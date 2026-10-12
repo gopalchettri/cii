@@ -1,0 +1,14 @@
+# Alertmanager, UAT and laptop. Runs with --web.external-url=<host>/alertmanager/.
+# D-05: no alert channel yet. Firing alerts show in Grafana (home dashboard and Alerting) and at /alertmanager.
+# When the owner names a channel, add it to `receivers` (email_configs, webhook_configs …) and point the
+# route at it.
+
+route:
+  receiver: none
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: none

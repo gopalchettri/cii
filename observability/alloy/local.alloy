@@ -1,0 +1,41 @@
+// Alloy on a developer laptop (scripts/monitoring.py): reads the files the API and workers write when
+// CII_LOG_DIR is set (TSG_LOG_DIR here is that folder) and labels them as UAT labels its pods, so the same
+// Grafana panels work in both places.
+
+// stderr, not the Windows Event Log: Alloy would try to register an event source there (admin rights) and stop.
+logging {
+  level       = "info"
+  format      = "logfmt"
+  destination = "stderr"
+}
+
+local.file_match "tsg" {
+  path_targets = [
+    {"__path__" = sys.env("TSG_LOG_DIR") + "/api.log", "app" = "tsg", "component" = "api"},
+    {"__path__" = sys.env("TSG_LOG_DIR") + "/worker*.log", "app" = "tsg", "component" = "worker"},
+    {"__path__" = sys.env("TSG_LOG_DIR") + "/beat.log", "app" = "tsg", "component" = "beat"},
+  ]
+}
+
+loki.source.file "tsg" {
+  targets       = local.file_match.tsg.targets
+  forward_to    = [loki.process.structlog.receiver]
+  tail_from_end = true
+}
+
+// Same as uat.alloy: `level` is the only label taken from the line.
+loki.process "structlog" {
+  forward_to = [loki.write.default.receiver]
+  stage.json {
+    expressions = { level = "level" }
+  }
+  stage.labels {
+    values = { level = "level" }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+}

@@ -1,0 +1,97 @@
+# TSG v2: every API call, ready to send (docs/DEBUGGING.md). Needs the REST Client extension.
+# Send a call: click "Send Request" above it, or put the cursor in it and press Ctrl+Alt+R. The answer opens beside
+# it, with the status, the headers (X-Request-Id) and the body.
+# Which TSG: the laptop by default. For UAT press Ctrl+Alt+E and choose "uat" (its address: .vscode/settings.json).
+# Your key and identity come from debug/.env (copy debug/.env.example first). Admin calls ask for the admin key each
+# time and never store it.
+
+@apiKey = {{$dotenv TSG_API_KEY}}
+@userId = {{$dotenv TSG_USER_ID}}
+@entityId = {{$dotenv TSG_ENTITY_ID}}
+@tenantId = {{$dotenv TSG_TENANT_ID}}
+@runId = {{$dotenv TSG_RUN_ID}}
+
+### 1. Health: is the API process answering? Expect: 200
+GET {{baseUrl}}/health
+
+### 2. Ready: can it reach MongoDB, SQL Server, Redis and a worker on every queue? Expect: 200
+# A 503 answer says which part is missing.
+GET {{baseUrl}}/ready
+
+### 2b. Metrics: the Prometheus numbers (what Grafana reads). Expect: 200
+GET {{baseUrl}}/metrics
+
+### 3. Admin: mint an API key. Expect: 201
+# Asks for the admin key. Copy "api_key" from the answer into debug/.env as TSG_API_KEY: it is shown only once.
+# @prompt adminKey The admin key (CII_ADMIN_API_KEY in .env on the laptop, .env.uat for UAT)
+POST {{baseUrl}}/v1/tsg/api-clients
+X-Admin-Key: {{adminKey}}
+X-User-Id: {{userId}}
+Content-Type: application/json
+
+{"name": "{{userId}}-{{$timestamp}}", "description": "minted from debug/tsg.http"}
+
+### 4. Admin: list the active API keys (never shows keys). Expect: 200
+# @prompt adminKey The admin key (CII_ADMIN_API_KEY in .env on the laptop, .env.uat for UAT)
+GET {{baseUrl}}/v1/tsg/api-clients?active=true
+X-Admin-Key: {{adminKey}}
+
+### 5. Check my key and headers work. Expect: 404
+# 404 "Session 'check-my-key' does not exist." means TSG accepted your key and headers (no run has that id).
+# 401 means the key or a header is wrong; 422 means a header breaks a rule.
+GET {{baseUrl}}/v1/sessions/check-my-key/events
+X-API-Key: {{apiKey}}
+X-User-Id: {{userId}}
+X-Entity-Id: {{entityId}}
+X-Tenant-Id: {{tenantId}}
+
+### 6a. Error example: no identity headers. Expect: 401
+GET {{baseUrl}}/v1/sessions/any-run/events
+
+### 6b. Error example: a wrong API key. Expect: 401
+GET {{baseUrl}}/v1/sessions/any-run/events
+X-API-Key: tsg_wrong
+X-User-Id: {{userId}}
+X-Entity-Id: {{entityId}}
+X-Tenant-Id: {{tenantId}}
+
+### 6c. Error example: an entity id that is not a number. Expect: 422
+GET {{baseUrl}}/v1/sessions/any-run/events
+X-API-Key: {{apiKey}}
+X-User-Id: {{userId}}
+X-Entity-Id: abc
+X-Tenant-Id: {{tenantId}}
+
+### 6d. Error example: a run of another entity. Expect: 403
+# Needs TSG_RUN_ID in debug/.env: run the task 'TSG: make a test run (laptop)' first.
+GET {{baseUrl}}/v1/sessions/{{runId}}/events
+X-API-Key: {{apiKey}}
+X-User-Id: {{userId}}
+X-Entity-Id: 999999
+X-Tenant-Id: {{tenantId}}
+
+### 6e. Error example: an address that does not exist. Expect: 404
+GET {{baseUrl}}/v1/nothing-here
+
+### 6f. Error example: the wrong method. Expect: 405
+DELETE {{baseUrl}}/health
+
+### 6g. Error example (admin): a key name of only spaces. Expect: 422
+# @prompt adminKey The admin key (CII_ADMIN_API_KEY in .env on the laptop, .env.uat for UAT)
+POST {{baseUrl}}/v1/tsg/api-clients
+X-Admin-Key: {{adminKey}}
+Content-Type: application/json
+
+{"name": "   "}
+
+### 7. Send your own request id: TSG keeps it, so your id and TSG's logs match. Expect: 200
+GET {{baseUrl}}/health
+X-Request-Id: my-debug-0001
+
+### 8. Admin: revoke an API key. Expect: 200
+# Asks for the admin key and the key's client_id (from request 3 or 4). The answer shows "active": false.
+# @prompt adminKey The admin key (CII_ADMIN_API_KEY in .env on the laptop, .env.uat for UAT)
+# @prompt clientId The client_id of the key to revoke
+POST {{baseUrl}}/v1/tsg/api-clients/{{clientId}}/revoke
+X-Admin-Key: {{adminKey}}
+X-User-Id: {{userId}}

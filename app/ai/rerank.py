@@ -1,0 +1,129 @@
+"""Rerank gateway: how well each document answers the query, 0-100. A local model when no base URL is set
+(dev), the proxy's reranker otherwise."""
+
+import math
+import threading
+import time
+from typing import Any
+
+import litellm
+
+from app.ai.common import (
+    IncompleteAiAnswer,
+    UnusableAiAnswer,
+    build_api_key_header,
+    call_timeout,
+    call_with_retries,
+    count_and_convert_ai_errors,
+)
+from app.ai.profiles import RERANK_MODEL_PROFILES, find_model_profile
+from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
+from app.core import metrics
+from app.core.config import get_settings
+from app.core.constants import AiOutcome, AiTask, ErrorMessage
+from app.core.singletons import singleton
+from app.core.tracing import traced
+from app.models.ai import RerankModelProfile
+
+
+class RerankModel:
+    def __init__(  # noqa: PLR0913 — the provider's address, key and limiter: each one is needed
+        self,
+        model: str,
+        profile: RerankModelProfile,
+        base_url: str,
+        api_key: str,
+        key_header: str = "",
+        slots: AiSlots = UNLIMITED_AI_SLOTS,
+    ):
+        self._model = model
+        self.profile = profile
+        self._base_url = base_url
+        self._api_key = api_key
+        self._key_header = build_api_key_header(key_header, api_key, option="headers")
+        self._local_model: Any = None
+        self._local_lock = threading.Lock()  # the local model: loaded once, then one prediction at a time
+        self._slots = slots  # remote calls only: a local model shares no provider
+
+    @traced("ai.rerank")
+    def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+        if not documents:
+            return []
+        started = time.perf_counter()
+        # A local model that would not load is counted too, so AiErrorRateHigh sees it on the laptop.
+        with count_and_convert_ai_errors(AiTask.RERANK, self._model):
+            scores = (
+                self._score_with_provider(query, documents)
+                if self._base_url
+                else self._score_with_local_model(query, documents)
+            )
+        metrics.AI_CALLS.labels(AiTask.RERANK, self._model, AiOutcome.OK).inc()
+        metrics.AI_SECONDS.labels(AiTask.RERANK, self._model).observe(time.perf_counter() - started)
+        return scores
+
+    def _score_with_provider(self, query: str, documents: list[str]) -> list[float]:
+        # call_with_retries is the only retry; a short answer is asked again too.
+        with self._slots.hold_slot(max_slot_hold_seconds(self.profile.timeout_seconds)):
+            return call_with_retries(
+                lambda: self._read_checked_scores(
+                    litellm.rerank(
+                        model=self._model,
+                        query=query,
+                        documents=documents,
+                        top_n=len(documents),
+                        api_base=self._base_url,
+                        api_key=self._api_key,
+                        timeout=call_timeout(self.profile.timeout_seconds),
+                        **self._key_header,
+                    ),
+                    len(documents),
+                )
+            )
+
+    def _read_checked_scores(self, response: Any, expected: int) -> list[float]:
+        """0-100 per document, in input order, checked: exactly one score per document, each a probability
+        (finite, 0-1)."""
+        results = sorted(response.results, key=lambda result: result["index"])
+        if [result["index"] for result in results] != list(range(expected)):
+            # A missing document would otherwise score 0 in silence and its control would just vanish.
+            raise IncompleteAiAnswer(
+                ErrorMessage.AI_ANSWER_INCOMPLETE.format(
+                    task=AiTask.RERANK, model=self._model, expected=expected
+                )
+            )
+        scores = [float(result["relevance_score"]) for result in results]
+        if bad := [score for score in scores if not (math.isfinite(score) and 0.0 <= score <= 1.0)]:
+            # A raw logit times 100 would pass the 75 bar or the 60 control cut-off by accident (G112).
+            raise UnusableAiAnswer(
+                ErrorMessage.RERANK_SCORE_OUT_OF_RANGE.format(model=self._model, score=bad[0])
+            )
+        return [100.0 * score for score in scores]
+
+    def _score_with_local_model(self, query: str, documents: list[str]) -> list[float]:
+        """ponytail: dev-only CPU model; UAT uses the proxy. Loaded once per process on first use, and one
+        prediction at a time (G199): one already uses every core, so ten at once (a worker's threads) only
+        thrashed, and none of them finished in 38 minutes (live test 2026-10-11)."""
+        with self._local_lock:
+            # A request whose deadline passed while it waited for the model (a plan request's top-up that
+            # already answered 503) ends here, never a full CPU prediction for no one.
+            call_timeout(self.profile.timeout_seconds)
+            if self._local_model is None:
+                from sentence_transformers import CrossEncoder
+
+                self._local_model = CrossEncoder(self._model)
+            # CrossEncoder.predict already applies the sigmoid for a one-label model: scores are 0..1.
+            probabilities = self._local_model.predict([(query, document) for document in documents])
+        return [100.0 * float(probability) for probability in probabilities]
+
+
+@singleton
+def get_rerank_model() -> RerankModel:
+    settings = get_settings()
+    return RerankModel(
+        settings.rerank_model,
+        find_model_profile(RERANK_MODEL_PROFILES, settings.rerank_model),
+        settings.rerank_base_url,
+        settings.rerank_api_key.get_secret_value(),
+        settings.ai_key_header,
+        get_ai_slots(),
+    )

@@ -1,0 +1,63 @@
+// Alloy in UAT / production: ships the stdout of every pod in this namespace to Loki, through the Kubernetes
+// API (no host folders). The laptop uses local.alloy: same labels, read from log files instead.
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+discovery.kubernetes "pods" {
+  role = "pod"
+  namespaces {
+    own_namespace = true // the namespaced Role allows nothing more
+  }
+}
+
+// The only labels: each has a small, fixed set of values. app = app.kubernetes.io/part-of ("tsg" on every
+// app pod), component = app.kubernetes.io/component (api, worker, beat, flower …).
+discovery.relabel "pod_logs" {
+  targets = discovery.kubernetes.pods.targets
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label  = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label  = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_part_of"]
+    target_label  = "app"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+    target_label  = "component"
+  }
+}
+
+loki.source.kubernetes "pods" {
+  targets    = discovery.relabel.pod_logs.output
+  forward_to = [loki.process.structlog.receiver]
+}
+
+// One JSON object per line (app/core/logging.py). `level` becomes a label; ids never do (see loki.yaml):
+// they stay in the line and are found with {app="tsg"} |= "<id>".
+loki.process "structlog" {
+  forward_to = [loki.write.default.receiver]
+  stage.json {
+    expressions = { level = "level" }
+  }
+  stage.labels {
+    values = { level = "level" }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

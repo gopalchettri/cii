@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSG Live Tracer</title>
+<style>
+  :root { --bg: #f3f5f9; --surface: #fff; --border: #e2e7ef; --border-strong: #cfd6e2; --text: #0f172a; --muted: #5b6b82; --faint: #94a3b8;
+          --primary: #2563eb; --primary-soft: #e8efff; --success: #15803d; --success-soft: #e6f6ec; --warn: #b45309; --warn-soft: #fff4e0;
+          --danger: #c42b1c; --danger-soft: #fdecea; --info: #0e7490; --info-soft: #e3f6fa; --mono: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  * { box-sizing: border-box; }
+  body { font: 13.5px/1.5 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 16px; background: var(--bg); color: var(--text); }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  a { color: var(--primary); }
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  code { background: #eef0f3; padding: 1px 4px; border-radius: 3px; }
+  .sub { color: var(--muted); margin-bottom: 12px; max-width: 1100px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 12px; }
+  label { display: block; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+  input[type=text], input[type=password], input[type=number] { width: 100%; padding: 5px 7px; border: 1px solid var(--border-strong); border-radius: 6px; font-family: var(--mono); font-size: 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  button { padding: 5px 11px; border: 1px solid var(--border-strong); border-radius: 6px; background: #fff; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; }
+  button:hover:not(:disabled) { background: #eef2f6; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .muted { color: var(--muted); } .faint { color: var(--faint); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #c3c9d0; vertical-align: 0; margin-right: 5px; }
+  .dot.on { background: var(--success); } .dot.warn { background: #f59e0b; } .dot.err { background: var(--danger); }
+  .cov { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+  .cov a { display: block; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; text-decoration: none; color: var(--text); background: #fafbfd; }
+  .cov a.hit { border-color: #bfe5cc; background: var(--success-soft); }
+  .cov b { display: block; font-size: 12.5px; } .cov span { font-size: 11.5px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eceff2; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+  .scroll { overflow-x: auto; }
+  #timeline tbody tr { cursor: pointer; }
+  #timeline tbody tr:hover td { background: #f8fafc; }
+  #timeline tbody tr.sel td { background: var(--primary-soft); }
+  .src { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 0 6px; border-radius: 999px; text-transform: uppercase; }
+  .src.sse { background: var(--success-soft); color: var(--success); } .src.poll { background: var(--warn-soft); color: var(--warn); }
+  .chg { font-family: var(--mono); font-size: 11.5px; }
+  .chg i { font-style: normal; color: var(--muted); }
+  .pv { display: inline-block; margin: 1px 4px 1px 0; padding: 0 7px; border-radius: 6px; background: var(--primary-soft); color: var(--primary); font-size: 11.5px; text-decoration: none; }
+  .pv.amb { background: var(--warn-soft); color: var(--warn); }
+  .why { display: block; font-size: 11.5px; color: var(--muted); }
+  pre { background: #0f172a; color: #e2e8f0; padding: 10px 12px; border-radius: 8px; font-size: 11.5px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .note { background: var(--info-soft); border: 1px solid #b6e3ec; border-radius: 8px; padding: 9px 11px; font-size: 12.5px; margin-bottom: 12px; color: #0b4e60; max-width: 1100px; }
+  .two { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+  @media (max-width: 1000px) { .two { grid-template-columns: 1fr; } }
+  .two > * { min-width: 0; }
+</style>
+</head>
+<body>
+
+<h1>TSG Live Tracer</h1>
+<div class="sub">Watches a session's live events and maps every change to the pipeline stage that caused it. Each <span class="pv">stage</span> link opens that
+  stage in the <a href="tsg_console.html#walk=X.3" target="_blank" rel="noopener">console's execution walkthrough</a>, which explains its input,
+  processing, decisions and output from the code. Everything in the timeline is <b>runtime data</b>; the stage it proves comes from the code's transition rules.</div>
+
+<div class="note"><b>How the stream works</b> (<code>app/api/routers/events.py</code>): <code>GET /v1/sessions/{id}/events</code> sends one event name,
+  <code>session.updated</code>, carrying the same RunBoard JSON as <code>GET /v1/sessions/{id}</code> (<code>session_status</code> and
+  <code>progress</code>: threats, scenarios, controls, overall, timings, error_message, last_next_set, last_regen, scenario_count); <code>GET /v1/remediation/{id}/events</code> sends
+  <code>remediation.updated</code> carrying RemediationStatus. Each stream sends the current status at once on connect, then only bodies that changed; it
+  re-checks every 30 s while a job is queued or running, and FastAPI writes a <code>: ping</code> comment after 15 s of silence. Publishes are best effort, so
+  the backstop poll stays on. <code>EventSource</code> cannot send the auth headers, so the stream is read with <code>fetch()</code>.</div>
+
+<div class="card">
+  <h2>Connection</h2>
+  <div class="grid">
+    <div><label for="base">API base (blank = same origin)</label><input type="text" id="base"></div>
+    <div><label for="apiKey">X-API-Key (never saved)</label><input type="password" id="apiKey" autocomplete="off"></div>
+    <div><label for="user">X-User-Id</label><input type="text" id="user"></div>
+    <div><label for="entity">X-Entity-Id</label><input type="text" id="entity"></div>
+    <div><label for="tenant">X-Tenant-Id</label><input type="text" id="tenant"></div>
+    <div><label for="session">Session id</label><input type="text" id="session" placeholder="32 hex characters"></div>
+  </div>
+  <div class="row">
+    <button class="primary" id="connect">Connect</button><button id="disconnect" disabled>Disconnect</button>
+    <button id="export" disabled>Export trace (JSON)</button><button id="clear">Clear timeline</button>
+    <label style="display:inline-flex;gap:6px;align-items:center;font-size:12.5px"><input type="checkbox" id="poll" checked> Backstop poll every</label>
+    <input type="number" id="pollSecs" value="15" min="5" style="width:64px"> s
+    <span id="state" class="muted"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Which of the seven steps this run has proved <span class="faint" style="text-transform:none;letter-spacing:0">(a step lights up once a change proves one of its stages)</span></h2>
+  <div class="cov" id="coverage"></div>
+</div>
+
+<div class="card">
+  <h2>Streams</h2>
+  <div class="scroll"><table id="streams"><thead><tr><th>Stream</th><th>State</th><th>Events</th><th>Pings</th><th>Last status</th></tr></thead><tbody></tbody></table></div>
+  <div class="faint" style="margin-top:6px;font-size:12px">A browser opens at most 6 connections to one origin: the session plus up to 4 plans are streamed, the rest
+    are polled with <code>GET /v1/remediation/{id}/status</code>. New plans are discovered with <code>GET /v1/remediation?session_id=</code> on every poll.</div>
+</div>
+
+<div class="two">
+  <div class="card">
+    <h2>Timeline <span class="faint" style="text-transform:none;letter-spacing:0">newest first · click a row for its raw body</span></h2>
+    <div class="scroll"><table id="timeline"><thead><tr><th>Time</th><th>Source</th><th>Stream · event</th><th>What changed</th><th>Proves stage</th></tr></thead>
+      <tbody><tr><td colspan="5" class="muted">Connect to begin.</td></tr></tbody></table></div>
+  </div>
+  <div class="card">
+    <h2>Raw frame</h2>
+    <pre id="raw">Select a timeline row.</pre>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  // ---------------------------------------------------------------------------------------------
+  // Stage titles from the console's execution catalogue (tsg_console.html, WALK). A link opens that stage there.
+  // ---------------------------------------------------------------------------------------------
+  var STAGE = {
+    "1.6": "Queue the job, audit, answer 202", "2.1": "A worker claims the job (lease)", "2.11": "Rank attack paths and freeze the plan",
+    "3.1": "Choose the set and the batch", "3.9": "Save the card and update the path", "3.10": "Hand over or finish the set",
+    "4.1": "Take a controls delivery", "4.5": "Save, retry and sweep", "5.3": "Accept", "5.4": "Reject", "5.5": "Generate the next set",
+    "5.6": "Regenerate scenarios", "6.5": "Create the plan record and queue the job", "6.6": "A worker claims the plan job",
+    "6.10": "Schedule checks and save", "7.2": "Accept or reject a version", "7.3": "Regenerate a plan", "X.1": "Job lease, retry and reaper"
+  };
+  var STEPS = [["1", "Start assessment", "1.1"], ["2", "Identify threats & freeze plan", "2.1"], ["3", "Write scenarios", "3.1"], ["4", "Map controls", "4.1"],
+               ["5", "Review scenarios", "5.1"], ["6", "Generate remediation plan", "6.1"], ["7", "Decide remediation plan", "7.1"], ["X", "Shared mechanisms", "X.1"]];
+  var MAX_PLAN_STREAMS = 4;   // ponytail: browsers allow 6 HTTP/1.1 connections per origin; session + 4 plans leaves room for the polls
+
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { var d = document.createElement("i"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+  var short = function (id) { return id ? String(id).slice(0, 8) : ""; };
+  var store = {
+    get: function (k, d) { try { var v = localStorage.getItem("tsgt." + k); return v == null ? d : v; } catch (e) { return d; } },
+    set: function (k, v) { try { localStorage.setItem("tsgt." + k, v); } catch (e) { /* private mode */ } }
+  };
+  var qs = new URLSearchParams(location.search);     // the console links here with ?sid=&base= (never the key)
+  [["base", ""], ["user", "gopal"], ["entity", "78"], ["tenant", "DESC"], ["session", ""]].forEach(function (f) {
+    $(f[0]).value = qs.get(f[0] === "session" ? "sid" : f[0]) || store.get(f[0], f[1]);
+    $(f[0]).addEventListener("change", function () { store.set(f[0], this.value.trim()); });
+  });
+  var base = function () { return $("base").value.trim().replace(/\/+$/, ""); };
+  var sid = function () { return $("session").value.trim(); };
+  var headers = function () {
+    return { "X-API-Key": $("apiKey").value, "X-User-Id": $("user").value.trim(), "X-Entity-Id": $("entity").value.trim(), "X-Tenant-Id": $("tenant").value.trim() };
+  };
+  // RFC 9457 problem bodies (app/api/errors.py) carry detail, code and a top-level reason.
+  function getJson(path) {
+    return fetch(base() + path, { headers: headers() }).then(function (r) {
+      return r.text().then(function (t) {
+        var body; try { body = t ? JSON.parse(t) : null; } catch (e) { body = t; }
+        if (!r.ok) throw new Error("HTTP " + r.status + " " + ((body && (body.reason || body.code)) || "") + " " + ((body && body.detail) || ""));
+        return body;
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The transition rules: which stage a status change proves (code-derived; see each stage in the console).
+  // ---------------------------------------------------------------------------------------------
+  // The run's status body (RunBoard, app/models/run_board.py): session_status, and progress with one word per stage
+  // (PENDING | RUNNING | COMPLETE | ERROR; a queued job counts as RUNNING), overall, error_message, last_next_set,
+  // last_regen and scenario_count.
+  var G = function (o) { return (o && o.progress) || {}; };
+  var C = function (o, k) { return (G(o).scenario_count || {})[k] || 0; };
+  var E = function (o, k) { return (G(o).error_message || {})[k] || ""; };
+  var errs = function (o) { var m = G(o).error_message || {}; return Object.keys(m).map(function (k) { return k + ": " + m[k]; }).join(" · "); };
+  var act = function (x, key) { return x.outcome + " · " + (x[key] != null ? x[key] : "?") + " of " + x.requested + " " + key; };
+  function provesSession(p, c) {
+    var out = [], st = c.session_status, g = G(c), pg = G(p);
+    var add = function (id, why, amb) { out.push([id, why, amb]); };
+    if (!p) {                                   // the snapshot every stream sends on connect
+      if (st === "failed") add("X.1", "run failed: " + errs(c));
+      else if (g.threats === "PENDING") add("1.6", "queued for a worker", true);
+      else if (g.threats === "RUNNING") add("2.1", "a worker is finding threats (2.2–2.11)");
+      else if (g.scenarios === "RUNNING") add("3.1", "scenarios are being written");
+      else if (g.controls === "RUNNING") add("4.1", "the run is done; controls are still being mapped");
+      else if (st === "completed") add(g.scenarios === "COMPLETE" ? "3.10" : "2.11", "the run is done (" + (g.overall || "") + ")");
+      return out;
+    }
+    var ln = g.last_next_set, pln = pg.last_next_set || {}, lr = g.last_regen, plr = pg.last_regen || {};
+    if (p.session_status !== "failed" && st === "failed") add("X.1", "run failed: " + errs(c));
+    if (pg.threats === "PENDING" && g.threats === "RUNNING") add("2.1", "a worker claimed the job");
+    if (pg.threats !== "COMPLETE" && g.threats === "COMPLETE") add("2.11", "plan frozen: " + C(c, "total") + " attack path(s) selected" + (E(c, "threats") ? " · " + E(c, "threats") : ""));
+    if (pg.scenarios !== "RUNNING" && g.scenarios === "RUNNING") add("3.1", "scenarios are being written (queued or running)");
+    if (C(c, "served") > C(p, "served")) add("3.9", (C(c, "served") - C(p, "served")) + " card(s) written");
+    if (E(c, "scenarios") && E(c, "scenarios") !== E(p, "scenarios")) add("3.9", E(c, "scenarios"));
+    if (pg.controls !== "RUNNING" && g.controls === "RUNNING") add("4.1", "controls are being mapped");
+    if (pg.controls === "RUNNING" && g.controls === "COMPLETE") add("4.5", "every written scenario is mapped");
+    if (pg.controls !== "ERROR" && g.controls === "ERROR") add("4.5", E(c, "controls") || "a control mapping failed");
+    if (C(c, "accepted") !== C(p, "accepted")) add("5.3", "accepted " + C(p, "accepted") + " → " + C(c, "accepted"));
+    if (C(c, "rejected") > C(p, "rejected")) add("5.4", "rejected " + C(p, "rejected") + " → " + C(c, "rejected"));
+    if (ln && ln.outcome === "running" && pln.outcome !== "running") add("5.5", "a reviewer asked for the next set (" + ln.requested + " requested)");
+    if (lr && lr.outcome === "running" && plr.outcome !== "running") add("5.6", "a reviewer asked to regenerate (" + lr.requested + " requested)");
+    if (lr && lr.outcome !== "running" && plr.outcome === "running") add("5.6", "regenerate finished: " + act(lr, "replaced"));
+    if (pg.scenarios === "RUNNING" && g.scenarios === "COMPLETE") add("3.10", "set finished: " + (g.overall || "") + (ln && ln.outcome !== "running" ? " · " + act(ln, "delivered") : ""));
+    return out;
+  }
+  function provesPlan(p, c) {
+    var out = [], add = function (id, why) { out.push([id, why]); };
+    if (!p) {
+      add({ queued: "6.5", running: "6.6", done: "6.10", failed: "X.1" }[c.latest_status] || "6.5", "v" + c.latest_version + " " + c.latest_status + " · " + c.decision);
+      return out;
+    }
+    if (c.latest_version > p.latest_version) add("7.3", "regenerated: version " + c.latest_version);
+    if (p.latest_status !== "running" && c.latest_status === "running") add("6.6", "a worker claimed v" + c.latest_version + " (AI plan, finish, schedule: 6.7–6.9)");
+    if (p.latest_status !== "done" && c.latest_status === "done") add("6.10", "v" + c.latest_version + " saved");
+    if (p.latest_status !== "failed" && c.latest_status === "failed") add("X.1", "v" + c.latest_version + " failed: " + ((c.error || {}).code || ""));
+    // A regenerate resets the decision itself (append_version), so only a same-version change is a reviewer's decision.
+    if (c.latest_version === p.latest_version && (p.decision !== c.decision || p.accepted_version !== c.accepted_version)) {
+      add("7.2", "decision " + p.decision + " → " + c.decision + (c.accepted_version ? " (accepted v" + c.accepted_version + ")" : ""));
+    }
+    return out;
+  }
+  function diff(p, c, path, out) {
+    path = path || ""; out = out || [];
+    if (!p) return out;
+    Object.keys(Object.assign({}, p, c)).forEach(function (k) {
+      if (k === "updated_at") return;
+      var a = p[k], b = c[k], name = path + k;
+      if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a)) diff(a, b, name + ".", out);
+      else if (JSON.stringify(a) !== JSON.stringify(b)) out.push([name, a, b]);
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // streams, polls and the timeline
+  // ---------------------------------------------------------------------------------------------
+  var streams = {};      // key -> {kind, id, path, abort, retry, timer, state, events, pings, last, polled}
+  var frames = [], hits = {}, pollTimer = null, running = false;
+  function streamKey(kind, id) { return kind + ":" + id; }
+
+  function record(key, source, event, payload) {
+    var s = streams[key], prev = s.last;
+    if (source === "poll" && prev && JSON.stringify(prev) === JSON.stringify(payload)) return;      // a poll that saw nothing new
+    var proves = s.kind === "session" ? provesSession(prev, payload) : provesPlan(prev, payload);
+    s.last = payload; if (source === "sse") s.events++;
+    var f = { at: new Date().toISOString(), source: source, stream: key, event: event, payload: payload, changes: diff(prev, payload), proves: proves, first: !prev };
+    frames.push(f);
+    proves.forEach(function (x) { hits[x[0]] = (hits[x[0]] || 0) + 1; });
+    renderFrame(f, frames.length - 1); renderCoverage(); renderStreams();
+    $("export").disabled = false;
+  }
+  function stageLink(x) {
+    return '<a class="pv' + (x[2] ? " amb" : "") + '" target="_blank" rel="noopener" href="tsg_console.html#walk=' + encodeURIComponent(x[0]) + '">' + esc(x[0]) + " " +
+           esc(STAGE[x[0]] || "") + '</a><span class="why">' + esc(x[1]) + "</span>";
+  }
+  function renderFrame(f, i) {
+    var tb = document.querySelector("#timeline tbody");
+    if (frames.length === 1) tb.innerHTML = "";
+    var s = streams[f.stream], tr = document.createElement("tr");
+    tr.dataset.i = i;
+    tr.innerHTML = "<td>" + esc(new Date(f.at).toLocaleTimeString()) + '</td><td><span class="src ' + f.source + '">' + f.source + "</span></td><td>" +
+      esc(s.kind === "session" ? "session" : "plan " + short(s.id)) + "<br><code>" + esc(f.event) + "</code></td>" +
+      '<td class="chg">' + (f.changes.length ? f.changes.slice(0, 8).map(function (c) {
+        return esc(c[0]) + " <i>" + esc(JSON.stringify(c[1])) + "</i> → " + esc(JSON.stringify(c[2]));
+      }).join("<br>") + (f.changes.length > 8 ? "<br>… " + (f.changes.length - 8) + " more" : "")
+        : '<span class="faint">' + (f.first ? "current status on connect" : "no change since the last read (the poll saw it first)") + "</span>") +
+      "</td><td>" + (f.proves.length ? f.proves.map(stageLink).join("") : '<span class="faint">no stage change</span>') + "</td>";
+    tb.insertBefore(tr, tb.firstChild);
+    while (tb.rows.length > 500) tb.deleteRow(tb.rows.length - 1);
+  }
+  document.querySelector("#timeline tbody").addEventListener("click", function (e) {
+    if (e.target.closest("a")) return;
+    var tr = e.target.closest("tr"); if (!tr || tr.dataset.i == null) return;
+    document.querySelectorAll("#timeline tr.sel").forEach(function (r) { r.classList.remove("sel"); });
+    tr.classList.add("sel");
+    var f = frames[+tr.dataset.i];
+    $("raw").textContent = "event: " + f.event + "   (" + f.source + ", " + f.at + ")\n\n" + JSON.stringify(f.payload, null, 2);
+  });
+  function renderCoverage() {
+    $("coverage").innerHTML = STEPS.map(function (S) {
+      var n = Object.keys(hits).filter(function (id) { return id.split(".")[0] === S[0]; }).reduce(function (a, id) { return a + hits[id]; }, 0);
+      return '<a class="' + (n ? "hit" : "") + '" target="_blank" rel="noopener" href="tsg_console.html#walk=' + S[2] + '"><b>' + (S[0] === "X" ? "" : S[0] + " · ") + esc(S[1]) +
+             "</b><span>" + (n ? n + " change(s) proved" : "no evidence yet") + "</span></a>";
+    }).join("");
+  }
+  function renderStreams() {
+    var tb = document.querySelector("#streams tbody"), keys = Object.keys(streams);
+    tb.innerHTML = keys.length ? keys.map(function (k) {
+      var s = streams[k], l = s.last || {};
+      var g = G(l);
+      var st = s.kind === "session" ? (l.session_status ? l.session_status + " · threats " + g.threats + " · scenarios " + g.scenarios + " · controls " + g.controls + " · " + g.overall : "")
+                                    : (l.latest_status ? "v" + l.latest_version + " " + l.latest_status + " · " + l.decision : "");
+      return "<tr><td>" + esc(s.kind === "session" ? "session " + short(s.id) : "plan " + short(s.id)) + '</td><td><span class="dot ' +
+             ({ live: "on", connecting: "warn", polling: "warn", error: "err" }[s.state] || "") + '"></span>' + esc(s.state) + "</td><td>" + s.events +
+             "</td><td>" + s.pings + "</td><td>" + esc(st) + "</td></tr>";
+    }).join("") : '<tr><td colspan="5" class="muted">None.</td></tr>';
+  }
+
+  // The SSE reader: fetch() + ReadableStream; frames end with a blank line, `:` lines are comments (FastAPI's ping).
+  async function openStream(key) {
+    var s = streams[key];
+    if (!s || !running) return;
+    s.abort = new AbortController();
+    var mine = s.abort;
+    s.state = "connecting"; renderStreams();
+    try {
+      var res = await fetch(base() + s.path, { headers: Object.assign({ Accept: "text/event-stream" }, headers()), signal: mine.signal });
+      if (!res.ok) {
+        var t = await res.text();
+        s.state = "error"; renderStreams(); $("state").textContent = s.path + ": HTTP " + res.status + " " + t.slice(0, 200);
+        if (res.status === 401 || res.status === 403 || res.status === 404) return;
+        throw new Error("HTTP " + res.status);
+      }
+      s.retry = 0; s.state = "live"; renderStreams();
+      var reader = res.body.getReader(), dec = new TextDecoder(), buf = "";
+      for (;;) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+        var i;
+        while ((i = buf.indexOf("\n\n")) >= 0) { onFrame(key, buf.slice(0, i)); buf = buf.slice(i + 2); }
+      }
+    } catch (e) {
+      if (e.name === "AbortError") return;
+    }
+    if (!running || s.abort !== mine) return;
+    var wait = Math.min(30000, 1000 * Math.pow(2, s.retry++));     // 1 s, 2 s, 4 s ... 30 s
+    s.state = "reconnecting in " + Math.round(wait / 1000) + " s"; renderStreams();
+    s.timer = setTimeout(function () { openStream(key); }, wait);
+  }
+  function onFrame(key, frame) {
+    var name = "message", data = [], comment = false;
+    frame.split("\n").forEach(function (l) {
+      if (l.charAt(0) === ":") comment = true;
+      else if (l.indexOf("event:") === 0) name = l.slice(6).trim();
+      else if (l.indexOf("data:") === 0) { var v = l.slice(5); if (v.charAt(0) === " ") v = v.slice(1); data.push(v); }
+    });
+    if (!data.length) { if (comment) { streams[key].pings++; renderStreams(); } return; }
+    var payload; try { payload = JSON.parse(data.join("\n")); } catch (e) { return; }
+    if (name === "session.updated" || name === "remediation.updated") record(key, "sse", name, payload);
+  }
+
+  function addStream(kind, id, stream) {
+    var key = streamKey(kind, id);
+    if (streams[key]) return;
+    streams[key] = { kind: kind, id: id, abort: null, retry: 0, timer: null, events: 0, pings: 0, last: null, polled: !stream,
+                     state: stream ? "connecting" : "polling",
+                     path: kind === "session" ? "/v1/sessions/" + encodeURIComponent(id) + "/events" : "/v1/remediation/" + encodeURIComponent(id) + "/events" };
+    if (stream) openStream(key); else pollPlan(key);
+    renderStreams();
+  }
+  function discoverPlans() {
+    return getJson("/v1/remediation?limit=500&session_id=" + encodeURIComponent(sid())).then(function (l) {
+      var open = Object.keys(streams).filter(function (k) { return streams[k].kind === "plan" && !streams[k].polled; }).length;
+      (l.items || []).forEach(function (r) {
+        if (streams[streamKey("plan", r.remediation_id)]) return;
+        addStream("plan", r.remediation_id, open < MAX_PLAN_STREAMS);
+        if (open < MAX_PLAN_STREAMS) open++;
+      });
+    }).catch(function (e) { $("state").textContent = "plan discovery: " + e.message; });
+  }
+  function pollPlan(key) {
+    var s = streams[key];
+    return getJson("/v1/remediation/" + encodeURIComponent(s.id) + "/status").then(function (b) { record(key, "poll", "GET status", b); })
+      .catch(function (e) { s.state = "error"; renderStreams(); $("state").textContent = e.message; });
+  }
+  // Backstop: a publish is best effort, and a dead worker publishes nothing; the poll is what makes the trace settle.
+  function backstop() {
+    if (!running || !$("poll").checked) return;
+    var key = streamKey("session", sid());
+    getJson("/v1/sessions/" + encodeURIComponent(sid())).then(function (b) { record(key, "poll", "GET session", b); })
+      .catch(function (e) { $("state").textContent = "poll: " + e.message; });
+    Object.keys(streams).forEach(function (k) { if (streams[k].polled) pollPlan(k); });
+    discoverPlans();
+  }
+  function schedulePoll() {
+    clearInterval(pollTimer);
+    pollTimer = setInterval(backstop, Math.max(5, parseInt($("pollSecs").value, 10) || 15) * 1000);
+  }
+
+  $("connect").addEventListener("click", function () {
+    if (!/^[0-9a-fA-F-]{32,36}$/.test(sid())) { alert("Paste the session id (32 hex characters)."); return; }
+    if (!$("apiKey").value) { alert("X-API-Key is required."); return; }
+    store.set("session", sid());
+    running = true; $("connect").disabled = true; $("disconnect").disabled = false; $("state").textContent = "";
+    addStream("session", sid(), true);
+    discoverPlans(); schedulePoll();
+  });
+  $("disconnect").addEventListener("click", function () {
+    running = false; clearInterval(pollTimer);
+    Object.keys(streams).forEach(function (k) { var s = streams[k]; clearTimeout(s.timer); if (s.abort) s.abort.abort(); s.state = "closed"; });
+    renderStreams(); $("connect").disabled = false; $("disconnect").disabled = true;
+  });
+  $("pollSecs").addEventListener("change", function () { if (running) schedulePoll(); });
+  $("clear").addEventListener("click", function () {
+    frames = []; hits = {};
+    Object.keys(streams).forEach(function (k) { streams[k].last = null; });     // the next frame is a fresh snapshot again
+    document.querySelector("#timeline tbody").innerHTML = '<tr><td colspan="5" class="muted">Cleared.</td></tr>';
+    $("raw").textContent = "Select a timeline row."; renderCoverage(); $("export").disabled = true;
+  });
+  // The export is runtime evidence: import it in the console (How it runs → Import) to see these events on stage X.3.
+  $("export").addEventListener("click", function () {
+    var blob = new Blob([JSON.stringify({ kind: "tsg-trace", exported_at: new Date().toISOString(), session_id: sid(),
+      frames: frames.map(function (f) { return { at: f.at, source: f.source, event: f.event, stream: f.stream, payload: f.payload, proves: f.proves.map(function (x) { return x[0]; }) }; }) }, null, 2)],
+      { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "tsg-trace-" + short(sid()) + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  // Self-check of the transition rules (runs once; a broken rule shows in the browser console as an error).
+  (function selfCheck() {
+    var b = function (th, sc, ct, n) { return { session_status: "active", progress: { threats: th, scenarios: sc, controls: ct, error_message: {}, scenario_count: n || {} } }; };
+    var q = b("PENDING", "PENDING", "PENDING"), r = b("RUNNING", "PENDING", "PENDING");
+    var s = b("COMPLETE", "RUNNING", "PENDING", { total: 4, remaining: 4 }), w = b("COMPLETE", "RUNNING", "RUNNING", { total: 4, remaining: 3, served: 1 });
+    var ids = function (l) { return l.map(function (x) { return x[0]; }).join(","); };
+    var cases = [[ids(provesSession(q, r)), "2.1"], [ids(provesSession(r, s)), "2.11,3.1"], [ids(provesSession(s, w)), "3.9,4.1"],
+                 [ids(provesPlan({ latest_version: 1, latest_status: "done", decision: "pending" }, { latest_version: 1, latest_status: "done", decision: "accepted", accepted_version: 1 })), "7.2"],
+                 [ids(provesPlan({ latest_version: 1, latest_status: "done", decision: "rejected" }, { latest_version: 2, latest_status: "queued", decision: "pending" })), "7.3"]];
+    cases.forEach(function (c) { if (c[0] !== c[1]) console.error("tracer rule self-check: got " + c[0] + ", expected " + c[1]); });
+  })();
+  renderCoverage(); renderStreams();
+})();
+</script>
+</body>
+</html>

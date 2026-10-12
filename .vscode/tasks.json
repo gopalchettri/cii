@@ -1,0 +1,130 @@
+{
+  // TSG tasks for debugging: Terminal > Run Task (docs/DEBUGGING.md). All run from the project folder.
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}",
+    "shell": {
+      "executable": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+    }
+  },
+  "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+  "tasks": [
+    { "label": "TSG: start", "type": "shell", "command": ".\\run.ps1", "problemMatcher": [] },
+    { "label": "TSG: stop", "type": "shell", "command": ".\\stop.ps1", "problemMatcher": [] },
+    { "label": "TSG: status", "type": "shell", "command": ".\\run.ps1 status", "problemMatcher": [] },
+    {
+      "label": "TSG: check the stores",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py stores",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: workers - alive and busy",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py workers",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: queues - jobs waiting",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py queues",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: run the reaper now",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py send reaper",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: rebuild the library indexes now",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py send indexes",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: show a run and its job",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py run-show '${input:runId}'",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: find in the logs",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py find '${input:searchText}'",
+      "problemMatcher": []
+    },
+    {
+      // Read-only: re-runs a run's search and ranking into logs/replay-<id>.log for tsg_console.html.
+      "label": "TSG: replay a run's inner steps",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\replay_run_steps.py '${input:runId}'",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: make a test run (laptop)",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py run-make",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: send a status change to the test run (laptop)",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py run-change ${input:newStatus}",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: delete the test run (laptop)",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py run-delete",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: watch a run's live updates",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python scripts\\debug_tools.py stream ${input:environment}",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: run all tests",
+      "type": "shell",
+      "command": ".venv\\Scripts\\python -m pytest -q -p no:cacheprovider",
+      "problemMatcher": []
+    },
+    {
+      "label": "TSG: code checks",
+      "type": "shell",
+      // Each tool's result is kept: with ';' alone the task showed only mypy's, so a ruff failure looked green.
+      "command": "$failed = 0; .venv\\Scripts\\python -m ruff check app scripts tests; if ($LASTEXITCODE) { $failed = 1 }; .venv\\Scripts\\python -m ruff format --check app scripts tests; if ($LASTEXITCODE) { $failed = 1 }; .venv\\Scripts\\python -m mypy app; if ($LASTEXITCODE) { $failed = 1 }; exit $failed",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "runId",
+      "type": "promptString",
+      "description": "Run id (leave empty to use TSG_RUN_ID from debug/.env)",
+      "default": ""
+    },
+    {
+      "id": "searchText",
+      "type": "promptString",
+      "description": "Request id, run id or task id to look for in the log files"
+    },
+    {
+      "id": "newStatus",
+      "type": "pickString",
+      "description": "New status for the test run",
+      "options": ["queued", "running", "done", "failed"],
+      "default": "done"
+    },
+    {
+      "id": "environment",
+      "type": "pickString",
+      "description": "Which TSG to watch",
+      "options": ["laptop", "uat"],
+      "default": "laptop"
+    }
+  ]
+}

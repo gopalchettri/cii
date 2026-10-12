@@ -1,0 +1,32 @@
+# Grafana data sources, UAT and laptop. The addresses come from the environment (Grafana fills ${…} here):
+#   UAT:    http://prometheus:9090/prometheus   http://loki:3100   http://alertmanager:9093/alertmanager
+#   laptop: the same paths on http://localhost (scripts/monitoring.py sets them)
+# The uids are fixed: the dashboard (grafana/dashboards/tsg.json) refers to them.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    jsonData:
+      timeInterval: 30s
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: ${LOKI_URL}
+
+  # Grafana's Alerting page lists and silences Alertmanager's alerts with this.
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: ${ALERTMANAGER_URL}
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false

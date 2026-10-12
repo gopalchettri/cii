@@ -1,0 +1,13 @@
+# Loads the dashboards in GRAFANA_DASHBOARDS (UAT: /var/lib/grafana/dashboards; laptop: this repo's
+# observability/grafana/dashboards). They are files: edit the JSON in git, not in the Grafana screen.
+
+apiVersion: 1
+
+providers:
+  - name: tsg
+    folder: TSG
+    type: file
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: ${GRAFANA_DASHBOARDS}

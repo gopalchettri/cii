@@ -1,0 +1,19 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests", "-p", "no:cacheprovider"],
+  "rest-client.environmentVariables": {
+    "$shared": {
+      "baseUrl": "http://localhost:8000",
+      "grafana": "http://localhost:3000/grafana/",
+      "flower": "http://localhost:5555/flower/"
+    },
+    "laptop": {},
+    "uat": {
+      "baseUrl": "https://set-the-uat-host-in-vscode-settings.invalid",
+      "grafana": "https://set-the-uat-host-in-vscode-settings.invalid/grafana/",
+      "flower": "https://set-the-uat-host-in-vscode-settings.invalid/flower/"
+    }
+  }
+}

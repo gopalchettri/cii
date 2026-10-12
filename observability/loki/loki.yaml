@@ -1,0 +1,55 @@
+# Loki, UAT and laptop: one process (all parts in one binary), files on local disk, logs kept 7 days (D-07).
+# Started with -config.expand-env=true: LOKI_DATA is the data folder (UAT: the /loki volume; laptop: set by
+# scripts/monitoring.py). Its API is public under /loki/api/v1/… (owner, 2026-10-08) — read it through Grafana.
+# ponytail: one pod; split into Loki's separate parts only when log volume, not queries, is the problem.
+
+auth_enabled: false
+
+analytics:
+  reporting_enabled: false # no usage reports to grafana.com
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9095
+  # A burst of log lines can exceed the 4 MB default; the push would then fail and lines would be lost.
+  grpc_server_max_recv_msg_size: 8388608
+  grpc_server_max_send_msg_size: 8388608
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: ${LOKI_DATA:-/loki}
+  storage:
+    filesystem:
+      chunks_directory: ${LOKI_DATA:-/loki}/chunks
+      rules_directory: ${LOKI_DATA:-/loki}/rules
+  replication_factor: 1 # one pod: the default 3 would fail every write
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 168h
+  # Ids (request_id, session_id …) stay in the line text, never in labels or metadata: every new id would
+  # make a new stream and the index would grow without end. They are still searchable: {app="tsg"} |= "<id>".
+  allow_structured_metadata: false
+  # After a restart Alloy may send a backlog older than the default 1 h window; rejected lines are lost.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  volume_enabled: true
+  # Its API is public (owner decision): nobody may delete logs through it. Retention still deletes old logs.
+  deletion_mode: disabled
+
+compactor:
+  working_directory: ${LOKI_DATA:-/loki}/compactor
+  retention_enabled: true # without it retention_period deletes nothing and the disk fills
+  delete_request_store: filesystem

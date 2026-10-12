@@ -1,0 +1,57 @@
+{
+  // Debug TSG v2 in VS Code: docs/DEBUGGING.md, Part 3. Needs the "Python" and "Python Debugger" extensions.
+  // Stop the normal TSG first (Terminal > Run Task > TSG: stop): it uses the same port 8000 and job queues.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug API",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "uvicorn",
+      // No --reload: it runs the app in a child process, where breakpoints never stop.
+      "args": ["app.main:app", "--host", "127.0.0.1", "--port", "8000"],
+      "cwd": "${workspaceFolder}",
+      "env": { "CII_LOG_DIR": "logs" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Debug worker",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "celery",
+      // solo pool: one task at a time on the main thread, so a breakpoint stops exactly one job.
+      // Metrics port 9101: never clashes with a normal worker still running on 9100.
+      "args": [
+        "-A", "app.worker", "worker", "--pool=solo",
+        "-Q", "tsg_threats,tsg_scenarios,tsg_maintenance",
+        "-n", "debug@%h", "--loglevel=INFO"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": { "CII_LOG_DIR": "logs", "CII_WORKER_METRICS_PORT": "9101" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Debug current test file",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "pytest",
+      // Open a file in tests/ first. The tests use their own databases (cii_tsg_test, Redis 14/15).
+      "args": ["${file}", "-q", "-p", "no:cacheprovider"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug API + worker",
+      "configurations": ["Debug API", "Debug worker"],
+      "stopAll": true
+    }
+  ]
+}

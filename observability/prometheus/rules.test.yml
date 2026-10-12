@@ -1,0 +1,299 @@
+# promtool test rules observability/prometheus/rules.test.yml — one case per alert, proving each one fires.
+# Run by tests/test_observability.py when promtool is installed (scripts/monitoring.py install puts it there).
+
+rule_files:
+  - rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: tsg_http_requests_total{method="GET",route="/v1/sessions",status="500"}
+        values: 0+10x20
+      - series: tsg_http_requests_total{method="GET",route="/v1/sessions",status="200"}
+        values: 0+10x20
+      # A storm of probe answers must not dilute the share of real errors.
+      - series: tsg_http_requests_total{method="GET",route="/ready",status="200"}
+        values: 0+1000x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: Api5xxHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: More than 2 % of API answers are server errors (5xx). }
+
+  # /ready answering 503 on purpose (a worker is missing) is not an API error.
+  - interval: 1m
+    input_series:
+      - series: tsg_http_requests_total{method="GET",route="/ready",status="503"}
+        values: 0+10x20
+      - series: tsg_http_requests_total{method="GET",route="/v1/sessions",status="200"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: Api5xxHigh
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: tsg_http_request_seconds_bucket{route="/v1/sessions",le="0.5"}
+        values: 0x20
+      - series: tsg_http_request_seconds_bucket{route="/v1/sessions",le="2.5"}
+        values: 0+10x20
+      - series: tsg_http_request_seconds_bucket{route="/v1/sessions",le="+Inf"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ApiLatencyHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "95 % of API requests should finish within 1 s; they have not for 10 minutes." }
+
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_total{task="tsg_find_threats",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: JobsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: A background job failed for good in the last 15 minutes. }
+
+  # A failed reaper pass or index build runs again on its timer: not a failed run.
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_total{task="tsg_reap",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+      - series: tsg_jobs_total{task="tsg_build_library_indexes",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: JobsFailing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_total{task="tsg_reap",outcome="success"}
+        values: 0+1x10 10x30
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ReaperNotRunning
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "The reaper has not run for 15 minutes; check Celery beat (stuck jobs are not repaired)."
+
+  - interval: 1m
+    input_series:
+      - series: redis_key_size{db="db0",key="tsg:tsg_threats"}
+        values: 60x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: QueueBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, key: "tsg:tsg_threats" }
+            exp_annotations: { summary: tsg:tsg_threats has held more than 50 waiting jobs for 15 minutes. }
+
+  - interval: 1m
+    input_series:
+      - series: tsg_workers_online{queue="tsg_threats"}
+        values: 0x5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: NoWorker
+        exp_alerts:
+          - exp_labels: { severity: critical, queue: tsg_threats }
+            exp_annotations: { summary: No live worker on queue tsg_threats; its jobs wait. }
+
+  - interval: 1m
+    input_series:
+      - series: tsg_dependency_up{name="mongo"}
+        values: 0x5
+      - series: tsg_dependency_up{name="sql"}
+        values: 0x5
+      - series: tsg_dependency_up{name="redis"}
+        values: 0x5
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MongoDown
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: MongoDB does not answer the API. }
+      - eval_time: 4m
+        alertname: SqlDown
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: SQL Server does not answer the API. }
+      - eval_time: 4m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: Redis does not answer the API. }
+
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_calls_total{task="embed",model="m",outcome="unavailable"}
+        values: 0+5x30
+      - series: tsg_ai_calls_total{task="embed",model="m",outcome="ok"}
+        values: 0+5x30
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: AiErrorRateHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: More than 10 % of AI calls fail (unavailable or unreadable answer). }
+
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_slots_in_use{instance="worker-1"}
+        values: 16x15
+      - series: tsg_ai_slots_cap{instance="worker-1"}
+        values: 16x15
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AiSlotsSaturated
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
+
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_slots_in_use{instance="worker-1"}
+        values: 0x15
+      - series: tsg_ai_slots_cap{instance="worker-1"}
+        values: 0x15
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AiSlotsSaturated
+        exp_alerts: []  # cap 0 = no limit: never saturated
+
+  - interval: 1m
+    input_series:
+      - series: tsg_audit_failures_total
+        values: 0 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AuditWriteFailing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: Audit records could not be written to tsg_audit (the actions still happened). }
+
+  - interval: 1m
+    input_series:
+      - series: up{job="api",instance="localhost:8000"}
+        values: 0x12
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: api, instance: "localhost:8000" }
+            exp_annotations: { summary: "Prometheus cannot read api at localhost:8000." }
+
+  - interval: 1m
+    input_series:
+      - series: kube_pod_container_status_restarts_total{namespace="tsg-uat",pod="api-1",container="api"}
+        values: 0 1 2 3 4 5 6 7 8 9
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: PodRestarting
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: tsg-uat, pod: api-1, container: api }
+            exp_annotations: { summary: api-1 restarted more than twice in 30 minutes. }
+
+  - interval: 1m
+    input_series:
+      - series: kube_pod_container_status_last_terminated_reason{namespace="tsg-uat",pod="api-1",container="api",reason="OOMKilled"}
+        values: 1x10
+      - series: kube_pod_container_status_restarts_total{namespace="tsg-uat",pod="api-1",container="api"}
+        values: 0 1 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PodOOMKilled
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: tsg-uat, pod: api-1, container: api, reason: OOMKilled }
+            exp_annotations: { summary: api-1 ran out of memory and was restarted. }
+
+  - interval: 1m
+    input_series:
+      - series: redis_up{instance="redis-exporter:9121"}
+        values: 0x12
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: QueueDepthUnknown
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: redis-exporter cannot reach Redis, so queue lengths are unknown (check the broker URL).
+
+  - interval: 1m
+    input_series:
+      - series: up{job="flower",instance="localhost:5555"}
+        values: 1x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ApiNotRunning
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: No API instance is running and answering. }
+      - eval_time: 6m
+        alertname: WorkerNotRunning
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: No worker process is running and answering. }
+
+  - interval: 1m
+    input_series:
+      - series: up{job="api",instance="localhost:8000"}
+        values: 1x10
+      - series: up{job="worker",instance="localhost:9100"}
+        values: 1x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ApiNotRunning
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: WorkerNotRunning
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: kube_pod_container_status_waiting_reason{namespace="tsg-uat",pod="flower-1",container="flower",reason="CreateContainerConfigError"}
+        values: 1x12
+      - series: kube_pod_status_phase{namespace="tsg-uat",pod="grafana-1",phase="Pending"}
+        values: 1x12
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: PodNotStarting
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: tsg-uat, pod: flower-1 }
+            exp_annotations: { summary: "flower-1 has not started for 10 minutes (oc describe pod flower-1)." }
+          - exp_labels: { severity: warning, namespace: tsg-uat, pod: grafana-1 }
+            exp_annotations: { summary: "grafana-1 has not started for 10 minutes (oc describe pod grafana-1)." }
+
+  # The library check failing every minute (SQL down, or a row the loader cannot read): edits are missed.
+  - interval: 1m
+    input_series:
+      - series: tsg_library_check_failures_total{instance="api"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: LibraryCheckFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served)." }
+
+  # One failed check is a blip, not an alert.
+  - interval: 1m
+    input_series:
+      - series: tsg_library_check_failures_total{instance="api"}
+        values: 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LibraryCheckFailing
+        exp_alerts: []
