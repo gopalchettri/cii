@@ -13,6 +13,7 @@ from app.core.constants import (
     AuditAction,
     AuditTarget,
     ConflictReason,
+    JobControlMessage,
     ReviewMessage,
     RunActionKind,
     RunClash,
@@ -62,7 +63,10 @@ class RunActions:
         paths = (record.get("plan") or {}).get("paths") or []
         asked, batch = set_and_first_batch(paths, get_settings().next_set_size)
         if not asked:
-            if resumed := self._resume_controls(record["_id"]):  # G214: only its stopped controls were left
+            resumed = self._resume_controls(record["_id"])
+            if resumed is None:
+                raise _being_deleted(record["_id"])
+            if resumed:  # G214: only its stopped controls were left
                 publish_session_status(record["_id"])
                 target = audit_target(AuditTarget.SESSION, record["_id"])
                 after = {"controls_resumed": resumed}
@@ -105,6 +109,8 @@ class RunActions:
             raise Conflict(
                 message, reason=ConflictReason.ASSET_BUSY, details={"active_session_id": active_id}
             )
+        if clash is RunClash.DELETING:
+            raise _being_deleted(record["_id"])
         if clash is RunClash.CHANGED:
             message = ReviewMessage.GENERATION_IN_PROGRESS.format(session_id=record["_id"])
             raise Conflict(message, reason=ConflictReason.GENERATION_IN_PROGRESS)
@@ -118,12 +124,19 @@ class RunActions:
         record_audit(action, caller_actor(principal), target, after=after)
         return RunActionStarted(epoch=epoch)
 
-    def _resume_controls(self, session_id: str) -> int:
-        """The controls a cancel stopped, queued again and sent at once (else they wait for the sweep)."""
+    def _resume_controls(self, session_id: str) -> int | None:
+        """The controls a cancel stopped, queued again and sent at once (else they wait for the sweep); None
+        when the run is being deleted."""
         resumed = self._controls.resume_controls(session_id)
         if resumed:
             send_job(TaskName.MAP_CONTROLS, session_id, 0)  # the epoch is never checked for controls
         return resumed
+
+
+def _being_deleted(session_id: str) -> Conflict:
+    """409 run_being_deleted: a click that lost the race with its run's delete is told so (G214)."""
+    message = JobControlMessage.BEING_DELETED.format(session_id=session_id)
+    return Conflict(message, reason=ConflictReason.RUN_BEING_DELETED)
 
 
 @singleton

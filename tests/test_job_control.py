@@ -27,14 +27,17 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import NotFound
+from app.core.exceptions import Conflict, NotFound
 from app.data_access.job_control import JobControlRecords
 from app.data_access.job_records import JobLease, JobRecords, LeaseLost
 from app.data_access.scenario_controls import ControlDeliveries, ControlSweep
 from app.data_access.sessions import SessionRepository
+from app.models.api_clients import Principal
 from app.services import jobs as jobs_module
 from app.services.api_clients import get_api_client_service
 from app.services.scenarios import run_actions as run_actions_module
+from app.services.scenarios.run_actions import get_run_actions
+from app.services.session_status import find_status_for_caller
 
 NOW = datetime.now(UTC)
 
@@ -264,6 +267,7 @@ def test_nothing_is_ever_deleted_under_a_worker(client: TestClient, api_key: str
     for run_id in (working, controls, planning):
         refused = client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity))
         assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.CANCEL_FIRST), run_id
+        assert "deleting_at" not in get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})  # unmarked
     client.post(f"/v1/sessions/{working}/cancel", headers=_who(api_key, entity))
     assert client.delete(f"/v1/sessions/{working}", headers=_who(api_key, entity)).status_code == 200
     theirs = _run(entity + 1, Status.DONE)
@@ -318,9 +322,9 @@ def test_a_delete_cut_short_is_finished_by_calling_it_again(
 
     plans = get_mongodb()[Collection.REMEDIATIONS]
 
-    class Down:
-        def distinct(self, *args: Any) -> list[str]:
-            return plans.distinct(*args)
+    class Down:  # MongoDB goes away as the plans are deleted; every read before works
+        def __getattr__(self, name: str) -> Any:
+            return getattr(plans, name)
 
         def delete_many(self, _: dict[str, Any]) -> None:
             raise ConnectionError("MongoDB went away")
@@ -434,3 +438,45 @@ def test_a_run_gone_under_a_reader_is_a_404_never_a_500() -> None:
     """A plan request or a job that reads a run deleted meanwhile (review: KeyError, a 500)."""
     with pytest.raises(NotFound):
         SessionRepository(get_mongodb()).find_context(uuid.uuid4().hex)
+
+
+def test_a_next_set_racing_a_delete_is_told_the_run_is_being_deleted(
+    client: TestClient, api_key: str, entity: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner 2026-10-12: a next set clicked as the run is deleted got 202, then its run vanished. The delete
+    marks the run first; a next set landing between that mark and the end gets 409 run_being_deleted, and
+    nothing is queued or sent."""
+    sent: list[Any] = []
+    monkeypatch.setattr(run_actions_module, "send_job", lambda *args: sent.append(args))
+    path = {"path_id": "p1", "rank": 1, "selected": True, "served": None, "attempts": 0, "abandoned": False}
+    run_id = _run(entity, Status.DONE, plan={"paths": [path]})
+    principal = Principal(client_id="c1", user_id="u2", entity_id=entity, tenant_id="T")
+    raced: list[BaseException] = []
+    work_left = JobControlRecords._work_left
+
+    def next_set_lands_meanwhile(records: JobControlRecords, session_id: str, entity_id: int) -> bool:
+        try:
+            get_run_actions().next_set(principal, find_status_for_caller(run_id, entity))
+        except Conflict as exc:
+            raced.append(exc)
+        return work_left(records, session_id, entity_id)
+
+    monkeypatch.setattr(JobControlRecords, "_work_left", next_set_lands_meanwhile)
+    assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200
+    assert [getattr(exc, "reason", None) for exc in raced] == [ConflictReason.RUN_BEING_DELETED]
+    assert sent == []
+
+
+def test_a_run_whose_delete_was_cut_short_starts_nothing_more(
+    client: TestClient, api_key: str, entity: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not even its stopped controls (nothing left to write): they stay stopped until the delete ends."""
+    sent: list[Any] = []
+    monkeypatch.setattr(run_actions_module, "send_job", lambda *args: sent.append(args))
+    path = {"path_id": "p1", "rank": 1, "selected": True, "served": "s1", "attempts": 1, "abandoned": False}
+    run_id = _run(entity, Status.DONE, plan={"paths": [path]}, deleting_at=NOW)
+    stopped = _scenario(run_id, Status.CANCELLED)
+    refused = client.post(f"/v1/sessions/{run_id}/scenarios/next-set", headers=_who(api_key, entity))
+    assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
+    assert _controls(stopped) == Status.CANCELLED and sent == []
+    assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200

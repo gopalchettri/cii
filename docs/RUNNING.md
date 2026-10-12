@@ -580,7 +580,7 @@ python -m mypy app
 ```
 
 `.venv\Scripts\python` is the project's Python 3.12, which has pytest; with the environment active (step 4),
-`python` is the same program. All four must be clean before you commit (today: 751 tests). Three monitoring checks (`promtool`) run only once the
+`python` is the same program. All four must be clean before you commit (today: 753 tests). Three monitoring checks (`promtool`) run only once the
 monitoring tools are installed (step 13); until then pytest reports them as skipped.
 
 ---

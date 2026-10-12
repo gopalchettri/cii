@@ -22,6 +22,10 @@ class JobControl:
 class JobControlMessage(StrEnum):
     NOTHING_TO_CANCEL = "Session '{session_id}' has no job queued or running and no controls being matched."
     PLAN_NOTHING_TO_CANCEL = "Remediation plan '{remediation_id}' is not being written."
+    BEING_DELETED = (
+        "Session '{session_id}' is being deleted: nothing more can start on it (if a delete was cut short, "
+        "delete it again to finish)."
+    )
     CANCEL_FIRST = (
         "Session '{session_id}' still has work queued or running (a job, controls or a remediation plan): "
         "cancel it first, then delete."

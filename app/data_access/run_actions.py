@@ -17,6 +17,7 @@ from app.core.constants import (
     Step,
     TaskName,
 )
+from app.data_access.job_control import DELETING_MARK, is_being_deleted
 from app.models.scenarios import running_action
 
 _RUN_FIELDS = {"entity_id": 1, "asset_id": 1, "status": 1, "step": 1, "job.epoch": 1}
@@ -54,6 +55,7 @@ class RunActionRecords:
             "job.epoch": run["job"]["epoch"],
             "status": {"$in": [Status.DONE, Status.FAILED, Status.CANCELLED]},
             "step": Step.SCENARIOS,
+            DELETING_MARK: {"$exists": False},  # G214: a run its owner is deleting starts nothing more
         }
         update = {
             "$set": {
@@ -70,7 +72,9 @@ class RunActionRecords:
             matched = self._sessions.update_one(still_as_read, update).matched_count
         except DuplicateKeyError:
             return RunClash.ACTIVE_RUN
-        return None if matched else RunClash.CHANGED
+        if matched:
+            return None
+        return RunClash.DELETING if is_being_deleted(self._sessions, run["_id"]) else RunClash.CHANGED
 
     def find_plan_threat(self, session_id: str, threat_key: str) -> dict[str, Any] | None:
         """One threat of the run's frozen plan, by key, read alone (the positional projection: $elemMatch

@@ -64,10 +64,8 @@ class JobService:
     def delete_run(self, principal: Principal, run: SessionStatus) -> SessionDeleted:
         """Remove the run for good, with its scenarios and remediation plans. 409 cancel_first while anything
         of it is queued or running: nothing is ever deleted under a worker."""
-        deleted = None
-        if not self._records.work_left(run.session_id, principal.entity_id):
-            deleted = self._records.delete_run(run.session_id, principal.entity_id)
-        if deleted is None:  # still working, or a next set started meanwhile
+        deleted = self._records.delete_run(run.session_id, principal.entity_id)
+        if deleted is None:  # still working, or a next set started first
             message = JobControlMessage.CANCEL_FIRST.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.CANCEL_FIRST)
         removed, plan_ids = deleted

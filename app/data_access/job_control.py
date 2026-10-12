@@ -48,6 +48,10 @@ _PLAN_FIELDS = {
     "created_at": 1,
     "updated_at": 1,
 }
+#: Set on a run by the first step of its delete, in the same conditional update that checks no job of it is
+#: queued or running: from then on nothing new starts on it (next set, regenerate, controls resumed), so the
+#: delete's check for work that follows is final, and a click racing the delete gets 409, never 202 (G214).
+DELETING_MARK = "deleting_at"
 #: The status's summary of each kind of action (data_access/run_actions.py): a cancel ends it as cancelled.
 _SUMMARY_OF: dict[str, str] = {
     RunActionKind.NEXT_SET: "last_next_set",
@@ -126,14 +130,23 @@ class JobControlRecords:
             ).modified_count
         )
 
-    def resume_controls(self, session_id: str) -> int:
+    def resume_controls(self, session_id: str) -> int | None:
         """A run resumed on purpose (next set, regenerate): the controls its owner's cancel stopped wait again
         (how many), and a run that is not at work no longer reads as cancelled: done, its controls matched
-        again (a resumed job's own update clears its mark)."""
+        again (a resumed job's own update clears its mark). None when the run is being deleted: nothing
+        resumed. Checked after the re-queue: either this sees the delete's mark, or the delete's check for
+        work sees these controls; never neither."""
         requeued = self._scenarios.update_many(
             {"session_id": session_id, "controls.status": Status.CANCELLED},
             {"$set": {"controls.status": Status.QUEUED, "controls.queued_at": datetime.now(UTC)}},
         ).modified_count
+        if is_being_deleted(self._sessions, session_id):
+            if requeued:  # undone: as before the click
+                self._scenarios.update_many(
+                    {"session_id": session_id, "controls.status": Status.QUEUED},
+                    {"$set": {"controls.status": Status.CANCELLED}},
+                )
+            return None
         if requeued:
             self._sessions.update_one(
                 {"_id": session_id, "status": {"$in": [Status.DONE, Status.CANCELLED]}},
@@ -142,7 +155,7 @@ class JobControlRecords:
             self._counts.refresh(session_id)
         return requeued
 
-    def work_left(self, session_id: str, entity_id: int) -> bool:
+    def _work_left(self, session_id: str, entity_id: int) -> bool:
         """Whether anything of the run is still queued or running: its job, the controls of a scenario the
         controls job maps (MAPPED_VERSIONS: a replaced version's are never mapped), or one of its plans."""
         working, run = {"$in": _WORKING}, {"session_id": session_id, "entity_id": entity_id}
@@ -156,14 +169,20 @@ class JobControlRecords:
         )
 
     def delete_run(self, session_id: str, entity_id: int) -> tuple[dict[str, int], list[str]] | None:
-        """The run removed for good: its scenarios and remediation plans first, the run last, so a delete cut
-        short (an outage between the steps) is finished by calling it again: the run is still there to be
-        found. (how many of each were removed, the plans' ids); None when the run is not this entity's or
-        its job is queued or running. A next set started just before is removed with it: its job finds no run
-        and ends (PlanProgress.hold). Scenarios before plans: a plan request re-reads its scenario after its
+        """The run removed for good: marked first (DELETING_MARK), then checked for work, then its scenarios
+        and remediation plans, the run last, so a delete cut short (an outage between the steps) is finished
+        by calling it again: the run is still there to be found. (how many of each were removed, the plans'
+        ids); None when the run is not this entity's or anything of it is still queued or running (its mark
+        is then taken off again). Scenarios before plans: a plan request re-reads its scenario after its
         insert (services/remediation/requests.py), so no plan outlives its scenario."""
         run = {"_id": session_id, "entity_id": entity_id}
-        if self._sessions.find_one({**run, "status": {"$nin": _WORKING}}, {"_id": 1}) is None:
+        marked = self._sessions.update_one(
+            {**run, "status": {"$nin": _WORKING}}, {"$set": {DELETING_MARK: datetime.now(UTC)}}
+        ).matched_count
+        if not marked:
+            return None
+        if self._work_left(session_id, entity_id):  # final: nothing new can start on a marked run
+            self._sessions.update_one(run, {"$unset": {DELETING_MARK: ""}})
             return None
         children = {"session_id": session_id, "entity_id": entity_id}
         plan_ids: list[str] = self._plans.distinct("_id", children)
@@ -173,6 +192,12 @@ class JobControlRecords:
         }
         self._sessions.delete_one(run)
         return removed, plan_ids
+
+
+def is_being_deleted(sessions: MongoCollection, session_id: str) -> bool:
+    """Whether the run carries its delete's mark, or is gone already."""
+    found = sessions.find_one({"_id": session_id}, {DELETING_MARK: 1})
+    return found is None or DELETING_MARK in found
 
 
 def _run_cancelled(cancelled: dict[str, Any], now: datetime) -> dict[str, Any]:

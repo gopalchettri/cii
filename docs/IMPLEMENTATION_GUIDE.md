@@ -25,7 +25,7 @@ critical infrastructure. It is built in five stages; each stage ends with someth
 Step numbers do not change: Step 15 is simply built after Steps 16 and 17 (§0.2 #6). The blueprint's development
 phases (`BLUEPRINT.md` §26) are the same work in finer pieces.
 
-**What is already built** (2026-10-12): 751 tests pass (`.venv\Scripts\python -m pytest`) and 20 alert rules are
+**What is already built** (2026-10-12): 753 tests pass (`.venv\Scripts\python -m pytest`) and 20 alert rules are
 live. Both code reviews of 2026-10-10 are fixed in code, each fix with a test that fails without it (§0.2 #11).
 
 | Step | Built | Still missing |

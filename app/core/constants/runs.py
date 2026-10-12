@@ -129,6 +129,7 @@ class RunClash(StrEnum):
     CHANGED = (
         "changed"  # the run moved on since it was read (another click, a worker): its job was not replaced
     )
+    DELETING = "deleting"  # its owner is deleting it (or just did): nothing more starts on it (G214)
 
 
 class ConflictReason(StrEnum):
@@ -163,6 +164,7 @@ class ConflictReason(StrEnum):
     JOB_IN_PROGRESS = "job_in_progress"  # an admin job of this kind is queued or running (#18)
     NOTHING_TO_CANCEL = "nothing_to_cancel"  # no job of it is queued or running (G214)
     CANCEL_FIRST = "cancel_first"  # a delete refused while a job of it is queued or running (G214)
+    RUN_BEING_DELETED = "run_being_deleted"  # a next set or regenerate refused: the run is being deleted
 
 
 class UnselectedReason(StrEnum):
