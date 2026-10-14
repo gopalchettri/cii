@@ -1,6 +1,7 @@
 """Stand-ins for the AI gateways, so the engine runs with no model: answers queued or worked out per AiTask,
 vectors from shared words, rerank scores from a table. Each records what it was asked."""
 
+import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Callable
@@ -14,6 +15,36 @@ from app.core.exceptions import Unavailable
 
 #: An answer: a JSON object, an exception to raise, or a function of the user prompt giving either.
 Answer = dict[str, Any] | BaseException | Callable[[str], dict[str, Any]]
+
+
+def brief_system_names(user_prompt: str) -> list[str]:
+    """The supporting systems a writer prompt's BRIEF lists (the JSON object right after "BRIEF:")."""
+    if "BRIEF:\n" not in user_prompt:
+        return []
+    brief, _ = json.JSONDecoder().raw_decode(user_prompt.split("BRIEF:\n", 1)[1])
+    return [system["name"] for system in brief.get("supporting_systems") or []]
+
+
+def _anatomy_for(user_prompt: str) -> dict[str, Any]:
+    """Default scenario parts for a writer prompt's BRIEF: the target is its first entry point (else the
+    asset), which the fake answers name; the mechanism names it too, so it is concrete. Each threat gets its
+    own mechanism and consequence words (from its name's digest), as distinct threats' real parts differ, so
+    two threats of one run are never near copies (G229) unless a test makes them so."""
+    if "BRIEF:\n" not in user_prompt:
+        return {}
+    brief, _ = json.JSONDecoder().raw_decode(user_prompt.split("BRIEF:\n", 1)[1])
+    options = brief.get("entry_point_options") or []
+    target = options[0] if options else (brief.get("asset") or {}).get("name") or "the asset"
+    own = hashlib.sha256(str((brief.get("threat") or {}).get("threat")).encode()).hexdigest()
+    return {
+        "anatomy": {
+            "target": target,
+            "entry_point": target,
+            "preconditions": [],
+            "mechanism": f"alters the {target} with step {own[:8]}",
+            "consequence": f"operators see {own[8:16]} {own[16:24]} {own[24:32]}",
+        }
+    }
 
 
 def items_in(user_prompt: str, heading: str) -> list[dict[str, Any]]:
@@ -68,7 +99,23 @@ class FakeChatModel:
         answer: Answer = self.queued[task].pop(0) if self.queued[task] else self.responders[task]
         if isinstance(answer, BaseException):
             raise answer
-        return answer(user_prompt) if callable(answer) else answer
+        answered = answer(user_prompt) if callable(answer) else answer
+        return self._with_system_reasons(task, answered, user_prompt)
+
+    def _with_system_reasons(self, task: AiTask, answer: dict[str, Any], user_prompt: str) -> dict[str, Any]:
+        """A writer answer that gives no system_reasons gets one per supporting system of the brief it
+        answers (G216), and one with no anatomy gets parts naming its brief's entry point or asset (G229), so
+        a test about something else need not write them; a test of either gives its own (empty included).
+        A write answers its own prompt (paths are written at once: the last call may be another path's); a
+        rewrite, the last write's."""
+        if task not in (AiTask.WRITE_SCENARIO, AiTask.REWRITE_SCENARIO) or not isinstance(answer, dict):
+            return answer
+        writes = (user for called, user in reversed(self.calls) if called == AiTask.WRITE_SCENARIO)
+        brief = user_prompt if task == AiTask.WRITE_SCENARIO else next(writes, "")
+        names = brief_system_names(brief)
+        reasons = {name: f"It could affect {name}." for name in names}
+        filled = {"system_reasons": reasons} | _anatomy_for(brief)
+        return {key: value for key, value in filled.items() if key not in answer} | answer
 
     def asked(self, task: AiTask) -> list[str]:
         """The user prompts of every call made for `task`, re-asks included."""

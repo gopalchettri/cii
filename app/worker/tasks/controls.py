@@ -15,7 +15,7 @@ from typing import Any
 import structlog
 from celery import Task
 
-from app.ai import get_rerank_model
+from app.ai import background_reranks, get_rerank_model
 from app.core.constants import (
     Controls,
     ErrorCode,
@@ -44,6 +44,7 @@ log = structlog.get_logger(__name__)
 def map_controls(self: Task, record_id: str, epoch: int) -> None:
     """An outage gives the scenario back and retries this message after the back-off; the scenario fails after
     Controls.MAX_ATTEMPTS, and the sweep tries it again later."""
+    structlog.contextvars.bind_contextvars(record_id=record_id)  # jobs.run_job binds it; this task skips it
     try:
         deliveries = ControlDeliveries(get_mongodb())
         # Taken before anything is loaded: a message that finds the run mapped now costs one update. Inside
@@ -115,7 +116,8 @@ class RunControls:
             lease = _ScenarioLease(
                 (self._deliveries, self._record_id), self._leases, scenario_id, self._task_id
             )
-            with keep_lease_alive(lease):
+            # Background work: on the laptop's CPU reranker a waiting scenario goes first (G222).
+            with keep_lease_alive(lease), background_reranks():
                 mapping = self._mapper.map_controls(scenario, self._context, self._snapshot)
         except ControlsNotMapped as exc:
             self._fail(scenario_id, exc.code, exc.message)

@@ -118,7 +118,8 @@ def build_snapshot(library: Any, embedding_model: str) -> Any:
     profile = find_model_profile(EMBEDDING_MODEL_PROFILES, embedding_model)
     stores = ReadOnlyLibrary(db[Collection.EMBEDDINGS]), ReadOnlyQueries(db[Collection.QUERY_VECTORS])
     model = EmbeddingModel(embedding_model, profile, "", "", *stores)  # no address or key: never called
-    model._provider = NoProvider()  # private: a cache miss must stop here, not reach the AI provider
+    # private: a cache miss must stop here, not reach the AI provider (a stand-in: only embed_batch is called)
+    model._provider = NoProvider()  # type: ignore[assignment]
     # Private builder: get_library_search() would start the library checker and the real (writing) stores.
     return _SnapshotBuilder(model).build(library)
 

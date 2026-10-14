@@ -40,8 +40,6 @@
 --     The dropdown columns already here (marked "dropdown") return the saved number on purpose: the app turns them
 --     into names with PART 5.
 --   * Keep entity_technology_context the LAST asset line: when the asset's text is too long, it is cut from the end.
---   * A column named entity_... describes the WHOLE ORGANISATION (@EntityID), not this asset: the AI gets it on a
---     separate ORGANISATION line, as background only. Name any other organisation-wide fact entity_... too.
 --   * Never name a fact alias, criticality, category_id, type_id, catalogue_id, actor_id or control_id: those names
 --     are never shown to the AI, so a run stops with "reserved names" (rename it: e.g. AS asset_criticality).
 --   * The asset and every supporting system need a name: a run on one without a name is refused (422).
@@ -56,7 +54,7 @@ CREATE OR ALTER PROCEDURE dbo.tsg_GetAssetContext
     @SectorID    INT = NULL,         -- sector_id sent, if any, e.g. 183 (Transport)
     @SubsectorID INT = NULL          -- subsector_id sent, if any, e.g. 199 (Aviation)
 AS
-BEGIN
+BEGIN 
     SET NOCOUNT ON;
 
     -- -----------------------------------------------------------------------------------------------------------------
@@ -111,14 +109,13 @@ BEGIN
         , @critical_service AS critical_service             -- the critical service(s) it supports (PART 0)
         , @sector AS sector                                 -- its sector, e.g. Energy (PART 0)
         , @sub_sector AS sub_sector                         -- its sub-sector, e.g. Electricity (PART 0)
-        , e.data_handled                                    -- the data it handles
-        , e.type AS asset_type                              -- its type in words, e.g. "Control system"
-        , e.operating_system                                -- its operating system
-        , e.location                                        -- where it is
-        , e.target_rto_hours                                -- how many hours until it must work again after an outage
-        , e.target_rpo_hours                                -- how many hours of data it may lose at most
-        , e.priority AS asset_priority                      -- its priority (dropdown: the option's id, the app shows the name)
-        , @entity_technology AS entity_technology_context   -- the organisation's technology (PART 0). KEEP LAST
+        --, e.data_handled                                    -- the data it handles
+        , e.type AS asset_type                                 -- how many hours of data it may lose at most
+        --, e.priority AS asset_priority                      -- its priority (dropdown: the option's id, the app shows the name)
+        --, e.can_service_continue_without_asset              -- 1, 0 (Yes/No)
+        --, e.has_disaster_recovery_setup                     -- 1, 0 (Yes/No)
+        --, e.criticality as  asset_criticality                              -- cia score
+        --, @entity_technology AS entity_technology_context   -- the organisation's technology (PART 0). KEEP LAST
     FROM dbo.ctm_scan_entity AS e
     LEFT JOIN dbo.ctm_scan_category AS cat ON cat.id = e.ctm_category_id
     WHERE e.id = @AssetID
@@ -153,53 +150,122 @@ BEGIN
     WHERE s.id = @sector_row AND s.is_deleted = 0;
 
     -- -----------------------------------------------------------------------------------------------------------------
-    -- PART 4: SUPPORTING SYSTEM FACTS                                                     >>> SHOW / HIDE HERE <<<
-    -- One row per supporting system sent, only when it is linked to the asset and not deleted (a system sent but
-    -- missing here = the run is refused: 403). Hide a fact: put -- at the start of its line.
-    -- -----------------------------------------------------------------------------------------------------------------
-    SELECT
-          ss.id                                             -- ALWAYS NEEDED: the system's id (never sent to the AI)
-        , ss.name                                           -- ALWAYS NEEDED: the system's name
-        , c.code AS category_code                           -- ALWAYS NEEDED: IT or OT; picks which controls fit
-        -- ---- facts: put -- at the start of a line to hide it -------------------------------------------------------
-        , c.name AS category_name                           -- its category in words; the AI sees it as its type
-        , ss.incident_description AS past_incidents         -- incidents it has had before
-        , ss.technology_used                                -- technologies it runs on (dropdown list: values)
-        , ss.vendor_name                                    -- who supplies it
-        , ss.database_platforms                             -- databases it uses (dropdown list: values)
-        , ss.targeted_users                                 -- who uses it (dropdown list: values)
-        , ss.saas_platform_list                             -- cloud software (SaaS) it uses (dropdown list: values)
-        , ss.public_cloud_platforms                         -- public clouds it uses (dropdown list: values)
-        , ss.min_no_of_transactions                         -- fewest transactions it handles
-        , ss.max_no_of_transactions                         -- most transactions it handles
-        , ss.user_base_count                                -- how many users it has
-        , ss.accessability_channel                          -- how users reach it (dropdown: value)
-        , ss.hosting_location                               -- where it is hosted (dropdown: value)
-        , ss.dr_location                                    -- where its disaster-recovery (DR) site is
-        , ss.network_connectivity_primary_dr                -- the link between its main site and DR site (dropdown: value)
-        , ss.dr_drill_frequency                             -- how often DR is practised (dropdown: value)
-        , ss.managed_by                                     -- who runs it (dropdown: value)
-        , ss.maintenance_contract_exists                    -- has a maintenance contract? (yes/no)
-        , ss.last_dr_test_date                              -- when DR was last tested (1900 = never)
-        , ss.backup_multi_site                              -- backups kept on more than one site? (yes/no)
-        , ss.backup_retention_period_days                   -- how many days backups are kept
-        , ss.backup_tested                                  -- are backups tested? (yes/no)
-        , ss.offsite_air_gapped_backup                      -- an offline copy kept elsewhere? (yes/no)
-        , ss.data_residency_restrictions                    -- rules on where its data may be kept? (yes/no)
-        , ss.data_residency_restriction_justification       -- why those rules apply
-        , ss.document_drp_exists                            -- a written DR plan exists? (yes/no)
-        , ss.saas_backup_required                           -- its SaaS data needs a backup? (yes/no)
-        , ss.rto_target_mins                                -- how many minutes until it must work again
-        , ss.rpo_target_mins                                -- how many minutes of data it may lose at most
-        , ss.data_loss_incident_last_3_years                -- lost data in the last 3 years? (yes/no)
-    FROM dbo.onboarding_supporting_systems AS ss
-    JOIN dbo.ctm_scan_entity_supporting_system AS link
-      ON link.onboarding_supporting_system_id = ss.id AND link.ctm_scan_entity_id = @AssetID
-    LEFT JOIN dbo.ctm_scan_category AS c ON c.id = ss.asset_type
-    WHERE ss.is_deleted = 0
-      AND ss.id IN (SELECT CAST([value] AS INT) FROM OPENJSON(@SystemIDs))
-      AND EXISTS (SELECT 1 FROM dbo.ctm_scan_entity_bu AS bu       -- only for an asset this organisation owns
-                  WHERE bu.ctm_scan_entity_id = @AssetID AND bu.group_id = @EntityID);
+-- PART 4: SUPPORTING SYSTEM FACTS                                                     >>> SHOW / HIDE HERE <<<
+-- -----------------------------------------------------------------------------------------------------------------
+
+SELECT
+      ss.id                                             -- ALWAYS NEEDED: the system's id (never sent to the AI)
+    , ss.name                                           -- ALWAYS NEEDED: the system's name
+    , c.code AS category_code                           -- ALWAYS NEEDED: IT or OT; picks which controls fit
+
+    ------ facts: put -- at the start of a line to hide it -------------------------------------------------------
+
+    , c.name AS category_name
+    , ss.description
+   -- , ss.incident_description AS past_incidents
+   --, Technology.technology_used
+   -- , ss.vendor_name
+   -- , DatabasePlatforms.database_platforms
+   -- , TargetedUsers.targeted_users
+   -- , SaaSPlatforms.saas_platform_list
+   -- , PublicCloudPlatforms.public_cloud_platforms
+   -- , AccessChannel.name AS accessability_channel
+  --  , HostingLocation.name AS hosting_location
+  --  , ss.dr_location
+  --  , NetworkConnectivity.name AS network_connectivity_primary_dr
+ --   , DrDrill.name AS dr_drill_frequency
+ --   , ManagedBy.name AS managed_by
+ --   , ss.maintenance_contract_exists
+ --   , ss.last_dr_test_date
+--    , ss.backup_multi_site
+--    , ss.backup_retention_period_days
+--    , ss.backup_tested
+--    , ss.offsite_air_gapped_backup
+--    , ss.data_residency_restrictions
+  --  , ss.data_residency_restriction_justification
+ --   , ss.document_drp_exists
+  --  , ss.saas_backup_required
+  --  , ss.rto_target_mins
+  --  , ss.rpo_target_mins
+   -- , ss.data_loss_incident_last_3_years
+
+FROM dbo.onboarding_supporting_systems AS ss
+
+JOIN dbo.ctm_scan_entity_supporting_system AS link
+    ON link.onboarding_supporting_system_id = ss.id
+   AND link.ctm_scan_entity_id = @AssetID
+
+LEFT JOIN dbo.ctm_scan_category AS c
+    ON c.id = ss.asset_type
+
+-- Multi-select dropdowns (JSON arrays)
+
+OUTER APPLY (
+    SELECT STRING_AGG(ov.name, ', ') AS technology_used
+    FROM OPENJSON(ss.technology_used) j
+    JOIN dbo.option_value ov
+        ON ov.id = TRY_CAST(j.value AS INT)
+) Technology
+
+OUTER APPLY (
+    SELECT STRING_AGG(ov.name, ', ') AS database_platforms
+    FROM OPENJSON(ss.database_platforms) j
+    JOIN dbo.option_value ov
+        ON ov.id = TRY_CAST(j.value AS INT)
+) DatabasePlatforms
+
+OUTER APPLY (
+    SELECT STRING_AGG(ov.name, ', ') AS targeted_users
+    FROM OPENJSON(ss.targeted_users) j
+    JOIN dbo.option_value ov
+        ON ov.id = TRY_CAST(j.value AS INT)
+) TargetedUsers
+
+OUTER APPLY (
+    SELECT STRING_AGG(ov.name, ', ') AS saas_platform_list
+    FROM OPENJSON(ss.saas_platform_list) j
+    JOIN dbo.option_value ov
+        ON ov.id = TRY_CAST(j.value AS INT)
+) SaaSPlatforms
+
+OUTER APPLY (
+    SELECT STRING_AGG(ov.name, ', ') AS public_cloud_platforms
+    FROM OPENJSON(ss.public_cloud_platforms) j
+    JOIN dbo.option_value ov
+        ON ov.id = TRY_CAST(j.value AS INT)
+) PublicCloudPlatforms
+
+-- Single-select dropdowns
+
+LEFT JOIN dbo.option_value AccessChannel
+    ON AccessChannel.id = TRY_CAST(ss.accessability_channel AS INT)
+
+LEFT JOIN dbo.option_value HostingLocation
+    ON HostingLocation.id = TRY_CAST(ss.hosting_location AS INT)
+
+LEFT JOIN dbo.option_value NetworkConnectivity
+    ON NetworkConnectivity.id = TRY_CAST(ss.network_connectivity_primary_dr AS INT)
+
+LEFT JOIN dbo.option_value DrDrill
+    ON DrDrill.id = TRY_CAST(ss.dr_drill_frequency AS INT)
+
+LEFT JOIN dbo.option_value ManagedBy
+    ON ManagedBy.id = TRY_CAST(ss.managed_by AS INT)
+
+WHERE ss.is_deleted = 0
+  AND ss.id IN (
+        --SELECT CAST([value] AS INT)
+        -- FROM OPENJSON(@SystemIDs)
+        SELECT CAST(j.[value] AS INT) 
+        FROM OPENJSON(@SystemIDs) as j
+        
+      )
+  AND EXISTS (
+        SELECT 1
+        FROM dbo.ctm_scan_entity_bu AS bu
+        WHERE bu.ctm_scan_entity_id = @AssetID
+          AND bu.group_id = @EntityID
+      );
 
     -- -----------------------------------------------------------------------------------------------------------------
     -- PART 5: DROPDOWN NAMES                                                                  >>> DO NOT EDIT <<<

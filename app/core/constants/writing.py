@@ -14,6 +14,17 @@ class Writing:
     # OTHER_SYSTEM, and two or more of them in a row as OTHER_SYSTEMS.
     OTHER_SYSTEM: Final = "another supporting system"
     OTHER_SYSTEMS: Final = "other supporting systems"
+    # One sentence per supporting system on a card: why the scenario applies to it or not (G216); a longer
+    # one is cut.
+    SYSTEM_REASON_MAX_CHARS: Final = 300
+    # Where the writers' prompts take THREAT_SCENARIO_WORD_LIMIT and RISK_STATEMENT_WORD_LIMIT (G226): the
+    # approved text holds these slots, filled from the settings when a prompt is built.
+    SCENARIO_WORDS_SLOT: Final = "<scenario words>"
+    RISK_WORDS_SLOT: Final = "<risk words>"
+    # A text outside its range by more than this is a finding (the writer rewrites it once): under half the
+    # minimum, or over the maximum by a tenth (the margin the story check used since G219).
+    WORDS_BELOW_SHARE: Final = 0.5
+    WORDS_ABOVE_SHARE: Final = 1.1
 
 
 class ScenarioStatus(StrEnum):
@@ -56,6 +67,25 @@ class FindingCode(StrEnum):
     SYSTEM_LINK_CLAIMED = "system_link_claimed"
     PLAN_CHECK = "plan_check"
     PLAN_CHECK_NOT_MADE = "plan_check_not_made"
+    STATEMENT_LENGTH = "statement_length"  # far outside THREAT_SCENARIO_WORD_LIMIT (G226)
+    RISK_LENGTH = "risk_length"  # far outside RISK_STATEMENT_WORD_LIMIT (G226)
+    # G229 (owner 2026-10-13), external intelligence on: a story that cites no evidence, a citation with no
+    # claim, a citation its entry does not support.
+    NO_EVIDENCE_CITED = "no_evidence_cited"
+    EVIDENCE_LINK_MISSING = "evidence_link_missing"
+    CITATION_UNSUPPORTED = "citation_unsupported"
+    # G229, both writers: the scenario's parts not stated, its target not the asset or a system it names, a
+    # mechanism naming nothing of this asset, a generic line, a weakness stated as fact on nothing recorded;
+    # a system the attack involves left unnamed (a warning).
+    ANATOMY_MISSING = "anatomy_missing"
+    TARGET_NOT_NAMED = "target_not_named"
+    MECHANISM_NOT_CONCRETE = "mechanism_not_concrete"
+    VAGUE_PHRASE = "vague_phrase"
+    UNSUPPORTED_WEAKNESS = "unsupported_weakness"
+    APPLICABLE_SYSTEM_NOT_IN_STORY = "applicable_system_not_in_story"
+    NEAR_DUPLICATE = "near_duplicate"  # G229: it reads almost like a scenario of the run already finished
+    # G232: a sentence says something happened in the deployment's country, citing no source that tells of it
+    COUNTRY_CLAIM_UNSUPPORTED = "country_claim_unsupported"
 
 
 #: Which findings block a scenario: only exact code faults do (owner C5; spec v4.0 §7.4.7 "application code
@@ -68,9 +98,38 @@ FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
     FindingCode.ATTACKER_NOT_NAMED: FindingSeverity.WARNING,
     FindingCode.OTHER_ATTACKER_NAMED: FindingSeverity.WARNING,
     FindingCode.SYSTEM_OUT_OF_SCOPE: FindingSeverity.WARNING,
-    FindingCode.SYSTEM_LINK_CLAIMED: FindingSeverity.WARNING,
+    FindingCode.SYSTEM_LINK_CLAIMED: FindingSeverity.BLOCKER,  # G229: an unsupported relationship rejects
     FindingCode.PLAN_CHECK: FindingSeverity.NOTE,
     FindingCode.PLAN_CHECK_NOT_MADE: FindingSeverity.NOTE,
+    FindingCode.STATEMENT_LENGTH: FindingSeverity.WARNING,  # rewritten once, never blocked
+    FindingCode.RISK_LENGTH: FindingSeverity.WARNING,
+    FindingCode.NO_EVIDENCE_CITED: FindingSeverity.BLOCKER,
+    FindingCode.EVIDENCE_LINK_MISSING: FindingSeverity.BLOCKER,
+    FindingCode.CITATION_UNSUPPORTED: FindingSeverity.BLOCKER,
+    FindingCode.ANATOMY_MISSING: FindingSeverity.BLOCKER,
+    FindingCode.TARGET_NOT_NAMED: FindingSeverity.BLOCKER,
+    FindingCode.MECHANISM_NOT_CONCRETE: FindingSeverity.BLOCKER,
+    FindingCode.VAGUE_PHRASE: FindingSeverity.BLOCKER,
+    FindingCode.UNSUPPORTED_WEAKNESS: FindingSeverity.BLOCKER,
+    FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY: FindingSeverity.WARNING,
+    FindingCode.NEAR_DUPLICATE: FindingSeverity.BLOCKER,
+    FindingCode.COUNTRY_CLAIM_UNSUPPORTED: FindingSeverity.BLOCKER,
+}
+
+#: G229 (owner 2026-10-13: "Do not retry an AI request when validation fails. Reject the invalid candidate and
+#: follow the bounded replacement policy"): a scenario blocked by one of these is final, its path given up at
+#: once and never written again.
+FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset({
+    FindingCode.NO_EVIDENCE_CITED, FindingCode.EVIDENCE_LINK_MISSING, FindingCode.CITATION_UNSUPPORTED,
+    FindingCode.ANATOMY_MISSING, FindingCode.TARGET_NOT_NAMED, FindingCode.MECHANISM_NOT_CONCRETE,
+    FindingCode.VAGUE_PHRASE, FindingCode.UNSUPPORTED_WEAKNESS, FindingCode.SYSTEM_LINK_CLAIMED,
+    FindingCode.NEAR_DUPLICATE, FindingCode.COUNTRY_CLAIM_UNSUPPORTED,
+})  # fmt: skip
+
+#: The G229 findings never ask for the one rewrite (no AI call is added for them): each is listed in it only
+#: when the rewrite runs anyway, for a finding it always ran for (the claimed link among them).
+NO_REWRITE_FINDINGS: Final[frozenset[FindingCode]] = (FINAL_FINDINGS - {FindingCode.SYSTEM_LINK_CLAIMED}) | {
+    FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY
 }
 
 
@@ -88,6 +147,27 @@ class FindingMessage(StrEnum):
     SYSTEM_OUT_OF_SCOPE = "Names a system outside this scenario: {names}."
     SYSTEM_LINK_CLAIMED = "Claims a link between {systems}, which the platform does not record."
     PLAN_CHECK_NOT_MADE = "The plan check could not be made: {reason}"
+    TEXT_LENGTH = "The {text} has {words} words; write {least} to {most}."
+    NO_EVIDENCE_CITED = (
+        "Cites none of the {count} evidence entries: a finished scenario cites at least one that directly "
+        "supports a claim in it."
+    )
+    EVIDENCE_LINK_MISSING = "Gives no supported claim (evidence_links) for the marker(s) {markers}."
+    ANATOMY_MISSING = (
+        "Does not state its parts ({parts}): a finished scenario gives its target, entry point, mechanism "
+        "and consequence."
+    )
+    TARGET_NOT_NAMED = "Its target ({target}) is not the asset or one of its systems named in the scenario."
+    MECHANISM_NOT_CONCRETE = "Its attack mechanism names no component, system or technology of this asset."
+    VAGUE_PHRASE = "Uses a generic line ({phrases}) where the concrete action belongs."
+    UNSUPPORTED_WEAKNESS = "States a weakness as fact ({claims}) that nothing recorded or cited supports."
+    APPLICABLE_SYSTEM_NOT_IN_STORY = "Does not name {systems}, which this attack involves."
+    NEAR_DUPLICATE = "Reads almost like scenario {scenario_id} of this run ({similarity}% of its wording)."
+    CITATION_UNSUPPORTED = "The marker(s) {markers} sit by claims their evidence entries do not support."
+    COUNTRY_CLAIM_UNSUPPORTED = (
+        "Says something happened in the {country} at marker(s) {markers}, but none of those sources tells of "
+        "the {country}: regional or global intelligence is never a {country} incident."
+    )
 
 
 class Route(StrEnum):

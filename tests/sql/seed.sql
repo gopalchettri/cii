@@ -55,13 +55,18 @@ INSERT dbo.onboarding_supporting_systems (
     backup_tested, dr_drill_frequency, database_platforms, saas_platform_list, public_cloud_platforms,
     rto_target_mins, rpo_target_mins, data_loss_incident_last_3_years, is_deleted)
 VALUES
-    (321, N'SCADA master station', 3, 1, N'[1]', 40, N'[1]', 1, N'Siemens', 1, N'Al Ain', 1, '2026-03-01', 1, 1,
+    (321, N'SCADA master station', 3, 2, N'[7]', 40, N'[11]', 6, N'Siemens', 3, N'Al Ain', 4, '2026-03-01', 1, 5,
      NULL, NULL, NULL, 60, 15, 0, 0),
-    (322, N'Process historian', 2, 1, N'[2, 3]', 120, N'[1]', 1, N'AVEVA', 1, NULL, 1, '2026-01-15', 0, 1,
-     N'[1]', N'[1]', N'[1]', 240, 60, 1, 0),
-    (323, N'Corporate e-mail', 2, 1, N'[3]', 900, NULL, 1, N'Microsoft', 1, NULL, 1, '2026-02-01', 1, 1,
+    (322, N'Process historian', 2, 2, N'[8, 9]', 120, N'[11]', 6, N'AVEVA', 3, NULL, 4, '2026-01-15', 0, 5,
+     N'[10]', N'[12]', N'[13]', 240, 60, 1, 0),
+    (323, N'Corporate e-mail', 2, 2, N'[9]', 900, NULL, 6, N'Microsoft', 3, NULL, 4, '2026-02-01', 1, 5,
      NULL, NULL, NULL, 480, 60, 0, 0);
+-- Every dropdown column (accessability_channel, managed_by, hosting_location, network_connectivity_primary_dr,
+-- dr_drill_frequency, and the lists technology_used, targeted_users, database_platforms, saas_platform_list,
+-- public_cloud_platforms) holds option IDS, as DevTest5 does: the procedure names them by id (G217).
 SET IDENTITY_INSERT dbo.onboarding_supporting_systems OFF;
+-- A system's own description (the procedure shows it, G217): 322 has none recorded (the required-facts tests).
+UPDATE dbo.onboarding_supporting_systems SET description = N'Runs the transmission grid.' WHERE id = 321;
 INSERT dbo.ctm_scan_entity_supporting_system (ctm_scan_entity_id, onboarding_supporting_system_id)
 VALUES (103, 321), (103, 322);
 

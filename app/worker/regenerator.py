@@ -26,17 +26,21 @@ from app.core.constants import (
     RunActionOutcome,
     ScenarioOutcome,
     TaskName,
+    WriterStyle,
 )
 from app.core.exceptions import Unavailable
 from app.data_access.job_records import JobLease
 from app.data_access.run_counts import RunCounts
 from app.data_access.scenario_versions import ScenarioVersions
 from app.data_access.scenarios import ScenarioRepository
-from app.engine.scenarios.writing.scenario_record import scenario_id, written_record
+from app.engine.scenarios.writing.evidence_gate import evidence_problem
+from app.engine.scenarios.writing.scenario_record import scenario_id, style_of_version, written_record
 from app.engine.shared.parallel import raise_most_retryable
 from app.models.library import ThreatLibrary
 from app.models.writing import PathFailure
 from app.worker.celery_app import send_job
+from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
+from app.worker.external_intelligence.intel_access import IntelAccess, get_intel_access
 from app.worker.path_writing import PathOutcome, PathWriter, save_with_unique_title, write_at_once
 from app.worker.plan_progress import PlanProgress
 
@@ -46,19 +50,36 @@ log = structlog.get_logger(__name__)
 class Regenerator:
     """One regenerate delivery: each target's next version written at once, each saved once it is done."""
 
-    def __init__(
-        self, lease: JobLease, run: dict[str, Any], db: Database, chat: ChatModel, library: ThreatLibrary
+    def __init__(  # noqa: PLR0913 - the delivery's lease, run, store, models, and the intelligence switch
+        self,
+        lease: JobLease,
+        run: dict[str, Any],
+        db: Database,
+        chat: ChatModel,
+        library: ThreatLibrary,
+        access: IntelAccess | None = None,
     ) -> None:
         self._lease, self._run = lease, run
         self._scenarios, self._versions = ScenarioRepository(db), ScenarioVersions(db)
         self._progress = PlanProgress(lease, run, self._scenarios, RunCounts(db))
         self._paths = PathWriter(run, chat, library)
+        self._access = access or get_intel_access()
+        self._evidence = EvidenceAtWrite(run, self._paths.threats, self._progress, self._access)
+        self._styles: dict[str, WriterStyle] = {}  # each target: the style its scenario was written in
         self._targets = {item["replaces"]: item["path_id"] for item in run["job"]["batch"]}
         self._current: dict[str, dict[str, Any]] = {}  # each target still to replace: its version record
         self._done: set[str] = set()
 
     def regenerate(self) -> None:
-        outages = write_at_once(self._heal_saved_and_list_work(), self._save)
+        work = self._heal_saved_and_list_work()
+        # A new version keeps the style of the one it replaces. Its threat keeps the evidence the first
+        # version was numbered with (saved on the plan): only a threat with no search yet is searched,
+        # once, here.
+        story = [self._targets[t] for t in work if self._styles[t] is WriterStyle.EVIDENCE_STORY]
+        if story and self._access.is_on():  # the switch read once, here (G229)
+            self._evidence.attach(story)
+        work = {target_id: self._gated(target_id, write) for target_id, write in work.items()}
+        outages = write_at_once(work, self._save)
         if outages:
             self._settle_outages(outages)
         if self._done:  # "card first, controls later"; a repeat message finds nothing to claim (G147)
@@ -103,10 +124,30 @@ class Regenerator:
                 continue
             self._current[target_id] = target
             path = self._progress.paths[path_id]
-            work[target_id] = partial(self._paths.write, path, tuple(statements[path_id]))
+            self._styles[target_id] = style_of_version((target.get("content") or {}).get("prompt_version"))
+            work[target_id] = partial(
+                self._paths.write, path, tuple(statements[path_id]), self._styles[target_id]
+            )
         if healed:  # a crash before the path's fenced write (G147): served, counts and watchers in one write
             self._progress.record(healed)
         return work
+
+    def _gated(self, target_id: str, write: Callable[[], PathOutcome]) -> Callable[[], PathOutcome]:
+        """G229: an evidence story is written only on its evidence; without it, its reason with no write call
+        (no evidence: the old version stays, with why), or the search's outage."""
+        if self._styles[target_id] is not WriterStyle.EVIDENCE_STORY:
+            return write
+        path = self._progress.paths[self._targets[target_id]]
+        problem = evidence_problem(self._paths.threats[path["steps"][0]])
+        if problem is None:
+            return write
+        if isinstance(problem, PathFailure):
+            return lambda: problem
+
+        def wait() -> PathOutcome:
+            raise problem
+
+        return wait
 
     def _save(self, target_id: str, outcome: PathOutcome) -> None:
         """A target's new version saved, then the old one superseded and the path served by the new one; or

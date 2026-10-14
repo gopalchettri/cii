@@ -25,7 +25,7 @@ critical infrastructure. It is built in five stages; each stage ends with someth
 Step numbers do not change: Step 15 is simply built after Steps 16 and 17 (§0.2 #6). The blueprint's development
 phases (`BLUEPRINT.md` §26) are the same work in finer pieces.
 
-**What is already built** (2026-10-12): 753 tests pass (`.venv\Scripts\python -m pytest`) and 20 alert rules are
+**What is already built** (2026-10-13): 1612 tests pass (`.venv\Scripts\python -m pytest`) and 20 alert rules are
 live. Both code reviews of 2026-10-10 are fixed in code, each fix with a test that fails without it (§0.2 #11).
 
 | Step | Built | Still missing |
@@ -148,7 +148,7 @@ Steps 15–17 and 19–21 are not started.
 | 22 | A register control the library retired (owner, 2026-10-11) | The AI gets its code, name and domain ("CII-CID-077 — Firmware integrity review (Integrity), retired in the library"), never a number; a number no control has stays a reviewer note; it is never recommended | The organisation still has the control: its name lets the AI judge coverage |
 | 23 | Scenarios written set by set, only when asked (owner, 2026-10-11, as v1; G196) | After planning, the run writes its first set, `INITIAL_SET_SIZE` paths (default 6), then stops: status `done`, the other selected paths still to write. Each next set (#7) writes the next `NEXT_SET_SIZE` (default 6), in waves of 6, then stops again. A path an interruption left unwritten comes first, inside the set, never on top. Both are settings (the owner's names, whole numbers ≥ 1, read when used); a set size is a review batch, never a limit: the total still comes from `TOTAL_SCENARIO_COUNT`. Example: 18 → 6, 6, 6; 20 → 6, 6, 6, 2. This overrides spec v4.0's automatic writing (spec lines 354, 805, 822, 1555, 1950, 1993; errata C13) and the earlier "no next-set call needed" (BLUEPRINT BR-WRT-01, Rules S6, S9) | A reviewer reads and decides one set before the next is written, as in v1; no AI money is spent on paths nobody asked to see yet |
 | 24 | Required asset and system facts (owner, 2026-10-11; G197) | `ASSET_PROPERTIES_REQUIRED` and `SYSTEM_PROPERTIES_REQUIRED`, comma-separated column names of `tsg_GetAssetContext`, empty = none (the default). A start (#1) or a hand-written scenario (#11) with a required fact not recorded is refused 422 `required_facts_missing`, naming each gap by name and id, never a value; nothing written. `id`, `name`, `category_code`, `alias` stop start-up; a name the procedure does not return → 500 `setup_error`. The EXCLUDED lines of the first G197 are removed (#26) |
-| 25 | Similarity thresholds (owner, 2026-10-11; G200) | `CONTROL_SIMILARITY_THRESHOLD` (60), `THREAT_SIMILARITY_THRESHOLD` (75), `ACTOR_SIMILARITY_THRESHOLD` (0 = no filter), one 0–100 scale on the reranker's score, set per environment. Controls: kept at or above it, else the single nearest. Threats: an AI proposal IS a library threat, or takes a library type, at or above it. Attackers: filters only the closest-match fallback (a type with no linked attacker); none reaches it → the closest still acts, flagged `below_threshold`. Linked attackers are never filtered |
+| 25 | Similarity thresholds (owner, 2026-10-11; G200) | `CONTROL_SIMILARITY_THRESHOLD` (50 since G225), `THREAT_SIMILARITY_THRESHOLD` (75), `ACTOR_SIMILARITY_THRESHOLD` (0 = no filter), one 0–100 scale on the reranker's score, set per environment. Controls: kept at or above it, else the single nearest. Threats: an AI proposal IS a library threat, or takes a library type, at or above it. Attackers: filters only the closest-match fallback (a type with no linked attacker); none reaches it → the closest still acts, flagged `below_threshold`. Linked attackers are never filtered |
 | 26 | The asset procedure decides the facts (owner, 2026-10-11; G203) | Every column `tsg_GetAssetContext` returns for the asset and its systems is a fact every step uses; remove a column and no later run uses it; add one and the next run uses it, no app change. Sector, sub-sector, critical service and the entity's technology are asset columns. A new dropdown column returns the option's name. Whoever edits the procedure decides what reaches the AI (accepted) |
 
 **Spec v4.0 errata (owner rulings, 2026-10-10).**
@@ -507,7 +507,7 @@ exception: no paging, it returns every client. Callers should time out after
 ```
 {scenario_id, session_id, version, status,
  scenario{threat_category, contributing_categories, threat_type, threat_name,
-          supporting_systems_involved[{supporting_system_id, supporting_system, is_entry_point}],
+          supporting_systems_involved[{supporting_system_id, supporting_system, is_applicable, is_entry_point, justification}],
           scenario_title, scenario_statement, risk_statement, assumptions, route_status},
  threat{threat_id, threat_category, threat_category_id, threat_type, threat_name, threat_type_id,
         library_threat_type, library_threat_name, grounding_status, threat_catalogue_id,
@@ -979,7 +979,7 @@ the preferred-domain order of controls (R-9: any error → no preference). See �
 
 | Topic | Rule |
 |---|---|
-| Keep | One rerank call scores each shortlist text from 0 to 100. Keep every control at or above `CONTROL_SIMILARITY_THRESHOLD` (60, #25); there is no maximum. If none qualifies, keep the single best one with `match: nearest` |
+| Keep | One rerank call scores each shortlist text from 0 to 100. (1) the `CONTROL_CANDIDATES` (40) closest library controls fitting the asset type are found; (2) the reranker scores each 0-100; (3) every one at or above `CONTROL_SIMILARITY_THRESHOLD` (`.env`; 50 = the owner's 0.50) is kept as strong; (4) never more than `MAX_CONTROLS` (10, the rest counted as `left_out_over_max`); (5) none reaching it: the nearest are kept as fallback up to `MIN_CONTROLS` (1). Never zero (G227); only a library with no control of the asset's type at all gives `no_compatible_control`; each with its tier and rationale (G225, G227) |
 | Order | IT/OT-compatible first, then score (high to low), then the 3 domains nearest the query, then id. Ranks are 1..n |
 | IT/OT pool | Match the category code of the scenario's own place (its systems; the asset's when it is on the asset itself or no system code is recorded; G211) to the controls' `AssetType` values (§0.1 #7). `IT\OT` means both (G211, owner 2026-10-12; `IT-OT` is not a value), so such a control passes when `IT` or `OT` matched; threats use the same values (`Threat_Catalogue.AssetType`). If any category has no match, apply no filter. Port v1 `_resolve_control_labels` |
 | Fallback and checks | An empty pool or shortlist → search the whole library. An empty library → `control_library_empty`. Fold twins by id, then by text. An unknown id or a gap in the ranks fails the attempt |
@@ -1023,8 +1023,10 @@ note to the plan. Build query texts from text fields and text lists only: no num
      the ranking missed.
    - The first actor is the acting one; the next 3, best fit first, are its alternates (§0.2 #12).
    - If embedding fails, use library order for both, and add the advisory `actor_not_ranked`.
-   - If no actor is linked, rank the **whole** actor library and offer the 3 nearest; one batched `attacker_fit` call
-     picks one (or keeps the nearest), flagged `closest_attacker` (v1 `attackers.py:55`).
+   - If no actor is linked, offer the vetted pool (actors linked to any type), flagged `closest_attacker`.
+   - G229: the relevance gate already returns the pick from the threat's own list, its reason and each actor's
+     suitability; code keeps the pick and prefers an equally suitable actor used less in the run. No `attacker_fit`
+     call any more.
 6. **Reasons.** Replace `SYS#` with the system's name. Drop a threat that has no reason, and add a note.
 
 **Attack paths**
@@ -1098,14 +1100,14 @@ Critical path: A1 → A3 → A4, **40 days**.
 | Task | Temperature | When the answer is bad |
 |---|---|---|
 | `relevance_gate`, `gap_fill` | 0.0 | Re-ask, then halve the batch, then mark `not_assessed` |
-| `same_attack`, `attacker_fit`, `attack_paths` | 0.0 | Re-ask once, then fold nothing; use the nearest actor; make one-step paths |
+| `same_attack`, `attack_paths` | 0.0 | Re-ask once, then fold nothing; make one-step paths |
 | `write_scenario`, `repair_scenario` | not sent | No re-ask: make a failure scenario; keep the original |
 | `consistency_check` | 0.0 | Re-ask once, then mark it `unchecked` |
 | `remediation_plan` | 0.0 | No re-ask: fail the version (`generation_failed`) |
 
 **The re-ask message**, exactly: `"Your previous reply was rejected:\n- <problem>…\nReturn the corrected JSON object
 only, in exactly the requested format."` It lists at most 20 problems, each cut to 200 characters. It goes only to the
-relevance gate, gap-fill, the batched checks (`same_attack`, `attacker_fit`) and the plan check;
+relevance gate, gap-fill, the batched check (`same_attack`) and the plan check;
 never to scenario writing or plans.
 
 **Prompt builders** (v1 `app/pipeline/prompts.py`, BLUEPRINT R-2). `AiTask.REMEDIATION_PLAN` is added with Step 16.
@@ -1190,7 +1192,7 @@ override `.env`: `CII_LOG_DIR` set empty in the shell still leaves the `logs` li
 |---|---|
 | `Generation` | `WRITER_BATCH` 6 (paths written at once, one wave of a set) · `MAX_PATH_ATTEMPTS` 5 · `MAX_SUPPORTING_SYSTEMS` 0 (no limit); the scenario count is the setting `TOTAL_SCENARIO_COUNT` (0 = every valid path, G106), and the set sizes are the settings `INITIAL_SET_SIZE` and `NEXT_SET_SIZE` (6 each, §0.2 #23) |
 | `Search` | `RRF_K` 60 · `BM25_K1` 1.5 · `BM25_B` 0.75 · `VECTOR_FLOOR` 0.60 · `THREATS_PER_QUERY` 10 · `QUERY_MAX_CHARS` 1,500 |
-| `Controls` · `Actors` | `MIN` 1 · `SHORTLIST` 40 · actors: `MIN` 1 · `MAX` 4 (1 acting + up to 3 alternates) |
+| `Controls` · `Actors` | `CONTROL_CANDIDATES` 40 (setting, G227) · actors: `MIN` 1 · `MAX` 4 (1 acting + up to 3 alternates) |
 | `Lease` | `SECONDS` 120 · `RENEW_EVERY_SECONDS` 30 · `REAPER_EVERY_SECONDS` 60 · `MAX_ATTEMPTS` 5 · `REQUEUE_QUEUED_AFTER_SECONDS` 120 · `RESEND_ANYWAY_AFTER_SECONDS` 900 · `MAX_JOB_SECONDS` 3,600 · `RETRY_DELAYS_SECONDS` (15, 30, 60, 120) · `CLOCK_SKEW_SECONDS` 5 |
 | `AiLimits` · `CHAT_TEMPERATURES` | `RETRIES` 3 · `RETRY_FIRST_WAIT_SECONDS` 0.5 · `CALL_RECORD_DAYS` 14 · the per-task temperature table (§9) |
 | `Timeouts` | `MONGO_MS` 5,000 · `MONGO_SOCKET_MS` 30,000 · `SQL_CONNECT_SECONDS` 5 · `SQL_QUERY_SECONDS` 30 · `REDIS_SECONDS` 5 · `REDIS_HEALTH_CHECK_SECONDS` 30 · `READY_CHECK_SECONDS` 5 · `READY_CHECK_REUSE_SECONDS` 2 · `RECORD_WRITE_SECONDS` 5 |
@@ -1328,7 +1330,7 @@ lines in the same change (§10).
 **Depends:** —
 **Test ids:** the §3 guards (T-CORE: no `lru_cache`). *Provisional — re-check when building remediation (Step 16).*
 **Verify:** `pip install -e ".[dev,local]" -c requirements.txt`, then `python -m ruff check app tests scripts`,
-`python -m ruff format --check app tests scripts`, `python -m mypy app` and `.venv\Scripts\python -m pytest -q`
+`python -m ruff format --check app tests scripts`, `python -m mypy app scripts` and `.venv\Scripts\python -m pytest -q`
 (with the venv active, `python` is the venv's Python 3.12).
 
 ### Step 2 — Core
@@ -1647,7 +1649,23 @@ With the reranker down, controls wait for the sweep. A mapping that runs longer 
 **Verify:** T-SCN-13..30 pass. Calling next-set twice returns 202, then 409. Promoting twice returns `inserted`, then
 `existing`, and the row has `IsActive = 0`. An accept sent with key B stores B's `client_id` as `decided_by_client`.
 
-### Step 15 — Intel and ATT&CK
+### External intelligence: endpoints and settings (Built 2026-10-12)
+
+| # | Endpoint | Body / answer | Errors |
+|---|---|---|---|
+| A1 | `GET /v1/tsg/intel/switch` | `{env_enabled, runtime_enabled, effective, changed_at, changed_by}` | 401 |
+| A2 | `PUT /v1/tsg/intel/switch` | `{enabled: bool}` (strict) -> the switch; ON also queues a refresh; audited `external_intelligence.switched` | 401 · 422 |
+| A3 | `GET /v1/tsg/intel/health` | switch, `snapshot_id`, `sources[]`, `stale`, `evidence{rerank_model, threshold, threshold_calibrated, threshold_calibrated_on}` | 401 |
+| A4 | `POST /v1/tsg/intel/refresh` | optional `{source}` -> 202 `{job_id, status}` (admin job kind `intel_refresh`, one at a time) | 401 · 409 `job_in_progress` · 409 while the master switch is off · 422 · 503 |
+| A5 | `GET /v1/tsg/intel/refresh/{job_id}` | the job: `{kind, status, result{source}, error}` | 401 · 404 |
+
+The scenario view gains `evidence_mode`, `evidence[]` (only what the text cites, by `[n]`, no scores) and `evidence_search`.
+
+Settings: `EXTERNAL_INTELLIGENCE_ENABLED` (master; default false in code, true only in dev `.env`, false in the test suite and in `.env.uat`),
+`EVIDENCE_SIMILARITY_THRESHOLD` (0-100 on the environment's reranker scale; explicit outside dev while enabled), and
+`CII_NVD_API_KEY` (optional secret). See `docs/EXTERNAL_INTELLIGENCE.md`.
+
+### Step 15 — Intel and ATT&CK (superseded: built as External intelligence, 2026-10-12)
 **WHAT:** The feeds, the technique list and the real `blocks_for`.
 **WHY:** Grounds the scenarios in real intel. An outage must never fail a run.
 **HOW:**

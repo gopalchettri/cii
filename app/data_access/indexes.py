@@ -3,6 +3,7 @@ worker's start): idempotent, never on a request or job path, and a failure stops
 
 from collections.abc import Iterable
 
+from app.core.config import get_settings
 from app.core.constants import AiLimits, Collection
 from app.core.database import get_mongodb
 from app.data_access.admin_jobs import AdminJobRecords
@@ -10,6 +11,9 @@ from app.data_access.ai_calls import AiCallRecords
 from app.data_access.api_clients import ApiClientRepository
 from app.data_access.audit import ensure_audit_indexes
 from app.data_access.embeddings import LibraryVectors, QueryVectors
+from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
+from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
 from app.data_access.job_records import JobRecords
 from app.data_access.remediations import RemediationRepository
 from app.data_access.scenarios import ScenarioRepository
@@ -31,3 +35,9 @@ def ensure_indexes(job_collections: Iterable[str] = ()) -> None:
     AdminJobRecords(db).ensure_indexes()
     for collection in job_collections:
         JobRecords(db[collection]).ensure_indexes()
+    if (
+        get_settings().external_intelligence_enabled
+    ):  # the master switch off: no intelligence collection exists
+        IntelRecordStore(db).ensure_indexes()
+        SnapshotPointerStore(db).ensure_indexes()
+        FeedStatusStore(db).seed_sources()

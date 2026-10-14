@@ -149,3 +149,21 @@ class ScenarioRepository:
 
 def _count(condition: dict[str, Any]) -> dict[str, Any]:
     return {"$sum": {"$cond": [condition, 1, 0]}}
+
+
+#: What the near-copy check compares of a finished scenario (G229): a few fields, never the evidence.
+_FINISHED_FIELDS = {
+    "path_id": 1,
+    "content.statement": 1,
+    "content.anatomy": 1,
+    "content.threat.key": 1,
+    "content.category": 1,
+    "content.systems.id": 1,
+}
+
+
+def find_finished(db: Database, session_id: str) -> list[dict[str, Any]]:
+    """The run's finished scenarios, current versions only, as the near-copy check reads them: one indexed
+    read per write delivery (the write job keeps the list and adds what it saves)."""
+    query = {"session_id": session_id, "status": ScenarioStatus.DONE, "superseded_by": None}
+    return list(db[Collection.SCENARIOS].find(query, _FINISHED_FIELDS))

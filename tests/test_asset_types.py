@@ -10,6 +10,7 @@ from structlog.testing import capture_logs
 
 from app.core.constants import (
     AiTask,
+    AssetType,
     CandidateRejection,
     GapFillOutcome,
     LogEvent,
@@ -17,7 +18,7 @@ from app.core.constants import (
     StrideCategory,
 )
 from app.data_access.library import LibraryRepository
-from app.models.library import LibraryThreat
+from app.models.library import LibraryThreat, asset_type_label, canonical_asset_type
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -214,3 +215,12 @@ def test_the_loader_reads_each_threats_asset_type_and_lists_the_unknown_ones() -
     library = LibraryRepository(_Procedures()).load_threat_library()  # type: ignore[arg-type]
     assert [threat.asset_type for threat in library.threats] == ["OT", r"IT\OT", "IT-OT", None]
     assert library.threats_unknown_asset_type == (3,)
+
+
+def test_it_slash_ot_is_both_and_is_kept_in_one_spelling() -> None:
+    r"""G217 (owner 2026-10-13): DevTest5 writes "IT/OT" (291 controls were read as unknown, fitting
+    everywhere with a warning); it means both, as IT\OT does. IT-OT stays not a value."""
+    assert asset_type_label("IT/OT") == asset_type_label(r" it \ ot ") == AssetType.IT_OT
+    assert asset_type_label("IT-OT") is None
+    assert canonical_asset_type("IT/OT") == r"IT\OT" and canonical_asset_type("IT-OT") == "IT-OT"
+    assert canonical_asset_type(None) is None

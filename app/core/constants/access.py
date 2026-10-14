@@ -27,6 +27,12 @@ class AuditAction(StrEnum):
     RUN_CANCELLED = "run.cancelled"  # its owner stopped a run (G214)
     SESSION_DELETED = "session.deleted"  # a run removed for good, with its scenarios and plans (G214)
     PLAN_CANCELLED = "plan.cancelled"  # its owner stopped a remediation plan being written (G214)
+    EXTERNAL_INTELLIGENCE_REFRESHED = "external_intelligence.refreshed"  # a source read (actor: the job)
+    EXTERNAL_INTELLIGENCE_REFRESH_FAILED = "external_intelligence.refresh_failed"
+    EXTERNAL_INTELLIGENCE_EVIDENCE_USED = "external_intelligence.evidence_used"  # one batch's search
+    EXTERNAL_INTELLIGENCE_SWITCHED = "external_intelligence.switched"  # an admin turned it on or off
+    EXTERNAL_INTELLIGENCE_SOURCE_REVOKED = "external_intelligence.source_revoked"  # records, vectors purged
+    EXTERNAL_INTELLIGENCE_SOURCE_APPROVED = "external_intelligence.source_approved"  # approved again
 
 
 class AuditTarget(StrEnum):
@@ -38,6 +44,7 @@ class AuditTarget(StrEnum):
     REMEDIATION = "remediation"
     LIBRARY_THREAT = "library_threat"
     ADMIN_JOB = "admin_job"
+    EXTERNAL_INTELLIGENCE_SOURCE = "external_intelligence_source"
 
 
 class Audit:

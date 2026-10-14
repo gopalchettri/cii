@@ -106,20 +106,24 @@ def _picking(name: str) -> Callable[[str], dict[str, Any]]:
     return answer
 
 
-def test_each_scenario_is_built_on_the_threat_the_ai_judges_best_for_its_system() -> None:
+def test_each_scenario_is_built_on_the_threat_the_ai_judges_best_for_the_asset() -> None:
     """Live run e4e70ea7: impact is HIGH for most threats, so numbers picked "AML.T0073 Impersonation" for a
     repudiation scenario. Now the AI picks by meaning; a group of one asks nothing."""
     strongest = planned("lib:1", "Firmware change", (321,), impact=3, confidence=90.0)
     best = planned("lib:2", "Logic overwrite", (321,), impact=3, confidence=70.0)
-    alone = planned("lib:3", "Log wipe", (322,), impact=1)
+    alone = planned("lib:3", "Log wipe", (322,), categories=(StrideCategory.SPOOFING,), impact=1)
     chat = FakeChatModel()
     chat.responders[AiTask.BEST_THREAT] = _picking("Logic overwrite")
     plan = AttackPathSelector(0, BestThreatPicker(chat)).build_plan(findings_of(strongest, best, alone))
-    by_system = {tuple(path["systems"]): (path["steps"], path["also_applies"]) for path in plan["paths"]}
-    assert by_system == {(321,): (["lib:2"], ["Firmware change"]), (322,): (["lib:3"], [])}
+    by_category = {path["category"]: (path["steps"], path["also_applies"]) for path in plan["paths"]}
+    assert by_category == {
+        StrideCategory.TAMPERING: (["lib:2"], ["Firmware change"]),
+        StrideCategory.SPOOFING: (["lib:3"], []),
+    }
     assert [task for task, _ in chat.calls] == [AiTask.BEST_THREAT] and plan["notes"] == []
     prompt = chat.calls[0][1]
-    assert 'SYS1 "SCADA server"' in prompt and "Firmware change" in prompt and "lib:" not in prompt
+    assert "the asset itself" in prompt and "Firmware change" in prompt and "lib:" not in prompt
+    assert 'the asset itself, through SYS1 "SCADA server"' in prompt  # the group's route (G216)
 
 
 def test_an_unreadable_pick_keeps_the_strongest_and_says_so() -> None:

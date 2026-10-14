@@ -114,12 +114,13 @@ def test_the_risk_owner_is_echoed_never_shown_and_long_text_is_cut_visibly() -> 
         "existing_controls_all_subsystems_justification": "SCADA",
     }
     part = register_half(RegisterData.model_validate(register), list(LIBRARY.values()), TODAY)
-    long_scenario = SCENARIO | {"content": SCENARIO["content"] | {"statement": "x" * 3000}}
+    past_the_limit = "x" * 4500  # G227: a statement is whole up to 4,000, then cut visibly
+    long_scenario = SCENARIO | {"content": SCENARIO["content"] | {"statement": past_the_limit}}
     snapshot = build_snapshot(long_scenario, CONTEXT, part, LIBRARY)
     assert snapshot["register"]["risk_owner"] == "Head of Grid Operations"
     shown_to_ai = {key: value for key, value in snapshot.items() if key not in ("register", "warnings")}
     assert "Head of Grid Operations" not in json.dumps(shown_to_ai)
     statement = snapshot["scenario"]["statement"]
-    assert len(statement) == Remediation.TEXT_MAX_CHARS + len(Remediation.TRUNCATED_MARK)
+    assert len(statement) == Remediation.STATEMENT_MAX_CHARS + len(Remediation.TRUNCATED_MARK)
     assert statement.endswith(" [truncated]")
     assert snapshot["existing_controls"]["applied_to_all_subsystems_justification"] is None

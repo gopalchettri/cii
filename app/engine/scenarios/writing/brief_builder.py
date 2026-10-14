@@ -7,12 +7,14 @@ import json
 import re
 from typing import Any
 
+from app.core.config import get_settings
 from app.core.constants import (
     ActorRole,
     ContextProperties,
     ErrorCode,
     PathProblem,
     StrideCategory,
+    WriterStyle,
     Writing,
 )
 from app.core.exceptions import PathNotWritable
@@ -21,7 +23,7 @@ from app.engine.scenarios.finding.asset_landscape import raw_system_facts
 from app.engine.shared.names import find_name_mentions, shorten_text, threat_name_without_code
 from app.engine.shared.prompt_redaction import facts_safe_for_prompt, redact
 from app.models.asset_context import FrozenContext
-from app.models.writing import LiveLibrary, WriterBrief
+from app.models.writing import BriefSystem, LiveLibrary, WriterBrief
 
 #: The asset facts under the names the approved brief shows; every other fact keeps its own name.
 _ASSET_FACT_NAMES = {
@@ -39,16 +41,18 @@ def build_brief(
     budget: int,
     live: LiveLibrary,
     other_scenarios: tuple[str, ...] = (),
+    style: WriterStyle = WriterStyle.ORIGINAL,
 ) -> WriterBrief:
     """The brief for `path`; `threats` = the plan's threats by key, `budget` = the most characters its facts
     may use (half the model input, as the landscape's: the asset at most a quarter, the path's systems
-    sharing the rest equally); `live` = what the library holds active now; `other_scenarios` = the path's
-    versions a regenerate must differ from, oldest first (the newest kept within a quarter of the budget).
+    sharing the rest equally); `live` = what the library holds active now; `style` = how it is written (only
+    an evidence story reads the threat's evidence); `other_scenarios` = the path's versions a regenerate
+    must differ from, oldest first (the newest kept within a quarter of the budget).
     Raises PathNotWritable for a path missing a fact or whose threat or acting attacker was retired."""
     threat = _path_threat(threats, path)
     _check_still_live(threat, path["path_id"], live)
     in_path = _path_systems(path, context)
-    asset = _cut_to_fit(_named_facts(context.asset["name"], _asset_facts(context)), budget // 4)
+    asset = _cut_to_fit(_named_facts(context.asset["name"], _asset_facts(context, style)), budget // 4)
     share = (budget - _json_length(asset)) // max(len(in_path), 1)
     systems = tuple(
         _cut_to_fit(_named_facts(system["name"], raw_system_facts(system)), share) for system in in_path
@@ -63,18 +67,43 @@ def build_brief(
         threat=threat_name_without_code(threat["name"]),
         why_it_applies=redact(_reason_on_path(threat["reason"], path, context)),
         systems=systems,
-        other_systems=tuple(
-            redact(system["name"]) for system in context.systems if system["id"] not in path["systems"]
-        ),
+        other_systems=_other_systems(path, context),
         other_scenarios=_newest_within(other_scenarios, budget // 4),
+        style=style,
+        evidence=_evidence_of(threat, style),
+        supporting_systems=_brief_systems(path, context),
     )
 
 
-def _asset_facts(context: FrozenContext) -> dict[str, Any]:
+def _other_systems(path: dict[str, Any], context: FrozenContext) -> tuple[str, ...]:
+    """The run's systems this scenario is not on, by name (redacted): never part of its story."""
+    return tuple(redact(system["name"]) for system in context.systems if system["id"] not in path["systems"])
+
+
+def _brief_systems(path: dict[str, Any], context: FrozenContext) -> tuple[BriefSystem, ...]:
+    """Every supporting system of the run, in its order: applicable when the scenario's route goes through
+    it (code decides, G216); the writer gives each a one-sentence reason. Names as the prompt may show
+    them."""
+    return tuple(
+        BriefSystem(system["id"], redact(system["name"]), system["id"] in path["systems"])
+        for system in context.systems
+    )
+
+
+def _evidence_of(threat: dict[str, Any], style: WriterStyle) -> tuple[dict[str, Any], ...]:
+    """Only an evidence story reads the threat's saved evidence: the original writer's brief never
+    carries it."""
+    return tuple(threat.get("evidence") or ()) if style is WriterStyle.EVIDENCE_STORY else ()
+
+
+def _asset_facts(context: FrozenContext, style: WriterStyle) -> dict[str, Any]:
     """The asset's own facts under the names the approved brief shows; the organisation's (entity_...) kept
-    apart under one key that says they are background, never this asset's (G208)."""
+    apart under one key that says they are background, never this asset's (G208). An evidence story also
+    reads the deployment's country (G232); the original writer's brief is as it was."""
     own, organisation = context.own_and_organisation_facts()
     facts = {_ASSET_FACT_NAMES.get(key, key): value for key, value in own.items()}
+    if style is WriterStyle.EVIDENCE_STORY:
+        facts[ContextProperties.COUNTRY_KEY] = get_settings().context_country
     background = "; ".join(str(value) for value in organisation.values() if value)
     return facts | ({ContextProperties.ORGANISATION_BRIEF_KEY: background} if background else {})
 

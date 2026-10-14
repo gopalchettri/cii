@@ -1,15 +1,14 @@
-"""A scenario as the API shows it, in v1's layout (owner 2026-10-12): what it says, the threat it is about
-(the threat block v1 tracked), its attackers, its controls and its review. Built from the stored scenario
+"""A scenario as the API shows it: what it says, the threat it is about
+(the threat block tracked), its attackers, its controls and its review. Built from the stored scenario
 alone: the category id and each control's description were kept when it was written and mapped, so a read
 never needs the library (or SQL Server). No database call here."""
 
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.constants import (
-    CONTROL_MATCH_REASONS,
     Decision,
     FindingSeverity,
     GroundingStatus,
@@ -20,13 +19,20 @@ from app.core.constants import (
     Status,
     ValidationStatus,
 )
+from app.models.control_views import ControlView, control_view
+from app.models.external_intelligence.evidence_view import EvidenceView, cited_evidence
+from app.models.external_intelligence.known_group_view import KnownGroupView, known_groups
 from app.models.run_board import Progress
 
 
 class SystemInvolved(BaseModel):
+    """One supporting system of the asset on a scenario: every system is listed, applicable or not."""
+
     supporting_system_id: int
     supporting_system: str
+    is_applicable: bool = True  # the scenario's route goes through it
     is_entry_point: bool
+    justification: str = ""  # the writer's one sentence: why it applies, or why not
 
 
 class ScenarioText(BaseModel):
@@ -41,6 +47,9 @@ class ScenarioText(BaseModel):
     scenario_statement: str | None  # the statement, then "Why this threat applies: ..."
     risk_statement: str | None
     assumptions: list[str]
+    # G229: the scenario's parts as its writer states them (target, entry point, preconditions, mechanism,
+    # consequence); None for a scenario written before them.
+    anatomy: dict[str, Any] | None = None
     # STANDALONE: no link between systems claimed; UNKNOWN: it relies on a link the platform does not record.
     route_status: str | None
     also_applies: list[
@@ -74,19 +83,9 @@ class ActorView(BaseModel):
     role: str | None  # acting, or alternate
     closest_match: bool  # no actor is linked to the threat's type: the nearest library actor acts
     below_threshold: bool  # that nearest actor scored below ACTOR_SIMILARITY_THRESHOLD
-
-
-class ControlView(BaseModel):
-    control_id: int
-    control_code: str | None
-    itot: str | None  # Control_Library.AssetType: IT, OT, IT\OT
-    domain: str | None
-    control_name: str | None
-    control_description: str | None
-    map_rank: int | None
-    score: float | None  # the reranker's 0-100; None for a control the scenario's author named
-    match_type: str  # EXACT, NEAREST or GIVEN
-    match_reason: str
+    # The acting attacker only (G229): how it was chosen (chosen, balanced, none_fits ...) and why.
+    selection: str | None = None
+    selection_reason: str | None = None
 
 
 class ScenarioView(BaseModel):
@@ -113,6 +112,12 @@ class ScenarioView(BaseModel):
     failure: dict[str, Any] | None
     regenerate_error: dict[str, Any] | None  # why the last regenerate kept this version
     created_at: datetime
+    # Set only on a scenario written as an evidence story: source-documented or inferred; the evidence its
+    # text cites by [n] (no scores); the audit of the search. Null / empty on every other scenario.
+    evidence_mode: str | None = None
+    evidence: list[EvidenceView] = Field(default_factory=list)
+    evidence_search: dict[str, Any] | None = None
+    known_groups: list[KnownGroupView] = Field(default_factory=list)  # G230: real groups beside the actor
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "ScenarioView":
@@ -127,7 +132,7 @@ class ScenarioView(BaseModel):
             threat=_threat_block(content),
             actors=[_actor(actor) for actor in content.get("actors") or []],
             controls_status=controls.get("status"),
-            controls=[_control(item) for item in controls.get("items") or []],
+            controls=[control_view(item) for item in controls.get("items") or []],
             **_review(record),
             validation_status=_validation_status(findings),
             validation_errors=_messages(findings, FindingSeverity.WARNING),
@@ -138,6 +143,10 @@ class ScenarioView(BaseModel):
             failure=record.get("failure"),
             regenerate_error=record.get("regenerate_error"),
             created_at=record["created_at"],
+            evidence_mode=content.get("evidence_mode"),
+            evidence=cited_evidence(content),
+            evidence_search=content.get("intel_search"),
+            known_groups=known_groups(content),
         )
 
 
@@ -155,13 +164,24 @@ class RunResults(ScenarioList):
     asset_name: str | None
     user_id: str | None
     progress: Progress
+    coverage: dict[str, Any] | None = None  # each system and kind: its scenarios; why any has none (G223)
 
 
-def _scenario_text(content: dict[str, Any]) -> ScenarioText:
-    threat, route = content.get("threat") or {}, content.get("route") or {}
-    statement, why = content.get("statement"), content.get("why_applies")
-    shown = f"{statement}{ScenarioDisplay.WHY_APPLIES_JOIN}{why}" if statement and why else statement
-    systems = [
+def _systems_involved(content: dict[str, Any]) -> list[SystemInvolved]:
+    """Every supporting system with applicable Yes/No, entry point and the writer's reason (G216); a card
+    without them (written before, failed, or hand-written) shows its own systems, applicable."""
+    if shown := content.get("system_applicability"):
+        return [
+            SystemInvolved(
+                supporting_system_id=system["id"],
+                supporting_system=system["name"],
+                is_applicable=bool(system.get("applicable")),
+                is_entry_point=bool(system.get("entry_point")),
+                justification=system.get("reason") or "",
+            )
+            for system in shown
+        ]
+    return [
         SystemInvolved(
             supporting_system_id=system["id"],
             supporting_system=system["name"],
@@ -169,6 +189,13 @@ def _scenario_text(content: dict[str, Any]) -> ScenarioText:
         )
         for system in content.get("systems") or []
     ]
+
+
+def _scenario_text(content: dict[str, Any]) -> ScenarioText:
+    threat, route = content.get("threat") or {}, content.get("route") or {}
+    statement, why = content.get("statement"), content.get("why_applies")
+    shown = f"{statement}{ScenarioDisplay.WHY_APPLIES_JOIN}{why}" if statement and why else statement
+    systems = _systems_involved(content)
     return ScenarioText(
         threat_category=content.get("category"),
         contributing_categories=content.get("contributing_categories") or [],
@@ -179,6 +206,7 @@ def _scenario_text(content: dict[str, Any]) -> ScenarioText:
         scenario_statement=shown,
         risk_statement=content.get("risk_statement"),
         assumptions=content.get("assumptions") or [],
+        anatomy=content.get("anatomy"),
         route_status=str(route["status"]).upper() if route.get("status") else None,
         also_applies=content.get("also_applies") or [],
     )
@@ -225,22 +253,8 @@ def _actor(actor: dict[str, Any]) -> ActorView:
         role=actor.get("role"),
         closest_match=bool(actor.get("closest")),
         below_threshold=bool(actor.get("below_threshold")),
-    )
-
-
-def _control(item: dict[str, Any]) -> ControlView:
-    match = item.get("match")
-    return ControlView(
-        control_id=item["control_id"],
-        control_code=item.get("code"),
-        itot=item.get("asset_type"),
-        domain=item.get("domain"),
-        control_name=item.get("name"),
-        control_description=item.get("description"),
-        map_rank=item.get("rank"),
-        score=item.get("score"),
-        match_type=str(match).upper(),
-        match_reason=CONTROL_MATCH_REASONS.get(str(match), ""),
+        selection=actor.get("selection"),
+        selection_reason=actor.get("reason"),
     )
 
 

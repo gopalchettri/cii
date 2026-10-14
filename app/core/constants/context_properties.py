@@ -24,6 +24,9 @@ class ContextProperties:
     ORGANISATION_PREFIX: Final = "entity_"
     #: The writer's brief keeps those facts under this one key, so it never tells them as the asset's (G208).
     ORGANISATION_BRIEF_KEY: Final = "organisation_background_not_this_asset"
+    #: G232: the deployment's country (THREAT_CONTEXT_COUNTRY), a fact planning and the story writer read
+    #: while external intelligence is on.
+    COUNTRY_KEY: Final = "country"
     #: The request field a refusal names, for the asset facts the request (not the asset) decides.
     REQUEST_FIELDS: Final = {
         "sector": "sector_id",

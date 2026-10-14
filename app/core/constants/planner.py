@@ -21,7 +21,6 @@ class ThreatFinding:
     GAP_FILL_MAX_CHARS: Final = 3_500  # a gap-fill proposal's type + threat
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
-    ATTACKER_OPTIONS: Final = 3  # nearest library actors offered when a threat's type links none
     CATEGORIES_AT_ONCE: Final = 6  # STRIDE categories judged in parallel
     # Owner, 2026-10-10 (G121): every threat of a category is judged, so batches are kept small and sent at
     # once. A batch's answer time grows with its verdicts (about 1.5 s each on the dev model, measured in
@@ -41,9 +40,9 @@ class ThreatFinding:
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id
     RECORD_SLOT: Final = "R"  # R1 ... in the relevance gate
     THREAT_SLOT: Final = "THR"  # THR1 ... in the same-attack check
-    ATTACKER_SLOT: Final = "A"  # A1 ... in the attacker check
+    # How suitable the gate judged each listed attacker (G229); a listed name it did not rate is LOW.
+    SUITABILITY_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
     CHOICE_SLOT: Final = "C"  # C1 ... in the best-threat pick (G209)
-    SCENARIO_SLOT: Final = "P"  # P1 ... in the same-scenario check (G213)
     # What a verdict says a threat needs that nothing recorded mentions (G209): kept on the rejection for the
     # reviewer, so only bounded to keep the record small, never a reason to accept.
     NEEDS_MAX_ITEMS: Final = 5
@@ -60,12 +59,13 @@ class ActorRole(StrEnum):
 
 
 class AttackerCheck(StrEnum):
-    """What the attacker check made of a closest-match attacker (a threat whose type links none)."""
+    """How a threat's acting attacker was decided (G229: the relevance gate's pick, code's checks)."""
 
-    FITS = "fits"  # the nearest is plausible
-    CHOSEN = "chosen"  # a runner-up is, and replaced it
-    NONE_FITS = "none_fits"  # none is: the nearest stays (never blank) and the card says so
-    NOT_CHECKED = "not_checked"  # the check could not be made
+    CHOSEN = "chosen"  # the gate's pick, from the threat's own list, with its reason
+    BALANCED = "balanced"  # rated as suitable as the pick and acting for fewer threats in the run
+    NONE_FITS = "none_fits"  # the gate found no listed attacker plausible: the nearest acts, flagged
+    NOT_CHECKED = "not_checked"  # the gate gave no usable pick: the search ranking decides
+    RANKED = "ranked"  # the gate never judged it (an AI threat, a hand-written one): the ranking decides
 
 
 class GapFillOutcome(StrEnum):
@@ -166,21 +166,17 @@ class PlanMessage(StrEnum):
     SAME_ATTACK_NOT_CHECKED = (
         "The same-attack check of {threats} threats could not be completed, so none of them was folded."
     )
-    SAME_SCENARIO_NOT_CHECKED = (
-        "Whether scenarios mean the same could not be checked for {categories} kind(s) of attack, so their "
-        "scenarios were kept apart."
-    )
-    SCENARIOS_MERGED = (
-        "{before} scenarios became {after}: the same attack with the same harm through different systems is "
-        "one scenario, listing every system."
-    )
     BEST_THREAT_NOT_PICKED = (
         "The best threat for {groups} scenario(s) could not be chosen by meaning, so the strongest by impact "
         "and confidence was used."
     )
-    ATTACKER_FIT_NOT_CHECKED = (
-        "The attacker check of {threats} closest-match attackers could not be completed, so each keeps the "
-        "nearest library attacker."
+    ATTACKERS_RANKED_ONLY = (
+        "The relevance check gave no usable attacker for {threats} threat(s), so the search ranking chose "
+        "their attacker."
+    )
+    ATTACKER_BALANCED = (
+        "{chosen} and {picked} were judged equally suitable ({level}) for this threat; {chosen} acts "
+        "because it carries fewer threats in this run."
     )
     # Written set by set, only when asked (owner 2026-10-11): the paths still to write wait for a next set.
     PLAN_NOTE = "{planned} attack paths selected; {written} written, {remaining} still to write, set by set."
@@ -194,3 +190,4 @@ class AnswerProblem(StrEnum):
     TEXT_REQUIRED = "must not be empty"
     PROBLEMS_REQUIRED = "consistent=false requires at least one problem"
     ENTRY_POINT_NOT_OFFERED = "entry_point must be one of entry_point_options, copied exactly: {options}"
+    SYSTEM_REASONS_MISSING = "system_reasons must give one short sentence for each of: {names}"

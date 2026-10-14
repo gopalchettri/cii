@@ -1,8 +1,10 @@
 """Composition root: builds the FastAPI app (routers, middleware, error handlers) and runs start-up and
 shutdown."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +15,7 @@ from app.api.middleware import AnswerUnexpectedErrors, RequestContextMiddleware
 from app.api.routers.api_clients import router as api_clients_router
 from app.api.routers.embeddings import router as embeddings_router
 from app.api.routers.events import router as events_router
+from app.api.routers.external_intelligence import router as external_intelligence_router
 from app.api.routers.health import router as health_router
 from app.api.routers.jobs import router as jobs_router
 from app.api.routers.library_curation import router as library_curation_router
@@ -26,9 +29,21 @@ from app.data_access.indexes import ensure_indexes
 from app.realtime.event_hub import EventHub
 
 
+def _ignore_client_gone(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    """A browser that closed its live-update stream first makes Windows' event loop raise ConnectionResetError
+    (WinError 10054) in its own clean-up, printed as a traceback; the client is simply gone (G221). Anything
+    else goes to the default handler, as before."""
+    if isinstance(context.get("exception"), ConnectionResetError) and "_call_connection_lost" in str(
+        context.get("message", "")
+    ):
+        return
+    loop.default_exception_handler(context)
+
+
 @asynccontextmanager
 async def application_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging(get_settings(), "api")
+    asyncio.get_running_loop().set_exception_handler(_ignore_client_gone)
     ensure_indexes()
     # Building the AI gateways looks up each model's profile: a model with no profile stops start-up here.
     get_chat_model()
@@ -64,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(library_curation_router)
     app.include_router(embeddings_router)
     app.include_router(jobs_router)
+    app.include_router(external_intelligence_router)
     return app
 
 

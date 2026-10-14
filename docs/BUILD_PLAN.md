@@ -1626,7 +1626,7 @@ Legend: ✅ matches · ⚠️ partial · ❌ missing · ⛔ conflicts with a rec
 | 5 | Relevance gate | Equal | Same design; current adds batch halving and a re-ask |
 | 6 | Search depth | Current, for now | Paging costs AI calls; measure first (M1) |
 | 7 | Gap-fill | Spec | No untyped threats or random attackers (S2) |
-| 8 | Threat intel | Spec in principle | Not buildable with today's data or legal status |
+| 8 | Threat intel | Spec | **Built 2026-10-12 (owner override of "not buildable"):** six public sources, evidence at write time, behind an on/off switch (`docs/EXTERNAL_INTELLIGENCE.md`) |
 | 9 | Duplicate removal | Spec | No cross-type merges; attackers after (S3, S4) |
 | 10 | Attacker choice | Mixed | No false attribution (S14); gate pick (S5); keep the ranking; ignore `IsCapable` |
 | 11 | Multi-step attacks | Spec (ruling) | No guessed chains; fewer AI calls (S9) |
@@ -1645,3 +1645,13 @@ Legend: ✅ matches · ⚠️ partial · ❌ missing · ⛔ conflicts with a rec
 | Same input → same plan | High | Lower | High |
 | Buildable now | No | Yes | Yes |
 | Time to scenarios | Months | Weeks | Weeks |
+
+### External intelligence (Built 2026-10-12; replaces Step 15 "Intel and ATT&CK")
+
+| Part | Status |
+|---|---|
+| Contract, constants, models | Built |
+| Sources, stores, snapshot, evidence finder, switch, health, refresh | Built (groups A and B) |
+| Evidence at write time, evidence-story writer style, scenario view fields | Built (group C) |
+| Admin API: switch, health, refresh | Built |
+| Dev enabled; UAT configured but dormant (`EXTERNAL_INTELLIGENCE_ENABLED=false`) until the threshold is calibrated on its reranker | Open: test in UAT |

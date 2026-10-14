@@ -110,7 +110,7 @@ class SessionState(StrEnum):
 class BoardMessage(StrEnum):
     """progress.error_message texts the status writes itself (a failed job brings its own message)."""
 
-    ABANDONED = "{abandoned} attack path(s) could not be written after repeated attempts."
+    ABANDONED = "{abandoned} attack path(s) could not be written; the results give each one's reason."
     NOT_ASSESSED = (
         "These threat categories could not be fully assessed, so the threats found are partial: {categories}."
     )
@@ -167,7 +167,18 @@ class ConflictReason(StrEnum):
     RUN_BEING_DELETED = "run_being_deleted"  # a next set or regenerate refused: the run is being deleted
 
 
+class CoverageGap(StrEnum):
+    """Why a supporting system or a kind of attack has no selected scenario (the plan's coverage, G223)."""
+
+    NO_RELEVANT_THREAT = "no_relevant_threat"  # no threat was judged relevant to it: none is forced on it
+    LIMIT_REACHED = "scenario_limit_reached"  # it had paths, but TOTAL_SCENARIO_COUNT kept others
+    SCENARIOS_FAILED = "scenarios_failed"  # its selected paths all failed for good (abandoned, G227)
+    AWAITING_NEXT_SET = "awaiting_next_set"  # its selected paths are not written yet: a next set writes them
+
+
 class UnselectedReason(StrEnum):
     """Why a valid attack path gets no scenario (stored on the path in the plan)."""
 
     TARGET_REACHED = "target_reached"  # TOTAL_SCENARIO_COUNT kept more relevant paths
+    # G229: it failed for good and a reserve path (one TOTAL_SCENARIO_COUNT had left out) took its place.
+    REPLACED_AFTER_FAILURE = "replaced_after_failure"

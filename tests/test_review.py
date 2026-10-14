@@ -23,6 +23,7 @@ from app.core.constants import (
     TargetProblem,
 )
 from app.core.database import get_mongodb
+from app.core.exceptions import Conflict
 from app.data_access.run_counts import RunCounts
 from app.data_access.scenario_review import ScenarioReview
 from app.engine.scenarios.attack_paths.path_progress import why_no_path_left
@@ -286,12 +287,24 @@ def test_two_calls_at_the_same_moment_exactly_one_wins(
     one, two = _at_the_same_moment(
         monkeypatch,
         [
-            lambda: service.accept(principal, run, AcceptRequest(scenario_ids=[first])),
-            lambda: service.accept(principal, run, AcceptRequest(scenario_ids=[second])),
+            lambda: _accept_or_refused(service, principal, run, first),
+            lambda: _accept_or_refused(service, principal, run, second),
         ],
     )
-    assert sorted([len(one.accepted), len(two.accepted)]) == [0, 1]
+    assert sorted([len(one), len(two)]) == [0, 1]
     assert [_decision(first), _decision(second)].count(Decision.ACCEPTED) == 1
+
+
+def _accept_or_refused(service: ReviewService, principal: Principal, run: Any, scenario_id: str) -> list[str]:
+    """What one of two racing accepts accepted. The loser either lost at the unique index (skipped,
+    changed_concurrently) or, when the winner had already written before it read, was refused (409
+    duplicate_version): both are right, and never are both accepted (the test read the second as a failure
+    in 1 run of 6, 2026-10-13)."""
+    try:
+        return service.accept(principal, run, AcceptRequest(scenario_ids=[scenario_id])).accepted
+    except Conflict as refused:
+        assert refused.reason == ConflictReason.DUPLICATE_VERSION
+        return []
 
 
 def test_review_waits_for_generation_and_serves_the_callers_entity_only(

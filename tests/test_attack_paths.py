@@ -47,33 +47,45 @@ def one_step(key: str, category: S, systems: tuple[int, ...], impact: int) -> At
     return AttackPath((planned(key, key, systems, categories=(category,), impact=impact),))
 
 
-def test_each_kind_of_attack_on_each_system_is_one_path_and_its_other_threats_stay_with_it() -> None:
-    """G208 (owner 2026-10-12: "logically it should not be more than 20-25"): threats are grouped by their own
-    category and by each system they involve (or the asset itself); each group is ONE one-step path around its
-    strongest threat, the others kept as also_applies (names, no codes); a threat a group already took is used
-    again only by a group with no other. The AI never joins threats (G114), and no AI is called."""
+def test_each_kind_of_attack_on_each_route_is_one_path_and_its_other_threats_stay_with_it() -> None:
+    """G216 (owner 2026-10-13, "5 is too less ... some logic is wrong"): at asset level, threats are grouped
+    by kind of attack AND by route, the systems each was judged on; each group is ONE one-step path around its
+    strongest threat, the others kept as also_applies (names, no codes). Another route is another scenario.
+    The AI never joins threats (G114), and no AI is called."""
     strong = planned("lib:1", "T0839: Firmware change", (321, 322), impact=3)
+    second = planned("lib:4", "Logic overwrite", (321, 322), impact=2)
     weak = planned("lib:2", "Log wipe", (321,), impact=1)
     on_asset = planned("lib:3", "Grid data theft", (), categories=(S.INFORMATION_DISCLOSURE,))
-    plan = AttackPathSelector(target=0).build_plan(findings_of(weak, strong, on_asset))
+    plan = AttackPathSelector(target=0).build_plan(findings_of(weak, strong, second, on_asset))
     groups = {(p["category"], tuple(p["systems"])): (p["steps"], p["also_applies"]) for p in plan["paths"]}
     assert groups == {
-        (S.TAMPERING, (321,)): (["lib:1"], ["Log wipe"]),  # the strongest; the weaker one stays with it
-        (S.TAMPERING, (322,)): (["lib:1"], []),  # the only threat on this system, though taken above
-        (S.INFORMATION_DISCLOSURE, ()): (["lib:3"], []),  # the asset itself
+        (S.TAMPERING, (321,)): (["lib:2"], []),  # its own route: its own scenario
+        (S.TAMPERING, (321, 322)): (["lib:1"], ["Logic overwrite"]),  # the strongest; the other stays
+        (S.INFORMATION_DISCLOSURE, ()): (["lib:3"], []),  # judged on no system: the asset itself
     }
     assert len({p["path_id"] for p in plan["paths"]}) == 3 and all("links" not in p for p in plan["paths"])
-    assert [t["key"] for t in plan["threats"]] == ["lib:2", "lib:1", "lib:3"]  # every threat kept, once
+    assert [t["key"] for t in plan["threats"]] == ["lib:2", "lib:1", "lib:4", "lib:3"]  # every threat, once
 
 
-def test_a_group_takes_its_strongest_threat_no_earlier_group_took() -> None:
-    """G208: two systems both best served by one threat get two different threats when they can."""
-    best = planned("lib:1", "Firmware change", (321, 322), impact=3)
-    second = planned("lib:2", "Logic overwrite", (321, 322), impact=2)
-    paths = AttackPathSelector(target=0).build_plan(findings_of(best, second))["paths"]
-    by_system = {tuple(p["systems"]): p["steps"] for p in paths}
-    assert by_system == {(321,): ["lib:1"], (322,): ["lib:2"]}
-    assert len(paths) <= 6 * (2 + 1)  # never more than six kinds of attack on each system and the asset
+def test_a_threat_counts_in_every_kind_it_fits_and_each_kind_prefers_an_untaken_threat() -> None:
+    """G216: run 816b94cb had threats fitting Repudiation whose main kind was Spoofing, and no Repudiation
+    scenario. Each kind a threat fits is a group; a group is written around a threat no earlier group took,
+    and the scenario is written and shown as its group's kind."""
+    login = planned("lib:1", "Fake operator login", (321,), categories=(S.SPOOFING, S.REPUDIATION), impact=3)
+    wipe = planned("lib:2", "Log wipe", (321,), categories=(S.REPUDIATION,), impact=1)
+    plan = AttackPathSelector(target=0).build_plan(findings_of(login, wipe))
+    by_kind = {p["category"]: (p["steps"], p["also_applies"], p["categories"][0]) for p in plan["paths"]}
+    assert by_kind == {
+        S.SPOOFING: (["lib:1"], [], S.SPOOFING),
+        S.REPUDIATION: (["lib:2"], ["Fake operator login"], S.REPUDIATION),  # lib:1 was taken by Spoofing
+    }
+    alone = planned("lib:5", "Ladder logic change", (321,), categories=(S.TAMPERING, S.DENIAL_OF_SERVICE))
+    paths = AttackPathSelector(target=0).build_plan(findings_of(alone))["paths"]
+    assert [(p["category"], p["steps"]) for p in paths] == [
+        (S.TAMPERING, ["lib:5"]),
+        (S.DENIAL_OF_SERVICE, ["lib:5"]),  # only one threat: told once per kind, as that kind
+    ]
+    assert paths[0]["path_id"] != paths[1]["path_id"]
 
 
 def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_steps() -> None:
@@ -87,17 +99,18 @@ def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_s
     assert path.categories == (S.SPOOFING, S.TAMPERING, S.REPUDIATION)
     assert (path.systems, path.impact, path.confidence, path.from_library) == ((321, 322), 3, 60.0, False)
     findings = replace(findings_of(wipe), category_ids={"tampering": 5, "spoofing": 1})
-    (record,) = AttackPathSelector(target=0).build_plan(findings)["paths"]
-    on_system = AttackPath((replace(wipe, systems=(321,)),), scope="system:321")  # one system: G208
-    assert record["path_id"] == on_system.path_id != AttackPath((wipe,)).path_id
+    record, as_repudiation = AttackPathSelector(target=0).build_plan(findings)["paths"]  # every kind (G216)
+    on_route = AttackPath((wipe,), scope="Tampering@system:321")  # the kind and the route name the path
+    assert record["path_id"] == on_route.path_id != AttackPath((wipe,)).path_id != as_repudiation["path_id"]
     assert record["steps"] == ["ai:wipe"] and record["systems"] == [321]
+    assert as_repudiation["category"] == S.REPUDIATION and as_repudiation["steps"] == ["ai:wipe"]
     assert record["category"] == S.TAMPERING and record["categories"] == [S.TAMPERING, S.REPUDIATION]
     assert record["category_id"] == 5  # the library's id, kept for the results (G207)
     assert (record["rank"], record["served"], record["attempts"], record["abandoned"]) == (1, None, 0, False)
 
 
-def test_paths_are_ranked_by_category_coverage_then_new_systems_then_significance() -> None:
-    """T-PATH-03. Since G208 a path is on one system or the asset itself (G210: no multi-system bonus)."""
+def test_paths_are_ranked_by_critical_risk_then_new_systems_then_new_kinds_then_significance() -> None:
+    """T-PATH-03 (G223: one pick at a time for the most coverage, recomputed after each pick)."""
     weak_spoofing = one_step("lib:1", S.SPOOFING, (321,), impact=1)
     strong_spoofing = one_step("lib:2", S.SPOOFING, (321,), impact=3)
     tampering = one_step("lib:3", S.TAMPERING, (322,), impact=2)
@@ -105,11 +118,11 @@ def test_paths_are_ranked_by_category_coverage_then_new_systems_then_significanc
     new_system = one_step("lib:4", S.TAMPERING, (323,), impact=1)
     ranked = rank_paths([weak_spoofing, new_system, on_asset, tampering, strong_spoofing])
     assert ranked == [
-        (strong_spoofing, PathChoice.CATEGORY_COVERAGE),
-        (on_asset, PathChoice.CATEGORY_COVERAGE),
+        (strong_spoofing, PathChoice.PATH_COVERAGE),  # HIGH: a critical threat first, and a new system
+        (on_asset, PathChoice.CATEGORY_COVERAGE),  # HIGH too: before any MEDIUM, though it adds no system
         (tampering, PathChoice.PATH_COVERAGE),  # a system not covered yet; the stronger of two first
         (new_system, PathChoice.PATH_COVERAGE),  # the weakest path, but on a system not covered yet
-        (weak_spoofing, PathChoice.RISK_SIGNIFICANCE),  # adds no system: waits for pass 3
+        (weak_spoofing, PathChoice.RISK_SIGNIFICANCE),  # adds nothing new: last
     ]
 
 
@@ -126,7 +139,10 @@ def test_equal_paths_rank_library_first_then_by_library_id_whatever_the_input_or
 
 def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:
     """T-PATH-05."""
-    threats = [planned("lib:1", "One", (321,), impact=3), planned("lib:2", "Two", (322,), impact=1)]
+    threats = [
+        planned("lib:1", "One", (321,), categories=(S.SPOOFING,), impact=3),
+        planned("lib:2", "Two", (322,), categories=(S.TAMPERING,), impact=1),
+    ]
     plan = AttackPathSelector(target=1).build_plan(findings_of(*threats))
     assert [(p["steps"], p["selected"]) for p in plan["paths"]] == [(["lib:1"], True), (["lib:2"], False)]
     assert plan["paths"][1]["unselected_reason"] == UnselectedReason.TARGET_REACHED and plan["target"] == 1

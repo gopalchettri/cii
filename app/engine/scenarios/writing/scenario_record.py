@@ -4,14 +4,25 @@ No database call here."""
 
 import itertools
 import uuid
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.constants import Decision, RunKind, ScenarioStatus, Status
+from app.core.constants import (
+    ActorRole,
+    Decision,
+    EvidenceMode,
+    RunKind,
+    ScenarioStatus,
+    Status,
+    StoryLimits,
+    WriterStyle,
+)
+from app.engine.scenarios.writing.evidence_citations import renumber_citations
 from app.engine.scenarios.writing.writing_prompts import WRITER_PROMPT_VERSION
 from app.engine.shared.names import name_match_key, threat_name_without_code
-from app.models.writing import PathFailure, WriterBrief, WrittenScenario
+from app.models.writing import PathFailure, ScenarioDraft, WriterBrief, WrittenScenario
 
 #: A path's first scenario is version 1; a regenerated one (#6) is the next version of its path.
 FIRST_VERSION = 1
@@ -45,18 +56,22 @@ def written_record(
     mapped to controls). Its controls wait for the controls job (Step 13). `replaces`: the version a
     regenerate (#6) writes the next version of ({_id, version}); None for a path's first write."""
     draft, now = written.draft, datetime.now(UTC)
-    status = ScenarioStatus.BLOCKED if written.blocked else ScenarioStatus.DONE
+    statement, risk, evidence = _cited(brief, draft)
+    # G229: an evidence story citing nothing is never finished, whatever made it (the rules block it first).
+    unproven = brief.style is WriterStyle.EVIDENCE_STORY and not evidence
+    status = ScenarioStatus.BLOCKED if written.blocked or unproven else ScenarioStatus.DONE
     content = {
         "title": draft.title,
-        "statement": draft.statement,
-        "risk_statement": draft.risk,
+        "statement": statement,
+        "risk_statement": risk,
         "why_applies": brief.why_it_applies,
         "assumptions": list(draft.assumptions),
+        "anatomy": draft.anatomy.as_doc() if draft.anatomy else None,  # G229: its parts, as written
         **_threat_content(path, threat),
-        "systems": _card_systems(run, path, brief, draft.entry_point),
+        **_systems_content(run, path, brief, draft),
         "route": {"status": written.route, "note": None},
-        "prompt_version": WRITER_PROMPT_VERSION,
-    }
+        "prompt_version": prompt_version_of(brief.style),
+    } | _evidence_content(brief, threat, evidence)
     record = _record_fields(run, path, status, now, replaces) | {
         "title_key": name_match_key(draft.title),
         "content": content,
@@ -67,6 +82,54 @@ def written_record(
     if status == ScenarioStatus.DONE:
         record["controls"] = {"status": Status.QUEUED, "attempts": 0, "queued_at": now}
     return record
+
+
+def prompt_version_of(style: WriterStyle) -> str:
+    """Which prompts wrote a scenario: a regenerate reads it back to keep the scenario's style."""
+    return StoryLimits.PROMPT_VERSION if style is WriterStyle.EVIDENCE_STORY else WRITER_PROMPT_VERSION
+
+
+def style_of_version(prompt_version: str | None) -> WriterStyle:
+    """The style a stored scenario was written in (a scenario with no version, or an older one: original)."""
+    return (
+        WriterStyle.EVIDENCE_STORY if prompt_version == StoryLimits.PROMPT_VERSION else WriterStyle.ORIGINAL
+    )
+
+
+def _cited(brief: WriterBrief, draft: ScenarioDraft) -> tuple[str, str, list[dict[str, Any]]]:
+    """An evidence story's statement and risk with its citations renumbered from [1], and the evidence they
+    cite (G224); a scenario written in the original style cites none."""
+    if brief.style is not WriterStyle.EVIDENCE_STORY:
+        return draft.statement, draft.risk, []
+    evidence = [dict(item) for item in brief.evidence]
+    return renumber_citations(draft.statement, draft.risk, evidence, dict(draft.evidence_links))
+
+
+def _evidence_content(
+    brief: WriterBrief, threat: dict[str, Any], cited: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The proof an evidence story carries: each entry its text cites, under the number its markers use
+    (G224), how the story rests on it (cited nothing: inferred from the asset), how many vulnerabilities
+    apply, and the audit of the search that found it. Nothing is added to an original-style scenario."""
+    if brief.style is not WriterStyle.EVIDENCE_STORY:
+        return {}
+    applies = Counter(str(item["applicability"]) for item in cited if item.get("applicability"))
+    return {
+        "evidence": cited,
+        "evidence_mode": brief.evidence_mode if cited else EvidenceMode.INFERRED,
+        "applicability": dict(applies),
+        "intel_search": threat.get("intel_search"),
+        "known_groups": _known_groups(threat, cited),
+    }
+
+
+def _known_groups(threat: dict[str, Any], cited: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """G230: the real named groups behind the threat's evidence, each with the number its technique is cited
+    under (None: the story did not cite it)."""
+    numbers = {item.get("ref"): item["n"] for item in cited}
+    return [
+        group | {"cited": numbers.get(group.get("technique"))} for group in threat.get("known_groups") or []
+    ]
 
 
 def _card_systems(
@@ -81,6 +144,29 @@ def _card_systems(
         {"id": system_id, "name": names[system_id], "entry_point": place == entry}
         for place, system_id in enumerate(path["systems"])  # in the brief's order: the path's systems
     ]
+
+
+def _systems_content(
+    run: dict[str, Any], path: dict[str, Any], brief: WriterBrief, draft: ScenarioDraft
+) -> dict[str, Any]:
+    """The card's own systems with the entry point (`systems`, as before), and every supporting system of the
+    run (`system_applicability`, G216): applicable when the scenario's route goes through it (code), the
+    entry point among them, and the writer's one-sentence reason; by its recorded name."""
+    card = _card_systems(run, path, brief, draft.entry_point)
+    names = {system["id"]: system["name"] for system in run["context"]["systems"]}
+    entry = {system["id"] for system in card if system["entry_point"]}
+    reasons = dict(draft.system_reasons)  # by the brief's spelling of each name
+    every = [
+        {
+            "id": system.id,
+            "name": names.get(system.id, system.name),
+            "applicable": system.applicable,
+            "entry_point": system.id in entry,
+            "reason": reasons.get(system.name, ""),
+        }
+        for system in brief.supporting_systems
+    ]
+    return {"systems": card, "system_applicability": every}
 
 
 def failure_record(
@@ -149,6 +235,12 @@ def _threat_content(path: dict[str, Any], threat: dict[str, Any]) -> dict[str, A
         "also_applies": list(path.get("also_applies") or []),
         "actors": [
             {key: actor.get(key) for key in ("id", "name", "role", "closest", "below_threshold")}
+            | (_why_acting(threat) if actor.get("role") == ActorRole.ACTING else {})
             for actor in threat.get("actors") or []
         ],
     }
+
+
+def _why_acting(threat: dict[str, Any]) -> dict[str, Any]:
+    """How the acting attacker was decided and why (G229): the card shows it, the audit keeps it."""
+    return {"selection": threat.get("attacker_check"), "reason": threat.get("attacker_check_reason")}

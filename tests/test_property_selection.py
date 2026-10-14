@@ -13,7 +13,7 @@ import pytest
 from app.core.config import get_settings
 from app.core.constants import StrideCategory
 from app.core.exceptions import Invalid, SetupError
-from app.engine.scenarios.control_mapper import control_search_text
+from app.engine.scenarios.control_query import control_query
 from app.engine.scenarios.finding.asset_landscape import (
     describe_asset_for_ai,
     library_search_queries,
@@ -80,7 +80,7 @@ def _texts(context: FrozenContext) -> str:
             json.dumps(context.to_record(), default=str),
             describe_asset_for_ai(context, 30_000).text,
             *library_search_queries(context, StrideCategory.TAMPERING),
-            control_search_text(CONTENT, context, context.systems),
+            control_query(CONTENT, context, context.systems).text,
             *(json.dumps(raw_system_facts(system), default=str) for system in context.systems),
         ]
     )
@@ -112,8 +112,8 @@ def test_a_column_added_to_the_procedure_reaches_every_step() -> None:
     ):
         assert NEW_FACT in text
     assert any(NEW_FACT in query for query in library_search_queries(context, StrideCategory.TAMPERING))
-    control_query = control_search_text(CONTENT, context, context.systems)  # owner 2026-10-11: controls too
-    assert NEW_FACT in control_query and "site_notes: Marker site notes Delta" in control_query
+    controls_text = control_query(CONTENT, context, context.systems).text  # owner 2026-10-11: controls too
+    assert NEW_FACT in controls_text and "site_notes: Marker site notes Delta" in controls_text
 
 
 def test_the_head_columns_are_not_facts_and_the_asset_name_is_searched() -> None:
@@ -307,9 +307,9 @@ def test_a_required_name_the_procedure_does_not_return_is_a_setup_error(
 def test_the_control_query_names_the_asset_without_empty_brackets() -> None:
     """With asset_type not returned (or not recorded) the reranker's text reads "Asset: <name>", never
     "Asset: <name> ()"; with it, "Asset: <name> (<type>)"."""
-    typed = control_search_text(CONTENT, _freeze(_rows()), [])
+    typed = control_query(CONTENT, _freeze(_rows()), []).text
     assert "Asset: Grid Centre (Control system)" in typed
-    untyped = control_search_text(CONTENT, _freeze(_rows(_without(_asset_row(), "asset_type"))), [])
+    untyped = control_query(CONTENT, _freeze(_rows(_without(_asset_row(), "asset_type"))), []).text
     assert "Asset: Grid Centre\n" in untyped and "()" not in untyped
 
 
@@ -317,5 +317,16 @@ def test_a_placeholder_asset_type_is_no_type_in_the_control_query() -> None:
     """Review 2026-10-11: "N/A" or blanks are not a type: "Asset: <name>", as for a type not recorded."""
     context = _freeze(_rows())
     placeholder = dataclasses.replace(context, asset_context=context.asset_context | {"asset_type": " N/A "})
-    text = control_search_text(CONTENT, placeholder, [])
+    text = control_query(CONTENT, placeholder, []).text
     assert "Asset: Grid Centre\n" in text and "N/A" not in text
+
+
+def test_dropdown_names_the_procedure_already_gave_are_kept() -> None:
+    """G217: the owner's procedure names dropdowns itself (by option id): "Historian, Windows" and "In-house"
+    reached the app as text and were dropped as unknown saved values."""
+    options = {"technology-used": {1: "SCADA"}, "managed-by": {1: "In-house"}}
+    assert context_module._multi("Historian, Windows", "technology-used", options) == ["Historian", "Windows"]
+    assert context_module._multi("[1]", "technology-used", options) == ["SCADA"]  # saved values, as before
+    assert context_module._multi("[1, x", "technology-used", options) is None  # a broken array: none
+    assert context_module._single("In-house", "managed-by", options) == "In-house"
+    assert context_module._single(1, "managed-by", options) == "In-house"

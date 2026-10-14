@@ -180,7 +180,7 @@ def test_a_required_property_not_recorded_saves_nothing(
 ) -> None:
     """G197 (owner 2026-10-11): a hand-written scenario is held to the same required properties as a run;
     the refusal names the field where the request put it, and nothing is proposed or saved."""
-    monkeypatch.setattr(get_settings(), "system_properties_required", "dr_location")
+    monkeypatch.setattr(get_settings(), "system_properties_required", "description")
     key = uuid.uuid4().hex
     refused = _post(client, api_key, BODY, key)
     assert (refused.status_code, refused.json()["reason"]) == (422, "required_facts_missing")

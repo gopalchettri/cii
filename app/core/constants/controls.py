@@ -9,7 +9,6 @@ from app.core.constants.runs import Generation
 
 
 class Controls:
-    SHORTLIST: Final = 40  # library controls the search hands the reranker for one scenario
     QUERY_MAX_CHARS: Final = 4_000  # one scenario's control query, cut from the end
     MAX_ATTEMPTS: Final = 5  # then failed; the sweep tries again after RETRY_FAILED_AFTER_SECONDS
     LEASE_SECONDS: Final = 120  # one scenario's mapping, and a run's delivery (G195), renewed while it runs
@@ -23,9 +22,17 @@ class Controls:
 
 class ControlMessage(StrEnum):
     NEAREST_ONLY = (
-        "No control reached the control similarity threshold of {cutoff:g}; the single nearest compatible "
-        "control is kept."
+        "No control reached the control similarity threshold of {cutoff:g}; the nearest compatible "
+        "controls are kept, up to the minimum of {least}."
     )
+    # Each control's rationale and the mapping's audit (owner 2026-10-13, G225).
+    STRONG_REASON = "Score {score:.0f} is at or above the threshold of {cutoff:g}: strong."
+    FALLBACK_REASON = (
+        "Score {score:.0f} is below the threshold of {cutoff:g}: fallback, among the nearest kept to reach "
+        "the minimum of {least}."
+    )
+    SHORTFALL = "{kept} control(s) kept: the minimum is {least}, but only {kept} compatible control(s) exist."
+    LEFT_OUT = "{count} more control(s) reached the threshold; MAX_CONTROLS keeps the best {most}."
 
 
 class ControlMatch(StrEnum):
@@ -35,6 +42,12 @@ class ControlMatch(StrEnum):
 
 
 #: Why a control was kept for a scenario, in words (the results' match_reason).
+#: The selection tier each match is (owner 2026-10-13, G225): "strong" or "fallback"; a named one is "given".
+CONTROL_TIERS: Final[dict[str, str]] = {
+    ControlMatch.EXACT: "strong",
+    ControlMatch.NEAREST: "fallback",
+    ControlMatch.GIVEN: "given",
+}
 CONTROL_MATCH_REASONS: Final[dict[str, str]] = {
     ControlMatch.EXACT: "Scored at or above the control similarity threshold for this scenario.",
     ControlMatch.NEAREST: "No control reached the threshold; this is the nearest relevant library control.",

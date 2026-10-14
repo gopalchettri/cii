@@ -1,9 +1,10 @@
 """The best-threat pick:
 threat each scenario is built on, chosen by meaning instead of by numbers (impact is HIGH for most threats, so
-impact and confidence rarely tell them apart). Each group of path_grouping.py (one kind of attack on one
-system, or on the asset itself) with two or more threats gets one AI call naming its ThreatFinding.BEST_PICKS
-best threats, best first; the groups are asked at once. An answer that cannot be read leaves its group in
-strength order, noted on the plan; an outage is raised, so the job retries, as for every planner check."""
+impact and confidence rarely tell them apart). Each group of path_grouping.py (one kind of attack on the
+asset through one route of systems) with two or more threats gets one AI call naming its
+ThreatFinding.BEST_PICKS best threats, best first; the groups are asked at once. An answer that cannot be
+read leaves its group in strength order, noted on the plan; an outage is raised, so the job retries, as for
+every planner check."""
 
 import functools
 from typing import Any
@@ -44,11 +45,10 @@ class BestThreatPicker:
 
     def _pick_one(self, landscape: Landscape, group: tuple[GroupKey, list[PlannedThreat]]) -> list[str]:
         """One group's best threats by key, best first; [] when its answer could not be read."""
-        (place, on_asset, system), members = group
+        (place, route), members = group
         slots = {f"{ThreatFinding.CHOICE_SLOT}{number}": threat for number, threat in enumerate(members, 1)}
         items = [_candidate(slot, threat) for slot, threat in slots.items()]
-        target = _ASSET_ITSELF if on_asset else system_named(landscape, system)
-        prompt = best_threat_prompt(landscape.text, _STRIDE_ORDER[place], target, items)
+        prompt = best_threat_prompt(landscape.text, _STRIDE_ORDER[place], _target(landscape, route), items)
         read = functools.partial(_read_pick, slots=set(slots))
         try:
             best: list[str] = ask_ai_and_check(self._chat, AiTask.BEST_THREAT, prompt, read)
@@ -66,6 +66,13 @@ def _candidate(slot: str, threat: PlannedThreat) -> dict[str, Any]:
         "threat": threat_name_without_code(threat.name),
         "why": shorten_text(threat.reason, ThreatFinding.PICK_REASON_CHARS),
     }
+
+
+def _target(landscape: Landscape, route: tuple[int, ...]) -> str:
+    """What the group's threats were judged to apply to: the asset itself, through its route's systems."""
+    if not route:
+        return _ASSET_ITSELF
+    return f"{_ASSET_ITSELF}, through " + " and ".join(system_named(landscape, system) for system in route)
 
 
 def system_named(landscape: Landscape, system_id: int) -> str:

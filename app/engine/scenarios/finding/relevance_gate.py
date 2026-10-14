@@ -1,9 +1,12 @@
 """The relevance gate (v1 threat_identification/relevance.py): the AI decides whether each
 candidate threat applies to the landscape, batched per STRIDE category. A verdict is never a score, every
 verdict carries its reason, and an answer that cannot be read is never "not relevant": its threats are
-recorded not judged (judge_candidates raises)."""
+recorded not judged (judge_candidates raises). The same call names each relevant threat's most plausible
+attacker among those it lists (G229; gate_verdicts.py reads it): the threat's linked actors, or the vetted
+pool when its type links none."""
 
 import functools
+from collections.abc import Sequence
 from concurrent.futures import Executor
 from typing import Any
 
@@ -20,13 +23,13 @@ from app.core.constants import (
     Tracing,
 )
 from app.core.tracing import record_detail, step_detail_enabled, traced
+from app.engine.scenarios.finding.gate_verdicts import parse_verdict
 from app.engine.scenarios.finding.threat_prompts import relevance_gate_prompt
-from app.engine.shared.ask_ai import answer_item_problems, answers_for_asked_slots, ask_ai_and_check
+from app.engine.shared.ask_ai import answers_for_asked_slots, ask_ai_and_check
 from app.engine.shared.names import threat_name_without_code
 from app.engine.shared.parallel import run_in_parallel, run_in_shared_pool
 from app.engine.shared.prompt_batches import batches_that_fit, max_batch_prompt_chars
 from app.models.library import LibraryThreat
-from app.models.planner_replies import RelevanceVerdict
 from app.models.threats import CategoryAudit, Landscape, PlannedThreat, Verdict
 
 log = structlog.get_logger(__name__)
@@ -46,50 +49,6 @@ def candidate_for_gate(slot: str, threat_type: str, threat: str, attackers: list
     }
 
 
-def parse_verdict(item: dict[str, Any], aliases: dict[str, int]) -> tuple[Verdict | None, list[str]]:
-    """One verdict, checked: known aliases only, a yes/no, an impact for a relevant threat, a confidence of
-    0-100 and always a reason (a rejection's too). A rejection's impact is never read, so never judged."""
-    slot, systems = item["slot"], item.get("systems") or []
-    impact = str(item.get("impact") or "").upper()
-    confidence, reason = item.get("confidence"), str(item.get("reason") or "").strip()
-    problems = []
-    # Any JSON may come back: a list or object in place of an alias is a problem to re-ask, never a crash.
-    if not isinstance(systems, list) or any(
-        not isinstance(alias, str) or alias not in aliases for alias in systems
-    ):
-        problems.append(f"{slot}: systems must be listed aliases only (SYS1, SYS2 ...)")
-    if not isinstance(item.get("relevant"), bool):
-        problems.append(f"{slot}: relevant must be true or false")
-    if item.get("relevant") is True and impact not in ThreatFinding.IMPACT_RANK:
-        problems.append(f"{slot}: impact must be HIGH, MEDIUM or LOW")
-    if isinstance(confidence, bool) or not isinstance(confidence, int | float) or not 0 <= confidence <= 100:
-        problems.append(f"{slot}: confidence must be a number from 0 to 100")
-    if not reason:
-        problems.append(f"{slot}: every verdict needs its reason, a rejection's too")
-    needs = item.get("needs") or []
-    if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
-        problems.append(f"{slot}: needs must be a list of names ([] when everything it needs is recorded)")
-    if problems:
-        return None, problems
-    shown = {**item, "impact": impact if item["relevant"] else None, "systems": systems, "needs": needs}
-    if problems := answer_item_problems(RelevanceVerdict, shown, slot):
-        return None, problems
-    return Verdict(
-        relevant=item["relevant"],
-        systems=tuple(sorted({aliases[alias] for alias in systems})),
-        reason=reason[: ThreatFinding.REASON_MAX_CHARS],
-        impact=ThreatFinding.IMPACT_RANK.get(impact, 0),
-        confidence=float(confidence or 0),
-        needs=_needs(needs),
-    ), []
-
-
-def _needs(names: list[str]) -> tuple[str, ...]:
-    """What a verdict says its threat needs that nothing recorded mentions, blanks dropped and bounded."""
-    kept = [" ".join(name.split())[: ThreatFinding.NEED_MAX_CHARS] for name in names if name.strip()]
-    return tuple(kept[: ThreatFinding.NEEDS_MAX_ITEMS])
-
-
 def accepted_library_threat(
     category: StrideCategory, threat: LibraryThreat, verdict: Verdict
 ) -> PlannedThreat:
@@ -105,16 +64,25 @@ def accepted_library_threat(
         impact=verdict.impact,
         confidence=verdict.confidence,
         reason=verdict.reason,
+        actor_pick=verdict.actor_pick,
     )
 
 
 class RelevanceGate:
     """Judges candidate threats of one category against one landscape, in batches that fit the model input."""
 
-    def __init__(self, chat: ChatModel, landscape: Landscape, pool: Executor | None = None) -> None:
-        """`pool`: shared by every category's batches (ThreatFinder); None = a pool per judge call."""
+    def __init__(
+        self,
+        chat: ChatModel,
+        landscape: Landscape,
+        pool: Executor | None = None,
+        unlinked_attackers: Sequence[str] = (),
+    ) -> None:
+        """`pool`: shared by every category's batches (ThreatFinder); None = a pool per judge call.
+        `unlinked_attackers`: what a threat whose type links no attacker lists (the vetted pool, by name)."""
         self._chat = chat
         self._landscape = landscape
+        self._unlinked = list(unlinked_attackers)
         self._room = max_batch_prompt_chars(chat.max_prompt_chars)
         self._pool = pool
 
@@ -140,7 +108,7 @@ class RelevanceGate:
                 f"{ThreatFinding.RECORD_SLOT}{position}",
                 threat.type_name,
                 threat.name,
-                [actor.name for actor in threat.linked_actors],
+                [actor.name for actor in threat.linked_actors] or self._unlinked,
             )
             for position, threat in enumerate(threats, start=1)
         ]
@@ -222,18 +190,20 @@ class RelevanceGate:
             return self._judge_batch(category, batch, last_try=True)
 
     def _ask_gate(self, category: StrideCategory, batch: list[dict[str, Any]]) -> dict[str, Verdict]:
-        asked = {item["slot"] for item in batch}
+        listed = {item["slot"]: item["attackers"] for item in batch}
         prompt = relevance_gate_prompt(self._landscape.text, category, batch)
         verdicts: dict[str, Verdict] = ask_ai_and_check(
-            self._chat, AiTask.RELEVANCE_GATE, prompt, functools.partial(self._read_verdicts, asked=asked)
+            self._chat, AiTask.RELEVANCE_GATE, prompt, functools.partial(self._read_verdicts, listed=listed)
         )
         return verdicts
 
-    def _read_verdicts(self, answer: dict[str, Any], asked: set[str]) -> tuple[dict[str, Verdict], list[str]]:
-        items, problems = answers_for_asked_slots(answer, "verdicts", asked)
+    def _read_verdicts(
+        self, answer: dict[str, Any], listed: dict[str, list[str]]
+    ) -> tuple[dict[str, Verdict], list[str]]:
+        items, problems = answers_for_asked_slots(answer, "verdicts", set(listed))
         verdicts = {}
         for item in items:
-            verdict, item_problems = parse_verdict(item, self._landscape.system_ids)
+            verdict, item_problems = parse_verdict(item, self._landscape.system_ids, listed[item["slot"]])
             problems += item_problems
             if verdict is not None:
                 verdicts[item["slot"]] = verdict

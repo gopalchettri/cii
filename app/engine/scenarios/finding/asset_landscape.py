@@ -61,7 +61,7 @@ def sector_text(asset_context: dict[str, Any]) -> str:
     return _joined_text([asset_context.get(key) for key in _SECTOR_KEYS])
 
 
-def _asset_part(context: FrozenContext, budget: int) -> str:
+def _asset_part(context: FrozenContext, budget: int, country: str) -> str:
     """The asset, its lead facts first, then the organisation's own facts on a line of their own (never read
     as this asset's: G208), in at most max(budget // 4, ASSET_SHARE_MIN_CHARS) characters; a long part is cut
     from its end, the organisation's line first."""
@@ -71,7 +71,13 @@ def _asset_part(context: FrozenContext, budget: int) -> str:
         facts_safe_for_prompt({**lead, **own_facts}),
         facts_safe_for_prompt(organisation_facts),
     )
-    described = {"asset": redact(context.asset["name"]), "asset_context": own, "supporting_systems": []}
+    where = {ContextProperties.COUNTRY_KEY: country} if country else {}  # G232: intelligence on only
+    described = {
+        "asset": redact(context.asset["name"]),
+        **where,
+        "asset_context": own,
+        "supporting_systems": [],
+    }
     text = json.dumps(described, ensure_ascii=False, default=str)
     if organisation:
         line = ThreatFinding.ORGANISATION_LABEL + json.dumps(organisation, ensure_ascii=False, default=str)
@@ -94,13 +100,13 @@ def _system_heads_and_facts(systems: list[dict[str, Any]]) -> tuple[list[str], l
 
 
 @traced("threats.build_landscape")
-def describe_asset_for_ai(context: FrozenContext, budget: int) -> Landscape:
+def describe_asset_for_ai(context: FrozenContext, budget: int, country: str = "") -> Landscape:
     """The landscape within `budget` characters: every system keeps its alias and quoted name, and their
     recorded facts share what the asset leaves equally, so no system is clipped away by another's long text.
     Raises PlanRefused when facts had to be shortened below MIN_SYSTEM_FACT_CHARS each: a system judged by its
     name alone is never planned in silence."""
     systems = context.systems
-    asset_part = _asset_part(context, budget)
+    asset_part = _asset_part(context, budget, country)
     heads, facts = _system_heads_and_facts(systems)
     share = (budget - len(asset_part) - sum(len(head) + 1 for head in heads)) // max(len(systems), 1)
     too_long = [len(text) for text in facts if len(text) > share]

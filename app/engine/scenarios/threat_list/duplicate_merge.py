@@ -32,6 +32,7 @@ def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThrea
         systems=tuple(sorted(set(kept.systems) | set(other.systems))),
         impact=max(kept.impact, other.impact),
         confidence=max(kept.confidence, other.confidence),
+        actor_pick=kept.actor_pick or other.actor_pick,  # G229: the kept verdict's pick, else the other's
     )
 
 

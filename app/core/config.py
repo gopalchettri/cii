@@ -3,16 +3,110 @@ per environment (request size, AI calls at once; 2026-10-09). Business values: c
 
 Every field here has a line in .env, .env.uat and .env.example (tests/test_config.py checks the names)."""
 
+import re
 from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.constants import ContextProperties, Env, ErrorMessage, Limits, PropertyMessage, Tracing
+from app.core.constants import (
+    COUNTRY_REGIONS,
+    PLACE_WORDS,
+    ContextProperties,
+    Env,
+    ErrorMessage,
+    EvidenceSettingMessage,
+    Limits,
+    PropertyMessage,
+    Tracing,
+)
 from app.core.singletons import singleton
 
+_WORD_RANGE = re.compile(r"\s*(\d+)\s*-\s*(\d+)\s*")
 
-class Settings(BaseSettings):
+
+class ScenarioOutputSettings(BaseSettings):
+    """What a scenario gets: its controls (owner 2026-10-13, G225) and how long its texts are (G226). Settings
+    reads these too (one class would pass the size limit)."""
+
+    # A scenario's controls, in five steps: the CONTROL_CANDIDATES closest library controls that fit the asset
+    # type are found; the reranker scores each 0-100; every one at or above CONTROL_SIMILARITY_THRESHOLD is
+    # kept as "strong" (the owner's 0.50 is 50); never more than MAX_CONTROLS; none reaching it: the nearest
+    # are kept as "fallback" up to MIN_CONTROLS. Never zero (owner 2026-10-13, G227).
+    control_similarity_threshold: float = Field(
+        default=50.0, ge=0, le=100, validation_alias="CONTROL_SIMILARITY_THRESHOLD"
+    )
+    control_candidates: int = Field(default=40, ge=1, validation_alias="CONTROL_CANDIDATES")
+    min_controls: int = Field(default=1, ge=1, validation_alias="MIN_CONTROLS")
+    max_controls: int = Field(default=10, ge=1, validation_alias="MAX_CONTROLS")
+    # Words in a scenario statement and in a risk statement, "min-max", for both writers.
+    threat_scenario_word_limit: str = Field(default="300-400", validation_alias="THREAT_SCENARIO_WORD_LIMIT")
+    risk_statement_word_limit: str = Field(default="150-200", validation_alias="RISK_STATEMENT_WORD_LIMIT")
+    # External intelligence on (G229): a threat whose search found no usable evidence is searched again with
+    # other words this many times (0-2; no AI call); still none, its scenario is not written.
+    evidence_search_retries: int = Field(default=1, ge=0, le=2, validation_alias="EVIDENCE_SEARCH_RETRIES")
+    # G229: a scenario is a near copy of one already finished in its run when at least this share (0-100) of
+    # its three-word phrases are shared, AND it is about the same thing: the same threat, or the same target,
+    # systems and kind with at least NEAR_COPY_PART_SIMILARITY of its mechanism and consequence words shared.
+    # Measured 2026-10-13: distinct scenarios of runs 03276384 and 82f22cc3 shared at most 3.5; a copy with
+    # two sentences reworded about 72.
+    near_copy_text_similarity: float = Field(
+        default=30.0, gt=0, le=100, validation_alias="NEAR_COPY_TEXT_SIMILARITY"
+    )
+    near_copy_part_similarity: float = Field(
+        default=50.0, gt=0, le=100, validation_alias="NEAR_COPY_PART_SIMILARITY"
+    )
+    # G232 (owner 2026-10-14): the country the assets are in ("UAE" or "United Arab Emirates"): planning and
+    # the writers read it as a fact, and the real groups and the evidence are ranked and labelled by it.
+    threat_context_country: str = Field(
+        default="United Arab Emirates", validation_alias="THREAT_CONTEXT_COUNTRY"
+    )
+
+    @model_validator(mode="after")
+    def refuse_output_limits_that_cannot_work(self) -> "ScenarioOutputSettings":
+        if not self.control_candidates >= self.max_controls >= self.min_controls:
+            raise ValueError(
+                ErrorMessage.CONTROL_COUNT_INVALID.format(
+                    candidates=self.control_candidates, most=self.max_controls, least=self.min_controls
+                )
+            )
+        if 0 < (value := self.control_similarity_threshold) < 1:
+            message = ErrorMessage.CONTROL_THRESHOLD_AS_FRACTION
+            raise ValueError(
+                message.format(setting="CONTROL_SIMILARITY_THRESHOLD", value=value, percent=value * 100)
+            )
+        _ = self.scenario_words, self.risk_words  # a range that cannot be read stops start-up
+        if self.context_country not in COUNTRY_REGIONS:
+            message = ErrorMessage.COUNTRY_UNKNOWN
+            raise ValueError(
+                message.format(value=self.threat_context_country, known=", ".join(COUNTRY_REGIONS))
+            )
+        return self
+
+    @property
+    def context_country(self) -> str:
+        """THREAT_CONTEXT_COUNTRY by its own name ("UAE" is the United Arab Emirates)."""
+        name = self.threat_context_country.strip()
+        return PLACE_WORDS.get(name.casefold(), name)
+
+    @property
+    def scenario_words(self) -> tuple[int, int]:
+        return _word_range("THREAT_SCENARIO_WORD_LIMIT", self.threat_scenario_word_limit)
+
+    @property
+    def risk_words(self) -> tuple[int, int]:
+        return _word_range("RISK_STATEMENT_WORD_LIMIT", self.risk_statement_word_limit)
+
+
+def _word_range(setting: str, text: str) -> tuple[int, int]:
+    found = _WORD_RANGE.fullmatch(text)
+    least, most = (int(found.group(1)), int(found.group(2))) if found else (0, 0)
+    if not 1 <= least <= most:
+        raise ValueError(ErrorMessage.WORD_LIMIT_INVALID.format(setting=setting, value=text))
+    return least, most
+
+
+class Settings(ScenarioOutputSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )
@@ -88,19 +182,32 @@ class Settings(BaseSettings):
     next_set_size: int = Field(default=6, ge=1, validation_alias="NEXT_SET_SIZE")
 
     # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for all three (owner
-    # 2026-10-11): a control kept for a scenario (none reaches it: the single nearest, with a warning); an
+    # 2026-10-11): a control kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, ScenarioOutputSettings); an
     # AI-proposed threat that IS a library threat or takes a library type; an attacker offered when a threat's
     # type links none (0 = no filter; none reaches it: the closest still acts, with a warning). Linked
     # attackers are never filtered: a curator chose them.
-    control_similarity_threshold: float = Field(
-        default=60.0, ge=0, le=100, validation_alias="CONTROL_SIMILARITY_THRESHOLD"
-    )
     threat_similarity_threshold: float = Field(
         default=75.0, ge=0, le=100, validation_alias="THREAT_SIMILARITY_THRESHOLD"
     )
     actor_similarity_threshold: float = Field(
         default=0.0, ge=0, le=100, validation_alias="ACTOR_SIMILARITY_THRESHOLD"
     )
+
+    # External intelligence (CISA KEV, EPSS, MITRE ATT&CK, CISA ICS, NVD). ENABLED is the MASTER switch: false
+    # means nothing is read, searched or shown, whatever an admin sets at run time (the run-time switch can
+    # only turn it off, never on). OFF unless an environment says true: a deployment that forgets the line
+    # stays the original TSG. Owner's names, without the CII_ prefix.
+    external_intelligence_enabled: bool = Field(
+        default=False, validation_alias="EXTERNAL_INTELLIGENCE_ENABLED"
+    )
+    # The lowest reranker score (0-100) at which an intelligence record counts as evidence for a threat. A
+    # ranking score, not a probability, and provisional: calibrate per environment and per reranker model
+    # (declared like THREAT_SIMILARITY_THRESHOLD, but on its own scale).
+    evidence_similarity_threshold: float = Field(
+        default=1.0, ge=0, le=100, validation_alias="EVIDENCE_SIMILARITY_THRESHOLD"
+    )
+    # Optional NVD key (a secret): raises NVD's rate limit from 5 to 50 requests per 30 s. Empty = unkeyed.
+    nvd_api_key: SecretStr = SecretStr("")
 
     # Which asset and supporting-system facts a run requires (a start without one is refused 422; owner
     # 2026-10-11): comma-separated column names of dbo.tsg_GetAssetContext; empty = none. Which facts a run
@@ -119,6 +226,7 @@ class Settings(BaseSettings):
         admin_key = self.admin_api_key.get_secret_value()
         if admin_key and len(admin_key) < Limits.MIN_ADMIN_KEY_CHARS:
             raise ValueError(ErrorMessage.ADMIN_KEY_TOO_SHORT.format(minimum=Limits.MIN_ADMIN_KEY_CHARS))
+        refuse_unset_evidence_threshold(self)
         return self
 
     @model_validator(mode="after")
@@ -145,6 +253,17 @@ class Settings(BaseSettings):
     @property
     def required_system_properties(self) -> frozenset[str]:
         return frozenset(_names(self.system_properties_required))
+
+
+def refuse_unset_evidence_threshold(settings: Settings) -> None:
+    """Outside dev, external intelligence on needs EVIDENCE_SIMILARITY_THRESHOLD set explicitly: each
+    reranker model scores on its own scale, so no default is safe (a value left to the default is not in
+    model_fields_set)."""
+    if (
+        settings.external_intelligence_enabled
+        and "evidence_similarity_threshold" not in settings.model_fields_set
+    ):
+        raise ValueError(EvidenceSettingMessage.THRESHOLD_NOT_SET)
 
 
 def _names(text: str) -> list[str]:

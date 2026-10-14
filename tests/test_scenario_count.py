@@ -5,10 +5,9 @@ technology nobody recorded is not relevant; and a scenario is written on its own
 import dataclasses
 
 from app.core.constants import ContextProperties, PlanCheckStatus, Route, StrideCategory, ThreatFinding
-from app.engine.scenarios.control_mapper import control_search_text
+from app.engine.scenarios.control_query import control_query
 from app.engine.scenarios.finding.asset_landscape import describe_asset_for_ai, library_search_queries
 from app.engine.scenarios.finding.threat_prompts import (
-    attacker_fit_prompt,
     gap_fill_prompt,
     relevance_gate_prompt,
 )
@@ -38,7 +37,7 @@ def test_no_other_step_reads_the_organisations_facts_as_the_assets() -> None:
     assert brief.asset[ContextProperties.ORGANISATION_BRIEF_KEY] == _ORGANISATION_TEXT
     assert "entity_technology_context" not in brief.asset  # never an asset fact
     content = {"statement": "s", "risk_statement": "r", "systems": [{"id": 321}]}
-    assert "billing" not in control_search_text(content, _WITH_ORGANISATION, [_WITH_ORGANISATION.systems[0]])
+    assert "billing" not in control_query(content, _WITH_ORGANISATION, [_WITH_ORGANISATION.systems[0]]).text
 
 
 def test_why_it_applies_never_names_a_system_this_scenario_is_not_on() -> None:
@@ -77,12 +76,11 @@ def test_the_relevance_and_gap_fill_rules_never_assume_a_technology_or_borrow_th
     engineering workstations, jump servers and radio links into existence (live run e4e70ea7)."""
     gate = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
     gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3)[1]
-    fit = attacker_fit_prompt("LANDSCAPE", [{"slot": "A1"}])[1]
     for prompt in (gate, gap):
         assert "it may never assume that a technology, component or device exists" in prompt
         assert "an engineering workstation, a jump server, a wireless or radio link" in prompt
         assert "The ORGANISATION line is background only" in prompt
-    for prompt in (gate, gap, fit):
+    for prompt in (gate, gap):
         assert "solely because a DETAIL of a recorded technology is unrecorded" in prompt
         assert "because a deciding fact is unrecorded" not in prompt
 

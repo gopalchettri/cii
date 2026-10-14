@@ -20,6 +20,7 @@ from app.models.library import (
     RejectedLibraryThreat,
     ThreatLibrary,
     ThreatProposal,
+    canonical_asset_type,
     unknown_asset_type,
 )
 
@@ -78,7 +79,8 @@ def _to_library_threat(
         type_name=threat_type["ThreatTypeName"],
         categories=_stride_sorted(categories),
         linked_actors=tuple(sorted(actors, key=lambda actor: actor.name)),
-        asset_type=row.get("AssetType"),  # None until the procedure returns it: fits everywhere (G211)
+        # None until the procedure returns it: fits everywhere (G211); "IT/OT" kept as IT\OT (G217)
+        asset_type=canonical_asset_type(row.get("AssetType")),
     )
 
 
@@ -196,7 +198,7 @@ def _controls(rows: Sequence[Row]) -> tuple[LibraryControl, ...]:
         LibraryControl(
             control_id=row["ControlLibraryID"],
             code=row["ControlCode"],
-            asset_type=row.get("AssetType"),
+            asset_type=canonical_asset_type(row.get("AssetType")),
             domain=row["Domain"],
             name=row["ControlName"],
             description=row.get("ControlDescription"),

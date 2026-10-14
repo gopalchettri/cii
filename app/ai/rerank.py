@@ -2,7 +2,6 @@
 (dev), the proxy's reranker otherwise."""
 
 import math
-import threading
 import time
 from typing import Any
 
@@ -16,11 +15,13 @@ from app.ai.common import (
     call_with_retries,
     count_and_convert_ai_errors,
 )
+from app.ai.local_turns import LocalTurns
 from app.ai.profiles import RERANK_MODEL_PROFILES, find_model_profile
 from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
 from app.core import metrics
 from app.core.config import get_settings
-from app.core.constants import AiOutcome, AiTask, ErrorMessage
+from app.core.constants import AiLimits, AiOutcome, AiTask, ErrorMessage
+from app.core.lease_signal import raise_if_lease_lost
 from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.models.ai import RerankModelProfile
@@ -42,7 +43,7 @@ class RerankModel:
         self._api_key = api_key
         self._key_header = build_api_key_header(key_header, api_key, option="headers")
         self._local_model: Any = None
-        self._local_lock = threading.Lock()  # the local model: loaded once, then one prediction at a time
+        self._turns = LocalTurns()  # the local model: loaded once, one prediction at a time, scenarios first
         self._slots = slots  # remote calls only: a local model shares no provider
 
     @traced("ai.rerank")
@@ -102,18 +103,28 @@ class RerankModel:
     def _score_with_local_model(self, query: str, documents: list[str]) -> list[float]:
         """ponytail: dev-only CPU model; UAT uses the proxy. Loaded once per process on first use, and one
         prediction at a time (G199): one already uses every core, so ten at once (a worker's threads) only
-        thrashed, and none of them finished in 38 minutes (live test 2026-10-11)."""
-        with self._local_lock:
-            # A request whose deadline passed while it waited for the model (a plan request's top-up that
-            # already answered 503) ends here, never a full CPU prediction for no one.
-            call_timeout(self.profile.timeout_seconds)
-            if self._local_model is None:
-                from sentence_transformers import CrossEncoder
+        thrashed, and none of them finished in 38 minutes (live test 2026-10-11). A few documents per turn,
+        scenarios first (G222, local_turns.py): a 40-control mapping never holds it while a next set waits.
+        Each pair is scored on its own, so the turns change no score."""
+        step = AiLimits.LOCAL_RERANK_TURN_DOCUMENTS
+        scores: list[float] = []
+        for start in range(0, len(documents), step):
+            with self._turns.turn():
+                # A request whose deadline passed while it waited (a plan request's top-up that already
+                # answered 503), or whose job was stopped (G214), ends here: no CPU prediction for no one.
+                call_timeout(self.profile.timeout_seconds)
+                raise_if_lease_lost()
+                pairs = [(query, document) for document in documents[start : start + step]]
+                # CrossEncoder.predict already applies the sigmoid for a one-label model: scores are 0..1.
+                scores += [100.0 * float(p) for p in self._loaded_local_model().predict(pairs)]
+        return scores
 
-                self._local_model = CrossEncoder(self._model)
-            # CrossEncoder.predict already applies the sigmoid for a one-label model: scores are 0..1.
-            probabilities = self._local_model.predict([(query, document) for document in documents])
-        return [100.0 * float(probability) for probability in probabilities]
+    def _loaded_local_model(self) -> Any:
+        if self._local_model is None:
+            from sentence_transformers import CrossEncoder
+
+            self._local_model = CrossEncoder(self._model)
+        return self._local_model
 
 
 @singleton

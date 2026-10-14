@@ -10,7 +10,7 @@ from typing import Any
 import structlog
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
-from app.core.constants import ErrorCode, ErrorMessage, Generation, LogEvent, Writing
+from app.core.constants import ErrorCode, ErrorMessage, Generation, LogEvent, WriterStyle, Writing
 from app.core.exceptions import JobFailed, LeaseLost, PathNotWritable
 from app.data_access.scenarios import ScenarioRepository, TitleTaken
 from app.engine.scenarios.writing.brief_builder import build_brief
@@ -35,8 +35,14 @@ class PathWriter:
     """What every path of one delivery is written with: the run's frozen facts and threats, what the library
     holds live now, and the writer."""
 
-    def __init__(self, run: dict[str, Any], chat: ChatModel, library: ThreatLibrary) -> None:
-        self._run_id = run["_id"]
+    def __init__(
+        self,
+        run: dict[str, Any],
+        chat: ChatModel,
+        library: ThreatLibrary,
+        style: WriterStyle = WriterStyle.ORIGINAL,
+    ) -> None:
+        self._run_id, self._style = run["_id"], style
         self._writer = ScenarioWriter(chat, tuple(actor.name for actor in library.actors))
         # The facts may use half the model input, as the landscape's: the rest is the prompt and one rewrite.
         self._budget = chat.max_prompt_chars // 2
@@ -44,11 +50,25 @@ class PathWriter:
         self._context = FrozenContext.from_record(run["context"])
         self.threats = {threat["key"]: threat for threat in run["plan"]["threats"]}
 
-    def write(self, path: dict[str, Any], other_scenarios: tuple[str, ...] = ()) -> PathOutcome:
+    def write(
+        self,
+        path: dict[str, Any],
+        other_scenarios: tuple[str, ...] = (),
+        style: WriterStyle | None = None,
+    ) -> PathOutcome:
         """In a pool thread: the AI work for one path (`other_scenarios`: the path's versions a regenerate
-        must differ from). An outage or a job-wide failure is raised."""
+        must differ from; `style`: the style it is written in, the delivery's own when not given). An outage
+        or a job-wide failure is raised."""
         try:
-            brief = build_brief(self.threats, path, self._context, self._budget, self._live, other_scenarios)
+            brief = build_brief(
+                self.threats,
+                path,
+                self._context,
+                self._budget,
+                self._live,
+                other_scenarios,
+                style or self._style,
+            )
             return brief, self._writer.write_scenario(brief)
         except PathNotWritable as exc:
             return PathFailure(exc.code, exc.message, final=True)

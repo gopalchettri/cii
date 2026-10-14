@@ -16,15 +16,16 @@ from app.models.library import LibraryControl
 from app.models.remediation_requests import RegisterData
 
 
-def clip(text: str | None) -> str | None:
-    """THE ONE DOOR for free text entering a snapshot: redacted, then cut at Remediation.TEXT_MAX_CHARS and
-    marked, so a cut is never silent and never crowds the register's own facts out of the prompt."""
+def clip(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | None:
+    """THE ONE DOOR for free text entering a snapshot: redacted, then cut at `limit` and marked, so a cut is
+    never silent and never crowds the register's own facts out of the prompt. A scenario's statement and risk
+    pass Remediation.STATEMENT_MAX_CHARS (G227: a 300-400-word scenario is whole, as a hand-written one of
+    that length is). A second clip changes nothing: the same first `limit` characters are kept, and the
+    same mark follows them."""
     if text is None:
         return None
     cleaned = redact(text)
-    if len(cleaned) <= Remediation.TEXT_MAX_CHARS:
-        return cleaned
-    return cleaned[: Remediation.TEXT_MAX_CHARS] + Remediation.TRUNCATED_MARK
+    return cleaned if len(cleaned) <= limit else cleaned[:limit] + Remediation.TRUNCATED_MARK
 
 
 def register_half(

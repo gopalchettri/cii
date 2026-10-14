@@ -77,13 +77,11 @@ def test_a_start_queues_the_whole_job_with_the_frozen_context(client: TestClient
     assert (body["asset_name"], body["user_id"]) == (run["context"]["asset"]["name"], run["user_id"])
     context = run["context"]
     assert [(s["alias"], s["id"]) for s in context["systems"]] == [("SYS1", 321), ("SYS2", 322)]
-    assert context["systems"][1]["technology_used"] == ["Historian", "Windows"]  # saved as values [2, 3]
-    assert context["systems"][0]["managed_by"] == "In-house"  # a single dropdown by its saved value too
+    assert context["systems"][0]["description"] == "Runs the transmission grid."  # the procedure's facts
     assert context["systems"][0]["category_code"] == "OT" and context["asset"]["category_code"] == "OT"
     facts = context["asset_context"]
     assert (facts["sector"], facts["sub_sector"]) == ("Energy", "Electricity")
     assert "sector" not in context and "critical_service" not in context  # each fact once: no top-level copy
-    assert context["asset_context"]["asset_priority"] == "High"
     # G203: the asset itself keeps only what names and the control pool need; its facts live in asset_context.
     assert set(context["asset"]) == {"id", "name", "category_code"}
     assert context["asset_context"]["critical_service"] == "Electricity transmission"
@@ -115,14 +113,14 @@ def test_a_start_the_asset_facts_refuse_writes_nothing(
 def test_a_required_property_not_recorded_refuses_the_start_and_names_each_gap(
     client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """G197 (owner 2026-10-11): SYSTEM_PROPERTIES_REQUIRED=dr_location and system 322 has none recorded ->
+    """G197 (owner 2026-10-11): SYSTEM_PROPERTIES_REQUIRED=description and system 322 has none recorded ->
     422 required_facts_missing naming system 322 at its place in the request; no run is written."""
-    monkeypatch.setattr(get_settings(), "system_properties_required", "dr_location")
+    monkeypatch.setattr(get_settings(), "system_properties_required", "description")
     response = _start(client, api_key)
     assert response.status_code == 422, response.text
     assert response.json()["reason"] == "required_facts_missing"
     assert response.json()["errors"] == [
-        {"field": "body.supporting_system_id.1", "message": "system 322: dr_location not recorded."}
+        {"field": "body.supporting_system_id.1", "message": "system 322: description not recorded."}
     ]
     assert get_mongodb()[Collection.SESSIONS].count_documents({"entity_id": 86, "asset_id": 103}) == 0
 
@@ -276,6 +274,27 @@ def test_results_show_current_versions_and_keep_a_decided_older_one(client: Test
     assert client.get(url, params={"include_replaced": True}, headers=headers).json()["total"] == 3
     page = client.get(url, params={"limit": 1, "offset": 1}, headers=headers).json()
     assert len(page["scenarios"]) == 1 and page["total"] == 2
+
+
+def test_results_work_the_coverage_out_from_the_plan(client: TestClient, api_key: str) -> None:
+    """G228: the results read the plan's paths themselves (the status never does): none before a plan; then
+    each kind with its finished paths, an abandoned one not counted."""
+    session_id = _start(client, api_key).json()["session_id"]
+    url, headers = f"/v1/sessions/{session_id}/results", _identity(api_key)
+    assert client.get(url, headers=headers).json()["coverage"] is None  # no plan yet
+    paths = [
+        {"path_id": "p1", "systems": [321], "categories": ["Spoofing"], "selected": True, "abandoned": False},
+        {"path_id": "p2", "systems": [322], "categories": ["Tampering"], "selected": True, "abandoned": True},
+    ]
+    paths[0]["served"] = "s1"  # G229: only a finished scenario covers
+    plan = {"plan.paths": paths, "plan.target": 15}
+    get_mongodb()[Collection.SESSIONS].update_one({"_id": session_id}, {"$set": plan})
+    coverage = client.get(url, headers=headers).json()["coverage"]
+    assert (coverage["limit"], coverage["selected"], coverage["finished"]) == (15, 1, 1)
+    kinds = coverage["kinds"]
+    assert kinds["Spoofing"]["path_ids"] == ["p1"] and kinds["Tampering"]["finished"] == 0
+    assert {"kind": "Tampering", "reason": "scenarios_failed"} in coverage["not_covered"]
+    assert "coverage" not in client.get(f"/v1/sessions/{session_id}", headers=headers).json()
 
 
 def test_one_scenario_with_its_computed_fields(client: TestClient, api_key: str) -> None:

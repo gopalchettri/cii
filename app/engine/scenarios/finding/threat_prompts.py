@@ -11,7 +11,7 @@ from app.engine.shared.ask_ai import ChatPrompt
 from app.engine.shared.names import quoted_for_prompt
 
 #: Bumped by hand whenever a planner prompt below changes; frozen on every plan.
-PLANNER_PROMPT_VERSION = "planner-2026-10-12.5"
+PLANNER_PROMPT_VERSION = "planner-2"  # G229: the relevance gate also names each threat's attacker
 
 _PLANNER_SYSTEM = (
     "You are a threat-modelling analyst assessing ONE asset and its supporting systems. "
@@ -20,7 +20,7 @@ _PLANNER_SYSTEM = (
 )
 
 #: Owner decision 2026-10-04: a fact the platform never recorded is UNKNOWN, never evidence of absence.
-#: Narrowed 2026-10-12 (G208, owner: "fix this also"): only a DETAIL of a recorded technology may be
+#: only a DETAIL of a recorded technology may be
 #: unknown; a component nobody recorded is never assumed into existence.
 _UNKNOWN_FACTS_RULE = (
     "Judge against the RECORDED facts: a fact the landscape does not state is UNKNOWN, not absent. "
@@ -32,14 +32,14 @@ _UNKNOWN_FACTS_RULE = (
     '- not recorded in the platform".\n'
 )
 
-#: Owner decision 2026-10-12 (G208): the organisation's own facts are background, never this asset's.
+# the organisation's own facts are background, never this asset's.
 _ORGANISATION_RULE = (
     "The ORGANISATION line is background only: never accept a threat because the organisation uses a "
     "technology elsewhere; it must fit the asset's or a listed system's own recorded facts.\n"
 )
 
-#: Owner decision 2026-10-12 (G208): an unknown fact may be a missing detail, never a missing technology.
-#: The gate ends it with "list it in needs", the proposal with "not relevant" (G209 review: the gate was told
+#: an unknown fact may be a missing detail, never a missing technology.
+#: The gate ends it with "list it in needs", the proposal with "not relevant" the gate was told
 #: both "not relevant" and "list it in needs" for the same case, so a need could go unlisted).
 _RECORDED_TECHNOLOGY = (
     "An assumption may fill a missing detail of a technology the asset or a listed system is recorded to "
@@ -50,14 +50,14 @@ _RECORDED_TECHNOLOGY = (
 _RECORDED_TECHNOLOGY_RULE = _RECORDED_TECHNOLOGY + "it is not relevant.\n"
 _RECORDED_TECHNOLOGY_NEEDS_RULE = _RECORDED_TECHNOLOGY + 'list it in "needs".\n'
 
-#: Owner decision 2026-10-12 (G209): a threat is an action on the asset, never the attacker's preparation.
+#: a threat is an action on the asset, never the attacker's preparation.
 _PREPARATION_RULE = (
     "It applies only if the attacker acts on the asset or a listed system: preparation done elsewhere "
     "(searching public sources, obtaining or building tools, setting up infrastructure) is not a threat to "
     "this asset.\n"
 )
 
-#: Owner decision 2026-10-12 (G209): what a threat needs that nothing recorded mentions is listed, and code
+#: what a threat needs that nothing recorded mentions is listed, and code
 #: refuses the threat when the list is not empty, whatever "relevant" says.
 _NEEDS_RULE = (
     '"needs" lists every component, device or technology the threat requires that no recorded fact of the '
@@ -93,6 +93,23 @@ _LIBRARY_GAP_RULE = (
 )
 
 
+#: G229 (owner 2026-10-13): the gate that judges a threat also names its attacker, so no AI call is added;
+#: code checks the name against the slot's own list and balances equally suitable attackers across the run.
+_ATTACKER_RULE = (
+    'ATTACKER: for a relevant threat, "attacker" is the ONE name from that slot\'s own "attackers" list who '
+    "could most plausibly carry it out against this asset, judged on what the threat needs: the access (a "
+    "legitimate account, a trusted vendor or support connection, physical presence, or only a network path), "
+    "the skill and resources, and a motive this asset's sector and critical service would attract. Judge "
+    "each slot on its own facts: never default to the first name, a well-known attacker, or one chosen for "
+    "another slot; give two slots the same attacker only when it is the most plausible for each. Copy the "
+    "name exactly; never invent, merge or rename an attacker, and never attribute the threat to a named "
+    'group. "attacker_reason" is ONE sentence giving that access, skill and motive. "suitability" rates '
+    "each listed attacker who could plausibly carry it out as HIGH or MEDIUM (one left out is LOW), for "
+    'example {"<a listed name>": "HIGH"}. If no listed attacker plausibly could, "attacker" is null with its '
+    'reason. A rejected threat has "attacker": null.\n'
+)
+
+
 def _category_line(category: StrideCategory) -> str:
     return f"STRIDE category: {category} ({STRIDE_DEFINITIONS[category]}).\n"
 
@@ -113,7 +130,7 @@ def relevance_gate_prompt(
         "landscape, in the asset's sector, sub-sector and critical service. It applies only if it "
         "can affect the asset itself or at least one listed system, is technically plausible for "
         "the technology and interfaces described, an attacker could plausibly carry it out, and "
-        "it belongs to this category. Do not change the candidate's category, type, threat or actor.\n"
+        "it belongs to this category. Do not change the candidate's category, type or threat.\n"
         + _PREPARATION_RULE
         + _ATOMIC_CANDIDATE_RULE
         + _UNKNOWN_FACTS_RULE
@@ -124,10 +141,12 @@ def relevance_gate_prompt(
         + _REASON_RULE
         + 'Return {"verdicts": [{"slot": "R1", "relevant": true, "systems": ["SYS1"], '
         '"reason": "one sentence naming the systems and any assumption", "impact": "HIGH", '
-        '"confidence": 80, "needs": []}, ...]} with exactly one verdict per slot. "systems" lists exactly '
+        '"confidence": 80, "needs": [], "attacker": "a listed name", "attacker_reason": "one sentence", '
+        '"suitability": {}}, ...]} with exactly one verdict per slot. "systems" lists exactly '
         "the systems the threat involves, by alias ([] means the asset itself); impact is HIGH, "
         "MEDIUM or LOW for the business, for a relevant threat; confidence is an integer 0-100. "
         + _NEEDS_RULE
+        + _ATTACKER_RULE
     )
     return _with_items(landscape, rules, "CANDIDATES", slots)
 
@@ -148,22 +167,6 @@ def best_threat_prompt(
         "best candidates by slot, best first (fewer when fewer are given), each slot once."
     )
     return _with_items(landscape, rules, "CANDIDATES", slots)
-
-
-def same_scenario_prompt(landscape: str, category: StrideCategory, slots: list[dict[str, Any]]) -> ChatPrompt:
-    """Which scenarios of one kind of attack are ONE scenario for the asset, differing only in the system the
-    attacker uses (G213, owner 2026-10-12): merged, so the same story is never written once per system."""
-    rules = (
-        _category_line(category)
-        + f"These scenarios are all {category} attacks on the asset. Which of them are the SAME scenario for "
-        "this asset: the same attacker action leading to the same harm to the asset and its critical "
-        "service, differing only in which supporting system the attacker uses? A different action, or a "
-        "different harm, is a different scenario; if in doubt, keep them separate.\n"
-        + _ORGANISATION_RULE
-        + 'Return {"same": [{"paths": ["P1", "P3"], "reason": "one sentence naming the systems by name"}]} '
-        'listing only groups of 2 or more; {"same": []} if every scenario is different.'
-    )
-    return _with_items(landscape, rules, "SCENARIOS", slots)
 
 
 def gap_fill_prompt(
@@ -213,24 +216,5 @@ def same_attack_prompt(landscape: str, slots: list[dict[str, Any]]) -> ChatPromp
         "ONLY groups of 2 or more threats that are the same attack, each threat in at most one "
         'group; every other threat stays as it is. Return {"same": []} if every threat is a '
         "different attack."
-    )
-    return _with_items(landscape, rules, "THREATS", slots)
-
-
-def attacker_fit_prompt(landscape: str, slots: list[dict[str, Any]]) -> ChatPrompt:
-    """Which of a closest-match threat's nearest library attackers could carry it out: only those names, never
-    an invented one, and null when none fits."""
-    rules = (
-        "Each threat below applies to this landscape, but the library links no attacker to its "
-        "threat type, so the attackers listed with it are the library's nearest by wording, not "
-        "by judgement. For EVERY slot pick the ONE listed attacker who could most plausibly carry "
-        "out that threat against this asset, in its sector, sub-sector and critical service -- "
-        "or null when none of the listed attackers plausibly could. Choose only from that slot's "
-        "own list and copy the name exactly; never invent, merge or rename an attacker.\n"
-        + _UNKNOWN_FACTS_RULE
-        + "Each reason is ONE sentence saying why that attacker fits or why none does, naming "
-        "systems by NAME as written in the landscape, never by alias.\n"
-        'Return {"choices": [{"slot": "A1", "attacker": "a name from the list, or null", '
-        '"reason": "one sentence"}, ...]} with exactly one choice per slot.'
     )
     return _with_items(landscape, rules, "THREATS", slots)

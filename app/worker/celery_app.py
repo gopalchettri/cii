@@ -15,7 +15,17 @@ from celery import Celery
 from kombu.exceptions import OperationalError as BrokerUnavailable
 
 from app.core.config import get_settings
-from app.core.constants import Cache, Controls, Lease, LogEvent, Queue, TaskName, Timeouts, Worker
+from app.core.constants import (
+    Cache,
+    Controls,
+    IntelLimits,
+    Lease,
+    LogEvent,
+    Queue,
+    TaskName,
+    Timeouts,
+    Worker,
+)
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, JobFailed
 
 log = structlog.get_logger(__name__)
@@ -30,6 +40,10 @@ TASK_MODULES = [
     "app.worker.tasks.writing",
     "app.worker.tasks.controls",
     "app.worker.tasks.remediation",
+    "app.worker.external_intelligence.refresh_task",
+    # Installs the run-time switch and the source refresher in the worker (the worker layer imports no
+    # service).
+    "app.services.external_intelligence.worker_runtime",
 ]
 
 celery_app = Celery("tsg", broker=settings.redis_celery_broker_url, include=TASK_MODULES)
@@ -42,6 +56,7 @@ celery_app.conf.update(
         TaskName.REAP: {"queue": Queue.MAINTENANCE},
         TaskName.RETRY_CONTROLS: {"queue": Queue.MAINTENANCE},
         TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
+        TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
     },
     task_default_queue=Queue.MAINTENANCE,
     task_serializer="json",
@@ -89,6 +104,18 @@ celery_app.conf.update(
             "schedule": Cache.LIBRARY_INDEXES_EVERY_SECONDS,
             "options": {"expires": Cache.LIBRARY_INDEXES_EVERY_SECONDS},
         },
+        # Only while the master switch is on: with it off no check is ever queued (as before the feature).
+        **(
+            {
+                TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {
+                    "task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+                    "schedule": IntelLimits.CHECK_EVERY_SECONDS,
+                    "options": {"expires": IntelLimits.CHECK_EVERY_SECONDS},
+                }
+            }
+            if settings.external_intelligence_enabled
+            else {}
+        ),
     },
     timezone="UTC",
 )

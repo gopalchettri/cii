@@ -1,0 +1,85 @@
+"""The active-snapshot pointer: one read, atomic, and never moved to an older build."""
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.core.constants import Collection, SnapshotState
+from app.core.database import get_mongodb
+from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
+
+T0 = datetime(2026, 10, 12, 8, tzinfo=UTC)
+
+
+@pytest.fixture
+def snapshots() -> SnapshotPointerStore:
+    db = get_mongodb()
+    db[Collection.EXTERNAL_INTELLIGENCE_SNAPSHOTS].delete_many({})
+    store = SnapshotPointerStore(db)
+    store.ensure_indexes()
+    return store
+
+
+def _describe(store: SnapshotPointerStore, name: str, built_at: datetime) -> None:
+    store.save_snapshot_description(
+        {
+            "snapshot_id": name,
+            "built_at": built_at,
+            "source_versions": {"cisa_kev": "1"},
+            "checksum": f"sum-{name}",
+            "state": SnapshotState.BUILDING,
+        }
+    )
+
+
+def _states() -> dict[str, str]:
+    return {d["_id"]: d["state"] for d in get_mongodb()[Collection.EXTERNAL_INTELLIGENCE_SNAPSHOTS].find({})}
+
+
+def test_nothing_is_active_until_a_snapshot_is_activated(snapshots: SnapshotPointerStore) -> None:
+    assert snapshots.read_active_snapshot() is None
+    _describe(snapshots, "s1", T0)
+    assert snapshots.read_active_snapshot() is None
+    assert snapshots.activate_snapshot("missing") is False
+
+
+def test_the_pointer_carries_the_whole_description_in_one_read(snapshots: SnapshotPointerStore) -> None:
+    _describe(snapshots, "s1", T0)
+    assert snapshots.activate_snapshot("s1") is True
+    active = snapshots.read_active_snapshot()
+    assert (active["snapshot_id"], active["checksum"]) == ("s1", "sum-s1")
+    assert active["source_versions"] == {"cisa_kev": "1"} and active["built_at"] == T0
+    assert active["state"] == SnapshotState.ACTIVE and "_id" not in active
+
+
+def test_a_newer_snapshot_replaces_it_and_the_older_one_is_superseded(
+    snapshots: SnapshotPointerStore,
+) -> None:
+    _describe(snapshots, "s1", T0)
+    _describe(snapshots, "s2", T0 + timedelta(hours=1))
+    assert snapshots.activate_snapshot("s1") and snapshots.activate_snapshot("s2")
+    assert snapshots.read_active_snapshot()["snapshot_id"] == "s2"
+    assert (_states()["s1"], _states()["s2"]) == (SnapshotState.SUPERSEDED, SnapshotState.ACTIVE)
+
+
+def test_the_pointer_never_moves_back_to_an_older_build(snapshots: SnapshotPointerStore) -> None:
+    _describe(snapshots, "new", T0 + timedelta(hours=2))
+    _describe(snapshots, "old", T0)
+    assert snapshots.activate_snapshot("new") is True
+    assert snapshots.activate_snapshot("old") is False
+    assert snapshots.activate_snapshot("new") is False  # not newer than itself either
+    assert snapshots.read_active_snapshot()["snapshot_id"] == "new"
+    assert _states()["old"] == SnapshotState.BUILDING
+
+
+def test_builders_racing_leave_the_newest_active(snapshots: SnapshotPointerStore) -> None:
+    for n in range(12):
+        _describe(snapshots, f"s{n}", T0 + timedelta(minutes=n))
+
+    def activate(n: int) -> bool:
+        return SnapshotPointerStore(get_mongodb()).activate_snapshot(f"s{n}")
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        list(pool.map(activate, range(12)))
+    assert snapshots.read_active_snapshot()["snapshot_id"] == "s11"

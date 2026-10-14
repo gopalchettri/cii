@@ -32,6 +32,19 @@ os.environ["INITIAL_SET_SIZE"] = os.environ["NEXT_SET_SIZE"] = "6"
 os.environ.update(
     CONTROL_SIMILARITY_THRESHOLD="60", THREAT_SIMILARITY_THRESHOLD="75", ACTOR_SIMILARITY_THRESHOLD="0"
 )
+# Control selection at its defaults (G225); the word limits wide open (G226): a test's short sample draft is
+# about its own rule, never its length. The length rule's tests set their own limits (test_word_limits.py).
+os.environ.update(
+    CONTROL_CANDIDATES="40",
+    MIN_CONTROLS="1",
+    MAX_CONTROLS="10",
+    THREAT_SCENARIO_WORD_LIMIT="1-100000",
+    RISK_STATEMENT_WORD_LIMIT="1-100000",
+)
+# External intelligence OFF for the whole suite, whatever the developer's .env says: the app's own tests then
+# exercise the original path. A test of the ON path asks for the `intel` fixture
+# (tests/external_intelligence/conftest.py).
+os.environ["EXTERNAL_INTELLIGENCE_ENABLED"] = "false"
 
 from app.core.config import Settings  # noqa: E402  # reads .env only; builds no client
 
@@ -62,7 +75,9 @@ from sqlalchemy import Engine  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_mongodb  # noqa: E402
+from app.data_access.indexes import ensure_indexes  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.worker.jobs import JOB_COLLECTIONS  # noqa: E402
 from tests.sql_test_database import build_sql_test_database  # noqa: E402
 
 ADMIN = {"X-Admin-Key": "test-admin-key"}
@@ -76,12 +91,15 @@ for _name in ("asset_properties_required", "system_properties_required"):
 @pytest.fixture(scope="session", autouse=True)
 def empty_test_database() -> Iterator[None]:
     """Every run starts from an empty test database. Before, it was dropped only after a run that used
-    `client`, so a partial run (-k) left records that a later run's reaper test then found and re-sent."""
+    `client`, so a partial run (-k) left records that a later run's reaper test then found and re-sent. Its
+    indexes are made first, as at start-up: a rule an index enforces (one title per run) holds in every test,
+    never only after the test that happened to make them."""
     database = get_mongodb()
     assert database.name == TEST_DATABASE  # never the developer's own data
     run = f"{CHECKOUT}:{os.getpid()}"
     _claim_test_redis_databases(run)  # empties them too: messages no worker took, made-up workers' heartbeats
     database.client.drop_database(TEST_DATABASE)
+    ensure_indexes(JOB_COLLECTIONS)
     yield
     database.client.drop_database(TEST_DATABASE)
     _release_test_redis_databases(run)

@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+from app.ai import reranks_in_background
 from app.ai.common import call_timeout
 from app.core.constants import (
     Collection,
@@ -44,9 +45,11 @@ class _Mapper:
 
     def __init__(self, seconds: float = 0.0, error: Exception | None = None) -> None:
         self.seconds, self.error, self.calls = seconds, error, 0
+        self.in_background: list[bool] = []  # G222: a plan request's mapping is foreground work
 
     def map_controls(self, scenario: dict[str, Any], context: Any, snapshot: Any) -> ControlMapping:
         self.calls += 1
+        self.in_background.append(reranks_in_background())
         time.sleep(self.seconds)
         if self.error is not None:
             raise self.error
@@ -88,7 +91,9 @@ def _set_controls(world: dict[str, Any], **fields: Any) -> None:
 
 
 def test_unmapped_controls_are_mapped_in_the_request(world: dict[str, Any]) -> None:
-    items = _top_up(_Mapper()).map_now(world["scenario_id"])
+    mapper = _Mapper()
+    items = _top_up(mapper).map_now(world["scenario_id"])
+    assert mapper.in_background == [False]  # G222: someone waits for it: never behind a waiting scenario
     assert [item["code"] for item in items] == ["CII-CID-1"]
     controls = _controls(world)
     assert (controls["status"], controls["attempts"], controls["lease_until"]) == (Status.DONE, 1, None)

@@ -7,6 +7,7 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Forbidden, NotFound
 from app.core.singletons import singleton
 from app.data_access.scenarios import Page, ScenarioRepository
+from app.data_access.sessions import find_run_coverage
 from app.models.api_clients import Principal
 from app.models.run_board import build_board
 from app.models.scenario_views import RunResults, ScenarioList, ScenarioView
@@ -18,12 +19,18 @@ class ScenarioQueries:
         self._scenarios = scenarios
 
     def run_results(self, run: SessionStatus, include_replaced: bool, offset: int, limit: int) -> RunResults:
-        """The run, its progress, then its current versions (include_replaced: every version), oldest
-        first."""
+        """The run, its progress, its coverage (worked out from its plan: one small read, G228), then its
+        current versions (include_replaced: every version), oldest first."""
         page = self._as_list(self._scenarios.list_for_run(run.session_id, include_replaced, offset, limit))
         board = build_board(run)
         header = board.model_dump(include={"session_id", "entity_id", "asset_id", "asset_name", "user_id"})
-        return RunResults(**header, progress=board.progress, scenarios=page.scenarios, total=page.total)
+        return RunResults(
+            **header,
+            progress=board.progress,
+            coverage=find_run_coverage(run.session_id),
+            scenarios=page.scenarios,
+            total=page.total,
+        )
 
     def one_scenario(self, session_id: str, scenario_id: str) -> ScenarioView:
         record = self._scenarios.find_in_run(session_id, scenario_id)

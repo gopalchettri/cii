@@ -34,7 +34,8 @@ SINGLE_SELECT_CODES: Final = {
     "dr_drill_frequency": "dr-drill",
     "managed_by": "managed-by",
 }
-#: Coded columns that hold a JSON array of saved option values, e.g. "[6, 9]".
+#: Coded columns that hold a JSON array of saved option values, e.g. "[6, 9]", or the names the procedure
+#: already made of them, e.g. "Historian, Windows" (the owner's procedure does, G217).
 MULTI_SELECT_CODES: Final = {
     "technology_used": "technology-used",
     "database_platforms": "database-platforms",
@@ -165,8 +166,15 @@ def _unanswered(raw: int | None) -> bool:
     return raw is None or raw == 0
 
 
-def _single(raw: int | None, code: str, options: dict[str, dict[int, str]]) -> str | None:
-    """The option's name; None when unanswered, or when the code is unknown (logged: seed data, not a gap)."""
+def _single(raw: int | str | None, code: str, options: dict[str, dict[int, str]]) -> str | None:
+    """The option's name: its saved value named through PART 5, or the name the procedure already gave (a
+    text that is not a number, G217); None when unanswered, or when a saved value is unknown (logged: seed
+    data, not a gap)."""
+    if isinstance(raw, str):
+        number = _whole(raw)
+        if number is None:  # the name the procedure already gave
+            return display_name(raw) or None
+        raw = number
     if raw is None or _unanswered(raw):
         return None
     name = options.get(code, {}).get(raw)
@@ -177,11 +185,15 @@ def _single(raw: int | None, code: str, options: dict[str, dict[int, str]]) -> s
 
 def _multi(raw: str | None, code: str, options: dict[str, dict[int, str]]) -> list[str] | None:
     """Names of a JSON array of saved values; an item that is not a known whole number is dropped alone, as
-    the platform's TRY_CAST does (a raw number would read as a fact); bad JSON = none."""
+    the platform's TRY_CAST does (a raw number would read as a fact); bad JSON = none. A text that is not a
+    JSON array is the names the procedure already made ("Historian, Windows": STRING_AGG, G217): kept."""
+    text = (raw or "").strip()
     try:
-        items = json.loads(raw) if raw else []
+        items = json.loads(text) if text else []
     except ValueError:
-        items = []
+        if text.startswith("["):  # a broken array: none
+            return None
+        return [name for name in (part.strip() for part in text.split(",")) if name] or None
     known = options.get(code, {})
     values = map(_whole, items if isinstance(items, list) else [])
     names = [known[value] for value in values if value in known]

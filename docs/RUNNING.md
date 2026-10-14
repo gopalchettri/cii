@@ -177,7 +177,13 @@ git-ignored: **secrets never go into the repository**.
 | `NEXT_SET_SIZE` | the owner's name. How many more scenarios each "next set" request writes. A batch for reviewing, not a limit: the total still comes from `TOTAL_SCENARIO_COUNT` (for example 18 → 6, then 6, then 6). A whole number, 1 or more | `6` |
 | `ASSET_PROPERTIES_REQUIRED` | the owner's name. Asset facts that must be recorded before a run can start: column names of `tsg_GetAssetContext`, comma-separated (for example `location,operating_system`); a start without one is refused with 422 `required_facts_missing`, naming what is missing. Empty = none | *(empty)* |
 | `SYSTEM_PROPERTIES_REQUIRED` | the same as `ASSET_PROPERTIES_REQUIRED`, for every supporting system sent (for example `technology_used`) | *(empty)* |
-| `CONTROL_SIMILARITY_THRESHOLD` | the owner's name. 0–100: a control is kept for a scenario when the reranker scores it this high or higher; if none does, the single nearest is kept, with a warning. Higher = fewer, closer controls; lower = more | `60` |
+| `CONTROL_SIMILARITY_THRESHOLD` | the owner's name. 0–100: a control is kept for a scenario as "strong" when the reranker scores it this high or higher (50 = the owner's 0.50; writing 0.5 stops start-up). Higher = fewer, closer controls; lower = more | `50` |
+| `CONTROL_CANDIDATES` | G227: library controls found and scored for one scenario; at least `MAX_CONTROLS`. Fewer = faster mapping on a laptop CPU reranker | `40` |
+| `EVIDENCE_SEARCH_RETRIES` | G229: with external intelligence on, how many more searches (other words, no AI) a threat gets when the first found no usable source; still none → that scenario fails with its reason and a reserve may take its place. 0 to 2 | `1` |
+| `THREAT_CONTEXT_COUNTRY` | G232: the country the assets are in, "UAE" or "United Arab Emirates". With external intelligence on, the real attacker groups on a card are ranked (attacked this country, then its region, then your sector) and each source is labelled this country / regional / global | `United Arab Emirates` |
+| `NEAR_COPY_TEXT_SIMILARITY` / `NEAR_COPY_PART_SIMILARITY` | G229: how alike (0-100) a new scenario's text and its parts (mechanism, consequence) must be to a finished one of the same run to count as a near copy; a copy is hidden and replaced. Higher = fewer flagged | `30` / `50` |
+| `MIN_CONTROLS` / `MAX_CONTROLS` | G225: a scenario's controls, at least / at most | `1` / `10` |
+| `THREAT_SCENARIO_WORD_LIMIT` / `RISK_STATEMENT_WORD_LIMIT` | G226: min-max words, both writers | `300-400` / `150-200` |
 | `THREAT_SIMILARITY_THRESHOLD` | the owner's name. 0–100: an AI-proposed threat this similar to a library threat IS that threat (dropped as a repeat), and takes a library type this similar. Higher = more AI threats stay new proposals; lower = more are matched to the library | `75` |
 | `ACTOR_SIMILARITY_THRESHOLD` | the owner's name. 0–100: when a threat's type links no attacker, only attackers scored this high or higher are offered; `0` = no filter. If none reaches it, the closest still acts, flagged. Linked attackers are never filtered | `0` |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana's admin password, needed only to change Grafana (looking needs no login). No `CII_` prefix: the monitoring scripts read it, not the app. Optional on a laptop: empty or no line = a random one. UAT (`.env.uat`): needed to deploy monitoring, 16 or more characters | a password you choose |
@@ -554,6 +560,29 @@ Still working → 409 `cancel_first`: cancel it, then delete. Both are written t
 
 ---
 
+## External intelligence: runbook (Built 2026-10-12)
+
+Dev has it on (`EXTERNAL_INTELLIGENCE_ENABLED=true` in `.env`; the code default is OFF, so an environment that forgets the line stays the original TSG); UAT has it on too since 2026-10-13 (owner), with the provisional, not calibrated cut-off 50 (`docs/EXTERNAL_INTELLIGENCE.md`, section 6).
+
+- **First refresh.** Set `EXTERNAL_INTELLIGENCE_ENABLED=true`, restart API and worker, then (admin key)
+  `POST /v1/tsg/intel/refresh`, read `GET /v1/tsg/intel/refresh/{job_id}` until `done`, then
+  `GET /v1/tsg/intel/health` until `snapshot_id` is set. After that the sources refresh hourly when due.
+- **Switch.** `GET /v1/tsg/intel/switch`; `PUT /v1/tsg/intel/switch` with `{"enabled": false}` turns the feature off at once
+  (the next batch is written by the original writer); `true` turns it on again and queues a refresh. Off does not delete data.
+- **Health.** `GET /v1/tsg/intel/health`: each source's status and last error, the snapshot, `stale`, and the
+  `evidence` block (reranker name, threshold, `threshold_calibrated`). `threshold_calibrated: false` means the threshold was not
+  calibrated on that reranker: run `scripts\calibrate_evidence_threshold.py` first.
+- **Revoke a source.** When Legal withdraws a source an admin calls `POST /v1/tsg/intel/sources/{source}/revoke`: audited
+  first, then the source is unapproved and its records and vectors are purged; the next snapshot no longer holds it. With
+  the master switch OFF it only deletes what exists. Evidence already written onto scenarios and plans is NOT removed:
+  delete or regenerate those if Legal requires it. `POST /v1/tsg/intel/sources/{source}/approve` brings the source back
+  (master switch ON only) and queues its refresh.
+- **A feed that looks cut short.** A source that suddenly delivers under half of its records shows `failed` ("looks cut
+  short") and keeps its data. If the drop is real, revoke and approve the source again to reload it. A worker that lost its
+  claim logs `external_intelligence.claim_lost` and stops writing; the next hourly check retries.
+- **Enabling in UAT.** 1) calibrate 2) set `EXTERNAL_INTELLIGENCE_ENABLED=true` (or the switch) 3) `POST /v1/tsg/intel/refresh`
+  4) check `GET /v1/tsg/intel/health`.
+
 ## 11. Run the tests and code checks
 
 The tests use the **real** local MongoDB, Redis and SQL Server, so steps 3, 6 and 7 must be done. They never touch
@@ -576,11 +605,11 @@ hanging. The worker does not need to be running.
 .venv\Scripts\python -m pytest -q
 python -m ruff check app tests scripts
 python -m ruff format --check app tests scripts
-python -m mypy app
+python -m mypy app scripts
 ```
 
 `.venv\Scripts\python` is the project's Python 3.12, which has pytest; with the environment active (step 4),
-`python` is the same program. All four must be clean before you commit (today: 753 tests). Three monitoring checks (`promtool`) run only once the
+`python` is the same program. All four must be clean before you commit (today: 1649 tests). Three monitoring checks (`promtool`) run only once the
 monitoring tools are installed (step 13); until then pytest reports them as skipped.
 
 ---
@@ -803,7 +832,7 @@ Before v2 first runs in UAT:
   database at the same time; v2 takes databases 0 and 1 once v1 is stopped. Scale **every** v1 pod down before v2's
   workers start: in namespace `ai-threatgen` the api, both workers, beat and flower; in namespace `ai-remediation`
   its 2 worker pods (all of them read broker database 1). (v1 will be removed.)
-- **The DBA installs the procedures.** All of `scripts/sql/*.sql` (`tsg_GetAssetContext`, `tsg_GetControlLibrary`,
+- **The DBA installs the procedures.** Every procedure file `scripts/sql/tsg_<Name>.sql` (a copy beside them, such as `tsg_GetAssetContext copy.sql`, is a backup and is never installed) (`tsg_GetAssetContext`, `tsg_GetControlLibrary`,
   `tsg_GetLibraryStamp`, `tsg_GetThreatLibrary`) go into `EYShieldDB_Copy` before v2 runs. `Control_Library` there
   must have the column `AssetType` (renamed from `ITOT` by the owner, 2026-10-09), or `tsg_GetControlLibrary` fails
   with "Invalid column name 'AssetType'". `tsg_GetControlLibrary` changed on 2026-10-11 (a second result set,

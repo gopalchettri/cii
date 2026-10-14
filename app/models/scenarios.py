@@ -80,7 +80,8 @@ class SessionStatus(BaseModel):
     not_assessed: list[str] = Field(default_factory=list)  # categories the plan could not assess
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it (G214)
 
-    #: The session fields this body reads: never the plan's threats and paths, nor the context's facts.
+    #: The session fields this body reads: never the plan's threats and paths, nor the context's facts. Read
+    #: on every run check and live update, so it stays small: the coverage is the results' own read (G228).
     RECORD_FIELDS: ClassVar[dict[str, int]] = {
         "entity_id": 1,
         "asset_id": 1,

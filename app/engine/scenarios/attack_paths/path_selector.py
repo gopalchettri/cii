@@ -1,7 +1,6 @@
-"""Attack-path selection: one path per kind of attack on each system (path_grouping.py, owner 2026-10-12;
-the AI never joins threats into chains), paths that are one attack through several systems merged into one
-(same_scenario.py, G213), every path ranked (path_ranking.py), TOTAL_SCENARIO_COUNT applied, and the plan the
-run freezes."""
+"""Attack-path selection: one path per kind of attack per route of systems, at asset level
+(path_grouping.py, owner 2026-10-13, G216; the AI never joins threats into chains), every path ranked
+(path_ranking.py), TOTAL_SCENARIO_COUNT applied, and the plan the run freezes."""
 
 from collections import Counter
 from typing import Any
@@ -12,9 +11,8 @@ from app.core.constants import GapFillOutcome, UnselectedReason
 from app.core.singletons import singleton
 from app.core.tracing import record_detail, step_detail_enabled, traced
 from app.engine.scenarios.attack_paths.best_threat import BestThreatPicker
-from app.engine.scenarios.attack_paths.path_grouping import group_by_attack_and_system
+from app.engine.scenarios.attack_paths.path_grouping import group_by_attack
 from app.engine.scenarios.attack_paths.path_ranking import rank_paths
-from app.engine.scenarios.attack_paths.same_scenario import SameScenarioCheck
 from app.engine.scenarios.finding.threat_prompts import PLANNER_PROMPT_VERSION
 from app.models.threats import AttackPath, FoldedThreat, ThreatFindings
 
@@ -40,24 +38,21 @@ def select_up_to_target(paths: list[dict[str, Any]], max_scenarios: int) -> list
 
 
 class AttackPathSelector:
-    def __init__(
-        self,
-        target: int,
-        picker: BestThreatPicker | None = None,
-        same_scenarios: SameScenarioCheck | None = None,
-    ) -> None:
+    def __init__(self, target: int, picker: BestThreatPicker | None = None) -> None:
         """`target`: TOTAL_SCENARIO_COUNT (0 = no cap). `picker`: chooses each path's threat by meaning
         (G209); None = the strongest by impact and confidence, with no AI call (the same threats, the same
-        plan). `same_scenarios`: merges paths that are one attack through several systems (G213); None =
-        none merged."""
-        self._target, self._picker, self._same_scenarios = target, picker, same_scenarios
+        plan)."""
+        self._target, self._picker = target, picker
 
     @traced("paths.plan")
     def build_plan(self, findings: ThreatFindings) -> dict[str, Any]:
-        """The plan: every threat once, one path per kind of attack on each system (its other threats
+        """The plan: every threat once, one path per kind of attack per route (its other threats
         kept with it), ranked and selected or not, the categories' records and every note. The worker stamps
         it frozen and saves it with the hand-over."""
-        grouped, notes, merges = self._scenarios(findings)
+        preferred, notes = (
+            self._picker.pick(findings.threats, findings.landscape) if self._picker else ({}, [])
+        )
+        grouped = group_by_attack(findings.threats, preferred)
         paths = [path for path, _ in grouped]
         also_applies = {path.path_id: others for path, others in grouped}
         ranked = [
@@ -86,25 +81,7 @@ class AttackPathSelector:
             "no_valid_threat": [a.category for a in uncovered if a.gap_fill != GapFillOutcome.NOT_ASSESSED],
             "categories": [audit.to_record() for audit in findings.audits],
             "folded": [_folded_record(fold) for fold in findings.folded],
-            "merged": merges,  # G213: each scenario merged from one attack through several systems, and why
         }
-
-    def _scenarios(
-        self, findings: ThreatFindings
-    ) -> tuple[list[tuple[AttackPath, list[str]]], list[str], list[dict[str, Any]]]:
-        """(each scenario's path and its other threats' names, the notes, the merges): one per kind of attack
-        on each system around its best threat (G208, G209), those that are one attack through several systems
-        merged (G213)."""
-        preferred, notes = (
-            self._picker.pick(findings.threats, findings.landscape) if self._picker else ({}, [])
-        )
-        grouped = group_by_attack_and_system(findings.threats, preferred)
-        if not self._same_scenarios:
-            return grouped, notes, []
-        grouped, merge_notes, merges = self._same_scenarios.merge(
-            grouped, findings.threats, findings.landscape
-        )
-        return grouped, [*notes, *merge_notes], merges
 
 
 def _trace_selection(paths: list[dict[str, Any]], target: int) -> None:
@@ -157,6 +134,4 @@ def _folded_record(fold: FoldedThreat) -> dict[str, Any]:
 @singleton
 def get_attack_path_selector() -> AttackPathSelector:
     chat = get_chat_model()
-    return AttackPathSelector(
-        get_settings().total_scenario_count, BestThreatPicker(chat), SameScenarioCheck(chat)
-    )
+    return AttackPathSelector(get_settings().total_scenario_count, BestThreatPicker(chat))

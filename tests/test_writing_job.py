@@ -21,6 +21,7 @@ from app.core.constants import (
     ScenarioStatus,
     Status,
     TaskName,
+    UnselectedReason,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
@@ -45,10 +46,11 @@ def _sessions() -> Any:
 
 
 def _queued_run(
-    threat_names: list[str], systems: tuple[int, ...] = (321,), first_set: int | None = None
+    threat_names: list[str], systems: tuple[int, ...] = (321,), first_set: int | None = None, limit: int = 0
 ) -> str:
-    """A run planned with one path per threat, every path selected; its set (job.set) is every path, or the
-    first `first_set` (INITIAL_SET_SIZE), and its batch that set's first six."""
+    """A run planned with one path per threat, every path selected, or with a `limit` (TOTAL_SCENARIO_COUNT)
+    the first `limit` (the rest kept as reserves, target_reached); its set (job.set) is every selected path,
+    or the first `first_set` (INITIAL_SET_SIZE), and its batch that set's first six."""
     record_id = uuid.uuid4().hex
     threats = [
         planned(f"lib:{number}", name, systems=systems, actors=_ACTORS, reason="It applies.").to_record()
@@ -58,7 +60,8 @@ def _queued_run(
         {
             "path_id": f"p{rank}",
             "rank": rank,
-            "selected": True,
+            "selected": not limit or rank <= limit,
+            "unselected_reason": None if not limit or rank <= limit else UnselectedReason.TARGET_REACHED,
             "served": None,
             "attempts": 0,
             "abandoned": False,
@@ -80,7 +83,13 @@ def _queued_run(
             "status": Status.QUEUED,
             "active": True,
             "context": CONTEXT.to_record(),
-            "plan": {"threats": threats, "paths": paths, "not_assessed": [], "frozen_at": now},
+            "plan": {
+                "threats": threats,
+                "paths": paths,
+                "target": limit,
+                "not_assessed": [],
+                "frozen_at": now,
+            },
             "job": {
                 "task": TaskName.WRITE_SCENARIOS,
                 "epoch": 1,

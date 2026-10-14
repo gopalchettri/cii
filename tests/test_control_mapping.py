@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from pymongo.errors import DuplicateKeyError
 
+from app.ai import reranks_in_background
 from app.core.config import get_settings
 from app.core.constants import (
     Collection,
@@ -150,9 +151,11 @@ class _ScoresByText:
     def __init__(self, scores: dict[str, float]) -> None:
         self.scores = scores
         self.asked: list[tuple[str, list[str]]] = []
+        self.in_background: list[bool] = []  # G222: was each call marked background work?
 
     def score_relevance(self, query: str, documents: list[str]) -> list[float]:
         self.asked.append((query, documents))
+        self.in_background.append(reranks_in_background())
         return [self.scores.get(document.split(":")[0], 0.0) for document in documents]
 
 
@@ -413,6 +416,12 @@ def _deliver(record_id: str, task_id: str) -> int | None:
     return controls_job.RunControls(record_id, task_id, deliveries).map_all()
 
 
+def test_the_control_mapping_job_reranks_as_background_work(mapping_run: dict[str, Any]) -> None:
+    """G222: on the laptop's CPU reranker a waiting scenario goes before the mapping job's reranks."""
+    assert _deliver(mapping_run["record_id"], "task-1") == 2
+    assert mapping_run["rerank"].in_background == [True, True]
+
+
 def _run_record(record_id: str) -> dict[str, Any]:
     return get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})
 
@@ -435,7 +444,10 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     mapped = _controls_of(f"{record_id}-1")
     assert mapped["status"] == Status.DONE and [item["code"] for item in mapped["items"]] == ["C-OT", "C-ANY"]
     # G200: the threshold "exact" meant for this mapping is kept with it.
-    assert set(mapped["made_with"]) == {"rerank_model", "embedding_model", "library", "threshold"}
+    assert set(mapped["made_with"]) == {
+        "rerank_model", "embedding_model", "library", "threshold",
+        "candidates", "min_controls", "max_controls", "query_shortened",
+    }  # fmt: skip
     assert mapped["made_with"]["threshold"] == 60.0 and mapped["query"]
     assert _run_record(record_id)["counts"]["controls_waiting"] == 0
     assert _run_record(record_id)["timings"]["controls_s"] >= 0.04  # the two mappings, added up

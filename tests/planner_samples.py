@@ -108,13 +108,6 @@ def judged(relevant: dict[str, list[str]]) -> Callable[[str], dict[str, Any]]:
     return answer
 
 
-def first_attacker_fits(user_prompt: str) -> dict[str, Any]:
-    slots = items_in(user_prompt, "THREATS")
-    return {
-        "choices": [{"slot": s["slot"], "attacker": s["attackers"][0], "reason": "Fits SYS1."} for s in slots]
-    }
-
-
 def planner_chat(relevant: dict[str, list[str]]) -> FakeChatModel:
     """A chat model answering every planner task: the gate by `relevant`, nothing else found or folded."""
     chat = FakeChatModel()
@@ -122,7 +115,6 @@ def planner_chat(relevant: dict[str, list[str]]) -> FakeChatModel:
         AiTask.RELEVANCE_GATE: judged(relevant),
         AiTask.GAP_FILL: lambda _: GAP_FILL_NONE,
         AiTask.SAME_ATTACK: lambda _: {"same": []},
-        AiTask.ATTACKER_FIT: first_attacker_fits,
     }
     return chat
 

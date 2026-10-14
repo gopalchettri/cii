@@ -363,9 +363,17 @@ categories, systems, impact, confidence, reason). 🔧 No attackers yet.
    - The threat is flagged **closest**, and D6 lets the AI choose among the 3.
 6. **Embeddings down:** library order, marked not ranked; if a threat has no linked attacker, the job retries instead.
 
-**D6. Check "closest" attackers ✅** `AttackerFitCheck.check_attackers`: the AI picks the ONE listed option that could most
-plausibly do it, or null; code accepts only names from that threat's list. Outcomes: `fits` / `chosen` / `none_fits` /
-`not_checked`, each noted.
+**D6. Choose who acts ✅ (G229)** No separate AI call: the relevance gate (D3) already named, for each threat, the ONE
+listed attacker that could most plausibly do it (or null), why, and how suitable each listed one is. `choose_actors`
+keeps that pick, but among attackers rated as suitable as the pick it prefers one acting for fewer threats of the run
+(so one attacker no longer acts everywhere just because it ranks first). Outcomes: `chosen` / `balanced` /
+`none_fits` / `not_checked` / `ranked` (an AI-proposed threat), each kept in `actor_selection` with the reason.
+With external intelligence on, the card also names up to 3 **real groups** behind the attack (G230), from the
+MITRE ATT&CK data: of the actor's kind (a Nation-state card shows state groups), those behind the card's own
+evidence first, then similar ones, then the nearest; an insider's card shows the groups known for the attack.
+Code only, no AI call, never in the story. G232: groups that attacked the UAE (`THREAT_CONTEXT_COUNTRY`) come
+first, then the region, then the asset's sector; each source is labelled UAE, regional or global, and a story may
+say something happened in the UAE only with a UAE source.
 
 **D7. Labels back to names ✅** `replace_codes_with_names`: every "SYS2" in reasons and notes becomes "RTU".
 
@@ -375,27 +383,33 @@ library fingerprint.
 
 ### Stage E: The plan (`AttackPathSelector.build_plan`, `engine/scenarios/attack_paths/`)
 
-**E1. One scenario per distinct attack 🔧G208, G209, G213**
-- **Group (code):** the threats are grouped by their own STRIDE category and each system they involve (or the asset
-  itself); the AI picks each group's best threat by meaning (`best_threat.py`); the group's other threats stay as
-  `also_applies`. At most 6 × (systems + 1) scenarios.
-- **Merge (AI names, code decides):** per kind of attack with two or more scenarios on systems, the AI says which
-  are the same attacker action with the same harm through different systems (`same_scenario.py`); each such group
-  becomes ONE scenario on all its systems, written around the threat judged on the most of them. Example: "Exposure
-  of operational grid data" through SCADA, the RTU and the Historian is one scenario, not three. Each merge and the
-  AI's reason are kept in `plan.merged`; a scenario on the asset itself is never merged.
-- **Path ID:** the first 16 characters of SHA-256 of the threat key and the place (`@system:<id>`, `@systems:<ids>`,
-  `@asset`), so the same threat on the same systems always gets the same ID.
+**E1. One scenario per kind of attack per attack route, on the asset 🔧G209, G216**
+- **Group (code):** each threat goes into every STRIDE category it fits (its own first) and into its **route**: the
+  systems the relevance check judged it on (none = the asset itself). Each group (kind of attack x route) is ONE
+  scenario about the asset, written around the best threat no earlier group took; the AI picks it by meaning
+  (`best_threat.py`, told the route's systems); the group's other threats stay as `also_applies`.
+- **Example (asset 1166, 4 systems, 34 threats):** 3 routes (Command Centre + Incident Response, Traffic Systems +
+  Signal Control, Signal Control alone) gave 15 scenarios covering all 6 kinds, where grouping by kind alone gave 5.
+- **Path ID:** the first 16 characters of SHA-256 of the threat key, the kind and the route, so the same threat on
+  another route, or told as another kind, is another scenario.
+- **On the card:** every supporting system is listed with applicable Yes/No (code, from the route), entry point, and
+  the writer's one-sentence reason (rule 13, G216).
 
-**E2. Rank ✅**
+**E2. Rank 🔧G223**
 - **Code:** `rank_paths` (`path_ranking.py`), a pure function: the same paths always give the same order.
-- **Pass 1 (category coverage):** in STRIDE order, for each uncovered category, the strongest path in it (main
-  category, then higher impact, then higher confidence).
-- **Pass 2 (system coverage, greedy):** repeatedly, the path adding the most systems not yet covered, until none adds
-  anything.
-- **Pass 3:** the rest, by impact, then confidence.
-- **Ties:** library before AI, lowest library ID, then path ID.
-- Each path is labelled `category_coverage`, `path_coverage` or `risk_significance`.
+- **One pick at a time** (recomputed after each pick), the path adding the most that is still missing:
+  1. a HIGH-impact threat not yet covered;
+  2. the most supporting systems not yet covered;
+  3. a kind of attack not yet covered;
+  4. a threat not yet covered.
+- **Ties:** impact, confidence, STRIDE order, then library before AI, lowest library ID, path ID.
+- **Example (run 82f22cc3, limit 15):** the first set of 6 covers all 6 kinds and all 4 systems; before, 4 of the
+  first 6 were on Command Centre + Incident Response and both Repudiation scenarios were cut.
+- **Coverage record:** worked out from the plan each time results are read (never stored, G227), shown as
+  `coverage`: each system and kind with its path ids,
+  scenarios, and why anything has none (no relevant threat, the limit was reached, or its scenarios failed).
+  Only the results read it (G228): the status and the live updates never read the plan's paths.
+- Each path is labelled `path_coverage` (a new system), `category_coverage` (a new kind) or `risk_significance`.
 
 **E3. Count 🔧G106** `select_up_to_target` with `TOTAL_SCENARIO_COUNT` (validated at start-up as a whole number ≥ 0):
 - 0 → all selected;
@@ -504,8 +518,8 @@ plus re-asks.
   - watchers are told.
 - **Example:**
   - **Title:** "Loss of control integrity"
-  - **Scenario:** "An organised criminal group could use a vendor maintenance session to push unauthorised firmware to
-    the RTU. The RTU may accept it as genuine, and its breaker and setpoint commands could no longer be trusted."
+  - **Scenario:** "A vendor maintenance session could give an organised criminal group a way to push unauthorised
+    firmware to the RTU. The RTU may accept it as genuine, and its breaker and setpoint commands could no longer be trusted."
   - **Risk:** "Loss of trusted control logic in the RTU could force manual operation and interrupt the Substation
     Control service."
   - **Assumptions:** "Assumes vendor sessions can update RTU firmware; not recorded in the platform."

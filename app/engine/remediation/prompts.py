@@ -11,7 +11,7 @@ from app.engine.shared.ask_ai import ChatPrompt
 from app.engine.shared.prompt_redaction import drop_database_ids
 
 #: Bumped by hand whenever the prompt below changes; stored on every plan version it writes.
-PLAN_PROMPT_VERSION = "remediation-2026-10-11.1"
+PLAN_PROMPT_VERSION = "remediation-1"
 
 #: Fixed for every plan, so the provider can reuse it.
 PLAN_SYSTEM_PROMPT = (

@@ -1,8 +1,10 @@
 """The SQL test database (BLUEPRINT R-11): built fresh from tests/sql/schema.sql, tests/sql/seed.sql and
-every procedure in scripts/sql/, on the server CII_DB_DSN names but under a database of its own. The write
-procedures are tested here, never in DevTest5, whose library the laptop's TSG (and v1) read."""
+every procedure file in scripts/sql/ (procedure_files), on the server CII_DB_DSN names but under a database
+of its own. The write procedures are tested here, never in DevTest5, whose library the laptop's TSG (and v1)
+read."""
 
 import re
+from pathlib import Path
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import make_url
@@ -12,6 +14,14 @@ from tests.checkout import CHECKOUT, REPO
 
 SQL_TEST_DATABASE = f"cii_tsg_sql_test_{CHECKOUT}"  # one per checkout: never another's
 _BATCH_SEPARATOR = re.compile(r"^\s*GO\s*$", re.IGNORECASE | re.MULTILINE)
+#: A procedure file is tsg_<Name>.sql, the name a plain identifier. Anything else beside it ("tsg_X copy.sql",
+#: kept by the owner as a backup, 2026-10-13) is never installed or granted (G217).
+PROCEDURE_FILE = re.compile(r"tsg_[A-Za-z0-9_]+")
+
+
+def procedure_files(folder: Path = REPO / "scripts" / "sql") -> list[Path]:
+    """The procedure files of `folder`, in name order: tsg_<Name>.sql only, never a backup copy."""
+    return sorted(path for path in folder.glob("tsg_*.sql") if PROCEDURE_FILE.fullmatch(path.stem))
 
 
 def build_sql_test_database() -> Engine:
@@ -32,7 +42,7 @@ def build_sql_test_database() -> Engine:
     scripts = [
         REPO / "tests" / "sql" / "schema.sql",
         REPO / "tests" / "sql" / "seed.sql",
-        *sorted((REPO / "scripts" / "sql").glob("tsg_*.sql")),
+        *procedure_files(),
     ]
     with engine.connect() as connection:
         for script in scripts:

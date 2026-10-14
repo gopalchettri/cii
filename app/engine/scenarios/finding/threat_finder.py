@@ -51,10 +51,8 @@ from app.engine.scenarios.finding.verdict_checks import (
     run_asset_types,
     threats_that_fit,
 )
-from app.engine.scenarios.threat_list.attacker_assignment import (
-    AttackerAssigner,
-    AttackerFitCheck,
-)
+from app.engine.scenarios.threat_list.attacker_assignment import AttackerAssigner, vetted_attackers
+from app.engine.scenarios.threat_list.attacker_choice import unranked_notes
 from app.engine.scenarios.threat_list.duplicate_merge import merge_reworded_threats, merge_same_threats
 from app.engine.scenarios.threat_list.same_attack_check import SameAttackCheck
 from app.engine.shared.names import replace_codes_with_names
@@ -85,14 +83,14 @@ class ThreatFinder:
         self._embeddings = embeddings
 
     @traced("threats.find")
-    def find_threats(self, context: FrozenContext) -> ThreatFindings:
+    def find_threats(self, context: FrozenContext, country: str = "") -> ThreatFindings:
         """Every threat that applies to the asset, one per threat, each with its acting library actor. One
         library snapshot serves the whole run: an edit made meanwhile never mixes two library versions."""
         snapshot = self._search.snapshot()
         library = snapshot.library.threat_library
         if not library.actors:  # never blank (owner, 2026-10-05): refused before any AI call is bought
             raise PlanRefused(ErrorCode.ACTOR_LIBRARY_EMPTY, PlanMessage.ACTOR_LIBRARY_EMPTY)
-        landscape = describe_asset_for_ai(context, self._chat.max_prompt_chars // 2)
+        landscape = describe_asset_for_ai(context, self._chat.max_prompt_chars // 2, country)  # G232
         if landscape.facts_shortened_note:
             log.warning(LogEvent.PLANNER_FACTS_SHORTENED, note=landscape.facts_shortened_note)
         fitting, type_notes = threats_that_fit(library.threats, context)  # G211: AssetType fits the run
@@ -169,7 +167,8 @@ class ThreatFinder:
         with ThreadPoolExecutor(
             ThreatFinding.AI_BATCHES_AT_ONCE, thread_name_prefix="gate-batch"
         ) as gate_pool:
-            gate = RelevanceGate(self._chat, landscape, gate_pool)
+            vetted = sorted(actor.name for actor in vetted_attackers(snapshot.library.threat_library))
+            gate = RelevanceGate(self._chat, landscape, gate_pool, vetted)
             matcher = LibraryMatcher(snapshot, self._rerank, run_asset_types(context))
             gap_filler = GapFiller(
                 self._chat, gate, matcher, landscape, refused_threat_names(snapshot.library.threat_library)
@@ -211,8 +210,8 @@ class ThreatFinder:
         )
         # A fold unites systems: each library threat keeps only those its AssetType fits (G211 review).
         threats = keep_on_matching_systems(threats, snapshot.library.threat_library.threats, context)
-        threats = AttackerAssigner(snapshot, self._rerank).assign_attackers(threats, landscape.sector)
-        threats, attacker_notes = AttackerFitCheck(self._chat, landscape).check_attackers(threats)
+        threats = AttackerAssigner(snapshot, self._rerank).assign_attackers(threats, landscape.sector, True)
+        attacker_notes = unranked_notes(threats)  # G229: the gate named the attacker, no AI call of its own
         return (
             [_named_threat(threat, landscape) for threat in threats],
             folded,
@@ -258,13 +257,17 @@ def _library_data_notes(library: ThreatLibrary) -> list[str]:
 
 
 def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
-    """T8: a reason names systems as a reviewer reads them; an AI threat's own names too."""
+    """T8: a reason (the attacker's too) names systems as a reviewer reads them; an AI threat's names too."""
     names = landscape.system_names
-    if threat.from_library:
-        return dataclasses.replace(threat, reason=replace_codes_with_names(threat.reason, names))
-    return dataclasses.replace(
+    threat = dataclasses.replace(
         threat,
         reason=replace_codes_with_names(threat.reason, names),
+        attacker_check_reason=replace_codes_with_names(threat.attacker_check_reason, names),  # G229
+    )
+    if threat.from_library:
+        return threat
+    return dataclasses.replace(
+        threat,
         name=replace_codes_with_names(threat.name, names),
         type_name=replace_codes_with_names(threat.type_name, names),
     )

@@ -8,9 +8,10 @@ Advisory numbers (CVE ...) are left in the text: the rules block a scenario that
 import re
 from collections.abc import Iterable
 
+from app.core.constants import Writing
 from app.core.tracing import record_detail, step_detail_enabled, traced
 from app.engine.scenarios.writing.writing_prompts import brief_text
-from app.engine.shared.names import TECHNIQUE_CODE, find_name_mentions, name_variants
+from app.engine.shared.names import TECHNIQUE_CODE, find_name_mentions, name_variants, shorten_text
 from app.models.writing import ScenarioDraft, WriterBrief
 
 #: A framework or library code by its shape: capitals next to digits ("T0839", "CVE-2024-1234", "CIP-007"),
@@ -79,6 +80,12 @@ def clean_draft(draft: ScenarioDraft, brief: WriterBrief, attackers: Iterable[st
         risk=lead_with_consequence(risk),
         assumptions=tuple(dict.fromkeys(assumption for assumption in assumptions if assumption)),
         entry_point=draft.entry_point,
+        system_reasons=tuple(
+            (name, shorten_text(_without_opaque_codes(reason, given), Writing.SYSTEM_REASON_MAX_CHARS))
+            for name, reason in draft.system_reasons
+        ),
+        evidence_links=draft.evidence_links,  # G229: the claims the markers support, kept as written
+        anatomy=draft.anatomy,  # G229: the parts, kept as written (the rules check them)
     )
     if step_detail_enabled():
         _trace_cleanup(brief.threat, draft, cleaned, fallback, risk != cleaned.risk, given)

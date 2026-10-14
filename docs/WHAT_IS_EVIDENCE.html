@@ -1,0 +1,369 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What Is Evidence?</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: a single reading column (memo), with a two-up comparison and a numbered process; amber = the citation marker, like a traffic signal */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --ink: #18212b; --muted: #55606d; --line: #d9dee5;
+  --accent: #b45f06; --accent-soft: #fdf1e2; --ok: #1f6f4a; --ok-soft: #e7f4ed; --no: #8a2f2f; --no-soft: #f8eaea;
+  --display: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11161c; --surface: #19212a; --ink: #e6eaef; --muted: #9aa5b1; --line: #2c3742;
+  --accent: #f0a04b; --accent-soft: #2e2213; --ok: #6cc59a; --ok-soft: #15291f; --no: #e48b8b; --no-soft: #2c1a1a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11161c; --surface: #19212a; --ink: #e6eaef; --muted: #9aa5b1; --line: #2c3742;
+  --accent: #f0a04b; --accent-soft: #2e2213; --ok: #6cc59a; --ok-soft: #15291f; --no: #e48b8b; --no-soft: #2c1a1a; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--body); }
+.wrap { max-width: 920px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: grid; gap: 44px; }
+h1, h2 { font-family: var(--display); line-height: 1.2; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 2.8rem); }
+h2 { font-size: 1.5rem; }
+p { margin: 0; max-width: 68ch; }
+section { display: grid; gap: 16px; min-width: 0; }
+.eyebrow { font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.lede { font-size: 1.2rem; color: var(--ink); }
+.answer { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; display: grid; gap: 10px; }
+.answer strong { color: var(--accent); }
+.m { display: inline-block; font: 600 .85em var(--mono); color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 0 5px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.report { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.tag { justify-self: start; font-size: .78rem; font-weight: 700; border-radius: 99px; padding: 2px 10px; }
+.tag.no { color: var(--no); background: var(--no-soft); }
+.tag.yes { color: var(--ok); background: var(--ok-soft); }
+.report h3 { margin: 0; font-size: 1.02rem; }
+.quote { font-size: .95rem; color: var(--muted); border-left: 3px solid var(--line); padding-left: 12px; }
+.quote b { color: var(--ink); font-weight: 600; }
+.evi { border: 1px dashed var(--accent); border-radius: 8px; padding: 12px 14px; display: grid; gap: 6px; font-size: .9rem; }
+.evi .t { font-weight: 700; }
+.evi a { color: var(--accent); word-break: break-all; }
+.evi ul { margin: 0; padding-left: 18px; }
+.none { font-size: .9rem; color: var(--muted); font-style: italic; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+td:first-child { font-weight: 600; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: s; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; }
+.steps li::before { content: counter(s); font: 700 1rem var(--display); color: var(--accent); border: 2px solid var(--accent); border-radius: 50%; width: 30px; height: 30px; display: grid; place-items: center; }
+.steps b { display: block; }
+.steps span { color: var(--muted); }
+.rule { background: var(--accent-soft); border-radius: 10px; padding: 14px 18px; }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.split > div { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; }
+.split h3 { margin: 0; font-size: 1rem; }
+.split ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.fig { font-variant-numeric: tabular-nums; }
+.stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; display: grid; gap: 8px; min-width: 0; }
+.stage-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.stage-n { font: 700 .8rem var(--mono); color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 1px 7px; }
+.stage-h h3 { margin: 0; font-size: 1.05rem; }
+.when { font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.stage ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: .94rem; }
+.stage li b { font-weight: 600; }
+code { font: 500 .86em var(--mono); background: var(--accent-soft); border-radius: 3px; padding: 0 4px; word-break: break-word; }
+.flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font: 600 .82rem var(--body); }
+.flow span { border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 3px 10px; }
+.flow i { color: var(--muted); font-style: normal; }
+.foot { font-size: .85rem; color: var(--muted); }
+.ascii { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.ascii pre { margin: 0; padding: 14px 16px; font: 500 .76rem/1.45 var(--mono); color: var(--ink); }
+</style>
+
+<main class="wrap">
+  <header style="display:grid;gap:14px">
+    <div class="eyebrow">Threat Scenario Generator · Traffic Control Platform</div>
+    <h1>What is evidence?</h1>
+    <p class="lede">You have two reports for the Traffic Control Platform: one made without external threat feeds, one made with them. The second has an extra section under every scenario called <b>Evidence</b>. This page explains what that is and how the tool produces it.</p>
+  </header>
+
+  <section>
+    <div class="answer">
+      <div class="eyebrow">The short answer</div>
+      <p><strong>Evidence is a published, public record showing that this kind of attack has really been used by real attackers.</strong></p>
+      <p>Each scenario points to its evidence with a number such as <span class="m">[1]</span>, like a footnote in a report. Under the scenario, the tool lists the source, a link, and the facts it took from it, so anyone can open the link and check.</p>
+      <p>Without external feeds, a scenario is a well-reasoned "this could happen". With them, it becomes "this could happen, <em>and here is proof that attackers really do this</em>".</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>The difference in your two reports</h2>
+    <p>The first scenario of each report, shortened:</p>
+    <div class="two">
+      <div class="report">
+        <span class="tag no">Without external feeds</span>
+        <h3>Unauthorised Operating Mode Elevation in Traffic Controllers</h3>
+        <p class="quote">"A malicious insider with operational access to the Traffic Signal Control System could deliberately switch signal controllers out of their normal coordinated mode… The Traffic Control Platform would then lose centralised command integrity over affected signals…"</p>
+        <p class="none">No evidence section. The story is based on our threat library, the asset's facts and the AI's reasoning. The reader has to trust that reasoning.</p>
+      </div>
+      <div class="report">
+        <span class="tag yes">With external feeds</span>
+        <h3>Trusted operator session forged from old credentials</h3>
+        <p class="quote">"A third-party vendor could abuse stale credentials to forge an authenticated session on the Traffic Control Platform… <b>The 2015 Ukraine Electric Power Attack campaign used compromised credentials for persistent access to industrial control systems</b> <span class="m">[1]</span>…"</p>
+        <div class="evi">
+          <div class="t"><span class="m">[1]</span> Valid Accounts</div>
+          <div>Source: MITRE ATT&amp;CK for industrial systems (ICS) · technique T0859</div>
+          <a href="https://attack.mitre.org/techniques/T0859" target="_blank" rel="noopener noreferrer">attack.mitre.org/techniques/T0859</a>
+          <ul>
+            <li>Used by real attacks: the 2015 Ukraine Electric Power Attack and the Triton safety-system attack.</li>
+            <li>Can be reduced by: access management, directory configuration, filtering network traffic.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th></th><th>Without external feeds</th><th>With external feeds</th></tr></thead>
+        <tbody>
+          <tr><td>Where the scenario comes from</td><td>Our threat library, the asset's facts, AI reasoning</td><td>The same, plus public threat intelligence</td></tr>
+          <tr><td>Proof that attackers really do this</td><td>None shown</td><td>At least one public source per scenario, with a link</td></tr>
+          <tr><td>Footnote numbers in the story</td><td>No</td><td>Yes, <span class="m">[1]</span>, <span class="m">[2]</span>…</td></tr>
+          <tr><td>Can a reviewer check it?</td><td>Only by expert judgement</td><td>Yes, by opening the source</td></tr>
+          <tr><td>A claim with no proof</td><td>Allowed</td><td>Rejected; the scenario is rewritten once, then dropped</td></tr>
+          <tr><td>Your reports, 13 Oct</td><td class="fig">12 scenarios, 0 sources</td><td class="fig">10 scenarios, 11 sources</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the evidence comes from</h2>
+    <p>Only official public sources that security teams worldwide rely on. The tool downloads them automatically and keeps its own copy, so a report never depends on a website being up at that moment.</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Source</th><th>Published by</th><th>What it tells us</th><th>Refreshed</th></tr></thead>
+        <tbody>
+          <tr><td>MITRE ATT&amp;CK: IT (Enterprise) and industrial (ICS)</td><td>MITRE, a US not-for-profit; the global reference</td><td>How real attackers operate: their methods, the named groups and real campaigns that used each one, and how to reduce it</td><td>Weekly</td></tr>
+          <tr><td>Known Exploited Vulnerabilities</td><td>US CISA (national cyber agency)</td><td>Software flaws confirmed as used in real attacks</td><td>Daily</td></tr>
+          <tr><td>Industrial control system advisories</td><td>US CISA</td><td>Security warnings for industrial and OT equipment</td><td>Daily</td></tr>
+          <tr><td>National Vulnerability Database</td><td>US NIST (standards institute)</td><td>Details of each flaw: affected products and severity</td><td>Daily</td></tr>
+          <tr><td>Exploit Prediction Scoring (EPSS)</td><td>FIRST, the global incident-response forum</td><td>The chance a flaw will be exploited in the next 30 days</td><td>Daily</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>In your report, all 11 sources are from MITRE ATT&amp;CK: 6 industrial (OT) and 5 IT. The three vulnerability sources describe flaws in <em>specific products</em>, and the platform records no product list for this asset, so the tool does not cite them. It will not claim "your system has this flaw" without knowing the product.</p>
+  </section>
+
+  <section>
+    <h2>How it is achieved: the evidence pipeline</h2>
+    <p>When <code>EXTERNAL_INTELLIGENCE_ENABLED=true</code>, scenario writing becomes <b>retrieval-augmented generation (RAG) with guardrails</b>. The AI is never trusted to "remember" threat intelligence. The tool first <em>retrieves</em> verified records from the feeds, gives the AI only those, and then <em>checks</em> what the AI wrote against them. There are six stages: the first two run in the background, and the other four run every time scenarios are written.</p>
+    <div class="ascii"><pre>BACKGROUND: an hourly Celery beat job, run by the maintenance worker
+
+  +------------------------------------+
+  | PUBLIC FEEDS                       |
+  | MITRE ATT&amp;CK Enterprise + ICS      |
+  |     (STIX bundles, weekly)         |
+  | CISA KEV, CISA ICS advisories,     |
+  | NIST NVD, FIRST EPSS (daily)       |
+  +------------------------------------+
+                     |  HTTPS, conditional GET (ETag), size + rate limits
+                     v
+  +------------------------------------+
+  | 1 INGEST                           |
+  | parse + normalise each item        |  ---&gt; [tsg_external_feed_status] status, checkpoint, lock
+  | sanitise; injection -&gt; quarantine  |
+  | version by content hash            |  ---&gt; [tsg_intel] records + old versions
+  +------------------------------------+
+                     |
+                     v
+  +------------------------------------+
+  | 2 INDEX                            |
+  | record text -&gt; embedding vector    |  ---&gt; [tsg_embeddings] vectors, cached per text
+  | BM25 index + vector index          |
+  | frozen, checksummed snapshot       |  ---&gt; [tsg_external_intelligence_snapshots]
+  |                                    |            snapshots + &#x27;active&#x27; pointer
+  +------------------------------------+
+                     |  each worker loads the active snapshot into memory
+                     v
+
+================== AT WRITE TIME: run by the scenarios worker ==================
+
+  +------------------------------------+
+  | PLAN (as before)                   |
+  | threat library + asset facts       |  ---&gt; [tsg_sessions] run + plan.threats[]
+  +------------------------------------+
+                     |  a batch of attack paths to write
+                     v
+  +------------------------------------+
+  | 3 RETRIEVE (per threat)            |
+  | query: &quot;Threat: ... Reason: ...&quot;   |  ---&gt; [tsg_query_vectors] query vectors, cached
+  | IT/OT filter                       |
+  | BM25 + vector -&gt; RRF -&gt; top 6      |
+  | cross-encoder rerank, 0-100        |
+  | rules -&gt; best 3 -&gt; plain facts     |  ---&gt; [tsg_sessions] plan.threats[].evidence
+  +------------------------------------+
+                     |
+                     v
+  +------------------------------------+
+  | 4 GENERATE (LLM)                   |
+  | numbered facts, UNTRUSTED block    |  ---&gt; [tsg_ai_calls] prompt + answer
+  | no IDs / links given to the AI     |
+  | story with [n] + claim per [n]     |
+  +------------------------------------+
+                     |
+                     v
+  +------------------------------------+
+  | 5 VALIDATE                         |
+  | code rules (markers, IDs, claims)  |
+  | LLM-as-judge plan check            |  ---&gt; [tsg_ai_calls] prompt + answer
+  | fail -&gt; 1 rewrite -&gt; blocked       |
+  +------------------------------------+
+                     |
+                     v
+  +------------------------------------+
+  | 6 STORE + AUDIT                    |
+  | cited evidence + search audit      |  ---&gt; [tsg_scenarios] scenario versions
+  | one audit row per batch            |  ---&gt; [tsg_audit] evidence_used
+  +------------------------------------+
+                     |
+                     v
+  REPORT / API: story with [1] + Evidence list (source, link, facts, scope) + real groups</pre></div>
+    <ol class="stages">
+      <li class="stage">
+        <div class="stage-h"><span class="stage-n">1</span><h3>Ingestion: collect and normalise the feeds</h3><span class="when">Background, scheduled</span></div>
+        <ul>
+          <li><b>Scheduler:</b> a Celery beat job runs every hour and fetches each source that is due. CISA KEV, EPSS, NVD and the ICS advisories are fetched every 24 hours; MITRE ATT&amp;CK (the Enterprise and ICS STIX bundles) every 168 hours.</li>
+          <li><b>Download:</b> over HTTPS with a conditional request (ETag / <code>If-None-Match</code>), so an unchanged file is not downloaded again. Size limits and the sources' rate limits are enforced.</li>
+          <li><b>Normalisation:</b> each item becomes one record with the same fields: source, ID (e.g. <code>T0859</code>, a CVE number), kind (technique, vulnerability or advisory), title, text, link, an IT or OT tag, and structured data (attacker goals, mitigations, and the real groups and campaigns that used it).</li>
+          <li><b>Sanitisation:</b> every field is length-capped and stripped of control characters. Text that matches prompt-injection patterns (text written to give an AI instructions) is quarantined and never indexed. Today 3 ATT&amp;CK records are held back this way.</li>
+          <li><b>Versioning:</b> each record carries a content hash. A change creates a new version and retires the old one, so the history is kept. Records are stored in MongoDB.</li>
+        </ul>
+      </li>
+      <li class="stage">
+        <div class="stage-h"><span class="stage-n">2</span><h3>Indexing: build a searchable snapshot</h3><span class="when">Background, after each refresh</span></div>
+        <ul>
+          <li><b>Corpus:</b> all current records are assembled. Exploit scores (EPSS) and vulnerability details (NVD) are joined to their CVE, and indicators such as IP addresses and file hashes are removed from the search text.</li>
+          <li><b>Embeddings:</b> each record's text is turned into a vector, a long list of numbers that captures its meaning. The laptop uses text-embedding-3-large (3,072 numbers per text) and UAT uses qwen3-embedding-8b (4,096). Vectors are cached, so only new or changed records are embedded.</li>
+          <li><b>Two indexes</b> over the same records: a <b>BM25 keyword index</b>, which matches exact terms, and a <b>vector index</b>, which matches meaning by cosine similarity.</li>
+          <li><b>Snapshot:</b> the result is fixed and identified by a checksum. Each worker loads it into memory and switches to a new snapshot in one step, never half-way.</li>
+        </ul>
+      </li>
+      <li class="stage">
+        <div class="stage-h"><span class="stage-n">3</span><h3>Retrieval: find the matching records for each scenario</h3><span class="when">At write time</span></div>
+        <ul>
+          <li><b>Query:</b> built from the threat being written, as <code>Threat: &lt;type&gt;: &lt;name&gt;</code> plus <code>Reason: &lt;why it applies to this asset&gt;</code>. It is at most 700 characters, with personal data removed.</li>
+          <li><b>IT/OT filter:</b> only records whose tag fits the asset are searched. The filter is applied before ranking.</li>
+          <li><b>Hybrid search:</b> all queries in a batch are embedded in one call. Each query is searched in both indexes, and the two ranked lists are merged with <b>Reciprocal Rank Fusion</b> (RRF, k = 60), which rewards records ranked high in either list. The top 6 become candidates.</li>
+          <li><b>Reranking:</b> a <b>cross-encoder reranker</b> model reads the query and each candidate together and scores relevance from 0 to 100. The laptop uses bge-reranker-v2-m3 and UAT uses qwen3-reranker-8b.</li>
+          <li><b>Selection rules,</b> in this order:
+            <ul>
+              <li>a score below the calibrated threshold is dropped;</li>
+              <li>a vulnerability or advisory that cannot be tied to a product recorded for the asset is dropped;</li>
+              <li>an affected version that does not match is dropped;</li>
+              <li>a duplicate is dropped;</li>
+              <li>the best <b>3 per threat</b> are kept.</li>
+            </ul>
+            Every candidate's score and decision is recorded.</li>
+          <li><b>Fallback:</b> if nothing qualifies, the search is repeated with two other wordings of the query. This needs no AI call.</li>
+          <li><b>Facts:</b> each kept record is turned into at most 6 plain sentences built from its structured fields, for example "The 2015 Ukraine Electric Power Attack campaign used this technique." The evidence is saved on the plan, so a retry or regenerate reuses the same evidence and numbers.</li>
+        </ul>
+      </li>
+      <li class="stage">
+        <div class="stage-h"><span class="stage-n">4</span><h3>Generation: the AI writes the scenario with citations</h3><span class="when">At write time</span></div>
+        <ul>
+          <li><b>Prompt:</b> asset facts, the threat, and the numbered facts. The facts sit inside a delimited block (<code>&lt;&lt;&lt;UNTRUSTED_EVIDENCE_BEGIN&gt;&gt;&gt;</code> … <code>END</code>), and the AI is told to treat that block as data, never as instructions.</li>
+          <li><b>No references in the prompt:</b> the AI receives fact sentences only, never IDs, links or titles. It cannot invent or alter a reference, because it never handles one; the tool attaches the links afterwards.</li>
+          <li><b>Output:</b> the scenario statement and risk statement with <span class="m">[n]</span> markers, plus, for each marker, the claim it supports. The model is Kimi K2.6 on the laptop, and kimi-k2.5 with glm-5 as fallback in UAT.</li>
+        </ul>
+      </li>
+      <li class="stage">
+        <div class="stage-h"><span class="stage-n">5</span><h3>Validation: guardrails check the draft</h3><span class="when">At write time</span></div>
+        <ul>
+          <li><b>Deterministic rules in code,</b> each of which blocks the draft:
+            <ul>
+              <li>at least one citation, and every <span class="m">[n]</span> exists;</li>
+              <li>each marker has its claim;</li>
+              <li>no IDs or URLs inside the prose;</li>
+              <li>a real attacker or campaign is named only with its marker;</li>
+              <li>no "is vulnerable" or "is exploitable" when it is unknown whether our product is affected;</li>
+              <li>no echo of injected text;</li>
+              <li>an "it happened before" sentence must match what its source names;</li>
+              <li>a claim about the UAE needs a UAE-labelled source.</li>
+            </ul></li>
+          <li><b>LLM-as-judge:</b> the plan-check AI call, already made for every scenario, reads each claim against its evidence and lists any citation it does not support.</li>
+          <li><b>Outcome:</b> any failure leads to one rewrite with the exact findings. If the draft still fails, it is blocked: kept for audit, never shown. Another attack path is written in its place.</li>
+        </ul>
+      </li>
+      <li class="stage">
+        <div class="stage-h"><span class="stage-n">6</span><h3>Storage and audit: full traceability</h3><span class="when">At write time</span></div>
+        <ul>
+          <li><b>The scenario</b> stores the evidence it cites, numbered in the order first cited, with the link and facts. Its evidence mode is "source-documented".</li>
+          <li><b>The audit record</b> keeps the query, the IT/OT filter, the snapshot ID, the threshold, the reranker model, and every candidate with its score and decision.</li>
+          <li><b>The plan</b> records which snapshot and source versions it used. One audit-log entry is written per batch.</li>
+        </ul>
+      </li>
+    </ol>
+    <p class="rule"><b>The rule that matters:</b> with feeds on, every scenario you see cites at least one public source that passed stages 3 and 5. A scenario that cannot be backed by a source is dropped, and another attack route is written in its place.</p>
+  </section>
+
+  <section>
+    <h2>Worked example: scenario 1 of your report</h2>
+    <p>"Trusted operator session forged from old credentials", traced from its stored audit record:</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Stage</th><th>What actually happened</th></tr></thead>
+        <tbody>
+          <tr><td>Query</td><td>"Threat: Credential Abuse: Shared, default or stale OT account abuse. Reason: The Intelligent Traffic Systems Platform and Traffic Signal Control System are OT systems where shared, default or stale accounts are a common… spoofing vector…"</td></tr>
+          <tr><td>IT/OT filter</td><td>IT, OT and IT/OT records (the asset has both)</td></tr>
+          <tr><td>Hybrid search</td><td>6 candidates: <code>T1078.001</code>, <code>T0859</code>, <code>T1078.003</code>, <code>T1078</code>, <code>T1694.001</code>, <code>T1078.002</code></td></tr>
+          <tr><td>Reranker scores</td><td class="fig">85.2, 77.4, 69.7: used (the best 3) · 66.2, 63.9, 57.1: "over limit"</td></tr>
+          <tr><td>Facts given to the AI</td><td>3 numbered records. For <code>T0859</code>, Valid Accounts (ICS): "It is used for these attacker goals: persistence, lateral movement." "The 2015 Ukraine Electric Power Attack campaign used this technique." "It can be reduced by: Filter Network Traffic, Active Directory Configuration, Access Management."</td></tr>
+          <tr><td>AI output</td><td>Cited one of the three: "The 2015 Ukraine Electric Power Attack campaign used compromised credentials for persistent access to industrial control systems <span class="m">[n]</span>"</td></tr>
+          <tr><td>Validation</td><td>The marker exists, its claim matches the fact, and no IDs are in the prose: passed</td></tr>
+          <tr><td>In the report</td><td>Only the cited record, renumbered <span class="m">[1]</span>: Valid Accounts · mitre_attack_ics · T0859 · link · facts</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the data lives in MongoDB</h2>
+    <p>Everything is stored in the MongoDB database <code>cii_tsg</code>. The four intelligence collections (feed status, records, snapshots and the feed vectors) exist only while external intelligence is switched on; the others are part of every run.</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Collection</th><th>Stage</th><th>What it holds</th></tr></thead>
+        <tbody><tr><td><code>tsg_external_feed_status</code></td><td>Ingest</td><td>One document per feed: approved or not, status, last success, attempt and error, checkpoint (release|etag|format), source version, record count, and a claim so only one worker refreshes it. The admin on/off switch is stored here too once an admin changes it.</td></tr><tr><td><code>tsg_intel</code></td><td>Ingest</td><td>The normalised records: ID (T0859, CVE-…), kind (technique, vulnerability, vulnerability detail, exploit score, advisory), title, text, link, IT/OT tag, structured data, content hash, state (valid or quarantined) and fetch time. Now: 7,902 current, 6,504 older versions kept for history, 8 quarantined.</td></tr><tr><td><code>tsg_embeddings</code></td><td>Index</td><td>Vectors, one per text and model, so a text is never embedded twice. Corpus external_intelligence holds the feed records (5,293); the other corpora are our own library: threats, threat actors, threat types and controls.</td></tr><tr><td><code>tsg_external_intelligence_snapshots</code></td><td>Index</td><td>One document per built snapshot (checksum, counts, embedding and reranker models, source versions), plus the &#x27;active&#x27; pointer that tells every worker which snapshot to load.</td></tr><tr><td><code>tsg_query_vectors</code></td><td>Retrieve</td><td>Cache of query vectors (hash of the search text → vector, with an expiry date), so the same query is not embedded again.</td></tr><tr><td><code>tsg_sessions</code></td><td>Plan, Retrieve</td><td>The run and its plan. plan.threats[] holds each threat&#x27;s evidence (so a retry reuses the same numbers), real groups and UAE/Gulf relevance; plan.made_with records the snapshot ID and source versions used.</td></tr><tr><td><code>tsg_ai_calls</code></td><td>Generate, Validate</td><td>Every AI call: task (write, plan check, rewrite…), model, prompt, answer, tokens and time.</td></tr><tr><td><code>tsg_scenarios</code></td><td>Store</td><td>Each scenario version: the story, content.evidence (cited sources), evidence mode, intel_search (query, IT/OT filter, snapshot, threshold, reranker, every candidate&#x27;s score and decision), real groups, check findings, status (done or blocked).</td></tr><tr><td><code>tsg_audit</code></td><td>Ingest, Store</td><td>The audit trail: external_intelligence.refreshed per feed refresh, external_intelligence.evidence_used per batch, admin jobs, accept and reject decisions.</td></tr><tr><td><code>tsg_admin_jobs</code></td><td>Ingest</td><td>Admin jobs, including &quot;refresh intelligence now&quot; (POST /v1/tsg/intel/refresh), with their status and result.</td></tr></tbody>
+      </table>
+    </div>
+    <p class="foot">Not part of evidence: <code>tsg_api_clients</code> (API keys) and <code>tsg_remediations</code> (remediation plans). Leftovers that the current code no longer uses: <code>tsg_intel_feeds</code> and <code>tsg_intel_snapshots</code> (an earlier build, 12 Oct), the embeddings corpus <code>intel</code> (2,696 vectors) and <code>test_ai_calls</code> (from a test run). They can be removed in a clean-up.</p>
+  </section>
+
+  <section>
+    <h2>What evidence means, and what it does not</h2>
+    <div class="split">
+      <div>
+        <h3>It means</h3>
+        <ul>
+          <li>This method of attack is real and documented by a recognised authority.</li>
+          <li>Named real campaigns or attacker groups have used it.</li>
+          <li>There are published ways to reduce it, which help in choosing controls.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>It does not mean</h3>
+        <ul>
+          <li>The Traffic Control Platform has been attacked.</li>
+          <li>Our system is confirmed to be vulnerable.</li>
+          <li>It happened in the UAE, unless the source is labelled "this country".</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Since 14 October</h2>
+    <p>New reports go one step further. Beside the threat actor, each scenario names up to three real attacker groups known for that attack, with groups that attacked the UAE or the Gulf region listed first. For example: <b>APT33</b>, a state group that <em>attacked the region and your sector</em>. Each source is also labelled <b>this country</b>, <b>regional</b> or <b>global</b>, and a story may only say something happened in the UAE if it cites a UAE source.</p>
+    <p class="foot">Not yet included: UAE incident feeds (aeCERT, UAE Cyber Security Council, DESC). They have no feed the tool can read yet and need legal approval first. Until then, most evidence is global.</p>
+  </section>
+
+  <footer class="foot">Reports compared: "Threat scenarios – Traffic Control Platform – 2026-10-13", without evidence (run 1a79c0d8) and with evidence (run 57bc320b). Every scenario starts as "To review": a reviewer reads the scenario and its sources before accepting it.</footer>
+</main>

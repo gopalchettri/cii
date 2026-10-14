@@ -25,22 +25,20 @@ from app.core.exceptions import PlanRefused, Unavailable
 from app.engine.scenarios.attack_paths.path_selector import AttackPathSelector
 from app.engine.scenarios.finding import threat_finder as threats_module
 from app.engine.scenarios.finding.asset_landscape import describe_asset_for_ai, library_search_queries
+from app.engine.scenarios.finding.gate_verdicts import parse_verdict
 from app.engine.scenarios.finding.relevance_gate import (
     RelevanceGate,
     accepted_library_threat,
     candidate_for_gate,
-    parse_verdict,
 )
 from app.engine.scenarios.finding.threat_finder import ThreatFinder
-from app.engine.scenarios.finding.threat_prompts import relevance_gate_prompt
-from app.engine.scenarios.threat_list.attacker_assignment import (
-    AttackerAssigner,
-    AttackerFitCheck,
-)
+from app.engine.scenarios.threat_list.attacker_assignment import AttackerAssigner
+from app.engine.scenarios.threat_list.attacker_choice import unranked_notes
 from app.engine.scenarios.threat_list.duplicate_merge import merge_reworded_threats, merge_same_threats
 from app.engine.scenarios.threat_list.same_attack_check import SameAttackCheck, pick_surviving_threat
 from app.engine.shared.names import replace_codes_with_names
 from app.engine.shared.parallel import run_in_parallel
+from app.models.actor_choice import ActorPick
 from app.models.asset_context import FrozenContext
 from app.models.library import LibraryActor, RejectedLibraryThreat, ThreatLibrary
 from app.models.threats import (
@@ -69,7 +67,6 @@ from tests.planner_samples import (
     S,
     audit_of,
     finder,
-    first_attacker_fits,
     gap_fill_for_elevation,
     judged,
     library_search,
@@ -554,9 +551,11 @@ def test_attackers_are_ranked_only_for_threats_left_after_duplicates_are_removed
     assigned: list[list[str]] = []
 
     class RecordingAssigner(AttackerAssigner):
-        def assign_attackers(self, threats: list[PlannedThreat], sector: str) -> list[PlannedThreat]:
+        def assign_attackers(
+            self, threats: list[PlannedThreat], sector: str, gate_judged: bool = False
+        ) -> list[PlannedThreat]:
             assigned.append([threat.key for threat in threats])
-            return super().assign_attackers(threats, sector)
+            return super().assign_attackers(threats, sector, gate_judged)
 
     monkeypatch.setattr(threats_module, "AttackerAssigner", RecordingAssigner)
     chat = planner_chat({RANSOMWARE.name: ["SYS1"], EXFILTRATION.name: ["SYS1"]})  # one type, one system
@@ -637,40 +636,34 @@ def test_an_attacker_threshold_filters_only_the_closest_match_fallback(
     assert phishing.to_record()["actors"][0]["below_threshold"] is True
 
 
-def test_the_ranking_alone_chooses_the_acting_attacker() -> None:
-    """G120 (owner, 2026-10-10, after M2: the AI picked "Nation-state/APT" for 8 of 10 threats): the gate
-    picks no attacker; the search ranking orders the linked actors; an attacker the AI still names is
-    ignored."""
-    _, user_prompt = relevance_gate_prompt("LANDSCAPE", S.TAMPERING, [])
-    assert '"attacker"' not in user_prompt
-    item = {"slot": "R1", "relevant": True, "systems": ["SYS1"], "reason": "It applies.", "impact": "HIGH"}
-    verdict, problems = parse_verdict(item | {"confidence": 80, "attacker": "Ransomware gang"}, {"SYS1": 321})
-    assert verdict is not None and problems == [] and not hasattr(verdict, "attacker")
-
-
-def test_the_attacker_check_keeps_picks_or_notes_and_an_outage_falls_back_to_library_order() -> None:
-    """T-THR-12."""
+def test_the_gates_pick_acts_none_fits_flags_and_no_pick_is_ranked_with_a_note() -> None:
+    """T-THR-12, G229 (owner 2026-10-13: actor selection inside the existing planning call): the relevance
+    gate's pick acts with its reason; "none fits" keeps the nearest, flagged; no usable pick leaves the search
+    ranking, flagged, with one plan note; an outage falls back to library order. No attacker AI call."""
     search, embeddings = library_search()
-    verdict = Verdict(True, (321,), "Phishing on SYS1.", 3, 80.0)
     snapshot = search.snapshot()
+    pick = ActorPick(INSIDER.name, "Holds the backup admin account.", ((INSIDER.name, "HIGH"),))
+    picked = Verdict(True, (321,), "Phishing on SYS1.", 3, 80.0, actor_pick=pick)
     (phishing,) = AttackerAssigner(snapshot, FakeRerankModel()).assign_attackers(
-        [accepted_library_threat(S.SPOOFING, PHISHING, verdict)], "Energy"
+        [accepted_library_threat(S.SPOOFING, PHISHING, picked)], "Energy", gate_judged=True
     )
-    runner_up = phishing.attacker_options[1]
-    chat = FakeChatModel()
-    chat.queue(
-        AiTask.ATTACKER_FIT, {"choices": [{"slot": "A1", "attacker": runner_up.name, "reason": "Fits SYS1."}]}
+    assert phishing.actors[0].actor_id == INSIDER.actor_id and phishing.attacker_check == AttackerCheck.CHOSEN
+    assert phishing.attacker_check_reason == "Holds the backup admin account."
+    assert phishing.to_record()["actor_selection"]["picked"] == INSIDER.name
+    none = Verdict(True, (321,), "Phishing on SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None could."))
+    (nearest,) = AttackerAssigner(snapshot, FakeRerankModel()).assign_attackers(
+        [accepted_library_threat(S.SPOOFING, PHISHING, none)], "Energy", gate_judged=True
     )
-    check = AttackerFitCheck(chat, describe_asset_for_ai(CONTEXT, 30_000))  # type: ignore[arg-type]
-    (chosen,), _ = check.check_attackers([phishing])
-    assert chosen.actors[0].actor_id == runner_up.actor_id and chosen.attacker_check == AttackerCheck.CHOSEN
-    assert chosen.attacker_check_reason == "Fits SCADA server."
-    chat.queue(AiTask.ATTACKER_FIT, {"choices": [{"slot": "A1", "attacker": None, "reason": "None does."}]})
-    assert check.check_attackers([phishing])[0][0].attacker_check == AttackerCheck.NONE_FITS
-    chat.queue(AiTask.ATTACKER_FIT, {"choices": "?"}, {"choices": "?"})
-    (unchecked,), notes = check.check_attackers([phishing])
-    assert unchecked.attacker_check == AttackerCheck.NOT_CHECKED and unchecked.actors == phishing.actors
-    assert notes == [PlanMessage.ATTACKER_FIT_NOT_CHECKED.format(threats=1)]
+    assert nearest.attacker_check == AttackerCheck.NONE_FITS
+    assert nearest.attacker_check_reason == "None could."
+    assert nearest.closest_attacker and nearest.actors[0].actor_id == nearest.attacker_options[0].actor_id
+    verdict = Verdict(True, (321,), "Phishing on SYS1.", 3, 80.0)
+    (unchecked,) = AttackerAssigner(snapshot, FakeRerankModel()).assign_attackers(
+        [accepted_library_threat(S.SPOOFING, PHISHING, verdict)], "Energy", gate_judged=True
+    )
+    assert unchecked.attacker_check == AttackerCheck.NOT_CHECKED
+    assert unranked_notes([unchecked]) == [PlanMessage.ATTACKERS_RANKED_ONLY.format(threats=1)]
+    assert "attacker_fit" not in {task.value for task in AiTask}
     embeddings.queries_down = True
     (unranked,) = AttackerAssigner(snapshot, FakeRerankModel()).assign_attackers(
         [accepted_library_threat(S.TAMPERING, RANSOMWARE, verdict)], "Energy"
@@ -792,31 +785,3 @@ def test_an_outage_in_one_batch_wins_over_a_bad_answer_in_another() -> None:
     with pytest.raises(Unavailable):
         run_in_parallel(work, [0, 1, 2, 3], 4, "test")
     assert run_in_parallel(lambda item: item * 2, [1, 2, 3], 2, "test") == [2, 4, 6]
-
-
-def test_attacker_check_batches_run_at_once_and_each_threat_keeps_its_choice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Review of S13c: the attacker check took 78 s in sequential batches; now they are sent together."""
-    monkeypatch.setattr(ThreatFinding, "GATE_BATCH_MAX_ITEMS", 1)
-    running, peak, lock = [0], [0], threading.Lock()
-
-    def slow_fit(user_prompt: str) -> dict[str, Any]:
-        with lock:
-            running[0] += 1
-            peak[0] = max(peak[0], running[0])
-        time.sleep(0.05)
-        with lock:
-            running[0] -= 1
-        return first_attacker_fits(user_prompt)
-
-    chat = FakeChatModel()
-    chat.responders[AiTask.ATTACKER_FIT] = slow_fit
-    options = (CREW, GANG, INSIDER)
-    threats = [
-        planned(f"lib:{n}", f"Threat {n}", closest_attacker=True, attacker_options=options, actors=())
-        for n in range(1, 5)
-    ]
-    checked, notes = AttackerFitCheck(chat, describe_asset_for_ai(CONTEXT, 30_000)).check_attackers(threats)  # type: ignore[arg-type]
-    assert peak[0] > 1 and notes == [] and len(chat.asked(AiTask.ATTACKER_FIT)) == 4
-    assert [threat.attacker_check for threat in checked] == [AttackerCheck.FITS] * 4

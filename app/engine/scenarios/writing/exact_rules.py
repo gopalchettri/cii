@@ -11,8 +11,12 @@ Not checked here, because they cannot happen:
 import re
 from collections.abc import Iterable, Sequence
 
-from app.core.constants import FindingCode, FindingMessage, Route
+from app.core.constants import FindingCode, FindingMessage, Route, WriterStyle
 from app.core.tracing import record_detail, step_detail_enabled, traced
+from app.engine.external_intelligence.story.evidence_story_rules import story_findings
+from app.engine.scenarios.writing.anatomy_rules import anatomy_findings
+from app.engine.scenarios.writing.evidence_checks import evidence_findings
+from app.engine.scenarios.writing.word_limits import length_findings
 from app.engine.scenarios.writing.writing_prompts import brief_text
 from app.engine.shared.names import find_name_mentions
 from app.models.writing import Finding, ScenarioDraft, WriterBrief
@@ -50,7 +54,10 @@ def check_exact_rules(
     findings = [
         *_blockers(text, brief_text(brief).casefold()),
         *_naming_warnings(draft, brief, text, attackers),
+        *length_findings(draft),  # both writers: THREAT_SCENARIO / RISK_STATEMENT_WORD_LIMIT (G226)
+        *anatomy_findings(draft, brief),  # both writers: specific, its parts stated (G229)
     ]
+    findings += _story_findings(draft, brief, text, findings)
     linked = _linked_systems(draft, brief)
     if linked:
         message = FindingMessage.SYSTEM_LINK_CLAIMED.format(systems=" and ".join(linked))
@@ -59,6 +66,19 @@ def check_exact_rules(
     if step_detail_enabled():
         _trace_rules(brief.threat, draft.title, findings, route)
     return tuple(findings), route
+
+
+def _story_findings(
+    draft: ScenarioDraft, brief: WriterBrief, text: str, found: list[Finding]
+) -> list[Finding]:
+    """An evidence story's own exact rules (none for the original writer); an advisory number the base rules
+    already found is not reported twice."""
+    if brief.style is not WriterStyle.EVIDENCE_STORY:
+        return []
+    already = any(finding.code == FindingCode.UNCITED_ADVISORY_ID for finding in found)
+    story = story_findings(text, draft.statement, draft.risk, brief)
+    kept = [f for f in story if not (already and f.code == FindingCode.UNCITED_ADVISORY_ID)]
+    return kept + evidence_findings(draft, brief)  # G229: mandatory, supported evidence
 
 
 def _trace_rules(threat: str, title: str, findings: list[Finding], route: Route) -> None:
@@ -73,8 +93,8 @@ def _blockers(text: str, given: str) -> list[Finding]:
     labels = _unsupplied_matches(_INTERNAL_LABEL, text, given)
     if labels:
         findings.append(Finding(FindingCode.UNKNOWN_ID, FindingMessage.UNKNOWN_ID.format(labels=labels)))
-    # ponytail: no threat intelligence reaches the writer yet (Step 15), so every advisory number is uncited;
-    # leave out the intelligence block's own ids here once it exists.
+    # ponytail: every advisory number the brief does not give is uncited here; the ids of the evidence block
+    # are judged by the story rules (engine/external_intelligence/story).
     advisories = _unsupplied_matches(_ADVISORY_ID, text, given)
     if advisories:
         message = FindingMessage.UNCITED_ADVISORY_ID.format(ids=advisories)

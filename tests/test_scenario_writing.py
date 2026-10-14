@@ -14,7 +14,9 @@ from pydantic import ValidationError
 from app.ai import UnreadableAiAnswer
 from app.core.constants import (
     CHAT_TEMPERATURES,
+    FINAL_FINDINGS,
     FINDING_SEVERITIES,
+    NO_REWRITE_FINDINGS,
     ActorRole,
     AiTask,
     Decision,
@@ -27,6 +29,7 @@ from app.core.constants import (
     RunKind,
     ScenarioStatus,
     ValidationStatus,
+    Writing,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
@@ -42,6 +45,7 @@ from app.engine.scenarios.writing.scenario_record import (
     written_record,
 )
 from app.engine.scenarios.writing.scenario_writer import ScenarioWriter
+from app.engine.scenarios.writing.word_limits import with_word_limits
 from app.engine.scenarios.writing.writing_prompts import (
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
@@ -51,6 +55,7 @@ from app.engine.scenarios.writing.writing_prompts import (
 from app.models.scenario_views import ScenarioView
 from app.models.threats import PlannedActor
 from app.models.writing import (
+    Anatomy,
     Finding,
     LiveLibrary,
     PathFailure,
@@ -71,9 +76,21 @@ def _answer(**changes: object) -> dict[str, object]:
 
 
 def test_every_finding_code_has_a_severity_and_only_exact_faults_block() -> None:
+    """The exact faults, and (G229, owner 2026-10-13) the code-checked evidence and specificity rules,
+    which are final: a scenario they block is given up at once. Only the claimed link (a rewrite trigger
+    before G229) still asks for the rewrite; no other does (no AI call added), nor an unnamed system."""
     assert set(FINDING_SEVERITIES) == set(FindingCode)
     blockers = {code for code, severity in FINDING_SEVERITIES.items() if severity == FindingSeverity.BLOCKER}
-    assert blockers == {FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID}
+    assert blockers == {FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID} | FINAL_FINDINGS
+    assert {
+        FindingCode.NO_EVIDENCE_CITED, FindingCode.EVIDENCE_LINK_MISSING, FindingCode.CITATION_UNSUPPORTED,
+        FindingCode.ANATOMY_MISSING, FindingCode.TARGET_NOT_NAMED, FindingCode.MECHANISM_NOT_CONCRETE,
+        FindingCode.VAGUE_PHRASE, FindingCode.UNSUPPORTED_WEAKNESS, FindingCode.SYSTEM_LINK_CLAIMED,
+        FindingCode.NEAR_DUPLICATE, FindingCode.COUNTRY_CLAIM_UNSUPPORTED,
+    } == FINAL_FINDINGS  # fmt: skip
+    assert (FINAL_FINDINGS - {FindingCode.SYSTEM_LINK_CLAIMED}) | {
+        FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY
+    } == NO_REWRITE_FINDINGS
 
 
 def test_a_written_scenario_is_blocked_only_by_a_blocker() -> None:
@@ -274,7 +291,7 @@ def test_the_prompts_are_the_owner_approved_text_word_for_word() -> None:
 def test_the_writer_reads_the_brief_as_one_json_object() -> None:
     brief = _brief_of(_plan_threat())
     system, user = writer_prompt(brief)
-    assert system == WRITER_SYSTEM_PROMPT and user.startswith("BRIEF:\n")
+    assert system == with_word_limits(WRITER_SYSTEM_PROMPT) and user.startswith("BRIEF:\n")
     sent = json.loads(user.removeprefix("BRIEF:\n"))
     assert sent["entry_point_options"] == ["SCADA server"] and "other_scenarios" not in sent
     assert sent["threat"] == {
@@ -375,7 +392,18 @@ _CLEAN = ScenarioDraft(
     "Loss of trusted control at Grid Control Centre could interrupt electricity transmission.",
     ("Assumes vendor sessions can update firmware - not recorded in the platform.",),
     "SCADA server",
+    # G229: its parts, stated by the writer.
+    anatomy=Anatomy(
+        "SCADA server",
+        "a vendor session",
+        (),
+        "pushes modified firmware to the SCADA server",
+        "operators lose trusted control",
+    ),  # fmt: skip
 )
+#: The reasons the fake writer gives an answer that has none (tests/fakes.py): one per system of the brief.
+_REASONS = (("SCADA server", "It could affect SCADA server."), ("Historian", "It could affect Historian."))
+_READ = dataclasses.replace(_CLEAN, system_reasons=_REASONS)
 
 
 def _codes(draft: ScenarioDraft, systems: tuple[int, ...] = (321,)) -> tuple[list[str], Route]:
@@ -455,11 +483,15 @@ def test_a_name_inside_the_assets_name_is_neither_another_system_nor_another_att
     assert check_exact_rules(_CLEAN, brief, (*_LIBRARY_ATTACKERS, "Centre")) == ((), Route.STANDALONE)
 
 
-def test_a_claimed_link_between_two_systems_is_a_warning_and_an_unknown_route() -> None:
-    """T-WRT-22 (S20): the platform records no system-to-system link."""
+def test_a_claimed_link_between_two_systems_blocks_for_good_and_is_an_unknown_route() -> None:
+    """T-WRT-22 (S20): the platform records no system-to-system link. G229 (owner 2026-10-13: "Reject
+    candidates that contain ... unsupported supporting-system relationships"): a blocker, final after the
+    one rewrite it has always asked for."""
     linked = " The cybercriminal could then pivot from the SCADA server to the Historian."
     codes, route = _codes(dataclasses.replace(_CLEAN, statement=_CLEAN.statement + linked), (321, 322))
     assert (codes, route) == ([FindingCode.SYSTEM_LINK_CLAIMED], Route.UNKNOWN)
+    assert FINDING_SEVERITIES[FindingCode.SYSTEM_LINK_CLAIMED] == FindingSeverity.BLOCKER
+    assert FindingCode.SYSTEM_LINK_CLAIMED in FINAL_FINDINGS - NO_REWRITE_FINDINGS
     together = " The SCADA server and the Historian could both lose data."
     assert _codes(dataclasses.replace(_CLEAN, statement=_CLEAN.statement + together), (321, 322)) == (
         [],
@@ -525,7 +557,7 @@ def test_a_clean_first_draft_is_kept_after_two_calls() -> None:
     """T-WRT-01: write, then one plan check; nothing found, so no rewrite."""
     writer, chat = _writer([_CLEAN.to_answer()], [_CONSISTENT])
     written = writer.write_scenario(_brief_of(_plan_threat()))
-    assert written.draft == _CLEAN and written.findings == () and not written.rewritten
+    assert written.draft == _READ and written.findings == () and not written.rewritten
     assert written.route == Route.STANDALONE and _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
 
 
@@ -533,7 +565,7 @@ def test_an_unreadable_answer_is_asked_once_more() -> None:
     """T-WRT-02: a missing field, then an entry point never offered, are each re-asked once."""
     no_risk = {key: value for key, value in _CLEAN.to_answer().items() if key != "risk_statement"}
     writer, chat = _writer([no_risk, _CLEAN.to_answer()], [_CONSISTENT])
-    assert writer.write_scenario(_brief_of(_plan_threat())).draft == _CLEAN
+    assert writer.write_scenario(_brief_of(_plan_threat())).draft == _READ
     elsewhere = _CLEAN.to_answer() | {"entry_point": "Historian"}
     writer, chat = _writer([elsewhere, _CLEAN.to_answer() | {"entry_point": "scada  SERVER"}], [_CONSISTENT])
     assert writer.write_scenario(_brief_of(_plan_threat())).draft.entry_point == "SCADA server"
@@ -551,6 +583,9 @@ def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None
     on_the_asset = {
         "scenario_statement": "A cybercriminal could push firmware to Grid Control Centre.",
         "entry_point": "Grid Control Centre",
+        "anatomy": Anatomy(
+            "Grid Control Centre", "its interface", (), "pushes firmware to Grid Control Centre", "lost"
+        ).as_doc(),
     }
     writer, chat = _writer([_CLEAN.to_answer() | on_the_asset], [_CONSISTENT])
     written = writer.write_scenario(_brief_of(_plan_threat(systems=())))
@@ -566,7 +601,7 @@ def test_the_one_rewrite_lists_every_problem_and_a_better_rewrite_is_kept() -> N
     inconsistent = {"consistent": False, "problems": ["The impact does not fit Tampering."]}
     writer, chat = _writer([no_asset], [inconsistent, _CONSISTENT], [_CLEAN.to_answer()])
     written = writer.write_scenario(_brief_of(_plan_threat()))
-    assert written.rewritten and written.draft == _CLEAN and written.findings == ()
+    assert written.rewritten and written.draft == _READ and written.findings == ()
     assert _calls(chat) == [
         AiTask.WRITE_SCENARIO,
         AiTask.PLAN_CHECK,
@@ -705,7 +740,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     and systems without ids, the entry point, the route, and validation from the findings."""
     brief = _brief_of(_plan_threat())
     written = WrittenScenario(
-        _CLEAN,
+        _READ,
         (Finding(FindingCode.PLAN_CHECK, "The impact is broad."),),
         PlanCheck(PlanCheckStatus.INCONSISTENT, ("The impact is broad.",)),
         Route.STANDALONE,
@@ -715,21 +750,27 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     path = {"path_id": "p1", "category": "Tampering", "categories": ["Tampering", "Denial of Service"]}
     extra = {"rank": 3, "category_id": 5, "systems": [321], "also_applies": ["Logic overwrite"]}
-    record = written_record(run, path | extra, _plan_threat(), brief, written)
+    picked = {"attacker_check": "chosen", "attacker_check_reason": "Sells stolen data."}  # G229
+    record = written_record(run, path | extra, _plan_threat(**picked), brief, written)
     view = ScenarioView.from_record(record)
     text = view.scenario
     assert record["_id"] == scenario_id("run-1", "p1", 1) == scenario_id("run-1", "p1", 1)
     assert (text.scenario_title, view.status) == (_CLEAN.title, ScenarioStatus.DONE)
     assert text.scenario_statement == f"{_CLEAN.statement}\n\nWhy this threat applies: {brief.why_it_applies}"
+    assert text.anatomy is not None and text.anatomy["target"] == "SCADA server"  # G229: its parts, shown
     assert [actor.model_dump() for actor in view.actors] == [
         {"actor_id": 7, "actor_name": "Cybercriminal", "role": "acting", "closest_match": False,
-         "below_threshold": False},
+         "below_threshold": False, "selection": "chosen", "selection_reason": "Sells stolen data."},
         {"actor_id": 8, "actor_name": "Insider", "role": "alternate", "closest_match": False,
-         "below_threshold": False},
+         "below_threshold": False, "selection": None, "selection_reason": None},
     ]  # fmt: skip
-    assert [system.model_dump() for system in text.supporting_systems_involved] == [
-        {"supporting_system_id": 321, "supporting_system": "SCADA server", "is_entry_point": True}
-    ]
+    assert [system.model_dump() for system in text.supporting_systems_involved] == [  # every system (G216)
+        {"supporting_system_id": 321, "supporting_system": "SCADA server", "is_applicable": True,
+         "is_entry_point": True, "justification": "It could affect SCADA server."},
+        {"supporting_system_id": 322, "supporting_system": "Historian", "is_applicable": False,
+         "is_entry_point": False, "justification": "It could affect Historian."},
+    ]  # fmt: skip
+    assert [system["id"] for system in record["content"]["systems"]] == [321]  # its own, as before
     assert text.contributing_categories == ["Denial of Service"] and text.route_status == "STANDALONE"
     assert text.also_applies == ["Logic overwrite"]  # the group's other threats, kept with it (G208)
     assert view.validation_status == ValidationStatus.OK and view.validation_notes == ["The impact is broad."]
@@ -780,14 +821,20 @@ def test_a_label_or_advisory_the_brief_supplied_is_never_a_blocker() -> None:
         "name": "MicroSCADA Pro SYS600",
         "past_incidents": "CVE-2024-1234 was exploited",
     }
+    listed = tuple(dataclasses.replace(s, name=system["name"]) for s in brief.supporting_systems[:1])
     brief = dataclasses.replace(
-        brief, systems=(system,), asset=brief.asset | {"name": "T1100 Gateway"}, asset_name="T1100 Gateway"
+        brief,
+        systems=(system,),
+        supporting_systems=listed,
+        asset=brief.asset | {"name": "T1100 Gateway"},
+        asset_name="T1100 Gateway",
     )
     draft = dataclasses.replace(
         _CLEAN,
         statement="A cybercriminal could use CVE-2024-1234 on the MicroSCADA Pro SYS600 of T1100 Gateway.",
         risk="Loss of control at T1100 Gateway could interrupt transmission.",
         entry_point="MicroSCADA Pro SYS600",
+        anatomy=Anatomy("MicroSCADA Pro SYS600", "it", (), "uses a weakness in MicroSCADA", "lost control"),
     )
     findings, _ = check_exact_rules(draft, brief, _LIBRARY_ATTACKERS)
     assert [finding.code for finding in findings] == []
@@ -811,3 +858,40 @@ def test_only_a_real_link_phrase_claims_a_link_between_two_systems(sentence: str
     """Review fix 5: "password", "router", "routine" and a "protection relay" are not links."""
     codes, route = _codes(dataclasses.replace(_CLEAN, statement=_CLEAN.statement + sentence), (321, 322))
     assert (FindingCode.SYSTEM_LINK_CLAIMED in codes, route == Route.UNKNOWN) == (linked, linked)
+
+
+def test_the_brief_lists_every_supporting_system_and_whether_the_scenario_applies_to_it() -> None:
+    """G216: code decides applicable (the scenario's route); the writer gives each system its reason."""
+    brief = _brief_of(_plan_threat())
+    listed = json.loads(writer_prompt(brief)[1].removeprefix("BRIEF:\n"))["supporting_systems"]
+    assert listed == [
+        {"name": "SCADA server", "applicable": "yes"},
+        {"name": "Historian", "applicable": "no"},
+    ]
+
+
+def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again() -> None:
+    """G216: a reason missing for one system is re-asked; a name is matched case and spacing forgiven."""
+    half = _CLEAN.to_answer() | {"system_reasons": {"scada  SERVER": "It could stop the server."}}
+    whole = _CLEAN.to_answer() | {
+        "system_reasons": {"SCADA server": "It could stop the server.", "Historian": "Its records stay."}
+    }
+    writer, chat = _writer([half, whole], [_CONSISTENT])
+    written = writer.write_scenario(_brief_of(_plan_threat()))
+    assert written.draft.system_reasons == (
+        ("SCADA server", "It could stop the server."),
+        ("Historian", "Its records stay."),
+    )
+    assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
+
+
+def test_a_reason_is_cleaned_and_cut_to_its_limit() -> None:
+    """A reason is shown on the card: codes and hashes leave it as they leave the statement, and a long one
+    is cut."""
+    hashed = "It could stop d41d8cd98f00b204e9800998ecf8427e on the server."
+    long = "It could " + "stop the server and " * 30 + "more."
+    answer = _CLEAN.to_answer() | {"system_reasons": {"SCADA server": hashed, "Historian": long}}
+    writer, _ = _writer([answer], [_CONSISTENT])
+    reasons = dict(writer.write_scenario(_brief_of(_plan_threat())).draft.system_reasons)
+    assert "d41d8cd98f00b204e9800998ecf8427e" not in reasons["SCADA server"]
+    assert len(reasons["Historian"]) <= Writing.SYSTEM_REASON_MAX_CHARS

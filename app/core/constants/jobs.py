@@ -18,6 +18,7 @@ class TaskName(StrEnum):
     RETRY_CONTROLS = "tsg_retry_controls"
     BUILD_LIBRARY_INDEXES = "tsg_build_library_indexes"
     WRITE_PLAN = "tsg_write_plan"  # one remediation plan version (Step 16)
+    REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # sources due, then a snapshot
 
 
 class AdminJobKind(StrEnum):
@@ -26,6 +27,7 @@ class AdminJobKind(StrEnum):
     EMBEDDINGS_BUILD = (
         "embeddings_build"  # #18: the library's vectors made now, not at the next 30-minute build
     )
+    INTEL_REFRESH = "intel_refresh"  # external intelligence sources read now, not at the next check
 
 
 class AdminJobs:

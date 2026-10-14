@@ -9,7 +9,13 @@ from pymongo.database import Database
 
 from app.core.constants import Collection, ScenarioStatus
 
-_VERSION_FIELDS = {"path_id": 1, "version": 1, "superseded_by": 1, "content.statement": 1}
+_VERSION_FIELDS = {
+    "path_id": 1,
+    "version": 1,
+    "superseded_by": 1,
+    "content.statement": 1,
+    "content.prompt_version": 1,
+}
 
 
 class ScenarioVersions:

@@ -11,7 +11,8 @@ CREATE TABLE dbo.ctm_scan_entity (
     id INT IDENTITY PRIMARY KEY, type NVARCHAR(255) NULL, name NVARCHAR(255) NULL, ctm_category_id INT NULL,
     description TEXT NULL, operating_system NVARCHAR(255) NULL, location NVARCHAR(255) NULL, criticality INT NULL,
     target_rto_hours DECIMAL(18, 0) NULL, target_rpo_hours DECIMAL(18, 0) NULL, priority INT NULL,
-    data_handled NVARCHAR(MAX) NULL);
+    data_handled NVARCHAR(MAX) NULL, can_service_continue_without_asset BIT NULL,
+    has_disaster_recovery_setup BIT NULL);
 CREATE TABLE dbo.onboarding_services (
     id INT IDENTITY PRIMARY KEY, name NVARCHAR(255) NOT NULL, is_deleted BIT NOT NULL DEFAULT 0);
 CREATE TABLE dbo.onboarding_sectors (
@@ -30,7 +31,8 @@ CREATE TABLE dbo.onboarding_supporting_systems (
     dr_drill_frequency INT NOT NULL, database_platforms NVARCHAR(255) NULL, saas_backup_required BIT NULL,
     saas_platform_list NVARCHAR(500) NULL, public_cloud_platforms NVARCHAR(500) NULL,
     rto_target_mins DECIMAL(18, 0) NOT NULL, rpo_target_mins DECIMAL(18, 0) NOT NULL,
-    data_loss_incident_last_3_years BIT NULL, incident_description NVARCHAR(MAX) NULL, is_deleted BIT NOT NULL);
+    data_loss_incident_last_3_years BIT NULL, incident_description NVARCHAR(MAX) NULL, is_deleted BIT NOT NULL,
+    description NVARCHAR(MAX) NULL);
 CREATE TABLE dbo.ctm_scan_entity_supporting_system (
     ctm_scan_entity_id INT NOT NULL, onboarding_supporting_system_id INT NOT NULL);
 CREATE TABLE dbo.[option] (id INT IDENTITY PRIMARY KEY, code NVARCHAR(20) NULL);

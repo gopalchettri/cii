@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.core.constants import AdminJobKind, Status
+from app.core.constants import AdminJobKind, IntelSource, Status
 
 
 class AdminJobStarted(BaseModel):
@@ -17,6 +17,12 @@ class EmbeddingsBuildResult(BaseModel):
     newly_embedded: dict[str, int] = Field(description="Vectors made while the build ran, per library.")
 
 
+class IntelRefreshResult(BaseModel):
+    source: IntelSource | None = Field(
+        default=None, description="The source refreshed; none = every source due."
+    )
+
+
 class AdminJobOut(BaseModel):
     job_id: str
     kind: AdminJobKind
@@ -25,5 +31,5 @@ class AdminJobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    result: EmbeddingsBuildResult | None = None
+    result: EmbeddingsBuildResult | IntelRefreshResult | None = None
     error: dict[str, str] | None = None

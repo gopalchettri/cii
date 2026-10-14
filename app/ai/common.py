@@ -12,7 +12,7 @@ import structlog
 
 from app.core import metrics
 from app.core.constants import AiLimits, AiOutcome, ErrorCode, ErrorMessage, LogEvent
-from app.core.exceptions import JobFailed, Unavailable
+from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 
 log = structlog.get_logger(__name__)
 
@@ -124,6 +124,8 @@ def count_and_convert_ai_errors(task: str, model: str) -> Iterator[None]:
     backs off and retries."""
     try:
         yield
+    except LeaseLost:
+        raise  # its job was stopped (G214): not an AI failure, so never counted as one (G222)
     except Unavailable:
         raise  # no provider answered: counted already, or no slot was free (app/ai/slots.py)
     except AI_UNAVAILABLE_ERRORS as exc:

@@ -3,6 +3,7 @@
 filters on job.task, so a late copy of this message can never plan the run again."""
 
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.engine.scenarios.attack_paths.path_selector import get_attack_path_sele
 from app.engine.scenarios.finding.threat_finder import get_threat_finder
 from app.models.asset_context import FrozenContext
 from app.worker.celery_app import celery_app
+from app.worker.external_intelligence.intel_access import get_intel_access
 from app.worker.jobs import hand_over, run_leased_job
 
 log = structlog.get_logger(__name__)
@@ -45,9 +47,16 @@ def plan_run(lease: JobLease) -> None:
     the run in that same write: nothing is left to write, so no writer job is queued."""
     started = time.perf_counter()
     context = FrozenContext.from_record(SessionRepository(get_mongodb()).find_context(lease.record_id))
-    findings = get_threat_finder().find_threats(context)
-    plan = get_attack_path_selector().build_plan(findings)
-    plan |= {"frozen_at": datetime.now(UTC), "made_with": made_with(findings.library_stamp)}
+    access = get_intel_access()
+    country = get_settings().context_country if access.is_on() else ""  # G232: intelligence on only
+    findings = get_threat_finder().find_threats(context, country)
+    near = access.threat_relevance(findings.threats, context)
+    threats = [replace(threat, country_relevance=near.get(threat.key)) for threat in findings.threats]
+    plan = get_attack_path_selector().build_plan(replace(findings, threats=threats))
+    plan |= {
+        "frozen_at": datetime.now(UTC),
+        "made_with": made_with(findings.library_stamp) | access.stamp(),
+    }
     selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
     changes = plan_changes(plan, len(selected), time.perf_counter() - started)
     if selected:

@@ -3,6 +3,7 @@ chat (JSON answers), embeddings (cached vectors) and rerank (relevance scores); 
 share.
 Retries, fallback, timeouts, metrics and call records live here and nowhere else."""
 
+import logging
 import os
 
 # Before litellm is first imported (here, the only door to it): its model table comes from the installed
@@ -17,6 +18,11 @@ import litellm  # noqa: E402
 # (not installed).
 litellm.DEFAULT_MAX_RETRIES = 0  # type: ignore[misc]  # typed Final, but read from the module at each call
 litellm.suppress_debug_info = True  # its coloured help lines would break the JSON log lines Loki reads
+# Its own tracing is not ours (G221): with CII_LOG_LEVEL=DEBUG it logged every request in full and a failed
+# price lookup per call ("This model isn't mapped yet": our models are not on its price list, and no price
+# is used). Our ai.call lines record every call; its warnings and errors still show.
+for _litellm_logger in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
+    logging.getLogger(_litellm_logger).setLevel(logging.WARNING)
 
 from app.ai.chat import (  # noqa: E402
     CORRECTION_MESSAGE_MAX_CHARS,
@@ -32,10 +38,13 @@ from app.ai.embeddings import (  # noqa: E402
     EmbeddingSizeMismatch,
     get_embedding_model,
 )
+from app.ai.local_turns import background_reranks, reranks_in_background  # noqa: E402
 from app.ai.rerank import RerankModel, get_rerank_model  # noqa: E402
 
 __all__ = [
     "ai_deadline",
+    "background_reranks",
+    "reranks_in_background",
     "CORRECTION_MESSAGE_MAX_CHARS",
     "ChatModel",
     "EmbeddingModel",

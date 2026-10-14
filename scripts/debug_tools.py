@@ -142,7 +142,7 @@ def stream(environment: str) -> int:
 
     variables = json.loads(SETTINGS.read_text(encoding="utf-8"))["rest-client.environmentVariables"]
     base_url = {**variables["$shared"], **variables.get(environment, {})}["baseUrl"]
-    headers = {
+    headers: dict[str, str] = {
         Header.API_KEY: debug_value("TSG_API_KEY"),
         Header.USER_ID: debug_value("TSG_USER_ID"),
         Header.ENTITY_ID: debug_value("TSG_ENTITY_ID"),

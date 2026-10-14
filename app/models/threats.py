@@ -14,6 +14,8 @@ from app.core.constants import (
     GapFillOutcome,
     StrideCategory,
 )
+from app.models.actor_choice import ActorPick
+from app.models.external_intelligence.evidence import Evidence, EvidenceSearchRecord
 from app.models.library import LibraryActor, LibraryThreat
 
 #: The tie-break's "no library id": after every real one.
@@ -35,6 +37,7 @@ class Verdict:
     confidence: float  # 0-100
     # What the threat needs that no recorded fact mentions (G209): a component, device or technology.
     needs: tuple[str, ...] = ()
+    actor_pick: ActorPick | None = None  # the attacker it judged most plausible (G229)
 
     @property
     def applies(self) -> bool:
@@ -76,37 +79,61 @@ class PlannedThreat:
     ] = ()  # a closest attacker's nearest library actors, nearest first
     attacker_check: AttackerCheck | None = None
     attacker_check_reason: str = ""
+    actor_pick: ActorPick | None = None  # the relevance gate's pick, until code decides (G229)
+    actor_selection: dict[str, Any] | None = None  # how the acting attacker was decided: the audit
+    evidence: tuple[
+        Evidence, ...
+    ] = ()  # intelligence the story may cite; set at write time, never by planning
+    intel_search: EvidenceSearchRecord | None = None  # the audit of the search that found (or missed) it
+    # G232: how near the deployment's country the groups known for it are ({scope, techniques, groups}); set
+    # by planning while external intelligence is on, None otherwise (a plan made with it off is as it was).
+    country_relevance: dict[str, Any] | None = None
 
     @property
     def from_library(self) -> bool:
         return self.catalogue_id is not None
 
     def to_record(self) -> dict[str, Any]:
+        return (
+            {
+                "key": self.key,
+                "library_id": self.catalogue_id,
+                "ai_generated": not self.from_library,
+                "type": {"id": self.type_id, "name": self.type_name},
+                "name": self.name,
+                "category": self.categories[0],
+                "categories": list(self.categories),
+                "systems": list(self.systems),
+                "reason": self.reason,
+                "impact": self.impact,
+                "confidence": self.confidence,
+                "actors": [
+                    {
+                        "id": actor.actor_id,
+                        "name": actor.name,
+                        "role": actor.role,
+                        "closest": self.closest_attacker,
+                        "below_threshold": actor.below_threshold,
+                    }
+                    for actor in self.actors
+                ],
+                "actors_ranked": self.actors_ranked,
+                "attacker_check": self.attacker_check,
+                "attacker_check_reason": self.attacker_check_reason or None,
+                "actor_selection": self.actor_selection,
+            }
+            | self._evidence_record()
+            | ({"country_relevance": self.country_relevance} if self.country_relevance else {})
+        )
+
+    def _evidence_record(self) -> dict[str, Any]:
+        """Only a threat that was searched carries evidence keys: a plan made with the switch off is as
+        it was."""
+        if self.intel_search is None:
+            return {}
         return {
-            "key": self.key,
-            "library_id": self.catalogue_id,
-            "ai_generated": not self.from_library,
-            "type": {"id": self.type_id, "name": self.type_name},
-            "name": self.name,
-            "category": self.categories[0],
-            "categories": list(self.categories),
-            "systems": list(self.systems),
-            "reason": self.reason,
-            "impact": self.impact,
-            "confidence": self.confidence,
-            "actors": [
-                {
-                    "id": actor.actor_id,
-                    "name": actor.name,
-                    "role": actor.role,
-                    "closest": self.closest_attacker,
-                    "below_threshold": actor.below_threshold,
-                }
-                for actor in self.actors
-            ],
-            "actors_ranked": self.actors_ranked,
-            "attacker_check": self.attacker_check,
-            "attacker_check_reason": self.attacker_check_reason or None,
+            "evidence": [item.as_doc() for item in self.evidence],
+            "intel_search": self.intel_search.as_doc(),
         }
 
 

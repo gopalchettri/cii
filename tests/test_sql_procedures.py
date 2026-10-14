@@ -4,6 +4,7 @@ import)."""
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,7 @@ from app.core.constants import AssetType, LibraryRowKind, StoredProcedure
 from app.core.database import StoredProcedureClient
 from app.data_access.library import LibraryRepository
 from app.models.library import PendingLibraryRow, RejectedLibraryThreat
-from tests.sql_test_database import REPO
+from tests.sql_test_database import REPO, procedure_files
 
 Rows = list[dict[str, Any]]
 
@@ -51,12 +52,11 @@ def test_the_asset_context_proves_ownership_and_carries_every_category(
     facts = asset[0]
     assert (facts["sector"], facts["sub_sector"]) == ("Energy", "Electricity")
     assert facts["critical_service"] == "Electricity transmission"
-    assert facts["entity_technology_context"].startswith("Siemens S7-1500")
-    assert list(facts)[-1] == "entity_technology_context"  # the landscape clips from the end
     assert facts["cii_asset_description"].startswith("Monitors") and facts["asset_type"] == "Control system"
     assert not {"criticality", "category_id", "category_name", "description", "type", "priority"} & set(facts)
     assert systems[0]["category_name"].endswith("(OT)") or systems[0]["category_name"].endswith("(IT)")
-    assert "past_incidents" in systems[0] and not {"category_id", "incident_description"} & set(systems[0])
+    # The owner's procedure shows each system's description (G217); a fact hidden there never arrives.
+    assert systems[0]["description"] == "Runs the transmission grid." and "category_id" not in systems[0]
     asked = procedures.execute_procedure(
         StoredProcedure.GET_ASSET_CONTEXT, EntityID=86, AssetID=103, SystemIDs="[321]", ServiceID=2
     )
@@ -292,5 +292,19 @@ def test_grants_name_every_tsg_procedure_and_nothing_else() -> None:
     deploy helpers)."""
     grants = (REPO / "scripts" / "sql" / "grants.sql").read_text(encoding="utf-8")
     granted = set(re.findall(r"GRANT EXECUTE ON dbo\.(\w+) TO", grants))
-    shipped = {path.stem for path in (REPO / "scripts" / "sql").glob("tsg_*.sql")}
+    shipped = {path.stem for path in procedure_files()}
     assert granted == shipped == {procedure.value for procedure in StoredProcedure}
+
+
+def test_a_backup_copy_beside_a_procedure_is_never_installed_or_granted(tmp_path: Path) -> None:
+    """G217 (owner 2026-10-13 keeps "tsg_GetAssetContext copy.sql" in scripts/sql): every tsg_*.sql file was
+    installed and checked as a procedure, so the stale copy was installed too and the grants check failed."""
+    for name in (
+        "tsg_GetAssetContext.sql",
+        "tsg_GetAssetContext copy.sql",
+        "tsg_GetAssetContext (1).sql",
+        "tsg_Get-Old.sql",
+        "grants.sql",
+    ):
+        (tmp_path / name).write_text("-- a file", encoding="utf-8")
+    assert [path.name for path in procedure_files(tmp_path)] == ["tsg_GetAssetContext.sql"]

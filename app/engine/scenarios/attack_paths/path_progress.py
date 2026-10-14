@@ -5,7 +5,7 @@ write, the plan's figures, and why none is left. One rule for the plan job, the 
 from collections.abc import Iterable
 from typing import Any
 
-from app.core.constants import ConflictReason, Generation
+from app.core.constants import ConflictReason, Generation, UnselectedReason
 
 
 def is_still_to_write(path: dict[str, Any]) -> bool:
@@ -43,11 +43,14 @@ def next_paths_to_write(paths: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def plan_counts(paths: Iterable[dict[str, Any]]) -> dict[str, int]:
+    paths = list(paths)
     selected = [path for path in paths if path["selected"]]
+    replaced = UnselectedReason.REPLACED_AFTER_FAILURE  # G229: given up, a reserve took its place
     return {
         "planned": len(selected),
         "remaining": sum(is_still_to_write(path) for path in selected),
         "abandoned": sum(bool(path["abandoned"]) for path in selected),
+        "replaced": sum(path.get("unselected_reason") == replaced for path in paths),
     }
 
 

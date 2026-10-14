@@ -117,7 +117,7 @@
   // Stage titles from the console's execution catalogue (tsg_console.html, WALK). A link opens that stage there.
   // ---------------------------------------------------------------------------------------------
   var STAGE = {
-    "1.6": "Queue the job, audit, answer 202", "2.1": "A worker claims the job (lease)", "2.11": "Rank attack paths and freeze the plan",
+    "1.6": "Queue the job, audit, answer 202", "2.1": "A worker claims the job (lease)", "2.11": "Rank scenarios and freeze the plan",
     "3.1": "Choose the set and the batch", "3.9": "Save the card and update the path", "3.10": "Hand over or finish the set",
     "4.1": "Take a controls delivery", "4.5": "Save, retry and sweep", "5.3": "Accept", "5.4": "Reject", "5.5": "Generate the next set",
     "5.6": "Regenerate scenarios", "6.5": "Create the plan record and queue the job", "6.6": "A worker claims the plan job",
@@ -181,7 +181,7 @@
     var ln = g.last_next_set, pln = pg.last_next_set || {}, lr = g.last_regen, plr = pg.last_regen || {};
     if (p.session_status !== "failed" && st === "failed") add("X.1", "run failed: " + errs(c));
     if (pg.threats === "PENDING" && g.threats === "RUNNING") add("2.1", "a worker claimed the job");
-    if (pg.threats !== "COMPLETE" && g.threats === "COMPLETE") add("2.11", "plan frozen: " + C(c, "total") + " attack path(s) selected" + (E(c, "threats") ? " · " + E(c, "threats") : ""));
+    if (pg.threats !== "COMPLETE" && g.threats === "COMPLETE") add("2.11", "plan frozen: " + C(c, "total") + " scenario(s) selected" + (E(c, "threats") ? " · " + E(c, "threats") : ""));
     if (pg.scenarios !== "RUNNING" && g.scenarios === "RUNNING") add("3.1", "scenarios are being written (queued or running)");
     if (C(c, "served") > C(p, "served")) add("3.9", (C(c, "served") - C(p, "served")) + " card(s) written");
     if (E(c, "scenarios") && E(c, "scenarios") !== E(p, "scenarios")) add("3.9", E(c, "scenarios"));

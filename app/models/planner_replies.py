@@ -1,7 +1,7 @@
 """The planner's AI answer contracts (v1 prompts.py, as they are): each item of an answer is checked against
 one of these before the server's own checks (the slots and aliases it handed out)."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,15 +17,10 @@ class RelevanceVerdict(BaseModel):
     impact: Literal["HIGH", "MEDIUM", "LOW"] | None = None
     confidence: int | None = Field(default=None, ge=0, le=100)
     needs: list[str] = Field(default_factory=list)  # what the threat needs that nothing recorded mentions
-
-
-class SameScenarioGroup(BaseModel):
-    """One group of the same-scenario check (G213): the scenarios, by slot, that are one attack with one harm
-    through different systems, and why."""
-
-    model_config = ConfigDict(extra="forbid")
-    paths: list[str]
-    reason: str
+    # The attacker pick (G229), read leniently in code: a bad one never costs a re-ask (no AI call added).
+    attacker: Any = None
+    attacker_reason: Any = None
+    suitability: Any = None
 
 
 class BestThreatPick(BaseModel):

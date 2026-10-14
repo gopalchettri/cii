@@ -58,6 +58,9 @@ class ErrorCode(StrEnum):
     # A path's threat or acting attacker was retired from the library after the plan was made (owner,
     # 2026-10-10; spec v4.0 §7.4.1): its scenario is not written.
     LIBRARY_RECORD_RETIRED = "library_record_retired"
+    # G229 (owner 2026-10-13): with external intelligence on, no evidence found for the path's threat (after
+    # the alternative search): its scenario is not written, and a reserve path may take its place.
+    EVIDENCE_NOT_FOUND = "evidence_not_found"
     # A regenerated version still broke a fixed rule after its rewrite: kept hidden for audit, the old version
     # stays current (BUILD_PLAN S41).
     SCENARIO_BLOCKED = "scenario_blocked"
@@ -83,6 +86,8 @@ class ErrorMessage(StrEnum):
     AI_ANSWER_TRUNCATED = "The AI answer for '{task}' from '{model}' was cut off at its length limit."
     AI_PROMPT_TOO_LONG = "The prompt for '{task}' has {chars} characters; the model takes at most {limit}."
     AI_BUSY = "Every AI slot stayed busy for {seconds} s. Try again shortly."
+    # The evidence reranker's queue, not the AI slots (G218): the threat goes without evidence.
+    RERANK_BUSY = "The evidence reranker stayed busy for {seconds} s: this threat goes without evidence."
     AI_DEADLINE_PASSED = "The request's time for AI calls ran out. Try again shortly."
     MODEL_PROFILE_MISSING = "No profile for AI model '{model}': add it to app/ai/profiles.py or fix .env."
     EMBEDDING_SIZE_MISMATCH = (
@@ -115,9 +120,27 @@ class ErrorMessage(StrEnum):
         "CII_CORS_ORIGINS may not contain * outside dev: list the platform UI origins."
     )
     ADMIN_KEY_TOO_SHORT = "CII_ADMIN_API_KEY must be at least {minimum} characters outside dev."
+    # What a scenario gets (owner 2026-10-13, G225-G226): a setting that cannot work stops start-up.
+    COUNTRY_UNKNOWN = (
+        "THREAT_CONTEXT_COUNTRY={value} is not a country this app knows the places of; set one of: {known}."
+    )
+    CONTROL_COUNT_INVALID = (
+        "CONTROL_CANDIDATES ({candidates}) must be at least MAX_CONTROLS ({most}), and MAX_CONTROLS at least "
+        "MIN_CONTROLS ({least})."
+    )
+    CONTROL_THRESHOLD_AS_FRACTION = (
+        "{setting}={value} reads as {value} on the 0-100 scale, which keeps almost every control: write "
+        "{percent:g} for {value}."
+    )
+    WORD_LIMIT_INVALID = "{setting}={value!r} must be two whole numbers, min-max, with 1 <= min <= max."
     PATH_NOT_WRITABLE = "Attack path {path_id} cannot be written: {problem}."
     CONTROL_LIBRARY_EMPTY = "The control library has no active control."
     PATH_AI_UNAVAILABLE = "The AI service did not answer for this attack path in {tries} tries."
+    EVIDENCE_NOT_FOUND = (
+        "No external intelligence supports this attack ({searches} search(es) made): it is not written "
+        "without evidence."
+    )
+    EVIDENCE_SEARCH_UNAVAILABLE = "The evidence search could not be made for this attack path: {reason}."
     AI_MISCONFIGURED = (
         "The AI gateway refused model '{model}' ({error}, HTTP {status}): check the model name, the key and "
         "its permissions in the settings."
@@ -166,6 +189,9 @@ class Collection(StrEnum):
     AUDIT = "tsg_audit"
     REMEDIATIONS = "tsg_remediations"  # one remediation plan per scenario, with its versions (M11)
     ADMIN_JOBS = "tsg_admin_jobs"  # admin jobs (#18 embeddings build), kept AdminJobs.KEEP_DAYS
+    INTEL = "tsg_intel"  # external intelligence records, one version per change
+    EXTERNAL_FEED_STATUS = "tsg_external_feed_status"  # per source: last refresh, checkpoint; the switch
+    EXTERNAL_INTELLIGENCE_SNAPSHOTS = "tsg_external_intelligence_snapshots"  # built snapshots, one active
 
 
 class Dependency(StrEnum):

@@ -12,6 +12,7 @@ from pymongo.errors import DuplicateKeyError
 from app.core.constants import Collection, RunClash, SessionMessage
 from app.core.database import get_mongodb
 from app.core.exceptions import NotFound
+from app.models.coverage import COVERAGE_FIELDS, run_coverage
 from app.models.scenarios import SessionStatus
 
 #: What a replay reads of the run that first took an Idempotency-Key.
@@ -89,6 +90,13 @@ class SessionRepository:
             refused_key = (exc.details or {}).get("keyPattern", {})
             return RunClash.ACTIVE_RUN if "asset_id" in refused_key else RunClash.IDEMPOTENCY_KEY
         return None
+
+
+def find_run_coverage(session_id: str) -> dict[str, Any] | None:
+    """The run's coverage worked out from its plan; None before a plan exists or for an unknown run. Only the
+    results read it (G228), with a few small fields per path."""
+    record = get_mongodb()[Collection.SESSIONS].find_one({"_id": session_id}, COVERAGE_FIELDS)
+    return None if record is None else run_coverage(record)
 
 
 def find_session_status(session_id: str) -> SessionStatus | None:

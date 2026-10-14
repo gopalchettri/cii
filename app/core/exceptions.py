@@ -8,7 +8,7 @@ from pymongo.errors import ConnectionFailure as MongoConnectionFailure
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
-from app.core.constants import ErrorCode, ErrorMessage, Limits
+from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
 
 #: Driver errors meaning "the store is unreachable right now" (timeouts, lost connections, no primary).
 #: The API answers them with 503 + Retry-After; workers retry them with back-off.
@@ -118,3 +118,13 @@ class ControlsNotMapped(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class IntelFetchFailed(Exception):
+    """An external intelligence source could not be read (no answer, a refusal, an unexpected format): the
+    refresh of that source fails, the others go on, and the last good data stays in use. Not an AppError:
+    it never reaches an API caller."""
+
+    def __init__(self, message: IntelMessage, **fields: object) -> None:
+        self.message = message.format(**fields)
+        super().__init__(self.message)

@@ -180,6 +180,23 @@
   .sc .ctl { font-size: 11.5px; padding: 2px 8px; border-radius: 6px; background: #f1f5f9; border: 1px solid var(--border); }
   .sc .sc-f { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-top: 1px solid var(--border);
               background: #fafbfd; }
+  /* evidence: the [n] a scenario's text cites, the list after it, and the box shown on hover or focus */
+  .ev-ref { color: var(--primary); font-weight: 700; cursor: help; border-bottom: 1px dotted var(--primary); }
+  .ev-ref:focus { outline: 2px solid var(--primary-soft); border-radius: 3px; }
+  .ev-list { margin: 4px 0 2px; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 12.5px; }
+  .ev-list li { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .ev-list .ev-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .ev-list .faint { white-space: nowrap; }
+  .ev-pop { position: fixed; z-index: 90; width: 400px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; background: #fff;
+            border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 12px 32px rgba(15,23,42,.22); padding: 10px 12px;
+            font-size: 12.5px; display: none; }
+  .ev-pop.open { display: block; }
+  .ev-pop h4, .ev-card h4 { margin: 0 0 6px; font-size: 13.5px; line-height: 1.35; }
+  .ev-pop dl, .ev-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; margin: 0; }
+  .ev-pop dt, .ev-card dt { color: var(--muted); font-weight: 600; }
+  .ev-pop dd, .ev-card dd { margin: 0; word-break: break-word; }
+  .ev-pop ul, .ev-card ul { margin: 0; padding-left: 16px; }
+  .ev-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 12.5px; }
   .clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
   .clamp.open { -webkit-line-clamp: unset; display: block; }
   .more { color: var(--primary); cursor: pointer; font-size: 12px; font-weight: 600; }
@@ -437,12 +454,61 @@
   .rd-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 9px 12px; border: 1px solid #bfe5cc; background: #f6fbf7;
             border-radius: 9px; margin-bottom: 10px; font-size: 12.5px; }
   .rd-bar select { padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 7px; max-width: 520px; background: #fff; }
-  .io-real { font-size: 12px; line-height: 1.4; max-height: 150px; overflow: auto; margin-top: 2px; word-break: break-word; }
-  .io-real i { font-style: normal; color: var(--muted); }
+  .rd-prog { width: 160px; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; }
+  .rd-prog i { display: block; height: 100%; width: 0; background: var(--success); }
+  .io-real { font-size: 12px; line-height: 1.4; margin-top: 3px; word-break: break-word; }
   .io-box.real .io-k .faint { text-transform: none; letter-spacing: 0; font-weight: 600; }
   .rd-calls { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; align-items: center; font-size: 12px; }
-  .rd-calls button { border: 1px solid var(--border-strong); background: #fff; border-radius: 6px; padding: 1px 7px; cursor: pointer; font-size: 11.5px; }
-  .rd-calls button.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+  /* run data as pictures: tiles, chips, bars, a timeline */
+  .vz-sub { border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 8px 10px; margin: 6px 0; }
+  .vz-h { font-weight: 700; font-size: 13px; display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .vz-n { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--primary); color: #fff; font-size: 11px; flex: none; }
+  .vz-io { display: grid; grid-template-columns: minmax(0, 2fr) 18px minmax(0, 3fr); gap: 6px; align-items: start; }
+  .vz-in, .vz-out { min-width: 0; border-radius: 8px; padding: 6px 8px; }
+  .vz-in { background: #f3f8ff; border-left: 3px solid var(--info); }
+  .vz-out { background: #f3fbf6; border-left: 3px solid var(--success); }
+  .vz-k { display: block; font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); margin-bottom: 3px; }
+  .vz-ar { align-self: center; text-align: center; color: var(--faint); }
+  .vz-cap { font-size: 11px; color: var(--muted); font-weight: 600; margin: 6px 0 3px; }
+  .vz-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vz-chip { background: #fff; border: 1px solid var(--border-strong); border-radius: 999px; padding: 1px 8px; font-size: 11.5px; max-width: 100%;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vz-chain { color: var(--faint); font-size: 12px; }
+  .vz-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+  .vz-stat { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 3px 9px; display: flex; flex-direction: column; min-width: 56px; max-width: 100%; }
+  .vz-stat b { font-size: 14px; line-height: 1.25; word-break: break-word; }
+  .vz-stat span { font-size: 10.5px; color: var(--muted); }
+  .vz-bars, .vz-rows { display: flex; flex-direction: column; gap: 3px; }
+  .vz-bar { display: grid; grid-template-columns: minmax(0, 18em) minmax(60px, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+  .vz-bar.tagged { grid-template-columns: minmax(0, 15em) minmax(50px, 1fr) auto 11em; }
+  .vz-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .vz-track { position: relative; height: 12px; background: #e9eef5; border-radius: 4px; }
+  .vz-track i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--primary); border-radius: 4px; }
+  .vz-track u { position: absolute; top: -3px; bottom: -3px; border-left: 2px dashed var(--danger); }
+  .vz-bar.under { opacity: .45; }
+  .vz-bar.crit .vz-track i { background: var(--danger); }
+  .vz-v { font-family: var(--mono); font-size: 11.5px; min-width: 4.5em; text-align: right; white-space: nowrap; }
+  .vz-tag { font-size: 10.5px; color: var(--muted); }
+  .vz-note { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .vz-row { display: flex; gap: 8px; align-items: center; font-size: 12px; flex-wrap: wrap; }
+  .vz-ok { font-weight: 800; width: 1em; } .vz-ok.y { color: var(--success); } .vz-ok.n { color: var(--danger); }
+  .vz-mini { display: inline-block; width: 60px; height: 8px; background: #e9eef5; border-radius: 4px; position: relative; overflow: hidden; }
+  .vz-mini i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--success); }
+  .vz-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .vz-cols > div { min-width: 0; }
+  .vz-ol { margin: 0; padding-left: 20px; font-size: 12px; } .vz-ol li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vz-ba { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; margin-bottom: 6px; }
+  .vz-ba s { color: var(--danger); } .vz-ba b { color: var(--success); }
+  .vz-item { font-size: 12.5px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; margin-bottom: 4px; }
+  .vz-nav { display: inline-flex; gap: 4px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
+  .vz-nav select { max-width: min(520px, 55vw); padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 12px; background: #fff; }
+  .vz-nav button { border: 1px solid var(--border-strong); background: #fff; border-radius: 6px; padding: 0 8px; cursor: pointer; font-size: 13px; }
+  .vz-nav button:disabled { opacity: .4; cursor: default; }
+  .vz-t { font-size: 12.5px; }
+  .vz-raw { margin-top: 6px; } .vz-raw > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  @media (max-width: 900px) {
+    .vz-io { grid-template-columns: 1fr; } .vz-ar { transform: rotate(90deg); }
+    .vz-bar { grid-template-columns: minmax(0, 9em) minmax(40px, 1fr) auto; }
+  }
   .rd-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   @media (max-width: 900px) { .rd-panes { grid-template-columns: 1fr; } }
   .rd-panes > div { min-width: 0; }
@@ -450,12 +516,6 @@
                   white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; }
   .rd-step { border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; margin-bottom: 8px; background: #fff; }
   .rd-step h5 { margin: 0; font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .rd-sub { cursor: default; font-size: 11.5px; }
-  .rd-sub:hover .io-mid { box-shadow: none; }
-  .rd-sub .io-box, .rd-sub .io-mid { padding: 5px 8px; }
-  .rd-sub .io-mid b { font-size: 12px; }
-  .rd-sub .io-real { font-size: 11.5px; max-height: 110px; }
-  .rd-sub + .io-down { padding: 1px 0; font-size: 12px; }
   .rd-explain { margin-top: 8px; } .rd-explain > summary { cursor: pointer; color: var(--primary); font-weight: 600; font-size: 12.5px; }
   @media (max-width: 760px) {
     .io-row { grid-template-columns: 1fr; }
@@ -504,9 +564,13 @@
       <div class="io-hint"><span>Each row is <b>input &rarr; what runs &rarr; output</b>. Click a step for its sub-steps, a sub-step for every call's real data.</span>
         <span style="flex:1"></span><button class="btn sm" id="ioAll">Open all steps</button><button class="btn sm ghost" id="ioNone">Close all</button></div>
       <div class="rd-bar" id="rdBar">
-        <label class="btn sm primary" style="cursor:pointer">Load run data<input type="file" id="rdFiles" accept=".log,.txt,.json,.jsonl" multiple hidden></label>
-        <span id="rdInfo" class="muted">Pick <code>logs/worker-dev.log</code> and <code>logs/api.log</code>: every step the app ran writes its real input and output there
-          (<code>DEBUG_STEP_OUTPUT=true</code>). Read in this tab only.</span>
+        <button class="btn sm primary" id="rdDirBtn" type="button">Choose logs folder</button>
+        <label class="btn sm" style="cursor:pointer">or files<input type="file" id="rdFiles" accept=".log,.txt,.json,.jsonl" multiple hidden></label>
+        <input type="file" id="rdDir" webkitdirectory multiple hidden>
+        <button class="btn sm" id="rdRefresh" type="button" hidden title="Read the same folder again: new runs and steps appear">Refresh</button>
+        <span class="rd-prog" id="rdProg" hidden><i></i></span>
+        <span id="rdInfo" class="muted">Pick the app's <code>logs</code> folder, or drop log files here. Needs <code>DEBUG_STEP_OUTPUT=true</code>
+          (and <code>DEBUG_STEP_DETAIL=true</code> for the inside of each step). Read in this tab only.</span>
       </div>
       <div class="wk-trace" id="wkTrace"></div>
       <div id="wkView"></div>
@@ -519,7 +583,7 @@
       </div>
       <details class="wk-import" id="wkImport">
         <summary>Import runtime data the API does not return <span class="faint" id="wkImpCount"></span></summary>
-        <p class="muted" style="margin:8px 0 0">The API never returns the frozen plan (threats, category verdicts, folds, attack-path ranks),
+        <p class="muted" style="margin:8px 0 0">The API never returns the frozen plan (threats, category verdicts, folds, scenario ranks),
           the AI prompts and replies, a scenario's control query or a plan version's snapshot. Paste documents exported from MongoDB
           (<code>mongoexport</code> NDJSON, a JSON array, or one document; Extended JSON is fine) or the event log exported by
           <code>sse_test.html</code>. Recognised: <code>tsg_sessions</code>, <code>tsg_ai_calls</code>, <code>tsg_scenarios</code>,
@@ -574,6 +638,7 @@
           <button data-f="accepted">Accepted</button><button data-f="rejected">Rejected</button>
         </div>
         <div style="flex:1"></div>
+        <button class="btn" id="btnExportWord" disabled title="The scenarios shown here, as a Word document for management">Export to Word</button>
         <button class="btn" id="btnRefreshScen">Refresh</button>
         <button class="btn" id="btnAcceptAll">Accept all to review</button>
         <button class="btn primary" id="btnNextSet">Generate next set</button>
@@ -1006,7 +1071,7 @@ $(function () {
     var p = prog(state.session), c = p.scenario_count || {};
     var total = c.total, served = c.served || 0;
     var head = '<span class="num">' + served + '</span><span class="of">written of <span class="why" title="scenario_count.total: ' +
-               'attack paths selected when the plan was frozen (stage 2.11); unknown until the threats are found">' + (total == null ? "?" : total) +
+               'scenarios selected when the plan was frozen (stage 2.11); unknown until the threats are found">' + (total == null ? "?" : total) +
                "</span> planned</span>" +
                (c.remaining != null ? ' <span class="sep">|</span> <span class="left"><b>' + c.remaining + "</b> still to write</span>" : "");
     var badge = overallBadge(p.overall);
@@ -1037,7 +1102,7 @@ $(function () {
       return { w: ws[st] || ws.RUNNING, t: t, s: RAIL[st] || "idle", d: d };
     }
     steps.push(stage("threats", "2 · Identify threats & freeze plan", { RUNNING: "2.1", COMPLETE: "2.11", ERROR: "X.1" }, "Waiting",
-                     p.threats === "RUNNING" ? "Finding threats (2.2–2.11)" : c.total != null ? c.total + " attack path(s) planned" : "Done"));
+                     p.threats === "RUNNING" ? "Finding threats (2.2–2.11)" : c.total != null ? c.total + " scenario planned" : "Done"));
     steps.push(stage("scenarios", "3 · Write scenarios", { RUNNING: "3.1", COMPLETE: "3.10", ERROR: "X.1" }, "After the plan is frozen",
                      (c.served || 0) + " written · " + (c.remaining != null ? c.remaining : "?") + " to write"));
     var cWait = items.filter(function (x) { return x.controls_status === "queued" || x.controls_status === "running"; }).length;
@@ -1202,7 +1267,7 @@ $(function () {
     var p = prog(state.session);
     if (scnRunning()) return "Scenarios are being generated: wait for this round to finish (409 generation_in_progress)";
     if (p.threats === "ERROR") return "The run failed while finding threats (409 run_failed)";
-    if ((p.scenario_count || {}).remaining === 0) return "No attack path is left to write (409 scenarios_abandoned / target_reached / nothing_left)";
+    if ((p.scenario_count || {}).remaining === 0) return "No scenario is left to write (409 scenarios_abandoned / target_reached / nothing_left)";
     return "";
   }
 
@@ -1212,7 +1277,7 @@ $(function () {
     else if (scnRunning()) out.push(["info", "Scenarios are being written (stage 3). New cards appear here as each one is saved."]);
     if (n.failed) {
       out.push(["warn", n.failed + (n.failed === 1 ? " card" : " cards") + " could not be written. A failed card is not regenerated " +
-                "(409 failure_scenario): the writer retries its attack path itself until it is written or abandoned after 5 attempts."]);
+                "(409 failure_scenario): the writer retries its scenario itself until it is written or abandoned after 5 attempts."]);
     }
     if (!scnRunning() && s.session_status !== "failed" && why) out.push(["warn", "Notes from the run: " + why]);
     if (!scnRunning() && p.last_next_set && p.last_next_set.outcome !== "complete") out.push(["warn", "The last next set: " + lastText(p.last_next_set, "delivered") + "."]);
@@ -1239,8 +1304,10 @@ $(function () {
   function scnSystems(s) {
     var l = scnText(s).supporting_systems_involved || [];
     return l.length ? '<div class="controls">' + l.map(function (x) {
-      return '<span class="ctl scn-chip' + (x.is_entry_point ? " scn-entry" : "") + '" title="' + (x.is_entry_point ? "Entry point" : "") + '">' +
-             esc(x.supporting_system) + (x.is_entry_point ? " · entry point" : "") + "</span>";
+      var off = x.is_applicable === false;   // G216: every system is listed, applicable or not
+      return '<span class="ctl scn-chip' + (x.is_entry_point ? " scn-entry" : "") + (off ? " faint" : "") + '" title="' +
+             attr(x.justification || (x.is_entry_point ? "Entry point" : "")) + '">' +
+             esc(x.supporting_system) + (x.is_entry_point ? " · entry point" : "") + (off ? " · not applicable" : "") + "</span>";
     }).join("") + "</div>" : '<p class="faint">None listed</p>';
   }
   function scnActors(s) {
@@ -1253,9 +1320,65 @@ $(function () {
     var n = all.map(function (a) { return a.actor_name; });
     return n.length ? esc(n.join(", ")) : '<span class="faint">None linked</span>';
   }
-  function scnClamp(id, key, text) {
+  // ---------- real groups (ScenarioView.known_groups, G230: a card written with external intelligence; none: nothing shown) ----------
+  var GROUP_KIND = { nation_state: "state group", cybercriminal: "criminal group", ransomware: "ransomware group", hacktivist: "hacktivist group" };
+  var GROUP_MATCH = { used_this_technique: "used this attack", used_related_technique: "used a similar attack", nearest: "closest match" };
+  // G232: why a group is near this asset, and what a source tells about place (THREAT_CONTEXT_COUNTRY).
+  var GROUP_NEAR = { targeted_country: "attacked this country", targeted_region: "attacked the region", targeted_sector: "attacked your sector" };
+  var EV_SCOPE = { country: "this country", regional: "regional", global: "global" };
+  function groupWhy(g) {
+    return (GROUP_MATCH[g.match] || g.match) + (g.through ? " through " + g.through : "") + ": " + (g.technique_title || g.technique) + (g.cited ? " [" + g.cited + "]" : "");
+  }
+  function groupNear(g) {
+    return (g.relevance || []).map(function (r) { return GROUP_NEAR[r] || r; }).join(", ");
+  }
+  function groupsNote(s) {
+    return (s.known_groups || []).some(function (g) { return !g.fits_actor; }) ? "No group of this attacker type is recorded; these groups are known for this attack." : "";
+  }
+  function scnGroups(s) {
+    var l = s.known_groups || [];
+    return l.length ? '<div class="lbl">Real groups known for this attack</div><ul class="ev-list">' + l.map(function (g) {
+      var name = /^https?:\/\//i.test(g.url || "") ? '<a href="' + attr(g.url) + '" target="_blank" rel="noopener noreferrer">' + esc(g.name) + "</a>" : esc(g.name);
+      return '<li title="' + attr(g.how || "") + '"><span><b>' + name + "</b>" + (GROUP_KIND[g.kind] ? " · " + GROUP_KIND[g.kind] : "") +
+        (groupNear(g) ? " · <i>" + esc(groupNear(g)) + "</i>" : "") + "</span>" +
+        '<span class="ev-t">' + esc(groupWhy(g)) + "</span>" + (g.who ? '<span class="faint">' + esc(g.who) + "</span>" : "") + "</li>";
+    }).join("") + "</ul>" + (groupsNote(s) ? '<p class="faint">' + esc(groupsNote(s)) + "</p>" : "") : "";
+  }
+  function groupText(s) {
+    var l = s.known_groups || [];
+    return l.length ? " Real groups known for this attack: " + l.map(function (g) {
+      return g.name + (GROUP_KIND[g.kind] ? " (" + GROUP_KIND[g.kind] + ")" : "") + (groupNear(g) ? ", " + groupNear(g) : "") + ", " + groupWhy(g);
+    }).join("; ") + "." + (groupsNote(s) ? " " + groupsNote(s) : "") : "";
+  }
+  // ---------- evidence (ScenarioView.evidence: what the text cites by [n], app/models/external_intelligence/evidence_view.py) ----------
+  function evOf(s, n) { return (s.evidence || []).filter(function (e) { return e.n === n; })[0] || null; }
+  function evRef(s, n) { return '<span class="ev-ref" tabindex="0" data-ev-scn="' + attr(s.scenario_id) + '" data-ev-n="' + n + '">' + n + "</span>"; }
+  // The text escaped, every cited [n] (or [1, 2]) a hover target; a number the evidence does not hold stays plain.
+  function evText(s, text) {
+    return esc(text).replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, function (all, nums) {
+      var ns = nums.split(/\s*,\s*/).map(Number);
+      return ns.some(function (n) { return evOf(s, n); }) ? "[" + ns.map(function (n) { return evOf(s, n) ? evRef(s, n) : n; }).join(", ") + "]" : all;
+    });
+  }
+  function evList(s) {
+    var l = s.evidence || [];
+    return l.length ? '<div class="lbl">Evidence</div><ul class="ev-list">' + l.map(function (e) {
+      return "<li><span>[" + evRef(s, e.n) + ']</span><span class="ev-t" title="' + attr(e.title || e.ref || "") + '">' + esc(e.title || e.ref || "") + "</span>" +
+        ([e.source, e.kind, EV_SCOPE[e.scope]].filter(Boolean).length ? '<span class="faint">' + esc([e.source, e.kind, EV_SCOPE[e.scope]].filter(Boolean).join(" · ")) + "</span>" : "") + "</li>";
+    }).join("") + "</ul>" : "";
+  }
+  // Title, source, kind, url, ref, facts: whatever is null or empty is left out. Only an http(s) url is a link.
+  function evBox(e, withN) {
+    var row = function (k, v) { return v ? "<dt>" + k + "</dt><dd>" + v + "</dd>" : ""; };
+    var link = /^https?:\/\//i.test(e.url || "") ? '<a href="' + attr(e.url) + '" target="_blank" rel="noopener noreferrer">' + esc(e.url) + "</a>" : e.url ? esc(e.url) : "";
+    var facts = (e.facts || []).filter(Boolean);
+    return (e.title || withN ? "<h4>" + (withN ? "[" + e.n + "] " : "") + esc(e.title || "") + "</h4>" : "") + "<dl>" +
+      row("Source", e.source && esc(e.source)) + row("Kind", e.kind && esc(e.kind)) + row("URL", link) + row("Ref", e.ref && esc(e.ref)) +
+      row("Facts", facts.length && "<ul>" + facts.map(function (f) { return "<li>" + esc(f) + "</li>"; }).join("") + "</ul>") + "</dl>";
+  }
+  function scnClamp(id, key, text, s) {
     var open = scnMem().open[id + key];
-    return '<p class="clamp' + (open ? " open" : "") + '">' + esc(text || "—") + "</p>" +
+    return '<p class="clamp' + (open ? " open" : "") + '">' + (text ? evText(s, text) : "—") + "</p>" +
            (String(text || "").length > 220 ? '<span class="more" data-key="' + key + '">' + (open ? "less" : "more") + "</span>" : "");
   }
 
@@ -1287,14 +1410,14 @@ $(function () {
              '.</p><div class="callout warn"><code>' + esc(f.code || "failed") + "</code> " + esc(f.message || "") + "</div>";
     } else {
       var rep = scnReplacesAccepted(s), prev = scnReplaces(s) ? scnFind(scnReplaces(s)) : null;
-      body = (scnReplaces(s) ? '<div class="callout info">Version ' + esc(s.version) + " of this attack path" +
+      body = (scnReplaces(s) ? '<div class="callout info">Version ' + esc(s.version) + " of this scenario" +
                (rep ? ": the accepted version " + esc(rep.version) + " stays until you accept this one as its replacement." :
                 prev ? " (replaces version " + esc(prev.version) + ")." : ".") + "</div>" : "") +
              (s.regenerate_error ? '<div class="callout warn">Last regenerate failed: <code>' + esc(s.regenerate_error.code) + "</code> " +
                esc(s.regenerate_error.message || "") + "</div>" : "") +
-             '<div class="lbl">Threat Scenario</div>' + scnClamp(id, "s", x.scenario_statement) +
-             '<div class="lbl">Risk Statement</div>' + scnClamp(id, "r", x.risk_statement) +
-             '<div class="lbl">Threat actor</div><p>' + scnActors(s) + "</p>" +
+             '<div class="lbl">Threat Scenario</div>' + scnClamp(id, "s", x.scenario_statement, s) + evList(s) +
+             '<div class="lbl">Risk Statement</div>' + scnClamp(id, "r", x.risk_statement, s) +
+             '<div class="lbl">Threat actor</div><p>' + scnActors(s) + "</p>" + scnGroups(s) +
              '<div class="lbl">Supporting Systems</div>' + scnSystems(s) +
              '<div class="lbl">Controls</div>' + (scnCtlState(s) || scnChips(s));
     }
@@ -1318,16 +1441,18 @@ $(function () {
       (st === "rejected" ? '<span class="badge">' + esc(scnWho("Rejected", s.rejected_by, s.rejected_at)) + "</span>" : "") + "</div>" +
       (st === "failed" ? '<div class="callout warn"><code>' + esc((s.failure || {}).code) + "</code> " + esc((s.failure || {}).message) + "</div>" : "") +
       (st !== "failed"
-        ? sec("Scenario", '<p style="white-space:pre-line">' + esc(x.scenario_statement || "—") + "</p>") + sec("Risk", "<p>" + val(x.risk_statement) + "</p>") +
+        ? sec("Scenario", '<p style="white-space:pre-line">' + (x.scenario_statement ? evText(s, x.scenario_statement) : "—") + "</p>") +
+          ((s.evidence || []).length ? sec("Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
+          sec("Risk", "<p>" + (x.risk_statement ? evText(s, x.risk_statement) : val(null)) + "</p>") +
           ((x.assumptions || []).length ? sec("Assumptions", ul(x.assumptions)) : "") +
-          sec("Supporting systems", sys.length ? '<table class="tbl"><thead><tr><th>System</th><th>Entry point</th></tr></thead><tbody>' +
-            sys.map(function (y) { return "<tr><td>" + esc(y.supporting_system) + "</td><td>" + (y.is_entry_point ? "yes" : "") + "</td></tr>"; }).join("") + "</tbody></table>"
+          sec("Supporting systems", sys.length ? '<table class="tbl"><thead><tr><th>System</th><th>Applicable</th><th>Entry point</th><th>Reason</th></tr></thead><tbody>' +
+            sys.map(function (y) { return "<tr><td>" + esc(y.supporting_system) + "</td><td>" + (y.is_applicable === false ? "no" : "yes") + "</td><td>" + (y.is_entry_point ? "yes" : "") + "</td><td>" + esc(y.justification || "") + "</td></tr>"; }).join("") + "</tbody></table>"
             : '<p class="faint">None listed</p>')
         : "") +
       sec("Threat", kv([["Category", val(x.threat_category ? x.threat_category + ((x.contributing_categories || []).length ? " (also " + x.contributing_categories.join(", ") + ")" : "") : null)],
                         ["Type", val(t.threat_type)], ["Name", val(t.threat_name)],
                         ["Origin", val(t.is_threat_ai_generated ? "Proposed by the AI (gap fill, stage 2.7)" : t.threat_catalogue_id != null ? "Library threat " + t.threat_catalogue_id : null)]])) +
-      sec("Threat actor", "<p>" + scnActors(s) + "</p>") +
+      sec("Threat actor", "<p>" + scnActors(s) + "</p>" + scnGroups(s)) +
       (st !== "failed" ? sec("Checks (stages 3.6–3.7)", kv([
           ["Validation", val(s.validation_status)], ["Warnings", ul(s.validation_errors)], ["Plan-check notes", ul(s.validation_notes)],
           ["Route", val(x.route_status)]])) : "") +
@@ -1348,6 +1473,7 @@ $(function () {
   function renderScenarios() {
     var f = state.filter || "all", $cards = $("#cards"), why = scnNextSetBlock();
     $("#scenFilter button").each(function () { $(this).toggleClass("on", $(this).attr("data-f") === f); });
+    $("#btnExportWord").prop("disabled", !scnExportable().length);
     $("#btnNextSet").prop("disabled", !!why).attr("title", why || "POST /v1/sessions/{id}/scenarios/next-set (stage 5.5)");
     if (!state.sid || !state.results) {
       scnBar(null);
@@ -1369,13 +1495,19 @@ $(function () {
     });
     scnBar(n);
     $("#scenNote").html(scnNotes(n));
-    var shown = list.filter(function (s) {
-      var st = scnStatus(s);
-      return !s.replaced_by && (f === "all" || st === f || (f === "pending" && st === "failed"));
-    });
+    var shown = scnShown();
     $cards.html(shown.length ? shown.map(scnCard).join("")
       : list.length ? scnEmpty("&#8709;", "No scenarios in this view.")
       : scnEmpty("&#9678;", "No scenarios in this session yet."));
+  }
+
+  // The cards the tab shows: current versions under the filter ("To review" also shows the failed cards).
+  function scnShown() {
+    var f = state.filter || "all";
+    return state.results ? scnList().filter(function (s) {
+      var st = scnStatus(s);
+      return !s.replaced_by && (f === "all" || st === f || (f === "pending" && st === "failed"));
+    }) : [];
   }
 
   function scnAfterDecision() { refreshResults(); refreshPlans(); refreshBoard(); }
@@ -1383,7 +1515,7 @@ $(function () {
   function scnReject(s) {
     openModal("Reject this scenario?",
       "<p><b>" + esc(scnTitle(s)) + "</b></p><p class=\"muted\">Decisions are final: there is no un-reject. The rejection is " +
-      "audited. To get a fresh scenario for the same attack path, use Regenerate afterwards.</p>",
+      "audited. To get a fresh version of the same scenario, use Regenerate afterwards.</p>",
       [{ text: "Reject", cls: "danger", click: function ($m) {
         withBusy($m, api("POST", scnPath("/scenarios/reject"), { scenario_ids: [s.scenario_id] })).done(function (r) {
           closeModal();
@@ -1409,7 +1541,7 @@ $(function () {
       .fail(function (e) {
         if (e.reason === "duplicate_version" && !replace) {
           openModal("Another version is already accepted",
-            "<p>Only one version of an attack path can be accepted (a unique index enforces it). Accept this version " +
+            "<p>Only one version of a scenario can be accepted (a unique index enforces it). Accept this version " +
             "<b>as its replacement</b>? The other one goes back to pending (stage 5.3, <code>replace_accepted: true</code>).</p>",
             [{ text: "Accept as replacement", cls: "success", click: function ($m) { closeModal(); scnAccept(s, true, $m); } }]);
         } else toast(e.reason || e.code || "Accept failed", e.message, "err");
@@ -1431,7 +1563,7 @@ $(function () {
     withBusy($btn, api("POST", scnPath("/regenerate/scenarios"), { scenario_ids: [id] })).always(function () { delete mem.busy[id]; })
       .done(function () {
         mem.regen[id] = { t: Date.now() };
-        toast("Regenerating…", "A new version is written for this attack path (stage 5.6); it appears as its own card.");
+        toast("Regenerating…", "A new version is written for this scenario (stage 5.6); it appears as its own card.");
         refreshBoard(); soonResults();
       }).always(renderScenarios);
   }
@@ -1443,7 +1575,7 @@ $(function () {
       var $b = $(this);
       if (!state.sid) return;
       withBusy($b, api("POST", scnPath("/scenarios/next-set"))).done(function (r) {
-        toast("Generating the next set…", "Epoch " + (r && r.epoch) + ": up to 6 more attack paths are written (stage 3.1).");
+        toast("Generating the next set…", "Epoch " + (r && r.epoch) + ": up to 6 more scenarios are written (stage 3.1).");
         $b.prop("disabled", true);
         refreshBoard();
       });
@@ -1453,7 +1585,7 @@ $(function () {
       if (!state.sid || !l.length) return;
       openModal("Accept all scenarios to review?",
         "<p>This sends <code>{\"scenario_ids\": \"all\"}</code>: every current written, not rejected version is accepted. " +
-        "A path whose other version is already accepted is skipped (<code>duplicate_version</code>): accept-all never replaces.</p>",
+        "A scenario whose other version is already accepted is skipped (<code>duplicate_version</code>): accept-all never replaces.</p>",
         [{ text: "Accept all", cls: "success", click: function ($m) {
           withBusy($m, api("POST", scnPath("/accept"), { scenario_ids: "all" })).done(function (r) {
             closeModal();
@@ -1470,6 +1602,151 @@ $(function () {
       $(this).text(on ? "less" : "more");
     })
     .on("click", "[data-scn-goto]", function () { gotoTab($(this).attr("data-scn-goto")); });
+
+  // The evidence box: opens on a cited [n] (hover or keyboard focus, on a card or in Details), stays while the
+  // pointer is on it so its link can be clicked, and closes on leaving, scrolling or Esc.
+  var $evPop = $('<div class="ev-pop" role="dialog" aria-label="Evidence"></div>').appendTo("body"), evTimer = null;
+  function evShow(el) {
+    var s = scnFind($(el).attr("data-ev-scn")), e = s && evOf(s, +$(el).attr("data-ev-n"));
+    if (!e) return;
+    clearTimeout(evTimer);
+    $evPop.html(evBox(e, false)).addClass("open");
+    var r = el.getBoundingClientRect(), w = $evPop.outerWidth(), h = $evPop.outerHeight();
+    $evPop.css({ left: Math.max(8, Math.min(r.left, innerWidth - w - 8)), top: r.bottom + 6 + h > innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6 });
+  }
+  function evClose(later) {
+    clearTimeout(evTimer);
+    if (later) evTimer = setTimeout(function () { $evPop.removeClass("open"); }, 250); else $evPop.removeClass("open");
+  }
+  $(document)
+    .on("mouseenter focusin", ".ev-ref", function () { evShow(this); })
+    .on("mouseleave focusout", ".ev-ref", function () { evClose(true); })
+    .on("keydown", function (e) { if (e.key === "Escape") evClose(false); });
+  $evPop.on("mouseenter", function () { clearTimeout(evTimer); }).on("mouseleave", function () { evClose(true); });
+  document.addEventListener("scroll", function (e) { if (!$evPop[0].contains(e.target)) evClose(false); }, true);
+
+  // ---------- Export to Word: the cards the tab shows, as a .docx management can read (built here, in this tab) ----------
+  // docx.js is fetched on the first export only, pinned and checked by its hash (jsDelivr's published sha256).
+  var DOCX_SRC = "https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js",
+      DOCX_SRI = "sha256-AtVo0gPAGArzdgm89f9sCRnSIPkzqIyoluugVWoI+q0=";
+  var READ_ME = [
+    ["Scenario statement", "A short story of how an attack could happen to this asset."],
+    ["Evidence", "Public sources the scenario cites. [1] in the text means evidence item 1."],
+    ["Risk statement", "What the organisation could lose."],
+    ["Threat actor", "Who would most likely do it."],
+    ["Supporting system", "Which of our systems the attack goes through. The entry point is where it starts."],
+    ["Controls", "Controls from our control library that reduce this risk."],
+    ["Status", "The decision recorded in the tool: To review, Accepted or Rejected."]];
+  var STATUS_WORD = { pending: "To review", accepted: "Accepted", rejected: "Rejected" };
+  // What is exported: the cards the tab shows, less the failed ones (they have no scenario to read).
+  function scnExportable() { return scnShown().filter(function (s) { return scnStatus(s) !== "failed"; }); }
+  function loadDocx() {
+    if (window.docx) return Promise.resolve(window.docx);
+    return loadDocx.p || (loadDocx.p = new Promise(function (ok, fail) {
+      var el = document.createElement("script");
+      el.src = DOCX_SRC; el.integrity = DOCX_SRI; el.crossOrigin = "anonymous";
+      el.onload = function () { if (window.docx) ok(window.docx); else fail(new Error("no docx")); };
+      el.onerror = function () { loadDocx.p = null; el.remove(); fail(new Error("not loaded")); };
+      document.head.appendChild(el);
+    }));
+  }
+  // The acting attacker only (alternates are left out); without one, whoever is linked.
+  function actorText(s) {
+    var all = (s.actors || []).filter(function (a) { return a && a.actor_name; });
+    var acting = all.filter(function (a) { return a.role === "acting"; });
+    return (acting.length ? acting : all).map(function (a) { return a.actor_name; }).join(", ") || "None linked";
+  }
+  function controlsLine(s) {
+    var st = s.controls_status;
+    return !st ? "No controls (not a written scenario)" : st === "queued" || st === "running" ? "Still being mapped"
+         : st === "failed" ? "Control mapping failed" : "No matching library controls";
+  }
+  function scnDocx(D, list) {
+    var run = function (text, o) { return new D.TextRun($.extend({ text: String(text == null ? "" : text) }, o || {})); };
+    var P = function (text, o, para) { return new D.Paragraph($.extend({ children: [run(text, o)], spacing: { after: 80 } }, para || {})); };
+    var paras = function (text) { return String(text || "—").split(/\n+/).map(function (t) { return P(t); }); };
+    var H = function (text, level, newPage) { return new D.Paragraph({ text: text, heading: level, pageBreakBefore: !!newPage, spacing: { before: 240, after: 100 } }); };
+    var cell = function (text, head, w) {
+      return new D.TableCell({ children: [P(text, { bold: !!head })], width: { size: w, type: D.WidthType.PERCENTAGE },
+                               shading: head ? { fill: "EEF2F7" } : undefined, margins: { top: 60, bottom: 60, left: 100, right: 100 } });
+    };
+    var table = function (heads, rows, widths) {
+      return new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE },
+        rows: [new D.TableRow({ tableHeader: true, children: heads.map(function (h, i) { return cell(h, true, widths[i]); }) })].concat(rows.map(function (r) {
+          return new D.TableRow({ children: r.map(function (v, i) { return cell(v, false, widths[i]); }) }); })) });
+    };
+    var terms = function (rows) {
+      return new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, rows: rows.map(function (r) {
+        return new D.TableRow({ children: [cell(r[0], true, 28), cell(r[1], false, 72)] }); }) });
+    };
+    var evidence = function (e) {
+      var out = [P("[" + e.n + "] " + (e.title || ""), { bold: true }, { spacing: { before: 120, after: 40 } })];
+      if (e.source) out.push(P("Source: " + e.source));
+      if (e.kind) out.push(P("Kind: " + e.kind));
+      if (e.url) out.push(new D.Paragraph({ spacing: { after: 80 }, children: [run("URL: ")].concat(/^https?:\/\//i.test(e.url)
+        ? [new D.ExternalHyperlink({ link: e.url, children: [run(e.url, { style: "Hyperlink" })] })] : [run(e.url)]) }));
+      if (e.ref) out.push(P("Ref: " + e.ref));
+      (e.facts || []).filter(Boolean).forEach(function (f) { out.push(P(f, null, { bullet: { level: 0 } })); });
+      return out;
+    };
+    var s0 = state.session || {}, asset = s0.asset_name || (state.results || {}).asset_name || "this asset", n = {};
+    list.forEach(function (s) { var st = scnStatus(s); n[st] = (n[st] || 0) + 1; });
+    var counts = ["pending", "accepted", "rejected"].filter(function (k) { return n[k]; }).map(function (k) { return n[k] + " " + STATUS_WORD[k].toLowerCase(); });
+    var body = [
+      new D.Paragraph({ text: "Threat scenarios: " + asset, heading: D.HeadingLevel.TITLE }),
+      P("For management review", { size: 28, color: "555555" }, { spacing: { after: 360 } }),
+      P("Generated " + new Date().toLocaleString() + (state.sid ? " · session " + short(state.sid) : "")),
+      P(list.length + (list.length === 1 ? " scenario: " : " scenarios: ") + counts.join(", ")),
+      P("Written with AI assistance from the organisation's threat library and public sources. Please check that each scenario is realistic for us.",
+        { italics: true, color: "555555" }, { spacing: { before: 240 } }),
+      H("How to read this document", D.HeadingLevel.HEADING_1, true), terms(READ_ME),
+      H("Summary", D.HeadingLevel.HEADING_1),
+      table(["No.", "Scenario", "Kind of threat", "Threat actor", "Status"], list.map(function (s, i) {
+        return [String(i + 1), scnTitle(s), scnText(s).threat_category || "—", actorText(s), STATUS_WORD[scnStatus(s)]];
+      }), [7, 43, 18, 18, 14])
+    ];
+    list.forEach(function (s, i) {
+      var x = scnText(s), no = (i + 1) + ". ";
+      var sys = x.supporting_systems_involved || [], ctl = s.controls || [];
+      body.push(H(no + scnTitle(s), D.HeadingLevel.HEADING_1, true), H("Scenario Statement", D.HeadingLevel.HEADING_2));
+      body = body.concat(paras(x.scenario_statement));
+      if ((s.evidence || []).length) {
+        body.push(H("Evidence", D.HeadingLevel.HEADING_2));
+        s.evidence.forEach(function (e) { body = body.concat(evidence(e)); });
+      }
+      body.push(H("Risk Statement", D.HeadingLevel.HEADING_2));
+      body = body.concat(paras(x.risk_statement));
+      body.push(H("Threat Actor", D.HeadingLevel.HEADING_2), P(actorText(s) + groupText(s)), H("Supporting System", D.HeadingLevel.HEADING_2),
+        sys.length ? table(["System", "Entry point", "Applicable", "Why"], sys.map(function (y) {
+          return [y.supporting_system, y.is_entry_point ? "Yes" : "", y.is_applicable === false ? "No" : "Yes", y.justification || ""];
+        }), [28, 14, 14, 44]) : P("None listed"),
+        H("Controls", D.HeadingLevel.HEADING_2),
+        ctl.length ? table(["Code", "Control", "Domain"], ctl.map(function (c) { return [c.control_code || "", c.control_name || "", c.domain || ""]; }), [18, 57, 25])
+                   : P(controlsLine(s)));
+    });
+    return { doc: new D.Document({ creator: "TSG Console", title: "Threat scenarios: " + asset,
+                                   styles: { default: { document: { run: { font: "Calibri", size: 22 } } } },
+                                   sections: [{ children: body }] }), asset: asset };
+  }
+  function scnExportDocx($b) {
+    var list = scnExportable();
+    if (!list.length) return;
+    busy($b, true);
+    loadDocx().then(function (D) {
+      var out = scnDocx(D, list);
+      return D.Packer.toBlob(out.doc).then(function (blob) {
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "Threat scenarios - " + out.asset.replace(/[\\/:*?"<>|]+/g, " ").trim() + " - " + new Date().toISOString().slice(0, 10) + ".docx";
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+        toast("Word document ready", list.length + (list.length === 1 ? " scenario" : " scenarios") + " exported", "ok");
+      });
+    }).catch(function (e) {
+      toast("Could not build the Word document", window.docx ? e.message : "Could not load the Word library; check the internet connection.", "err");
+    }).then(function () { busy($b, false); });
+  }
+  $("#btnExportWord").on("click", function () { scnExportDocx($(this)); });
 
   // ==================== module: plans ====================
   // ====================================================================================
@@ -2179,33 +2456,33 @@ $(function () {
       nx: ["2.10"], out: "The final threat list.", st: "plan.folded[] (reason same_attack)",
       c: ["app/engine/scenarios/threat_list/same_attack_check.py:SameAttackCheck", "app/engine/scenarios/threat_list/threat_codes.py"] },
 
-    { id: "2.10", s: "2", t: "Assign attackers and check the fit", run: "worker · `AttackerAssigner`, `AttackerFitCheck`",
+    { id: "2.10", s: "2", t: "Assign attackers", run: "worker · `AttackerAssigner`, `choose_actors`",
       from: ["2.9"], in: "Each threat (type, name, reason), the sector, the THREAT_ACTOR index, each threat type's linked actors.",
       p: ["Query `{type_name}: {name}. {reason} {sector}`; `find_actors` ranks actors with the same BM25 + vector RRF (no floor, every actor).",
           "A threat with linked actors: the ranking orders only the linked ones; the first is `acting`, up to 3 more are `alternate` (`Actors.MAX` = 4).",
           "No linked actor: the closest pool = actors linked to any type; with `ACTOR_SIMILARITY_THRESHOLD` = 0 (default) the top 3 by ranking are offered and the first acts, `closest: true`.",
           "Embedding unavailable: re-raised when a threat has no linked actor; otherwise the library's name order is used (`actors_ranked: false`).",
-          "`AttackerFitCheck.check_attackers` (closest-match threats only, slots `A1..`, ≤20 per batch): the answer must name an attacker from that slot's own list, or null, with a reason.",
+          "G229, no AI call here: the relevance gate (2.6) already named each threat's pick from its own list, a reason and each listed actor's suitability. `choose_actors` keeps the pick; among actors rated as suitable it prefers the one acting for fewer threats so far (threats taken highest impact first).",
           "`replace_codes_with_names` turns SYSn / THRn codes back into names in every reason and note."],
       k: [["Actors.MAX", "4", "core/constants/library.py"], ["ThreatFinding.ATTACKER_OPTIONS", "3", "core/constants/planner.py"], ["ACTOR_SIMILARITY_THRESHOLD", "0 (setting)", "core/config.py"]],
       m: "`PlannedThreat.actors[{id, name, role: acting | alternate, closest, below_threshold}]`, `attacker_check`, `attacker_check_reason`.",
-      dec: [["`fits`", "the nearest attacker is kept", "2.11"], ["`chosen`", "a runner-up becomes the only (acting) actor", "2.11"],
-            ["`none_fits`", "the nearest stays", "2.11"], ["The check failed after the re-ask", "`not_checked`, note `ATTACKER_FIT_NOT_CHECKED`", "2.11"]],
+      dec: [["`chosen`", "the gate's pick acts", "2.11"], ["`balanced`", "an equally suitable, less-used actor acts", "2.11"],
+            ["`none_fits`", "the nearest stays, flagged", "2.11"], ["No usable pick", "`not_checked`: the ranking decides, note `ATTACKERS_RANKED_ONLY`", "2.11"]],
       nx: ["2.11"], out: "`ThreatFindings {threats, audits, folded, notes, library_stamp}`.",
-      c: ["app/engine/scenarios/threat_list/attacker_assignment.py:AttackerAssigner", "app/engine/scenarios/threat_list/attacker_assignment.py:AttackerFitCheck"] },
+      c: ["app/engine/scenarios/threat_list/attacker_assignment.py:AttackerAssigner", "app/engine/scenarios/threat_list/attacker_choice.py:choose_actors"] },
 
-    { id: "2.11", s: "2", t: "Rank attack paths and freeze the plan", run: "worker · `AttackPathSelector.build_plan`, then `plan_changes`",
+    { id: "2.11", s: "2", t: "Rank scenarios and freeze the plan", run: "worker · `AttackPathSelector.build_plan`, then `plan_changes`",
       from: ["2.10"], in: "`ThreatFindings`; the setting `TOTAL_SCENARIO_COUNT`.",
-      p: ["Each threat becomes one `AttackPath`: `path_id = sha256(step keys)[:16]`, impact = the max step impact, confidence = the min.",
-          "`rank_paths` compares tuples, never a numeric score. Pass 1 (category coverage): STRIDE order, one strongest path per uncovered category (`category_coverage`). Pass 2 (system coverage): repeatedly the path adding the most new systems, until none adds one (`path_coverage`); a path on the asset itself waits for pass 3. Pass 3: the rest by (−impact, −confidence, tie-break) (`risk_significance`). Tie-break: library first, lowest library id, path_id, name digest.",
-          "`select_up_to_target(ranked, TOTAL_SCENARIO_COUNT)`: 0 (default) = every path; N > 0 = the top N, the rest `selected: false, unselected_reason: target_reached`. It never pads up to N.",
+      p: ["Each threat becomes one planned scenario (`AttackPath`): `path_id = sha256(step keys)[:16]`, impact = the max step impact, confidence = the min.",
+          "`rank_paths` compares tuples, never a numeric score. Pass 1 (category coverage): STRIDE order, one strongest scenario per uncovered category (`category_coverage`). Pass 2 (system coverage): repeatedly the scenario adding the most new systems, until none adds one (`path_coverage`); a scenario on the asset itself waits for pass 3. Pass 3: the rest by (−impact, −confidence, tie-break) (`risk_significance`). Tie-break: library first, lowest library id, path_id, name digest.",
+          "`select_up_to_target(ranked, TOTAL_SCENARIO_COUNT)`: 0 (default) = every scenario; N > 0 = the top N, the rest `selected: false, unselected_reason: target_reached`. It never pads up to N.",
           "The worker adds `frozen_at` and `made_with` (chat, embedding and rerank models, library hashes).",
           "One fenced write: `plan`, `step: scenarios`, `counts.planned = counts.remaining = selected`, `timings.threats_s`, `plan_note` = \"{N} attack paths selected; 0 written, {N} still to write, set by set.\". Then `session.updated`."],
-      k: [["TOTAL_SCENARIO_COUNT", "0 = every path (setting)", "core/config.py"], ["INITIAL_SET_SIZE", "6 (setting)", "core/config.py"]],
+      k: [["TOTAL_SCENARIO_COUNT", "0 = every scenario (setting)", "core/config.py"], ["INITIAL_SET_SIZE", "6 (setting)", "core/config.py"]],
       m: "The frozen plan.",
       sh: "plan: { prompt_version, target, notes, not_assessed, no_valid_threat,\n  threats: [{key, library_id, ai_generated, type{id,name}, name, category, categories,\n             systems, reason, impact, confidence, actors[], actors_ranked, attacker_check}],\n  categories: [audit…], folded: [...],\n  paths: [{path_id, rank, choice, selected, served, attempts, abandoned, steps,\n           category, categories, systems, impact, confidence}],\n  frozen_at, made_with }",
       na: ["`plan` is never returned by any API route: the API shows only `progress.scenario_count.total` and `.remaining` (and `progress.error_message.threats` for a category not assessed). Import the `tsg_sessions` document to see it."],
-      dec: [["At least one path selected", "`set_and_first_batch(paths, 6)` and `hand_over(tsg_write_scenarios)`: status back to `queued`, step `scenarios`", "3.1"],
+      dec: [["At least one scenario selected", "`set_and_first_batch(paths, 6)` and `hand_over(tsg_write_scenarios)`: status back to `queued`, step `scenarios`", "3.1"],
             ["Nothing selected", "`finish`: status `done`, `active: false`; `last_action.outcome` = `partial` if a category was not assessed, else `complete` — the run ends", null]],
       nx: ["3.1"], out: "A frozen plan and a queued writing job.", st: "tsg_sessions.plan (not returned by the API)",
       c: ["app/engine/scenarios/attack_paths/path_selector.py:AttackPathSelector", "app/engine/scenarios/attack_paths/path_ranking.py:rank_paths",
@@ -2214,32 +2491,32 @@ $(function () {
     // ------------------------------------------------------------------ STEP 3
     { id: "3.1", s: "3", t: "Choose the set and the batch", run: "worker · task `tsg_write_scenarios`, queue `tsg_scenarios` (claimed as in 2.1)",
       from: ["2.11", "5.5", "3.10"], in: "`plan.paths` and the set size (6 at the start, 6 for each next set).",
-      p: ["`next_set_paths(paths, size)`: selected paths still to write (`not served and not abandoned`), by `rank`, the first `size`.",
-          "`next_paths_to_write`: within the set, never-tried paths first `(attempts > 0, rank)`, at most `WRITER_BATCH` 6, each `{path_id, replaces: null}`.",
+      p: ["`next_set_paths(paths, size)`: selected scenarios still to write (`not served and not abandoned`), by `rank`, the first `size`.",
+          "`next_paths_to_write`: within the set, never-tried scenarios first `(attempts > 0, rank)`, at most `WRITER_BATCH` 6, each `{path_id, replaces: null}`.",
           "Stored on the job as `job.set` and `job.batch`."],
       k: [["Generation.WRITER_BATCH", "6", "core/constants/runs.py"], ["INITIAL_SET_SIZE / NEXT_SET_SIZE", "6 / 6 (settings)", "core/config.py"]],
       m: "`job.batch = [{path_id, replaces}]`.",
       dec: [["An item has `replaces` (a regenerate)", "the Regenerator writes it", "5.6"], ["Otherwise", "write the batch", "3.2"]],
-      nx: ["3.2"], out: "One batch of up to 6 attack paths.",
+      nx: ["3.2"], out: "One batch of up to 6 scenarios.",
       c: ["app/engine/scenarios/attack_paths/path_progress.py:next_set_paths", "app/engine/scenarios/attack_paths/path_progress.py:next_paths_to_write"] },
 
     { id: "3.2", s: "3", t: "Route the batch and write in parallel", run: "worker · `write_batch` → `BatchWriter.write`",
-      from: ["3.1"], in: "`job.batch`, the plan's threats and paths, the frozen context.",
-      p: ["A path already written (status done, not superseded) is recorded `served` with no AI call.",
-          "`write_at_once` runs each remaining path in a `ThreadPoolExecutor(min(6, n))`; each outcome is saved on the job's own thread as soon as it is done (3.9)."],
-      m: "One writing task per path.",
-      dec: [["Path already written", "marked served, no AI", "3.10"], ["Otherwise", "build its brief", "3.3"]],
-      nx: ["3.3"], out: "Per-path writing tasks.",
+      from: ["3.1"], in: "`job.batch`, the plan's threats and scenarios, the frozen context.",
+      p: ["A scenario already written (status done, not superseded) is recorded `served` with no AI call.",
+          "`write_at_once` runs each remaining scenario in a `ThreadPoolExecutor(min(6, n))`; each outcome is saved on the job's own thread as soon as it is done (3.9)."],
+      m: "One writing task per scenario.",
+      dec: [["Scenario already written", "marked served, no AI", "3.10"], ["Otherwise", "build its brief", "3.3"]],
+      nx: ["3.3"], out: "Per-scenario writing tasks.",
       c: ["app/worker/tasks/writing.py:write_batch", "app/worker/tasks/writing.py:BatchWriter", "app/worker/path_writing.py:write_at_once"] },
 
     { id: "3.3", s: "3", t: "Build the writer's brief", run: "worker · `build_brief` (no AI)",
-      from: ["3.2"], in: "One path's threat (category, type, name, reason, actors, systems), the frozen context, other scenarios' statements.",
+      from: ["3.2"], in: "One planned scenario's threat (category, type, name, reason, actors, systems), the frozen context, other scenarios' statements.",
       p: ["Budget = `max_prompt_chars // 2`; the asset facts get ≤ budget // 4, each system an equal share of the rest (`_cut_to_fit` shortens the longest text fact first; lists are never cut).",
           "Fact renames: `cii_asset_description` → `description`, `asset_type` → `type`, `asset_priority` → `priority`.",
           "`other_scenarios`: the newest statements of other scenarios that fit budget // 4, so the writer avoids repeating them.",
-          "`entry_point_options` = the path's system names."],
+          "`entry_point_options` = the scenario's system names."],
       m: "`WriterBrief`.", sh: "{ asset, asset_name, critical_service, category, attacker (actors[0].name), threat_type, threat,\n  why_it_applies, systems, other_systems, other_scenarios }",
-      dec: [["Not exactly one threat, the category not STRIDE, a blank type/name, or no acting attacker", "`PathNotWritable` → a failure card `invalid_plan`; the path is abandoned at once", "3.9"],
+      dec: [["Not exactly one threat, the category not STRIDE, a blank type/name, or no acting attacker", "`PathNotWritable` → a failure card `invalid_plan`; the scenario is abandoned at once", "3.9"],
             ["The threat or its acting attacker was retired from the library since the plan", "failure card `library_record_retired`; abandoned", "3.9"],
             ["A threat system is not in the run's context", "`SYSTEM_NOT_IN_RUN`; abandoned", "3.9"],
             ["Brief ready", "write the draft", "3.4"]],
@@ -2305,35 +2582,35 @@ $(function () {
       nx: ["3.9"], out: "The draft to save.",
       c: ["app/engine/scenarios/writing/scenario_writer.py:ScenarioWriter"] },
 
-    { id: "3.9", s: "3", t: "Save the card and update the path", run: "worker · `BatchWriter._save`, `PlanProgress.record`",
+    { id: "3.9", s: "3", t: "Save the card and update the scenario's state", run: "worker · `BatchWriter._save`, `PlanProgress.record`",
       from: ["3.8", "3.3", "3.4"], in: "The kept draft, or a failure.",
       p: ["Scenario id = `uuid5(NAMESPACE_URL, tsg:{session}:{path}:{version})`.",
           "`written_record`: status `blocked` if any BLOCKER, else `done`; `source: generated`, `decision: pending`, `content{title, statement, risk_statement, why_applies, assumptions, category, contributing_categories, threat{key, type, name, library_id, ai_generated}, actors, systems[{id, name, entry_point}], route, prompt_version}`, `findings`, `plan_check`, `rewritten`. Only `done` gets `controls{status: queued}`.",
           "`save_with_unique_title`: title, then `title (qualifier)`, then `title (2)`, `(3)`… against the index `one_title_per_run_all_versions`.",
           "A failure becomes `failure_record`: status `failed`, `failure{code, message}`.",
-          "The path: written → `served = id`; else `attempts + 1` and `abandoned = final or attempts ≥ 5`.",
+          "The planned scenario: written → `served = id`; else `attempts + 1` and `abandoned = final or attempts ≥ 5`.",
           "`PlanProgress.record` refreshes the counts, writes `plan.paths`, `counts` and `plan_note`, then publishes `session.updated`."],
       k: [["Generation.MAX_PATH_ATTEMPTS", "5", "core/constants/runs.py"]],
-      m: "One scenario document and the path's new state.",
+      m: "One scenario document and the planned scenario's new state.",
       sh: "tsg_scenarios: { _id, session_id, path_id, version, source, status: done|blocked|failed,\n  decision: \"pending\", replaces, superseded_by, content{…}, findings[], plan_check,\n  rewritten, controls{status: \"queued\"} | failure{code, message} }",
       dec: [["`done`", "a visible card; its controls are queued", "3.10"],
-            ["`blocked`", "hidden for audit only; the path is retried (abandoned at 5)", "3.10"],
-            ["`failed` (generation_failed, internal_error)", "a visible failure card; the path is retried", "3.10"],
-            ["`PathNotWritable`", "failure card; the path is abandoned at once", "3.10"],
+            ["`blocked`", "hidden for audit only; the scenario is retried (abandoned at 5)", "3.10"],
+            ["`failed` (generation_failed, internal_error)", "a visible failure card; the scenario is retried", "3.10"],
+            ["`PathNotWritable`", "failure card; the scenario is abandoned at once", "3.10"],
             ["A final job error", "the whole run fails", "X.1"]],
       nx: ["3.10"], out: "A saved card (visible in `/results` unless blocked).", st: "tsg_scenarios",
       c: ["app/engine/scenarios/writing/scenario_record.py:written_record", "app/engine/scenarios/writing/scenario_record.py:failure_record", "app/worker/plan_progress.py:PlanProgress"] },
 
     { id: "3.10", s: "3", t: "Hand over or finish the set", run: "worker · `PlanProgress.continue_or_finish`",
-      from: ["3.9", "3.2"], in: "The batch's outcomes, `job.set`, the plan's paths.",
-      p: ["If any path of the batch was served → `send_job(MAP_CONTROLS)`: \"card first, controls later\".",
-          "Outages (`_settle_outages`): on the last attempt (5), when every error is `Unavailable` and another path was served, each outage path gets a failure card `unavailable`; otherwise the error is re-raised and the job retries.",
+      from: ["3.9", "3.2"], in: "The batch's outcomes, `job.set`, the plan's scenarios.",
+      p: ["If any scenario of the batch was served → `send_job(MAP_CONTROLS)`: \"card first, controls later\".",
+          "Outages (`_settle_outages`): on the last attempt (5), when every error is `Unavailable` and another scenario was served, each outage scenario gets a failure card `unavailable`; otherwise the error is re-raised and the job retries.",
           "Another batch left in `job.set` → `hand_over`: `status: queued`, same epoch, `job.attempts: 0` (the status flips queued ↔ running between batches).",
-          "Set finished: abandoned paths that were in fact written are rescued; `last_action.outcome` = `partial` if a category was not assessed or this set has abandoned paths, else `complete`; `timings.scenarios_s`; `finish` (status `done`, `active: false`)."],
+          "Set finished: abandoned scenarios that were in fact written are rescued; `last_action.outcome` = `partial` if a category was not assessed or this set has abandoned scenarios, else `complete`; `timings.scenarios_s`; `finish` (status `done`, `active: false`)."],
       m: "The run's new status.",
       dec: [["More batches in the set", "the next batch", "3.1"], ["Cards were served", "the controls job is queued", "4.1"],
             ["The set is finished", "the run is `done`; the reviewer acts", "5.1"], ["A provider outage", "the job retries", "X.1"]],
-      nx: ["4.1", "5.1"], out: "RunBoard: `session_status`, `progress.scenarios`, `progress.scenario_count.served/remaining`, `progress.timings.scenarios`, `progress.error_message.scenarios` (paths given up on), `progress.last_next_set`.",
+      nx: ["4.1", "5.1"], out: "RunBoard: `session_status`, `progress.scenarios`, `progress.scenario_count.served/remaining`, `progress.timings.scenarios`, `progress.error_message.scenarios` (scenarios given up on), `progress.last_next_set`.",
       c: ["app/worker/plan_progress.py:PlanProgress", "app/worker/tasks/writing.py:BatchWriter"] },
 
     // ------------------------------------------------------------------ STEP 4
@@ -2352,36 +2629,37 @@ $(function () {
       from: ["4.1"], in: "The scenario content, the asset and its systems' `category_code`.",
       p: ["An empty control library → `ControlsNotMapped(control_library_empty)`.",
           "Allowed AssetTypes (`place_asset_types`, G211) = `COMPATIBLE_ASSET_TYPES` over the scenario's own systems' category codes, or the asset's when it is on the asset itself or no system code is recorded: IT → {IT, IT\\OT}; OT → {OT, IT\\OT}; IT\\OT → all three (G211: IT\\OT is both; IT-OT is not a value). A control with no type, or a value that is not a type, always fits.",
-          "`control_search_text`: lines `Category:`, `Threat: {type}: {name}`, `Attacker:`, `Title:`, `Scenario:`, `Risk:`, `Asset: name (type)`, `Systems: …; technology: …`; redacted; cut from the end to 4,000 chars."],
+          "`control_query` (G227): a head (`Category:`, `Threat: {type}: {name}`, `Attacker:`, `Title:`, `Asset: name (type)`), then each system (`System {name}: facts`), `Asset facts:`, `Scenario:`, `Risk:`; redacted. The room left after the head (4,000 chars in all) is shared fairly: a part shorter than its share stays whole, the longest are shortened, none is dropped; the shortened parts are recorded in `made_with.query_shortened`."],
       k: [["Controls.QUERY_MAX_CHARS", "4,000", "core/constants/controls.py"]],
       m: "The query text and the allowed-type mask.",
       dec: [["Library empty", "failed `control_library_empty`", "4.5"], ["OK", "search", "4.3"]],
       nx: ["4.3"], out: "Query + mask.", st: "tsg_scenarios.controls.query (not returned by the API)",
-      c: ["app/engine/scenarios/control_mapper.py:ControlMapper", "app/engine/scenarios/control_mapper.py:control_search_text", "app/core/constants/controls.py"] },
+      c: ["app/engine/scenarios/control_mapper.py:ControlMapper", "app/engine/scenarios/control_query.py:control_query", "app/core/constants/controls.py"] },
 
-    { id: "4.3", s: "4", t: "Hybrid shortlist of 40 controls", run: "worker · `snapshot.find_controls` → `HybridIndex.search`",
+    { id: "4.3", s: "4", t: "Hybrid shortlist of CONTROL_CANDIDATES controls", run: "worker · `snapshot.find_controls` → `HybridIndex.search`",
       from: ["4.2"], in: "The query, the allowed-type mask, the CONTROL corpus (`{name}: {description}`).",
-      p: ["`find_controls([query], 40, allowed)`.",
-          "The same search as 2.5: BM25 (1.5 / 0.75) + cosine with floor 0.60 + RRF (k 60), each leg cut to 40, exact-text override."],
-      k: [["Controls.SHORTLIST", "40", "core/constants/controls.py"]],
-      m: "Up to 40 candidate controls (scores in memory).",
-      na: ["The 40-row shortlist and its BM25 / cosine / RRF scores are never stored."],
+      p: ["`find_controls([query], CONTROL_CANDIDATES, allowed)` (default 40; at least MAX_CONTROLS, checked at start-up).",
+          "The same search as 2.5: BM25 (1.5 / 0.75) + cosine with floor 0.60 + RRF (k 60), each leg cut to CONTROL_CANDIDATES, exact-text override."],
+      k: [["CONTROL_CANDIDATES", "40", ".env (setting, G227)"]],
+      m: "Up to CONTROL_CANDIDATES candidate controls (scores in memory).",
+      na: ["The shortlist and its BM25 / cosine / RRF scores are never stored."],
       dec: [["Empty shortlist", "failed `no_compatible_control` (the pool is never widened)", "4.5"], ["Candidates", "rerank them", "4.4"]],
       nx: ["4.4"], out: "The shortlist.", demo: "retrieval",
       c: ["app/search/snapshot.py", "app/search/indexes.py:HybridIndex"] },
 
-    { id: "4.4", s: "4", t: "Rerank and apply the cut-off", run: "worker · `RerankModel.score_relevance`, `_controls_above_cutoff`",
+    { id: "4.4", s: "4", t: "Rerank and apply the cut-off", run: "worker · `RerankModel.score_relevance`, `select_controls`",
       from: ["4.3"], in: "The query and the shortlist's texts.",
       p: ["The reranker scores each candidate; scores must be in [0, 1] (else `ai_answer_unusable`, final) and are multiplied by 100.",
-          "Sorted by (−score, control_id). Scores ≥ `CONTROL_SIMILARITY_THRESHOLD` (default 60) are kept as `match: exact`.",
-          "None reaches it → the single best is kept as `match: nearest` with the warning NEAREST_ONLY.",
-          "Twins (the same control_id, or the same name key) are folded, then ranked 1..n. No other cap than the 40-row shortlist."],
-      k: [["CONTROL_SIMILARITY_THRESHOLD", "60 (setting, 0–100)", "core/config.py"]],
+          "Sorted by (−score, control_id); twins (the same control_id, or the same name key) are folded.",
+          "Scores ≥ `CONTROL_SIMILARITY_THRESHOLD` are kept as `match: exact` (tier strong), at most MAX_CONTROLS; how many more there were is recorded (`left_out`).",
+          "Fewer than MIN_CONTROLS strong → the nearest below the threshold are added as `match: nearest` (tier fallback) to reach it, with the warning NEAREST_ONLY when none was strong. Never zero (G227); fewer candidates than MIN_CONTROLS is recorded as a shortfall.",
+          "Ranked 1..n; each keeps its reason (`rationale`)."],
+      k: [["CONTROL_SIMILARITY_THRESHOLD", ".env (0–100; 50 if the line is missing)", "core/config.py"], ["MIN_CONTROLS / MAX_CONTROLS", "1 / 10", ".env (G225)"]],
       m: "The kept controls.", sh: "items: [{control_id, code, name, domain, asset_type, rank, score (1 decimal), match: exact | nearest}]",
       na: ["Rerank scores of the controls below the cut-off are not stored."],
       dec: [["Always", "save", "4.5"]],
       nx: ["4.5"], out: "The scenario's mapped controls.",
-      c: ["app/engine/scenarios/control_mapper.py:ControlMapper", "app/ai/rerank.py:RerankModel"] },
+      c: ["app/engine/scenarios/control_mapper.py:ControlMapper", "app/engine/scenarios/control_selection.py:select_controls", "app/ai/rerank.py:RerankModel"] },
 
     { id: "4.5", s: "4", t: "Save, retry and sweep", run: "worker · `controls_record`, `ControlLeases.finish`; beat task `tsg_retry_controls`",
       from: ["4.4", "4.2", "4.3"], in: "The kept controls, or an error.",
@@ -2401,7 +2679,7 @@ $(function () {
     { id: "5.1", s: "5", t: "Read the results", run: "API · GET routes",
       from: ["3.10", "4.5"], in: "The session id.",
       p: ["`GET /v1/sessions/{id}/results?include_replaced&offset&limit` (limit 50 by default, max 500): current versions (the newest, or one already decided), never blocked, oldest first.",
-          "`ScenarioView` (v1's layout): `scenario{threat_category, contributing_categories, threat_type, threat_name, supporting_systems_involved[supporting_system_id, supporting_system, is_entry_point], scenario_title, scenario_statement (statement + \"Why this threat applies: \" + why_applies), risk_statement, assumptions, route_status}`, `threat{threat_id, threat_type, threat_name, threat_catalogue_id, is_threat_ai_generated, grounding_score, scope_rank, …}`, `actors[actor_id, actor_name, role, closest_match, below_threshold]`, `controls_status`, `controls[]`, `accepted`, `accepted_by/at`, `rejected_by/at`, `validation_status: ok | warning`, `validation_errors` (warnings), `validation_notes` (plan check), `scenario_source`, `replaced_scenarios`, `replaced_by`, version, failure, regenerate_error.",
+          "`ScenarioView` (v1's layout): `scenario{threat_category, contributing_categories, threat_type, threat_name, supporting_systems_involved[supporting_system_id, supporting_system, is_entry_point], scenario_title, scenario_statement (statement + \"Why this threat applies: \" + why_applies), risk_statement, assumptions, route_status}`, `threat{threat_id, threat_type, threat_name, threat_catalogue_id, is_threat_ai_generated, grounding_score, scope_rank, …}`, `actors[actor_id, actor_name, role, closest_match, below_threshold, selection, selection_reason]`, `known_groups[name, attack_id, url, kind, who, match, fits_actor, technique, technique_title, through, how, cited]` (G230, intelligence on), `controls_status`, `controls[]`, `accepted`, `accepted_by/at`, `rejected_by/at`, `validation_status: ok | warning`, `validation_errors` (warnings), `validation_notes` (plan check), `scenario_source`, `replaced_scenarios`, `replaced_by`, version, failure, regenerate_error.",
           "`GET /v1/sessions/{id}` → RunBoard (`session_status`, `progress`); its numbers come from the counts `RunCounts.refresh` recomputes (current versions, never blocked)."],
       m: "`RunResults {session_id, entity_id, asset_id, asset_name, user_id, progress, scenarios, total}`.",
       dec: [["Decide cards", "accept or reject", "5.2"], ["Want more scenarios", "next set", "5.5"], ["A card is weak", "regenerate", "5.6"]],
@@ -2422,10 +2700,10 @@ $(function () {
 
     { id: "5.3", s: "5", t: "Accept", run: "API · `POST /v1/sessions/{id}/accept`",
       from: ["5.2"], in: "`{scenario_ids: [..] | \"all\", replace_accepted: false}`",
-      p: ["With ids, `why_ids_cannot_be_decided` checks each: `unknown`, `failure_scenario`, `already_rejected` (decisions are final), `duplicate_version` (two versions of one path in the call), `library_inactive` → 409 `scenarios_not_decidable` with `errors[]`.",
-          "`_make_room`: another version of the same path already accepted → 409 `duplicate_version`, unless `replace_accepted: true`, which first sets that version back to pending (returned in `replaced`). This is the only way back from accepted.",
+      p: ["With ids, `why_ids_cannot_be_decided` checks each: `unknown`, `failure_scenario`, `already_rejected` (decisions are final), `duplicate_version` (two versions of one scenario in the call), `library_inactive` → 409 `scenarios_not_decidable` with `errors[]`.",
+          "`_make_room`: another version of the same scenario already accepted → 409 `duplicate_version`, unless `replace_accepted: true`, which first sets that version back to pending (returned in `replaced`). This is the only way back from accepted.",
           "`\"all\"`: every current written, not rejected version; skipped `duplicate_version` (accept-all never replaces) and `library_inactive`; nothing left → 409 `nothing_to_accept`.",
-          "`_decide`: one bulk update filtered on `decision: pending`; rows lost to a race are skipped `changed_concurrently`. A unique index allows one accepted version per path.",
+          "`_decide`: one bulk update filtered on `decision: pending`; rows lost to a race are skipped `changed_concurrently`. A unique index allows one accepted version per scenario.",
           "Audit, metric, counts refresh, `session.updated`."],
       m: "`AcceptResult`.", sh: "{ accepted: [], replaced: [], skipped: [{scenario_id, reason}], controls_pending: [] }",
       dec: [["Accepted", "the scenario can get a remediation plan", "6.1"], ["Refused id(s)", "409 with the reasons", null]],
@@ -2443,12 +2721,12 @@ $(function () {
       c: ["app/services/scenarios/review.py:ReviewService"] },
 
     { id: "5.5", s: "5", t: "Generate the next set", run: "API · `POST /v1/sessions/{id}/scenarios/next-set`, then the worker",
-      from: ["5.1"], in: "No body; the plan's paths.",
+      from: ["5.1"], in: "No body; the plan's scenarios.",
       p: ["`next_set` → `set_and_first_batch(paths, NEXT_SET_SIZE 6)`.",
           "`queue_again`: one conditional update (status done or failed, step scenarios, the epoch unchanged) → `status: queued`, `active: true`, epoch + 1, `last_action {kind: next_set, outcome: running}`.",
           "202 `{epoch}`."],
       m: "A queued writing job.",
-      dec: [["No path left", "409 with `why_no_path_left`: `scenarios_abandoned`, else `target_reached`, else `nothing_left`", null],
+      dec: [["No scenario left", "409 with `why_no_path_left`: `scenarios_abandoned`, else `target_reached`, else `nothing_left`", null],
             ["Another run of the asset is active", "409 `asset_busy` + `active_session_id`", null],
             ["The run changed meanwhile", "409 `generation_in_progress`", null],
             ["Queued", "the writer runs again", "3.1"]],
@@ -2459,7 +2737,7 @@ $(function () {
       from: ["5.1", "5.4", "3.1"], in: "`{scenario_ids}`",
       p: ["`why_ids_cannot_be_regenerated`: `unknown`, `failure_scenario`, `hand_written`, `version_not_current`, `duplicate_version` → 409 `scenarios_not_regenerable`. Any decision state may be regenerated.",
           "The batch `[{path_id, replaces: scenario_id}]` is queued with `queue_again` (`last_action.kind: regenerate`).",
-          "`Regenerator` heals first (a successor already saved supersedes the old version with no AI call), then writes the rest (3.3–3.8) with `other_scenarios` = every done statement of the path.",
+          "`Regenerator` heals first (a successor already saved supersedes the old version with no AI call), then writes the rest (3.3–3.8) with `other_scenarios` = every done statement of the scenario.",
           "Blocked → saved hidden, the old version gets `regenerate_error{code: scenario_blocked}`; failure → `regenerate_error`; success → the new version is saved (`replaces` = old id), the old one gets `superseded_by`.",
           "Outcome `complete` if every target got its new version, else `partial`; attempts never increase."],
       m: "New scenario versions.",
@@ -2655,7 +2933,7 @@ $(function () {
       nx: [], out: "RunBoard `session_status: failed`, `progress.error_message {stage: why}` (or RemediationStatus `latest_status: failed`).",
       c: ["app/worker/jobs.py:run_leased_job", "app/data_access/job_records.py:JobLease", "app/worker/reaper.py", "app/worker/heartbeat.py"] },
 
-    { id: "X.2", s: "X", t: "One AI chat call", run: "every chat task (relevance_gate, gap_fill, same_attack, attacker_fit, write_scenario, rewrite_scenario, plan_check, remediation_plan)",
+    { id: "X.2", s: "X", t: "One AI chat call", run: "every chat task (relevance_gate, gap_fill, same_attack, write_scenario, rewrite_scenario, plan_check, remediation_plan)",
       from: ["2.6", "2.7", "2.9", "2.10", "3.4", "3.7", "3.8", "6.7"], in: "A task, a prompt, an answer checker.",
       p: ["`ask_ai_and_check` → one ask, then ONE corrective re-ask in the same conversation listing ≤20 problems (≤200 chars each). Still bad → `UnreadableAiAnswer`.",
           "A prompt above 60,000 chars → `TruncatedAiAnswer` before any call; `finish_reason == length` → `TruncatedAiAnswer`.",
@@ -2719,9 +2997,9 @@ $(function () {
     "2.1": "leased job + FrozenContext", "2.2": "library snapshot (4 indexes) + threats by category", "2.3": "Landscape text (≤30,000 chars)",
     "2.4": "search queries per category", "2.5": "ordered shortlist per category", "2.6": "relevance verdicts + category audits",
     "2.7": "0 or 1 AI threat per empty category", "2.8": "de-duplicated threat list + folds", "2.9": "same-attack folds",
-    "2.10": "threats with attackers (ThreatFindings)", "2.11": "frozen plan (ranked attack paths) + queued writing job",
-    "3.1": "job.batch (≤6 paths)", "3.2": "one writing task per path", "3.3": "WriterBrief", "3.4": "first draft", "3.5": "cleaned draft",
-    "3.6": "findings (blockers, warnings)", "3.7": "plan_check", "3.8": "kept draft", "3.9": "scenario record + path state",
+    "2.10": "threats with attackers (ThreatFindings)", "2.11": "frozen plan (ranked scenarios) + queued writing job",
+    "3.1": "job.batch (≤6 scenarios)", "3.2": "one writing task per scenario", "3.3": "WriterBrief", "3.4": "first draft", "3.5": "cleaned draft",
+    "3.6": "findings (blockers, warnings)", "3.7": "plan_check", "3.8": "kept draft", "3.9": "scenario record + plan state",
     "3.10": "status, counts, queued controls job",
     "4.1": "one claimed scenario", "4.2": "control query + allowed types", "4.3": "shortlist of ≤40 controls", "4.4": "kept controls (rank, score, match)",
     "4.5": "controls record on the scenario",
@@ -2736,16 +3014,16 @@ $(function () {
   // How often a stage runs inside its step.
   var LOOP_NOTE = {
     "2.4": "once per STRIDE category", "2.5": "one search call for every category's queries", "2.6": "once per category · 6 categories in parallel",
-    "2.7": "once per empty category", "3.1": "once per batch", "3.2": "once per batch", "3.3": "once per attack path · ≤6 in parallel",
-    "3.4": "once per attack path", "3.5": "once per draft", "3.6": "once per draft", "3.7": "once per draft", "3.8": "once per attack path",
-    "3.9": "once per attack path", "3.10": "once per batch", "4.1": "once per delivery turn", "4.2": "once per scenario · ≤6 per turn",
+    "2.7": "once per empty category", "3.1": "once per batch", "3.2": "once per batch", "3.3": "once per scenario · ≤6 in parallel",
+    "3.4": "once per scenario", "3.5": "once per draft", "3.6": "once per draft", "3.7": "once per draft", "3.8": "once per scenario",
+    "3.9": "once per scenario", "3.10": "once per batch", "4.1": "once per delivery turn", "4.2": "once per scenario · ≤6 per turn",
     "4.3": "once per scenario", "4.4": "once per scenario", "4.5": "once per scenario", "6.6": "once per plan version", "6.7": "once per plan version",
     "6.8": "once per plan version", "6.9": "once per plan version", "6.10": "once per plan version"
   };
   var STEP_NOTE = {
     "1": "One API request, start to finish: nothing is queued until 1.6.",
     "2": "One worker job (tsg_find_threats). Read top to bottom: every stage below runs in this order inside that job.",
-    "3": "One worker job per batch (tsg_write_scenarios); 3.3–3.9 run for each attack path of the batch, in parallel.",
+    "3": "One worker job per batch (tsg_write_scenarios); 3.3–3.9 run for each scenario of the batch, in parallel.",
     "4": "A worker job per run (tsg_map_controls), started as soon as a batch has written cards; 4.2–4.5 run for each waiting scenario.",
     "5": "Requests a reviewer makes, in any order after the run is done. 5.1–5.2 run before every decision; 5.5 and 5.6 send work back to step 3.",
     "6": "One API request (6.1–6.5), then one worker job per plan version (6.6–6.10). 6.M replaces 6.1 for a hand-written scenario.",
@@ -2755,8 +3033,8 @@ $(function () {
   // The same steps and stages in everyday words, for a reader who does not read code.
   var STEP_PLAIN = {
     "1": "The platform asks TSG to assess one asset. TSG checks who is asking, reads everything the database knows about the asset and its supporting systems, freezes a copy of it and puts the real work on a queue. The caller gets an answer straight away.",
-    "2": "A background worker works out which threats from the threat library really apply to this asset. It searches the library by words and by meaning, asks an AI to judge every candidate, lets the AI propose a missing threat where the library has none, removes duplicates, picks a likely attacker for each threat, and freezes an ordered list of attack paths to write about.",
-    "3": "For each attack path, an AI writes a readable threat scenario. Code tidies it and checks hard rules, a second AI call checks it against the plan, the AI may rewrite it once, and the better draft is saved as a card a person can review.",
+    "2": "A background worker works out which threats from the threat library really apply to this asset. It searches the library by words and by meaning, asks an AI to judge every candidate, lets the AI propose a missing threat where the library has none, removes duplicates, picks a likely attacker for each threat, and freezes an ordered list of scenarios to write.",
+    "3": "For each planned scenario, an AI writes the readable text. Code tidies it and checks hard rules, a second AI call checks it against the plan, the AI may rewrite it once, and the better draft is saved as a card a person can review.",
     "4": "For each written scenario, TSG searches the control library for the security controls that best address it, lets a ranking model score each candidate, and keeps the good matches.",
     "5": "A person reviews the cards: accepts the good ones, rejects the bad ones, asks for more scenarios, or asks for a new version of one.",
     "6": "For an accepted scenario, TSG gathers every fact the planner needs, an AI drafts the remediation plan (which controls, which actions, who, how long), and code checks it and computes the schedule and the critical path.",
@@ -2780,27 +3058,27 @@ $(function () {
     "2.8": "Duplicates are merged: the same threat found in two categories becomes one, and an AI threat that means the same as another (meaning similarity 0.98 or more) is folded into it.",
     "2.9": "The AI is asked whether two threats on the same systems really describe the same attack; if they do, they become one.",
     "2.10": "Each threat gets an attacker. The library's attackers linked to the threat type are ranked with the same word + meaning search; the best one acts, up to three are alternates. When the attacker is only a nearest guess, the AI checks that it fits.",
-    "2.11": "The threats are grouped: one attack path per kind of attack (STRIDE) on each system, or on the asset itself. The AI picks the threat each path is written around; the group's other threats stay as also_applies. Paths that are the same attack with the same harm through different systems become one path on all of them (G213). Paths are ordered so every threat category is covered first, then every system, then by impact and confidence. This ordered list is frozen as the run's plan, and the writing job is queued.",
-    "3.1": "The next set of attack paths is taken from the frozen plan, six at a time; inside a set, paths never tried before go first.",
-    "3.2": "Up to six scenarios are written at the same time; a path that already has a written scenario is skipped.",
-    "3.3": "For each path a brief is prepared for the AI writer: the asset, the attacker, the threat and why it applies, the systems involved, and other scenarios to avoid repeating.",
+    "2.11": "The threats are grouped: one scenario per kind of attack (STRIDE) on each system, or on the asset itself. The AI picks the threat each scenario is written around; the group's other threats stay as also_applies. Scenarios that are the same attack with the same harm through different systems become one scenario on all of them (G213). Scenarios are ordered so every threat category is covered first, then every system, then by impact and confidence. This ordered list is frozen as the run's plan, and the writing job is queued.",
+    "3.1": "The next set of scenarios is taken from the frozen plan, six at a time; inside a set, scenarios never tried before go first.",
+    "3.2": "Up to six scenarios are written at the same time; a planned scenario that is already written is skipped.",
+    "3.3": "For each scenario a brief is prepared for the AI writer: the asset, the attacker, the threat and why it applies, the systems involved, and other scenarios to avoid repeating.",
     "3.4": "The AI writes the scenario: a title, a scenario statement, a risk statement, assumptions and the entry point. If the answer is malformed, the AI is told exactly what is wrong once and asked again.",
     "3.5": "Code tidies the text: it removes framework codes and internal identifiers from the title and rewrites the risk sentence so it starts with the consequence.",
     "3.6": "Code checks hard rules: no invented system codes or advisory numbers (these block the scenario), and warns if the asset or the attacker is not mentioned or other systems are named.",
     "3.7": "A second AI call checks the scenario against the plan: the right asset, attacker, threat and systems. Any problem is noted.",
     "3.8": "If anything was found, the AI rewrites the scenario once with the list of problems, and the better of the two drafts is kept.",
-    "3.9": "The scenario is saved. One that still breaks a hard rule is kept hidden; a failure becomes a visible failed card. The attack path records whether it was served or how often it failed — after 5 failures it is abandoned.",
+    "3.9": "The scenario is saved. One that still breaks a hard rule is kept hidden; a failure becomes a visible failed card. The plan records whether it was served or how often it failed — after 5 failures it is abandoned.",
     "3.10": "When the batch is done, control mapping starts for the new cards, and either the next batch of the set begins or the run is marked done (or partial, if something could not be done).",
     "4.1": "A background worker picks up scenarios that still need security controls, up to six per turn.",
     "4.2": "It builds a search text from the scenario and keeps only controls that fit the asset's type (IT, OT or both).",
-    "4.3": "It searches the control library with the same word + meaning search as threats (see the worked example in 2.5) and keeps the best 40 candidates.",
-    "4.4": "A ranking model (the reranker) reads the scenario and each candidate control together and scores the match from 0 to 100. Controls scoring 60 or more are kept; if none does, only the single nearest one is kept, marked \"nearest\".",
+    "4.3": "It searches the control library with the same word + meaning search as threats (see the worked example in 2.5) and keeps the best CONTROL_CANDIDATES (40) candidates.",
+    "4.4": "A ranking model (the reranker) reads the scenario and each candidate control together and scores the match from 0 to 100. Controls at or above CONTROL_SIMILARITY_THRESHOLD are kept, at most MAX_CONTROLS (10); if fewer than MIN_CONTROLS (1) reach it, the nearest ones are added, marked \"nearest\", so a scenario is never left without a control.",
     "4.5": "The controls are saved on the scenario. Failures are retried automatically: a sweep runs every 5 minutes and retries failed mappings after 30 minutes.",
     "5.1": "The reviewer reads the scenario cards and the run's counters.",
     "5.2": "Decisions are refused while the AI is still writing, so nobody decides on a moving target.",
-    "5.3": "Accepting marks a scenario as accepted (only one version per attack path). An accepted scenario can now get a remediation plan.",
+    "5.3": "Accepting marks a scenario as accepted (only one version per scenario). An accepted scenario can now get a remediation plan.",
     "5.4": "Rejecting is final for that version; a new version can still be generated.",
-    "5.5": "Asks the writer for the next six attack paths of the frozen plan.",
+    "5.5": "Asks the writer for the next six scenarios of the frozen plan.",
     "5.6": "Asks the writer for a new version of a scenario; the old one stays until the new one is saved.",
     "5.7": "Puts a threat the AI invented into the library as pending, for a curator to approve.",
     "6.1": "The reviewer asks for a remediation plan for an accepted scenario and supplies the risk register data: ratings, owner, existing controls and the mitigation window.",
@@ -2916,8 +3194,8 @@ $(function () {
   // ---------- what goes in and what comes out of every step and sub-step: [input, its parts, output, its parts] ----------
   var STEP_IO = {
     "1": ["Assessment request", "asset id · supporting system ids · caller's identity", "Queued run", "session id · status queued · frozen asset facts"],
-    "2": ["Frozen asset facts", "asset · its systems · the threat library", "Frozen plan", "threats that apply · their attackers · ranked attack paths"],
-    "3": ["Attack paths", "up to 6 at a time, from the plan", "Scenario cards", "title · scenario · risk · attacker · systems · checks"],
+    "2": ["Frozen asset facts", "asset · its systems · the threat library", "Frozen plan", "threats that apply · their attackers · ranked scenarios"],
+    "3": ["Planned scenarios", "up to 6 at a time, from the plan", "Scenario cards", "title · scenario · risk · attacker · systems · checks"],
     "4": ["Written scenario", "its text · the control library", "Mapped controls", "control code · name · rank · score · exact or nearest"],
     "5": ["Scenario cards", "a reviewer's decision", "Decided scenarios", "accepted · rejected · more scenarios · new versions"],
     "6": ["Accepted scenario + risk register", "ratings · owner · existing controls · mitigation window", "Remediation plan version",
@@ -2942,10 +3220,10 @@ $(function () {
     "2.8": ["All relevant threats", "library + AI", "Threats without duplicates", "duplicates folded"],
     "2.9": ["Threats on the same systems", "", "Threats without repeats", "same attacks folded"],
     "2.10": ["Threats", "+ attacker library", "Threats with attackers", "1 acting + up to 3 alternates"],
-    "2.11": ["Threats with attackers", "", "Frozen plan", "ranked attack paths · number planned"],
-    "3.1": ["Frozen plan", "attack paths", "Batch", "up to 6 attack paths"],
-    "3.2": ["Batch", "", "Writing tasks", "one per path, run together"],
-    "3.3": ["Attack path + asset facts", "threat · attacker · systems", "Writer's brief", "everything the AI writer needs"],
+    "2.11": ["Threats with attackers", "", "Frozen plan", "ranked scenarios · number planned"],
+    "3.1": ["Frozen plan", "planned scenarios", "Batch", "up to 6 scenarios"],
+    "3.2": ["Batch", "", "Writing tasks", "one per scenario, run together"],
+    "3.3": ["Planned scenario + asset facts", "threat · attacker · systems", "Writer's brief", "everything the AI writer needs"],
     "3.4": ["Writer's brief", "", "Draft scenario (AI)", "title · scenario · risk · assumptions · entry point"],
     "3.5": ["Draft scenario", "", "Cleaned draft", "codes removed · risk starts with the consequence"],
     "3.6": ["Cleaned draft + brief", "", "Rule findings", "blockers · warnings"],
@@ -2955,14 +3233,14 @@ $(function () {
     "3.10": ["Batch results", "", "Run status", "next batch · done · partial · controls job"],
     "4.1": ["Scenarios waiting for controls", "", "One scenario to map", "up to 6 per turn"],
     "4.2": ["Scenario + asset types", "IT · OT", "Control search text", "+ which control types fit"],
-    "4.3": ["Control search text", "+ control library index", "Control shortlist", "up to 40 controls"],
-    "4.4": ["Control shortlist", "", "Kept controls", "score ≥ 60 kept · else the 1 nearest"],
+    "4.3": ["Control search text", "+ control library index", "Control shortlist", "up to CONTROL_CANDIDATES (40)"],
+    "4.4": ["Control shortlist", "", "Kept controls", "≥ threshold kept (max 10) · else the nearest (min 1)"],
     "4.5": ["Kept controls, or an error", "", "Saved controls", "done · or failed and retried"],
     "5.1": ["Session id", "", "Cards + counters", "every scenario · run status"],
     "5.2": ["A decision", "", "Allowed or refused", "refused while the AI is writing"],
     "5.3": ["Scenarios to accept", "chosen ones, or all", "Accepted scenarios", "accepted · replaced · skipped"],
     "5.4": ["Scenarios to reject", "", "Rejected scenarios", "rejected · skipped"],
-    "5.5": ["\"Next set\" request", "", "Next set queued", "up to 6 more paths → step 3"],
+    "5.5": ["\"Next set\" request", "", "Next set queued", "up to 6 more scenarios → step 3"],
     "5.6": ["Scenarios to rewrite", "", "New versions", "→ steps 3 and 4"],
     "5.7": ["Accepted scenario with an AI threat", "", "Library proposal", "inserted · or already there"],
     "6.1": ["Accepted scenario + register data", "ratings · owner · existing controls · window", "Valid plan request", "or refused (not accepted / plan exists)"],
@@ -2993,7 +3271,7 @@ $(function () {
     "2.3": ["threats.build_landscape"], "2.4": ["threats.search_queries"], "2.5": ["search.find_threats", "threats.search_shortlists", "ai.embed_queries"],
     "2.6": ["threats.category_check", "threats.relevance_batch", "threats.check_categories"], "2.7": ["threats.gap_fill", "threats.library_match"],
     "2.8": ["threats.merge", "threats.fold_rewordings"], "2.9": ["threats.same_attack"],
-    "2.10": ["threats.assign_actors", "search.find_actors", "threats.attacker_check"], "2.11": ["paths.plan", "paths.best_threat", "paths.same_scenario", "paths.rank", "paths.apply_target"],
+    "2.10": ["threats.assign_actors", "search.find_actors", "threats.attacker_check"], "2.11": ["paths.plan", "paths.best_threat", "paths.rank", "paths.apply_target"],
     "3.1": ["worker.write_batch"], "3.2": ["worker.write_batch"], "3.3": ["writing.brief"], "3.4": ["writing.write"], "3.5": ["writing.clean"],
     "3.6": ["writing.rules"], "3.7": ["writing.plan_check"], "3.8": ["writing.write"],
     "4.1": ["worker.map_controls"], "4.2": ["controls.map"], "4.3": ["search.find_controls"], "4.4": ["controls.map", "ai.rerank"], "4.5": ["controls.map"],
@@ -3009,19 +3287,21 @@ $(function () {
   // whose results name a sub is one inner sub-step of that call (its own input and output, grouped by item).
   // ponytail: older logs have no call id, so their calls are paired started→finished in order per step; a step that ran
   // in parallel there (e.g. relevance batches) is flagged and its n-th input may not belong to its n-th output.
-  function parseTrace(texts) {
+  // A line without a record_id (logged outside a job) joins the run it names, or whose call it is or runs inside.
+  function parseTrace(lines) {
     var runs = {}, open = {}, loose = [];
-    texts.forEach(function (text) {
-      text.split("\n").forEach(function (line) {
-        if (line.charAt(0) !== "{" || line.indexOf('"step.') < 0) return;
-        var d; try { d = JSON.parse(line); } catch (e) { return; }
-        if (!d.step || !/^step\./.test(d.event || "")) return;
-        if (d.record_id) traceEvent(runs, open, d.record_id, d); else loose.push([line, d]);
-      });
+    lines.forEach(function (line) {
+      if (line.charAt(0) !== "{" || line.indexOf('"step.') < 0) return;
+      var d; try { d = JSON.parse(line); } catch (e) { return; }
+      if (!d.step || !/^step\./.test(d.event || "")) return;
+      if (d.record_id) traceEvent(runs, open, d.record_id, d); else loose.push([line, d]);
     });
     var ids = Object.keys(runs);
     loose.forEach(function (x) {
-      ids.forEach(function (id) { if (x[0].indexOf(id) >= 0 || (x[1].call && runs[id].byCall[x[1].call])) traceEvent(runs, open, id, x[1]); });
+      ids.forEach(function (id) {
+        var r = runs[id];
+        if (x[0].indexOf(id) >= 0 || (x[1].call && (r.byCall[x[1].call] || r.byCall[x[1].parent]))) traceEvent(runs, open, id, x[1]);
+      });
     });
     ids.forEach(function (id) { runs[id].calls.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; }); });
     return runs;
@@ -3090,54 +3370,193 @@ $(function () {
     var keys = Object.keys(v).filter(function (k) { return k !== "type"; });
     return clip((v.type ? v.type + " " : "") + "{" + keys.slice(0, 4).map(function (k) { return k + ": " + brief(v[k], 40); }).join(", ") + (keys.length > 4 ? ", …" : "") + "}", n);
   }
-  // A logged value as a few short lines: a list shows its size and first items, an argument map one line per argument.
-  function realLines(v) {
-    var out = linesOf(v);
-    return out.length ? out : ['<i class="faint">' + (v == null ? "nothing (the function returns no value)" : "none (empty)") + "</i>"];
+  // ---------- run data as pictures ----------
+  // Values arrive as the log keeps them (core/redaction.safe_preview): ranked results are {"<id> <name>": score},
+  // lists are {count, first}, joined lists are "a | b", chains "a > b". Field names (snake_case) become tiles,
+  // data labels become bars (numbers) or rows (text).
+  function num(v) { return typeof v === "number" && isFinite(v); }
+  function fmtN(v) { return Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 1000) / 1000); }
+  function nameOf(k) { var m = /^\d+ (.+)$/.exec(k); return m ? m[1] : k; }
+  function isField(k) { return /^[a-z][a-z0-9_]*$/.test(k); }
+  function vCap(t) { return '<div class="vz-cap">' + esc(t) + "</div>"; }
+  function vChips(list) {
+    return '<div class="vz-chips">' + list.filter(function (x) { return x !== ""; }).map(function (x) {
+      return '<span class="vz-chip" title="' + attr(x) + '">' + esc(x) + "</span>"; }).join("") + "</div>";
   }
-  function linesOf(v) {
-    var out = [];
-    if (v == null) return out;
-    if (isPreview(v)) {
-      out.push("<i>" + v.count + " items</i>");
-      v.first.forEach(function (x, i) { out.push((i + 1) + ". " + esc(brief(x, 240))); });
-      if (v.count > v.first.length) out.push('<i class="faint">… ' + (v.count - v.first.length) + " more (the log keeps the first " + v.first.length + ")</i>");
-    } else if (Array.isArray(v)) {
-      if (v.length === 2 && v[0] && typeof v[0] === "object" && typeof v[1] !== "object") out.push(esc(brief(v, 220)));
-      else v.slice(0, 4).forEach(function (x) { out = out.concat(Array.isArray(x) && !x.length ? ["none"] : linesOf(x)); });
-    } else if (typeof v === "object" && !v.type && typeof v.relevant !== "boolean") {
-      Object.keys(v).slice(0, 7).forEach(function (k) {
-        var x = v[k];
-        out.push("<b>" + esc(k) + ":</b> " + esc(isPreview(x) ? x.count + " items — e.g. " + (x.first.length ? brief(x.first[0], 130) : "") : brief(x, 160)));
-      });
-    } else out.push(esc(brief(v, 320)));
-    return out;
+  function vChain(list) {
+    return '<div class="vz-chips">' + list.map(function (x) { return '<span class="vz-chip">' + esc(x) + "</span>"; }).join('<span class="vz-chain">&rarr;</span>') + "</div>";
   }
+  function vStats(o) {
+    return '<div class="vz-stats">' + Object.keys(o).filter(function (k) { return o[k] !== undefined; }).map(function (k) {
+      return '<div class="vz-stat"><b>' + esc(brief(o[k], 60)) + "</b><span>" + esc(k.replace(/_/g, " ")) + "</span></div>"; }).join("") + "</div>";
+  }
+  // label → number as bars; opt.line: a floor or cut-off drawn across (opt.drop greys the rows under it),
+  // opt.tag(label): a note after the label, opt.raw: keep the "<id> " prefix.
+  function vBars(o, opt) {
+    opt = opt || {};
+    var keys = Object.keys(o).filter(function (k) { return num(o[k]); }), line = num(opt.line) ? opt.line : null;
+    var max = Math.max.apply(null, keys.map(function (k) { return o[k]; }).concat([line || 0, 1e-9]));
+    return '<div class="vz-bars">' + keys.map(function (k) {
+      var v = o[k], under = line != null && opt.drop && v < line;
+      return '<div class="vz-bar' + (under ? " under" : "") + (opt.tag ? " tagged" : "") + '"><span class="vz-l" title="' + attr(k) + '">' + esc(opt.raw ? k : nameOf(k)) +
+        '</span><span class="vz-track"><i style="width:' + Math.max(0, 100 * v / max).toFixed(1) + '%"></i>' +
+        (line != null ? '<u style="left:' + (100 * line / max).toFixed(1) + '%"></u>' : "") + '</span><span class="vz-v">' + fmtN(v) + (under ? " &#10007;" : "") + "</span>" +
+        (opt.tag ? '<span class="vz-tag">' + esc(opt.tag(nameOf(k))) + "</span>" : "") + "</div>";
+    }).join("") + (line != null ? '<div class="vz-note"><span style="color:var(--danger)">&#9482;</span> ' + esc(opt.lineLabel || "cut-off") + " " + fmtN(line) +
+      (opt.drop ? " · rows under it are dropped" : " · nothing reached it, so none is dropped") + "</div>" : "") + "</div>";
+  }
+  function vPairs(o) {
+    return '<div class="vz-rows">' + Object.keys(o).map(function (k) {
+      return '<div class="vz-row"><b class="vz-l" style="max-width:45%" title="' + attr(k) + '">' + esc(nameOf(k)) + "</b>" + vText(o[k]) + "</div>"; }).join("") + "</div>";
+  }
+  function vText(x) {
+    var s = String(x);
+    if (typeof x === "string" && / \| /.test(s)) return vChips(s.split(" | "));
+    if (typeof x === "string" && / > /.test(s)) return vChain(s.split(" > "));
+    if (typeof x === "string" && /, /.test(s) && s.split(", ").every(function (p) { return p.length <= 32; })) return vChips(s.split(", "));
+    return '<span class="vz-t">' + esc(brief(x, 400)) + "</span>";
+  }
+  function vList(items, count) {
+    return vStats({ items: count }) + vChips(items.slice(0, 12).map(function (x) { return brief(x, 60); })) +
+      (count > items.length ? '<div class="vz-note">the log keeps the first ' + items.length + "</div>" : "");
+  }
+  function vAny(v) {
+    if (v == null) return '<span class="faint">nothing</span>';
+    if (typeof v !== "object") return vText(v);
+    if (isPreview(v)) return vList(v.first, v.count);
+    if (Array.isArray(v)) return v.length ? vList(v, v.length) : '<span class="faint">none</span>';
+    var keys = Object.keys(v).filter(function (k) { return k !== "type"; });
+    if (!keys.length) return '<span class="faint">none</span>';
+    if (keys.every(function (k) { return !isField(k); })) return keys.every(function (k) { return num(v[k]); }) ? vBars(v) : vPairs(v);
+    var tiles = {}, rest = "";
+    keys.forEach(function (k) {
+      var x = v[k];
+      if (x == null || typeof x !== "object" && !/ \| | > |, /.test(String(x)) && String(x).length <= 48) tiles[k] = x;
+      else rest += vCap(k.replace(/_/g, " ")) + vAny(x);
+    });
+    return (Object.keys(tiles).length ? vStats(tiles) : "") + rest;
+  }
+  // A step row's box: at most four tiles (a list as its size).
+  function vMini(v) {
+    if (v == null) return '<span class="faint">nothing</span>';
+    if (isPreview(v) || Array.isArray(v)) {
+      var a = isPreview(v) ? v.first : v;
+      return vStats({ items: isPreview(v) ? v.count : v.length }) + vChips(a.slice(0, 3).map(function (x) { return brief(x, 40); }));
+    }
+    if (typeof v !== "object") return '<span class="vz-t">' + esc(brief(v, 120)) + "</span>";
+    var tiles = {};
+    Object.keys(v).filter(function (k) { return k !== "type"; }).slice(0, 4).forEach(function (k) {
+      var x = v[k];
+      tiles[k] = isPreview(x) ? x.count + " items" : Array.isArray(x) ? x.length + " items" : brief(x, 40);
+    });
+    return vStats(tiles);
+  }
+  function legs(s) { return s && s !== "none" ? String(s).split(" | ") : []; }
+  function vVerdicts(o) {
+    return '<div class="vz-rows">' + Object.keys(o).map(function (k) {
+      var t = String(o[k]), m = /^yes \/ ([^/]*) \/ ([\d.]+)/.exec(t), conf = m ? +m[2] : 0;
+      return '<div class="vz-row"><span class="vz-ok ' + (m ? "y" : "n") + '">' + (m ? "&#10003;" : "&#10007;") + '</span><span class="vz-l" style="max-width:55%" title="' +
+        attr(k) + '">' + esc(k) + "</span>" + (m ? '<span class="badge">' + esc(m[1]) + '</span><span class="vz-mini"><i style="width:' +
+        Math.min(100, conf > 1 ? conf : conf * 100) + '%"></i></span><span class="vz-tag">confidence ' + esc(m[2]) + "</span>" : '<span class="vz-tag">' + esc(t) + "</span>") + "</div>";
+    }).join("") + "</div>";
+  }
+  var CHOICE_CLS = { category_coverage: "blue", path_coverage: "amber", risk_significance: "" };
+  function vOrder(o) {
+    return '<div class="vz-rows">' + Object.keys(o).map(function (k) {
+      var m = /^(\d+) (.+)$/.exec(k) || [0, "", k], v = /^(\S+) impact (\S+) conf (\S+)/.exec(String(o[k]));
+      return '<div class="vz-row"><span class="vz-n">' + esc(m[1]) + '</span><span class="vz-l" style="max-width:50%" title="' + attr(m[2]) + '">' + esc(m[2]) + "</span>" +
+        (v ? '<span class="badge ' + (CHOICE_CLS[v[1]] || "") + '">' + esc(v[1].replace(/_/g, " ")) + '</span><span class="vz-tag">impact ' + esc(v[2]) + " · confidence " + esc(v[3]) + "</span>"
+           : vText(o[k])) + "</div>";
+    }).join("") + "</div>";
+  }
+  // "10 days, starts day 0, after A + B" per action as a timeline; the critical path in red.
+  function vGantt(o, crit) {
+    var rows = Object.keys(o).map(function (k) {
+      var t = String(o[k]), m = /(\d+) days?, starts day (\d+)/.exec(t) || [];
+      return { k: k, d: +m[1] || 0, s: +m[2] || 0, after: (/after (.*)$/.exec(t) || [])[1] };
+    });
+    var end = Math.max.apply(null, rows.map(function (r) { return r.s + r.d; }).concat([1]));
+    return '<div class="vz-bars">' + rows.map(function (r) {
+      return '<div class="vz-bar' + (crit.indexOf(r.k) >= 0 ? " crit" : "") + '"><span class="vz-l" title="' + attr(r.k + (r.after && r.after !== "-" ? " · after " + r.after : "")) + '">' +
+        esc(r.k) + '</span><span class="vz-track"><i style="left:' + (100 * r.s / end).toFixed(1) + "%;width:" + (100 * r.d / end).toFixed(1) + '%"></i></span>' +
+        '<span class="vz-v">day ' + r.s + "&ndash;" + (r.s + r.d) + "</span></div>";
+    }).join("") + '<div class="vz-note">' + end + " days in all" + (crit.length ? ' · <span style="color:var(--danger)">red</span> = critical path' : "") + "</div></div>";
+  }
+  function sibling(sibs, name) { return sibs.filter(function (x) { return x.sub === name; })[0]; }
+  // The inner sub-steps the app records (core/tracing.record_detail), each as [input picture, output picture].
+  var VIZ = {
+    "words → BM25": function (i, o) {
+      var w = o.matched_words || {}, seen = {};
+      var tokens = String(i.tokens || "").split(" ").filter(function (t) { return t && !seen[t] && (seen[t] = 1); });
+      return [vCap("the query's words") + vChips(tokens.slice(0, 40)) + vStats({ rows_in_scope: i.rows_in_scope }),
+              vCap("matched words · how rare each is (IDF)") + vChips(Object.keys(w).map(function (k) { return k + " " + (num(w[k]) ? fmtN(w[k]) : w[k]); })) +
+              vCap("best rows by BM25") + vAny(o.top || {})];
+    },
+    "meaning → similarity": function (i, o) {
+      return [vStats({ rows_in_scope: i.rows_in_scope, floor: i.floor }),
+              vStats({ floor_applied: o.floor_applied, rows_at_or_above_floor: o.rows_at_or_above_floor }) + vCap("best rows by meaning (cosine)") +
+              vBars(o.top || {}, { line: i.floor, drop: o.floor_applied === true, lineLabel: "floor" })];
+    },
+    "merge by rank (RRF)": function (i, o) {
+      var kw = legs(i.keyword_ranking), mn = legs(i.meaning_ranking);
+      var col = function (t, list) { return "<div>" + vCap(t) + '<ol class="vz-ol">' + list.map(function (x) { return '<li title="' + attr(x) + '">' + esc(x) + "</li>"; }).join("") + "</ol></div>"; };
+      var tag = function (n) {
+        var a = kw.indexOf(n), b = mn.indexOf(n);
+        return (a >= 0 ? "words #" + (a + 1) : "") + (a >= 0 && b >= 0 ? " · " : "") + (b >= 0 ? "meaning #" + (b + 1) : "");
+      };
+      return ['<div class="vz-cols">' + col("by words (BM25)", kw) + col("by meaning", mn) + "</div>" + vStats({ k: i.k }),
+              vStats({ exact_text_match: o.exact_text_match }) + vCap("merged: each list gives 1 / (k + rank), summed") + vBars(o.top || {}, { tag: tag })];
+    },
+    "rerank": function (i, o, sibs) {
+      var cut = sibling(sibs, "cut-off");
+      return [vAny(i), vBars(o, { line: cut && cut.input && cut.input.threshold, drop: true, lineLabel: "cut-off", raw: true })];
+    },
+    "verdicts": function (i, o) { return [vAny(i), vVerdicts(o)]; },
+    "final order": function (i, o) { return [vAny(i), vOrder(o)]; },
+    "schedule": function (i, o, sibs) {
+      var cp = sibling(sibs, "critical path");
+      return [vAny(i), vGantt(o, cp && cp.output ? legs(String(cp.output.path || "").replace(/ > /g, " | ")) : [])];
+    },
+    "clean-up": function (i, o) {
+      var rest = {};
+      Object.keys(o).forEach(function (k) { if (k !== "title_before" && k !== "title_after") rest[k] = o[k]; });
+      return [vAny(i), (o.title_before === o.title_after ? vStats({ title: "unchanged" }) :
+        '<div class="vz-ba"><s>' + esc(o.title_before) + "</s><span>&rarr;</span><b>" + esc(o.title_after) + "</b></div>") + vStats(rest)];
+    }
+  };
+  function subViz(s, sibs, n) {
+    var io = (VIZ[s.sub] || function (i, o) { return [vAny(i), vAny(o)]; })(s.input || {}, s.output || {}, sibs);
+    return '<div class="vz-sub"><div class="vz-h"><span class="vz-n">' + n + "</span>" + esc(s.sub) + "</div>" +
+      '<div class="vz-io"><div class="vz-in"><span class="vz-k">In</span>' + io[0] + '</div><span class="vz-ar">&rarr;</span>' +
+      '<div class="vz-out"><span class="vz-k">Out</span>' + io[1] + "</div></div></div>";
+  }
+  // ‹ n of N › with a list of every one: for a call's many calls, or a call's many items (queries, threats …).
+  function navHtml(kind, key, labels, ix, noun) {
+    if (labels.length < 2) return "";
+    var btn = function (to, text, on) { return '<button type="button" data-' + kind + '="' + attr(key) + '" data-i="' + to + '"' + (on ? "" : " disabled") + ">" + text + "</button>"; };
+    return '<span class="vz-nav">' + btn(Math.max(ix - 1, 0), "&lsaquo;", ix > 0) + '<select data-' + kind + 'sel="' + attr(key) + '">' + labels.map(function (l, i) {
+        return '<option value="' + i + '"' + (i === ix ? " selected" : "") + ">" + esc(noun + " " + (i + 1) + " of " + labels.length + (l ? " · " + clip(l, 80) : "")) + "</option>";
+      }).join("") + "</select>" + btn(Math.min(ix + 1, labels.length - 1), "&rsaquo;", ix < labels.length - 1) + "</span>";
+  }
+  var ITEM_NOUN = { "words → BM25": "query", "best score per category": "category", "batches": "category", "actor ranking": "threat",
+                    "first draft": "threat", "clean-up": "threat", "rules": "threat", "allowed types + query": "threat" };
   // The sub-steps whose real input and output stand for a whole step on its closed row.
   var STEP_REAL = { "1": ["1.1", "1.6"], "2": ["2.3", "2.11"], "3": ["3.3", "3.4"], "4": ["4.2", "4.5"], "5": ["5.3", "5.6"], "6": ["6.7", "6.10"],
                     "7": ["7.2", "7.3"], "X": ["X.2", "X.4"] };
   function realBox(kind, call, label) {
-    var lines = kind === "out" && call.failed ? ['<span class="bad-mark">failed</span> ' + esc(call.error)] : realLines(kind === "in" ? call.input : call.output);
-    return '<div class="io-box ' + kind + ' real"><span class="io-k">' + (kind === "in" ? "Input" : "Output") + ' <span class="io-live">· real</span> ' +
-           '<span class="faint">' + esc(label) + "</span></span>" + '<div class="io-real">' + lines.slice(0, 8).map(function (l) { return "<div>" + l + "</div>"; }).join("") + "</div></div>";
+    var body = kind === "out" && call.failed ? '<span class="bad-mark">failed</span> ' + esc(call.error) : vMini(kind === "in" ? call.input : call.output);
+    return '<div class="io-box ' + kind + ' real"><span class="io-k">' + (kind === "in" ? "Input" : "Output") + ' <span class="io-live">· ' +
+           (call.task === "dummy" ? "dummy" : "real") + '</span> <span class="faint">' + esc(label) + '</span></span><div class="io-real">' + body + "</div></div>";
   }
-  // A call's inner sub-steps (step.result records naming a sub) as Input → sub → Output rows, one item (e.g. a query) at a time.
+  // A call's inner sub-steps (step.result records naming a sub) as pictures, one item (a query, a threat …) at a time.
   function subChain(c, skey) {
-    if (!c.subs.length) return "";
     var items = [], by = {};
     c.subs.forEach(function (s) { var k = s.item == null ? "" : String(s.item); if (!by[k]) { by[k] = []; items.push(k); } by[k].push(s); });
-    var ix = Math.min(walk.subIdx[skey] || 0, items.length - 1);
-    // Long items (search queries) show as "n · start…" with the whole text on hover.
-    var picker = items.length > 1 ? '<div class="rd-calls">' + items.slice(0, 60).map(function (k, i) {
-      var label = k.length > 40 ? (i + 1) + " · " + k.slice(0, 36) + "…" : k || "whole call";
-      return '<button data-rdsub="' + attr(skey) + '" data-i="' + i + '" title="' + attr(k) + '" class="' + (i === ix ? "on" : "") + '">' + esc(label) + "</button>";
-    }).join("") + (items.length > 60 ? " … " + items.length + " in all" : "") + "</div>" : "";
-    var which = items.length > 1 ? " · " + (ix + 1) + " of " + items.length : "";
-    return '<div class="sub-h">Inside this call, step by step' + which + (items[ix] ? " · " + esc(brief(items[ix], 160)) : "") + "</div>" + picker +
-      by[items[ix]].map(function (s, k) {
-        return (k ? '<div class="io-down">&darr;</div>' : "") + '<div class="io-row rd-sub">' + realBox("in", s, "") + AR +
-               '<div class="io-mid"><b>' + esc(s.sub) + "</b></div>" + AR + realBox("out", s, "") + "</div>";
-      }).join("");
+    var ix = Math.min(walk.subIdx[skey] || 0, items.length - 1), here = by[items[ix]];
+    var noun = items.length > 1 && here[0] ? ITEM_NOUN[here[0].sub] || "item" : "item";
+    return '<div class="sub-h">Inside, step by step' + navHtml("rdsub", skey, items.map(function (k) { return k || "the whole call"; }), ix, noun) + "</div>" +
+      (items[ix].length > 60 ? '<div class="vz-item">' + esc(clip(items[ix], 400)) + "</div>" : "") +
+      here.map(function (s, k) { return subViz(s, here, k + 1); }).join("");
   }
   // The traced calls made inside this one (their parent is its call id), as "step × n".
   function childChips(c) {
@@ -3151,29 +3570,48 @@ $(function () {
   function realDetail(w, groups, rt) {
     var h = groups.map(function (g) {
       var key = w.id + "|" + g.name, idx = Math.min(walk.callIdx[key] || 0, g.calls.length - 1), c = g.calls[idx];
-      var picker = g.calls.length > 1 ? '<div class="rd-calls">call ' + g.calls.slice(0, 60).map(function (x, i) {
-        return '<button data-rdcall="' + attr(key) + '" data-i="' + i + '" class="' + (i === idx ? "on" : "") + '" title="' + attr(fmtTime(x.at)) + '">' + (i + 1) + "</button>";
-      }).join("") + (g.calls.length > 60 ? " … " + g.calls.length + " in all" : "") + "</div>" : "";
-      return '<div class="rd-step"><h5><code>' + esc(g.name) + "</code><span class=\"badge\">" + g.calls.length + (g.calls.length === 1 ? " call" : " calls") + "</span>" +
-        '<span class="muted" style="font-weight:400">' + esc(fmtTime(c.at)) + (c.ms != null ? " · " + c.ms + " ms" : "") + (c.task ? " · " + c.task : "") + "</span>" +
-        (g.parallel ? '<span class="badge amber" title="The log has no call id: inputs and outputs are paired in order">ran in parallel</span>' : "") + "</h5>" + picker +
-        childChips(c) + subChain(c, key + "|" + idx) +
-        '<div class="rd-panes"><div><div class="sub-h" style="margin-top:4px">Real input</div><pre>' + esc(pretty(c.input)) + "</pre></div>" +
-        '<div><div class="sub-h" style="margin-top:4px">Real output</div><pre>' + esc(c.failed ? c.error : pretty(c.output)) + "</pre></div></div>" +
-        (c.results.length ? '<div class="sub-h">Intermediate results</div><pre>' + esc(pretty(c.results)) + "</pre>" : "") + "</div>";
+      var calls = g.calls.map(function (x) { return fmtTime(x.at) + (x.ms != null ? " · " + x.ms + " ms" : "") + (x.subs.length && x.subs[0].item ? " · " + x.subs[0].item : ""); });
+      return '<div class="rd-step"><h5><code>' + esc(g.name) + "</code>" +
+        (g.calls.length > 1 ? navHtml("rdcall", key, calls, idx, "call") : '<span class="muted" style="font-weight:400">' + esc(calls[0]) + "</span>") +
+        (g.parallel ? '<span class="badge amber" title="The log has no call id: inputs and outputs are paired in order">ran in parallel</span>' : "") + "</h5>" +
+        childChips(c) +
+        (c.subs.length ? subChain(c, key + "|" + idx) : '<div class="vz-io" style="margin-top:6px"><div class="vz-in"><span class="vz-k">In</span>' + vAny(c.input) +
+          '</div><span class="vz-ar">&rarr;</span><div class="vz-out"><span class="vz-k">Out</span>' +
+          (c.failed ? '<span class="bad-mark">failed</span> ' + esc(c.error) : vAny(c.output)) + "</div></div>") +
+        '<details class="vz-raw"><summary>raw data</summary><div class="rd-panes"><div><div class="sub-h" style="margin-top:4px">Input</div><pre>' + esc(pretty(c.input)) + "</pre></div>" +
+        '<div><div class="sub-h" style="margin-top:4px">Output</div><pre>' + esc(c.failed ? c.error : pretty(c.output)) + "</pre></div></div>" +
+        (c.results.length || c.subs.length ? '<div class="sub-h">Inner records</div><pre>' + esc(pretty(c.results.concat(c.subs))) + "</pre>" : "") + "</details></div>";
     }).join("");
     return h + '<details class="rd-explain"><summary>How the code does it (explanation)</summary>' + sfDetail(w, rt) + "</details>";
   }
+  // The step each traced name belongs to (TRACE), the asset a run is about, and a run's one-line label.
+  function nameSteps() {
+    if (nameSteps.v) return nameSteps.v;
+    var m = nameSteps.v = {};
+    Object.keys(TRACE).forEach(function (id) { TRACE[id].forEach(function (n) { if (!(n in m) && BY[id] && BY[id].s !== "X") m[n] = BY[id].s; }); });
+    return m;
+  }
+  function runLabel(r) {
+    var steps = {}, asset = "";
+    r.calls.forEach(function (c) {
+      var s = nameSteps()[c.step]; if (s) steps[s] = 1;
+      asset = asset || at(c.input, "context.asset.name") || at(c.input, "asset.name") || (c.input && typeof c.input.asset === "string" ? c.input.asset : "");
+    });
+    return short(r.id) + (asset ? " · " + clip(asset, 40) : "") + " · " + fmtTime(r.first) + " · steps " + (Object.keys(steps).sort().join(" ") || "-") +
+      (r.tasks.replay ? " · replay" : r.tasks.dummy ? " · dummy" : "");
+  }
   function renderRdBar() {
     var t = walk.trace;
+    $("#rdRefresh").prop("hidden", !walk.logDir);
     if (!t) return;
     var ids = Object.keys(t.runs).sort(function (a, b) { return t.runs[a].first < t.runs[b].first ? 1 : -1; });
-    var label = function (r) { return short(r.id) + (r.tasks.replay ? " (replay)" : "") + " · " + Object.keys(r.tasks).join(", ") + " · " + fmtTime(r.first) + " · " + r.calls.length + " calls"; };
-    $("#rdInfo").html('<b>Real data:</b> run <select id="rdRunSel">' + ids.map(function (id) {
-        return '<option value="' + id + '"' + (id === t.sel ? " selected" : "") + ">" + esc(label(t.runs[id])) + "</option>"; }).join("") + "</select>" +
-      (ids.length > 1 ? ' <span class="muted">also show:</span> ' + ids.filter(function (id) { return id !== t.sel; }).map(function (id) {
-        return '<label style="display:inline-flex;gap:4px;align-items:center;margin-right:6px"><input type="checkbox" data-rdextra="' + id + '"' + (t.extra[id] ? " checked" : "") + ">" +
-               esc(short(id) + " " + Object.keys(t.runs[id].tasks).join(",")) + "</label>"; }).join("") : ""));
+    var more = ids.filter(function (id) { return id !== t.sel && !t.extra[id]; });
+    $("#rdInfo").html('<b>Run</b> <select id="rdRunSel">' + ids.map(function (id) {
+        return '<option value="' + id + '"' + (id === t.sel ? " selected" : "") + ">" + esc(runLabel(t.runs[id])) + "</option>"; }).join("") + "</select>" +
+      (more.length ? ' <select id="rdAddRun"><option value="">+ add a run (e.g. its remediation plan)</option>' + more.map(function (id) {
+        return '<option value="' + id + '">' + esc(runLabel(t.runs[id])) + "</option>"; }).join("") + "</select>" : "") +
+      Object.keys(t.extra).filter(function (id) { return t.extra[id] && t.runs[id]; }).map(function (id) {
+        return ' <span class="badge">+ ' + esc(short(id)) + ' <a href="#" data-rdextraoff="' + id + '" title="Remove">&times;</a></span>'; }).join(""));
   }
 
   // A data refresh (live event, poll) re-renders around the reader: the steps are left alone while they type in them
@@ -3433,8 +3871,8 @@ $(function () {
   function pathsPanel(c) {
     var p = planOfImp(c);
     if (!p || !p.paths) return null;
-    return evb("im", "plan.paths (ranked attack paths)", "tsg_sessions " + short(c.sess._id) + " · target " + esc(p.target), tblHtml(
-      ["Rank", "Path", "Choice", "Selected", "Category", "Systems", "Impact", "Conf.", "Served", "Attempts", "Abandoned"], p.paths.map(function (x) {
+    return evb("im", "plan.paths (ranked scenarios)", "tsg_sessions " + short(c.sess._id) + " · target " + esc(p.target), tblHtml(
+      ["Rank", "Scenario", "Choice", "Selected", "Category", "Systems", "Impact", "Conf.", "Served", "Attempts", "Abandoned"], p.paths.map(function (x) {
         return [esc(x.rank), '<span class="mono">' + esc(x.path_id) + "</span>", esc(x.choice), esc(x.selected === false ? "no · " + (x.unselected_reason || "") : "yes"),
                 esc(x.category), esc((x.systems || []).join(", ")), esc(x.impact), esc(x.confidence), '<span class="mono">' + esc(short(x.served)) + "</span>",
                 esc(x.attempts), esc(x.abandoned ? "yes" : "")];
@@ -3444,10 +3882,10 @@ $(function () {
     if (!c.sc || !c.sc.controls_status) return null;
     var it = c.sc.controls || [];
     return evb("rt", "controls of the traced scenario (controls_status " + c.sc.controls_status + ")", "GET /v1/sessions/{id}/results → scenarios[].controls",
-      tblHtml(["Rank", "Code", "Control", "Domain", "IT/OT", "Rerank score (0–100)", "Match"], it.map(function (x) {
+      tblHtml(["Rank", "Code", "Control", "Domain", "IT/OT", "Rerank score (0–100)", "Tier", "Why kept"], it.map(function (x) {
         return [esc(x.map_rank), '<span class="mono">' + esc(x.control_code) + "</span>", esc(x.control_name), esc(x.domain || ""), esc(x.itot || ""), esc(x.score),
-                '<span title="' + attr(x.match_reason || "") + '">' + esc(x.match_type) + "</span>"];
-      })) + (it.length && it[0].match_type === "NEAREST" ? '<p class="muted" style="margin:6px 0 0">No control reached the cut-off: the single nearest one was kept (NEAREST_ONLY).</p>' : ""));
+                '<span title="' + attr(x.match_type || "") + '">' + esc(x.tier || x.match_type) + "</span>", esc(x.match_reason || "")];
+      })) + (it.length && it[0].match_type === "NEAREST" ? '<p class="muted" style="margin:6px 0 0">No control reached the threshold: the nearest were kept as fallback, up to MIN_CONTROLS (G225).</p>' : ""));
   }
   function snapshotOf(c) {
     if (!c.irem || !c.irem.versions) return null;
@@ -3508,7 +3946,7 @@ $(function () {
     },
     "2.8": function (c) { return [["out", foldedPanel(c, ["same_name", "same_wording"], "Folds by name or wording")]]; },
     "2.9": function (c) { return [["out", foldedPanel(c, ["same_attack"], "Folds by same attack")], ["mid", callsPanel(c, ["same_attack"])]]; },
-    "2.10": function (c) { return [["out", scnPanel(c, ["actors"], "Actors on the traced scenario")], ["out", threatsPanel(c, function () { return true; }, "Every planned threat and its actors")], ["mid", callsPanel(c, ["attacker_fit"])]]; },
+    "2.10": function (c) { return [["out", scnPanel(c, ["actors"], "Actors on the traced scenario")], ["out", threatsPanel(c, function () { return true; }, "Every planned threat and its actors")], ["mid", callsPanel(c, ["relevance_gate"])]]; },
     "2.11": function (c) { return [["out", apiSession(c, ["progress.threats", "progress.timings.threats", "progress.scenario_count.total", "progress.scenario_count.remaining", "progress.error_message.threats"])], ["mid", pathsPanel(c)],
                                    ["mid", c.sess && c.sess.plan ? evb("im", "Plan notes", "tsg_sessions · plan", jpre(pick(c.sess.plan, ["target", "notes", "not_assessed", "no_valid_threat", "frozen_at", "prompt_version"]))) : null]]; },
     "3.1": function (c) { return [["mid", pathsPanel(c)], ["out", apiSession(c, ["session_status", "progress.scenarios", "progress.last_next_set", "progress.scenario_count.remaining"])], ["in", impPanel(c.sess, "job.set", "job.set", "tsg_sessions")]]; },
@@ -3787,30 +4225,88 @@ $(function () {
     .on("click", "#sdRun", runScheduleDemo)
     .on("click", "#ioAll", function () { WALK_STEPS.forEach(function (S) { walk.open[S.n] = true; }); renderIO(); })
     .on("click", "#ioNone", function () { walk.open = {}; walk.det = {}; renderIO(); });
-  // Real run data: the log files are read in this tab only; nothing is sent anywhere.
-  $("#rdFiles").on("change", function () {
-    var files = [].slice.call(this.files || []), input = this;
-    if (!files.length) return;
-    $("#rdInfo").text("Reading " + files.map(function (f) { return f.name; }).join(", ") + "…");
-    Promise.all(files.map(function (f) { return f.text(); })).then(function (texts) {
-      var runs = parseTrace(texts), ids = Object.keys(runs);
-      input.value = "";
+  // Real run data: the log files are read in this tab only; nothing is sent anywhere. A worker log can be 100+ MB,
+  // so it is read as a stream and only its step-trace lines are kept.
+  function readStepLines(files, progress) {
+    var lines = [], total = files.reduce(function (a, f) { return a + f.size; }, 0) || 1, done = 0;
+    return files.reduce(function (p, f) {
+      return p.then(function () {
+        var reader = f.stream().getReader(), dec = new TextDecoder(), rest = "";
+        function pump() {
+          return reader.read().then(function (r) {
+            if (r.done) { if (rest.indexOf('"step.') >= 0) lines.push(rest); return; }
+            done += r.value.length;
+            var parts = (rest + dec.decode(r.value, { stream: true })).split("\n");
+            rest = parts.pop();
+            for (var i = 0; i < parts.length; i++) if (parts[i].indexOf('"step.') >= 0) lines.push(parts[i]);
+            progress(f.name, done / total);
+            return pump();
+          });
+        }
+        return pump();
+      });
+    }, Promise.resolve()).then(function () { return lines; });
+  }
+  // Open every step with data, and the details of every sub-step whose calls recorded their inside.
+  function autoOpen() {
+    WALK.forEach(function (w) {
+      var g = stageCalls(w);
+      if (g.length) walk.open[w.s] = true;
+      if (g.some(function (x) { return x.calls.some(function (c) { return c.subs.length; }); })) walk.det[w.id] = true;
+    });
+  }
+  function loadRunFiles(files) {
+    if (!files.length) { $("#rdInfo").html('<span class="bad-mark">No log files there.</span> Pick the app\'s <code>logs</code> folder.'); return; }
+    var last = -1;
+    $("#rdProg").prop("hidden", false);
+    readStepLines(files, function (name, f) {
+      var pct = Math.floor(f * 100);
+      if (pct !== last) { last = pct; $("#rdProg i").css("width", pct + "%"); $("#rdInfo").text("Reading " + name + " · " + pct + "%"); }
+    }).then(function (lines) {
+      $("#rdProg").prop("hidden", true);
+      var runs = parseTrace(lines), ids = Object.keys(runs), t = walk.trace;
       if (!ids.length) {
         $("#rdInfo").html('<span class="bad-mark">No step records in these files.</span> The app writes them only while <code>DEBUG_STEP_OUTPUT=true</code>.');
         return;
       }
+      var keep = t && runs[t.sel] ? t.sel : null;    // a refresh stays on the run being read
       var latest = ids.filter(function (id) { return runs[id].tasks.tsg_find_threats; }).sort(function (a, b) { return runs[a].last < runs[b].last ? 1 : -1; })[0];
-      walk.trace = { runs: runs, sel: state.sid && runs[state.sid] ? state.sid : latest || ids[0], extra: {} };
-      walk.callIdx = {}; walk.subIdx = {};
-      WALK_STEPS.forEach(function (S) { if (WALK.some(function (w) { return w.s === S.n && stageCalls(w).length; })) walk.open[S.n] = true; });
+      walk.trace = { runs: runs, sel: keep || (state.sid && runs[state.sid] ? state.sid : latest || ids[0]), extra: keep ? t.extra : {} };
+      if (!keep) { walk.callIdx = {}; walk.subIdx = {}; walk.det = {}; }
+      autoOpen();
       renderIO();
-    }).catch(function (e) { $("#rdInfo").text("Could not read the files: " + e.message); });
+    }).catch(function (e) { $("#rdProg").prop("hidden", true); $("#rdInfo").text("Could not read the files: " + e.message); });
+  }
+  function logFile(name) { return /\.log$/i.test(name) && !/beat|maint/i.test(name); }   // the scheduler's logs hold no run
+  async function readLogDir(dir) {
+    var files = [];
+    for await (const h of dir.values()) if (h.kind === "file" && logFile(h.name)) files.push(await h.getFile());
+    return files;
+  }
+  $("#rdDirBtn").on("click", function () {
+    if (!window.showDirectoryPicker) { $("#rdDir").trigger("click"); return; }     // other browsers: a folder upload
+    window.showDirectoryPicker({ id: "tsg-logs" }).then(function (dir) { walk.logDir = dir; return readLogDir(dir); }).then(loadRunFiles)
+      .catch(function (e) { if (e.name !== "AbortError") $("#rdInfo").text("Could not open the folder: " + e.message); });
   });
+  $("#rdRefresh").on("click", function () {
+    if (walk.logDir) readLogDir(walk.logDir).then(loadRunFiles).catch(function (e) { $("#rdInfo").text("Could not read the folder: " + e.message); });
+  });
+  $("#rdDir").on("change", function () { var f = [].slice.call(this.files || []).filter(function (x) { return logFile(x.name); }); this.value = ""; loadRunFiles(f); });
+  $("#rdFiles").on("change", function () { var f = [].slice.call(this.files || []); this.value = ""; if (f.length) loadRunFiles(f); });
+  $("#rdBar").on("dragover", function (e) { e.preventDefault(); }).on("drop", function (e) {
+    e.preventDefault();
+    var f = [].slice.call(e.originalEvent.dataTransfer.files || []).filter(function (x) { return /\.(log|txt|jsonl?)$/i.test(x.name); });
+    if (f.length) loadRunFiles(f);
+  });
+  function pickIdx(map, key, i) { map[key] = parseInt(i, 10) || 0; renderIO(); }
   $("#pane-walk")
-    .on("change", "#rdRunSel", function () { walk.trace.sel = this.value; walk.trace.extra = {}; walk.callIdx = {}; walk.subIdx = {}; renderIO(); })
-    .on("change", "[data-rdextra]", function () { walk.trace.extra[$(this).attr("data-rdextra")] = this.checked; renderIO(); })
-    .on("click", "[data-rdcall]", function () { walk.callIdx[$(this).attr("data-rdcall")] = parseInt($(this).attr("data-i"), 10); renderIO(); })
-    .on("click", "[data-rdsub]", function () { walk.subIdx[$(this).attr("data-rdsub")] = parseInt($(this).attr("data-i"), 10); renderIO(); });
+    .on("change", "#rdRunSel", function () { walk.trace.sel = this.value; walk.trace.extra = {}; walk.callIdx = {}; walk.subIdx = {}; walk.det = {}; autoOpen(); renderIO(); })
+    .on("change", "#rdAddRun", function () { if (this.value) { walk.trace.extra[this.value] = true; autoOpen(); renderIO(); } })
+    .on("click", "[data-rdextraoff]", function (e) { e.preventDefault(); delete walk.trace.extra[$(this).attr("data-rdextraoff")]; renderIO(); })
+    .on("click", "[data-rdcall]", function () { pickIdx(walk.callIdx, $(this).attr("data-rdcall"), $(this).attr("data-i")); })
+    .on("change", "[data-rdcallsel]", function () { pickIdx(walk.callIdx, $(this).attr("data-rdcallsel"), this.value); })
+    .on("click", "[data-rdsub]", function () { pickIdx(walk.subIdx, $(this).attr("data-rdsub"), $(this).attr("data-i")); })
+    .on("change", "[data-rdsubsel]", function () { pickIdx(walk.subIdx, $(this).attr("data-rdsubsel"), this.value); });
   // #walk=step-2 opens a step's sub-steps; #walk=2.5 also opens that sub-step's details.
   function fromHash() {
     var m = /#walk=(step-)?([\w.]+)/.exec(location.hash);

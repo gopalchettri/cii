@@ -72,8 +72,8 @@ def _scenario(content: dict[str, Any]) -> dict[str, Any]:
     them, not against every system of the run."""
     return {
         "title": clip(content.get("title")),
-        "statement": clip(content.get("statement")),
-        "risk_statement": clip(content.get("risk_statement")),
+        "statement": clip(content.get("statement"), Remediation.STATEMENT_MAX_CHARS),  # whole (G227)
+        "risk_statement": clip(content.get("risk_statement"), Remediation.STATEMENT_MAX_CHARS),
         "supporting_systems_involved": [
             {"supporting_system": clip(system.get("name")), "is_entry_point": bool(system.get("entry_point"))}
             for system in content.get("systems") or []

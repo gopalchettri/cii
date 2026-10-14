@@ -27,15 +27,3 @@ def trace_actor_choice(
             for threat in assigned[: Tracing.PREVIEW_KEYS]
         },
     )
-
-
-def trace_fit_check(decided: list[PlannedThreat], batches: int) -> None:
-    """Each closest-match threat's attacker check: its outcome and the attacker acting after it."""
-    record_detail(
-        "fit check",
-        given={"threats": len(decided), "batches": batches},
-        produced={
-            threat.name: f"{threat.attacker_check} {threat.actors[0].name if threat.actors else 'none'}"
-            for threat in decided[: Tracing.PREVIEW_KEYS]
-        },
-    )
