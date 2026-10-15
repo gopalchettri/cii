@@ -58,7 +58,7 @@ def pick_known_groups(
     once: dict[str, KnownGroup] = {}
     for group in chosen:
         once.setdefault(group.name, group)
-    return tuple(once.values())[: KnownGroups.SHOWN]
+    return tuple(once.values())[: KnownGroups.CANDIDATES]  # G235: the card picks SHOWN of them once written
 
 
 def _ranked(
@@ -102,7 +102,8 @@ def _shown(
 
     def order(name: str) -> tuple[object, ...]:
         tiers = tuple(level not in relevance[name] for level in GroupRelevance)
-        return (*tiers, -weight[name], name.casefold())
+        # G236: among equals, a group that used the attack itself before one linked through its malware.
+        return (*tiers, -weight[name], bool(uses[name].through), name.casefold())
 
     return [
         KnownGroup(**asdict(uses[name]), match=match, relevance=relevance[name])

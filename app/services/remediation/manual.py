@@ -7,24 +7,21 @@ import hashlib
 import json
 from typing import Any
 
-from app.ai import get_rerank_model
 from app.core.constants import ConflictReason, Header, RemediationMessage, RunKind, SessionMessage
 from app.core.database import get_mongodb, get_stored_procedure_client
-from app.core.exceptions import Conflict, Invalid
+from app.core.exceptions import Conflict, Forbidden, Invalid
 from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.data_access.asset_context import AssetContextRepository
-from app.data_access.library import LibraryRepository
 from app.data_access.manual_scenarios import ManualRecords
 from app.data_access.remediations import RemediationRepository
 from app.data_access.run_counts import RunCounts
 from app.data_access.sessions import SessionRepository
 from app.engine.remediation.manual_records import manual_ids
 from app.models.api_clients import Principal
-from app.models.remediation import PlanRequested
+from app.models.remediation import PlanStarted
 from app.models.remediation_requests import ManualScenario, PlanRequest
 from app.search.library_cache import get_library_service
-from app.search.service import get_library_search
 from app.services.remediation.manual_scenarios import ManualScenarios
 from app.services.remediation.requests import PlanRequestService, get_plan_request_service
 
@@ -40,21 +37,25 @@ class ManualPlans:
         self._sessions, self._plans, self._scenarios, self._requests = sessions, plans, scenarios, requests
 
     @traced("remediation.manual_request")
-    def request(self, principal: Principal, body: PlanRequest, key: str | None) -> tuple[PlanRequested, bool]:
+    def request(self, principal: Principal, body: PlanRequest, key: str | None) -> tuple[PlanStarted, bool]:
         """(the plan, True when it was created now; False for a replay of the same key and body)."""
         if not key:
             message = RemediationMessage.IDEMPOTENCY_KEY_REQUIRED
             raise Invalid(message, errors=[{"field": f"header.{Header.IDEMPOTENCY_KEY}", "message": message}])
         manual = body.manual_scenario
-        assert manual is not None  # the route sends a generated scenario to PlanRequestService
+        assert manual is not None  # PlanRequest: is_manual=true
+        if manual.entity_id != principal.entity_id:  # v1 sends the entity in the body: the caller's only
+            raise Forbidden(SessionMessage.ENTITY_MISMATCH_BODY)
         fingerprint = _fingerprint(body)
         scenario = self._earlier_scenario(principal, manual, key, fingerprint)
         if scenario is not None and (replayed := self._replayed(scenario["_id"])) is not None:
             return replayed, False
-        if scenario is None:  # new, or an earlier attempt stopped before its scenario was saved
+        saved_before = scenario is not None  # an earlier call saved it, then stopped (v1: replayed)
+        if scenario is None:
             scenario = self._scenarios.save(principal, body, key, fingerprint)
         try:
-            return self._requests.plan_scenario(principal, body, scenario), True
+            started = self._requests.plan_scenario(principal, body, scenario)
+            return started.model_copy(update={"replayed": saved_before}), True
         except Conflict as clash:  # the same request made at the same moment won: its answer, replayed
             replayed = self._replayed(scenario["_id"])
             if clash.reason != ConflictReason.PLAN_ALREADY_EXISTS or replayed is None:
@@ -78,16 +79,18 @@ class ManualPlans:
             raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
         return self._plans.find_scenario(manual_ids(principal.entity_id, key)[1])
 
-    def _replayed(self, scenario_id: str) -> PlanRequested | None:
+    def _replayed(self, scenario_id: str) -> PlanStarted | None:
         status = self._plans.find_for_scenario(scenario_id)
         if status is None:
             return None
-        return PlanRequested(
+        return PlanStarted(
             remediation_id=status.remediation_id,
             session_id=status.session_id,
             scenario_id=status.scenario_id,
             version=status.latest_version,
             status=status.latest_status,
+            is_manual=True,
+            replayed=True,
         )
 
 
@@ -100,13 +103,7 @@ def _fingerprint(body: PlanRequest) -> str:
 def get_manual_plans() -> ManualPlans:
     db, procedures = get_mongodb(), get_stored_procedure_client()
     scenarios = ManualScenarios(
-        AssetContextRepository(procedures),
-        get_library_service(),
-        LibraryRepository(procedures),
-        get_library_search(),
-        ManualRecords(db),
-        RunCounts(db),
-        get_rerank_model(),
+        AssetContextRepository(procedures), get_library_service(), ManualRecords(db), RunCounts(db)
     )
     return ManualPlans(
         SessionRepository(db), RemediationRepository(db), scenarios, get_plan_request_service()

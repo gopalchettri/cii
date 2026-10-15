@@ -7,7 +7,8 @@ Built 2026-10-12. The decider for the two exceptions below is the owner.
 Public threat intelligence (CISA Known Exploited Vulnerabilities, FIRST EPSS, MITRE ATT&CK Enterprise and ICS, CISA
 ICS advisories, NIST NVD detail) is kept in MongoDB and searched when a scenario is written. A scenario then tells a
 short story that cites real precedent by a marker such as `[1]`; the proof (which technique, which advisory, the link)
-sits beside the text, never inside it. With **no evidence** a scenario is still written, "inferred", as before.
+sits beside the text, never inside it. With **no evidence** the scenario is not finished (G229: evidence is mandatory while on); its path may be replaced. A story that cites none of its sources is kept with the closest one shown as `related_evidence` ("Related intelligence, closest match, not cited by any sentence"; mode `related`; no number, no AI call: G250). When no source passes the relevance check, the search keeps its closest candidate (a technique first) and the story is still written, never citing it: mode `nearest` (G254). A footnote that claims more than its source says is removed in code (with the sentence when it claims a past event) instead of losing the story (G252); the writer may also footnote an attack step that is the source's technique (G253).
+G248 (owner 2026-10-15): G233's feed-built steps were undone (72% of first cards were set aside: the writer stretched real-attack accounts onto its own attack); a scenario cites real precedent in its own sentence again. G234: the cited evidence's mitigations guide the control search.
 
 **Off means as before.** With the switch off the app writes scenarios with the original writer and prompts, stores
 nothing about intelligence on a plan or a scenario, creates no intelligence collection, builds no snapshot and queues
@@ -69,8 +70,11 @@ A scenario read (`GET /v1/sessions/{id}/results`, scenarios endpoints) gains thr
       "source": "mitre_attack_ics",
       "title": "Module Firmware",
       "url": "https://attack.mitre.org/techniques/T0839/",
-      "facts": ["Sandworm used a rogue firmware update to disable substation devices in a real attack."],
-      "applicability": null
+      "facts": ["It is used for these attacker goals: persistence, impair process control.",
+                "Sandworm Team, a threat group, has used this technique."],
+      "applicability": null,
+      "scope": "global",
+      "mitigations": ["Boot Integrity", "Code Signing", "Audit"]
     }
   ],
   "evidence_search": {
@@ -115,20 +119,27 @@ Collections (created only while the env master switch is on): `tsg_intel` (recor
 `tsg_external_intelligence_snapshots` (built snapshots, pointer `_id: "active"`), vectors in `tsg_embeddings`
 (corpus `external_intelligence`).
 
-## 4. Operating it (admin key)
+## 4. Operating it
+
+No admin key and no API key on any of these calls (owner, 2026-10-15). Every change is audited as the
+`X-User-Id` sent, else `admin`. Anyone who can reach the API can therefore switch the feature off or revoke
+a source (which deletes its data): keep the API's address inside the network.
 
 | Call | Does |
 |---|---|
 | `GET /v1/tsg/intel/switch` | `{env_enabled, runtime_enabled, effective, changed_at, changed_by}` |
 | `PUT /v1/tsg/intel/switch` `{"enabled": true}` | sets the run-time switch (audited); turning it ON also queues a refresh |
 | `GET /v1/tsg/intel/health` | the switch, the active snapshot, every source's status, `stale`, `pending_sources`, `no_data` and `evidence`: `{rerank_model, threshold, threshold_calibrated, threshold_calibrated_on}` (see "Fresh, pending, stale" below) |
-| `POST /v1/tsg/intel/refresh` `{"source": "cisa_kev"}` (body optional) | 202 `{job_id}`; one at a time (409 `job_in_progress`, `details.job_id`); 422 for an unknown or unapproved source; 409 while the env master switch is off |
+| `POST /v1/tsg/intel/refresh` `{"source": "cisa_kev"}` (body optional) | 202 `{job_id}`; one at a time (409 `job_in_progress`, `details.job_id`); 422 for an unknown or unapproved source; 409 while the switch is off (the env master or the run-time switch) |
 | `GET /v1/tsg/intel/refresh/{job_id}` | the job: status, result, error |
 | `POST /v1/tsg/intel/sources/{source}/revoke` | audited FIRST (`external_intelligence.source_revoked`), then marks the source unapproved with a blank health, purges its records and vectors and rebuilds the snapshot. Works whatever the switch says: with the env master OFF it only deletes what exists (no collection, row or snapshot is created) |
-| `POST /v1/tsg/intel/sources/{source}/approve` | a revoked source approved again (audited `external_intelligence.source_approved`; 409 while the env master is OFF; 422 unknown source): it starts blank and a refresh of that source is queued (`refresh_job_id`, null when a refresh was already queued) |
+| `POST /v1/tsg/intel/sources/{source}/approve` | a revoked source approved again (audited `external_intelligence.source_approved`; 409 while the env master is OFF; 422 unknown source): it starts blank and a refresh of that source is queued (`refresh_job_id`, null when a refresh was already queued, or while the run-time switch is off) |
 
 First run: set `EXTERNAL_INTELLIGENCE_ENABLED=true`, restart API and worker, `POST /v1/tsg/intel/refresh`, read the job,
-then `GET /v1/tsg/intel/health` until `snapshot_id` is set. After that sources refresh hourly when due (KEV, EPSS,
+then `GET /v1/tsg/intel/health` until `snapshot_id` is set. Until then (G259) each process logs ONE
+`external_intelligence.no_data_yet` line naming these calls, and `POST /v1/sessions` answers 409 `intel_no_data` (a
+run then could only retry its evidence searches until it failed); `PUT /v1/tsg/intel/switch {"enabled": false}` runs
+without the feeds instead. After that sources refresh hourly when due (KEV, EPSS,
 ICS, NVD daily; ATT&CK weekly) and a failed source keeps its last good data. NVD is slow without `CII_NVD_API_KEY`
 (optional, raises the rate limit from 5 to 50 requests per 30 s).
 
@@ -172,6 +183,8 @@ operator must delete or regenerate those scenarios and plans (regenerating write
 
 ## 5. Security model
 
+- **No source's free text reaches the writer (G248).** Facts are built only from structured fields (goals, names, mitigations, vendor, product, dates, scores); a description is used only for search.
+- **Descriptions are screened sentence by sentence (G237).** Only a flagged sentence is removed (logged with a count and a hash); the rest is screened again as a whole; a description with no clean sentence, or an unsafe name, still quarantines the record.
 - **Sources are untrusted text.** Every stored field is cut to a size, stripped of control characters and quarantined when
   it reads as an instruction to an AI (never indexed). The checks are tuned on the live sources (a real run over ATT&CK,
   KEV and the ICS advisories quarantines nothing): a Windows registry key or a file or URL path (the backslash becomes a
@@ -236,4 +249,5 @@ A reranker score is a ranking score, not a probability, and each model has its o
 - The AI plan check judges whether a marker is supported; code checks only what is exact.
 - "Unknown applicability" is checked by sentence patterns in code; a claim worded in an unusual way is left to the plan check.
 - Already-written story scenarios keep showing their stored proof after the switch is turned off (the text carries its markers).
-- The controls search does not yet read an evidence entry's mitigation facts.
+- The controls search reads the cited evidence's mitigation names (G234); it does not mark which control answers which mitigation.
+- Planning ranks with its own copy of the ATT&CK techniques, re-read when a newer snapshot is published (G238); it never waits for the evidence index.

@@ -132,7 +132,7 @@ class AttackGroups:
     def _description(self, obj: dict[str, Any]) -> str:
         try:
             plain = _CITATION.sub("", str(obj.get("description") or ""))
-            return self._guard.clean(plain, AttackReading.TEXT_LIMIT)
+            return self._guard.clean_sentences(plain, AttackReading.TEXT_LIMIT)
         except UnsafeSourceText as unsafe:
-            self._guard.quarantine("", obj, unsafe.reason)  # logged; the group is kept without a description
+            self._guard.quarantine("", obj, unsafe.reason)  # nothing clean left: kept without a description
             return ""

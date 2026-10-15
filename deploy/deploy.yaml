@@ -1,0 +1,357 @@
+# TSG v2 on OpenShift, project ai-threatgen: the API, one worker per queue, beat, the API's Service and Route
+# (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget. v2 replaces v1 here.
+#
+# The rest, as v1 split it:
+#   deploy/deploy.ai-remediation.yaml       one more threats and one more scenarios worker in ai-remediation
+#   deploy/networkpolicy.yaml               this project's network rules (deploy/networkpolicy.ai-remediation.yaml there)
+#   deploy/observability.yaml, flower.yaml  the monitoring, in ai-remediation (not on this project's CPU budget)
+#   settings (ConfigMap tsg-config, Secret tsg-secrets) are made from .env.uat by scripts/gen_openshift_config.py
+#
+# Apply with deploy/deploy-uat.ps1. It replaces tsg-api:v2-COMMIT below with the image it deploys (the tag
+# deploy/build-image.ps1 printed: what runs is always one exact commit) and `none` with the settings
+# fingerprint (a changed setting rolls the pods; none changed, none restart). By hand: put the tag in place of COMMIT.
+#
+# Workers: two of each kind in all, one here and one in ai-remediation, so every queue still has a worker when
+# either project is down or full. One per project means no disruption budget for a worker (minAvailable 1 on a
+# single pod blocks every node drain); the API has two copies and its budget.
+#
+# CPU budget (v1's notes: ai-threatgen allows 6 CPU in limits). Limits here: api 2 x 1, threats 1, scenarios 1,
+# maintenance 0.5, beat 0.25 = 4.75 CPU, and an update starts one extra pod at a time (at most 1 CPU): 5.75.
+# tests/test_deploy.py keeps it under 6.
+#
+# Every pod carries app.kubernetes.io/part-of: tsg and app.kubernetes.io/component: api|worker|beat: Prometheus
+# names its jobs by the component (the alerts read job="api" and job="worker") and Alloy labels logs by both.
+# Sizes and probes: docs/BLUEPRINT.md §23. Start order on a fresh install: workers and beat first, then the API
+# (an API pod is ready only when every queue has a live worker).
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/name: api, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 2
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: api, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: api }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+        tsg/settings-fingerprint: none
+    spec:
+      # Preferred, not required: on a small cluster "required" would leave the second copy Pending.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: { matchLabels: { app.kubernetes.io/name: api } }
+      # Cluster DNS cannot resolve the AI gateway: pinned here; the calls still go through the proxy below.
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      # uvicorn waits up to 30 s for open requests; the 5 s pause lets the router drop the pod first.
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: api
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          # --forwarded-allow-ips: only the router and the monitoring can reach the pod (deploy/networkpolicy.yaml),
+          # so the router's X-Forwarded-* headers are trusted.
+          command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --proxy-headers,
+                    "--forwarded-allow-ips=*", --no-access-log, --timeout-graceful-shutdown, "30"]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env: # the corporate proxy: the only way out to the AI gateway and the intelligence feeds
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+          ports: [{ name: http, containerPort: 8000 }]
+          # Ready = every store answers and every queue has a live worker (each check waits at most 5 s).
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 7
+            failureThreshold: 3
+          # Alive = the process answers; no I/O, so a store outage never restarts a healthy pod.
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop: { exec: { command: [sleep, "5"] } }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+
+# ---------------------------------------------------------------- workers: one Deployment per queue
+# A stopped worker loses nothing: its message is redelivered (acks_late) and the reaper takes its job back after
+# the 120 s lease, so the grace period only lets most running AI calls finish.
+# Liveness asks this very worker (-d celery@<pod name>) through the broker: a bare ping would pass while any other
+# worker answers. sh -c expands $HOSTNAME: a probe's command gets no expansion of its own.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-threats
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/name: worker-threats, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker-threats }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: worker-threats, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+        tsg/settings-fingerprint: none
+    spec:
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_threats]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env:
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+          ports: [{ name: metrics, containerPort: 9100 }]
+          livenessProbe:
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "1", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-scenarios
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/name: worker-scenarios, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker-scenarios }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: worker-scenarios, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+        tsg/settings-fingerprint: none
+    spec:
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_scenarios]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env:
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+          ports: [{ name: metrics, containerPort: 9100 }]
+          livenessProbe:
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "1", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+
+# 3 threads: one for each long task kind on its queue, plus one so the reaper always finds a free thread.
+# Half a CPU (BLUEPRINT §23 says 1): its jobs mostly wait on the stores and the AI, and this keeps the project in
+# its budget; a library or ATT&CK rebuild takes longer, nothing fails.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-maintenance
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/name: worker-maintenance, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker-maintenance }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: worker-maintenance, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+        tsg/settings-fingerprint: none
+    spec:
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "3", -Q, tsg_maintenance]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env:
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+          ports: [{ name: metrics, containerPort: 9100 }]
+          livenessProbe:
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { cpu: 500m, memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+
+# ---------------------------------------------------------------- beat: exactly one, ever, and only here
+# Two beats would send every scheduled job twice: one replica, Recreate (the old pod is gone before the new one
+# starts), no disruption budget, and never a copy in ai-remediation.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beat
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/name: beat, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: beat }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: beat, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: beat }
+      annotations: { tsg/settings-fingerprint: none }
+    spec:
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: beat
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          command: [celery, -A, app.worker, beat, -s, /tmp/beat/schedule]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env:
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+          # Beat has no ping: alive = it saved its schedule in the last 6 minutes (it saves every ~3).
+          livenessProbe:
+            exec: { command: [sh, -c, "find /tmp/beat -name 'schedule*' -newermt '-360 seconds' | grep -q ."] }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts: [{ name: schedule, mountPath: /tmp/beat }]
+          # Importing app.worker costs about 255 MB (litellm about 160 MB of it): 320Mi covers it.
+          resources:
+            requests: { cpu: 50m, memory: 320Mi }
+            limits: { cpu: 250m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+      # Nothing to keep: the schedule is "every N seconds", so a new pod starts a fresh one.
+      volumes: [{ name: schedule, emptyDir: {} }]
+
+# ---------------------------------------------------------------- Service, Route, disruption budget
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/part-of: tsg }
+spec:
+  selector: { app.kubernetes.io/name: api }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+
+# v1's address, now over https (http is redirected). v1's own Route on this host is removed by deploy-uat.ps1
+# (after asking; a copy is kept for the rollback): two Routes cannot share a host and path.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: api
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/part-of: tsg }
+spec:
+  host: threatgen-api.apps.dda-desc-az1-01.desccii.local
+  path: /
+  to: { kind: Service, name: api }
+  port: { targetPort: http }
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
+
+# A node drain never takes the API's last copy.
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/part-of: tsg }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app.kubernetes.io/name: api } }

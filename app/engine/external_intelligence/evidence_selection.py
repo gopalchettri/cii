@@ -64,7 +64,28 @@ class EvidenceSelector:
                 return _left_out(hit, EvidenceDecision.NOT_APPLICABLE, self._writer.safe_reason(reason))
         if any(item.ref == hit.external_id for item in usable):
             return _left_out(hit, EvidenceDecision.DUPLICATE, EvidenceReason.DUPLICATE.value)
-        evidence = Evidence(
+        used = Considered(hit.external_id, hit.score, EvidenceDecision.USED)
+        return self._evidence(hit, applicability), used
+
+    def nearest(self, scored: Sequence[IntelHit], checker: ProductLinkChecker) -> Evidence | None:
+        """G254 (owner 2026-10-15: "if no evidence is identified, provide at least 1 which is nearby"): when
+        no candidate passed, the closest one, shown and never cited: the best technique (a method of attack
+        says nothing about the asset's product), else the best other candidate whose product is not ruled
+        out. None: the search had no candidate at all."""
+        techniques = [hit for hit in scored if hit.kind == IntelKind.TECHNIQUE]
+        for hit in techniques or scored:  # best first
+            applicability = None
+            if hit.kind in _HAS_APPLICABILITY:
+                if checker.has_no_link(hit):
+                    continue
+                applicability, _ = checker.judge(hit)
+                if applicability == Applicability.NOT_APPLICABLE:
+                    continue
+            return self._evidence(hit, applicability)
+        return None
+
+    def _evidence(self, hit: IntelHit, applicability: Applicability | None) -> Evidence:
+        return Evidence(
             hit.external_id,
             hit.kind,
             hit.source,
@@ -77,8 +98,8 @@ class EvidenceSelector:
             fetched_at=hit.fetched_at,
             # G229: direct only when the weakness is confirmed in the asset's own product; else context.
             role=EvidenceRole.DIRECT if applicability == Applicability.CONFIRMED else EvidenceRole.CONTEXT,
+            mitigations=self._writer.safe_mitigations(hit),  # G234: the control search reads them
         )
-        return evidence, Considered(hit.external_id, hit.score, EvidenceDecision.USED)
 
     def _final_row(self, row: Considered | Evidence, used: list[Evidence]) -> Considered:
         """A usable record is USED when it fit the limit, else OVER_LIMIT; others stand."""

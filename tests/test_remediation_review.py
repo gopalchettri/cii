@@ -29,13 +29,14 @@ from app.data_access.remediation_reads import RemediationReads
 from app.data_access.remediation_versions import RemediationVersions
 from app.data_access.remediations import RemediationRepository
 from app.data_access.sessions import SessionRepository
-from app.models.remediation_requests import DecisionRequest
+from app.models.remediation_reviews import DecisionRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.decisions import PlanDecisions
 from app.services.remediation.regenerate import PlanRegeneration, get_plan_regeneration
 from app.services.remediation.snapshots import SnapshotMaker
 from app.worker import jobs
 from app.worker.tasks import remediation as plan_job
+from tests.plan_addresses import generated, plan_url
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
     FAKE_LIBRARY,
@@ -55,7 +56,7 @@ def plans(
 ) -> Iterator[dict[str, Any]]:
     """`world` and a regenerate service on the same fakes; what a regenerate sends."""
     db = get_mongodb()
-    snapshots = SnapshotMaker(SessionRepository(db), FAKE_LIBRARY, world["top_up"])  # type: ignore[arg-type]
+    snapshots = SnapshotMaker(SessionRepository(db), FAKE_LIBRARY)  # type: ignore[arg-type]
     built = PlanRegeneration(RemediationRepository(db), RemediationVersions(db), snapshots)
     client.app.dependency_overrides[get_plan_regeneration] = lambda: built  # type: ignore[attr-defined]
     monkeypatch.setattr(regenerate_module, "send_job", lambda *args: world["sent"].append(args))
@@ -73,14 +74,21 @@ def _deliver(remediation_id: str, version: int) -> None:
 
 def _done_plan(client: TestClient, key: str, state: dict[str, Any]) -> str:
     """A plan whose version 1 is written."""
-    remediation_id = _request(client, key, {"scenario_id": _scenario()}).json()["remediation_id"]
+    remediation_id = _request(client, key, generated(_scenario())).json()["remediation_id"]
     state["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
     _deliver(remediation_id, 1)
     return remediation_id
 
 
+#: v1's one review call takes the decision in its body (owner, 2026-10-15).
+_REVIEWS = {"accept": Decision.ACCEPTED, "reject": Decision.REJECTED}
+
+
 def _post(client: TestClient, key: str, remediation_id: str, action: str, body: dict[str, Any]) -> Any:
-    return client.post(f"/v1/remediation/{remediation_id}/{action}", json=body, headers=_identity(key))
+    """`accept` / `reject` → POST .../treatment-plan/review with that decision; `regenerate` as it is."""
+    if action in _REVIEWS:
+        action, body = "review", body | {"decision": _REVIEWS[action]}
+    return client.post(plan_url(remediation_id, action), json=body, headers=_identity(key))
 
 
 def _record(remediation_id: str) -> dict[str, Any]:
@@ -118,7 +126,7 @@ def test_a_new_version_is_written_from_the_scenario_as_it_is_now(
     assert _post(client, api_key, remediation_id, "regenerate", {"note": "x"}).status_code == 422
     plans["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-2")))
     _deliver(remediation_id, 2)
-    status = client.get(f"/v1/remediation/{remediation_id}/status", headers=_identity(api_key)).json()
+    status = client.get(plan_url(remediation_id, "status"), headers=_identity(api_key)).json()
     assert (status["latest_version"], status["latest_status"], status["decision"]) == (2, "done", "pending")
     assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 1
 
@@ -169,9 +177,14 @@ def test_every_refusal_and_a_read_only_plan(
     assert (queued.status_code, queued.json()["reason"]) == (409, ConflictReason.NOT_COMPLETE)
     # v1 rejected while v2 is still being written: the plan still waits for a decision on v2.
     assert _post(client, api_key, remediation_id, "reject", {"version": 1}).json()["decision"] == "pending"
-    url = f"/v1/remediation/{remediation_id}/accept"
-    assert client.post(url, json={"version": 1}, headers=_identity(api_key, 1)).status_code == 403
-    assert _post(client, api_key, "nope", "reject", {}).status_code == 404
+    url, review = plan_url(remediation_id, "review"), {"version": 1, "decision": "accepted"}
+    assert client.post(url, json=review, headers=_identity(api_key, 1)).status_code == 403
+    nowhere = "/v1/sessions/none/scenarios/nope/treatment-plan/review"
+    assert client.post(nowhere, json={"decision": "rejected"}, headers=_identity(api_key)).status_code == 404
+    assert (
+        client.post(url, json={"version": 1, "decision": "pending"}, headers=_identity(api_key)).status_code
+        == 422
+    )
     scenario_id = _record(remediation_id)["scenario_id"]
     get_mongodb()[Collection.SCENARIOS].update_one(
         {"_id": scenario_id}, {"$set": {"decision": Decision.PENDING}}
@@ -181,9 +194,7 @@ def test_every_refusal_and_a_read_only_plan(
             client, api_key, remediation_id, action, {} if action == "regenerate" else {"version": 1}
         )
         assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.SCENARIO_NOT_ACCEPTED)
-    assert (
-        client.get(f"/v1/remediation/{remediation_id}/result", headers=_identity(api_key)).status_code == 200
-    )
+    assert client.get(plan_url(remediation_id), headers=_identity(api_key)).status_code == 200
 
 
 def test_a_decision_raced_by_another_reads_again_once(

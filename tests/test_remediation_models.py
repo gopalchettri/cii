@@ -9,13 +9,17 @@ from pydantic import ValidationError
 
 from app.core.constants import Decision, RemediationProgress, Status
 from app.models.remediation import PlanDraft, RemediationStatus
-from app.models.remediation_requests import DecisionRequest, PlanRequest, RegenerateRequest, RegisterData
+from app.models.remediation_examples import PLAN_REQUEST_EXAMPLES
+from app.models.remediation_requests import PlanRequest, RegisterData
+from app.models.remediation_reviews import DecisionRequest, RegenerateRequest, ReviewRequest
 
+#: v1's manual_scenario: the entity and the threat's six flat fields (owner, 2026-10-15).
 MANUAL: dict[str, Any] = {
     "asset_id": 103,
+    "entity_id": 7,
     "supporting_system_ids": [321],
-    "threat_type": {"name": "Malicious code"},
-    "threat": {"id": 5},
+    "threat_type_name": "Malicious code",
+    "threat_id": 5,
     "threat_scenario": "An insider could upload altered logic to the PLC.",
     "risk_statement": "Loss of trusted control could stop the substation.",
 }
@@ -87,28 +91,71 @@ def test_register_controls_take_strings_drop_blanks_and_keep_the_first_of_a_repe
             RegisterData.model_validate({"existing_controls": wrong})
 
 
+GENERATED: dict[str, Any] = {"is_manual": False, "session_id": "r1", "scenario_id": "s1"}
+HAND_WRITTEN: dict[str, Any] = {"is_manual": True}
+
+
+def _manual(**changes: Any) -> dict[str, Any]:
+    return HAND_WRITTEN | {"manual_scenario": MANUAL | changes}
+
+
 def test_a_plan_request_names_exactly_one_scenario() -> None:
-    """Either an accepted generated scenario or a hand-written one; the hand-written one has no title,
-    names its library rows, and lists each of its controls once; any register label is accepted and echoed."""
-    assert PlanRequest.model_validate({"scenario_id": "s1", "risk_level": "Severe"}).risk_level == "Severe"
-    assert PlanRequest.model_validate({"manual_scenario": MANUAL}).manual_scenario is not None
+    """v1's one request for both kinds: a generated scenario by its run and id, or a hand-written one; the
+    hand-written one has no title, names its library rows, and lists each of its controls once; any register
+    label is accepted and echoed."""
+    assert PlanRequest.model_validate(GENERATED | {"risk_level": "Severe"}).risk_level == "Severe"
+    manual = PlanRequest.model_validate(_manual()).manual_scenario
+    assert manual is not None and (manual.threat_type.name, manual.threat.id) == ("Malicious code", 5)
+    assert manual.threat_category is None and manual.entity_id == 7
+    no_entity = {key: value for key, value in MANUAL.items() if key != "entity_id"}
     for wrong in (
-        {},
-        {"scenario_id": "s1", "manual_scenario": MANUAL},
-        {"scenario_id": "s1", "strategy": "Accept"},
-        {"manual_scenario": MANUAL | {"scenario_title": "x"}},
-        {"manual_scenario": MANUAL | {"threat": {}}},
-        {"manual_scenario": MANUAL | {"threat_type": {"name": "---"}}},
-        {"manual_scenario": MANUAL | {"threat_type": {"name": "t" * 301}}},  # Threat_Type holds 300
-        {"manual_scenario": MANUAL | {"threat_category": {"name": "c" * 201}}},
-        {"scenario_id": "s1", "existing_controls_all_subsystems": "yes"},
-        {"manual_scenario": MANUAL | {"mapped_controls": ["CII-CID-1", {"control_code": "cii-cid-1"}]}},
-        {"manual_scenario": MANUAL | {"supporting_system_ids": [321, 321]}},
-        {"manual_scenario": MANUAL | {"threat_scenario": "   "}},  # review S56: blank is not a statement
-        {"manual_scenario": MANUAL | {"risk_statement": "\n\t "}},
+        {"scenario_id": "s1", "session_id": "r1"},  # is_manual is required
+        GENERATED | {"strategy": "Accept"},
+        GENERATED | {"existing_controls_all_subsystems": "yes"},
+        HAND_WRITTEN | {"manual_scenario": no_entity},
+        _manual(scenario_title="x"),
+        _manual(threat_id=None),  # the threat is not named
+        _manual(threat_type_name=""),  # nor the type
+        _manual(threat_type_name="---"),
+        _manual(threat_type_name="t" * 301),  # Threat_Type holds 300
+        _manual(threat_category_name="c" * 201),
+        _manual(threat_id=0),
+        _manual(threat_type={"name": "the nested shape is gone"}),
+        _manual(mapped_controls=["CII-CID-1", {"control_code": "cii-cid-1"}]),
+        _manual(supporting_system_ids=[321, 321]),
+        _manual(threat_scenario="   "),  # review S56: blank is not a statement
+        _manual(risk_statement="\n\t "),
     ):
         with pytest.raises(ValidationError):
             PlanRequest.model_validate(wrong)
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (HAND_WRITTEN, "is_manual=true requires manual_scenario."),
+        (_manual() | {"scenario_id": "s1"}, "must not send session_id or scenario_id"),
+        ({"is_manual": False, "scenario_id": "s1"}, "is_manual=false requires session_id and scenario_id."),
+        (GENERATED | {"manual_scenario": MANUAL}, "is_manual=false must not send manual_scenario."),
+    ],
+)
+def test_the_two_kinds_are_never_mixed(body: dict[str, Any], message: str) -> None:
+    """v1's `_one_kind`: each kind sends its own half and never the other's."""
+    with pytest.raises(ValidationError, match=message):
+        PlanRequest.model_validate(body)
+
+
+def test_every_published_example_is_a_valid_request() -> None:
+    """Swagger's two examples (one per kind) can never drift from the model."""
+    kinds = [PlanRequest.model_validate(example).is_manual for example in PLAN_REQUEST_EXAMPLES]
+    assert kinds == [False, True]
+
+
+def test_a_review_accepts_or_rejects_only() -> None:
+    assert ReviewRequest.model_validate({"decision": "accepted"}).decision == Decision.ACCEPTED
+    for wrong in ({}, {"decision": "pending"}, {"decision": "approved"}, {"decision": "rejected", "x": 1}):
+        with pytest.raises(ValidationError):
+            ReviewRequest.model_validate(wrong)
 
 
 def test_decision_and_regenerate_bodies_refuse_unknown_fields() -> None:

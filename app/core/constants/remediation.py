@@ -22,8 +22,6 @@ class Remediation:
     # after the point: 99,999,999,999.9999 at most (BR-REM-04).
     RATING_MAX_DIGITS: Final = 15
     RATING_DECIMALS: Final = 4
-    TOP_UP_SECONDS: Final = 20  # a request waits this long at most for its scenario's controls (Rule R1T)
-    TOP_UP_RETRY_AFTER_SECONDS: Final = 30  # the Retry-After of a 503 controls_not_ready
     STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code (BR-REM-05)
     # A register control the library retired, as the AI reads it: "CII-CID-077 — Firmware review (Integrity)"
     # then this (owner, 2026-10-11: its name and domain, never a bare number).
@@ -90,12 +88,21 @@ class RemediationProgress(StrEnum):
 class RemediationMessage(StrEnum):
     WINDOW_PAIR = "mitigation_start_date and mitigation_end_date must be sent together."
     WINDOW_ORDER = "mitigation_end_date must be on or after mitigation_start_date."
-    ONE_SCENARIO = "Send exactly one of scenario_id and manual_scenario."
+    # v1's four `_one_kind` refusals (owner, 2026-10-15: one plan request for both kinds of scenario).
+    MANUAL_NEEDS_SCENARIO = "is_manual=true requires manual_scenario."
+    MANUAL_SENDS_NO_IDS = "is_manual=true must not send session_id or scenario_id: TSG creates them."
+    GENERATED_NEEDS_IDS = "is_manual=false requires session_id and scenario_id."
+    GENERATED_SENDS_NO_SCENARIO = "is_manual=false must not send manual_scenario."
+    THREAT_TYPE_REQUIRED = "Name the threat type: send threat_type_id, threat_type_name or both."
+    THREAT_REQUIRED = "Name the threat: send threat_id, threat_name or both."
+    SCENARIO_NOT_IN_SESSION = "Scenario '{scenario_id}' is not in session '{session_id}'."
+    PLAN_NOT_REQUESTED = (
+        "No remediation plan has been requested for scenario '{scenario_id}' in session '{session_id}'."
+    )
     CONTROL_REF_EMPTY = (
         "A control entry must name the control: send control_id, control_code or control_name."
     )
     CONTROL_NAMED_TWICE = "The same control is named twice ({key}): send one entry per control."
-    LIBRARY_REF_EMPTY = "Name the library row by id, by name, or both."
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
     CONTROL_REPEATED = "{reference} names the same control as an earlier entry: send one entry per control."
@@ -103,12 +110,10 @@ class RemediationMessage(StrEnum):
         "control_id {control_id} and control_code {control_code} name two different controls."
     )
     REFERENCES_INVALID = "Some control references cannot be resolved."
-    CONTROLS_NOT_READY = (
-        "The scenario's controls are not mapped yet; they are being mapped now. Try again in {seconds} "
-        "seconds."
+    CONTROLS_BEING_MAPPED = (
+        "The scenario's controls were still being matched by another job after {seconds} seconds; the plan "
+        "job tries again."
     )
-    # Stored on the scenario's controls when a plan request's top-up gave them back to the controls job.
-    TOP_UP_LATE = "Not mapped within the {seconds} seconds a plan request waits; the controls job maps them."
     SCENARIO_NOT_FOUND = "Scenario '{scenario_id}' does not exist."
     SCENARIO_OTHER_ENTITY = "Scenario '{scenario_id}' belongs to another entity."
     SCENARIO_NOT_ACCEPTED = "Scenario '{scenario_id}' is not accepted: only an accepted scenario gets a plan."

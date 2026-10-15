@@ -1,7 +1,7 @@
 """Scenario writing: the brief the writer reads, the AI answer contracts, a draft,
 its findings and the written scenario. Frozen, so the paths written at once share nothing mutable."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -141,6 +141,8 @@ class ScenarioDraft:
 class Finding:
     code: FindingCode | StoryFindingCode
     message: str
+    # G252: the footnote numbers a footnote fault names, so code can remove them (never stored).
+    markers: tuple[int, ...] = field(default=(), compare=False)
 
     @property
     def severity(self) -> FindingSeverity:

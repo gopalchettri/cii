@@ -12,3 +12,6 @@ logs/
 celerybeat-schedule*
 deploy/monitoring.env
 .run/
+
+# One-time data backups (never committed)
+backups/

@@ -92,8 +92,9 @@ def test_the_master_switch_off_decides_the_original_style_before_any_read(
     """G229: the batch decides its style ONCE, from the switch; with it off the batch is written in the
     original style and never searches (EvidenceAtWrite is only ever called for an evidence-story batch)."""
     monkeypatch.setattr(access_module, "get_mongodb", lambda: Untouched())
-    access = IntelAccess(finder=Untouched, is_stale=Untouched)  # type: ignore[arg-type]
-    assert access.writer_style() is WriterStyle.ORIGINAL and access.stamp() == {}
+    access = IntelAccess(finder=Untouched, is_stale=Untouched, relevance=Untouched)  # type: ignore[arg-type]
+    assert access.writer_style() is WriterStyle.ORIGINAL
+    assert access.plan_intel([], None) == ({}, {})  # type: ignore[arg-type]  # nothing read when off
 
 
 def test_the_runtime_switch_off_writes_the_original_style_and_searches_nothing(

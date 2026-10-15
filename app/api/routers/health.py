@@ -5,20 +5,24 @@ from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from app.core.constants import ApiTag
 from app.services.readiness import check_readiness_without_a_thread
 
-router = APIRouter(tags=["health"])
+router = APIRouter(tags=[ApiTag.HEALTH])
 
 
-@router.get("/health", summary="Process is alive")
+@router.get("/health", summary="1. Is the API alive?")
 async def report_liveness() -> dict[str, str]:
+    """Answers `{"status": "ok"}` while the process runs (the liveness probe). No key."""
     # async: no I/O, so it never waits for a request thread. A sync handler would queue behind /ready and
     # /metrics calls held by a hung store, and the liveness probe would then restart a healthy pod.
     return {"status": "ok"}
 
 
-@router.get("/ready", summary="Every store answers and every queue has a live worker")
+@router.get("/ready", summary="2. Are its stores and workers ready?")
 async def report_readiness() -> JSONResponse:
+    """200 `ready` when MongoDB, SQL Server and Redis answer and every queue has a live worker; else 503
+    `not_ready`, naming what is down. No key."""
     # async: public, so it must not hold one of the request threads while a slow store keeps it waiting.
     dependencies, workers = await check_readiness_without_a_thread()
     ready = all(dependencies.values()) and workers is not None and all(workers.values())

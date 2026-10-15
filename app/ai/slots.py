@@ -14,7 +14,6 @@ from contextlib import contextmanager
 import structlog
 from redis import Redis
 
-from app.ai.common import seconds_left
 from app.core.config import get_settings
 from app.core.constants import AiLimits, ErrorMessage, LogEvent
 from app.core.database import get_redis_client
@@ -98,8 +97,7 @@ class AiSlots:
 
     def _wait_for_free_slot(self, call_id: str, hold_seconds: int) -> None:
         assert self._redis is not None
-        left = seconds_left()  # a caller's own deadline (ai_deadline) shortens the wait, never lengthens it
-        wait = self._wait_seconds if left is None else min(self._wait_seconds, left)
+        wait = self._wait_seconds
         deadline = time.monotonic() + wait
         pause = AiLimits.SLOT_FIRST_PAUSE_SECONDS
         while not self._redis.eval(

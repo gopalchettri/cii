@@ -6,7 +6,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.core.config import get_settings
 from app.core.constants import (
     AdminJobKind,
     AdminJobMessage,
@@ -26,20 +25,27 @@ from app.core.singletons import singleton
 from app.data_access.admin_jobs import AdminJobRecords
 from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
 from app.services.audit import admin_actor, audit_target, record_audit
+from app.services.external_intelligence.switch import (
+    ExternalIntelligenceSwitch,
+    get_external_intelligence_switch,
+)
 from app.worker.celery_app import send_admin_job
 
 _KIND = AdminJobKind.INTEL_REFRESH
 
 
 class IntelRefreshes:
-    def __init__(self, jobs: AdminJobRecords, feeds: FeedStatusStore) -> None:
-        self._jobs, self._feeds = jobs, feeds
+    def __init__(
+        self, jobs: AdminJobRecords, feeds: FeedStatusStore, switch: ExternalIntelligenceSwitch
+    ) -> None:
+        self._jobs, self._feeds, self._switch = jobs, feeds, switch
 
     def start(self, requested_by: str, source: IntelSource | None = None) -> dict[str, Any]:
-        """The queued refresh's id. 422 for a source not approved; 409 job_in_progress (details.job_id: the
+        """The queued refresh's id. 409 while the switch is off (the env master or the run-time switch: a job
+        queued then could only fail); 422 for a source not approved; 409 job_in_progress (details.job_id: the
         active one) while a refresh is queued or running; 503 when the job queue is unreachable (the job is
         then failed, never left queued)."""
-        if not get_settings().external_intelligence_enabled:
+        if not self._switch.is_enabled():
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         if source is not None and not self._feeds.is_source_approved(source):
             raise Invalid(IntelRefreshMessage.SOURCE_NOT_APPROVED.format(source=source))
@@ -103,4 +109,4 @@ class IntelRefreshes:
 @singleton
 def get_intel_refreshes() -> IntelRefreshes:
     db = get_mongodb()
-    return IntelRefreshes(AdminJobRecords(db), FeedStatusStore(db))
+    return IntelRefreshes(AdminJobRecords(db), FeedStatusStore(db), get_external_intelligence_switch())

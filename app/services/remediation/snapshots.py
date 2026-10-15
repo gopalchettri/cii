@@ -1,45 +1,44 @@
-"""A plan version's frozen input, made the same way for a first request and a regenerate: the
-scenario's controls topped up when missing (a plan never starts without a control), its run's frozen
-context, the register resolved against the current library, then the snapshot. A scenario whose mapped
-controls were all retired since is mapped again: a plan never starts without a control."""
+"""A plan version's frozen input, made the same way for a first request and a regenerate, with no AI call
+(G262, owner 2026-10-15): with many users at once an AI step inside the request answered 503. The register is
+resolved against the current library first (a refusal is a 422, at once); then the snapshot, when the
+scenario's controls and attackers are known; else a pending snapshot its plan job completes
+(app/worker/plan_inputs.py), where a busy AI only means waiting. An empty control library is refused at once:
+no control could ever be kept."""
 
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.constants import Status
+from app.core.constants import ErrorCode, ErrorMessage
 from app.core.database import get_mongodb
+from app.core.exceptions import Conflict
 from app.core.singletons import singleton
 from app.data_access.sessions import SessionRepository
 from app.engine.remediation.register import register_half
-from app.engine.remediation.snapshot import build_snapshot
+from app.engine.remediation.snapshot import build_snapshot, inputs_ready, pending_snapshot
 from app.models.asset_context import FrozenContext
 from app.models.remediation_requests import RegisterData
 from app.search.library_cache import LibraryService, get_library_service
-from app.services.remediation.controls_top_up import ControlsTopUp, get_controls_top_up
 
 
 class SnapshotMaker:
-    def __init__(self, sessions: SessionRepository, library: LibraryService, top_up: ControlsTopUp) -> None:
-        self._sessions, self._library, self._top_up = sessions, library, top_up
+    def __init__(self, sessions: SessionRepository, library: LibraryService) -> None:
+        self._sessions, self._library = sessions, library
 
     def make(self, register: RegisterData, scenario: dict[str, Any], stored: bool = False) -> dict[str, Any]:
         """`stored`: the register a regenerate rebuilds from (a library change since is a warning). The
-        register is resolved first: one it refuses (422) costs no mapping."""
+        register is resolved first: one it refuses (422) saves nothing."""
         library = self._library.get_control_library()
+        if not library:
+            raise Conflict(ErrorMessage.CONTROL_LIBRARY_EMPTY, reason=ErrorCode.CONTROL_LIBRARY_EMPTY)
         retired = self._library.get_retired_controls()
         register_part = register_half(register, library, datetime.now(UTC).date(), stored, retired)
         by_id = {row.control_id: row for row in library}
-        controls = scenario.get("controls") or {}
-        items = controls.get("items") if controls.get("status") == Status.DONE else None
-        if not items:
-            items = self._top_up.map_now(scenario["_id"])
-        elif not any(item["control_id"] in by_id for item in items):  # every one retired since: mapped again
-            items = self._top_up.map_now(scenario["_id"], remap=True)
+        if not inputs_ready(scenario, by_id):
+            return pending_snapshot(scenario["_id"], register_part)
         context = FrozenContext.from_record(self._sessions.find_context(scenario["session_id"]))
-        mapped = scenario | {"controls": {"items": items}}
-        return build_snapshot(mapped, context, register_part, by_id)
+        return build_snapshot(scenario, context, register_part, by_id)
 
 
 @singleton
 def get_snapshot_maker() -> SnapshotMaker:
-    return SnapshotMaker(SessionRepository(get_mongodb()), get_library_service(), get_controls_top_up())
+    return SnapshotMaker(SessionRepository(get_mongodb()), get_library_service())

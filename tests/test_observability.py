@@ -24,6 +24,9 @@ OBS = REPO / "observability"
 RULES = OBS / "prometheus" / "rules.yml"
 DASHBOARD = OBS / "grafana" / "dashboards" / "tsg.json"
 TEMPLATE = REPO / "deploy" / "observability.yaml"
+FLOWER = REPO / "deploy" / "flower.yaml"
+MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
+APP_IMAGE = f"{MIRROR}/tsg-api:v2-COMMIT"  # deploy-uat.ps1 puts the deployed tag in
 
 #: §22.3 alerts that are Built (AiSlotsSaturated and IntelStale wait for their metrics).
 BUILT_ALERTS = {
@@ -74,8 +77,15 @@ def _monitoring_script():
         sys.path.remove(str(REPO / "scripts"))
 
 
+def _uat_objects() -> list[dict]:
+    """Every object of the UAT monitoring files: deploy/observability.yaml and Flower's deploy/flower.yaml."""
+    return [
+        o for path in (TEMPLATE, FLOWER) for o in yaml.safe_load_all(path.read_text(encoding="utf-8")) if o
+    ]
+
+
 def _template_objects(kind: str) -> list[dict]:
-    return [o for o in yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))["objects"] if o["kind"] == kind]
+    return [o for o in _uat_objects() if o["kind"] == kind]
 
 
 def _app_metric_names() -> set[str]:
@@ -103,8 +113,9 @@ def _prometheus_queries() -> list[str]:
 
 
 def test_every_config_file_parses() -> None:
-    for path in [*OBS.rglob("*.yml"), *OBS.rglob("*.yaml"), TEMPLATE]:
+    for path in [*OBS.rglob("*.yml"), *OBS.rglob("*.yaml")]:
         assert yaml.safe_load(path.read_text(encoding="utf-8")), path
+    assert _uat_objects()
     json.loads(DASHBOARD.read_text(encoding="utf-8"))
 
 
@@ -152,13 +163,20 @@ def test_queue_depth_reads_the_keys_celery_really_uses() -> None:
 
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
-    kinds = {o["kind"] for o in yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))["objects"]}
-    assert not kinds & {"ClusterRole", "ClusterRoleBinding"}
+    """In ai-remediation, as v1's monitoring; only the Role that lets it read the app's pods is in
+    ai-threatgen."""
+    objects = _uat_objects()
+    assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
+    elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
+        (o["kind"], "ai-remediation") for o in objects
+    }
+    assert elsewhere == {("Role", "ai-threatgen"), ("RoleBinding", "ai-threatgen")}
     for deployment in _template_objects("Deployment"):
         pod = deployment["spec"]["template"]["spec"]
+        assert pod["imagePullSecrets"] == [{"name": "quay-pull"}]
         for container in pod.get("initContainers", []) + pod["containers"]:
             image = container["image"]
-            assert image == "${APP_IMAGE}" or re.fullmatch(r"\$\{REGISTRY\}/[\w-]+:v?\d[\w.]*", image), image
+            assert image == APP_IMAGE or re.fullmatch(rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*", image), image
             assert container["resources"]["requests"] and container["resources"]["limits"], deployment
             security = container["securityContext"]
             assert security["allowPrivilegeEscalation"] is False and security["runAsNonRoot"] is True
@@ -342,7 +360,10 @@ def test_a_process_start_time_tells_a_reused_id_apart() -> None:
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
-@pytest.mark.parametrize("name", ["run.ps1", "stop.ps1", "deploy/observability.ps1"])
+@pytest.mark.parametrize(
+    "name",
+    ["run.ps1", "stop.ps1", "deploy/observability.ps1", "deploy/deploy-uat.ps1", "deploy/build-image.ps1"],
+)
 def test_the_laptop_scripts_parse_and_are_plain_ascii(name: str) -> None:
     """run.ps1 / stop.ps1 start and stop the laptop stack: a broken edit must fail here, not at the next
     start. ASCII only: Windows PowerShell 5.1 reads a file without a byte-order mark as the ANSI code page."""

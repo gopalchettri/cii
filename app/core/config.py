@@ -36,7 +36,8 @@ class ScenarioOutputSettings(BaseSettings):
     control_similarity_threshold: float = Field(
         default=50.0, ge=0, le=100, validation_alias="CONTROL_SIMILARITY_THRESHOLD"
     )
-    control_candidates: int = Field(default=40, ge=1, validation_alias="CONTROL_CANDIDATES")
+    # No value in code (owner 2026-10-15, G249): read only from the env file; missing, the app does not start.
+    control_candidates: int = Field(ge=1, validation_alias="CONTROL_CANDIDATES")
     min_controls: int = Field(default=1, ge=1, validation_alias="MIN_CONTROLS")
     max_controls: int = Field(default=10, ge=1, validation_alias="MAX_CONTROLS")
     # Words in a scenario statement and in a risk statement, "min-max", for both writers.
@@ -143,6 +144,9 @@ class Settings(ScenarioOutputSettings):
     # A gateway that reads the AI key from its own header (UAT's LiteLLM: x-litellm-api-key) gets it there
     # too, on every chat, embedding and rerank call; the standard Authorization header is still sent.
     ai_key_header: str = ""
+    # v1's TSG_LITELLM_BYPASS_PROXY: true = litellm_proxy/ models skip HTTP(S)_PROXY (the UAT Windows server's
+    # proxy cannot reach the gateway); false for OpenShift, where only the proxy reaches it (the gate checks).
+    ai_bypass_proxy: bool = True
 
     admin_api_key: SecretStr = SecretStr("")
 

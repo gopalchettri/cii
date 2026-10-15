@@ -178,7 +178,7 @@ git-ignored: **secrets never go into the repository**.
 | `ASSET_PROPERTIES_REQUIRED` | the owner's name. Asset facts that must be recorded before a run can start: column names of `tsg_GetAssetContext`, comma-separated (for example `location,operating_system`); a start without one is refused with 422 `required_facts_missing`, naming what is missing. Empty = none | *(empty)* |
 | `SYSTEM_PROPERTIES_REQUIRED` | the same as `ASSET_PROPERTIES_REQUIRED`, for every supporting system sent (for example `technology_used`) | *(empty)* |
 | `CONTROL_SIMILARITY_THRESHOLD` | the owner's name. 0–100: a control is kept for a scenario as "strong" when the reranker scores it this high or higher (50 = the owner's 0.50; writing 0.5 stops start-up). Higher = fewer, closer controls; lower = more | `50` |
-| `CONTROL_CANDIDATES` | G227: library controls found and scored for one scenario; at least `MAX_CONTROLS`. Fewer = faster mapping on a laptop CPU reranker | `40` |
+| `CONTROL_CANDIDATES` | G227: library controls found and scored for one scenario; at least `MAX_CONTROLS`. Fewer = faster mapping on a laptop CPU reranker. Required: no value in code (G249) | `40` (example) |
 | `EVIDENCE_SEARCH_RETRIES` | G229: with external intelligence on, how many more searches (other words, no AI) a threat gets when the first found no usable source; still none → that scenario fails with its reason and a reserve may take its place. 0 to 2 | `1` |
 | `THREAT_CONTEXT_COUNTRY` | G232: the country the assets are in, "UAE" or "United Arab Emirates". With external intelligence on, the real attacker groups on a card are ranked (attacked this country, then its region, then your sector) and each source is labelled this country / regional / global | `United Arab Emirates` |
 | `NEAR_COPY_TEXT_SIMILARITY` / `NEAR_COPY_PART_SIMILARITY` | G229: how alike (0-100) a new scenario's text and its parts (mechanism, consequence) must be to a finished one of the same run to count as a near copy; a copy is hidden and replaced. Higher = fewer flagged | `30` / `50` |
@@ -196,8 +196,9 @@ Notes:
 - **Never run v1 and v2 at the same time.** Both versions name their Redis keys `tsg:…`, and on this laptop they share
   databases 0 and 1 (owner, 2026-10-09). Stop v1 first (its own `stop.ps1`); `.\run.ps1` refuses to start v2 while
   v1's worker or beat runs. In UAT, v2 takes databases 0 and 1 once v1 is stopped (step 14).
-- **Behind a proxy?** If your laptop has a proxy set, add `NO_PROXY=llmapi.govai.ae` so the AI calls go direct
-  (that is what v1's `LITELLM_BYPASS_PROXY=true` does). v2 needs nothing else.
+- **Behind a proxy?** `CII_AI_BYPASS_PROXY` in `.env` is the one switch (v1's `LITELLM_BYPASS_PROXY`): true puts
+  the host of every `litellm_proxy/` model on `NO_PROXY` at start-up, so those calls go direct and every other call
+  still uses the proxy; false leaves all calls on the proxy (OpenShift: the deploy gate requires false).
 - Business values (batch sizes, timeouts, retries) are **not** in `.env`; they are constants in
   `app/core/constants/` (one file per topic). Only the two limits in the table (`CII_MAX_REQUEST_MB` and
   `CII_MAX_CONCURRENT_AI_CALLS`) are settings, because they differ per environment (owner, 2026-10-09), and the
@@ -547,7 +548,7 @@ regenerate carries on from there, and when no set is left a next set restarts on
 curl.exe -X POST http://localhost:8000/v1/sessions/<run id>/cancel -H "X-API-Key: tsg_…" -H "X-User-Id: gopal" -H "X-Entity-Id: 86" -H "X-Tenant-Id: shield"
 ```
 
-A remediation plan being written: `POST /v1/remediation/<plan id>/cancel`. Nothing left to stop → 409
+A remediation plan being written: `POST /v1/sessions/<run id>/scenarios/<scenario id>/treatment-plan/cancel`. Nothing left to stop → 409
 `nothing_to_cancel`.
 
 **Remove a run for good** (with its scenarios and plans; this cannot be undone):
@@ -751,22 +752,25 @@ them; a line for one of these is ignored: `GF_SERVER_ROOT_URL`, `GF_SERVER_SERVE
 
 ### 13.2 In UAT (OpenShift)
 
-The same files (`observability/`) and the same paths are used. The app's own image and deployments come with
-blueprint M15; until then the monitoring runs but has no app pods to watch.
+The same files (`observability/`) and the same paths are used. As in v1, the monitoring runs in project
+`ai-remediation` (not on `ai-threatgen`'s CPU budget) and watches the app's pods in both projects; its address is
+`https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local`. `deploy\deploy-uat.ps1` runs these steps for you
+(with the app, Flower and a smoke test); this is the monitoring alone.
 
 1. Copy every image named in `deploy/observability.yaml` into the image mirror (STEP 0 at the top of that file).
 2. Fill in the Grafana lines of `.env.uat` (repo root, git-ignored, never committed; the same file the app's UAT
-   settings come from): `GRAFANA_ADMIN_PASSWORD`, 16 or more characters (the script refuses a shorter one, because
-   the admin login is on a public page), and any `GF_` lines you want (optional, as in 13.1: copy the 12 of
+   settings come from): `GRAFANA_ADMIN_PASSWORD` only if someone must log in to change Grafana (16 or more
+   characters; no line = no login at all: the admin account gets a random password nobody sees, owner 2026-10-15),
+   and any `GF_` lines you want (optional, as in 13.1: copy the 12 of
    `.env.example` to get the setup above, then change any). Nothing else is typed: the script takes the queues'
    Redis database from the number at the end of `CII_REDIS_CELERY_BROKER_URL` (e.g. `1` for `…/1`), and
    redis-exporter reads the Redis URL from the app's own
    Secret, so the Redis password is kept in one place only. The old `deploy\monitoring.env` is retired and no longer
    read.
-3. Log in and pick the project (`oc login …`, `oc project <namespace>`), then run:
+3. Log in (`oc login …`), then run (it makes `ai-remediation` the current project):
 
    ```powershell
-   .\deploy\observability.ps1 -RouteHost <the app's host> -AppImage <registry>/tsg:<version>
+   .\deploy\observability.ps1
    ```
 
    The script reads `.env.uat` and builds two Secrets from it: `tsg-monitoring` (the admin password and the queue
@@ -775,8 +779,9 @@ blueprint M15; until then the monitoring runs but has no app pods to watch.
    It waits up to 60 s for the router to accept each Route (a new Route has no status for a few seconds), and stops
    with a clear message when one was not accepted (its host is used by another namespace).
    At the end it waits (up to 300 s each) until every monitoring program runs again, so "applied" means running.
-4. **Check:** open `https://<host>/grafana/`. Also `/prometheus/`, `/alertmanager/`, `/flower/` and `/loki/` on the
-   same host, and the API's `/metrics`, `/health` and `/ready`.
+4. **Check:** open `https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/`. Also `/prometheus/`,
+   `/alertmanager/`, `/flower/` (Flower comes with `deploy\flower.yaml`) and `/loki/` on the same host, and the
+   API's `/metrics`, `/health` and `/ready` on `https://threatgen-api.apps.dda-desc-az1-01.desccii.local`.
 
 Run the script again after any change in `observability/` or in the Grafana lines of `.env.uat`: it rebuilds the
 settings and restarts the monitoring pods. A changed Grafana password takes effect on that restart (a start-up step

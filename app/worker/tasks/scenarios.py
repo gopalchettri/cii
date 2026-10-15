@@ -50,12 +50,12 @@ def plan_run(lease: JobLease) -> None:
     access = get_intel_access()
     country = get_settings().context_country if access.is_on() else ""  # G232: intelligence on only
     findings = get_threat_finder().find_threats(context, country)
-    near = access.threat_relevance(findings.threats, context)
+    near, intel_stamp = access.plan_intel(findings.threats, context)  # G238: one read, never waits
     threats = [replace(threat, country_relevance=near.get(threat.key)) for threat in findings.threats]
     plan = get_attack_path_selector().build_plan(replace(findings, threats=threats))
     plan |= {
         "frozen_at": datetime.now(UTC),
-        "made_with": made_with(findings.library_stamp) | access.stamp(),
+        "made_with": made_with(findings.library_stamp) | intel_stamp,
     }
     selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
     changes = plan_changes(plan, len(selected), time.perf_counter() - started)

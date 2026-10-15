@@ -1,784 +1,776 @@
-# TSG monitoring in UAT / production (OpenShift Template). Apply with deploy/observability.ps1, which also
-# builds the ConfigMaps from observability/ and the Secrets from .env.uat (Grafana's settings and admin
-# password, the queue-depth database).
+# TSG v2 monitoring in UAT: plain OpenShift YAML for project ai-remediation (v1 kept its monitoring there too, so
+# it does not use ai-threatgen's CPU budget). Apply with deploy/observability.ps1: it first builds the ConfigMaps
+# from observability/ (the same files the laptop uses: Prometheus' config and alert rules, Alertmanager, Loki,
+# Alloy, Grafana's data sources and dashboard) and the Secrets from .env.uat (Grafana's admin password and
+# settings, the queue-depth database), then applies this file. Flower is deploy/flower.yaml (it runs from the app
+# image; deploy/deploy-uat.ps1 applies it).
 #
-# What you get, all public and without login (owner, 2026-10-08), on the app's one Route host:
-#   https://<HOST>/grafana/       Grafana: the one place to look (home = TSG dashboard; alerts; logs; audit)
-#   https://<HOST>/flower/        Flower: background jobs (view only: Flower switches its API off without a login)
-#   https://<HOST>/prometheus/    Prometheus: raw metrics and alert rules (admin API off: read-only)
-#   https://<HOST>/alertmanager/  Alertmanager: firing alerts and silences
-#   https://<HOST>/loki/          Loki's API (read it through Grafana)
-#   https://<HOST>/metrics, /health, /ready   the API itself (Route "/" comes with the app, M15)
-# Prometheus finds the app pods by their annotations (observability/prometheus/prometheus.yml).
+# What you get, all public and without login (owner, 2026-10-08), on the monitoring host:
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/       Grafana: the one place to look
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/flower/        Flower: background jobs (view only)
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/prometheus/    Prometheus: raw metrics, alert rules
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/alertmanager/  Alertmanager: firing alerts, silences
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/loki/          Loki's API (read it through Grafana)
+# The API's own /metrics, /health and /ready are on threatgen-api (deploy/deploy.yaml).
 #
-# STEP 0 — images. The cluster pulls only from the mirror (REGISTRY). Before the first apply, and after any
-# version change below, copy each image there from a machine with internet access, e.g.:
+# Prometheus finds the app pods in BOTH projects (ai-threatgen and ai-remediation) by their annotations
+# (observability/prometheus/prometheus.yml); Alloy ships both projects' pod logs; kube-state-metrics watches both.
+# Each reads ai-threatgen through a Role there (below): namespaced objects only, no cluster-wide rights.
+#
+# STEP 0 — images. The cluster pulls only from the mirror (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/
+# dda-desc). Before the first apply, and after any version change below, copy each image there from a machine
+# with internet access, e.g.:
 #   podman pull --platform linux/amd64 docker.io/prom/prometheus:v3.15.0
-#   podman tag  docker.io/prom/prometheus:v3.15.0 <REGISTRY>/prometheus:v3.15.0
-#   podman push <REGISTRY>/prometheus:v3.15.0
+#   podman tag  docker.io/prom/prometheus:v3.15.0 <mirror>/prometheus:v3.15.0
+#   podman push <mirror>/prometheus:v3.15.0
 # The version on each `image:` line is the one pin: scripts/monitoring.py installs the same versions on a laptop.
-#
-# Only namespaced objects (Role, RoleBinding): no cluster-wide rights are needed or asked for.
 
-apiVersion: template.openshift.io/v1
-kind: Template
+# ---------------------------------------------------------------- access (namespaced only)
+---
+apiVersion: v1
+kind: ServiceAccount
 metadata:
-  name: tsg-observability
-  annotations:
-    description: TSG monitoring - Prometheus, Alertmanager, Loki, Alloy, Grafana, Flower and exporters.
+  name: prometheus
+  namespace: ai-remediation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-find-pods
+  namespace: ai-remediation
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-find-pods
+  namespace: ai-remediation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-find-pods
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: ai-remediation
 
-parameters:
-  - name: HOST
-    description: The app's existing Route host (no new DNS), e.g. tsg-uat.apps.example.local
-    required: true
-  - name: NAMESPACE
-    description: The namespace this is applied to (the RoleBindings name their ServiceAccounts in it)
-    required: true
-  - name: APP_IMAGE
-    description: The TSG app image (Flower runs from it), e.g. <REGISTRY>/tsg:1.0.0
-    required: true
-  - name: APP_CONFIG
-    description: The app's ConfigMap of CII_* settings (Flower reads the broker from it)
-    value: tsg-config
-  - name: APP_SECRET
-    description: The app's Secret of CII_* secrets
-    value: tsg-secrets
-  - name: REGISTRY
-    description: The image mirror every image is pulled from
-    value: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc
-  - name: PULL_SECRET
-    description: The pull secret for REGISTRY
-    value: quay-pull
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: ai-remediation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: alloy-read-logs
+  namespace: ai-remediation
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alloy-read-logs
+  namespace: ai-remediation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: alloy-read-logs
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: ai-remediation
 
-objects:
-  # ---------------------------------------------------------------- access (namespaced only)
-  - apiVersion: v1
-    kind: ServiceAccount
-    metadata:
-      name: prometheus
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: Role
-    metadata:
-      name: prometheus-find-pods
-    rules:
-      - apiGroups: [""]
-        resources: [pods]
-        verbs: [get, list, watch]
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    metadata:
-      name: prometheus-find-pods
-    roleRef:
-      apiGroup: rbac.authorization.k8s.io
-      kind: Role
-      name: prometheus-find-pods
-    subjects:
-      - kind: ServiceAccount
-        name: prometheus
-        namespace: ${NAMESPACE}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: ai-remediation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-state-metrics-read-pods
+  namespace: ai-remediation
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-state-metrics-read-pods
+  namespace: ai-remediation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-state-metrics-read-pods
+subjects:
+  - kind: ServiceAccount
+    name: kube-state-metrics
+    namespace: ai-remediation
 
-  - apiVersion: v1
-    kind: ServiceAccount
-    metadata:
-      name: alloy
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: Role
-    metadata:
-      name: alloy-read-logs
-    rules:
-      - apiGroups: [""]
-        resources: [pods, pods/log]
-        verbs: [get, list, watch]
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    metadata:
-      name: alloy-read-logs
-    roleRef:
-      apiGroup: rbac.authorization.k8s.io
-      kind: Role
-      name: alloy-read-logs
-    subjects:
-      - kind: ServiceAccount
-        name: alloy
-        namespace: ${NAMESPACE}
+# The app's own project: the same three may read its pods (and Alloy their logs), nothing else.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tsg-monitoring-read-pods
+  namespace: ai-threatgen
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tsg-monitoring-read-pods
+  namespace: ai-threatgen
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tsg-monitoring-read-pods
+subjects:
+  - { kind: ServiceAccount, name: prometheus, namespace: ai-remediation }
+  - { kind: ServiceAccount, name: alloy, namespace: ai-remediation }
+  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-remediation }
 
-  - apiVersion: v1
-    kind: ServiceAccount
-    metadata:
-      name: kube-state-metrics
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: Role
-    metadata:
-      name: kube-state-metrics-read-pods
-    rules:
-      - apiGroups: [""]
-        resources: [pods]
-        verbs: [list, watch]
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    metadata:
-      name: kube-state-metrics-read-pods
-    roleRef:
-      apiGroup: rbac.authorization.k8s.io
-      kind: Role
-      name: kube-state-metrics-read-pods
-    subjects:
-      - kind: ServiceAccount
-        name: kube-state-metrics
-        namespace: ${NAMESPACE}
+# ---------------------------------------------------------------- volumes (D-07)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: ai-remediation
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  namespace: ai-remediation
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: ai-remediation
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
 
-  # ---------------------------------------------------------------- volumes (D-07)
-  - apiVersion: v1
-    kind: PersistentVolumeClaim
+# ---------------------------------------------------------------- Prometheus (15 days)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: prometheus, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # one writer on a ReadWriteOnce volume
+  selector:
+    matchLabels: { app.kubernetes.io/name: prometheus }
+  template:
     metadata:
-      name: prometheus-data
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/component: prometheus
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
     spec:
-      accessModes: [ReadWriteOnce]
-      resources:
-        requests:
-          storage: 10Gi
-  - apiVersion: v1
-    kind: PersistentVolumeClaim
-    metadata:
-      name: loki-data
-    spec:
-      accessModes: [ReadWriteOnce]
-      resources:
-        requests:
-          storage: 10Gi
-  - apiVersion: v1
-    kind: PersistentVolumeClaim
-    metadata:
-      name: grafana-data
-    spec:
-      accessModes: [ReadWriteOnce]
-      resources:
-        requests:
-          storage: 1Gi
+      serviceAccountName: prometheus
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: prometheus
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/prometheus:v3.15.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=15d
+            - --storage.tsdb.retention.size=8GB
+            - --web.external-url=https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/prometheus/
+          ports: [{ name: http, containerPort: 9090 }]
+          readinessProbe:
+            httpGet: { path: /prometheus/-/ready, port: 9090 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /prometheus/-/healthy, port: 9090 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+            - { name: data, mountPath: /prometheus }
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: 500m, memory: 1Gi }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-config }
+        - name: data
+          persistentVolumeClaim: { claimName: prometheus-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: ai-remediation
+spec:
+  selector: { app.kubernetes.io/name: prometheus }
+  ports: [{ name: http, port: 9090, targetPort: 9090 }]
 
-  # ---------------------------------------------------------------- Prometheus (15 days)
-  - apiVersion: apps/v1
-    kind: Deployment
+# ---------------------------------------------------------------- Alertmanager (D-05: no channel yet)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: alertmanager, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: alertmanager }
+  template:
     metadata:
-      name: prometheus
-      labels: { app.kubernetes.io/name: prometheus, app.kubernetes.io/part-of: tsg-observability }
+      labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/component: alertmanager
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9093"
+        prometheus.io/path: /alertmanager/metrics
     spec:
-      replicas: 1
-      strategy: { type: Recreate } # one writer on a ReadWriteOnce volume
-      selector:
-        matchLabels: { app.kubernetes.io/name: prometheus }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: prometheus
-            app.kubernetes.io/component: prometheus
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-        spec:
-          serviceAccountName: prometheus
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: prometheus
-              image: ${REGISTRY}/prometheus:v3.15.0
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              args:
-                - --config.file=/etc/prometheus/prometheus.yml
-                - --storage.tsdb.path=/prometheus
-                - --storage.tsdb.retention.time=15d
-                - --storage.tsdb.retention.size=8GB
-                - --web.external-url=https://${HOST}/prometheus/
-              ports: [{ name: http, containerPort: 9090 }]
-              readinessProbe:
-                httpGet: { path: /prometheus/-/ready, port: 9090 }
-                initialDelaySeconds: 20
-                periodSeconds: 10
-                timeoutSeconds: 5
-                failureThreshold: 6
-              livenessProbe:
-                httpGet: { path: /prometheus/-/healthy, port: 9090 }
-                initialDelaySeconds: 60
-                periodSeconds: 20
-                timeoutSeconds: 5
-                failureThreshold: 6
-              volumeMounts:
-                - { name: config, mountPath: /etc/prometheus }
-                - { name: data, mountPath: /prometheus }
-              resources:
-                requests: { cpu: 100m, memory: 512Mi }
-                limits: { cpu: 500m, memory: 1Gi }
-          volumes:
-            - name: config
-              configMap: { name: prometheus-config }
-            - name: data
-              persistentVolumeClaim: { claimName: prometheus-data }
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      name: prometheus
-    spec:
-      selector: { app.kubernetes.io/name: prometheus }
-      ports: [{ name: http, port: 9090, targetPort: 9090 }]
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: alertmanager
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alertmanager:v0.34.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            # ponytail: silences live on an emptyDir and are lost on restart; add a volume if that hurts.
+            - --storage.path=/alertmanager
+            - --web.external-url=https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/alertmanager/
+            - --cluster.listen-address=  # one Alertmanager: no peers to find
+          ports: [{ name: http, containerPort: 9093 }]
+          readinessProbe:
+            httpGet: { path: /alertmanager/-/ready, port: 9093 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /alertmanager/-/healthy, port: 9093 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - { name: config, mountPath: /etc/alertmanager }
+            - { name: data, mountPath: /alertmanager }
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 100m, memory: 256Mi }
+      volumes:
+        - name: config
+          configMap: { name: alertmanager-config }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: ai-remediation
+spec:
+  selector: { app.kubernetes.io/name: alertmanager }
+  ports: [{ name: http, port: 9093, targetPort: 9093 }]
 
-  # ---------------------------------------------------------------- Alertmanager (D-05: no channel yet)
-  - apiVersion: apps/v1
-    kind: Deployment
+# ---------------------------------------------------------------- Loki (7 days)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: loki, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: loki }
+  template:
     metadata:
-      name: alertmanager
-      labels: { app.kubernetes.io/name: alertmanager, app.kubernetes.io/part-of: tsg-observability }
+      labels:
+        app.kubernetes.io/name: loki
+        app.kubernetes.io/component: loki
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+        prometheus.io/path: /metrics
     spec:
-      replicas: 1
-      selector:
-        matchLabels: { app.kubernetes.io/name: alertmanager }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: alertmanager
-            app.kubernetes.io/component: alertmanager
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-          annotations:
-            prometheus.io/scrape: "true"
-            prometheus.io/port: "9093"
-            prometheus.io/path: /alertmanager/metrics
-        spec:
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: alertmanager
-              image: ${REGISTRY}/alertmanager:v0.34.1
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              args:
-                - --config.file=/etc/alertmanager/alertmanager.yml
-                # ponytail: silences live on an emptyDir and are lost on restart; add a volume if that hurts.
-                - --storage.path=/alertmanager
-                - --web.external-url=https://${HOST}/alertmanager/
-                - --cluster.listen-address=  # one Alertmanager: no peers to find
-              ports: [{ name: http, containerPort: 9093 }]
-              readinessProbe:
-                httpGet: { path: /alertmanager/-/ready, port: 9093 }
-                initialDelaySeconds: 10
-                periodSeconds: 10
-                timeoutSeconds: 5
-                failureThreshold: 3
-              livenessProbe:
-                httpGet: { path: /alertmanager/-/healthy, port: 9093 }
-                initialDelaySeconds: 30
-                periodSeconds: 20
-                timeoutSeconds: 5
-                failureThreshold: 6
-              volumeMounts:
-                - { name: config, mountPath: /etc/alertmanager }
-                - { name: data, mountPath: /alertmanager }
-              resources:
-                requests: { cpu: 25m, memory: 64Mi }
-                limits: { cpu: 100m, memory: 256Mi }
-          volumes:
-            - name: config
-              configMap: { name: alertmanager-config }
-            - name: data
-              emptyDir: {}
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      name: alertmanager
-    spec:
-      selector: { app.kubernetes.io/name: alertmanager }
-      ports: [{ name: http, port: 9093, targetPort: 9093 }]
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: loki
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/loki:3.7.8
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          imagePullPolicy: IfNotPresent
+          args: [-config.file=/etc/loki/loki.yaml, -config.expand-env=true, -target=all]
+          env:
+            - { name: LOKI_DATA, value: /loki }
+          ports:
+            - { name: http, containerPort: 3100 }
+            - { name: grpc, containerPort: 9095 }
+          readinessProbe:
+            httpGet: { path: /ready, port: 3100 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /ready, port: 3100 }
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          volumeMounts:
+            - { name: config, mountPath: /etc/loki }
+            - { name: data, mountPath: /loki }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 1Gi }
+      volumes:
+        - name: config
+          configMap: { name: loki-config }
+        - name: data
+          persistentVolumeClaim: { claimName: loki-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: ai-remediation
+spec:
+  selector: { app.kubernetes.io/name: loki }
+  ports: [{ name: http, port: 3100, targetPort: 3100 }]
 
-  # ---------------------------------------------------------------- Loki (7 days)
-  - apiVersion: apps/v1
-    kind: Deployment
+# ---------------------------------------------------------------- Alloy (pod logs -> Loki)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: alloy, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1 # one reader: two would ship every line twice
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: alloy }
+  template:
     metadata:
-      name: loki
-      labels: { app.kubernetes.io/name: loki, app.kubernetes.io/part-of: tsg-observability }
+      labels:
+        app.kubernetes.io/name: alloy
+        app.kubernetes.io/component: alloy
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "12345"
+        prometheus.io/path: /metrics
     spec:
-      replicas: 1
-      strategy: { type: Recreate }
-      selector:
-        matchLabels: { app.kubernetes.io/name: loki }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: loki
-            app.kubernetes.io/component: loki
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-          annotations:
-            prometheus.io/scrape: "true"
-            prometheus.io/port: "3100"
-            prometheus.io/path: /metrics
-        spec:
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: loki
-              image: ${REGISTRY}/loki:3.7.8
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              args: [-config.file=/etc/loki/loki.yaml, -config.expand-env=true, -target=all]
-              env:
-                - { name: LOKI_DATA, value: /loki }
-              ports:
-                - { name: http, containerPort: 3100 }
-                - { name: grpc, containerPort: 9095 }
-              readinessProbe:
-                httpGet: { path: /ready, port: 3100 }
-                initialDelaySeconds: 30
-                periodSeconds: 10
-                timeoutSeconds: 5
-                failureThreshold: 6
-              livenessProbe:
-                httpGet: { path: /ready, port: 3100 }
-                initialDelaySeconds: 90
-                periodSeconds: 30
-                timeoutSeconds: 10
-                failureThreshold: 10
-              volumeMounts:
-                - { name: config, mountPath: /etc/loki }
-                - { name: data, mountPath: /loki }
-              resources:
-                requests: { cpu: 100m, memory: 256Mi }
-                limits: { cpu: 500m, memory: 1Gi }
-          volumes:
-            - name: config
-              configMap: { name: loki-config }
-            - name: data
-              persistentVolumeClaim: { claimName: loki-data }
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      name: loki
-    spec:
-      selector: { app.kubernetes.io/name: loki }
-      ports: [{ name: http, port: 3100, targetPort: 3100 }]
+      serviceAccountName: alloy
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: alloy
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alloy:v1.20.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --storage.path=/tmp/alloy
+            - --disable-reporting
+          ports: [{ name: http, containerPort: 12345 }]
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 12345 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /-/ready, port: 12345 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - { name: config, mountPath: /etc/alloy }
+            - { name: data, mountPath: /tmp/alloy }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 512Mi }
+      volumes:
+        - name: config
+          configMap: { name: alloy-config }
+        - name: data
+          emptyDir: {}
 
-  # ---------------------------------------------------------------- Alloy (pod logs -> Loki)
-  - apiVersion: apps/v1
-    kind: Deployment
+# ---------------------------------------------------------------- Grafana (the one place to look)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: grafana, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: grafana }
+  template:
     metadata:
-      name: alloy
-      labels: { app.kubernetes.io/name: alloy, app.kubernetes.io/part-of: tsg-observability }
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/component: grafana
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
     spec:
-      replicas: 1 # one reader: two would ship every line twice
-      strategy: { type: Recreate }
-      selector:
-        matchLabels: { app.kubernetes.io/name: alloy }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: alloy
-            app.kubernetes.io/component: alloy
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-          annotations:
-            prometheus.io/scrape: "true"
-            prometheus.io/port: "12345"
-            prometheus.io/path: /metrics
-        spec:
-          serviceAccountName: alloy
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: alloy
-              image: ${REGISTRY}/alloy:v1.20.1
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              args:
-                - run
-                - /etc/alloy/config.alloy
-                - --server.http.listen-addr=0.0.0.0:12345
-                - --storage.path=/tmp/alloy
-                - --disable-reporting
-              ports: [{ name: http, containerPort: 12345 }]
-              readinessProbe:
-                httpGet: { path: /-/ready, port: 12345 }
-                initialDelaySeconds: 10
-                periodSeconds: 10
-                timeoutSeconds: 5
-                failureThreshold: 3
-              livenessProbe:
-                httpGet: { path: /-/ready, port: 12345 }
-                initialDelaySeconds: 30
-                periodSeconds: 20
-                timeoutSeconds: 5
-                failureThreshold: 6
-              volumeMounts:
-                - { name: config, mountPath: /etc/alloy }
-                - { name: data, mountPath: /tmp/alloy }
-              resources:
-                requests: { cpu: 50m, memory: 128Mi }
-                limits: { cpu: 300m, memory: 512Mi }
-          volumes:
-            - name: config
-              configMap: { name: alloy-config }
-            - name: data
-              emptyDir: {}
+      imagePullSecrets: [{ name: quay-pull }]
+      initContainers:
+        # Grafana reads GF_SECURITY_ADMIN_PASSWORD only when it creates its database, which lives on a
+        # volume: without this, a new password in .env.uat would never take effect.
+        - name: set-admin-password
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/grafana:12.4.12
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          command: [sh, -c]
+          args:
+            - >-
+              if [ -f /var/lib/grafana/grafana.db ]; then
+              printf '%s' "$GF_SECURITY_ADMIN_PASSWORD" | grafana cli --homepath /usr/share/grafana
+              admin reset-admin-password --password-from-stdin; fi
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: tsg-monitoring, key: GF_SECURITY_ADMIN_PASSWORD } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/grafana }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 256Mi }
+      containers:
+        - name: grafana
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/grafana:12.4.12
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          imagePullPolicy: IfNotPresent
+          # Grafana's own settings: every GF_ line of .env.uat (owner, 2026-10-09), which
+          # deploy/observability.ps1 copies into this Secret. The env entries below win over these: the links,
+          # the /grafana path and the home dashboard depend on them.
+          envFrom:
+            - secretRef: { name: tsg-grafana-settings }
+          env:
+            # The admin password only changes Grafana itself; looking needs no login.
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: tsg-monitoring, key: GF_SECURITY_ADMIN_PASSWORD } }
+            - { name: GF_SERVER_ROOT_URL, value: "https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/" }
+            - { name: GF_SERVER_SERVE_FROM_SUB_PATH, value: "true" }
+            - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /var/lib/grafana/dashboards/tsg.json }
+            - { name: GRAFANA_DASHBOARDS, value: /var/lib/grafana/dashboards }
+            - { name: PROMETHEUS_URL, value: "http://prometheus:9090/prometheus" }
+            - { name: LOKI_URL, value: "http://loki:3100" }
+            - { name: ALERTMANAGER_URL, value: "http://alertmanager:9093/alertmanager" }
+          ports: [{ name: http, containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/grafana }
+            - { name: provisioning, mountPath: /etc/grafana/provisioning }
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: grafana-data }
+        - name: provisioning
+          configMap:
+            name: grafana-provisioning
+            items:
+              - { key: datasources.yaml, path: datasources/datasources.yaml }
+              - { key: dashboards.yaml, path: dashboards/dashboards.yaml }
+        - name: dashboards
+          configMap: { name: grafana-dashboards }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: ai-remediation
+spec:
+  selector: { app.kubernetes.io/name: grafana }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]
 
-  # ---------------------------------------------------------------- Grafana (the one place to look)
-  - apiVersion: apps/v1
-    kind: Deployment
+# ---------------------------------------------------------------- redis-exporter (queue depth)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: redis-exporter, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: redis-exporter }
+  template:
     metadata:
-      name: grafana
-      labels: { app.kubernetes.io/name: grafana, app.kubernetes.io/part-of: tsg-observability }
+      labels:
+        app.kubernetes.io/name: redis-exporter
+        app.kubernetes.io/component: redis-exporter
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: /metrics
     spec:
-      replicas: 1
-      strategy: { type: Recreate }
-      selector:
-        matchLabels: { app.kubernetes.io/name: grafana }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: grafana
-            app.kubernetes.io/component: grafana
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-        spec:
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          initContainers:
-            # Grafana reads GF_SECURITY_ADMIN_PASSWORD only when it creates its database, which lives on a
-            # volume: without this, a new password in .env.uat would never take effect.
-            - name: set-admin-password
-              image: ${REGISTRY}/grafana:12.4.12
-              imagePullPolicy: IfNotPresent
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              command: [sh, -c]
-              args:
-                - >-
-                  if [ -f /var/lib/grafana/grafana.db ]; then
-                  printf '%s' "$GF_SECURITY_ADMIN_PASSWORD" | grafana cli --homepath /usr/share/grafana
-                  admin reset-admin-password --password-from-stdin; fi
-              env:
-                - name: GF_SECURITY_ADMIN_PASSWORD
-                  valueFrom: { secretKeyRef: { name: tsg-monitoring, key: GF_SECURITY_ADMIN_PASSWORD } }
-              volumeMounts:
-                - { name: data, mountPath: /var/lib/grafana }
-              resources:
-                requests: { cpu: 50m, memory: 64Mi }
-                limits: { cpu: 200m, memory: 256Mi }
-          containers:
-            - name: grafana
-              image: ${REGISTRY}/grafana:12.4.12
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              # Grafana's own settings: every GF_ line of .env.uat (owner, 2026-10-09), which
-              # deploy/observability.ps1 copies into this Secret. The env entries below win over these: the links,
-              # the /grafana path and the home dashboard depend on them.
-              envFrom:
-                - secretRef: { name: tsg-grafana-settings }
-              env:
-                # The admin password only changes Grafana itself; looking needs no login.
-                - name: GF_SECURITY_ADMIN_PASSWORD
-                  valueFrom: { secretKeyRef: { name: tsg-monitoring, key: GF_SECURITY_ADMIN_PASSWORD } }
-                - { name: GF_SERVER_ROOT_URL, value: "https://${HOST}/grafana/" }
-                - { name: GF_SERVER_SERVE_FROM_SUB_PATH, value: "true" }
-                - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /var/lib/grafana/dashboards/tsg.json }
-                - { name: GRAFANA_DASHBOARDS, value: /var/lib/grafana/dashboards }
-                - { name: PROMETHEUS_URL, value: "http://prometheus:9090/prometheus" }
-                - { name: LOKI_URL, value: "http://loki:3100" }
-                - { name: ALERTMANAGER_URL, value: "http://alertmanager:9093/alertmanager" }
-              ports: [{ name: http, containerPort: 3000 }]
-              readinessProbe:
-                httpGet: { path: /api/health, port: 3000 }
-                initialDelaySeconds: 20
-                periodSeconds: 10
-                timeoutSeconds: 5
-                failureThreshold: 6
-              livenessProbe:
-                httpGet: { path: /api/health, port: 3000 }
-                initialDelaySeconds: 60
-                periodSeconds: 30
-                timeoutSeconds: 10
-                failureThreshold: 6
-              volumeMounts:
-                - { name: data, mountPath: /var/lib/grafana }
-                - { name: provisioning, mountPath: /etc/grafana/provisioning }
-                - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }
-              resources:
-                requests: { cpu: 100m, memory: 256Mi }
-                limits: { cpu: 500m, memory: 512Mi }
-          volumes:
-            - name: data
-              persistentVolumeClaim: { claimName: grafana-data }
-            - name: provisioning
-              configMap:
-                name: grafana-provisioning
-                items:
-                  - { key: datasources.yaml, path: datasources/datasources.yaml }
-                  - { key: dashboards.yaml, path: dashboards/dashboards.yaml }
-            - name: dashboards
-              configMap: { name: grafana-dashboards }
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      name: grafana
-    spec:
-      selector: { app.kubernetes.io/name: grafana }
-      ports: [{ name: http, port: 3000, targetPort: 3000 }]
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: redis-exporter
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/redis_exporter:v1.93.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          imagePullPolicy: IfNotPresent
+          env:
+            # The app's own broker URL (password included): one copy, so a password change reaches both.
+            - name: REDIS_ADDR
+              valueFrom: { secretKeyRef: { name: tsg-secrets, key: CII_REDIS_CELERY_BROKER_URL } }
+            - name: REDIS_DB
+              valueFrom: { secretKeyRef: { name: tsg-monitoring, key: REDIS_DB } }
+            # Each Celery queue is a Redis list named <Worker.BROKER_KEY_PREFIX><queue>: its length = jobs waiting.
+            - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS
+              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_maintenance"
+            - { name: REDIS_EXPORTER_INCL_SYSTEM_METRICS, value: "false" }
+          ports: [{ name: metrics, containerPort: 9121 }]
+          readinessProbe:
+            httpGet: { path: /health, port: 9121 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /health, port: 9121 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 100m, memory: 128Mi }
 
-  # ---------------------------------------------------------------- Flower (jobs; runs from the app image)
-  - apiVersion: apps/v1
-    kind: Deployment
+# ---------------------------------------------------------------- kube-state-metrics (restarts, OOM)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: kube-state-metrics, app.kubernetes.io/part-of: tsg-observability }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: kube-state-metrics }
+  template:
     metadata:
-      name: flower
-      labels: { app.kubernetes.io/name: flower, app.kubernetes.io/part-of: tsg-observability }
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/component: kube-state-metrics
+        app.kubernetes.io/part-of: tsg-observability
+        tsg-observability: "true"
     spec:
-      replicas: 1
-      selector:
-        matchLabels: { app.kubernetes.io/name: flower }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: flower
-            app.kubernetes.io/component: flower
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-          annotations:
-            prometheus.io/scrape: "true"
-            prometheus.io/port: "5555"
-            prometheus.io/path: /flower/metrics
-        spec:
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: flower
-              image: ${APP_IMAGE}
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              command: [celery, -A, app.worker, flower, --address=0.0.0.0, --port=5555, --url_prefix=flower]
-              envFrom:
-                - configMapRef: { name: "${APP_CONFIG}" }
-                - secretRef: { name: "${APP_SECRET}" }
-              ports: [{ name: http, containerPort: 5555 }]
-              readinessProbe:
-                tcpSocket: { port: 5555 }
-                initialDelaySeconds: 10
-                periodSeconds: 10
-              livenessProbe:
-                tcpSocket: { port: 5555 }
-                initialDelaySeconds: 30
-                periodSeconds: 30
-              resources:
-                requests: { cpu: 100m, memory: 256Mi }
-                limits: { cpu: 200m, memory: 512Mi }
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      name: flower
-    spec:
-      selector: { app.kubernetes.io/name: flower }
-      ports: [{ name: http, port: 5555, targetPort: 5555 }]
+      serviceAccountName: kube-state-metrics
+      imagePullSecrets: [{ name: quay-pull }]
+      containers:
+        - name: kube-state-metrics
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/kube-state-metrics:v2.20.0
+          imagePullPolicy: IfNotPresent
+          # Both projects the app's pods run in (restarts, OOM kills, pods that never start).
+          args: ["--namespaces=ai-threatgen,ai-remediation", --resources=pods]
+          ports: [{ name: metrics, containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 100m, memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: ai-remediation
+spec:
+  selector: { app.kubernetes.io/name: kube-state-metrics }
+  ports: [{ name: metrics, port: 8080, targetPort: 8080 }]
 
-  # ---------------------------------------------------------------- redis-exporter (queue depth)
-  - apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: redis-exporter
-      labels: { app.kubernetes.io/name: redis-exporter, app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      replicas: 1
-      selector:
-        matchLabels: { app.kubernetes.io/name: redis-exporter }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: redis-exporter
-            app.kubernetes.io/component: redis-exporter
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-          annotations:
-            prometheus.io/scrape: "true"
-            prometheus.io/port: "9121"
-            prometheus.io/path: /metrics
-        spec:
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: redis-exporter
-              image: ${REGISTRY}/redis_exporter:v1.93.0
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-              imagePullPolicy: IfNotPresent
-              env:
-                # The app's own broker URL (password included): one copy, so a password change reaches both.
-                - name: REDIS_ADDR
-                  valueFrom: { secretKeyRef: { name: "${APP_SECRET}", key: CII_REDIS_CELERY_BROKER_URL } }
-                - name: REDIS_DB
-                  valueFrom: { secretKeyRef: { name: tsg-monitoring, key: REDIS_DB } }
-                # Each Celery queue is a Redis list named <Worker.BROKER_KEY_PREFIX><queue>: its length = jobs waiting.
-                - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS
-                  value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_maintenance"
-                - { name: REDIS_EXPORTER_INCL_SYSTEM_METRICS, value: "false" }
-              ports: [{ name: metrics, containerPort: 9121 }]
-              readinessProbe:
-                httpGet: { path: /health, port: 9121 }
-                initialDelaySeconds: 10
-                periodSeconds: 15
-              livenessProbe:
-                httpGet: { path: /health, port: 9121 }
-                initialDelaySeconds: 30
-                periodSeconds: 30
-              resources:
-                requests: { cpu: 25m, memory: 64Mi }
-                limits: { cpu: 100m, memory: 128Mi }
+# ---------------------------------------------------------------- public paths on the monitoring host
+# (Flower's /flower is in deploy/flower.yaml)
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: grafana
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/part-of: tsg-observability }
+spec:
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
+  path: /grafana
+  to: { kind: Service, name: grafana }
+  port: { targetPort: http }
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: prometheus
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/part-of: tsg-observability }
+spec:
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
+  path: /prometheus
+  to: { kind: Service, name: prometheus }
+  port: { targetPort: http }
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: alertmanager
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/part-of: tsg-observability }
+spec:
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
+  path: /alertmanager
+  to: { kind: Service, name: alertmanager }
+  port: { targetPort: http }
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: loki
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/part-of: tsg-observability }
+spec:
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
+  path: /loki
+  to: { kind: Service, name: loki }
+  port: { targetPort: http }
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
 
-  # ---------------------------------------------------------------- kube-state-metrics (restarts, OOM)
-  - apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: kube-state-metrics
-      labels: { app.kubernetes.io/name: kube-state-metrics, app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      replicas: 1
-      selector:
-        matchLabels: { app.kubernetes.io/name: kube-state-metrics }
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: kube-state-metrics
-            app.kubernetes.io/component: kube-state-metrics
-            app.kubernetes.io/part-of: tsg-observability
-            tsg-observability: "true"
-        spec:
-          serviceAccountName: kube-state-metrics
-          imagePullSecrets: [{ name: "${PULL_SECRET}" }]
-          containers:
-            - name: kube-state-metrics
-              image: ${REGISTRY}/kube-state-metrics:v2.20.0
-              imagePullPolicy: IfNotPresent
-              args: [--namespaces=$(POD_NAMESPACE), --resources=pods]
-              env:
-                - name: POD_NAMESPACE
-                  valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
-              ports: [{ name: metrics, containerPort: 8080 }]
-              readinessProbe:
-                httpGet: { path: /healthz, port: 8080 }
-                initialDelaySeconds: 5
-                periodSeconds: 20
-              livenessProbe:
-                httpGet: { path: /healthz, port: 8080 }
-                initialDelaySeconds: 10
-                periodSeconds: 30
-              resources:
-                requests: { cpu: 20m, memory: 64Mi }
-                limits: { cpu: 100m, memory: 192Mi }
-              securityContext:
-                allowPrivilegeEscalation: false
-                runAsNonRoot: true
-                capabilities: { drop: [ALL] }
-                seccompProfile: { type: RuntimeDefault }
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      name: kube-state-metrics
-    spec:
-      selector: { app.kubernetes.io/name: kube-state-metrics }
-      ports: [{ name: metrics, port: 8080, targetPort: 8080 }]
-
-  # ---------------------------------------------------------------- public paths on the app's host
-  - apiVersion: route.openshift.io/v1
-    kind: Route
-    metadata:
-      name: grafana
-      labels: { app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      host: ${HOST}
-      path: /grafana
-      to: { kind: Service, name: grafana }
-      port: { targetPort: http }
-      tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
-  - apiVersion: route.openshift.io/v1
-    kind: Route
-    metadata:
-      name: flower
-      labels: { app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      host: ${HOST}
-      path: /flower
-      to: { kind: Service, name: flower }
-      port: { targetPort: http }
-      tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
-  - apiVersion: route.openshift.io/v1
-    kind: Route
-    metadata:
-      name: prometheus
-      labels: { app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      host: ${HOST}
-      path: /prometheus
-      to: { kind: Service, name: prometheus }
-      port: { targetPort: http }
-      tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
-  - apiVersion: route.openshift.io/v1
-    kind: Route
-    metadata:
-      name: alertmanager
-      labels: { app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      host: ${HOST}
-      path: /alertmanager
-      to: { kind: Service, name: alertmanager }
-      port: { targetPort: http }
-      tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
-  - apiVersion: route.openshift.io/v1
-    kind: Route
-    metadata:
-      name: loki
-      labels: { app.kubernetes.io/part-of: tsg-observability }
-    spec:
-      host: ${HOST}
-      path: /loki
-      to: { kind: Service, name: loki }
-      port: { targetPort: http }
-      tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }
-
-  # ---------------------------------------------------------------- network: only the monitoring pods
-  # These select only pods labelled tsg-observability: "true"; the app's own pods are not affected.
-  - apiVersion: networking.k8s.io/v1
-    kind: NetworkPolicy
-    metadata:
-      name: observability-from-router
-    spec:
-      podSelector:
-        matchLabels: { tsg-observability: "true" }
-      ingress:
-        - from:
-            - namespaceSelector:
-                matchLabels: { policy-group.network.openshift.io/ingress: "" }
-  - apiVersion: networking.k8s.io/v1
-    kind: NetworkPolicy
-    metadata:
-      name: observability-from-namespace
-    spec:
-      podSelector:
-        matchLabels: { tsg-observability: "true" }
-      ingress:
-        - from:
-            - podSelector: {}
+# ---------------------------------------------------------------- network: only the monitoring pods
+# These select only pods labelled tsg-observability: "true"; the app's own pods are not affected.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-from-router
+  namespace: ai-remediation
+spec:
+  podSelector:
+    matchLabels: { tsg-observability: "true" }
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { policy-group.network.openshift.io/ingress: "" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-from-namespace
+  namespace: ai-remediation
+spec:
+  podSelector:
+    matchLabels: { tsg-observability: "true" }
+  ingress:
+    - from:
+        - podSelector: {}

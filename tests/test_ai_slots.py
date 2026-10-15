@@ -9,14 +9,9 @@ from collections.abc import Iterator
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from app.ai import ai_deadline, slots
-from app.ai.chat import _build_request_options
-from app.ai.common import IncompleteAiAnswer, call_timeout, call_with_retries, seconds_left
-from app.ai.embeddings import _embed_batches_in_parallel
-from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
+from app.ai import slots
 from app.ai.slots import AiSlots
-from app.core.config import get_settings
-from app.core.constants import AiLimits, AiTask
+from app.core.constants import AiLimits
 from app.core.database import get_redis_client
 from app.core.exceptions import Unavailable
 
@@ -61,49 +56,6 @@ def test_no_free_slot_within_the_wait_is_unavailable() -> None:
         pass
     with impatient.hold_slot(hold_seconds=60):  # freed when the first call ended
         pass
-
-
-def test_a_callers_deadline_shortens_the_slot_wait_the_timeout_and_the_retries() -> None:
-    """Review 2026-10-11 (R1T step 2): a request with 0.2 s left never waits the process's 5 s for a slot, and
-    each of its calls gets the time left as its timeout and one try; past the deadline none starts."""
-    busy, patient = (AiSlots(get_redis_client(), cap=1, wait_seconds=5) for _ in range(2))
-    started = time.monotonic()
-    with (
-        busy.hold_slot(hold_seconds=60),
-        ai_deadline(time.monotonic() + 0.2),
-        pytest.raises(Unavailable),
-        patient.hold_slot(hold_seconds=60),
-    ):
-        pass
-    assert time.monotonic() - started < 2
-    tries: list[int] = []
-
-    def short_answer() -> None:
-        tries.append(1)
-        raise IncompleteAiAnswer("short")
-
-    with ai_deadline(time.monotonic() + 5), pytest.raises(IncompleteAiAnswer):
-        assert call_timeout(120) <= 5
-        call_with_retries(short_answer)
-    assert tries == [1] and call_timeout(120) == 120  # no deadline: the profile's own timeout
-    with ai_deadline(time.monotonic() - 1), pytest.raises(Unavailable):
-        call_timeout(120)
-
-
-def test_the_deadline_reaches_pooled_embedding_requests_and_chat_calls() -> None:
-    """Review 2026-10-11: embedding batches ran in pool threads without the caller's context (no deadline, and
-    no run in their log lines), and a chat call kept its profile's timeout under a deadline."""
-    seen: list[float | None] = []
-
-    def request(batch: list[str]) -> list[bytes]:
-        seen.append(seconds_left())
-        return [b""] * len(batch)
-
-    profile = find_model_profile(CHAT_MODEL_PROFILES, get_settings().chat_model)
-    with ai_deadline(time.monotonic() + 5):
-        list(_embed_batches_in_parallel([["a"], ["b"]], request, concurrency=2))
-        assert _build_request_options(profile, AiTask.WRITE_SCENARIO)["timeout"] <= 5
-    assert len(seen) == 2 and all(left is not None and left <= 5 for left in seen)
 
 
 def test_the_slot_of_a_process_that_died_frees_itself() -> None:

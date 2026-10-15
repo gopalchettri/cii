@@ -1,13 +1,18 @@
-"""What a chat call sends and gets back: the conversation, its size and the answer's JSON object. No AI call
-here: app/ai/chat.py makes them."""
+"""What a chat call sends and gets back: the conversation, its size, the answer's JSON object and the call's
+record (metrics, log line, tsg_ai_calls copy). No AI call here: app/ai/chat.py makes them."""
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
-from app.core.constants import AiOutcome, AiTask
+from app.core import metrics
+from app.core.constants import AiOutcome, AiTask, LogEvent
+from app.data_access.ai_calls import AiCallRecords
+
+log = structlog.get_logger(__name__)
 
 
 def _remove_markdown_code_fence(answer: str) -> str:
@@ -47,6 +52,8 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
         "model": model,
         "outcome": outcome,
         "record_id": context.get("record_id"),
+        "task_id": context.get("task_id"),  # G244: a retry of this job reuses this answer
+        "prompt_hash": prompt_hash(messages),
         "request_id": context.get("request_id"),
         "prompt": messages,
         "response": response.choices[0].message.content or "",
@@ -54,3 +61,47 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
         "tokens_out": getattr(response.usage, "completion_tokens", 0) or 0,
         "seconds": seconds,
     }
+
+
+def prompt_hash(messages: list[dict]) -> str:
+    """The exact conversation's fingerprint (G244): equal only for the same messages in the same order."""
+    text = json.dumps(messages, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def update_call_metrics(
+    task: AiTask, model: str, outcome: AiOutcome, tokens_in: int, tokens_out: int, seconds: float
+) -> None:
+    """The metrics and the log line of one chat call."""
+    metrics.AI_CALLS.labels(task, model, outcome).inc()
+    metrics.AI_TOKENS.labels(task, model, "in").inc(tokens_in)
+    metrics.AI_TOKENS.labels(task, model, "out").inc(tokens_out)
+    metrics.AI_SECONDS.labels(task, model).observe(seconds)
+    log.info(
+        LogEvent.AI_CALL,
+        task=task,
+        model=model,
+        outcome=outcome,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        seconds=round(seconds, 2),
+    )
+
+
+def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is kept
+    records: AiCallRecords,
+    task: AiTask,
+    model: str,
+    messages: list[dict],
+    response: Any,
+    seconds: float,
+    outcome: AiOutcome,
+) -> None:
+    """One outcome per call: counted and logged, then copied to tsg_ai_calls, so every prompt and answer of a
+    run can be found (and a retry of its job reuses a usable one, G244)."""
+    record = build_call_record(task, model, messages, response, seconds, outcome)
+    update_call_metrics(task, model, outcome, record["tokens_in"], record["tokens_out"], seconds)
+    try:
+        records.insert(record)
+    except Exception:  # noqa: BLE001 - ponytail: the audit copy must never fail the AI call; logged instead
+        log.warning(LogEvent.AI_CALL_RECORD_FAILED, task=task, exc_info=True)

@@ -1,6 +1,7 @@
 """The one door through which source text reaches a stored record: every title, description, name, note and
 link is sanitised here (engine/external_intelligence/untrusted_text.py), and a record with unsafe text is
-quarantined whole, never stored and never indexed.
+quarantined whole, never stored and never indexed. A description is screened sentence by sentence: only its
+flagged sentences are removed (G237), unless none is clean or what is left reads as orders as a whole.
 
 Stateless apart from the source it speaks for, so a source may build one per run or share one."""
 
@@ -21,6 +22,7 @@ log = structlog.get_logger(__name__)
 _LINK = re.compile(r"https?://[^\s<>\"'`\\{}|^]+")
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:+~%*-]*")  # a cpe field, a version, an id: no space, no phrase
 _PLAIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
 class UnsafeSourceText(Exception):
@@ -43,6 +45,39 @@ class SourceTextGuard:
         if result.unsafe:
             raise UnsafeSourceText(result.reason or "")
         return result.text
+
+    def clean_sentences(self, text: Any, max_chars: int) -> str:
+        """A DESCRIPTION as safe plain text: each sentence is screened alone and a flagged one is removed, so
+        one sentence describing an attack on AI ("instructing the LLM to ignore previous instructions") no
+        longer throws the whole record away (G237: T1699, T1608.007 and T1700 were lost so). What is left is
+        screened once more as a whole (a split instruction is still caught) and raises like `clean`; so does a
+        description with no clean sentence. A removed sentence never reaches a store or a prompt. A clean
+        description (nearly all) takes the one whole pass it always did: only a flagged one is split."""
+        if not isinstance(text, str) or max_chars <= 0:
+            return ""
+        whole = self._sanitiser.sanitise(text, max_chars)
+        if not whole.unsafe:
+            return whole.text
+        raw = " ".join(text[: max(TextCleaning.MIN_RAW_CHARS, max_chars * TextCleaning.RAW_FACTOR)].split())
+        kept: list[str] = []
+        reasons: list[str] = []
+        for sentence in filter(None, _SENTENCE_END.split(raw)):
+            result = self._sanitiser.sanitise(sentence, len(sentence))
+            if result.unsafe:
+                reasons.append(result.reason or "")
+            elif result.text:
+                kept.append(result.text)
+        if reasons and not kept:
+            raise UnsafeSourceText(reasons[0])
+        if reasons:
+            log.info(
+                LogEvent.EXTERNAL_INTELLIGENCE_SENTENCES_REMOVED,
+                source=self._source,
+                removed=len(reasons),
+                reason=reasons[0],
+                raw_hash=content_hash_of(text),
+            )
+        return self.clean(" ".join(kept), max_chars)
 
     def clean_token(self, value: Any, max_chars: int = 100) -> str:
         """An identifier-like value (a vendor, a product, a version) kept as it is when it has the shape of
@@ -84,12 +119,12 @@ class SourceTextGuard:
             reason=reason,
             raw_hash=raw_hash,
         )
-        return RejectedRecord(self._source, self.plain_id(external_id), IntelRejection.UNSAFE_TEXT, raw_hash)
+        return RejectedRecord(self._source, plain_id(external_id), IntelRejection.UNSAFE_TEXT, raw_hash)
 
-    @staticmethod
-    def plain_id(value: Any) -> str:
-        """`value` when it looks like an id (T1059, CVE-2024-0001, ICSA-24-001-01), else ''."""
-        return value if isinstance(value, str) and _PLAIN_ID.fullmatch(value) else ""
+
+def plain_id(value: Any) -> str:
+    """`value` when it looks like an id (T1059, CVE-2024-0001, ICSA-24-001-01), else ''."""
+    return value if isinstance(value, str) and _PLAIN_ID.fullmatch(value) else ""
 
 
 def on_host(url: str, hosts: Sequence[str]) -> bool:

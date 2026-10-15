@@ -43,6 +43,7 @@ class FakeFinder:
         self.raises = False
         self.evidence: tuple[Evidence, ...] = (TECHNIQUE,)
         self.groups: tuple[KnownGroup, ...] = ()  # G230: the real groups it answers with
+        self.nearest: Evidence | None = None  # G254: the closest candidate when no evidence passed
 
     def find_evidence(
         self, requests: Sequence[EvidenceRequest], *, stale: bool
@@ -68,7 +69,8 @@ class FakeFinder:
         search = EvidenceSearchRecord(
             request.text, tuple(sorted(request.asset_types)), SNAPSHOT, 1.0, considered, stale, failure
         )
-        return EvidenceResult(() if self.down else self.evidence, search, () if self.down else self.groups)
+        evidence, groups = (() if self.down else self.evidence), (() if self.down else self.groups)
+        return EvidenceResult(evidence, search, groups, None if self.down else self.nearest)
 
 
 class FakeSwitch:

@@ -10,11 +10,10 @@ from typing import Any
 import structlog
 
 from app.core.config import get_settings
-from app.core.constants import IntelWorkEvent, KnownGroups, WriterStyle
+from app.core.constants import IntelWorkEvent, WriterStyle
 from app.core.database import get_mongodb
 from app.core.singletons import singleton
 from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
-from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
 from app.engine.external_intelligence.evidence_finder import EvidenceFinder
 from app.engine.external_intelligence.threat_relevance import threat_relevance
 from app.models.asset_context import FrozenContext
@@ -25,6 +24,7 @@ from app.models.threats import PlannedThreat
 from app.search.external_intelligence.index_keeper import get_evidence_index_keeper
 from app.worker.external_intelligence.evidence_request_builder import nearness_of
 from app.worker.external_intelligence.intel_runtime import IntelRuntime, RefresherPort
+from app.worker.external_intelligence.relevance_corpus import RelevanceCorpus, get_relevance_corpus
 
 log = structlog.get_logger(__name__)
 
@@ -41,9 +41,11 @@ class IntelAccess:
         self,
         finder: Callable[[], EvidenceFinder] = get_evidence_finder,
         is_stale: Callable[[], bool] | None = None,
+        relevance: Callable[[], RelevanceCorpus] = get_relevance_corpus,
     ) -> None:
         self._runtime: IntelRuntime | None = None
         self._finder = finder
+        self._relevance = relevance
         self._is_stale = is_stale or self._feeds_are_stale
 
     def install(self, runtime: IntelRuntime) -> None:
@@ -77,38 +79,27 @@ class IntelAccess:
         """One batch's evidence (ONE embedding call): the engine, told whether the intelligence is stale."""
         return self._finder().find_evidence(requests, stale=self._is_stale())
 
-    def threat_relevance(
+    def plan_intel(
         self, threats: list[PlannedThreat], context: FrozenContext
-    ) -> dict[str, dict[str, Any]]:
-        """G232: each planned threat's nearness to the deployment's country, read from the evidence index's
-        groups by keywords (no AI or embedding call); {} when off. Planning waits for a first index at most
-        KnownGroups.PLAN_INDEX_WAIT_SECONDS; one not ready by then plans without it, logged."""
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        """G232: each planned threat's nearness to the deployment's country, by keywords (no AI or embedding
+        call), and the stamp of the snapshot it was read from (its id and each source's release): one read,
+        so a plan records exactly the data it ranked with. G238: never waits, never the old data (its own
+        small copy, RelevanceCorpus). ({}, {}) when off; a store fault plans without it, logged. No ATT&CK
+        technique stored: no tie-break, but the stamp still names the snapshot the writer will search."""
         if not self.is_on():
-            return {}
-        keeper = get_evidence_index_keeper()
-        index = keeper.current_index()
+            return {}, {}
         try:
-            if not index.has_records:
-                index = keeper.rebuild_index().result(timeout=KnownGroups.PLAN_INDEX_WAIT_SECONDS)
+            corpus, active = self._relevance().current()
         except Exception:  # noqa: BLE001 - the plan is made without the tie-break, never lost to it
             log.warning(IntelWorkEvent.RELEVANCE_SKIPPED, exc_info=True)
-            return {}
-        return threat_relevance(index.corpus, threats, nearness_of(context))
-
-    def stamp(self) -> dict[str, Any]:
-        """What a plan records of the intelligence it is made with: the active snapshot's id and each source's
-        release; nothing at all when off. A store fault records nothing (a plan is never lost to it)."""
-        if not self.is_on():
-            return {}
-        try:
-            active = SnapshotPointerStore(get_mongodb()).read_active_snapshot() or {}
-        except Exception:  # noqa: BLE001 - the stamp is information; the plan is made without it
-            log.warning(IntelWorkEvent.STAMP_FAILED, exc_info=True)
-            return {}
-        return {
+            return {}, {}
+        stamp = {
             "intel_snapshot_id": active.get("snapshot_id"),
             "intel_sources": dict(active.get("source_versions") or {}),
         }
+        near = threat_relevance(corpus, threats, nearness_of(context)) if corpus is not None else {}
+        return near, stamp
 
     def _feeds_are_stale(self) -> bool:
         """True when an approved source that has data is older than IntelLimits.STALE_AFTER_HOURS (the health

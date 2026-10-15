@@ -94,6 +94,12 @@ class IntelMessage(StrEnum):
     ICS_UNREACHABLE = "{url} failed {count} times in a row: the run was stopped."
     SNAPSHOT_EMPTY = "No approved intelligence record is current: the snapshot was not built."
     SNAPSHOT_INCONSISTENT = "The snapshot holds {rows} records but {vectors} vectors: it was not used."
+    # Owner 2026-10-15: on, but nothing imported yet: one line naming the cure, not a log full of failures.
+    NO_DATA_YET = (
+        "External intelligence is on (EXTERNAL_INTELLIGENCE_ENABLED=true) but holds no data yet. Import it: "
+        "POST /v1/tsg/intel/refresh, then GET /v1/tsg/intel/health until snapshot_id is set. Or turn it off: "
+        'PUT /v1/tsg/intel/switch {"enabled": false}.'
+    )
 
 
 class IntelRejection(StrEnum):
@@ -182,7 +188,6 @@ class EvidenceLimits:
     CANDIDATES: Final = 6  # records reranked per threat: the rerank cost is threats x this x text length
     QUERY_MAX_CHARS: Final = 700  # the search text of one threat, cut from the end (type, name, reason lead)
     MAX_FACTS: Final = 6  # plain sentences kept per evidence record
-    DESCRIPTION_MAX_CHARS: Final = 320  # the attacker's behaviour, in the source's own words
     REAL_WORLD_USERS: Final = 2  # named groups / malware per technique
     MITIGATIONS: Final = 3
     RANGES_SAID: Final = 2  # affected version ranges and fixed versions put in one sentence
@@ -218,7 +223,8 @@ class EvidenceFact(StrEnum):
     """Plain sentences the scenario writer may use. Never an id: ids live only in `Evidence.ref`."""
 
     USED_BY = "{name}, {what}, has used this technique."
-    CAMPAIGN_USED = "The {name} campaign used this technique."
+    #: `name` ends in "campaign" (G233: a name that already says it, "… Campaign", gets no second one).
+    CAMPAIGN_USED = "The {name} used this technique."
     MITIGATED_BY = "It can be reduced by: {mitigations}."
     KEV_LISTED = "CISA lists weaknesses in {vendor} {product} as exploited in real attacks (added {date})."
     KEV_LISTED_UNNAMED = "CISA lists a weakness as exploited in real attacks (added {date})."

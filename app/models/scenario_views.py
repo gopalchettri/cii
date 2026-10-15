@@ -20,7 +20,7 @@ from app.core.constants import (
     ValidationStatus,
 )
 from app.models.control_views import ControlView, control_view
-from app.models.external_intelligence.evidence_view import EvidenceView, cited_evidence
+from app.models.external_intelligence.evidence_view import EvidenceView, cited_evidence, related_evidence
 from app.models.external_intelligence.known_group_view import KnownGroupView, known_groups
 from app.models.run_board import Progress
 
@@ -112,10 +112,13 @@ class ScenarioView(BaseModel):
     failure: dict[str, Any] | None
     regenerate_error: dict[str, Any] | None  # why the last regenerate kept this version
     created_at: datetime
-    # Set only on a scenario written as an evidence story: source-documented or inferred; the evidence its
+    # Set only on a scenario written as an evidence story: source-documented, related (it cites none: its
+    # closest source in related_evidence, G250) or inferred; the evidence its
     # text cites by [n] (no scores); the audit of the search. Null / empty on every other scenario.
     evidence_mode: str | None = None
     evidence: list[EvidenceView] = Field(default_factory=list)
+    # G250: a story citing none of its sources shows the closest one here, never numbered (mode "related").
+    related_evidence: list[EvidenceView] = Field(default_factory=list)
     evidence_search: dict[str, Any] | None = None
     known_groups: list[KnownGroupView] = Field(default_factory=list)  # G230: real groups beside the actor
 
@@ -145,6 +148,7 @@ class ScenarioView(BaseModel):
             created_at=record["created_at"],
             evidence_mode=content.get("evidence_mode"),
             evidence=cited_evidence(content),
+            related_evidence=related_evidence(content),
             evidence_search=content.get("intel_search"),
             known_groups=known_groups(content),
         )

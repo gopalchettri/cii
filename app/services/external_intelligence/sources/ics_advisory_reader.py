@@ -160,7 +160,7 @@ class IcsAdvisoryReader:
 
     def _mitigations(self, vulns: list[dict[str, Any]]) -> list[str]:
         found = (
-            self._guard.clean(r.get("details"), IcsReading.MITIGATION_CHARS)
+            self._guard.clean_sentences(r.get("details"), IcsReading.MITIGATION_CHARS)
             for v in vulns
             for r in _items(v.get("remediations"))
             if r.get("category") in _MITIGATION_CATEGORIES
@@ -170,7 +170,9 @@ class IcsAdvisoryReader:
     def _summary(self, head: dict[str, Any], vulns: list[dict[str, Any]]) -> str:
         notes = _items(head.get("notes")) + [n for v in vulns for n in _items(v.get("notes"))]
         wanted = [n for n in notes if n.get("category") in ("summary", "description")]
-        return self._guard.clean(wanted[0].get("text"), IcsReading.SUMMARY_CHARS * 2) if wanted else ""
+        if not wanted:
+            return ""
+        return self._guard.clean_sentences(wanted[0].get("text"), IcsReading.SUMMARY_CHARS * 2)
 
     def _text(
         self, advisory_id: str, title: str, summary: str, groups: list[dict], mitigations: list[str]

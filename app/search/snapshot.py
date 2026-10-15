@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from app.ai import EmbeddingModel
-from app.core.constants import EmbeddingCorpus, StrideCategory
+from app.core.constants import Controls, EmbeddingCorpus, StrideCategory
 from app.core.tracing import traced
 from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, LoadedLibraries
 from app.search.indexes import HybridIndex
@@ -73,15 +73,28 @@ class LibrarySnapshot:
 
     @traced("search.find_controls")
     def find_controls(
-        self, queries: Sequence[str], top_k: int, allowed_types: Collection[str] | None = None
+        self,
+        queries: Sequence[str],
+        top_k: int,
+        allowed_types: Collection[str] | None = None,
+        *,
+        ai_controls: bool = True,
     ) -> list[list[tuple[LibraryControl, float]]]:
         """`allowed_types`: the only AssetType values ranked (upper case), before the top-k cut, as categories
-        are for threats; a control with no AssetType always takes part. None = every control."""
+        are for threats; a control with no AssetType always takes part. None = every control. `ai_controls`
+        False: no control of Controls.AI_DOMAIN takes part (G243: a card whose threat is not about AI)."""
         controls = self.library.control_library
-        if allowed_types is None:
+        if allowed_types is None and ai_controls:
             return self._search(EmbeddingCorpus.CONTROL, controls, queries, top_k)
         # ponytail: the mask is rebuilt per call (1,288 comparisons); cache it per allowed set if it shows.
-        mask = np.array([control.fits(allowed_types) for control in controls], dtype=bool)
+        mask = np.array(
+            [
+                (allowed_types is None or control.fits(allowed_types))
+                and (ai_controls or control.domain != Controls.AI_DOMAIN)
+                for control in controls
+            ],
+            dtype=bool,
+        )
         return self._search(EmbeddingCorpus.CONTROL, controls, queries, top_k, [mask] * len(queries))
 
     @traced("search.find_actors")

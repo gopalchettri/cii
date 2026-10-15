@@ -147,26 +147,30 @@ def test_an_id_in_the_prose_is_blocked_then_rewritten_once(ident: str) -> None:
     assert [task.value for task, _ in chat.calls].count("rewrite_scenario") == 1
 
 
-def test_a_marker_without_evidence_is_blocked_and_a_story_citing_nothing_is_never_finished() -> None:
-    """G229 (owner 2026-10-13): with external intelligence on, a story citing no entry is never finished
-    (before, one with no evidence passed as "inferred")."""
+def test_a_marker_without_evidence_is_blocked_and_citing_nothing_is_only_a_warning() -> None:
+    """A marker naming no entry still blocks. G250 (owner 2026-10-15): a story citing none of its entries is
+    no longer blocked; it is kept with its closest source (scenario_record) and the finding is a warning."""
     assert _blockers(_with_statement(STORY_MARKED.replace("[1]", "[2]")), _story_brief(TECHNIQUE)) == {
-        StoryFindingCode.UNKNOWN_MARKER,
-        FindingCode.NO_EVIDENCE_CITED,
+        StoryFindingCode.UNKNOWN_MARKER
     }
     plain = _story_brief()
     assert plain.evidence_mode == EvidenceMode.INFERRED
     assert StoryFindingCode.UNKNOWN_MARKER in _blockers(_DRAFT, plain)
-    assert _blockers(_with_statement(STORY_PLAIN), plain) == {FindingCode.NO_EVIDENCE_CITED}
+    assert _blockers(_with_statement(STORY_PLAIN), plain) == set()
+
+    def uncited(brief: Any) -> list[FindingSeverity]:
+        findings, _ = check_exact_rules(_with_statement(STORY_PLAIN), brief, _LIBRARY_ATTACKERS)
+        return [f.severity for f in findings if f.code == FindingCode.NO_EVIDENCE_CITED]
+
+    assert uncited(_story_brief(TECHNIQUE)) == [FindingSeverity.WARNING]  # a source it could have cited
+    assert uncited(plain) == []  # G254: no source passed the check: nothing to cite, its nearest is shown
 
 
 def test_a_named_real_world_actor_needs_its_marker_in_the_same_sentence() -> None:
     brief = _story_brief(TECHNIQUE)
     unmarked = STORY_MARKED.replace("Attackers have used", "Sandworm has used").replace(" [1]", "")
-    assert _blockers(_with_statement(unmarked), brief) == {
-        StoryFindingCode.UNMARKED_PRECEDENT,
-        FindingCode.NO_EVIDENCE_CITED,  # G229: citing nothing is never finished
-    }
+    # A real group named without its marker still blocks (citing nothing alone no longer does, G250).
+    assert _blockers(_with_statement(unmarked), brief) == {StoryFindingCode.UNMARKED_PRECEDENT}
     assert _blockers(_with_statement(unmarked.replace("before.", "before [1].")), brief) == set()
 
 

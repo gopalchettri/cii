@@ -49,7 +49,6 @@ class ErrorCode(StrEnum):
     GENERATION_FAILED = "generation_failed"
     INVALID_PLAN = "invalid_plan"
     CONTROL_LIBRARY_EMPTY = "control_library_empty"
-    NO_COMPATIBLE_CONTROL = "no_compatible_control"  # spec v4.0 §7.5.2: the pool is never widened
     # An AI answer no retry can fix (wrong-size or non-finite vectors, rerank scores outside 0-1): the model
     # profile or the provider's settings are wrong; the operator fixes them (G112).
     AI_ANSWER_UNUSABLE = "ai_answer_unusable"
@@ -88,7 +87,6 @@ class ErrorMessage(StrEnum):
     AI_BUSY = "Every AI slot stayed busy for {seconds} s. Try again shortly."
     # The evidence reranker's queue, not the AI slots (G218): the threat goes without evidence.
     RERANK_BUSY = "The evidence reranker stayed busy for {seconds} s: this threat goes without evidence."
-    AI_DEADLINE_PASSED = "The request's time for AI calls ran out. Try again shortly."
     MODEL_PROFILE_MISSING = "No profile for AI model '{model}': add it to app/ai/profiles.py or fix .env."
     EMBEDDING_SIZE_MISMATCH = (
         "Embedding model '{model}' returned {received} numbers per text, not {expected}."
@@ -148,10 +146,6 @@ class ErrorMessage(StrEnum):
     REGENERATE_BLOCKED = (
         "The new version still broke a fixed rule after its rewrite ({codes}): it is kept for audit only, "
         "and this version stays current."
-    )
-    NO_COMPATIBLE_CONTROL = (
-        "No active control fits this scenario's asset and systems (asset types {types}); none of another "
-        "type is used in its place."
     )
     UNEXPECTED = "Unexpected error. Quote the X-Request-Id header when reporting it."
     # A background job has no request id: its log lines carry the run's id (record_id).

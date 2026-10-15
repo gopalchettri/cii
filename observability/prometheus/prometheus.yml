@@ -1,6 +1,7 @@
 # Prometheus in UAT / production (OpenShift). The laptop uses prometheus.local.yml: same rules, same paths.
 #
-# Every pod in this namespace that carries the annotations below is scraped, one target per pod:
+# Every pod in the app's two projects (ai-threatgen, ai-remediation) that carries the annotations below is
+# scraped, one target per pod:
 #   prometheus.io/scrape: "true"
 #   prometheus.io/port:   "<a containerPort the pod declares>"   (api 8000, worker 9100, flower 5555 …)
 #   prometheus.io/path:   "/metrics"                               (flower: /flower/metrics)
@@ -24,8 +25,8 @@ scrape_configs:
   - job_name: pods
     kubernetes_sd_configs:
       - role: pod
-        namespaces:
-          own_namespace: true # the namespaced Role allows nothing more
+        namespaces: # the app's two projects; a namespaced Role in each allows nothing more
+          names: [ai-threatgen, ai-remediation]
     relabel_configs:
       - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
         regex: "true"

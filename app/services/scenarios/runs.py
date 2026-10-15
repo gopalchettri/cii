@@ -31,6 +31,7 @@ from app.models.api_clients import Principal
 from app.models.asset_context import FrozenContext
 from app.models.scenarios import SessionStatus, StartRunRequest, running_action
 from app.services.audit import audit_target, caller_actor, record_audit
+from app.services.external_intelligence.data_check import refuse_without_intel_data
 from app.services.scenarios.context import freeze_context
 from app.worker.celery_app import send_job
 
@@ -65,6 +66,7 @@ class RunService:
         Idempotency-Key)."""
         if idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
             return replayed, False
+        refuse_without_intel_data()  # on but nothing imported: refused now, never a run that can only fail
         rows = self._asset_contexts.read(
             principal.entity_id,
             request.asset_id,

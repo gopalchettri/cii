@@ -6,10 +6,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from typing import Any
 
 import pytest
 
-from app.ai.common import ai_deadline
 from app.core.constants import EvidenceSearchFailure, RerankGateLimits
 from app.core.exceptions import LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
@@ -88,8 +88,8 @@ def test_a_failing_rerank_releases_its_place() -> None:
         pass
 
 
-def test_a_wait_for_the_gate_ends_with_the_callers_deadline_as_unavailable() -> None:
-    gate = RerankGate(1, wait_seconds=30)
+def test_a_wait_for_the_gate_ends_at_its_limit_as_unavailable() -> None:
+    gate = RerankGate(1, wait_seconds=0.2)
     held, release = threading.Event(), threading.Event()
 
     def hold() -> None:
@@ -101,7 +101,7 @@ def test_a_wait_for_the_gate_ends_with_the_callers_deadline_as_unavailable() -> 
     holder.start()
     assert held.wait(5)
     started = time.monotonic()
-    with ai_deadline(time.monotonic() + 0.2), pytest.raises(Unavailable), gate.hold_place():
+    with pytest.raises(Unavailable), gate.hold_place():
         pass
     assert time.monotonic() - started < 5
     release.set()
@@ -120,9 +120,40 @@ class OneAtATimeRerank(CountingRerank):
             return super().score_relevance(query, documents)
 
 
-def _failures(gate: RerankGate) -> list[EvidenceSearchFailure]:
+class GiveUpCountingGate(RerankGate):
+    """Counts the waits that gave up: a test's model keeps its places until they have (no clock race)."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.gave_up = threading.Semaphore(0)
+
+    def _wait_for_place(self) -> None:
+        try:
+            super()._wait_for_place()
+        except Unavailable:
+            self.gave_up.release()
+            raise
+
+
+class BusyUntilGivenUp(OneAtATimeRerank):
+    """The model's first answer comes only once `expected` waiters have given up: the places stay taken
+    however late a loaded machine starts a thread (a fixed 0.2 s answer let the last thread find one free)."""
+
+    def __init__(self, gate: GiveUpCountingGate, expected: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.gate, self.expected = gate, expected
+
+    def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+        with self.turn:
+            while self.expected:
+                assert self.gate.gave_up.acquire(timeout=10), "a waiter never gave up"
+                self.expected -= 1
+            return CountingRerank.score_relevance(self, query, documents)
+
+
+def _failures(gate: GiveUpCountingGate, giving_up: int = 0) -> list[EvidenceSearchFailure]:
     """Run 0a84b002's next set in small: 6 threats at once, a model answering one at a time."""
-    finder = _finder(OneAtATimeRerank(hold_seconds=0.2), gate)
+    finder = _finder(BusyUntilGivenUp(gate, giving_up, hold_seconds=0.02), gate)
     results, _ = finder.find_evidence([request_of(f"Threat: ransomware {n}") for n in range(6)], stale=False)
     return [result.search.failure for result in results if result.search.failure is not None]
 
@@ -130,8 +161,10 @@ def _failures(gate: RerankGate) -> list[EvidenceSearchFailure]:
 def test_the_laptop_model_is_waited_for_so_every_threat_of_a_set_gets_its_evidence() -> None:
     """G218: 4 places and a fixed wait shorter than the queue left 2 threats of each 6 without evidence while
     the model was still answering (live: a 60 s wait, 106 s for the first answer); the laptop's gate waits."""
-    assert _failures(RerankGate(4, wait_seconds=0.05)) == [EvidenceSearchFailure.UNAVAILABLE] * 2
-    assert _failures(rerank_gate_for("")) == []
+    fixed = GiveUpCountingGate(4, wait_seconds=0.05)
+    assert _failures(fixed, giving_up=2) == [EvidenceSearchFailure.UNAVAILABLE] * 2
+    laptop = GiveUpCountingGate(RerankGateLimits.LOCAL_RERANKS_AT_ONCE, wait_seconds=None)
+    assert rerank_gate_for("")._wait_seconds is None and _failures(laptop) == []
 
 
 def _hold(gate: RerankGate) -> tuple[threading.Thread, threading.Event]:
@@ -172,21 +205,6 @@ def test_a_cancelled_job_stops_waiting_for_the_gate_within_one_check() -> None:
     holder.join()
 
 
-def test_the_callers_deadline_still_ends_a_laptop_gate_wait_as_unavailable() -> None:
-    gate = rerank_gate_for("")
-    holder, release = _hold(gate)
-    started = time.monotonic()
-    with (
-        ai_deadline(time.monotonic() + 0.2),
-        pytest.raises(Unavailable, match="evidence reranker"),
-        gate.hold_place(),
-    ):
-        pass
-    assert time.monotonic() - started < 1
-    release.set()
-    holder.join()
-
-
 def test_the_proxy_gate_fails_fast_and_the_laptop_gate_has_one_place_and_no_fixed_wait() -> None:
     local, remote = rerank_gate_for(""), rerank_gate_for("http://proxy.invalid")
     assert local._wait_seconds is None and remote._wait_seconds == RerankGateLimits.GATE_WAIT_SECONDS
@@ -194,5 +212,4 @@ def test_the_proxy_gate_fails_fast_and_the_laptop_gate_has_one_place_and_no_fixe
         with ExitStack() as stack:
             for _ in range(places):
                 stack.enter_context(gate.hold_place())
-            with ai_deadline(time.monotonic() + 0.05), pytest.raises(Unavailable), gate.hold_place():
-                pass
+            assert not gate._places.acquire(timeout=0)  # noqa: SLF001 — every place is taken

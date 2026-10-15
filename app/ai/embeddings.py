@@ -18,7 +18,7 @@ from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
     build_api_key_header,
-    call_timeout,
+    bypass_proxy_for_ai,
     call_with_retries,
     count_and_convert_ai_errors,
 )
@@ -191,7 +191,7 @@ class _EmbeddingProvider:
             api_key=self._api_key,
             # ponytail: no `dimensions` sent — each model answers at its native size (as v1 did); the
             # profile's size is checked instead.
-            timeout=call_timeout(self._profile.timeout_seconds),
+            timeout=self._profile.timeout_seconds,
             **self._key_header,
         )
 
@@ -247,8 +247,8 @@ def _embed_batches_in_parallel(
         return
     pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="embed")
     try:
-        # Each request in a copy of the caller's context: its log fields (the run) and its AI deadline
-        # (ai_deadline) reach the pool's threads too.
+        # Each request in a copy of the caller's context: its log fields (the run) and its job's lease signal
+        # reach the pool's threads too.
         sent = {pool.submit(contextvars.copy_context().run, request, batch): batch for batch in batches}
         failure: BaseException | None = None
         for answer in as_completed(sent):
@@ -269,6 +269,7 @@ def _embed_batches_in_parallel(
 @singleton
 def get_embedding_model() -> EmbeddingModel:
     settings = get_settings()
+    bypass_proxy_for_ai(settings)
     library = LibraryVectors(get_mongodb()[Collection.EMBEDDINGS])
     queries = QueryVectors(get_mongodb()[Collection.QUERY_VECTORS])
     return EmbeddingModel(

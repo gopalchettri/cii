@@ -83,13 +83,16 @@ def test_every_finding_code_has_a_severity_and_only_exact_faults_block() -> None
     blockers = {code for code, severity in FINDING_SEVERITIES.items() if severity == FindingSeverity.BLOCKER}
     assert blockers == {FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID} | FINAL_FINDINGS
     assert {
-        FindingCode.NO_EVIDENCE_CITED, FindingCode.EVIDENCE_LINK_MISSING, FindingCode.CITATION_UNSUPPORTED,
+        FindingCode.EVIDENCE_LINK_MISSING, FindingCode.CITATION_UNSUPPORTED,
         FindingCode.ANATOMY_MISSING, FindingCode.TARGET_NOT_NAMED, FindingCode.MECHANISM_NOT_CONCRETE,
         FindingCode.VAGUE_PHRASE, FindingCode.UNSUPPORTED_WEAKNESS, FindingCode.SYSTEM_LINK_CLAIMED,
         FindingCode.NEAR_DUPLICATE, FindingCode.COUNTRY_CLAIM_UNSUPPORTED,
     } == FINAL_FINDINGS  # fmt: skip
+    # G250: citing nothing is a warning, never final, and never asks for the rewrite (no AI call added)
+    assert FINDING_SEVERITIES[FindingCode.NO_EVIDENCE_CITED] == FindingSeverity.WARNING
     assert (FINAL_FINDINGS - {FindingCode.SYSTEM_LINK_CLAIMED}) | {
-        FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY
+        FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY,
+        FindingCode.NO_EVIDENCE_CITED,
     } == NO_REWRITE_FINDINGS
 
 

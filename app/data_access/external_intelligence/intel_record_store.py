@@ -14,7 +14,14 @@ from typing import Any
 from pymongo import ASCENDING, UpdateMany, UpdateOne
 from pymongo.database import Database
 
-from app.core.constants import Collection, IntelLimits, IntelOperationsLimits, IntelSource, IntelState
+from app.core.constants import (
+    Collection,
+    IntelKind,
+    IntelLimits,
+    IntelOperationsLimits,
+    IntelSource,
+    IntelState,
+)
 from app.core.database import expire_documents_after
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord, SaveCounts
 
@@ -82,10 +89,13 @@ class IntelRecordStore:
             query, {"$set": {"current": False, "retired_at": retired_at}}
         ).modified_count
 
-    def stream_current_records(self, sources: Sequence[IntelSource]) -> Iterator[Doc]:
-        """Every valid current record of `sources`, streamed in batches: a snapshot build never holds the
-        collection twice."""
-        cursor = self._records.find(self._current(sources), _STORED_ONLY)
+    def stream_current_records(
+        self, sources: Sequence[IntelSource], kind: IntelKind | None = None
+    ) -> Iterator[Doc]:
+        """Every valid current record of `sources` (only those of `kind` when given: planning reads just the
+        techniques, G238), streamed in batches: a snapshot build never holds the collection twice."""
+        query = self._current(sources) | ({"kind": kind} if kind else {})
+        cursor = self._records.find(query, _STORED_ONLY)
         yield from cursor.batch_size(IntelLimits.BATCH_SIZE)
 
     def count_current_records(self, sources: Sequence[IntelSource]) -> int:

@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     Collection,
     ControlMatch,
+    ControlMessage,
     Controls,
     ErrorCode,
     RunKind,
@@ -257,16 +258,22 @@ def test_an_it_and_an_ot_twin_are_one_control_and_the_higher_score_stays() -> No
     assert [item.control_id for item in mapping.items] == [7]
 
 
-def test_an_empty_library_and_a_library_with_nothing_compatible_are_told_apart() -> None:
-    """T-CTL-08/09 (S32): control_library_empty only when the library is empty; otherwise
-    no_compatible_control, never a control of another type in its place."""
+def test_an_empty_library_fails_and_no_control_of_the_type_keeps_the_nearest_of_another() -> None:
+    """T-CTL-08/09, owner 2026-10-15 ("provide the near possible control"): control_library_empty only when
+    the library is empty; with no control of the scenario's type, the nearest of another type is kept
+    (MIN_CONTROLS at most, never a strong set of another type), and the warning says so."""
     with pytest.raises(ControlsNotMapped) as empty:
         ControlMapper(_ScoresByText({})).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot())  # type: ignore[arg-type]
     assert empty.value.code == ErrorCode.CONTROL_LIBRARY_EMPTY
-    it_only = _snapshot(LibraryControl(1, "C-IT", "IT", None, "Offline backup", None))
-    with pytest.raises(ControlsNotMapped) as none_fits:
-        ControlMapper(_ScoresByText({})).map_controls(_SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
-    assert none_fits.value.code == ErrorCode.NO_COMPATIBLE_CONTROL and "OT" in none_fits.value.message
+    it_only = _snapshot(
+        LibraryControl(1, "C-IT", "IT", None, "Offline backup", None),
+        LibraryControl(2, "C-IT-2", "IT", None, "Email filtering", None),
+    )
+    rerank = _ScoresByText({"Offline backup": 90.0, "Email filtering": 85.0})
+    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
+    assert mapping.items[0].control_id == 1 and len(mapping.items) == get_settings().min_controls
+    expected = ControlMessage.OTHER_TYPE.format(types=r"IT\OT, OT")
+    assert mapping.warning == expected and mapping.left_out == 0
 
 
 def test_a_reranker_outage_is_raised_and_a_long_query_is_cut() -> None:
@@ -446,8 +453,9 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     # G200: the threshold "exact" meant for this mapping is kept with it.
     assert set(mapped["made_with"]) == {
         "rerank_model", "embedding_model", "library", "threshold",
-        "candidates", "min_controls", "max_controls", "query_shortened",
+        "candidates", "min_controls", "max_controls", "query_shortened", "mitigations", "ai_controls",
     }  # fmt: skip
+    assert mapped["made_with"]["mitigations"] == []  # G234: written without intelligence, none guided it
     assert mapped["made_with"]["threshold"] == 60.0 and mapped["query"]
     assert _run_record(record_id)["counts"]["controls_waiting"] == 0
     assert _run_record(record_id)["timings"]["controls_s"] >= 0.04  # the two mappings, added up
@@ -456,11 +464,11 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     assert _deliver(record_id, "task-2") == 0
 
 
-def test_an_outage_gives_the_scenario_back_and_no_compatible_control_fails_the_scenario_not_the_job(
+def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps_the_nearest(
     mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """T-CTL-07/09 (S34): an outage queues the scenario again and is raised (the message retries); a scenario
-    with no compatible control has its controls failed with that code, and the job goes on to the next."""
+    with no control of its type gets the nearest of another type, flagged (owner 2026-10-15), never none."""
     record_id = mapping_run["record_id"]
 
     class _Down(_ScoresByText):
@@ -482,9 +490,11 @@ def test_an_outage_gives_the_scenario_back_and_no_compatible_control_fails_the_s
     )
     monkeypatch.setattr(controls_job, "get_library_search", lambda: it_only)
     # The message's retry keeps its task id, so it takes back the run it still holds (review 2026-10-11).
-    assert _deliver(record_id, "task-1") == 0
-    codes = {_controls_of(f"{record_id}-{number}")["error"]["code"] for number in (1, 2)}
-    assert codes == {ErrorCode.NO_COMPATIBLE_CONTROL}
+    assert _deliver(record_id, "task-1") == 2
+    for number in (1, 2):
+        controls = _controls_of(f"{record_id}-{number}")
+        assert (controls["status"], [item["code"] for item in controls["items"]]) == (Status.DONE, ["C-IT"])
+        assert controls["warning"].startswith("No control of asset type(s) ")
 
 
 def test_the_sweep_sends_one_message_per_run_it_requeued(mapping_run: dict[str, Any]) -> None:

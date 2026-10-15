@@ -5,7 +5,9 @@ from app.engine.external_intelligence.story.evidence_story_texts import (
     STORY_PLAN_CHECK_SYSTEM_PROMPT,
     STORY_WRITER_SYSTEM_PROMPT,
 )
+from app.engine.scenarios.writing.evidence_checks import named_by, supports
 from app.engine.scenarios.writing.evidence_citations import renumber_citations
+from app.engine.scenarios.writing.writing_prompts import WRITER_SYSTEM_PROMPT
 
 ENTRIES = [{"ref": "T1078"}, {"ref": "T0839"}, {"ref": "T1566"}]
 
@@ -34,7 +36,10 @@ def test_the_writer_and_the_check_cite_only_what_directly_supports_the_claim() -
     the plan check names the unsupported ones."""
     writer = STORY_WRITER_SYSTEM_PROMPT
     assert "never because it shares a category" in writer
-    assert "it names the group, software, campaign, vendor or product the entry names" in writer
+    # G253 (owner 2026-10-15): a step that IS the entry's technique may carry its marker; a named group only
+    # in the entry's own words
+    assert "either a step that IS the entry's technique (as its title says), adding no detail" in writer
+    assert "in the entry's own words; a sentence that says only" in writer
     assert "which is better than a false citation" in writer
     assert "evidence_links" in writer and "When no entry directly fits" not in writer
     assert "not only a shared category" in STORY_PLAN_CHECK_SYSTEM_PROMPT
@@ -53,3 +58,47 @@ def test_a_dropped_marker_at_the_start_leaves_no_space_and_punctuation_is_kept()
 def test_a_story_citing_nothing_keeps_no_source() -> None:
     written = ("No intelligence here.", "None.")
     assert renumber_citations(*written, ENTRIES) == (*written, [])
+
+
+def test_the_story_writer_has_no_step_rule_and_real_attackers_are_cited_by_name() -> None:
+    """G248 (owner 2026-10-15, "undo the feed-built steps"): with G233's steps, 72% of first cards were set
+    aside (28% before): the writer stretched the real-attack accounts onto its own attack. One feed sentence
+    per card again: no step rule, and a real attacker is a name the citation check reads."""
+    assert "Build the attack's steps" not in STORY_WRITER_SYSTEM_PROMPT
+    assert "Build the attack's steps" not in WRITER_SYSTEM_PROMPT
+    entry = {
+        "facts": [
+            "ALLANITE, a threat group, has used this technique.",
+            "The Anthropic AI-orchestrated Campaign used this technique.",
+        ]
+    }
+    assert {"allanite", "anthropic"} <= named_by(entry)
+    assert supports("ALLANITE has collected credentials this way [1].", entry)
+    assert not supports("Attackers have done this before [1].", entry)
+
+
+def test_a_sentence_saying_how_the_attack_works_is_never_read_as_a_past_event() -> None:
+    """G246 (run 5f2e072a): "Incident" in a system's name and a past participle describing a noun read as "it
+    happened", so how-it-works sentences needed a group's name and their cards were blocked."""
+    entry = {
+        "facts": [
+            "It is used for these attacker goals: impact.",
+            "OnionDuke, a piece of malicious software, has used this technique.",
+        ]
+    }
+    for sentence in (
+        "Simultaneously, they could direct resource exhaustion requests against the Incident Detection & "
+        "Response Platform, depleting server memory and CPU until incident alerts queue and then fail [1].",
+        "The attacker could send a targeted phishing email to an operator [1].",
+        "They could log in with compromised credentials through a remote session [1].",
+        "Compromised credentials would let the attacker open a trusted session [1].",
+        "A tool that can be used to flood the platform could be bought [1].",
+    ):
+        assert supports(sentence, entry), sentence
+    for sentence in (
+        "A similar incident disrupted a regional utility [1].",
+        "The C0027 campaign used similar access techniques [1].",
+        "Attackers previously flooded such platforms [1].",
+    ):
+        assert not supports(sentence, entry), sentence
+    assert supports("OnionDuke has used a Denial of Service module [1].", entry)

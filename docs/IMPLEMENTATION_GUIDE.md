@@ -43,7 +43,7 @@ live. Both code reviews of 2026-10-10 are fixed in code, each fix with a test th
 | 12 | The scenario writer (`docs/BUILD_PLAN.md` S16-S28): `writer_brief`, `writer_prompts` (the owner-approved text, held equal by a test), `cleanup`, `rules`, `plan_check`, `writer` (one rewrite in the same conversation), `scenario_record`; `tsg_write_scenarios` (`worker/tasks/writing.py`: 6 at once, saved one by one, handed on by itself until its set is written, then it stops (§0.2 #23), complete / partial); `blocked` scenarios never served; unique titles by index; `tsg_scenarios_total`; G123-G124 | The intelligence block (Step 15); the S29 owner gate |
 | 13 | Controls (`docs/BUILD_PLAN.md` S30-S34): `ControlMapper` (the scenario AND risk statement; the pool by the asset and the scenario's own systems, never widened; one rerank; ≥ 60 exact, else the nearest with a warning; twins folded), `ControlLeases` (a lease per scenario), `RunCounts` (counts written only when newer), `tsg_map_controls` (sent per written batch), `tsg_retry_controls` (beat, 300 s); the S16-S31 review fixes G128-G136 | The S36 owner gate |
 | 14 | Review (`docs/BUILD_PLAN.md` S37-S42): #4 accept and #5 reject (`ReviewService`: one `update_many` on the expected decision, every id at fault named, a race reported per id, decisions final except `replace_accepted`, accept-all idempotent, `decided_by_client`), #7 next set and #6 regenerate (`RunActions`: one conditional update on the epoch and state; `Regenerator`: version n+1 saved, then n superseded), #27 promote (`LibraryPromotion`: in memory first, only a new name to `tsg_ResolveThreat`, pending), `tsg_decisions_total`; review fixes G137-G148 | — |
-| 16 | Remediation plans (`docs/BUILD_PLAN.md` S44-S56; BLUEPRINT M11 "as built"): the owner-approved prompt (held equal by a test), the frozen snapshot (the register half and the scenario half; one door for free text), `RemediationPlanner` (one AI call, one re-ask, code's control checks, then the scheduler's dates and warnings), `tsg_write_plan`, #11 for a generated or a hand-written scenario (Idempotency-Key, threat identity in memory, a new wording proposed pending, attackers ranked, strict controls), the in-request control top-up (20 s, a lease per scenario), #12-#17, #28, decisions fenced by `decision_seq`, `tsg_plans_total`, the `plan.completed` audit; review fixes G149-G177 | The control cut-off calibration (owner: later) |
+| 16 | Remediation plans (`docs/BUILD_PLAN.md` S44-S56; BLUEPRINT M11 "as built"): the owner-approved prompt (held equal by a test), the frozen snapshot (the register half and the scenario half; one door for free text), `RemediationPlanner` (one AI call, one re-ask, code's control checks, then the scheduler's dates and warnings), `tsg_write_plan`, #11 for a generated or a hand-written scenario (Idempotency-Key, threat identity in memory, a new wording proposed pending, attackers ranked, strict controls), missing controls and a hand-written scenario's attackers found by the plan job, never the request (G262; a lease per scenario), #12-#17, #28, decisions fenced by `decision_seq`, `tsg_plans_total`, the `plan.completed` audit; review fixes G149-G177 | The control cut-off calibration (owner: later) |
 | 18 | Prometheus, Alertmanager, Loki, Alloy, Grafana, Flower, redis-exporter, kube-state-metrics; 20 alerts (with `AiSlotsSaturated`); laptop `run.ps1` / `stop.ps1`; Grafana's settings from `.env` / `.env.uat` (§0.1 #6) | The planned alert `IntelStale` (Step 15) |
 
 Steps 15–17 and 19–21 are not started.
@@ -452,7 +452,7 @@ have runs of spaces collapsed to one.
 
 **Lists** use `limit` (default 50, max 500) and `offset`, and return `{items, total}`; #21 (API clients) is the
 exception: no paging, it returns every client. Callers should time out after
-30 s; only the top-up in #11 and #14 waits on AI, for at most 20 s.
+30 s; no endpoint waits on AI (G262: a plan request's AI steps are its plan job's).
 
 | # | Method · path | Auth | Request → success | Errors |
 |---|---|---|---|---|
@@ -461,16 +461,16 @@ exception: no paging, it returns every client. Callers should time out after
 | 4 | `POST …/{id}/accept` | B | `{scenario_ids:[1..50] \| "all", replace_accepted: false}` → 200 `{accepted, replaced, skipped[{scenario_id, reason}], controls_pending}` | §7.5 |
 | 5 | `POST …/{id}/scenarios/reject` | B | `{scenario_ids:[1..50]}` (ids only, no `"all"`) → 200 `{rejected, skipped[{scenario_id, reason}]}` | §7.5 |
 | 6 · 7 | `POST …/regenerate/scenarios` · `…/scenarios/next-set` | B | `{scenario_ids:[1..50]}` · `{}` → 202 `{epoch}` | §7.6 |
-| 8 | `GET …/{id}/events` and `/v1/remediation/{id}/events` | B | SSE `session.updated` / `remediation.updated` | 401/403/404/503, before the stream starts |
+| 8 | `GET …/{id}/events` and `/v1/sessions/{id}/scenarios/{sid}/treatment-plan/events` | B | SSE `session.updated` / `remediation.updated` | 401/403/404/503, before the stream starts |
 | 9 | `GET /v1/entities/{entity_id}/scenarios?decision` | B | `{items, total}` | 403 if the path entity ≠ the header |
 | 27 | `POST …/scenarios/{sid}/promote-to-library` | B | `{}` → 200 `{scenario_id, results[{threat, threat_type, threat_type_id, threat_catalogue_id, outcome: inserted \| existing \| curator_rejected}]}` | §7.7 |
 | 29 | `GET /v1/jobs` | B | → 200 `{jobs[{kind (threats \| scenarios \| controls \| remediation), session_id, remediation_id, asset_id, asset_name, status, queued_at, created_at, attempts, user_id, progress}], total}`: the caller's entity only, oldest first (G214) | 401 |
 | 30 · 31 | `POST /v1/sessions/{id}/cancel` · `DELETE /v1/sessions/{id}` | B | → 200 run status (cancelled) · 200 `{session_id, scenarios, remediation_plans}` | 403, 404, 409 nothing_to_cancel · cancel_first |
-| 32 | `POST /v1/remediation/{id}/cancel` | B | → 200 `{remediation_id, status: cancelled}` | 403, 404, 409 nothing_to_cancel |
-| 11 | `POST /v1/remediation` | B (+ `Idempotency-Key`, required for manual) | `{scenario_id, …register}` or `{manual_scenario, …register}` → 202 `{remediation_id, session_id, scenario_id, version, status}` (200 on replay) | §7.8; 422 if a manual request has no `Idempotency-Key` |
-| 12 · 13 | `POST /v1/remediation/{id}/accept` · `/reject` | B | `{version?, comment? ≤ 2,000}` → 200 `RemediationStatus` | §7.9 |
-| 14 | `POST /v1/remediation/{id}/regenerate` | B | `{}` (any field → 422) → 202 `{version}` | §7.9 |
-| 15 · 16 · 17 | `GET /v1/remediation/{id}/status` · `/result?include_history` · `GET /v1/remediation?session_id&scenario_id&status&decision&risk_level` | B | `RemediationStatus` · `RemediationResult` · `{items:[RemediationSummary], total}` | 403, 404 (#15, #16) · 422 (#17) |
+| 32 | `POST /v1/sessions/{id}/scenarios/{sid}/treatment-plan/cancel` | B | → 200 `{remediation_id, status: cancelled}` | 403, 404, 409 nothing_to_cancel |
+| 11 | `POST /v1/remediation` | B (+ `Idempotency-Key`, required for manual) | v1's one request (G258): `{is_manual: false, session_id, scenario_id, …register}` or `{is_manual: true, manual_scenario{…, entity_id, threat_type_id/_name, threat_id/_name, threat_category_id/_name?}, …register}` → 202 `{remediation_id, session_id, scenario_id, version, status, is_manual, replayed}` (200 on replay) | §7.8; 422 if a manual request has no `Idempotency-Key` |
+| 12 · 13 | `POST /v1/sessions/{id}/scenarios/{sid}/treatment-plan/review` | B | `{decision: accepted \| rejected, version?, comment? ≤ 2,000}` → 200 `RemediationStatus` | §7.9 |
+| 14 | `POST /v1/sessions/{id}/scenarios/{sid}/treatment-plan/regenerate` | B | `{}` (any field → 422) → 202 `PlanRequested` | §7.9 |
+| 15 · 16 · 17 | `GET /v1/sessions/{id}/scenarios/{sid}/treatment-plan/status` · `GET /v1/sessions/{id}/scenarios/{sid}/treatment-plan?include_history` · `GET /v1/sessions/{id}/treatment-plans` and `GET /v1/entities/{entity_id}/treatment-plans` `?status&decision&risk_level` | B | `RemediationStatus` · `RemediationResult` · `{items:[RemediationSummary], total}` | 403, 404 (#15, #16) · 422 (#17) |
 | 18 · 19 | `POST /v1/embeddings` · `GET /v1/embeddings/{job_id}` | A | no body (every library at once) → 202 `{job_id, status}` · `{job_id, kind, status, requested_by, created_at, started_at, finished_at, result{counts, newly_embedded}, error}`. **Built 2026-10-11** (G204) | 409 `job_in_progress` (`details.job_id`) · 503 · 404 |
 | 20 · 21 · 22 | `POST /v1/tsg/api-clients` · `GET ?active` · `POST /{client_id}/revoke` | A | `{name (1–100), description?}` → 201 with `api_key` shown **once** (`Cache-Control: no-store`) · 200 `{items, total}` (no paging) · 200 client | 409 name taken, 404 |
 | 23 · 24 | `GET /v1/tsg/library/pending` · `POST /v1/tsg/library/decisions` | A (**Built 2026-10-11**, G204) | `{approve, reject}` (1–100 ids in total, no id in both) → `{results[{catalogue_id, outcome}]}` (outcomes in §4) | 422, 503 |
@@ -573,15 +573,16 @@ Every field is optional. An unknown field → 422. `""` means "not given".
 | `…_justification` | ≤ 1,000 chars |
 | `mitigation_start_date`, `mitigation_end_date` | Sent together; end ≥ start |
 
-**`manual_scenario`** (for #11; `scenario_title` is refused with 422):
+**`manual_scenario`** (for #11 with `is_manual: true`; v1's shape, G258; `scenario_title` is refused with 422):
 
 | Field | Rule |
 |---|---|
 | `asset_id` | — |
-| `supporting_system_ids` | At least 1 |
+| `entity_id` | Required (v1); must equal `X-Entity-Id`, else 403 |
+| `supporting_system_id` | At least 1 (one id or a list) |
 | `sector_id`, `subsector_id`, `service_id` | Optional |
-| `threat_category` | Optional; `{id \| name}` |
-| `threat_type`, `threat` | `{id \| name}` each. If both an id and a name are given, they must agree |
+| `threat_category_id`, `threat_category_name` | Optional |
+| `threat_type_id` / `threat_type_name`, `threat_id` / `threat_name` | Each named by id, name or both; both given must agree |
 | `threat_scenario`, `risk_statement` | 1–4,000 chars each |
 | `mapped_controls` | Optional; ≤ 50 |
 
@@ -758,29 +759,32 @@ Calling again returns `existing`. If SQL Server is down → 503, and Mongo is no
 ```
 manual_scenario ─▶ Idempotency-Key required (missing ─▶ 422; used elsewhere ─▶ 409; same key + plan exists ─▶ 200;
   │   same key, no plan yet ─▶ resume with the same ids — every write below is an idempotent upsert) → asset checks
-  │   → threat resolved in memory (new wording ─▶ tsg_ResolveThreat, pending; wrong type ─▶ 422 type_mismatch)
-  │   → actors (below; no live actor ─▶ 503 actor_library_empty) → mapped_controls strict (unknown ─▶ 422)
-  │   → upsert manual run (done, inactive) + accepted scenario, ids from the key
+  │   → threat resolved in memory (wrong type ─▶ 422 type_mismatch; a new wording: pending.proposal)
+  │   → no live actor in the library ─▶ 503 actor_library_empty → mapped_controls strict (unknown ─▶ 422)
+  │   → upsert manual run (done, inactive) + accepted scenario (actors [], pending.actors), ids from the key
 scenario done + accepted? ─no─▶ 409 scenario_not_accepted · plan exists ─▶ 409 plan_already_exists
-controls not done, or done with no item? ─▶ TOP-UP (below) ─fail─▶ 503 controls_not_ready (Retry-After 30)
-register existing_controls resolved tolerantly (unresolved entries kept as text) → snapshot v1
+empty control library ─▶ 409 control_library_empty (in memory)
+register existing_controls resolved tolerantly (unresolved entries kept as text) → snapshot v1, or PENDING when the
+  scenario's controls are not mapped or its attackers not found (the plan job completes it: below; no AI call here)
 → insert {…, status queued, active true, job{task tsg_write_plan, epoch 1, attempts 0, due_at now, error null}}
   (dup ─▶ 409 plan_already_exists) → send tsg_write_plan → audit (risk owner masked) → 202
 ```
-**Hand-written actors** (BLUEPRINT R2.4). Rank the actors linked to the type against
+**Hand-written actors** (BLUEPRINT R2.4), by the plan job. Rank the actors linked to the type against
 `"<type>: <threat>. <threat_scenario>"`. The first is the acting actor; of the next 3, keep as alternates only those
 with cosine ≥ 0.80 to it. No linked actor → the single closest library actor, flagged `closest_attacker`, with no AI
 call (the person already described the attack).
 
-**Top-up** (BLUEPRINT R1T). The caller is waiting, so there is a hard 20 s deadline and no retry.
-- Trigger: the scenario's controls are not `done`, or `done` with no item.
-- Claim with a 120 s lease (`Controls.LEASE_SECONDS`) and a unique `controls.task_id = "<request_id>:<uuid4 hex>"`. A worker holding a live lease → 503 at once.
-- Map with `ControlMapper.map_controls(…, deadline_seconds=20)`: wait at most 10 s for an AI slot; the embedding and rerank
-  calls each get the time left as their timeout and **no** retries.
-- On a cold API pod the first top-up also builds the control index from the vector cache; that build counts against
-  the same 20 s.
-- On failure write the controls back: generated → `queued` (the worker retries it), hand-written → `failed` (never
-  mapped in the background).
+**The plan job completes a pending input** (BLUEPRINT R1T, G262; `app/worker/plan_inputs.py`). With many users at
+once an AI step inside the request answered 503, so the request makes none; the plan job does, then plans:
+- A hand-written scenario: its attackers (above), then its new wording proposed (`tsg_ResolveThreat`, pending; a new
+  type linked to those attackers), audited as the person who asked; saved with `pending` removed in one write.
+- Controls not mapped (or every one retired since): claim with a 120 s lease (`Controls.LEASE_SECONDS`) and
+  `controls.task_id = "<job task>:plan"`; map with `ControlMapper.map_controls` (a worker waits up to 300 s for an AI
+  slot); save fenced. Held by the controls job now → wait for it (every `Controls.PLAN_WAIT_POLL_SECONDS`, at most the
+  lease) and use its result. An outage frees the controls (generated → `queued`, hand-written → `failed`) and the job
+  retries after its back-off.
+- No control of the scenario's asset type: the nearest of another type, flagged (owner 2026-10-15).
+- The full snapshot is saved on the version (fenced), then the plan is written.
 
 **Snapshot.** Frozen per version, built only from data already loaded (no SQL). Fixed key order (BLUEPRINT R4):
 ```
@@ -979,7 +983,7 @@ the preferred-domain order of controls (R-9: any error → no preference). See �
 
 | Topic | Rule |
 |---|---|
-| Keep | One rerank call scores each shortlist text from 0 to 100. (1) the `CONTROL_CANDIDATES` (40) closest library controls fitting the asset type are found; (2) the reranker scores each 0-100; (3) every one at or above `CONTROL_SIMILARITY_THRESHOLD` (`.env`; 50 = the owner's 0.50) is kept as strong; (4) never more than `MAX_CONTROLS` (10, the rest counted as `left_out_over_max`); (5) none reaching it: the nearest are kept as fallback up to `MIN_CONTROLS` (1). Never zero (G227); only a library with no control of the asset's type at all gives `no_compatible_control`; each with its tier and rationale (G225, G227) |
+| Keep | One rerank call scores each shortlist text from 0 to 100. (1) the `CONTROL_CANDIDATES` (set in the env file, required, G249) closest library controls fitting the asset type are found; (2) the reranker scores each 0-100; (3) every one at or above `CONTROL_SIMILARITY_THRESHOLD` (`.env`; 50 = the owner's 0.50) is kept as strong; (4) never more than `MAX_CONTROLS` (10, the rest counted as `left_out_over_max`); (5) none reaching it: the nearest are kept as fallback up to `MIN_CONTROLS` (1). Never zero (G227); only a library with no control of the asset's type at all gives `no_compatible_control`; each with its tier and rationale (G225, G227) |
 | Order | IT/OT-compatible first, then score (high to low), then the 3 domains nearest the query, then id. Ranks are 1..n |
 | IT/OT pool | Match the category code of the scenario's own place (its systems; the asset's when it is on the asset itself or no system code is recorded; G211) to the controls' `AssetType` values (§0.1 #7). `IT\OT` means both (G211, owner 2026-10-12; `IT-OT` is not a value), so such a control passes when `IT` or `OT` matched; threats use the same values (`Threat_Catalogue.AssetType`). If any category has no match, apply no filter. Port v1 `_resolve_control_labels` |
 | Fallback and checks | An empty pool or shortlist → search the whole library. An empty library → `control_library_empty`. Fold twins by id, then by text. An unknown id or a gap in the ranks fails the attempt |
@@ -1088,7 +1092,7 @@ Critical path: A1 → A3 → A4, **40 days**.
 | Input and context | Data blocks: a landscape ≤ 30,000 chars, ≤ 5 intel items, 4 techniques | Bounded, factual input | Aliases (`SYS#`, `R#`, `THR#`), never database ids. Never the risk owner. Never more than 60,000 chars |
 | Prompt | Planner prompts from v1 `app/pipeline/prompts.py` (builders in the table below); the writer and plan check from the approved `docs/SCENARIO_PROMPTS_DRAFT.md`. Never from `prompts_05_Oct_2026.py`, `prompts_reference.py`, `prompts_5.py` or `prompts_v1.py` | Parity with v1 | `PROMPT_VERSION = "1.0"` never changes. `PLANNER_PROMPT_VERSION` (v1 today: `"planner-2026-10-07.5"`) is bumped by hand whenever a planner prompt changes. Fixed instructions go first so the provider's cache can reuse them |
 | Output and validation | Strict JSON, parsed by pydantic; code re-checks every rule | AI never decides a rule | A `validate()` per task, plus one corrective re-ask |
-| Retry and timeout | The profile's timeout (90 or 120 s); 3 retries inside the call; then job back-off | Bounded calls, within quota | Chat, embedding and rerank retries all come from `call_with_retries` (0.5, 1, 2 s), so a busy provider gets 4 requests in all, and a call that timed out is not retried in the call (owner 2026-10-10): the fallback model answers, then the job's back-off; litellm's own retries are off (`num_retries=0`, `litellm.DEFAULT_MAX_RETRIES = 0`, set in `app/ai/__init__.py`), and its model price list is read from the package, never fetched (`LITELLM_LOCAL_MODEL_COST_MAP`). `AiSlots` (a Redis sorted set + Lua) allows `CII_MAX_CONCURRENT_AI_CALLS` calls at once across all pods (16; 0 = no limit). Wait ≤ 30 s in the API (≤ 10 s in a top-up) or 300 s in a worker, then raise `Unavailable(ai_busy)` |
+| Retry and timeout | The profile's timeout (90 or 120 s); 3 retries inside the call; then job back-off | Bounded calls, within quota | Chat, embedding and rerank retries all come from `call_with_retries` (0.5, 1, 2 s), so a busy provider gets 4 requests in all, and a call that timed out is not retried in the call (owner 2026-10-10): the fallback model answers, then the job's back-off; litellm's own retries are off (`num_retries=0`, `litellm.DEFAULT_MAX_RETRIES = 0`, set in `app/ai/__init__.py`), and its model price list is read from the package, never fetched (`LITELLM_LOCAL_MODEL_COST_MAP`). `AiSlots` (a Redis sorted set + Lua) allows `CII_MAX_CONCURRENT_AI_CALLS` calls at once across all pods (16; 0 = no limit). Wait ≤ 30 s in the API or 300 s in a worker (a plan request makes no AI call, G262), then raise `Unavailable(ai_busy)` |
 | Fallback | A fallback chat model with its own profile, then the task's rule below | An outage loses no work | Every chat call is recorded in `tsg_ai_calls` (14 days); every call (chat, embedding, rerank) is counted in metrics |
 
 | Model | Dev | UAT |
@@ -1192,7 +1196,7 @@ override `.env`: `CII_LOG_DIR` set empty in the shell still leaves the `logs` li
 |---|---|
 | `Generation` | `WRITER_BATCH` 6 (paths written at once, one wave of a set) · `MAX_PATH_ATTEMPTS` 5 · `MAX_SUPPORTING_SYSTEMS` 0 (no limit); the scenario count is the setting `TOTAL_SCENARIO_COUNT` (0 = every valid path, G106), and the set sizes are the settings `INITIAL_SET_SIZE` and `NEXT_SET_SIZE` (6 each, §0.2 #23) |
 | `Search` | `RRF_K` 60 · `BM25_K1` 1.5 · `BM25_B` 0.75 · `VECTOR_FLOOR` 0.60 · `THREATS_PER_QUERY` 10 · `QUERY_MAX_CHARS` 1,500 |
-| `Controls` · `Actors` | `CONTROL_CANDIDATES` 40 (setting, G227) · actors: `MIN` 1 · `MAX` 4 (1 acting + up to 3 alternates) |
+| `Controls` · `Actors` | `CONTROL_CANDIDATES` from the env file, required (G227, G249) · actors: `MIN` 1 · `MAX` 4 (1 acting + up to 3 alternates) |
 | `Lease` | `SECONDS` 120 · `RENEW_EVERY_SECONDS` 30 · `REAPER_EVERY_SECONDS` 60 · `MAX_ATTEMPTS` 5 · `REQUEUE_QUEUED_AFTER_SECONDS` 120 · `RESEND_ANYWAY_AFTER_SECONDS` 900 · `MAX_JOB_SECONDS` 3,600 · `RETRY_DELAYS_SECONDS` (15, 30, 60, 120) · `CLOCK_SKEW_SECONDS` 5 |
 | `AiLimits` · `CHAT_TEMPERATURES` | `RETRIES` 3 · `RETRY_FIRST_WAIT_SECONDS` 0.5 · `CALL_RECORD_DAYS` 14 · the per-task temperature table (§9) |
 | `Timeouts` | `MONGO_MS` 5,000 · `MONGO_SOCKET_MS` 30,000 · `SQL_CONNECT_SECONDS` 5 · `SQL_QUERY_SECONDS` 30 · `REDIS_SECONDS` 5 · `REDIS_HEALTH_CHECK_SECONDS` 30 · `READY_CHECK_SECONDS` 5 · `READY_CHECK_REUSE_SECONDS` 2 · `RECORD_WRITE_SECONDS` 5 |
@@ -1225,7 +1229,7 @@ override `.env`: `CII_LOG_DIR` set empty in the shell still leaves the `logs` li
 | Conflict · duplicate | A conditional write matched 0 docs; a duplicate key; a reused Idempotency-Key | Stop, or return the original result | no | 409 + `reason`, or 200 |
 | Duplicate job message | The claim matched nothing | Raise Celery's `Ignore`: the message is acknowledged and no job outcome is counted | no | — |
 | Store down | A driver error or timeout | API: 503, and the pod turns unready. Worker: give the job back. SQL: serve the last library copy | worker: 15→120 s, 5 tries | 503 + `Retry-After: 5` |
-| AI busy or down | A litellm error, or the slot wait timed out | In-call retries (none after a timeout), then the fallback model, then job back-off. In the writer it is not a failure scenario (W11) | yes | 503 (top-up only) |
+| AI busy or down | A litellm error, or the slot wait timed out | In-call retries (none after a timeout), then the fallback model, then job back-off. In the writer it is not a failure scenario (W11) | yes | — (no endpoint calls the AI, G262) |
 | Short embedding or rerank answer · wrong vector size · any other AI error | `IncompleteAiAnswer` still after the 3 in-call retries, raised as `Unavailable` (counted `unreadable`) · `EmbeddingSizeMismatch` · e.g. a refused key or a bad request (counted `error`) | Give the job back · fail the job: the profile is wrong · fail the job | yes · no · no | — · `internal_error` · `internal_error` |
 | Bad or truncated AI answer | `validate()`; `finish_reason = length` | Re-ask once or halve the batch, then the task's rule (§9) | once | Note, failure scenario or failed version |
 | Worker crash | The lease expires | The reaper re-queues within 3 min; fenced writes stop the old worker | yes | — |
@@ -1451,8 +1455,8 @@ the category columns. For entity 99, the asset result set is empty. `EXEC tsg_Ge
   counted `error` (built 2026-10-09).
 - **Slots:** `AiSlots` (`ai/slots.py`): a Redis sorted set `tsg:ai_slots` and one Lua script. The cap is
   `CII_MAX_CONCURRENT_AI_CALLS` (0 = no limit: the limiter is skipped); it replaces the planned `AiLimits.SLOTS`. Each
-  slot's TTL is `timeout × (RETRIES + 1) + 30`, so a dead process frees its slot. Wait ≤ 30 s in the API, ≤ 10 s in a
-  top-up, ≤ 300 s in a worker, then `Unavailable(ai_busy)`.
+  slot's TTL is `timeout × (RETRIES + 1) + 30`, so a dead process frees its slot. Wait ≤ 30 s in the API, ≤ 300 s in a
+  worker, then `Unavailable(ai_busy)`.
 - **Slot metric and alert:** the gauge `tsg_ai_slots_in_use`; the alert `AiSlotsSaturated` (slots in use = cap for
   10 min), with its promtool test and its §19 runbook row.
 - **Call records:** `tsg_ai_calls` records chat calls only; add `record_id` and `request_id` from the log context.
@@ -1653,11 +1657,11 @@ With the reranker down, controls wait for the sweep. A mapping that runs longer 
 
 | # | Endpoint | Body / answer | Errors |
 |---|---|---|---|
-| A1 | `GET /v1/tsg/intel/switch` | `{env_enabled, runtime_enabled, effective, changed_at, changed_by}` | 401 |
-| A2 | `PUT /v1/tsg/intel/switch` | `{enabled: bool}` (strict) -> the switch; ON also queues a refresh; audited `external_intelligence.switched` | 401 · 422 |
-| A3 | `GET /v1/tsg/intel/health` | switch, `snapshot_id`, `sources[]`, `stale`, `evidence{rerank_model, threshold, threshold_calibrated, threshold_calibrated_on}` | 401 |
-| A4 | `POST /v1/tsg/intel/refresh` | optional `{source}` -> 202 `{job_id, status}` (admin job kind `intel_refresh`, one at a time) | 401 · 409 `job_in_progress` · 409 while the master switch is off · 422 · 503 |
-| A5 | `GET /v1/tsg/intel/refresh/{job_id}` | the job: `{kind, status, result{source}, error}` | 401 · 404 |
+| A1 | `GET /v1/tsg/intel/switch` (no key) | `{env_enabled, runtime_enabled, effective, changed_at, changed_by}` | — |
+| A2 | `PUT /v1/tsg/intel/switch` (no key) | `{enabled: bool}` (strict) -> the switch; ON also queues a refresh; audited `external_intelligence.switched` | 422 |
+| A3 | `GET /v1/tsg/intel/health` (no key) | switch, `snapshot_id`, `sources[]`, `stale`, `evidence{rerank_model, threshold, threshold_calibrated, threshold_calibrated_on}` | — |
+| A4 | `POST /v1/tsg/intel/refresh` (no key) | optional `{source}` -> 202 `{job_id, status}` (admin job kind `intel_refresh`, one at a time) | 409 `job_in_progress` · 409 while the master switch is off · 422 · 503 |
+| A5 | `GET /v1/tsg/intel/refresh/{job_id}` (no key) | the job: `{kind, status, result{source}, error}` | 404 |
 
 The scenario view gains `evidence_mode`, `evidence[]` (only what the text cites, by `[n]`, no scores) and `evidence_search`.
 
@@ -1695,10 +1699,10 @@ Settings: `EXTERNAL_INTELLIGENCE_ENABLED` (master; default false in code, true o
 - Implement §7.8–§7.9 and the §8 schedule.
 - Port `treatment_prompt` (l. 1328), the redaction rules (`treatment_input.py:46-72`, into `planner.py`) and
   `TreatmentPlanGenerated` (as `PlanDraft`, with `dependencies`). Add `AiTask.REMEDIATION_PLAN` (temperature 0.0).
-- The top-up calls `ControlMapper.map_controls(…, deadline_seconds=20)`: a slot wait of at most 10 s, and a per-call timeout
-  with no retries on the embedding and rerank calls (§7.8).
+- A plan request makes no AI call: the plan job maps missing controls and a hand-written scenario's attackers
+  first (§7.8, G262).
 - Register `tsg_remediations` in `JOB_COLLECTIONS` with `publish_remediation_status`; add the stream
-  `GET /v1/remediation/{id}/events`.
+  `GET /v1/sessions/{id}/scenarios/{sid}/treatment-plan/events`.
 - Count plans in `tsg_plans_total`.
 - Store `requested_by_client` on each plan version and `decided_by_client` on each decision (§0.1 #5).
 
@@ -1710,7 +1714,7 @@ Settings: `EXTERNAL_INTELLIGENCE_ENABLED` (master; default false in code, true o
 **Verify:**
 - T-REM-01..24 pass, including the golden schedule.
 - Accepting v2 sends v1 back to pending. Two rejects at the same moment leave the right `decision`.
-- With the reranker down, a top-up returns 503 within 20 s.
+- With the reranker down, a plan request still answers 202 at once; its plan job retries after its back-off.
 - A plan requested with key A and decided with key B stores A as `requested_by_client` and B as `decided_by_client`.
 
 ### Step 17 — Admin API and library writes
@@ -1834,7 +1838,7 @@ Every module:
 | Jobs | A killed job resumes within 3 min. A duplicate message changes nothing. Every task is both registered and routed |
 | Engine | No pymongo, fastapi or celery imports. Every rule has a test with the fake AI |
 | Scenarios | Every `reason` in §7 has a test. The double-click and kill-worker tests pass |
-| Remediation | The golden schedule passes. At most one version is accepted. A top-up takes ≤ 20 s |
+| Remediation | The golden schedule passes. At most one version is accepted. A plan request answers at once, under any load |
 | Admin | Never two jobs of the same kind at once. Every action is audited |
 
 **Production gate** (BLUEPRINT §28–29)
@@ -1871,7 +1875,7 @@ Writing  p1 "Loss of grid control via VPN" → title_names_supporting_system →
 Controls p1: OT pool → top 40 → rerank 91.4 "Remote access MFA", 77.0, 64.2 | 41.0 → keep 3, match exact
 Review   accept p1 → 200 · next set → 202 epoch 2 → p7 → job stops (had the run failed before p3's retry, the
          next set would be p3 first, then p7)
-Plan     POST /v1/remediation {scenario_id: p1, risk_level "High", window 2026-10-01…12-31} → 202 → AI: 4 actions
+Plan     POST /v1/remediation {is_manual: false, session_id, scenario_id: p1, risk_level "High", window 2026-10-01…12-31} → 202 → AI: 4 actions
          → code drops 1 control outside the scenario's list (warning) → golden schedule: 40 days, ends 2026-11-09
 Result   tsg_sessions done · tsg_scenarios ×7 (p3 reused its id) · tsg_remediations v1 done · audit: run.started, scenario.accepted, plan.*
 ```
@@ -1897,7 +1901,7 @@ ai-remediation (it shares Redis db 0/1 and the "tsg:" prefix) → workers + beat
 | `flower` | Already in the observability Template (`deploy/observability.yaml`): do not deploy it again |
 | Route | The existing host, edge TLS. `/` → api; `/grafana`, `/flower`, `/prometheus`, `/alertmanager`, `/loki` → their Services. HAProxy rate limits |
 | Config · network · storage | `envFrom` ConfigMap + Secret · NetworkPolicy: ingress from the router and the namespace; egress to DNS, SQL Server, MongoDB, Redis and the corporate proxy (the AI gateway and the intel hosts: CISA, OTX, GitHub for ATT&CK and CAPEC) · PodDisruptionBudgets `minAvailable: 1` for `api`, `worker-threats` and `worker-scenarios` · PVCs: Prometheus 10Gi, Loki 10Gi, Grafana 1Gi |
-| Monitoring | Copy every image into the mirror (STEP 0 at the top of `deploy/observability.yaml`); in the git-ignored `.env.uat`, set `GRAFANA_ADMIN_PASSWORD` (16 or more characters; the script refuses less) and the `GF_` lines you want (optional; copy the 12 of `.env.example` to keep the D-10 setup, since a missing line means Grafana's own default, e.g. a login for everything); then run `.\deploy\observability.ps1 -RouteHost <host> -AppImage <registry>/tsg:<version>`. It builds Secret `tsg-monitoring` (the admin password; `REDIS_DB` = the number at the end of `CII_REDIS_CELERY_BROKER_URL`) and Secret `tsg-grafana-settings` (the `GF_` lines; applied empty when there are none) through a temporary file, never on the command line. It waits up to 60 s for the router to admit each Route. Run it again after a Grafana change. `deploy/monitoring.env` is retired |
+| Monitoring | Copy every image into the mirror (STEP 0 at the top of `deploy/observability.yaml`); in the git-ignored `.env.uat`, set `GRAFANA_ADMIN_PASSWORD` (16 or more characters; the script refuses less) and the `GF_` lines you want (optional; copy the 12 of `.env.example` to keep the D-10 setup, since a missing line means Grafana's own default, e.g. a login for everything); then run `.\deploy\observability.ps1` (project `ai-remediation`, as v1; `deploy\deploy-uat.ps1` runs it with the app and applies Flower, `deploy\flower.yaml`). It builds Secret `tsg-monitoring` (the admin password; `REDIS_DB` = the number at the end of `CII_REDIS_CELERY_BROKER_URL`) and Secret `tsg-grafana-settings` (the `GF_` lines; applied empty when there are none) through a temporary file, never on the command line. It waits up to 60 s for the router to admit each Route. Run it again after a Grafana change. `deploy/monitoring.env` is retired |
 
 **Rollout:** rolling update, `maxUnavailable: 0`.
 

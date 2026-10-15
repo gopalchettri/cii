@@ -1,0 +1,8 @@
+# An allow-list: only what the Dockerfile copies reaches the build. Settings files (.env, .env.uat, with their
+# passwords), backups, logs and the virtual environment can never end up in an image.
+*
+!pyproject.toml
+!requirements.txt
+!app/
+**/__pycache__
+**/*.pyc

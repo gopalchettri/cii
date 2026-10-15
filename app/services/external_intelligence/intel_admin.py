@@ -103,7 +103,8 @@ class IntelAdmin:
         """A revoked source approved again (409 while the env master is OFF): its health starts blank, the
         approval is audited and a refresh of that source is queued, so its data comes back from the start.
         `refresh_job_id` is None when a refresh was already queued or running (it, or the next hourly check,
-        picks the source up)."""
+        picks the source up), or while the run-time switch is off (turning it on queues a refresh of every
+        source due, this one included)."""
         if not self._settings.external_intelligence_enabled:
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         self._feeds.approve_source(source)
@@ -120,7 +121,7 @@ class IntelAdmin:
         try:
             return self._refreshes.start(requested_by, source)["job_id"]
         except Conflict:
-            return None  # one is already queued or running: it does the work
+            return None  # one is already queued or running and does the work, or the switch is off
 
     def _evidence_settings(self) -> dict[str, Any]:
         model = self._settings.rerank_model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]

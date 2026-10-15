@@ -62,7 +62,7 @@
 
 <div class="note"><b>How the stream works</b> (<code>app/api/routers/events.py</code>): <code>GET /v1/sessions/{id}/events</code> sends one event name,
   <code>session.updated</code>, carrying the same RunBoard JSON as <code>GET /v1/sessions/{id}</code> (<code>session_status</code> and
-  <code>progress</code>: threats, scenarios, controls, overall, timings, error_message, last_next_set, last_regen, scenario_count); <code>GET /v1/remediation/{id}/events</code> sends
+  <code>progress</code>: threats, scenarios, controls, overall, timings, error_message, last_next_set, last_regen, scenario_count); <code>GET /v1/sessions/{id}/scenarios/{id}/treatment-plan/events</code> sends
   <code>remediation.updated</code> carrying RemediationStatus. Each stream sends the current status at once on connect, then only bodies that changed; it
   re-checks every 30 s while a job is queued or running, and FastAPI writes a <code>: ping</code> comment after 15 s of silence. Publishes are best effort, so
   the backstop poll stays on. <code>EventSource</code> cannot send the auth headers, so the stream is read with <code>fetch()</code>.</div>
@@ -95,7 +95,8 @@
   <h2>Streams</h2>
   <div class="scroll"><table id="streams"><thead><tr><th>Stream</th><th>State</th><th>Events</th><th>Pings</th><th>Last status</th></tr></thead><tbody></tbody></table></div>
   <div class="faint" style="margin-top:6px;font-size:12px">A browser opens at most 6 connections to one origin: the session plus up to 4 plans are streamed, the rest
-    are polled with <code>GET /v1/remediation/{id}/status</code>. New plans are discovered with <code>GET /v1/remediation?session_id=</code> on every poll.</div>
+    are polled with <code>GET /v1/sessions/{id}/scenarios/{id}/treatment-plan/status</code>. New plans are discovered with
+    <code>GET /v1/sessions/{id}/treatment-plans</code> on every poll.</div>
 </div>
 
 <div class="two">
@@ -227,7 +228,7 @@
   // ---------------------------------------------------------------------------------------------
   // streams, polls and the timeline
   // ---------------------------------------------------------------------------------------------
-  var streams = {};      // key -> {kind, id, path, abort, retry, timer, state, events, pings, last, polled}
+  var streams = {};      // key -> {kind, id, plan, path, abort, retry, timer, state, events, pings, last, polled}; a plan's id = its scenario_id
   var frames = [], hits = {}, pollTimer = null, running = false;
   function streamKey(kind, id) { return kind + ":" + id; }
 
@@ -252,7 +253,7 @@
     var s = streams[f.stream], tr = document.createElement("tr");
     tr.dataset.i = i;
     tr.innerHTML = "<td>" + esc(new Date(f.at).toLocaleTimeString()) + '</td><td><span class="src ' + f.source + '">' + f.source + "</span></td><td>" +
-      esc(s.kind === "session" ? "session" : "plan " + short(s.id)) + "<br><code>" + esc(f.event) + "</code></td>" +
+      esc(s.kind === "session" ? "session" : "plan · scenario " + short(s.id)) + "<br><code>" + esc(f.event) + "</code></td>" +
       '<td class="chg">' + (f.changes.length ? f.changes.slice(0, 8).map(function (c) {
         return esc(c[0]) + " <i>" + esc(JSON.stringify(c[1])) + "</i> → " + esc(JSON.stringify(c[2]));
       }).join("<br>") + (f.changes.length > 8 ? "<br>… " + (f.changes.length - 8) + " more" : "")
@@ -283,7 +284,7 @@
       var g = G(l);
       var st = s.kind === "session" ? (l.session_status ? l.session_status + " · threats " + g.threats + " · scenarios " + g.scenarios + " · controls " + g.controls + " · " + g.overall : "")
                                     : (l.latest_status ? "v" + l.latest_version + " " + l.latest_status + " · " + l.decision : "");
-      return "<tr><td>" + esc(s.kind === "session" ? "session " + short(s.id) : "plan " + short(s.id)) + '</td><td><span class="dot ' +
+      return "<tr><td>" + esc(s.kind === "session" ? "session " + short(s.id) : "plan · scenario " + short(s.id)) + '</td><td><span class="dot ' +
              ({ live: "on", connecting: "warn", polling: "warn", error: "err" }[s.state] || "") + '"></span>' + esc(s.state) + "</td><td>" + s.events +
              "</td><td>" + s.pings + "</td><td>" + esc(st) + "</td></tr>";
     }).join("") : '<tr><td colspan="5" class="muted">None.</td></tr>';
@@ -333,28 +334,30 @@
     if (name === "session.updated" || name === "remediation.updated") record(key, "sse", name, payload);
   }
 
-  function addStream(kind, id, stream) {
+  // plan: a plan's address, /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan (null for the session).
+  function addStream(kind, id, stream, plan) {
     var key = streamKey(kind, id);
     if (streams[key]) return;
-    streams[key] = { kind: kind, id: id, abort: null, retry: 0, timer: null, events: 0, pings: 0, last: null, polled: !stream,
+    streams[key] = { kind: kind, id: id, plan: plan || null, abort: null, retry: 0, timer: null, events: 0, pings: 0, last: null, polled: !stream,
                      state: stream ? "connecting" : "polling",
-                     path: kind === "session" ? "/v1/sessions/" + encodeURIComponent(id) + "/events" : "/v1/remediation/" + encodeURIComponent(id) + "/events" };
+                     path: kind === "session" ? "/v1/sessions/" + encodeURIComponent(id) + "/events" : plan + "/events" };
     if (stream) openStream(key); else pollPlan(key);
     renderStreams();
   }
   function discoverPlans() {
-    return getJson("/v1/remediation?limit=500&session_id=" + encodeURIComponent(sid())).then(function (l) {
+    return getJson("/v1/sessions/" + encodeURIComponent(sid()) + "/treatment-plans?limit=500").then(function (l) {
       var open = Object.keys(streams).filter(function (k) { return streams[k].kind === "plan" && !streams[k].polled; }).length;
       (l.items || []).forEach(function (r) {
-        if (streams[streamKey("plan", r.remediation_id)]) return;
-        addStream("plan", r.remediation_id, open < MAX_PLAN_STREAMS);
+        if (streams[streamKey("plan", r.scenario_id)]) return;
+        addStream("plan", r.scenario_id, open < MAX_PLAN_STREAMS,
+                  "/v1/sessions/" + encodeURIComponent(r.session_id) + "/scenarios/" + encodeURIComponent(r.scenario_id) + "/treatment-plan");
         if (open < MAX_PLAN_STREAMS) open++;
       });
     }).catch(function (e) { $("state").textContent = "plan discovery: " + e.message; });
   }
   function pollPlan(key) {
     var s = streams[key];
-    return getJson("/v1/remediation/" + encodeURIComponent(s.id) + "/status").then(function (b) { record(key, "poll", "GET status", b); })
+    return getJson(s.plan + "/status").then(function (b) { record(key, "poll", "GET status", b); })
       .catch(function (e) { s.state = "error"; renderStreams(); $("state").textContent = e.message; });
   }
   // Backstop: a publish is best effort, and a dead worker publishes nothing; the poll is what makes the trace settle.

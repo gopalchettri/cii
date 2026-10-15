@@ -846,24 +846,6 @@ def test_the_local_reranker_scores_one_request_at_a_time() -> None:
     assert most[0] == 1 and scores == [[50.0]] * 4
 
 
-def test_the_local_reranker_drops_a_request_whose_deadline_passed_while_it_waited() -> None:
-    """Review 2026-10-11: a plan request's top-up that already answered 503 never costs a full CPU prediction
-    when its turn at the local model comes."""
-
-    class _Model:
-        predicted = 0
-
-        def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-            _Model.predicted += 1
-            return [0.5] * len(pairs)
-
-    model = ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "", "")
-    model._local_model = _Model()
-    with ai.ai_deadline(time.monotonic() - 1), pytest.raises(Unavailable):
-        model.score_relevance("q", ["a"])
-    assert _Model.predicted == 0
-
-
 def test_a_job_that_lost_its_lease_never_calls_the_ai(monkeypatch: pytest.MonkeyPatch) -> None:
     """G214: a cancelled job's next AI call is refused before it reaches the provider (no cost)."""
     called: list[object] = []

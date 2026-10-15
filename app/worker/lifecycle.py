@@ -18,7 +18,7 @@ from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.logging import configure_logging
 from app.data_access.indexes import ensure_indexes
 from app.worker.celery_app import settings
-from app.worker.external_intelligence.warm_up import warm_up_intelligence
+from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
 from app.worker.jobs import JOB_COLLECTIONS
 
@@ -108,8 +108,10 @@ def start_heartbeat(sender: Any, **_: object) -> None:
 @signals.worker_ready.connect
 def warm_up_external_intelligence(**_: object) -> None:
     """Once the worker is consuming: ask for the intelligence search index in the background, only while the
-    switch is on. Never waits for it and never stops the worker (warm_up_intelligence swallows its faults)."""
+    switch is on, then follow the active snapshot every minute (G242). Never waits for it and never stops the
+    worker (both swallow their faults)."""
     warm_up_intelligence()
+    start_following_active_snapshot()
 
 
 @signals.task_prerun.connect

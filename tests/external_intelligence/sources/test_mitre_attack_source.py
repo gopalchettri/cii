@@ -88,7 +88,7 @@ def test_technique_record_carries_plain_text_and_the_facts() -> None:
     }  # fmt: skip
     # What the reader keeps is pinned with its format: change what it keeps (or how it reads a group's kind),
     # move both, or an unchanged ATT&CK file is never read again with the new reader (G230).
-    assert AttackReading.FORMAT == "5"
+    assert AttackReading.FORMAT == "7"  # G248: how it works no longer kept
 
 
 def test_it_and_ot_tags() -> None:

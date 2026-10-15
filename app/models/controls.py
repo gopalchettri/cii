@@ -58,6 +58,8 @@ class ControlMapping:
     shortfall: str | None = None  # fewer than MIN_CONTROLS kept: fewer compatible controls exist
     left_out: int = 0  # strong controls MAX_CONTROLS did not keep
     query_shortened: tuple[str, ...] = ()  # the query's parts cut to fit QUERY_MAX_CHARS (labels only, G227)
+    mitigations: tuple[str, ...] = ()  # G234: the evidence's mitigations that guided the search
+    ai_controls: bool = True  # G243: False when the card's threat is not about AI (no AI-domain control)
 
 
 @dataclass(frozen=True)
@@ -66,3 +68,4 @@ class ControlQuery:
 
     text: str
     shortened: tuple[str, ...] = ()  # labels such as "scenario", "risk", "system 1450": never their text
+    mitigations: tuple[str, ...] = ()  # G234: the cited evidence's mitigations the query carries

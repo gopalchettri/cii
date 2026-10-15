@@ -41,3 +41,4 @@ class EvidenceResult:
     evidence: tuple[Evidence, ...]  # best first, at most EvidenceLimits.PER_THREAT
     search: EvidenceSearchRecord
     groups: tuple[KnownGroup, ...] = ()  # G230: the real named groups behind it, at most KnownGroups.SHOWN
+    nearest: Evidence | None = None  # G254: none passed: the closest candidate, shown and never cited

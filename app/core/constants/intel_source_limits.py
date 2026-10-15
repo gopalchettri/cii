@@ -55,9 +55,10 @@ class AttackReading:
 
     #: What the reader keeps of a file. A checkpoint made by another format reads the file again (G230: the
     #: groups behind each technique are kept now, 2; a group's kind read from its origin too, 3; the places
-    #: and sectors a group attacked, 4 (G232); what a group IS is never whom it attacked, 5; an unchanged
-    #: file would otherwise never be read again).
-    FORMAT: Final = "5"
+    #: and sectors a group attacked, 4 (G232); what a group IS is never whom it attacked, 5; only a
+    #: description's flagged sentences removed, 6 (G237); how a technique works no longer kept, 7 (G248: the
+    #: owner undid the feed-built steps); an unchanged file would otherwise never be read again).
+    FORMAT: Final = "7"
     REAL_WORLD_USE_LIMIT: Final = 5
     MITIGATIONS_IN_TEXT: Final = 5
     TEXT_LIMIT: Final = 1500  # characters of the search text that the technique's own description may use

@@ -21,6 +21,7 @@ from app.services.external_intelligence.sources.text_guard import (
     SourceTextGuard,
     UnsafeSourceText,
     flat_strings,
+    plain_id,
 )
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
@@ -56,7 +57,7 @@ class NvdItemReader:
             and isinstance(modified, str)
             and _DATE.fullmatch(modified)
         ):
-            plain = self._guard.plain_id(cve_id)
+            plain = plain_id(cve_id)
             return RejectedRecord(
                 IntelSource.NIST_NVD, plain, IntelRejection.NVD_BAD_ITEM, content_hash_of(item)
             )
@@ -98,9 +99,11 @@ class NvdItemReader:
         english = [
             d.get("value") for d in descriptions or [] if isinstance(d, dict) and d.get("lang") == "en"
         ]
-        return self._guard.clean(
-            f"{cve}.{rating} {english[0] if english else ''}", IntelLimits.NVD_SUMMARY_MAX_CHARS
-        )
+        # G237: the description alone is screened by sentence (its own id and rating are never "a clean
+        # sentence" that keeps a poisoned description alive), then the whole once more.
+        limit = IntelLimits.NVD_SUMMARY_MAX_CHARS
+        description = self._guard.clean_sentences(english[0], limit) if english else ""
+        return self._guard.clean(f"{cve}.{rating} {description}", IntelLimits.NVD_SUMMARY_MAX_CHARS)
 
     def _patch_urls(self, references: Any) -> list[str]:
         urls = [

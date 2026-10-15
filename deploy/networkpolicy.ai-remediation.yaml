@@ -1,0 +1,45 @@
+# Network rules for TSG v2's worker pods in project ai-remediation (deploy/deploy.ai-remediation.yaml). They select
+# only pods labelled app.kubernetes.io/part-of: tsg: the monitoring in this project (tsg-observability) and v1's
+# pods are not touched. Self-contained: everything a worker needs, as deploy/networkpolicy.yaml gives ai-threatgen's.
+#
+# Once any rule selects a pod, everything not listed here is dropped: a new outside dependency needs a line here
+# in the same change. scripts/gen_openshift_config.py --gate checks the stores in .env.uat against these addresses.
+
+# In: Prometheus (this project) to the worker metrics. Nothing else calls a worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tsg-app-ingress
+  namespace: ai-remediation
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/part-of: tsg } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { tsg-observability: "true" } } }]
+      ports: [{ port: 9100, protocol: TCP }]
+
+# Out, and nothing else: DNS, the proxy (AI gateway, intelligence feeds), Redis, SQL Server, MongoDB.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tsg-app-egress
+  namespace: ai-remediation
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/part-of: tsg } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: openshift-dns } } }]
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+        - { port: 5353, protocol: UDP }
+        - { port: 5353, protocol: TCP }
+    - to: [{ ipBlock: { cidr: 10.61.192.2/32 } }]
+      ports: [{ port: 8080, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.228.146.4/32 } }]
+      ports: [{ port: 6379, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.228.146.2/32 } }]
+      ports: [{ port: 1444, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.228.146.3/32 } }]
+      ports: [{ port: 27018, protocol: TCP }]

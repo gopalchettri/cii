@@ -17,6 +17,7 @@ from app.engine.remediation.planner import finish
 from app.models.remediation import PlanDraft
 from app.models.remediation_views import RemediationResult
 from app.services.api_clients import get_api_client_service
+from tests.plan_addresses import plan_url
 from tests.test_remediation_planner import _answer, _control, _snapshot
 
 ENTITY = 286  # its own entity: these plans never show in another test's list
@@ -83,8 +84,17 @@ def _plan(*versions: dict[str, Any], **fields: Any) -> str:
 
 
 def _result(client: TestClient, api_key: str, remediation_id: str, **params: Any) -> Any:
-    url = f"/v1/remediation/{remediation_id}/result"
-    return client.get(url, params=params, headers=_identity(api_key))
+    return client.get(plan_url(remediation_id), params=params, headers=_identity(api_key))
+
+
+def _run(session_id: str) -> str:
+    """A run of ENTITY (a run's list checks the run first: 404 unknown, 403 another entity's)."""
+    get_mongodb()[Collection.SESSIONS].replace_one(
+        {"_id": session_id},
+        {"entity_id": ENTITY, "asset_id": 1179, "status": Status.DONE, "updated_at": NOW},
+        upsert=True,
+    )
+    return session_id
 
 
 def test_the_accepted_version_is_shown_else_the_newest_done(client: TestClient, api_key: str) -> None:
@@ -112,7 +122,9 @@ def test_the_history_never_holds_a_snapshot(client: TestClient, api_key: str) ->
     answer = _result(client, api_key, remediation_id, include_history="true")
     shown = answer.json()
     assert "snapshot" not in answer.text and "requested_by_client" not in answer.text
-    assert "snapshot" not in RemediationReads(get_mongodb()).find_result(remediation_id)["versions"][0]  # IO
+    scenario_id = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": remediation_id})["scenario_id"]
+    stored = RemediationReads(get_mongodb()).find_result_of_scenario(scenario_id)
+    assert "snapshot" not in stored["versions"][0]  # IO
     assert [(v["version"], v["status"]) for v in shown["versions"]] == [(1, "done"), (2, "failed")]
     assert shown["versions"][1]["error"] == error and shown["versions"][1]["plan"] is None
     assert shown["register_data"]["risk_owner"] == "Head of Grid Operations"
@@ -120,17 +132,17 @@ def test_the_history_never_holds_a_snapshot(client: TestClient, api_key: str) ->
 
 
 def test_each_list_filter_newest_first(client: TestClient, api_key: str) -> None:
-    session = uuid.uuid4().hex
+    session = _run(uuid.uuid4().hex)
     older = _plan(_version(1), session_id=session, created_at=NOW - timedelta(days=1), risk_level="Low")
     failed = _plan(
         _version(1, done=False), session_id=session, status=Status.FAILED, created_at=NOW - timedelta(hours=1)
     )
     newer = _plan(_version(1), session_id=session, decision=Decision.ACCEPTED, accepted_version=1)
-    scenario_id = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": newer})["scenario_id"]
 
     def listed(**params: Any) -> list[str]:
-        query = {"session_id": session, **params}
-        answer = client.get("/v1/remediation", params=query, headers=_identity(api_key))
+        answer = client.get(
+            f"/v1/sessions/{session}/treatment-plans", params=params, headers=_identity(api_key)
+        )
         assert answer.status_code == 200, answer.text
         return [item["remediation_id"] for item in answer.json()["items"]]
 
@@ -138,22 +150,27 @@ def test_each_list_filter_newest_first(client: TestClient, api_key: str) -> None
     assert listed(decision="accepted") == [newer]
     assert listed(status="failed") == [failed]
     assert listed(risk_level="Low") == [older]
-    assert listed(scenario_id=scenario_id) == [newer]
     page = client.get(
-        "/v1/remediation", params={"scenario_id": scenario_id}, headers=_identity(api_key)
+        f"/v1/sessions/{session}/treatment-plans", params={"limit": 1}, headers=_identity(api_key)
     ).json()
     assert (
-        page["total"] == 1 and page["items"][0]["latest_version"] == 1 and "versions" not in json.dumps(page)
+        page["total"] == 3 and page["items"][0]["latest_version"] == 1 and "versions" not in json.dumps(page)
     )
+    register = client.get(
+        f"/v1/entities/{ENTITY}/treatment-plans", params={"limit": 500}, headers=_identity(api_key)
+    )
+    assert {newer, failed, older} <= {item["remediation_id"] for item in register.json()["items"]}
 
 
 def test_another_entity_sees_nothing(client: TestClient, api_key: str) -> None:
     remediation_id = _plan(_version(1))
     other = _identity(api_key, ENTITY + 1)
-    assert client.get(f"/v1/remediation/{remediation_id}/result", headers=other).status_code == 403
-    assert client.get("/v1/remediation/nope/result", headers=other).status_code == 404
-    listed = client.get("/v1/remediation", params={"session_id": "run-reads"}, headers=other).json()
-    assert listed == {"items": [], "total": 0}
+    assert client.get(plan_url(remediation_id), headers=other).status_code == 403
+    assert client.get(plan_url(remediation_id, "status"), headers=other).status_code == 403
+    nowhere = "/v1/sessions/run-reads/scenarios/nope/treatment-plan"
+    assert client.get(nowhere, headers=other).status_code == 404
+    assert client.get(f"/v1/sessions/{_run('run-reads')}/treatment-plans", headers=other).status_code == 403
+    assert client.get(f"/v1/entities/{ENTITY}/treatment-plans", headers=other).status_code == 403
 
 
 def test_only_the_shown_version_is_built_without_the_history() -> None:
@@ -168,3 +185,17 @@ def test_only_the_shown_version_is_built_without_the_history() -> None:
     assert (result.shown_version, result.versions) == (2, None)
     with pytest.raises(KeyError):  # the malformed plan is read only for the history
         RemediationResult.from_records(record, None, include_history=True)
+
+
+def test_the_old_v2_addresses_are_gone(client: TestClient, api_key: str) -> None:
+    """Owner, 2026-10-15: v1's addresses replace /v1/remediation/{id}/... (no legacy code)."""
+    remediation_id = _plan(_version(1))
+    for path in ("status", "result", "events"):
+        assert (
+            client.get(f"/v1/remediation/{remediation_id}/{path}", headers=_identity(api_key)).status_code
+            == 404
+        )
+    for action in ("accept", "reject", "regenerate", "cancel"):
+        old = client.post(f"/v1/remediation/{remediation_id}/{action}", json={}, headers=_identity(api_key))
+        assert old.status_code == 404
+    assert client.get("/v1/remediation", headers=_identity(api_key)).status_code == 405  # POST only now

@@ -20,9 +20,10 @@ litellm.DEFAULT_MAX_RETRIES = 0  # type: ignore[misc]  # typed Final, but read f
 litellm.suppress_debug_info = True  # its coloured help lines would break the JSON log lines Loki reads
 # Its own tracing is not ours (G221): with CII_LOG_LEVEL=DEBUG it logged every request in full and a failed
 # price lookup per call ("This model isn't mapped yet": our models are not on its price list, and no price
-# is used). Our ai.call lines record every call; its warnings and errors still show.
-for _litellm_logger in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
-    logging.getLogger(_litellm_logger).setLevel(logging.WARNING)
+# is used). Our ai.call lines record every call; its warnings and errors still show. The OpenAI client
+# under it logs each request's headers at DEBUG, the AI key among them (UAT, 2026-10-15): capped the same way.
+for _library_logger in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "openai"):
+    logging.getLogger(_library_logger).setLevel(logging.WARNING)
 
 from app.ai.chat import (  # noqa: E402
     CORRECTION_MESSAGE_MAX_CHARS,
@@ -31,7 +32,6 @@ from app.ai.chat import (  # noqa: E402
     UnreadableAiAnswer,
     get_chat_model,
 )
-from app.ai.common import ai_deadline  # noqa: E402
 from app.ai.embeddings import (  # noqa: E402
     EmbeddingModel,
     EmbeddingNotFinite,
@@ -42,7 +42,6 @@ from app.ai.local_turns import background_reranks, reranks_in_background  # noqa
 from app.ai.rerank import RerankModel, get_rerank_model  # noqa: E402
 
 __all__ = [
-    "ai_deadline",
     "background_reranks",
     "reranks_in_background",
     "CORRECTION_MESSAGE_MAX_CHARS",

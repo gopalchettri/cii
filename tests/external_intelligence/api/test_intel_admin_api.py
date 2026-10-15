@@ -1,4 +1,4 @@
-"""The admin endpoints of external intelligence: auth, validation, the switch, a refresh
+"""The endpoints of external intelligence: no key on any of them, validation, the switch, a refresh
 queued one at a time, and the health report with the evidence settings. The switch, the health reporter
 and the feed store are group B's and A's: fakes with their documented signatures stand in; the job queue
 is faked too."""
@@ -32,6 +32,9 @@ class MemorySwitch:
 
     def state(self) -> SwitchState:
         return SwitchState(self.env, self.runtime)
+
+    def is_enabled(self) -> bool:
+        return self.env and self.runtime
 
     def change_runtime_flag(self, enabled: bool, changed_by: str) -> SwitchState:
         self.runtime = enabled
@@ -76,7 +79,7 @@ class Api:
         self.switch, self.sent = MemorySwitch(), []
         self.reporter, self.purger = Reporter(self.switch), Purger()
         self.feeds = Feeds()
-        self.refreshes = IntelRefreshes(AdminJobRecords(get_mongodb()), self.feeds)  # type: ignore[arg-type]
+        self.refreshes = IntelRefreshes(AdminJobRecords(get_mongodb()), self.feeds, self.switch)  # type: ignore[arg-type]
         self.admin = IntelAdmin(  # type: ignore[arg-type]
             self.switch, self.reporter, self.refreshes, get_settings(), self.purger, self.feeds
         )
@@ -103,12 +106,22 @@ def _audit(action: str) -> list[dict[str, Any]]:
     return list(get_mongodb()[Collection.AUDIT].find({"action": action}))
 
 
-@pytest.mark.parametrize(
-    ("method", "path"), [("get", "/switch"), ("put", "/switch"), ("get", "/health"), ("post", "/refresh")]
-)
-def test_every_endpoint_needs_the_admin_key(client: TestClient, api: Api, method: str, path: str) -> None:
-    assert getattr(client, method)(URL + path).status_code == 401
-    assert getattr(client, method)(URL + path, headers={"X-Admin-Key": "wrong"}).status_code == 401
+def test_the_switch_revoke_and_approve_need_no_key(client: TestClient, api: Api) -> None:
+    # Owner, 2026-10-15: no admin key and no API key on any external intelligence endpoint.
+    assert client.get(f"{URL}/switch").status_code == 200
+    assert client.put(f"{URL}/switch", json={"enabled": True}).status_code == 200
+    assert client.post(f"{URL}/sources/nist_nvd/revoke").status_code == 200
+    assert client.post(f"{URL}/sources/nist_nvd/approve").status_code == 200
+    assert _audit("external_intelligence.source_revoked")[-1]["actor"]["user_id"] == "admin"
+
+
+def test_health_and_a_refresh_need_no_key(client: TestClient, api: Api) -> None:
+    # Owner, 2026-10-15: run by hand in UAT and prod with no admin key and no API key.
+    assert client.get(f"{URL}/health").status_code == 200
+    started = client.post(f"{URL}/refresh")
+    assert started.status_code == 202
+    job = client.get(f"{URL}/refresh/{started.json()['job_id']}")
+    assert job.status_code == 200 and job.json()["requested_by"] == "admin"  # no X-User-Id: Audit.ADMIN_USER
 
 
 def test_the_switch_is_read_and_changed_and_the_change_is_audited(client: TestClient, api: Api) -> None:
@@ -170,8 +183,27 @@ def test_a_refresh_is_refused_while_the_master_switch_is_off(
     client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
+    api.switch.env = False  # the real switch reads the env master once, at start-up
     assert client.post(f"{URL}/refresh", headers=ADMIN).status_code == 409
     assert api.sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 0
+
+
+def test_a_refresh_is_refused_while_the_runtime_switch_is_off(client: TestClient, api: Api) -> None:
+    # Queued then, the worker could only fail it: refused at once instead (owner, 2026-10-15).
+    api.switch.runtime = False
+    refused = client.post(f"{URL}/refresh")
+    assert (
+        refused.status_code == 409
+        and refused.json()["detail"] == "External intelligence is off: nothing was refreshed."
+    )
+    assert api.sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 0
+
+
+def test_an_approval_with_the_runtime_switch_off_queues_nothing(client: TestClient, api: Api) -> None:
+    api.switch.runtime = False
+    done = client.post(f"{URL}/sources/nist_nvd/approve")
+    assert done.status_code == 200 and done.json()["refresh_job_id"] is None
+    assert api.feeds.approved == [IntelSource.NIST_NVD] and api.sent == []
 
 
 def test_a_job_of_another_kind_is_not_found_here(client: TestClient, api: Api) -> None:
@@ -220,7 +252,6 @@ def test_a_source_is_revoked_purged_and_audited_whatever_the_switch_says(
     row = _audit("external_intelligence.source_revoked")[-1]
     assert row["actor"]["user_id"] == "op-3" and row["target"]["id"] == "nist_nvd"
     assert client.post(f"{URL}/sources/not_a_source/revoke", headers=ADMIN).status_code == 422
-    assert client.post(f"{URL}/sources/cisa_kev/revoke").status_code == 401
 
 
 def test_a_revoked_source_is_approved_again_audited_and_refreshed(client: TestClient, api: Api) -> None:
@@ -236,10 +267,9 @@ def test_a_revoked_source_is_approved_again_audited_and_refreshed(client: TestCl
     assert again.status_code == 200 and again.json()["refresh_job_id"] is None
 
 
-def test_the_approval_needs_the_admin_key_a_known_source_and_the_master_switch(
+def test_the_approval_needs_a_known_source_and_the_master_switch(
     client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert client.post(f"{URL}/sources/cisa_kev/approve").status_code == 401
     assert client.post(f"{URL}/sources/not_a_source/approve", headers=ADMIN).status_code == 422
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
     assert client.post(f"{URL}/sources/cisa_kev/approve", headers=ADMIN).status_code == 409

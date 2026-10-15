@@ -37,13 +37,21 @@ LIBRARY = ThreatLibrary(
 )
 
 
+def _flat(part: str, ref: dict[str, Any]) -> dict[str, Any]:
+    """v1's flat fields of one reference: {"id": 1} → {"threat_type_id": 1, "threat_type_name": None}."""
+    return {f"{part}_id": ref.get("id"), f"{part}_name": ref.get("name")}
+
+
 def _resolved(threat_type: dict[str, Any], threat: dict[str, Any], **fields: Any) -> Any:
+    category = fields.pop("threat_category", None)
     scenario = ManualScenario.model_validate(
         {
             "asset_id": 1179,
+            "entity_id": 1,
             "supporting_system_ids": [1488],
-            "threat_type": threat_type,
-            "threat": threat,
+            **_flat("threat_type", threat_type),
+            **_flat("threat", threat),
+            **(_flat("threat_category", category) if category else {}),
             "threat_scenario": "A cybercriminal could tamper with the RTU's firmware.",
             "risk_statement": "Loss of trusted control could interrupt transmission.",
         }
@@ -90,9 +98,9 @@ def test_ids_and_names_must_agree_and_a_threat_keeps_its_type() -> None:
     assert "'Malware'" in (mismatch.errors or [])[0]["message"]
     both = _refused({"id": 99}, {"id": 10, "name": "Wiper"})
     assert [error["field"] for error in both.errors or []] == [
-        "body.manual_scenario.threat_type.id",
-        "body.manual_scenario.threat.name",
-        "body.manual_scenario.threat_type",  # and Firmware tampering is the library's Malware
+        "body.manual_scenario.threat_type_id",
+        "body.manual_scenario.threat_name",
+        "body.manual_scenario.threat_type_id",  # and Firmware tampering is the library's Malware
     ]
 
 
@@ -106,8 +114,8 @@ def test_the_category_given_must_be_stride_and_one_the_threat_is_filed_under() -
     both = _refused(
         {"name": "Malware"}, {"name": "Logic bomb"}, threat_category={"id": 2, "name": "Spoofing"}
     )
-    assert (both.errors or [])[0]["field"] == "body.manual_scenario.threat_category.name"  # review S56
+    assert (both.errors or [])[0]["field"] == "body.manual_scenario.threat_category_name"  # review S56
     unknown = _refused({"name": "Malware"}, {"name": "Logic bomb"}, threat_category={"name": "Fraud"})
     assert unknown.errors == [
-        {"field": "body.manual_scenario.threat_category", "message": "'Fraud' is not a STRIDE category."}
+        {"field": "body.manual_scenario.threat_category_name", "message": "'Fraud' is not a STRIDE category."}
     ]

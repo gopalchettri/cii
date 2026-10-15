@@ -8,3 +8,4 @@ class EvidenceIndexRefused(Exception):
 
     def __init__(self, message: IntelMessage, **facts: object) -> None:
         super().__init__(message.format(**facts))
+        self.no_data = message is IntelMessage.SNAPSHOT_EMPTY  # nothing imported yet (or all of it gone)

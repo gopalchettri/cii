@@ -1,6 +1,7 @@
 """Mandatory evidence, checked in code (G229, owner 2026-10-13: "every finalized threat scenario must contain
 at least one valid, relevant, traceable evidence item ... a mandatory validation rule, not an optional prompt
-instruction"). An evidence story must cite at least one entry; every cited marker needs the claim it supports
+instruction"). An evidence story should cite at least one entry (citing none is a warning: the card is kept
+with its closest source shown, never numbered, G250); every cited marker needs the claim it supports
 (the writer's evidence_links); and a citation counts only when its sentence states something the cited entry
 itself states: the group, software or campaign it names, the vendor or product it concerns. "Attackers have
 done this before [1]" names none of it and does not count (run 03276384: 6 of 9 citations were such). The
@@ -12,7 +13,8 @@ incident") needs the cited entry's name; a sentence that says how the attack wor
 describes ("could flood the wireless links [1]"): the AI plan check, which sees the technique's name, judges
 it. A sentence that says something happened in the deployment's country (THREAT_CONTEXT_COUNTRY) must cite a
 source that tells of that country (scope "country"): regional or global intelligence is never presented as a
-local incident. Each finding is final: the scenario is not finished, and no AI call is spent on it."""
+local incident. Every other finding here is final: the scenario is not finished, and no AI call is spent
+on it."""
 
 import re
 from collections.abc import Iterator
@@ -40,16 +42,31 @@ _STOP = frozenset({
 })  # fmt: skip
 
 
-#: A sentence that says something happened: a perfect tense ("has used", "have done", "has been"), a past
-#: action that is not a passive of what can be ("used" but not "be used"), a year, a past incident.
+#: A sentence that says something happened: a perfect tense ("has used", "have done", "has been"), a year, a
+#: past incident ("a similar incident"; never a name or a thing such as "the Incident Detection & Response
+#: Platform" or "incident alerts", G246: run 5f2e072a lost a how-it-works sentence so), "previously".
 _PRECEDENT = re.compile(
     r"\b(?:has|have|had)\s+(?:\w+\s+){0,2}?\w+(?:ed|en|ne|wn)\b"
-    r"|(?<!\bbe )(?<!\bis )(?<!\bare )(?<!\bbeing )\b(?:used|exploited|targeted|deployed|attacked|compromised"
-    r"|abused|leveraged|employed|conducted)\b"
-    r"|\b(?:previously|historically|precedents?|incidents?)\b|\bin the past\b|\bin (?:19|20)\d{2}\b"
+    r"|\b(?:previously|historically|precedents?)\b|\bin the past\b|\bin (?:19|20)\d{2}\b"
+    r"|\b(?:past|previous|prior|earlier|similar|documented|reported|recorded|known|historical|real|actual)"
+    r"\s+incidents?\b"
     r"|\bknown to\b|\breal[- ]world\b",
     re.IGNORECASE,
 )
+#: A past action ("APT28 conducted …", "the C0027 campaign used …"). The same word describing a noun is no
+#: action (G246): after an article, a determiner, a preposition or "use" ("a targeted phishing email", "with
+#: compromised credentials"), opening the sentence ("Compromised credentials let …"), or a passive of what can
+#: be ("be used", "is targeted").
+_PAST_ACTIONS = frozenset({
+    "used", "exploited", "targeted", "deployed", "attacked", "compromised", "abused", "leveraged",
+    "employed", "conducted",
+})  # fmt: skip
+_DESCRIBES_A_NOUN_AFTER = frozenset({
+    "a", "an", "the", "any", "its", "their", "his", "her", "our", "such", "these", "those", "this", "with",
+    "using", "via", "through", "use", "uses", "of", "by", "from", "into", "for", "be", "is", "are", "being",
+    "newly",
+})  # fmt: skip
+_WORD = re.compile(r"[A-Za-z0-9-]+")
 
 
 def _template(fact: EvidenceFact, *named: str) -> tuple[re.Pattern[str], tuple[str, ...]]:
@@ -75,6 +92,8 @@ def evidence_findings(draft: ScenarioDraft, brief: WriterBrief) -> list[Finding]
     entry does not support. A marker outside the evidence is the story rules' (UNKNOWN_MARKER)."""
     text = f"{draft.statement}\n{draft.risk}"
     count = len(brief.evidence)
+    if not count:  # G254: no source passed the relevance check: nothing to cite, its nearest is shown
+        return []
     cited = sorted({number for number in markers_of(text) if 1 <= number <= count})
     if not cited:
         return [Finding(FindingCode.NO_EVIDENCE_CITED, FindingMessage.NO_EVIDENCE_CITED.format(count=count))]
@@ -86,6 +105,7 @@ def evidence_findings(draft: ScenarioDraft, brief: WriterBrief) -> list[Finding]
             Finding(
                 FindingCode.EVIDENCE_LINK_MISSING,
                 FindingMessage.EVIDENCE_LINK_MISSING.format(markers=markers),
+                tuple(missing),
             )
         )
     unsupported = [
@@ -97,7 +117,9 @@ def evidence_findings(draft: ScenarioDraft, brief: WriterBrief) -> list[Finding]
         markers = ", ".join(f"[{number}]" for number in unsupported)
         findings.append(
             Finding(
-                FindingCode.CITATION_UNSUPPORTED, FindingMessage.CITATION_UNSUPPORTED.format(markers=markers)
+                FindingCode.CITATION_UNSUPPORTED,
+                FindingMessage.CITATION_UNSUPPORTED.format(markers=markers),
+                tuple(unsupported),
             )
         )
     return findings + _country_claims(text, brief)
@@ -108,12 +130,24 @@ def supports(sentence: str, entry: dict[str, Any]) -> bool:
     terms. A sentence saying how the attack works, not that something happened, is the plan check's (G232)."""
     said = {token.casefold() for token in _TOKEN.findall(sentence) if len(token) >= 3}
     names = named_by(entry)
-    if names & said or not _PRECEDENT.search(sentence):
+    if names & said or not says_it_happened(sentence):
         return True
     if names:
         return False
     terms = {token.casefold() for fact in entry.get("facts") or () for token in _TOKEN.findall(fact)}
     return len((terms - _STOP) & said) >= 2
+
+
+def says_it_happened(sentence: str) -> bool:
+    """Whether the sentence says something happened (it then needs the cited entry's name), not how the attack
+    works: a precedent phrase, or a past action word that is not describing a noun (G246)."""
+    if _PRECEDENT.search(sentence):
+        return True
+    words = [word.casefold() for word in _WORD.findall(sentence)]
+    return any(
+        word in _PAST_ACTIONS and place > 0 and words[place - 1] not in _DESCRIBES_A_NOUN_AFTER
+        for place, word in enumerate(words)
+    )
 
 
 def _country_claims(text: str, brief: WriterBrief) -> list[Finding]:
@@ -123,7 +157,7 @@ def _country_claims(text: str, brief: WriterBrief) -> list[Finding]:
     count, unsupported = len(brief.evidence), []
     for sentence in _SENTENCE_END.split(text):
         cited = [number for number in markers_of(sentence) if 1 <= number <= count]
-        if not cited or country not in places_in(sentence) or not _PRECEDENT.search(sentence):
+        if not cited or country not in places_in(sentence) or not says_it_happened(sentence):
             continue
         if all(brief.evidence[number - 1].get("scope") != EvidenceScope.COUNTRY for number in cited):
             unsupported += [number for number in cited if number not in unsupported]
@@ -131,7 +165,7 @@ def _country_claims(text: str, brief: WriterBrief) -> list[Finding]:
         return []
     markers = ", ".join(f"[{number}]" for number in unsupported)
     message = FindingMessage.COUNTRY_CLAIM_UNSUPPORTED.format(country=country, markers=markers)
-    return [Finding(FindingCode.COUNTRY_CLAIM_UNSUPPORTED, message)]
+    return [Finding(FindingCode.COUNTRY_CLAIM_UNSUPPORTED, message, tuple(unsupported))]
 
 
 def named_by(entry: dict[str, Any]) -> set[str]:

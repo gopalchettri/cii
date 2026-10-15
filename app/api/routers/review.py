@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path
 
 from app.api.dependencies import Caller, CallersRun
-from app.core.constants import Review
+from app.core.constants import ApiTag, Review
 from app.models.review import (
     AcceptRequest,
     AcceptResult,
@@ -20,7 +20,7 @@ from app.services.scenarios.promotion import LibraryPromotion, get_library_promo
 from app.services.scenarios.review import ReviewService, get_review_service
 from app.services.scenarios.run_actions import RunActions, get_run_actions
 
-router = APIRouter(tags=["review"])
+router = APIRouter(tags=[ApiTag.REVIEW])
 
 Reviews = Annotated[ReviewService, Depends(get_review_service)]
 Actions = Annotated[RunActions, Depends(get_run_actions)]
@@ -28,19 +28,22 @@ Promotions = Annotated[LibraryPromotion, Depends(get_library_promotion)]
 ScenarioId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 
 
-@router.post("/v1/sessions/{session_id}/accept", response_model=AcceptResult, summary="Accept scenarios")
+@router.post("/v1/sessions/{session_id}/accept", response_model=AcceptResult, summary="1. Accept scenarios")
 def accept_scenarios(
     body: AcceptRequest, run: CallersRun, principal: Caller, review: Reviews
 ) -> AcceptResult:
+    """Send `{"scenario_ids": ["..."]}` or `{"scenario_ids": "all"}`. An accepted scenario can get a
+    remediation plan (group 7). `replace_accepted: true` lets a newer version replace an accepted one."""
     return review.accept(principal, run, body)
 
 
 @router.post(
-    "/v1/sessions/{session_id}/scenarios/reject", response_model=RejectResult, summary="Reject scenarios"
+    "/v1/sessions/{session_id}/scenarios/reject", response_model=RejectResult, summary="2. Reject scenarios"
 )
 def reject_scenarios(
     body: ScenarioIdsRequest, run: CallersRun, principal: Caller, review: Reviews
 ) -> RejectResult:
+    """Send `{"scenario_ids": ["..."]}`. Each answer row says what was done or why not."""
     return review.reject(principal, run, body)
 
 
@@ -48,11 +51,13 @@ def reject_scenarios(
     "/v1/sessions/{session_id}/regenerate/scenarios",
     status_code=202,
     response_model=RunActionStarted,
-    summary="Regenerate scenarios",
+    summary="3. Rewrite scenarios",
 )
 def regenerate_scenarios(
     body: ScenarioIdsRequest, run: CallersRun, principal: Caller, actions: Actions
 ) -> RunActionStarted:
+    """Send `{"scenario_ids": ["..."]}`: each is written again in the background (202); follow it with
+    `GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`)."""
     return actions.regenerate(principal, run, body)
 
 
@@ -60,18 +65,22 @@ def regenerate_scenarios(
     "/v1/sessions/{session_id}/scenarios/next-set",
     status_code=202,
     response_model=RunActionStarted,
-    summary="Write the next set of scenarios",
+    summary="4. Write the next set",
 )
 def write_next_set(run: CallersRun, principal: Caller, actions: Actions) -> RunActionStarted:
+    """Writes more scenarios from the attack paths not written yet (202). 409 `nothing_left` when every
+    path is written."""
     return actions.next_set(principal, run)
 
 
 @router.post(
     "/v1/sessions/{session_id}/scenarios/{scenario_id}/promote-to-library",
     response_model=PromotionResult,
-    summary="Promote an accepted AI-proposed threat to the library (pending a curator)",
+    summary="5. Propose an AI-written threat to the library",
 )
 def promote_to_library(
     scenario_id: ScenarioId, run: CallersRun, principal: Caller, promotions: Promotions
 ) -> PromotionResult:
+    """For an accepted scenario whose threat the AI proposed: it goes to the curators as pending
+    (group 10), never straight into the library."""
     return promotions.promote(principal, run, scenario_id)

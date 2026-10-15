@@ -1,17 +1,19 @@
 """What every AI gateway shares: which provider errors mean "busy or down", the answer errors, the key
 header, the retries and how each call's outcome is counted."""
 
+import os
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Any
+from urllib.parse import urlsplit
 
 import litellm
 import structlog
 
 from app.core import metrics
-from app.core.constants import AiLimits, AiOutcome, ErrorCode, ErrorMessage, LogEvent
+from app.core.config import Settings
+from app.core.constants import LITELLM_MODEL_PREFIX, AiLimits, AiOutcome, ErrorCode, ErrorMessage, LogEvent
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 
 log = structlog.get_logger(__name__)
@@ -55,46 +57,31 @@ class UnusableAiAnswer(JobFailed):
 _RETRYABLE_ERRORS: tuple[type[Exception], ...] = (*AI_UNAVAILABLE_ERRORS, IncompleteAiAnswer)
 
 
+def bypass_proxy_for_ai(settings: Settings) -> None:
+    """CII_AI_BYPASS_PROXY=true (v1's TSG_LITELLM_BYPASS_PROXY): the host of every LiteLLM gateway model
+    (litellm_proxy/...) goes on NO_PROXY, so those calls go direct; every other host (another provider, the
+    intel feeds) still uses HTTP(S)_PROXY. litellm takes no per-call proxy setting, hence the process
+    environment. Each model factory calls it before its first call; repeating it changes nothing."""
+    if not settings.ai_bypass_proxy:
+        return
+    models = (
+        (settings.chat_model, settings.chat_base_url),
+        (settings.chat_fallback_model, settings.chat_base_url),
+        (settings.embedding_model, settings.embedding_base_url),
+        (settings.rerank_model, settings.rerank_base_url),
+    )
+    urls = {url for model, url in models if url and model.startswith(LITELLM_MODEL_PREFIX)}
+    hosts = {urlsplit(url if "//" in url else f"//{url}").hostname for url in urls}
+    for name in ("NO_PROXY", "no_proxy"):
+        listed = [entry for entry in os.environ.get(name, "").split(",") if entry]
+        os.environ[name] = ",".join(listed + sorted(host for host in hosts - set(listed) if host))
+
+
 def build_api_key_header(header: str, api_key: str, option: str = "extra_headers") -> dict[str, Any]:
     """{option: {header: key}} for a gateway that reads the key from its own header (settings.ai_key_header);
     {} when none is set. litellm's rerank takes `headers` (it drops `extra_headers`); chat and embedding take
     `extra_headers`."""
     return {option: {header: api_key}} if header else {}
-
-
-#: When (time.monotonic()) this caller needs its AI answers by; None = each call's own profile timeout. A
-#: context variable: set in one thread, it reaches every thread given a copy of that thread's context.
-_DEADLINE: ContextVar[float | None] = ContextVar("ai_deadline", default=None)
-
-
-@contextmanager
-def ai_deadline(until: float) -> Iterator[None]:
-    """Every AI call inside ends by `until` (a time.monotonic() value): its timeout is the time left, it is
-    never retried, and it waits that long at most for a slot; one that would start too late is Unavailable
-    at once.
-    A request that gives up at its deadline (a plan request's control top-up, R1T) never leaves calls running
-    behind it, holding AI slots the jobs need."""
-    token = _DEADLINE.set(until)
-    try:
-        yield
-    finally:
-        _DEADLINE.reset(token)
-
-
-def seconds_left() -> float | None:
-    """The time the caller's deadline leaves (never below 0); None without a deadline."""
-    until = _DEADLINE.get()
-    return None if until is None else max(until - time.monotonic(), 0.0)
-
-
-def call_timeout(profile_timeout: float) -> float:
-    """One provider call's timeout: its profile's, or the deadline's time left when that is sooner."""
-    left = seconds_left()
-    if left is None:
-        return profile_timeout
-    if left <= 0:
-        raise Unavailable(ErrorMessage.AI_DEADLINE_PASSED)
-    return min(profile_timeout, left)
 
 
 def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
@@ -104,9 +91,7 @@ def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
 
     A call that timed out is not asked again here (owner, 2026-10-10): the provider is overloaded, and asking
     again would hold the worker another full timeout (90-120 s) each time and add to its load. The fallback
-    model answers instead, or the job's own back-off asks later. Under a deadline (ai_deadline): one try."""
-    if _DEADLINE.get() is not None:
-        return call()
+    model answers instead, or the job's own back-off asks later."""
     for attempt in range(AiLimits.RETRIES):
         try:
             return call()

@@ -38,6 +38,7 @@ from app.services.api_clients import get_api_client_service
 from app.services.scenarios import run_actions as run_actions_module
 from app.services.scenarios.run_actions import get_run_actions
 from app.services.session_status import find_status_for_caller
+from tests.plan_addresses import plan_url
 
 NOW = datetime.now(UTC)
 
@@ -278,15 +279,14 @@ def test_a_remediation_plan_being_written_can_be_cancelled(
     client: TestClient, api_key: str, entity: int
 ) -> None:
     plan_id = _plan(entity, "run", Status.RUNNING)
-    response = client.post(f"/v1/remediation/{plan_id}/cancel", headers=_who(api_key, entity))
+    url = plan_url(plan_id, "cancel")  # v1's address: the plan's run and scenario
+    response = client.post(url, headers=_who(api_key, entity))
     assert response.json() == {"remediation_id": plan_id, "status": Status.CANCELLED}
     stored = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": plan_id})
     assert stored["status"] == Status.CANCELLED and stored["active"] is False
-    again = client.post(f"/v1/remediation/{plan_id}/cancel", headers=_who(api_key, entity))
+    again = client.post(url, headers=_who(api_key, entity))
     assert (again.status_code, again.json()["reason"]) == (409, ConflictReason.NOTHING_TO_CANCEL)
-    assert (
-        client.post(f"/v1/remediation/{plan_id}/cancel", headers=_who(api_key, entity + 1)).status_code == 403
-    )
+    assert client.post(url, headers=_who(api_key, entity + 1)).status_code == 403
 
 
 def test_a_delivery_mapping_the_run_stops_at_the_cancel(

@@ -1,0 +1,56 @@
+# Network rules for TSG v2's app pods in project ai-threatgen (deploy/deploy.yaml). They select only pods labelled
+# app.kubernetes.io/part-of: tsg, so v1's pods and anything else in the project are not touched.
+#
+# Once any rule selects a pod, everything not listed here is dropped: a new outside dependency needs a line here
+# in the same change. scripts/gen_openshift_config.py --gate checks that the stores named in .env.uat are the
+# addresses below, so the settings and these rules cannot point at different places.
+
+# In: the router to the API; the monitoring (Prometheus, in ai-remediation) and this project's own pods to the
+# API and the worker metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tsg-app-ingress
+  namespace: ai-threatgen
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/part-of: tsg } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ namespaceSelector: { matchLabels: { policy-group.network.openshift.io/ingress: "" } } }]
+      ports: [{ port: 8000, protocol: TCP }]
+    - from:
+        - podSelector: {}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ai-remediation } }
+          podSelector: { matchLabels: { tsg-observability: "true" } }
+      ports: [{ port: 8000, protocol: TCP }, { port: 9100, protocol: TCP }]
+
+# Out, and nothing else (v1's addresses):
+#   DNS    openshift-dns, port 53 and 5353 (where OpenShift's DNS pods really listen)
+#   proxy  10.61.192.2:8080   the AI gateway (llmapi.govai.ae) and the intelligence feeds
+#   Redis  10.228.146.4:6379  queues, live updates, caches: blocked, a worker starts but never receives a job
+#   SQL    10.228.146.2:1444  the library and the asset facts
+#   Mongo  10.228.146.3:27018 every run, scenario, plan and job
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tsg-app-egress
+  namespace: ai-threatgen
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/part-of: tsg } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: openshift-dns } } }]
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+        - { port: 5353, protocol: UDP }
+        - { port: 5353, protocol: TCP }
+    - to: [{ ipBlock: { cidr: 10.61.192.2/32 } }]
+      ports: [{ port: 8080, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.228.146.4/32 } }]
+      ports: [{ port: 6379, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.228.146.2/32 } }]
+      ports: [{ port: 1444, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.228.146.3/32 } }]
+      ports: [{ port: 27018, protocol: TCP }]

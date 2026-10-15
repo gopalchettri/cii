@@ -5,7 +5,7 @@ No database call here."""
 import itertools
 import uuid
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +13,8 @@ from app.core.constants import (
     ActorRole,
     Decision,
     EvidenceMode,
+    KnownGroupMatch,
+    KnownGroups,
     RunKind,
     ScenarioStatus,
     Status,
@@ -57,8 +59,10 @@ def written_record(
     regenerate (#6) writes the next version of ({_id, version}); None for a path's first write."""
     draft, now = written.draft, datetime.now(UTC)
     statement, risk, evidence = _cited(brief, draft)
-    # G229: an evidence story citing nothing is never finished, whatever made it (the rules block it first).
-    unproven = brief.style is WriterStyle.EVIDENCE_STORY and not evidence
+    # G229: an evidence story with no source at all is never finished; one citing none of its sources shows
+    # the closest instead (G250, G254), so only a threat whose search kept nothing is unproven (the gate stops
+    # it before writing).
+    unproven = brief.style is WriterStyle.EVIDENCE_STORY and not evidence and not _related(brief, threat)[0]
     status = ScenarioStatus.BLOCKED if written.blocked or unproven else ScenarioStatus.DONE
     content = {
         "title": draft.title,
@@ -109,27 +113,53 @@ def _evidence_content(
     brief: WriterBrief, threat: dict[str, Any], cited: list[dict[str, Any]]
 ) -> dict[str, Any]:
     """The proof an evidence story carries: each entry its text cites, under the number its markers use
-    (G224), how the story rests on it (cited nothing: inferred from the asset), how many vulnerabilities
-    apply, and the audit of the search that found it. Nothing is added to an original-style scenario."""
+    (G224); citing none, the closest source as related intelligence, never numbered (G250, owner
+    2026-10-15: "if no citation is found suggest the nearest possible one"); how the story rests on it, how
+    many vulnerabilities apply, and the audit of the search. Nothing is added to an original-style
+    scenario."""
     if brief.style is not WriterStyle.EVIDENCE_STORY:
         return {}
     applies = Counter(str(item["applicability"]) for item in cited if item.get("applicability"))
+    related, mode = ([], brief.evidence_mode) if cited else _related(brief, threat)
     return {
         "evidence": cited,
-        "evidence_mode": brief.evidence_mode if cited else EvidenceMode.INFERRED,
+        "related_evidence": related,
+        "evidence_mode": mode,
         "applicability": dict(applies),
         "intel_search": threat.get("intel_search"),
         "known_groups": _known_groups(threat, cited),
     }
 
 
+def _related(brief: WriterBrief, threat: dict[str, Any]) -> tuple[list[dict[str, Any]], EvidenceMode]:
+    """What a story citing none of its sources shows instead: its best source (G250, "related"); when no
+    source passed the relevance check, the closest match its search kept (G254, "nearest"); else nothing."""
+    if brief.evidence:
+        return [_closest(brief.evidence)], EvidenceMode.RELATED
+    nearest = threat.get("nearest_evidence") or []
+    return ([dict(nearest[0])], EvidenceMode.NEAREST) if nearest else ([], EvidenceMode.INFERRED)
+
+
+def _closest(evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The source the search scored highest (G250), as searched: no number, no claim (none cites it)."""
+    best = max(evidence, key=lambda item: float(item.get("score") or 0.0))
+    return dict(best)
+
+
 def _known_groups(threat: dict[str, Any], cited: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """G230: the real named groups behind the threat's evidence, each with the number its technique is cited
-    under (None: the story did not cite it)."""
+    under (None: the story did not cite it). G235: picked for what the story cites, now that it is written:
+    groups behind a cited technique first ("used this attack [n]"); a group behind a technique the card does
+    not show used a related attack, never "this" one; the search order (UAE, region, sector) kept within."""
     numbers = {item.get("ref"): item["n"] for item in cited}
-    return [
-        group | {"cited": numbers.get(group.get("technique"))} for group in threat.get("known_groups") or []
-    ]
+    groups = []
+    for group in threat.get("known_groups") or []:
+        number = numbers.get(group.get("technique"))
+        match = group.get("match")
+        if number is None and match == KnownGroupMatch.USED_THIS_TECHNIQUE:
+            match = KnownGroupMatch.USED_RELATED_TECHNIQUE
+        groups.append(group | {"cited": number, "match": match})
+    return sorted(groups, key=lambda group: group["cited"] is None)[: KnownGroups.SHOWN]
 
 
 def _card_systems(

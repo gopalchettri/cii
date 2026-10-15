@@ -49,3 +49,23 @@ def test_only_the_evidence_the_text_cites_is_shown_in_marker_order_without_score
 def test_a_scenario_with_no_evidence_shows_null_and_empty() -> None:
     view = ScenarioView.from_record(_record(statement="It could stop."))
     assert (view.evidence_mode, view.evidence, view.evidence_search) == (None, [], None)
+
+
+def test_a_story_citing_nothing_shows_its_closest_source_as_related_without_number_or_score() -> None:
+    """G250 (owner 2026-10-15): related intelligence is shown apart from the cited evidence, never numbered,
+    never scored; a card that cites its sources shows none."""
+    view = ScenarioView.from_record(
+        _record(
+            statement="An attacker could tamper with the controller.",
+            evidence=[],
+            related_evidence=[TECHNIQUE.as_doc()],
+            evidence_mode="related",
+        )
+    )
+    (related,) = view.related_evidence
+    assert view.evidence == [] and view.evidence_mode == "related"
+    assert related.n is None and related.ref == "T0839" and "score" not in related.model_dump()
+    cited = ScenarioView.from_record(
+        _record(statement=STORY_MARKED, evidence=[{"n": 1, **TECHNIQUE.as_doc()}])
+    )
+    assert cited.related_evidence == []

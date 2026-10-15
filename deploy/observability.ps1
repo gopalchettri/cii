@@ -1,17 +1,16 @@
 <#
-Apply TSG monitoring to the current OpenShift project (log in and pick the project with `oc` first):
+Apply TSG monitoring (deploy/observability.yaml) to project ai-remediation, as v1 kept it there (log in with
+`oc login` first; this makes ai-remediation the current project):
 
-    .\deploy\observability.ps1 -RouteHost tsg-uat.apps.example.local -AppImage <REGISTRY>/tsg:1.0.0
+    .\deploy\observability.ps1
 
 Reads the UAT settings file .env.uat (repo root; never commit it): Grafana's admin password
 (GRAFANA_ADMIN_PASSWORD), every Grafana setting (GF_ lines) and the broker URL (its database holds the queues).
 Safe to run again: every step is an apply. Images must be in the mirror first (STEP 0 in observability.yaml).
+Flower (deploy/flower.yaml) runs from the app image: deploy/deploy-uat.ps1 applies it.
 #>
-param(
-    [Parameter(Mandatory)] [string] $RouteHost,
-    [Parameter(Mandatory)] [string] $AppImage
-)
 $ErrorActionPreference = "Stop"
+$Namespace = 'ai-remediation'
 # Windows PowerShell 5.1 passes text between programs (oc ... | oc apply) as ASCII and may add a byte-order
 # mark: every non-ASCII character in the settings would arrive as "?". UTF-8 without a mark, both ways, keeps
 # them intact.
@@ -75,8 +74,14 @@ function Set-Secret([string] $name, $values) {
 if (-not (Test-Path $appEnv)) { throw "Missing $appEnv - the UAT settings file (copy .env.example and fill it in)." }
 $settings = Read-EnvFile $appEnv
 $password = [string]$settings['GRAFANA_ADMIN_PASSWORD']
-if ($password.Length -lt 16) {
-    throw "Set GRAFANA_ADMIN_PASSWORD in $appEnv (16 or more characters): it is the admin login of a public page."
+if (-not $password) {
+    # No line (owner, 2026-10-15: "no id pass for grafana"): everyone views without a login (anonymous viewer);
+    # the admin account gets a random password that is never shown, so nobody can log in to change Grafana.
+    $bytes = New-Object byte[] 24
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $password = [Convert]::ToBase64String($bytes)
+} elseif ($password.Length -lt 16) {
+    throw "GRAFANA_ADMIN_PASSWORD in ${appEnv}: 16 or more characters, or leave the line out (no Grafana login)."
 }
 $broker = [string]$settings['CII_REDIS_CELERY_BROKER_URL']
 if (-not $broker) { throw "CII_REDIS_CELERY_BROKER_URL is not set in $appEnv" }
@@ -89,8 +94,9 @@ foreach ($key in $settings.Keys) {
     if ($key.StartsWith('GF_') -and -not $fixed.Count) { $grafana[$key] = $settings[$key] }
 }
 
-$namespace = oc project -q
-Assert-Ok "oc project"
+# The ConfigMaps and Secrets below are applied to the current project: make it ai-remediation.
+oc project $Namespace
+Assert-Ok "oc project $Namespace"
 Set-ConfigMap prometheus-config @("$obs/prometheus/prometheus.yml", "$obs/prometheus/rules.yml")
 Set-ConfigMap alertmanager-config @("$obs/alertmanager/alertmanager.yml")
 Set-ConfigMap loki-config @("$obs/loki/loki.yaml")
@@ -102,9 +108,8 @@ Set-ConfigMap grafana-dashboards @("$obs/grafana/dashboards/tsg.json")
 Set-Secret tsg-monitoring ([ordered]@{ GF_SECURITY_ADMIN_PASSWORD = $password; REDIS_DB = $redisDb })
 Set-Secret tsg-grafana-settings $grafana
 
-oc process -f "$PSScriptRoot/observability.yaml" -p HOST=$RouteHost -p NAMESPACE=$namespace -p APP_IMAGE=$AppImage |
-    oc apply -f -
-Assert-Ok "oc process | oc apply"
+oc apply -f "$PSScriptRoot/observability.yaml"
+Assert-Ok "oc apply observability.yaml"
 
 # A Route whose host another namespace already claimed is stored but never served: check each was admitted.
 # The router reports a new Route a few seconds after it is applied (its status is empty until then), so each is
@@ -116,7 +121,7 @@ foreach ($route in oc get route -l app.kubernetes.io/part-of=tsg-observability -
         if ($admitted) { break }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
-    if ($admitted -ne "True") { throw "$route was not admitted: is $RouteHost used by another namespace?" }
+    if ($admitted -ne "True") { throw "$route was not admitted: is its host used by another project or Route?" }
 }
 
 # A running pod never sees a changed ConfigMap or Secret: restart them all (each has one replica), then wait
@@ -128,4 +133,5 @@ foreach ($deployment in oc get deployment -l app.kubernetes.io/part-of=tsg-obser
     Assert-Ok "$deployment did not start (oc describe $deployment; oc get events)"
 }
 
-Write-Host "Monitoring applied and running. Open https://$RouteHost/grafana/ (no login needed)."
+$monitoringHost = oc get route grafana -o 'jsonpath={.spec.host}'
+Write-Host "Monitoring applied and running. Open https://$monitoringHost/grafana/ (no login needed)."

@@ -1,7 +1,7 @@
 """The plain sentences of the three kinds of evidence record, made ONLY from structured fields (tactics,
 mitigations, real-world users, vendor, product, dates, scores, ranges, fixes). A record's free text is never
 used: it is the channel a poisoned source would use. Every string put in a sentence went through TextCleaner;
-a sentence missing a string it needs is left out whole."""
+a sentence missing a string it needs is left out whole (G248: the owner undid G233's "how it works" facts)."""
 
 import re
 from itertools import islice
@@ -20,6 +20,7 @@ from app.engine.external_intelligence.name_grammar import is_tactic
 from app.engine.external_intelligence.text_cleaner import TextCleaner
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_KNOWN = "a known attacker"  # an actor of no kind ACTOR_KIND_WORDS names
 
 
 class FactSentences:
@@ -84,8 +85,13 @@ class FactSentences:
         cleaned = (self._cleaner.clean(tactic, FactWordLimits.MAX_NAME_CHARS) for tactic in tactics)
         return list(islice(filter(None, cleaned), FactWordLimits.MAX_TACTICS))
 
+    def mitigation_names(self, data: dict[str, Any]) -> list[str]:
+        """The record's mitigations that read as names, at most EvidenceLimits.MITIGATIONS: the ones its
+        facts say, and the ones the control search reads (G234)."""
+        return self._names(data.get("mitigations"), EvidenceLimits.MITIGATIONS)
+
     def _mitigation(self, data: dict[str, Any]) -> list[str]:
-        names = self._names(data.get("mitigations"), EvidenceLimits.MITIGATIONS)
+        names = self.mitigation_names(data)
         return [EvidenceFact.MITIGATED_BY.format(mitigations=", ".join(names))] if names else []
 
     def _used_by(self, use: Any) -> str:
@@ -96,10 +102,9 @@ class FactSentences:
             return ""
         kind = use.get("kind")
         if kind == "campaign":
-            return EvidenceFact.CAMPAIGN_USED.format(name=name)
-        words = (
-            ACTOR_KIND_WORDS.get(kind, "a known attacker") if isinstance(kind, str) else "a known attacker"
-        )
+            label = name if name.casefold().endswith("campaign") else f"{name} campaign"  # one "campaign"
+            return EvidenceFact.CAMPAIGN_USED.format(name=label)
+        words = ACTOR_KIND_WORDS.get(kind, _KNOWN) if isinstance(kind, str) else _KNOWN
         return EvidenceFact.USED_BY.format(name=name, what=words)
 
 

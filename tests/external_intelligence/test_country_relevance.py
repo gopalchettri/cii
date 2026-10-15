@@ -87,11 +87,11 @@ def test_groups_of_a_step_are_ranked_country_then_region_then_sector_and_say_why
         _group("Skyline", (), ("aviation",)), _group("Both", ("Qatar",), ("aviation",)),
     )])  # fmt: skip
     picked = pick_known_groups("Nation-state/APT", ["T1"], [], groups, NEAR)
-    assert [group.name for group in picked] == ["Falcon", "Both", "Gulfwatch"]
+    assert [group.name for group in picked] == ["Falcon", "Both", "Gulfwatch", "Skyline", "Alpha"]
     assert picked[0].relevance == (GroupRelevance.TARGETED_COUNTRY,)
     assert picked[1].relevance == (GroupRelevance.TARGETED_REGION, GroupRelevance.TARGETED_SECTOR)
     plain = pick_known_groups("Nation-state/APT", ["T1"], [], groups)  # no country: as G230, by name
-    assert [group.name for group in plain] == ["Alpha", "Both", "Falcon"]
+    assert [group.name for group in plain][:3] == ["Alpha", "Both", "Falcon"]
 
 
 def test_a_source_is_labelled_country_regional_or_global_by_the_groups_behind_it() -> None:
@@ -202,13 +202,10 @@ class _IntelOn:
     def is_on(self) -> bool:
         return True
 
-    def threat_relevance(self, threats: list, context: Any) -> dict[str, dict[str, Any]]:
-        return {
-            threat.key: {"scope": "country", "techniques": ["T1"], "groups": ["Falcon"]} for threat in threats
-        }
-
-    def stamp(self) -> dict[str, Any]:
-        return {}
+    def plan_intel(self, threats: list, context: Any) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        nearness = {"scope": "country", "techniques": ["T1"], "groups": ["Falcon"]}
+        near = {threat.key: nearness for threat in threats}
+        return near, {"intel_snapshot_id": "snap-9", "intel_sources": {}}
 
 
 def test_planning_with_intelligence_on_reads_the_country_and_keeps_each_threats_nearness(
@@ -223,4 +220,6 @@ def test_planning_with_intelligence_on_reads_the_country_and_keeps_each_threats_
     jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run)
     threats = _stored_run(record_id)["plan"]["threats"]
     assert threats and all(threat["country_relevance"]["groups"] == ["Falcon"] for threat in threats)
+    # G238: the plan records the snapshot it ranked with, from the same read
+    assert _stored_run(record_id)["plan"]["made_with"]["intel_snapshot_id"] == "snap-9"
     assert all(f'"country": "{UAE}"' in user for user in chat.asked(AiTask.RELEVANCE_GATE))

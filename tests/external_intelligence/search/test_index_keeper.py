@@ -5,12 +5,14 @@ import threading
 from datetime import timedelta
 
 import pytest
+from structlog.testing import capture_logs
 
-from app.core.constants import IntelLimits, IntelSource
+from app.core.constants import IntelLimits, IntelSource, LogEvent
 from app.search.external_intelligence.index_keeper import (
     RETRY_FIRST_SECONDS,
     EvidenceIndexKeeper,
 )
+from app.search.external_intelligence.index_refused import EvidenceIndexRefused
 from tests.external_intelligence.evidence_fakes import (
     NOW,
     MemoryFeeds,
@@ -179,3 +181,35 @@ def test_only_approved_sources_are_read_and_the_age_gauge_is_nan_until_built() -
     index = keeper.rebuild_index().result(10)
     assert [hit.external_id for hit in index.corpus.hits] == ["CVE-1"] and keeper.snapshot_age_seconds() >= 0
     assert NOW
+
+
+def test_nothing_imported_yet_says_once_which_api_to_run_then_retries_quietly() -> None:
+    """Owner, 2026-10-15: on but empty, the log names the import to run once per process (not one failure
+    per retry); data coming and going again says it again; any other failure is logged each time."""
+    keeper, records, _, embeddings = _keeper([])
+
+    def failures(times: int) -> list[str]:
+        with capture_logs() as logs:
+            for _ in range(times):
+                with pytest.raises(EvidenceIndexRefused):
+                    keeper.rebuild_index().result(10)
+        return [log["event"] for log in logs]
+
+    assert failures(3) == [LogEvent.EXTERNAL_INTELLIGENCE_NO_DATA]
+    with capture_logs() as told, pytest.raises(EvidenceIndexRefused):
+        keeper.rebuild_index().result(10)
+    assert told == []
+    records.docs.append(technique_doc("T1"))
+    keeper.rebuild_index().result(10)
+    records.docs.clear()
+    with capture_logs() as again, pytest.raises(EvidenceIndexRefused):
+        keeper.rebuild_index().result(10)
+    assert [log["event"] for log in again] == [LogEvent.EXTERNAL_INTELLIGENCE_NO_DATA]
+    assert "POST /v1/tsg/intel/refresh" in again[0]["action"]
+    records.docs.append(technique_doc("T2"))
+    embeddings.fail = True
+    with capture_logs() as broken:
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                keeper.rebuild_index().result(10)
+    assert [log["event"] for log in broken] == [LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED] * 2

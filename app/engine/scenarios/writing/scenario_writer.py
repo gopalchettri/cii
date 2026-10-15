@@ -26,6 +26,7 @@ from app.core.constants import (
 from app.core.tracing import record_detail, step_detail_enabled, traced
 from app.engine.external_intelligence.story.evidence_story_prompts import story_writer_prompt
 from app.engine.scenarios.writing.ai_plan_check import PlanChecker
+from app.engine.scenarios.writing.citation_repair import repair_citations
 from app.engine.scenarios.writing.draft_cleanup import clean_draft, title_suffix
 from app.engine.scenarios.writing.exact_rules import check_exact_rules
 from app.engine.scenarios.writing.writing_prompts import writer_prompt
@@ -45,6 +46,11 @@ class ScenarioWriter:
 
     @traced("writing.write")
     def write_scenario(self, brief: WriterBrief) -> WrittenScenario:
+        """The draft kept (the first or its one rewrite); one blocked only by footnote faults is repaired in
+        code, never thrown away whole for them (G252, no AI call)."""
+        return repair_citations(self._kept_draft(brief), brief, self._attackers)
+
+    def _kept_draft(self, brief: WriterBrief) -> WrittenScenario:
         prompt = story_writer_prompt(brief) if _is_story(brief) else writer_prompt(brief)
         systems = tuple(system.name for system in brief.supporting_systems)
         read = functools.partial(_read_draft, options=brief.entry_point_options, systems=systems)

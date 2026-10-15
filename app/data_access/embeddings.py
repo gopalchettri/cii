@@ -68,6 +68,21 @@ class LibraryVectors(_VectorStore):
         # ponytail: documents stored before 2026-10-10 (no `corpus`: only a key and a vector) are dropped by
         # the TTL; every library text is embedded again once. Delete this line once no older store exists.
         self._vectors.update_many({"corpus": {"$exists": False}}, {"$set": {"expires_at": datetime.now(UTC)}})
+        self.retire_unknown_corpora()
+
+    def retire_unknown_corpora(self) -> int:
+        """G239: the vectors of a corpus this code does not know (a renamed one: "intel" before
+        "external_intelligence") are retired like any unused vector: each build retires only within the
+        corpora it knows, so a renamed one stayed for ever. Retired, not deleted at once: during a rolling
+        update an older process does not know a newer corpus, and the newer process's next build brings back
+        what it still uses (`reconcile`). Runs at every start; a vector already retired is not written again.
+        Returns how many it retired."""
+        now, known = datetime.now(UTC), [corpus.value for corpus in EmbeddingCorpus]
+        retired = self._vectors.update_many(
+            {"corpus": {"$exists": True, "$nin": known}, "retired_at": {"$exists": False}},
+            {"$set": {"retired_at": now, "expires_at": now + timedelta(days=Cache.RETIRED_VECTOR_DAYS)}},
+        )
+        return retired.modified_count
 
     def count_made_since(self, since: datetime) -> dict[str, int]:
         """{corpus: vectors embedded at or after `since`}: one aggregation, answered from the (created_at,

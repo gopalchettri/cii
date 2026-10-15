@@ -35,7 +35,7 @@ def control_rule() -> ControlRule:
 
 def select_controls(scored: Scored, rule: ControlRule, query: str) -> tuple[ControlMapping, list[str]]:
     """(the mapping, the twins' codes folded away). `scored`: each compatible candidate with its 0-100 score
-    (at least one: no compatible candidate at all is the caller's no_compatible_control)."""
+    (at least one: the caller widens the shortlist to every type when none of the scenario's exists)."""
     unique, twins = _without_twins(sorted(scored, key=lambda pair: (-pair[1], pair[0].control_id)))
     strong = [(control, score) for control, score in unique if score >= rule.cutoff]
     kept = strong[: rule.most]

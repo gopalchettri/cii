@@ -11,7 +11,7 @@ from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
     build_api_key_header,
-    call_timeout,
+    bypass_proxy_for_ai,
     call_with_retries,
     count_and_convert_ai_errors,
 )
@@ -74,7 +74,7 @@ class RerankModel:
                         top_n=len(documents),
                         api_base=self._base_url,
                         api_key=self._api_key,
-                        timeout=call_timeout(self.profile.timeout_seconds),
+                        timeout=self.profile.timeout_seconds,
                         **self._key_header,
                     ),
                     len(documents),
@@ -110,9 +110,7 @@ class RerankModel:
         scores: list[float] = []
         for start in range(0, len(documents), step):
             with self._turns.turn():
-                # A request whose deadline passed while it waited (a plan request's top-up that already
-                # answered 503), or whose job was stopped (G214), ends here: no CPU prediction for no one.
-                call_timeout(self.profile.timeout_seconds)
+                # A job stopped while it waited (G214) ends here: no CPU prediction for no one.
                 raise_if_lease_lost()
                 pairs = [(query, document) for document in documents[start : start + step]]
                 # CrossEncoder.predict already applies the sigmoid for a one-label model: scores are 0..1.
@@ -130,6 +128,7 @@ class RerankModel:
 @singleton
 def get_rerank_model() -> RerankModel:
     settings = get_settings()
+    bypass_proxy_for_ai(settings)
     return RerankModel(
         settings.rerank_model,
         find_model_profile(RERANK_MODEL_PROFILES, settings.rerank_model),

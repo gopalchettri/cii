@@ -1,5 +1,5 @@
-// Alloy in UAT / production: ships the stdout of every pod in this namespace to Loki, through the Kubernetes
-// API (no host folders). The laptop uses local.alloy: same labels, read from log files instead.
+// Alloy in UAT / production: ships the stdout of every pod in the app's two projects to Loki, through the
+// Kubernetes API (no host folders). The laptop uses local.alloy: same labels, read from log files instead.
 
 logging {
   level  = "info"
@@ -9,7 +9,7 @@ logging {
 discovery.kubernetes "pods" {
   role = "pod"
   namespaces {
-    own_namespace = true // the namespaced Role allows nothing more
+    names = ["ai-threatgen", "ai-remediation"] // a namespaced Role in each allows nothing more
   }
 }
 

@@ -11,8 +11,10 @@ from app.core.config import Settings, get_settings
 from app.core.constants import Audit, ErrorMessage, Header, Limits, Review
 from app.core.exceptions import Forbidden, Unauthorized
 from app.models.api_clients import Principal
+from app.models.remediation import RemediationStatus
 from app.models.scenarios import SessionStatus
 from app.services.api_clients import ApiClientService, get_api_client_service
+from app.services.remediation.queries import find_plan_for_caller
 from app.services.session_status import find_status_for_caller
 
 
@@ -71,13 +73,27 @@ def valid_session(
     return find_status_for_caller(session_id, principal.entity_id)
 
 
+#: A run's and a scenario's id in a path: v1's addresses, /v1/sessions/{session_id}/scenarios/{scenario_id}.
+SessionId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
+ScenarioId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
+
+
+def valid_plan(
+    session_id: SessionId,
+    scenario_id: ScenarioId,
+    principal: Annotated[Principal, Depends(get_authenticated_principal)],
+) -> RemediationStatus:
+    """The plan of the caller's scenario: none (or the scenario is in another run) → 404; another's → 403."""
+    return find_plan_for_caller(session_id, scenario_id, principal.entity_id)
+
+
 #: Who an admin call is recorded as (X-User-Id, else Audit.ADMIN_USER), as a route parameter.
 AdminUser = Annotated[str, Depends(admin_user_id)]
 #: The authenticated caller, and the caller's run (404 unknown, 403 another entity's), as route parameters.
 Caller = Annotated[Principal, Depends(get_authenticated_principal)]
 CallersRun = Annotated[SessionStatus, Depends(valid_session)]
-#: A remediation plan's id in the path (its ownership is checked by the service: 404 unknown, 403 another's).
-RemediationId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
+#: The caller's scenario's remediation plan (404 none, 403 another entity's), as a route parameter.
+CallersPlan = Annotated[RemediationStatus, Depends(valid_plan)]
 #: A paged list's position and page size, as query parameters.
 # Up to SQL Server's INT: a procedure's @Offset INT would overflow (500), not refuse (422).
 Offset = Annotated[int, Query(ge=0, le=Limits.MAX_SQL_INT)]

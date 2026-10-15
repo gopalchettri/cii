@@ -30,6 +30,7 @@ def control_query(
     threat = content.get("threat") or {}
     acting = next((a["name"] for a in content.get("actors") or [] if a.get("role") == "acting"), "")
     asset = _named_with_type(context.asset.get("name"), context.asset_context.get("asset_type"))
+    mitigations = cited_mitigations(content)
     head = redact(
         "\n".join(
             [
@@ -38,6 +39,8 @@ def control_query(
                 f"Attacker: {acting}",
                 f"Title: {content.get('title') or ''}",
                 f"Asset: {asset}",
+                # G234: what the cited evidence says reduces this attack; in the head, so never cut.
+                *([f"Mitigations (MITRE ATT&CK): {'; '.join(mitigations)}"] if mitigations else []),
             ]
         )
     )
@@ -55,7 +58,15 @@ def control_query(
         label for (label, _), text, share in zip(labelled, texts, shares, strict=True) if len(text) > share
     )
     query = "\n".join([shorten_text(head, Controls.QUERY_MAX_CHARS), *(text for text in fitted if text)])
-    return ControlQuery(query, shortened)
+    return ControlQuery(query, shortened, mitigations)
+
+
+def cited_mitigations(content: dict[str, Any]) -> tuple[str, ...]:
+    """G234 (owner 2026-10-14: the feeds guide the controls): the mitigations of the evidence the scenario
+    cites (content.evidence holds only the cited entries), each once, at most Controls.QUERY_MITIGATIONS.
+    A scenario written without intelligence has none."""
+    names = (str(name) for item in content.get("evidence") or [] for name in item.get("mitigations") or ())
+    return tuple(dict.fromkeys(name for name in names if name.strip()))[: Controls.QUERY_MITIGATIONS]
 
 
 def _fair_shares(lengths: list[int], room: int) -> list[int]:

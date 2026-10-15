@@ -3,6 +3,7 @@ MAX_CONTROLS; none strong: the nearest are kept as fallback up to MIN_CONTROLS, 
 each control carries its tier and its reason; how many candidates are searched is CONTROL_CANDIDATES."""
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.constants import ControlMatch
@@ -74,7 +75,26 @@ def test_control_settings_that_cannot_work_stop_start_up(changes: dict[str, floa
 
 def test_the_default_rule_is_the_owners_and_the_floor_setting_is_gone() -> None:
     fields = Settings.model_fields
-    defaults = {name: fields[name].default for name in ("control_similarity_threshold", "control_candidates")}
-    assert defaults == {"control_similarity_threshold": 50.0, "control_candidates": 40}
+    assert fields["control_similarity_threshold"].default == 50.0
     assert (fields["min_controls"].default, fields["max_controls"].default) == (1, 10)
     assert "control_fallback_threshold" not in fields
+
+
+def test_the_candidates_come_only_from_the_env_file_and_start_up_stops_without_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G249 (owner 2026-10-15): no CONTROL_CANDIDATES in code; the env file's value is the one searched."""
+    assert Settings.model_fields["control_candidates"].is_required()
+    # No env file is read: the other required settings get placeholders, and dev keeps prod's checks (admin
+    # key, CORS) out of the way, so only CONTROL_CANDIDATES decides.
+    others = {
+        name: "placeholder"
+        for name, field in Settings.model_fields.items()
+        if field.is_required() and name != "control_candidates"
+    } | {"env": "dev"}
+    monkeypatch.setenv("CONTROL_CANDIDATES", "12")
+    assert Settings(_env_file=None, **others).control_candidates == 12  # type: ignore[call-arg]
+    monkeypatch.delenv("CONTROL_CANDIDATES")
+    with pytest.raises(ValidationError) as missing:
+        Settings(_env_file=None, **others)  # type: ignore[call-arg]
+    assert ("CONTROL_CANDIDATES",) in [error["loc"] for error in missing.value.errors()]

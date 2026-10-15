@@ -25,6 +25,7 @@ class SessionMessage(StrEnum):
     ACTIVE_SESSION_EXISTS = "Asset {asset_id} already has an active run."
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another request."
     ENTITY_MISMATCH = "The entity in the path is not the caller's entity."
+    ENTITY_MISMATCH_BODY = "manual_scenario.entity_id is not the caller's entity (X-Entity-Id)."
     SCENARIO_NOT_FOUND = "Scenario '{scenario_id}' does not exist in session '{session_id}'."
     SYSTEMS_REQUIRED = "Send at least one supporting system."
     SYSTEMS_REPEATED = "Each supporting system may be sent only once."
@@ -117,6 +118,12 @@ class BoardMessage(StrEnum):
     CONTROLS_FAILED = (
         "Controls could not be matched for {failed} scenario(s) yet; they are tried again later."
     )
+    # A hand-written run's: nothing retries it in the background; its plan job maps it, and a regenerate of
+    # its plan tries again (G262).
+    CONTROLS_FAILED_MANUAL = (
+        "Controls could not be matched for the hand-written scenario; regenerate its plan "
+        "(POST .../treatment-plan/regenerate) to try again."
+    )
     CANCELLED = "Cancelled by user {user} at {at} UTC."
     CONTROLS_CANCELLED = "Matching controls was cancelled for {cancelled} scenario(s)."
 
@@ -156,7 +163,6 @@ class ConflictReason(StrEnum):
     NOT_COMPLETE = "not_complete"  # a plan version still being written, or failed, cannot be decided
     CHANGED_CONCURRENTLY = "changed_concurrently"  # another decision landed twice while this one was made
     PLAN_ALREADY_EXISTS = "plan_already_exists"  # one plan per scenario: regenerate it instead
-    CONTROLS_NOT_READY = "controls_not_ready"  # a 503 reason: a plan request found the controls unmapped
     ASSET_NOT_OWNED = "asset_not_owned"  # a 403 reason
     SYSTEM_NOT_LINKED = "system_not_linked"  # a 403 reason
     # A 422 reason: a property the owner requires (ASSET_/SYSTEM_PROPERTIES_REQUIRED) is not recorded.
@@ -165,6 +171,7 @@ class ConflictReason(StrEnum):
     NOTHING_TO_CANCEL = "nothing_to_cancel"  # no job of it is queued or running (G214)
     CANCEL_FIRST = "cancel_first"  # a delete refused while a job of it is queued or running (G214)
     RUN_BEING_DELETED = "run_being_deleted"  # a next set or regenerate refused: the run is being deleted
+    INTEL_NO_DATA = "intel_no_data"  # a run refused: external intelligence is on but nothing is imported yet
 
 
 class CoverageGap(StrEnum):

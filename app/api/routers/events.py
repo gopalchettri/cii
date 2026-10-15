@@ -1,7 +1,8 @@
 """Live updates over Server-Sent Events (SSE).
 
-A client opens GET /v1/sessions/{session_id}/events (#8) or GET /v1/remediation/{remediation_id}/events (#28)
-with the usual identity headers. It receives the current status at once, then every change as a
+A client opens GET /v1/sessions/{session_id}/events (#8) or
+GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events (#28) with the usual identity
+headers. It receives the current status at once, then every change as a
 `session.updated` or `remediation.updated` event, until it closes the connection; or until the run or plan is
 deleted (G214): one `session.deleted` or `remediation.deleted` event, then the stream ends."""
 
@@ -13,19 +14,17 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from app.api.dependencies import get_authenticated_principal
-from app.core.constants import Event, Realtime, SessionState, StageState, Status
+from app.api.dependencies import ScenarioId, SessionId, get_authenticated_principal
+from app.core.constants import ApiTag, Event, Realtime, SessionState, StageState, Status
 from app.core.exceptions import NotFound
 from app.models.api_clients import Principal
+from app.models.remediation import RemediationStatus
 from app.realtime.event_hub import EventHub
 from app.realtime.publisher import remediation_channel, session_channel
-from app.services.remediation.queries import (
-    find_remediation_status_for_caller,
-    read_current_remediation_status,
-)
+from app.services.remediation.queries import find_plan_for_caller, read_current_remediation_status
 from app.services.session_status import find_status_for_caller, read_current_status
 
-router = APIRouter(tags=["live updates"])
+router = APIRouter(tags=[ApiTag.LIVE_UPDATES])
 
 #: A plan's queued or running version; a run's job still at work.
 _UNFINISHED = {Status.QUEUED, Status.RUNNING, SessionState.ACTIVE}
@@ -43,9 +42,12 @@ async def check_session_for_caller(
     "/v1/sessions/{session_id}/events",
     response_class=EventSourceResponse,
     dependencies=[Depends(check_session_for_caller)],
-    summary="Live status of a run (Server-Sent Events)",
+    summary="1. A run's live status",
 )
 async def stream_session_events(session_id: str, request: Request) -> AsyncIterator[ServerSentEvent]:
+    """Server-Sent Events: `session.updated` (the body of `GET /v1/sessions/{session_id}`) now and at
+    every change; `session.deleted` once when it is deleted. Swagger cannot show a stream: use
+    `curl -N` or a browser EventSource."""
     reads = partial(read_current_status, session_id)
     gone = ServerSentEvent(event=Event.SESSION_DELETED, data={"session_id": session_id})
     channel = session_channel(session_id)
@@ -53,19 +55,26 @@ async def stream_session_events(session_id: str, request: Request) -> AsyncItera
         yield event
 
 
-async def check_remediation_for_caller(
-    remediation_id: str, principal: Annotated[Principal, Depends(get_authenticated_principal)]
-) -> None:
-    await asyncio.to_thread(find_remediation_status_for_caller, remediation_id, principal.entity_id)
+async def check_plan_for_caller(
+    session_id: SessionId,
+    scenario_id: ScenarioId,
+    principal: Annotated[Principal, Depends(get_authenticated_principal)],
+) -> RemediationStatus:
+    """The scenario's plan (404 none, 403 another entity's), checked before the stream starts."""
+    return await asyncio.to_thread(find_plan_for_caller, session_id, scenario_id, principal.entity_id)
 
 
 @router.get(
-    "/v1/remediation/{remediation_id}/events",
+    "/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events",
     response_class=EventSourceResponse,
-    dependencies=[Depends(check_remediation_for_caller)],
-    summary="Live status of a remediation plan (Server-Sent Events)",
+    summary="2. A plan's live status",
 )
-async def stream_remediation_events(remediation_id: str, request: Request) -> AsyncIterator[ServerSentEvent]:
+async def stream_remediation_events(
+    plan: Annotated[RemediationStatus, Depends(check_plan_for_caller)], request: Request
+) -> AsyncIterator[ServerSentEvent]:
+    """The plan's status now (`remediation.updated`: the body of `.../treatment-plan/status`), then every
+    change, until the client closes; `remediation.deleted` once, when its run is deleted."""
+    remediation_id = plan.remediation_id
     reads = partial(read_current_remediation_status, remediation_id)
     channel = remediation_channel(remediation_id)
     gone = ServerSentEvent(event=Event.REMEDIATION_DELETED, data={"remediation_id": remediation_id})

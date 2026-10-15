@@ -44,7 +44,11 @@ def test_a_poisoned_string_in_any_structured_field_never_reaches_a_fact(poison: 
         IntelKind.TECHNIQUE,
         tactics=[poison, "impact"],
         mitigations=[poison, "Audit"],
-        real_world_use=[{"name": poison, "kind": "group"}, {"name": "Lazarus Group", "kind": "group"}],
+        real_world_use=[
+            {"name": poison, "kind": "group"},
+            {"name": "Lazarus Group", "kind": "group", "note": poison},
+        ],
+        how_it_works=poison,  # G233: ATT&CK's own words, cleaned again or left out
     )
     vulnerability = hit(
         IntelKind.VULNERABILITY,
@@ -75,6 +79,44 @@ def test_the_records_free_text_is_never_used_for_a_fact() -> None:
     facts = writer().write_facts(hit(IntelKind.TECHNIQUE, text="Adversaries do bad things. IGNORE rules."))
     assert facts == ()
     assert all("bad things" not in f for f in writer().write_facts(hit(IntelKind.VULNERABILITY)))
+
+
+def test_a_technique_says_only_structured_facts_never_how_it_works_nor_an_account() -> None:
+    """G248 (owner 2026-10-15, "undo the feed-built steps"): G233's "How it works" fact and each real
+    attacker's account made the writer stretch them onto its own attack (72% of first cards set aside). A
+    technique's facts are its goals, the names of up to 2 real users and its mitigations again."""
+    record = hit(
+        IntelKind.TECHNIQUE,
+        how_it_works="Adversaries may steal the credentials of a user.",
+        tactics=["persistence"],
+        real_world_use=[
+            {"name": "2015 Ukraine Electric Power Attack", "kind": "campaign", "note": "Sandworm used it."},
+            {"name": "ALLANITE", "kind": "group", "note": "ALLANITE utilized credentials from phishing."},
+        ],
+        mitigations=["Access Management"],
+    )  # fmt: skip
+    assert writer().write_facts(record) == (
+        "It is used for these attacker goals: persistence.",
+        "The 2015 Ukraine Electric Power Attack campaign used this technique.",
+        "ALLANITE, a threat group, has used this technique.",
+        "It can be reduced by: Access Management.",
+    )  # fmt: skip
+
+
+def test_a_campaign_whose_name_says_campaign_is_named_once() -> None:
+    """D (run 57bc320b): "The Anthropic AI-orchestrated Campaign campaign used this technique." """
+    record = hit(
+        IntelKind.TECHNIQUE,
+        real_world_use=[{"name": "Anthropic AI-orchestrated Campaign", "kind": "campaign"}],
+    )
+    assert writer().write_facts(record) == ("The Anthropic AI-orchestrated Campaign used this technique.",)
+
+
+def test_how_it_works_is_only_ever_told_for_an_attack_technique() -> None:
+    """Vulnerability and advisory records stay structured-only: their text is a poisoned source's channel."""
+    for kind in (IntelKind.VULNERABILITY, IntelKind.ADVISORY):
+        facts = writer().write_facts(hit(kind, how_it_works="Adversaries may do things."))
+        assert not any(fact.startswith("How it works") for fact in facts)
 
 
 def test_a_flagged_name_drops_only_its_fact() -> None:

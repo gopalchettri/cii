@@ -189,7 +189,9 @@ def _error_message(run: SessionStatus, controls: StageState) -> dict[str, str]:
         messages.setdefault(str(Step.SCENARIOS), BoardMessage.ABANDONED.format(abandoned=abandoned))
     if controls == StageState.ERROR:
         failed = run.counts["controls_failed"]
-        messages[str(Step.CONTROLS)] = BoardMessage.CONTROLS_FAILED.format(failed=failed)
+        manual = run.kind == RunKind.MANUAL  # only its plan job maps it, never the background
+        unmatched = BoardMessage.CONTROLS_FAILED_MANUAL if manual else BoardMessage.CONTROLS_FAILED
+        messages[str(Step.CONTROLS)] = unmatched.format(failed=failed)
     if run.cancelled:  # G214: who stopped it and when, on the stage it stopped
         stage = str(run.step) if run.status == Status.CANCELLED else str(Step.CONTROLS)
         messages.setdefault(stage, _stopped_by(run.cancelled))

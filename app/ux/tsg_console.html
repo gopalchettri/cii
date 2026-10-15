@@ -651,7 +651,7 @@
     <!-- ---------- remediation plans ---------- -->
     <section class="pane" id="pane-plans">
       <div class="toolbar">
-        <span class="muted">One row per accepted scenario of this session &middot; <code>GET /v1/remediation?session_id=</code></span>
+        <span class="muted">One row per accepted scenario of this session &middot; <code>GET /v1/sessions/{id}/treatment-plans</code></span>
         <div style="flex:1"></div>
         <button class="btn" id="btnRefreshPlans">Refresh</button>
       </div>
@@ -661,7 +661,7 @@
     <!-- ---------- register ---------- -->
     <section class="pane" id="pane-register">
       <div class="toolbar">
-        <span class="muted">Every remediation plan of the entity in <b>X-Entity-Id</b>, across sessions &middot; <code>GET /v1/remediation</code></span>
+        <span class="muted">Every remediation plan of the entity in <b>X-Entity-Id</b>, across sessions &middot; <code>GET /v1/entities/{id}/treatment-plans</code></span>
         <div style="flex:1"></div>
         <button class="btn" id="btnRefreshReg">Refresh</button>
       </div>
@@ -671,7 +671,7 @@
     <!-- ---------- manual ---------- -->
     <section class="pane" id="pane-manual">
       <div class="callout info">A scenario a person wrote: TSG saves it as an accepted scenario of a new <code>manual</code> run and starts
-        its plan in one call (<code>POST /v1/remediation</code> with <code>manual_scenario</code> and an <code>Idempotency-Key</code>;
+        its plan in one call (<code>POST /v1/remediation</code> with <code>is_manual: true</code>, <code>manual_scenario</code> and an <code>Idempotency-Key</code>;
         walkthrough stage 6.M). Edit the JSON, then submit. The asset, systems and library names must exist in this environment.</div>
       <div class="field"><textarea class="code" id="manualJson" spellcheck="false"></textarea></div>
       <div class="row" style="margin-top:10px">
@@ -970,7 +970,7 @@ $(function () {
   // CORE: the session, its refreshes, live-event routing, the seven-step rail, the scenario meter
   //   state.session = RunBoard   (GET /v1/sessions/{id} and every session.updated: session_status + progress)
   //   state.results = RunResults (GET /v1/sessions/{id}/results: progress + scenarios[] + total)
-  //   state.plans   = RemediationSummary[] of this session (GET /v1/remediation?session_id=)
+  //   state.plans   = RemediationSummary[] of this session (GET /v1/sessions/{id}/treatment-plans)
   // ====================================================================================
   var state = { sid: null, session: null, results: null, plans: null, filter: "all", frames: [] };
   var NONE = $.Deferred().resolve().promise();
@@ -1028,7 +1028,7 @@ $(function () {
   function refreshPlans(loud) {
     if (!state.sid) return NONE;
     var sid = state.sid;
-    return api("GET", "/v1/remediation?limit=500&session_id=" + encodeURIComponent(sid), undefined, { quiet: !loud })
+    return api("GET", "/v1/sessions/" + encodeURIComponent(sid) + "/treatment-plans?limit=500", undefined, { quiet: !loud })
       .done(function (p) { if (sid === state.sid) state.plans = (p && p.items) || []; })
       .always(function () { if (sid === state.sid) { renderPlans(); renderScenarios(); renderRail(); refreshWalk(); } });
   }
@@ -1443,6 +1443,7 @@ $(function () {
       (st !== "failed"
         ? sec("Scenario", '<p style="white-space:pre-line">' + (x.scenario_statement ? evText(s, x.scenario_statement) : "—") + "</p>") +
           ((s.evidence || []).length ? sec("Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
+          ((s.related_evidence || []).length ? sec(s.evidence_mode === "nearest" ? "Closest match found (below the relevance check, not cited)" : "Related intelligence (closest match, not cited by any sentence)", s.related_evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, false) + "</div>"; }).join("")) : "") +
           sec("Risk", "<p>" + (x.risk_statement ? evText(s, x.risk_statement) : val(null)) + "</p>") +
           ((x.assumptions || []).length ? sec("Assumptions", ul(x.assumptions)) : "") +
           sec("Supporting systems", sys.length ? '<table class="tbl"><thead><tr><th>System</th><th>Applicable</th><th>Entry point</th><th>Reason</th></tr></thead><tbody>' +
@@ -1555,7 +1556,7 @@ $(function () {
     if (act === "details") return scnDetails(s);
     if (act === "trace") return traceScenario(id, "3.4");
     if (act === "create-plan") return openCreatePlan(id);
-    if (act === "view-plan") return openPlan(planOf(id).remediation_id);
+    if (act === "view-plan") return openPlan(state.sid, id);
     if (act === "reject") return scnReject(s);
     if (act === "accept") return scnAccept(s, !!scnReplacesAccepted(s), $btn);
     if (act !== "regen") return;
@@ -1750,10 +1751,16 @@ $(function () {
 
   // ==================== module: plans ====================
   // ====================================================================================
-  // REMEDIATION PLANS on /v1/remediation (app/api/routers/remediation.py). One record per scenario, keyed by
-  // remediation_id, with numbered versions; a regenerate adds a version and keeps the id. Private names "pl", ids "pd".
+  // REMEDIATION PLANS (app/api/routers/remediation.py): requested with POST /v1/remediation, then every call on one plan
+  // is addressed by its run and scenario (planPath). One record per scenario, with numbered versions; a regenerate adds
+  // a version and keeps the remediation_id. Private names "pl", ids "pd".
   // ====================================================================================
-  var plView;                       // the open plan viewer: {rid, data, timer}
+  var plView;                       // the open plan viewer: {sid, scn, data, timer}
+
+  // v1's address of one scenario's plan: /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan + tail.
+  function planPath(sid, scn, tail) {
+    return "/v1/sessions/" + encodeURIComponent(sid) + "/scenarios/" + encodeURIComponent(scn) + "/treatment-plan" + (tail || "");
+  }
 
   function plSpin() { return '<span class="pd-spin"></span>'; }
   function plDash(v) { return v == null || v === "" ? '<span class="faint">&mdash;</span>' : esc(v); }
@@ -1816,8 +1823,7 @@ $(function () {
   function plRow(x) {
     var r = x.r, sid = x.s ? x.s.scenario_id : r.scenario_id;
     var b = function (act, text, cls) {
-      return '<button class="btn sm ' + (cls || "") + '" data-pl="' + act + '" data-scn="' + attr(sid) + '"' +
-             (r ? ' data-rid="' + attr(r.remediation_id) + '"' : "") + ">" + text + "</button>";
+      return '<button class="btn sm ' + (cls || "") + '" data-pl="' + act + '" data-scn="' + attr(sid) + '">' + text + "</button>";
     };
     var acts = !r ? b("create", "Create plan", "primary")
       : RUNNING(r.latest_status) ? b("view", "View")
@@ -1831,11 +1837,11 @@ $(function () {
   }
   $("#btnRefreshPlans").on("click", function () { refreshPlans(true); });
   $("#plansBox").on("click", "[data-pl]", function () {
-    var $b = $(this), act = $b.attr("data-pl"), sid = $b.attr("data-scn"), rid = $b.attr("data-rid");
+    var $b = $(this), act = $b.attr("data-pl"), scn = $b.attr("data-scn");
     if (act === "goto") { gotoTab("scenarios"); return; }
-    if (act === "create") { openCreatePlan(sid); return; }
-    if (act === "view") { openPlan(rid); return; }
-    var ctx = { rid: rid, title: scnText(scnFind(sid)).scenario_title || (planOf(sid) || {}).title || short(sid), version: null, viewer: false };
+    if (act === "create") { openCreatePlan(scn); return; }
+    if (act === "view") { openPlan(state.sid, scn); return; }
+    var ctx = { sid: state.sid, scn: scn, title: scnText(scnFind(scn)).scenario_title || (planOf(scn) || {}).title || short(scn), version: null, viewer: false };
     if (act === "regen") plRegenerate(ctx); else plDecide(ctx, act === "accept" ? "accept" : "reject");
   });
 
@@ -1844,13 +1850,13 @@ $(function () {
     if ($("#pane-register").hasClass("active")) loadRegister();
     if (walk.rem) loadTraceRem(walk.scn);
   }
-  function plBack(ctx) { if (ctx.viewer) openPlan(ctx.rid); else closeModal(); }
+  function plBack(ctx) { if (ctx.viewer) openPlan(ctx.sid, ctx.scn); else closeModal(); }
   function plStep(ctx, title, html, okText, okCls, run) {
     var btns = ctx.viewer ? [{ text: "Back", cls: "ghost", click: function () { plBack(ctx); } }] : [];
     btns.push({ text: okText, cls: okCls, click: function ($b) { withBusy($b, run()).done(function () { plChanged(); plBack(ctx); }); } });
     openModal(title, html, btns);
   }
-  // POST /v1/remediation/{id}/accept|reject {version?, comment?}: no version = the newest done one (stage 7.2).
+  // POST planPath/review {decision: accepted|rejected, version?, comment?}: no version = the newest done one (stage 7.2).
   function plDecide(ctx, verb) {
     var ok = verb === "accept";
     plStep(ctx, (ok ? "Accept plan — " : "Reject plan — ") + ctx.title,
@@ -1861,10 +1867,10 @@ $(function () {
       '<div class="hint">Up to 2000 characters. Your X-User-Id is recorded as <code>decided_by</code>.</div></div>',
       ok ? "Accept plan" : "Reject plan", ok ? "success" : "danger",
       function () {
-        var body = {}, c = ($("#pdComment").val() || "").trim();
+        var body = { decision: ok ? "accepted" : "rejected" }, c = ($("#pdComment").val() || "").trim();
         if (ctx.version) body.version = ctx.version;
         if (c) body.comment = c;
-        return api("POST", "/v1/remediation/" + encodeURIComponent(ctx.rid) + "/" + verb, body).done(function (r) {
+        return api("POST", planPath(ctx.sid, ctx.scn, "/review"), body).done(function (r) {
           toast(ok ? "Plan accepted" : "Plan rejected", ctx.title + " · decision " + (r && r.decision) +
                 (r && r.accepted_version ? " · accepted v" + r.accepted_version : ""), "ok");
         });
@@ -1873,19 +1879,20 @@ $(function () {
   }
   function plRegenerate(ctx) {
     plStep(ctx, "Regenerate plan — " + ctx.title,
-      '<p style="margin-top:0">Writes a new version of the same plan (<code>POST /v1/remediation/{id}/regenerate {}</code>, stage 7.3). ' +
+      '<p style="margin-top:0">Writes a new version of the same plan (<code>POST &hellip;/treatment-plan/regenerate {}</code>, stage 7.3). ' +
       "The snapshot is rebuilt from the stored register data; earlier versions stay in the history and the id does not change.</p>",
       "Regenerate plan", "primary",
       function () {
-        return api("POST", "/v1/remediation/" + encodeURIComponent(ctx.rid) + "/regenerate", {}).done(function (r) {
+        return api("POST", planPath(ctx.sid, ctx.scn, "/regenerate"), {}).done(function (r) {
           toast("Regenerating plan", ctx.title + " · version " + (r && r.version) + " " + (r && r.status), "ok");
         });
       });
   }
 
-  // ---------- create-plan form: PlanRequest = scenario_id + RegisterData (app/models/remediation_requests.py) ----------
+  // ---------- create-plan form: PlanRequest = is_manual false + session_id + scenario_id + RegisterData (app/models/remediation_requests.py) ----------
   function openCreatePlan(scenarioId) {
     if (!state.sid) { toast("No session", "Open a session first.", "warn"); return; }
+    var sid = state.sid;
     var s = scnFind(scenarioId) || {}, title = scnText(s).scenario_title || short(scenarioId), now = new Date();
     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());          // datetime-local wants local time
     var f = function (id, label, input, hint, cls) {
@@ -1916,7 +1923,7 @@ $(function () {
         f("pdStart", "Mitigation start", '<input id="pdStart" type="date">', "Anchors the schedule's dates (stage 6.9)") +
         f("pdEnd", "Mitigation end", '<input id="pdEnd" type="date">', "Set both dates or neither") +
       "</div>",
-      [{ text: "Create plan", cls: "primary", click: function ($b) { plSubmitCreate($b, scenarioId, title); } }]);
+      [{ text: "Create plan", cls: "primary", click: function ($b) { plSubmitCreate($b, sid, scenarioId, title); } }]);
     var editedF = false, pickedLevel = false;
     var syncLevel = function () { if (!pickedLevel) $("#pdLevel").val(plLevelOf($("#pdF").val())); };
     $("#pdL, #pdI").on("input", function () {
@@ -1928,8 +1935,8 @@ $(function () {
     $("#pdF").on("input", function () { editedF = this.value !== ""; syncLevel(); });
     $("#pdLevel").on("change", function () { pickedLevel = true; });
   }
-  function plSubmitCreate($b, scenarioId, title) {
-    var errs = [], body = { scenario_id: scenarioId };
+  function plSubmitCreate($b, sid, scenarioId, title) {
+    var errs = [], body = { is_manual: false, session_id: sid, scenario_id: scenarioId };
     var val = function (id) { return ($("#" + id).val() || "").trim(); };
     var ctl = val("pdCtl").split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
     if (ctl.length > 50) errs.push("At most 50 existing controls, one per line (there are " + ctl.length + ").");
@@ -1957,31 +1964,29 @@ $(function () {
         closeModal(); plChanged();
       })
       .fail(function (e) {
-        var rid = e.details && e.details.remediation_id;
         var list = (e.errors || []).map(function (x) { return (x.field || "") + ": " + (x.message || ""); });
         $("#pdFormMsg").html('<div class="callout err"><b>' + esc(e.status + " " + (e.reason || e.code)) + "</b> " + esc(e.message) +
           (list.length ? plList(list) : "") +
-          (e.reason === "plan_already_exists" && rid ? '<div style="margin-top:8px">This scenario already has a plan. ' +
+          (e.reason === "plan_already_exists" ? '<div style="margin-top:8px">This scenario already has a plan. ' +
             '<button class="btn sm" id="pdOpenExisting">Open it</button></div>' : "") +
-          (e.reason === "controls_not_ready" ? "<div>The scenario's controls were not mapped within 20 s (stage 6.3); the server " +
-            "handed the work back to the controls job. Try again in about 30 s.</div>" : "") + "</div>");
+          "</div>");
         $("#mBody").scrollTop(0);
-        $("#pdOpenExisting").on("click", function () { openPlan(rid); });
+        $("#pdOpenExisting").on("click", function () { openPlan(sid, scenarioId); });
       });
   }
 
-  // ---------- plan viewer: GET /v1/remediation/{id}/result?include_history=true (RemediationResult) ----------
-  function openPlan(rid) {
-    if (!rid) return;
+  // ---------- plan viewer: GET planPath?include_history=true (RemediationResult) ----------
+  function openPlan(sid, scn) {
+    if (!sid || !scn) return;
     if (plView) clearTimeout(plView.timer);
-    var v = plView = { rid: rid, data: null, timer: null };
+    var v = plView = { sid: sid, scn: scn, data: null, timer: null };
     openModal("Remediation plan", '<div id="pdView"><div class="empty">' + plSpin() + " Loading the plan&hellip;</div></div>", []);
     plLoad(v, true);
   }
   function plAlive(v) { return plView === v && $("#overlay").hasClass("open") && $("#pdView").length > 0; }
   function plLoad(v, loud) {
     clearTimeout(v.timer);
-    return api("GET", "/v1/remediation/" + encodeURIComponent(v.rid) + "/result?include_history=true", undefined, { quiet: !loud })
+    return api("GET", planPath(v.sid, v.scn, "?include_history=true"), undefined, { quiet: !loud })
       .done(function (p) {
         if (!plAlive(v)) return;
         var was = v.data && v.data.latest_status;
@@ -1998,7 +2003,7 @@ $(function () {
   function plRender(v) {
     var p = v.data, sc = p.scenario || {}, top = $("#mBody").scrollTop();
     var title = sc.title || (sc.threat || {}).name || short(p.scenario_id);
-    var ctx = { rid: p.remediation_id, title: title, version: p.shown_version, viewer: true };
+    var ctx = { sid: p.session_id, scn: p.scenario_id, title: title, version: p.shown_version, viewer: true };
     var h = '<div id="pdView"><div class="pd-badges">' + planBadge(p) + '<span class="badge">' + esc("progress: " + ((p.progress || {}).overall || "")) + "</span>" +
       (p.shown_version ? '<span class="badge">Showing v' + esc(p.shown_version) + "</span>" : "") +
       (p.register_data && p.register_data.risk_level ? plLevelBadge(p.register_data.risk_level, "Risk: ") : "") + "</div>";
@@ -2071,13 +2076,13 @@ $(function () {
     .on("click", "[data-pd-dec]", function () {
       if (!plView || !plView.data) return;
       var p = plView.data;
-      plDecide({ rid: p.remediation_id, title: (p.scenario || {}).title || short(p.scenario_id), version: parseInt($(this).attr("data-v"), 10), viewer: true },
+      plDecide({ sid: p.session_id, scn: p.scenario_id, title: (p.scenario || {}).title || short(p.scenario_id), version: parseInt($(this).attr("data-v"), 10), viewer: true },
                $(this).attr("data-pd-dec"));
     });
 
   // ==================== module: register ====================
   // ====================================================================================
-  // PLAN REGISTER: GET /v1/remediation (the entity comes from X-Entity-Id) with its filters.
+  // PLAN REGISTER: GET /v1/entities/{X-Entity-Id}/treatment-plans with its filters (another entity's id → 403).
   // ====================================================================================
   var regState = { limit: 25, offset: 0, status: "", decision: "", risk_level: "", entity: null };
   var regRows = [], regSeq = 0;
@@ -2119,7 +2124,7 @@ $(function () {
     $("#regBox").html(regFiltersHtml() + '<div class="rm-body"><div class="empty">Loading&hellip;</div></div>');
     var q = { limit: regState.limit, offset: regState.offset }, my = ++regSeq;
     REG_FILTERS.forEach(function (f) { if (regState[f[0]]) q[f[0]] = regState[f[0]]; });
-    return api("GET", "/v1/remediation?" + $.param(q), undefined, { quiet: true })
+    return api("GET", "/v1/entities/" + encodeURIComponent(eid) + "/treatment-plans?" + $.param(q), undefined, { quiet: true })
       .done(function (r) { if (my === regSeq) $("#regBox .rm-body").html(regBodyHtml(r)); })
       .fail(function (e) {
         if (my === regSeq) $("#regBox .rm-body").html('<div class="callout err"><b>' + esc(e.reason || e.code || "Request failed") + "</b> " + esc(e.message) + "</div>");
@@ -2138,21 +2143,23 @@ $(function () {
     .on("click", "[data-rm]", function () {
       var o = regRows[$(this).attr("data-i")];
       if (!o) return;
-      if ($(this).attr("data-rm") === "plan") openPlan(o.remediation_id); else { setSession(o.session_id); gotoTab("plans"); }
+      if ($(this).attr("data-rm") === "plan") openPlan(o.session_id, o.scenario_id); else { setSession(o.session_id); gotoTab("plans"); }
     });
 
   // ==================== module: manual ====================
   // ====================================================================================
-  // MANUAL SCENARIO: POST /v1/remediation with manual_scenario (ManualScenario) and a fresh Idempotency-Key.
+  // MANUAL SCENARIO: POST /v1/remediation with is_manual: true, manual_scenario (ManualScenario: v1's flat threat fields
+  // and entity_id = X-Entity-Id) and a fresh Idempotency-Key.
   // ====================================================================================
   var manualLast = null, manualPristine = "";
   function manualExample() {
     return {
+      is_manual: true,
       manual_scenario: {
-        asset_id: 1200, supporting_system_id: [1550, 1551],
-        threat_category: { name: "Tampering" },
-        threat_type: { name: "Engineering Workstation Compromise" },
-        threat: { name: "Engineering workstation compromise" },
+        asset_id: 1200, entity_id: manualEntity(), supporting_system_id: [1550, 1551],
+        threat_category_name: "Tampering",
+        threat_type_name: "Engineering Workstation Compromise",
+        threat_name: "Engineering workstation compromise",
         threat_scenario: "Threat actors compromise an engineering workstation, programming laptop or project repository through " +
           "phishing, malware, portable media, stolen laptop or weak endpoint controls, then use its trusted access to change controller logic.",
         risk_statement: "Compromise of engineering workstations can expose controller logic and enable trusted changes to devices, " +
@@ -2165,6 +2172,7 @@ $(function () {
       mitigation_start_date: "2026-10-15", mitigation_end_date: "2026-12-31"
     };
   }
+  function manualEntity() { var n = parseInt($("#entityId").val(), 10); return isNaN(n) ? null : n; }   // X-Entity-Id as a number
   function manualOkHtml(r, http) {
     return '<div class="rm-ok"><div class="row">' +
       (http === 200 ? '<span class="badge amber">Replayed (HTTP 200): same Idempotency-Key and body, nothing new saved</span>' : '<span class="badge green">Saved (HTTP 202)</span>') +
@@ -2181,13 +2189,15 @@ $(function () {
   }
   function resetManual() { manualPristine = JSON.stringify(manualExample(), null, 2); $("#manualJson").val(manualPristine); }
   $("#manualJson").after('<div class="hint">The asset, supporting systems, library names and mapped_controls must exist in the chosen ' +
-    "environment; leave out mapped_controls to let TSG map the controls itself (stage 4). Every submit sends a new Idempotency-Key; " +
-    "the entity comes from X-Entity-Id.</div>");
+    "environment; leave out mapped_controls to let TSG map the controls itself (stage 4). The threat is named in flat fields: " +
+    "threat_type_id or threat_type_name, threat_id or threat_name (both needed), threat_category_id or threat_category_name (optional). " +
+    "entity_id must equal X-Entity-Id (403 otherwise); left empty, the page fills it in. Every submit sends a new Idempotency-Key.</div>");
   if (!String($("#manualJson").val() || "").trim()) resetManual();
   $("#btnManualReset").on("click", resetManual);
   $("#btnManual").on("click", function () {
     var body;
     try { body = JSON.parse($("#manualJson").val()); } catch (e) { toast("The JSON is not valid", e.message, "err"); return; }
+    if (body && body.manual_scenario && body.manual_scenario.entity_id == null) body.manual_scenario.entity_id = manualEntity();
     manualLast = null; $("#manualResult").empty();
     withBusy($(this), api("POST", "/v1/remediation", body, { headers: { "Idempotency-Key": uuid() }, quiet: true }))
       .done(function (r, http) { manualLast = r || {}; $("#manualResult").html(manualOkHtml(manualLast, http)); })
@@ -2196,7 +2206,7 @@ $(function () {
   $("#manualResult")
     .on("click", "[data-rm]", function () {
       if (!manualLast) return;
-      if ($(this).attr("data-rm") === "plan") openPlan(manualLast.remediation_id); else { setSession(manualLast.session_id); gotoTab("plans"); }
+      if ($(this).attr("data-rm") === "plan") openPlan(manualLast.session_id, manualLast.scenario_id); else { setSession(manualLast.session_id); gotoTab("plans"); }
     })
     .on("click", ".rm-copy", function () { copy($(this).siblings(".mono").text()); });
 
@@ -2616,7 +2626,7 @@ $(function () {
     // ------------------------------------------------------------------ STEP 4
     { id: "4.1", s: "4", t: "Take a controls delivery", run: "worker · task `tsg_map_controls`, queue `tsg_scenarios`",
       from: ["3.10", "5.6", "6.3", "4.5"], in: "The run id; scenarios whose `controls.status` is queued (or running with an expired lease).",
-      p: ["Triggered by a written batch, a regenerate, the sweep, a top-up give-back, or the previous delivery's next turn.",
+      p: ["Triggered by a written batch, a regenerate, the sweep, a plan job's give-back after an outage, or the previous delivery's next turn.",
           "One delivery per run at a time (lease 120 s).",
           "`RunControls.map_all`: up to 6 scenarios per turn; `ControlLeases.claim` takes the oldest waiting scenario (status done; the newest or an accepted version) → `running`, `lease_until + 120 s`, `attempts + 1`, renewed every 30 s."],
       k: [["Controls.PER_DELIVERY", "6", "core/constants/controls.py"], ["Controls.LEASE_SECONDS", "120", "core/constants/controls.py"]],
@@ -2638,9 +2648,9 @@ $(function () {
 
     { id: "4.3", s: "4", t: "Hybrid shortlist of CONTROL_CANDIDATES controls", run: "worker · `snapshot.find_controls` → `HybridIndex.search`",
       from: ["4.2"], in: "The query, the allowed-type mask, the CONTROL corpus (`{name}: {description}`).",
-      p: ["`find_controls([query], CONTROL_CANDIDATES, allowed)` (default 40; at least MAX_CONTROLS, checked at start-up).",
+      p: ["`find_controls([query], CONTROL_CANDIDATES, allowed)` (from the env file only, G249; at least MAX_CONTROLS, checked at start-up).",
           "The same search as 2.5: BM25 (1.5 / 0.75) + cosine with floor 0.60 + RRF (k 60), each leg cut to CONTROL_CANDIDATES, exact-text override."],
-      k: [["CONTROL_CANDIDATES", "40", ".env (setting, G227)"]],
+      k: [["CONTROL_CANDIDATES", "set in .env (required)", ".env (setting, G227, G249)"]],
       m: "Up to CONTROL_CANDIDATES candidate controls (scores in memory).",
       na: ["The shortlist and its BM25 / cosine / RRF scores are never stored."],
       dec: [["Empty shortlist", "failed `no_compatible_control` (the pool is never widened)", "4.5"], ["Candidates", "rerank them", "4.4"]],
@@ -2759,30 +2769,31 @@ $(function () {
 
     // ------------------------------------------------------------------ STEP 6
     { id: "6.1", s: "6", t: "Request a remediation plan", run: "API · `POST /v1/remediation` → `PlanRequestService.request`",
-      from: ["5.3"], in: "`PlanRequest` = `scenario_id` (or `manual_scenario` — exactly one) + the register data.",
+      from: ["5.3"], in: "`PlanRequest` = `is_manual: false` + `session_id` + `scenario_id` (or `is_manual: true` + `manual_scenario`) + the register data.",
       f: [["existing_controls[]", "≤50; strings, or `{control_id?, control_code?, control_name?}`"],
           ["likelihood_rating, impact_rating, final_risk_rating", "decimals ≥0, ≤4 decimal places; final taken as given"],
           ["risk_level, risk_owner, impacted_business_division, risk_identification_date", "echoed into the plan; the risk owner never reaches the AI"],
           ["existing_controls_all_subsystems (+ justification)", "Yes / No"],
           ["mitigation_start_date, mitigation_end_date", "both or neither, end ≥ start; anchor the schedule (6.9)"]],
-      p: ["`_accepted_scenario`: 404 unknown, 403 another entity, 409 `scenario_not_accepted` unless the scenario is done and accepted.",
+      p: ["`PlanRequest.check_one_kind`: each kind sends its own half; `is_manual` missing or the two kinds mixed → 422.",
+          "`_accepted_scenario`: 404 unknown or not in that run, 403 another entity, 409 `scenario_not_accepted` unless the scenario is done and accepted.",
           "`plan_scenario`: a plan for the scenario already exists → 409 `plan_already_exists` with `details.remediation_id` — checked before any control mapping; a race is caught by the unique `scenario_id` index."],
       m: "A validated request for an accepted scenario.",
-      dec: [["`manual_scenario` given", "the hand-written branch", "6.M"], ["Not accepted / already planned", "409 — the request ends", null],
+      dec: [["`is_manual: true`", "the hand-written branch", "6.M"], ["Not accepted / already planned", "409 — the request ends", null],
             ["OK", "build the snapshot", "6.2"]],
       nx: ["6.2"], out: "Register data + the scenario.",
       c: ["app/api/routers/remediation.py:request_plan", "app/services/remediation/requests.py:PlanRequestService", "app/models/remediation_requests.py:PlanRequest"] },
 
     { id: "6.M", s: "6", t: "Hand-written scenario branch", run: "API · `ManualPlans.request`",
-      from: ["6.1"], in: "`manual_scenario{asset_id, supporting_system_ids, service_id?, sector_id?, subsector_id?, threat_category?, threat_type, threat, threat_scenario, risk_statement, mapped_controls?}` + register data + `Idempotency-Key`.",
-      p: ["`Idempotency-Key` is required (422 without). The same key with the same SHA-256 body fingerprint → 200 replay; a different body or asset, or a generated run's key → 409 `idempotency_key_conflict`.",
+      from: ["6.1"], in: "`manual_scenario{asset_id, entity_id (= X-Entity-Id, else 403), supporting_system_id[], service_id?, sector_id?, subsector_id?, threat_category_id? / threat_category_name?, threat_type_id / threat_type_name, threat_id / threat_name, threat_scenario, risk_statement, mapped_controls?}` (type and threat: an id, a name or both) + register data + `Idempotency-Key`.",
+      p: ["`Idempotency-Key` is required (422 without). The same key with the same SHA-256 body fingerprint → 200 replay (`replayed: true`); a different body or asset, or a generated run's key → 409 `idempotency_key_conflict`.",
           "Run and scenario ids are uuid5 values of `entity:key`.",
           "The asset and systems pass the same checks as 1.3–1.4.",
           "The threat is matched to the library in memory (422 `type_mismatch`); a new wording is proposed to the library (audit `library.proposed`); attackers are ranked as in 2.10 (empty actor library → 503).",
           "The run is saved `kind: manual`, done and inactive; the scenario is saved accepted by its author (title null). `mapped_controls` are matched strictly (unknown or repeated → 422); without them the controls are mapped as in step 4.",
           "Then the same path as a generated scenario."],
       m: "A manual run + an accepted scenario.",
-      dec: [["Replay", "200 with the earlier PlanRequested", null], ["Saved", "build the snapshot", "6.2"]],
+      dec: [["Replay", "200 with the earlier PlanStarted, `replayed: true`", null], ["Saved", "build the snapshot", "6.2"]],
       nx: ["6.2"], out: "An accepted, hand-written scenario.",
       c: ["app/services/remediation/manual.py:ManualPlans", "app/services/remediation/manual_scenarios.py", "app/engine/remediation/threat_identity.py", "app/engine/remediation/manual_records.py"] },
 
@@ -2798,16 +2809,20 @@ $(function () {
       nx: ["6.3"], out: "`existing_controls.register_controls`, `risk_assessment`, `register`, advisories.",
       c: ["app/engine/remediation/register.py:register_half", "app/engine/remediation/references.py:resolve_controls"] },
 
-    { id: "6.3", s: "6", t: "Controls top-up", run: "API · `SnapshotMaker.make` → `ControlsTopUp.map_now`",
-      from: ["6.2"], in: "The scenario's `controls`.",
-      p: ["If the scenario's controls are not `done`, or every mapped control has been retired since, they are mapped now (the step-4 mapper) under the scenario's control lease, waiting at most 20 s."],
-      k: [["Remediation.TOP_UP_SECONDS", "20", "core/constants/remediation.py"]],
-      m: "Mapped controls for the snapshot.",
-      dec: [["Timeout, outage, or a worker holds the lease", "503 `controls_not_ready`, `Retry-After: 30`; the work goes back to the controls job", "4.1"],
-            ["`ControlsNotMapped`", "409 `control_library_empty` / `no_compatible_control`", null],
-            ["Mapped", "scenario half", "6.4"]],
-      nx: ["6.4"], out: "`controls.items` ready.",
-      c: ["app/services/remediation/snapshots.py:SnapshotMaker", "app/services/remediation/controls_top_up.py:ControlsTopUp"] },
+    { id: "6.3", s: "6", t: "Missing inputs: left to the plan job", run: "API · `SnapshotMaker.make` (no AI call) → worker · `PlanInputs.complete`",
+      from: ["6.2"], in: "The scenario's `controls` and, for a hand-written one, its `pending` attackers.",
+      p: ["G262 (owner 2026-10-15): with many users at once an AI step inside the request answered 503, so the request makes none.",
+          "Controls mapped and attackers known: the snapshot is built now (6.4). Else the version gets a PENDING snapshot (the register half only) and the answer is still 202 at once.",
+          "The plan job then ranks a hand-written scenario's attackers (and proposes its new wording), maps missing controls under the scenario's control lease (waiting for the controls job's mapping when it holds the lease, and using it), saves the full snapshot on the version, then plans.",
+          "No control of the scenario's asset type: the nearest of another type is kept, flagged (owner 2026-10-15)."],
+      k: [["Controls.PLAN_WAIT_POLL_SECONDS", "5", "core/constants/controls.py"], ["Controls.LEASE_SECONDS", "120", "core/constants/controls.py"]],
+      m: "A complete snapshot, now or in the plan job.",
+      dec: [["Empty control library", "409 `control_library_empty` at the request (in memory)", null],
+            ["The controls job holds the lease", "the plan job waits for it and uses its result; still held after the lease → retried later", "4.1"],
+            ["Outage in the plan job", "controls freed; the job retries after its back-off", "6.6"],
+            ["Known now", "scenario half", "6.4"]],
+      nx: ["6.4"], out: "`controls.items` ready; the snapshot complete or pending.",
+      c: ["app/services/remediation/snapshots.py:SnapshotMaker", "app/worker/plan_inputs.py:PlanInputs"] },
 
     { id: "6.4", s: "6", t: "Snapshot, scenario half", run: "API · `build_snapshot`",
       from: ["6.3"], in: "The scenario, its run's frozen context, its mapped controls, the register half.",
@@ -2826,7 +2841,7 @@ $(function () {
           "`send_job` on queue `tsg_scenarios`; audit `plan.requested` (risk owner masked); `publish_remediation_status`."],
       m: "A queued plan record.",
       dec: [["Always", "202; the worker takes over", "6.6"]],
-      nx: ["6.6"], out: "202 `PlanRequested`.", osh: "{ remediation_id, session_id, scenario_id, version: 1, status: \"queued\" }", st: "tsg_remediations",
+      nx: ["6.6"], out: "202 `PlanStarted` (keep session_id + scenario_id: they address the plan from now on).", osh: "{ remediation_id, session_id, scenario_id, version: 1, status: \"queued\", is_manual, replayed: false }", st: "tsg_remediations",
       c: ["app/services/remediation/requests.py:new_plan_record", "app/services/remediation/requests.py:PlanRequestService"] },
 
     { id: "6.6", s: "6", t: "A worker claims the plan job", run: "worker · task `tsg_write_plan(record_id, epoch = version)`",
@@ -2884,18 +2899,18 @@ $(function () {
       c: ["app/engine/remediation/schedule_checks.py:schedule_warnings", "app/worker/tasks/remediation.py:write_version"] },
 
     // ------------------------------------------------------------------ STEP 7
-    { id: "7.1", s: "7", t: "Read the plan", run: "API · GET /v1/remediation…",
-      from: ["6.10"], in: "The remediation id (from `GET /v1/remediation?session_id=` or `?scenario_id=`).",
-      p: ["`GET /v1/remediation/{id}/status` → RemediationStatus; `progress.overall` = the first that applies: `failed` > `generating` (queued/running) > `awaiting_review` (decision pending) > `accepted` / `rejected`.",
-          "`GET /v1/remediation/{id}/result?include_history=true` → RemediationResult: the shown version = the accepted one, else the newest done one; `plan` flattened by `PlanView.from_stored` (`controls_to_be_implemented[]`, `actions[]`, `critical_path`, `mitigation_timeline…`), `warnings`, the `scenario` summary, `register_data`, `versions[]` (never the snapshot).",
-          "`GET /v1/remediation?session_id&scenario_id&status&decision&risk_level&offset&limit` → RemediationList."],
+    { id: "7.1", s: "7", t: "Read the plan", run: "API · GET /v1/sessions/{id}/scenarios/{id}/treatment-plan…",
+      from: ["6.10"], in: "The run and scenario ids (from the 202, or `GET /v1/sessions/{id}/treatment-plans`).",
+      p: ["`GET …/treatment-plan/status` → RemediationStatus; `progress.overall` = the first that applies: `failed` > `generating` (queued/running) > `awaiting_review` (decision pending) > `accepted` / `rejected`. 404 when the scenario has no plan (or is not in that run).",
+          "`GET …/treatment-plan?include_history=true` → RemediationResult: the shown version = the accepted one, else the newest done one; `plan` flattened by `PlanView.from_stored` (`controls_to_be_implemented[]`, `actions[]`, `critical_path`, `mitigation_timeline…`), `warnings`, the `scenario` summary, `register_data`, `versions[]` (never the snapshot).",
+          "`GET /v1/sessions/{id}/treatment-plans` (a run's) or `GET /v1/entities/{id}/treatment-plans` (the register; {id} = X-Entity-Id, else 403), each `?status&decision&risk_level&offset&limit` → RemediationList."],
       m: "What the reviewer reads.",
       dec: [["Decide", "accept or reject a version", "7.2"], ["Ask for another version", "regenerate", "7.3"]],
       nx: ["7.2", "7.3"], out: "RemediationResult.",
       c: ["app/services/remediation/queries.py:RemediationQueries", "app/models/remediation_views.py:RemediationResult", "app/models/remediation.py:RemediationStatus"] },
 
-    { id: "7.2", s: "7", t: "Accept or reject a version", run: "API · `POST /v1/remediation/{id}/accept | reject`",
-      from: ["7.1"], in: "`{version?, comment? (≤2,000)}`; no version = the newest done one.",
+    { id: "7.2", s: "7", t: "Accept or reject a version", run: "API · `POST …/treatment-plan/review`",
+      from: ["7.1"], in: "`{decision: accepted | rejected, version?, comment? (≤2,000)}`; no version = the newest done one.",
       p: ["Refusals: no done version, or the version not done → 409 `not_complete`; an unknown version → 404 `version_not_found`; the scenario no longer accepted → 409 `scenario_not_accepted`.",
           "Repeating the same decision → 200, nothing changes, nothing is audited.",
           "Accepting sets `accepted_version` (a previously accepted version returns to pending); rejecting the accepted version clears it.",
@@ -2907,7 +2922,7 @@ $(function () {
       nx: ["7.3"], out: "The end of the flow: an accepted, dated remediation plan for an accepted threat scenario.",
       c: ["app/services/remediation/decisions.py:PlanDecisions", "app/engine/remediation/decisions.py"] },
 
-    { id: "7.3", s: "7", t: "Regenerate a plan", run: "API · `POST /v1/remediation/{id}/regenerate`",
+    { id: "7.3", s: "7", t: "Regenerate a plan", run: "API · `POST …/treatment-plan/regenerate`",
       from: ["7.1", "7.2"], in: "`{}` (any field → 422).",
       p: ["Refusals: 404 / 403; 409 `scenario_not_accepted`; 409 `generation_in_progress` if the latest version is not done or failed, or another regenerate won.",
           "New version = `job.epoch + 1`; its snapshot is rebuilt from the stored register (6.2–6.4); a control the previous version had mapped but the scenario lost → `CONTROL_NO_LONGER_MAPPED`.",
@@ -2946,7 +2961,7 @@ $(function () {
       nx: [], out: "The answer; a `tsg_ai_calls` record (not exposed by the API — import it).",
       c: ["app/engine/shared/ask_ai.py:ask_ai_and_check", "app/ai/chat.py", "app/ai/common.py:call_with_retries", "app/data_access/ai_calls.py"] },
 
-    { id: "X.3", s: "X", t: "Live status and SSE", run: "API · `GET /v1/sessions/{id}/events`, `GET /v1/remediation/{id}/events`",
+    { id: "X.3", s: "X", t: "Live status and SSE", run: "API · `GET /v1/sessions/{id}/events`, `GET /v1/sessions/{id}/scenarios/{id}/treatment-plan/events`",
       from: ["2.1", "2.11", "3.9", "4.5", "5.3", "6.10", "7.2"], in: "A publish: Redis channel `tsg:events:session:{id}` carrying only the record id (best effort).",
       p: ["The stream checks ownership first (404/403/503 as normal problem responses), subscribes, reads MongoDB, and sends the current status at once.",
           "On each message it re-reads MongoDB and sends only a body that changed: `event: session.updated` with the RunBoard JSON (or `remediation.updated` with RemediationStatus), `retry: 3000`.",
@@ -3071,7 +3086,7 @@ $(function () {
     "3.10": "When the batch is done, control mapping starts for the new cards, and either the next batch of the set begins or the run is marked done (or partial, if something could not be done).",
     "4.1": "A background worker picks up scenarios that still need security controls, up to six per turn.",
     "4.2": "It builds a search text from the scenario and keeps only controls that fit the asset's type (IT, OT or both).",
-    "4.3": "It searches the control library with the same word + meaning search as threats (see the worked example in 2.5) and keeps the best CONTROL_CANDIDATES (40) candidates.",
+    "4.3": "It searches the control library with the same word + meaning search as threats (see the worked example in 2.5) and keeps the best CONTROL_CANDIDATES candidates (the number set in .env).",
     "4.4": "A ranking model (the reranker) reads the scenario and each candidate control together and scores the match from 0 to 100. Controls at or above CONTROL_SIMILARITY_THRESHOLD are kept, at most MAX_CONTROLS (10); if fewer than MIN_CONTROLS (1) reach it, the nearest ones are added, marked \"nearest\", so a scenario is never left without a control.",
     "4.5": "The controls are saved on the scenario. Failures are retried automatically: a sweep runs every 5 minutes and retries failed mappings after 30 minutes.",
     "5.1": "The reviewer reads the scenario cards and the run's counters.",
@@ -3233,7 +3248,7 @@ $(function () {
     "3.10": ["Batch results", "", "Run status", "next batch · done · partial · controls job"],
     "4.1": ["Scenarios waiting for controls", "", "One scenario to map", "up to 6 per turn"],
     "4.2": ["Scenario + asset types", "IT · OT", "Control search text", "+ which control types fit"],
-    "4.3": ["Control search text", "+ control library index", "Control shortlist", "up to CONTROL_CANDIDATES (40)"],
+    "4.3": ["Control search text", "+ control library index", "Control shortlist", "up to CONTROL_CANDIDATES (set in .env)"],
     "4.4": ["Control shortlist", "", "Kept controls", "≥ threshold kept (max 10) · else the nearest (min 1)"],
     "4.5": ["Kept controls, or an error", "", "Saved controls", "done · or failed and retried"],
     "5.1": ["Session id", "", "Cards + counters", "every scenario · run status"],
@@ -3254,7 +3269,7 @@ $(function () {
     "6.8": ["Draft plan", "", "Checked plan", "controls matched to the library · warnings"],
     "6.9": ["Actions + mitigation window", "", "Dated plan", "start and end dates · critical path · total days"],
     "6.10": ["Dated plan", "", "Saved plan version", "status done · warnings"],
-    "7.1": ["Remediation id", "", "Plan + its versions", "what the reviewer reads"],
+    "7.1": ["Run id + scenario id", "", "Plan + its versions", "what the reviewer reads"],
     "7.2": ["A version + accept or reject", "", "Decision", "accepted = the final output"],
     "7.3": ["\"Regenerate\" request", "", "New plan version", "→ step 6"],
     "X.1": ["A job's error", "", "Retry, or a failure", "waits 15 · 30 · 60 · 120 s, up to 5 tries"],
@@ -3728,21 +3743,16 @@ $(function () {
     if ($("#sdOut").length) runScheduleDemo();
   }
 
-  // The selected scenario's remediation: GET /v1/remediation?scenario_id= then its result with the history.
+  // The selected scenario's remediation with the history: GET planPath?include_history=true (404 = no plan yet).
   function loadTraceRem(scnId) {
     var my = ++walk.remSeq;
     walk.remLoading = scnId;
     if (!scnId || !state.sid) { walk.rem = null; walk.remFor = scnId; walk.remLoading = null; return; }
-    api("GET", "/v1/remediation?limit=1&scenario_id=" + encodeURIComponent(scnId), undefined, { quiet: true })
-      .done(function (l) {
-        if (my !== walk.remSeq) return;
-        var it = l && l.items && l.items[0];
-        if (!it) { walk.rem = null; walk.remFor = scnId; walk.remLoading = null; refreshWalk(); return; }
-        api("GET", "/v1/remediation/" + encodeURIComponent(it.remediation_id) + "/result?include_history=true", undefined, { quiet: true })
-          .done(function (r) { if (my === walk.remSeq) { walk.rem = r; walk.remFor = scnId; } })
-          .always(function () { if (my === walk.remSeq) { walk.remLoading = null; refreshWalk(); } });
-      })
-      .fail(function () { if (my === walk.remSeq) { walk.remFor = scnId; walk.remLoading = null; refreshWalk(); } });
+    var sid = (walk.rem && walk.rem.scenario_id === scnId && walk.rem.session_id) || state.sid;   // a plan opened from the register keeps its run
+    api("GET", planPath(sid, scnId, "?include_history=true"), undefined, { quiet: true, expected: [404] })
+      .done(function (r) { if (my === walk.remSeq) walk.rem = r; })
+      .fail(function (e) { if (my === walk.remSeq && e.status === 404) walk.rem = null; })
+      .always(function () { if (my === walk.remSeq) { walk.remFor = scnId; walk.remLoading = null; refreshWalk(); } });
   }
   // Pick a scenario to trace (one with a plan, else an accepted one, else the first written one) and keep its plan fresh.
   function autoTrace() {
@@ -3811,7 +3821,7 @@ $(function () {
     return c.sc ? evb("rt", title || "Traced scenario " + short(c.sc.scenario_id) + " · v" + c.sc.version, "GET /v1/sessions/{id}/results → scenarios[]", jpre(pick(c.sc, keys))) : null;
   }
   function remPanel(c, keys, title) {
-    return c.rem ? evb("rt", title || "Remediation " + short(c.rem.remediation_id), "GET /v1/remediation/{id}/result?include_history=true", jpre(pick(c.rem, keys), 6000)) : null;
+    return c.rem ? evb("rt", title || "Remediation " + short(c.rem.remediation_id), "GET /v1/sessions/{id}/scenarios/{id}/treatment-plan?include_history=true", jpre(pick(c.rem, keys), 6000)) : null;
   }
   function capPanel(key, title) {
     var x = cap[key];
@@ -3895,7 +3905,7 @@ $(function () {
   }
   function versionsPanel(c) {
     if (!c.rem || !c.rem.versions) return null;
-    return evb("rt", "versions[] of the traced plan", "GET /v1/remediation/{id}/result?include_history=true", tblHtml(
+    return evb("rt", "versions[] of the traced plan", "GET /v1/sessions/{id}/scenarios/{id}/treatment-plan?include_history=true", tblHtml(
       ["Version", "Status", "Decision", "Decided by", "Requested", "Completed", "Warnings", "Error"], c.rem.versions.map(function (e) {
         return ["v" + esc(e.version) + (e.version === c.rem.accepted_version ? ' <span class="badge green">accepted</span>' : ""), esc(e.status), esc(e.decision),
                 esc(e.decided_by || ""), esc(fmtTime(e.requested_at)), esc(fmtTime(e.completed_at)), esc((e.warnings || []).length), esc(e.error ? e.error.code : "")];
@@ -4014,8 +4024,8 @@ $(function () {
     },
     "6.10": function (c) { return [["out", remPanel(c, ["latest_status", "progress", "warnings"])]]; },
     "7.1": function (c) { return [["out", remPanel(c, ["shown_version", "latest_version", "latest_status", "decision", "accepted_version", "progress"])]]; },
-    "7.2": function (c) { return [["out", versionsPanel(c)], ["out", capPanel("POST /v1/remediation/{id}/accept", "The last accept")], ["out", capPanel("POST /v1/remediation/{id}/reject", "The last reject")]]; },
-    "7.3": function (c) { return [["out", versionsPanel(c)], ["out", capPanel("POST /v1/remediation/{id}/regenerate", "The last regenerate")]]; },
+    "7.2": function (c) { return [["out", versionsPanel(c)], ["out", capPanel("POST /v1/sessions/{id}/scenarios/{id}/treatment-plan/review", "The last accept or reject")]]; },
+    "7.3": function (c) { return [["out", versionsPanel(c)], ["out", capPanel("POST /v1/sessions/{id}/scenarios/{id}/treatment-plan/regenerate", "The last regenerate")]]; },
     "X.1": function (c) { return [["out", apiSession(c, ["session_status", "progress.overall", "progress.error_message"])], ["mid", impPanel(c.sess, "job", "job", "tsg_sessions")]]; },
     "X.2": function (c) { return [["out", callsPanel(c, null)]]; },
     "X.3": function (c) { return [["out", framesPanel(c)]]; }

@@ -40,6 +40,7 @@ from app.services.external_intelligence.sources.text_guard import (
     SourceTextGuard,
     UnsafeSourceText,
     limit_rejected,
+    plain_id,
     sort_into,
 )
 
@@ -139,7 +140,7 @@ class CisaIcsAdvisoriesSource:
         for stamp, path in run.failed:
             runs = failed_runs.get(path, 0) + 1
             if runs >= IcsReading.MAX_FAILED_RUNS:
-                name = self._guard.plain_id(path.rpartition("/")[2].removesuffix(".json").upper())
+                name = plain_id(path.rpartition("/")[2].removesuffix(".json").upper())
                 run.rejected.append(
                     RejectedRecord(
                         IntelSource.CISA_ICS, name, IntelRejection.ICS_DOWNLOAD_FAILED, content_hash_of(path)
@@ -153,7 +154,7 @@ class CisaIcsAdvisoriesSource:
     def _read_file(self, path: str, body: bytes) -> IntelRecord | RejectedRecord:
         """One advisory file as a record; an unreadable or incomplete one as a rejected one, an unsafe one as
         a quarantined one."""
-        name = self._guard.plain_id(path.rpartition("/")[2].removesuffix(".json").upper())
+        name = plain_id(path.rpartition("/")[2].removesuffix(".json").upper())
         try:
             doc = load_json(body, IntelSource.CISA_ICS.value)
             made = self._reader.read_advisory(doc, path) if isinstance(doc, dict) else None

@@ -110,13 +110,21 @@ class FinishedPlan:
 
 
 class PlanRequested(BaseModel):
-    """202 of #11 (200 on a replay of a hand-written request)."""
+    """202 of a regenerate: the version being written. Keep session_id and scenario_id: every plan call takes
+    them in its address (/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan...)."""
 
     remediation_id: str
     session_id: str
     scenario_id: str
     version: int
     status: Status
+
+
+class PlanStarted(PlanRequested):
+    """202 of `POST /v1/remediation` (200 on a replay of a hand-written request), with v1's two flags."""
+
+    is_manual: bool  # the scenario's own kind (a person wrote it), not an echo of the request
+    replayed: bool = False  # this Idempotency-Key had already saved this scenario: nothing new was saved
 
 
 class Progress(BaseModel):

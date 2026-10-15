@@ -49,6 +49,13 @@ def _first_sentence(text: Any) -> str:
     return _SENTENCE_END.split(plain[: AttackReading.NOTE_CHARS * 4], maxsplit=1)[0]
 
 
+def _described(guard: SourceTextGuard, obj: dict[str, Any]) -> str:
+    """The technique's description, citations gone, screened by sentence (G237: only flagged ones go)."""
+    return guard.clean_sentences(
+        _CITATION.sub("", str(obj.get("description") or "")), AttackReading.TEXT_LIMIT
+    )
+
+
 def _shorten(description: str, room: int) -> str:
     """The description cut at the last sentence end that leaves room for the rest of the text."""
     room -= AttackReading.TAIL_ROOM
@@ -157,12 +164,11 @@ def technique_record(
         return guard.quarantine(identifier, obj, unsafe.reason)
 
 
-def _search_text(guard: SourceTextGuard, obj: dict[str, Any], head: str, lists: list[list[str]]) -> str:
+def _search_text(guard: SourceTextGuard, description: str, head: str, lists: list[list[str]]) -> str:
     """The head, the description (cut to leave room) and the tactics, platforms and mitigations in words."""
     labels = ("Tactics", "Platforms", "Mitigations")
     lists = [*lists[:2], lists[2][: AttackReading.MITIGATIONS_IN_TEXT]]
     tail = [f"{label}: {', '.join(items)}." for label, items in zip(labels, lists, strict=True) if items]
-    description = guard.clean(_CITATION.sub("", str(obj.get("description") or "")), AttackReading.TEXT_LIMIT)
     room = _shorten(description, AttackReading.TEXT_LIMIT - len(head))
     return guard.clean(" ".join([head, room, *tail]), TextSafety.MAX_TEXT_CHARS)
 
@@ -180,7 +186,8 @@ def _build(
     tactics = [t for t in guard.clean_list(phases, AttackReading.LABEL_CHARS) if is_tactic(t)]
     platforms = guard.clean_list(obj.get("x_mitre_platforms"), AttackReading.LABEL_CHARS)
     mitigations = index.mitigations_of(obj.get("id"))
-    text = _search_text(guard, obj, f"{identifier} {name}.", [tactics, platforms, mitigations])
+    description = _described(guard, obj)
+    text = _search_text(guard, description, f"{identifier} {name}.", [tactics, platforms, mitigations])
     data = {
         "technique_id": identifier,
         "tactics": tactics,

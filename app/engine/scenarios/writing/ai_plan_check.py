@@ -79,7 +79,7 @@ def _unsupported_citations(
     if not (flagged := sorted(named & cited)):
         return ()
     message = FindingMessage.CITATION_UNSUPPORTED.format(markers=", ".join(f"[{n}]" for n in flagged))
-    return (Finding(FindingCode.CITATION_UNSUPPORTED, message),)
+    return (Finding(FindingCode.CITATION_UNSUPPORTED, message, tuple(flagged)),)
 
 
 def _read_answer(answer: dict[str, Any]) -> tuple[PlanCheckAnswer | None, list[str]]:

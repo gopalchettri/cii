@@ -2,12 +2,14 @@
 half (the asset, its systems, the threat, the scenario, its mapped controls with their library details)
 joined to the register half (app/engine/remediation/register.py) in one fixed key order. Whether the
 register already covers a mapped control is decided here, in code; the AI only judges the register's free
-text. Every free text passes the one door (`clip`). Pure, no IO: the library is in memory."""
+text. Every free text passes the one door (`clip`). A plan request makes no AI call (G262): when the
+scenario's controls or attackers are not known yet, the version gets a pending snapshot (the register half
+only) that its plan job completes. Pure, no IO: the library is in memory."""
 
 from collections.abc import Mapping
 from typing import Any
 
-from app.core.constants import ControlMatch, Remediation, SnapshotWarning
+from app.core.constants import ControlMatch, Remediation, SnapshotWarning, Status
 from app.engine.remediation.register import clip
 from app.engine.scenarios.finding.asset_landscape import raw_system_facts
 from app.engine.shared.names import name_match_key
@@ -15,6 +17,35 @@ from app.engine.shared.prompt_redaction import facts_safe_for_prompt
 from app.models.asset_context import FrozenContext
 from app.models.library import LibraryControl
 from app.search.texts import describe_control
+
+
+def inputs_ready(scenario: dict[str, Any], controls_by_id: Mapping[int, LibraryControl]) -> bool:
+    """Whether a snapshot can be built now, with no AI call: the scenario's controls mapped, at least one
+    still active in the library, and its attackers known (a hand-written scenario's: its plan job's)."""
+    controls = scenario.get("controls") or {}
+    items = controls.get("items") if controls.get("status") == Status.DONE else None
+    active = any(item["control_id"] in controls_by_id for item in items or ())
+    return active and not (scenario.get("pending") or {}).get("actors")
+
+
+def pending_snapshot(scenario_id: str, register_part: dict[str, Any]) -> dict[str, Any]:
+    """A version's input the plan job completes (app/worker/plan_inputs.py): the register frozen now."""
+    return {"pending": True, "scenario_id": scenario_id, "register_part": register_part}
+
+
+def is_pending(snapshot: dict[str, Any]) -> bool:
+    return bool(snapshot.get("pending"))
+
+
+def no_longer_mapped(previous: dict[str, Any], snapshot: dict[str, Any], previous_version: int) -> list[str]:
+    """A warning for each control the previous version's snapshot had that this one no longer maps (none
+    when the previous one never got its controls)."""
+    now_mapped = {item["control_code"] for item in snapshot["existing_controls"]["library_mapped"]}
+    return [
+        SnapshotWarning.CONTROL_NO_LONGER_MAPPED.format(code=item["control_code"], version=previous_version)
+        for item in (previous.get("existing_controls") or {}).get("library_mapped") or []
+        if item["control_code"] not in now_mapped
+    ]
 
 
 def build_snapshot(

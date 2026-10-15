@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.ai import get_chat_model, get_embedding_model, get_rerank_model
 from app.api.errors import register_exception_handlers
 from app.api.middleware import AnswerUnexpectedErrors, RequestContextMiddleware
+from app.api.openapi_docs import API_DESCRIPTION, OPENAPI_TAGS
 from app.api.routers.api_clients import router as api_clients_router
 from app.api.routers.embeddings import router as embeddings_router
 from app.api.routers.events import router as events_router
@@ -22,6 +23,7 @@ from app.api.routers.library_curation import router as library_curation_router
 from app.api.routers.remediation import router as remediation_router
 from app.api.routers.review import router as review_router
 from app.api.routers.scenarios import router as scenarios_router
+from app.api.routers.service_mapper import router as service_mapper_router
 from app.core.config import get_settings
 from app.core.constants import Header
 from app.core.logging import configure_logging
@@ -57,7 +59,11 @@ async def application_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="DESC - Critical Information Infrastructure", version="1.0.0", lifespan=application_lifespan
+        title="DESC - Critical Information Infrastructure",
+        version="1.0.0",
+        description=API_DESCRIPTION,
+        openapi_tags=OPENAPI_TAGS,
+        lifespan=application_lifespan,
     )
     # Added first = innermost: an unexpected 500 still passes CORS and gets a request id.
     app.add_middleware(AnswerUnexpectedErrors)
@@ -70,16 +76,18 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestContextMiddleware)  # added last = outermost: CORS answers get a request id too
     register_exception_handlers(app)
+    # In the order a tester sets up and tests (app/api/openapi_docs.py): Swagger lists them so.
     app.include_router(health_router)
     app.include_router(api_clients_router)
-    app.include_router(events_router)
+    app.include_router(embeddings_router)
+    app.include_router(external_intelligence_router)
     app.include_router(scenarios_router)
     app.include_router(review_router)
     app.include_router(remediation_router)
-    app.include_router(library_curation_router)
-    app.include_router(embeddings_router)
     app.include_router(jobs_router)
-    app.include_router(external_intelligence_router)
+    app.include_router(events_router)
+    app.include_router(library_curation_router)
+    app.include_router(service_mapper_router)
     return app
 
 

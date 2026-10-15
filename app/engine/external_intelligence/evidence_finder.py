@@ -30,6 +30,7 @@ from app.engine.external_intelligence.rerank_gate import RerankGate, get_rerank_
 from app.engine.shared.parallel import run_in_parallel
 from app.models.external_intelligence.evidence import (
     Considered,
+    Evidence,
     EvidenceBatchSummary,
     IntelHit,
 )
@@ -101,21 +102,34 @@ class EvidenceFinder:
             except _SEARCH_ERRORS:  # the reranker: this request alone goes without evidence
                 log.warning(LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=1, exc_info=True)
                 return EvidenceResult((), record(request, failure=EvidenceSearchFailure.UNAVAILABLE))
-            checker = ProductLinkChecker(request.recorded_products)
-            evidence, considered = self._selector.select(scored, checker)
-            # G230/G232: the real groups behind them and what each source tells about place; no AI call
-            known, near = search.corpus.groups, request.near
-            scoped = (
-                replace(item, scope=near.scope(known.by_technique.get(item.ref, ()))) for item in evidence
-            )
-            evidence = tuple(scoped)
-            refs, related = [item.ref for item in evidence], [c.ref for c in considered]
-            groups = pick_known_groups(request.actor, refs, related, known, near)
-            return EvidenceResult(evidence, record(request, considered), groups)
+            return self._chosen(search, request, scored, record)
 
         return run_in_parallel(
             rank_one, range(len(requests)), EvidenceLimits.SEARCHES_AT_ONCE, "evidence-rerank"
         )
+
+    def _chosen(
+        self,
+        search: EvidenceSearch,
+        request: EvidenceRequest,
+        scored: list[IntelHit],
+        record: Callable[..., RankedSearchRecord],
+    ) -> EvidenceResult:
+        """The evidence chosen from one request's scored candidates, each told what it says about place, and
+        the real groups behind it (G230, G232); none chosen, the closest one, never cited (G254). No AI
+        call."""
+        checker = ProductLinkChecker(request.recorded_products)
+        evidence, considered = self._selector.select(scored, checker)
+        known, near = search.corpus.groups, request.near
+
+        def placed(item: Evidence) -> Evidence:
+            return replace(item, scope=near.scope(known.by_technique.get(item.ref, ())))
+
+        evidence = tuple(map(placed, evidence))
+        refs, related = [item.ref for item in evidence], [c.ref for c in considered]
+        groups = pick_known_groups(request.actor, refs, related, known, near)
+        closest = None if evidence else self._selector.nearest(scored, checker)
+        return EvidenceResult(evidence, record(request, considered), groups, closest and placed(closest))
 
     def _rerank(self, search: EvidenceSearch, query: str, hits: list[IntelHit]) -> list[IntelHit]:
         if not hits:  # nothing to score: no call, no place in the gate

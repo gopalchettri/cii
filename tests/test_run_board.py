@@ -156,6 +156,11 @@ def test_a_failed_run_says_why_and_a_failed_mapping_names_its_count() -> None:
     assert failed.scenario_count.total is None and failed.scenario_count.remaining is None
     unmatched = build_board(_run(**_written(**_SET, controls_failed=2))).progress
     assert unmatched.error_message == {"controls": BoardMessage.CONTROLS_FAILED.format(failed=2)}
+    # Live E2E 2026-10-15: a hand-written run's controls are never tried again in the background (Rule R1T).
+    hand_written = _written(written=1, accepted=1, controls_failed=1) | {"kind": RunKind.MANUAL}
+    board = build_board(_run(**hand_written)).progress
+    assert board.error_message == {"controls": BoardMessage.CONTROLS_FAILED_MANUAL}
+    assert "tried again later" not in board.error_message["controls"]
 
 
 def test_a_summary_shows_its_own_action_running_or_failed_never_the_one_before() -> None:

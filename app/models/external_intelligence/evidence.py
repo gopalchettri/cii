@@ -54,9 +54,12 @@ class Evidence:
     # G232: groups behind it attacked the deployment's country, its region, or neither (global); never proof
     # that this asset or its organisation was attacked.
     scope: EvidenceScope = EvidenceScope.GLOBAL
+    # G234 (owner 2026-10-14: the feeds guide the controls): the source's own names for what reduces it, the
+    # ones its facts say (an ATT&CK technique's mitigations); the control search reads them.
+    mitigations: tuple[str, ...] = ()
 
     def as_doc(self) -> dict[str, Any]:
-        return asdict(self) | {"facts": list(self.facts)}
+        return asdict(self) | {"facts": list(self.facts), "mitigations": list(self.mitigations)}
 
 
 @dataclass(frozen=True)

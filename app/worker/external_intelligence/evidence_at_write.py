@@ -74,7 +74,16 @@ class EvidenceAtWrite:
             for key, fields in again.items():
                 earlier = found[key]["intel_search"]
                 past = [*earlier.pop("attempts", []), earlier]
-                found[key] = fields | {"intel_search": fields["intel_search"] | {"attempts": past}}
+                # G254: real evidence found on a later try makes any nearest of the earlier tries irrelevant
+                nearest = (
+                    []
+                    if fields["evidence"]
+                    else _closest(found[key]["nearest_evidence"], fields["nearest_evidence"])
+                )
+                found[key] = fields | {
+                    "intel_search": fields["intel_search"] | {"attempts": past},
+                    "nearest_evidence": nearest,
+                }
         return found
 
     def _find(self, requests: dict[str, EvidenceRequest]) -> Found:
@@ -107,7 +116,17 @@ def _fields_of(result: EvidenceResult, searched_at: str) -> dict[str, Any]:
         "evidence": [item.as_doc() | {"searched_at": searched_at} for item in result.evidence],
         "intel_search": result.search.as_doc() | {"searched_at": searched_at},
         "known_groups": [group.as_doc() for group in result.groups],  # G230: kept with the evidence
+        # G254: none passed: the closest candidate, shown on the card and never given to the writer
+        "nearest_evidence": [result.nearest.as_doc() | {"searched_at": searched_at}]
+        if result.nearest
+        else [],
     }
+
+
+def _closest(*tries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The best-scored nearest candidate over every search of a threat ([] when none had one)."""
+    candidates = [item for found in tries for item in found]
+    return [max(candidates, key=lambda item: float(item.get("score") or 0.0))] if candidates else []
 
 
 def _is_settled(fields: dict[str, Any]) -> bool:

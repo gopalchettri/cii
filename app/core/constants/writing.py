@@ -72,6 +72,7 @@ class FindingCode(StrEnum):
     # G229 (owner 2026-10-13), external intelligence on: a story that cites no evidence, a citation with no
     # claim, a citation its entry does not support.
     NO_EVIDENCE_CITED = "no_evidence_cited"
+    CITATION_REMOVED = "citation_removed"  # G252: a footnote its source did not support was taken out
     EVIDENCE_LINK_MISSING = "evidence_link_missing"
     CITATION_UNSUPPORTED = "citation_unsupported"
     # G229, both writers: the scenario's parts not stated, its target not the asset or a system it names, a
@@ -103,7 +104,9 @@ FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
     FindingCode.PLAN_CHECK_NOT_MADE: FindingSeverity.NOTE,
     FindingCode.STATEMENT_LENGTH: FindingSeverity.WARNING,  # rewritten once, never blocked
     FindingCode.RISK_LENGTH: FindingSeverity.WARNING,
-    FindingCode.NO_EVIDENCE_CITED: FindingSeverity.BLOCKER,
+    # G250 (owner 2026-10-15): a story citing nothing is kept, its closest source shown, never numbered.
+    FindingCode.NO_EVIDENCE_CITED: FindingSeverity.WARNING,
+    FindingCode.CITATION_REMOVED: FindingSeverity.WARNING,  # G252: shown to the reviewer, never blocking
     FindingCode.EVIDENCE_LINK_MISSING: FindingSeverity.BLOCKER,
     FindingCode.CITATION_UNSUPPORTED: FindingSeverity.BLOCKER,
     FindingCode.ANATOMY_MISSING: FindingSeverity.BLOCKER,
@@ -120,7 +123,7 @@ FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
 #: follow the bounded replacement policy"): a scenario blocked by one of these is final, its path given up at
 #: once and never written again.
 FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset({
-    FindingCode.NO_EVIDENCE_CITED, FindingCode.EVIDENCE_LINK_MISSING, FindingCode.CITATION_UNSUPPORTED,
+    FindingCode.EVIDENCE_LINK_MISSING, FindingCode.CITATION_UNSUPPORTED,
     FindingCode.ANATOMY_MISSING, FindingCode.TARGET_NOT_NAMED, FindingCode.MECHANISM_NOT_CONCRETE,
     FindingCode.VAGUE_PHRASE, FindingCode.UNSUPPORTED_WEAKNESS, FindingCode.SYSTEM_LINK_CLAIMED,
     FindingCode.NEAR_DUPLICATE, FindingCode.COUNTRY_CLAIM_UNSUPPORTED,
@@ -128,8 +131,10 @@ FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset({
 
 #: The G229 findings never ask for the one rewrite (no AI call is added for them): each is listed in it only
 #: when the rewrite runs anyway, for a finding it always ran for (the claimed link among them).
+#: G250: a story citing nothing never asks for one either (its closest source is shown instead: no AI call).
 NO_REWRITE_FINDINGS: Final[frozenset[FindingCode]] = (FINAL_FINDINGS - {FindingCode.SYSTEM_LINK_CLAIMED}) | {
-    FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY
+    FindingCode.APPLICABLE_SYSTEM_NOT_IN_STORY,
+    FindingCode.NO_EVIDENCE_CITED,
 }
 
 
@@ -149,10 +154,14 @@ class FindingMessage(StrEnum):
     PLAN_CHECK_NOT_MADE = "The plan check could not be made: {reason}"
     TEXT_LENGTH = "The {text} has {words} words; write {least} to {most}."
     NO_EVIDENCE_CITED = (
-        "Cites none of the {count} evidence entries: a finished scenario cites at least one that directly "
-        "supports a claim in it."
+        "Cites none of the {count} evidence entries (cite one that directly supports a claim): the closest "
+        "related source is shown, not cited by any sentence."
     )
     EVIDENCE_LINK_MISSING = "Gives no supported claim (evidence_links) for the marker(s) {markers}."
+    CITATION_REMOVED = (
+        "Removed the citation(s) {markers}: their sources do not support the claim beside them (a sentence "
+        "claiming a past event with them was taken out; on an attack step only the marker)."
+    )
     ANATOMY_MISSING = (
         "Does not state its parts ({parts}): a finished scenario gives its target, entry point, mechanism "
         "and consequence."

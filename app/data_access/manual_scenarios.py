@@ -25,6 +25,11 @@ class ManualRecords:
         _insert_once(self._scenarios, scenario)
         return None
 
+    def complete(self, scenario_id: str, changes: dict[str, Any]) -> None:
+        """Its plan job found what was pending (its attackers, its library ids, G262): saved, and `pending`
+        removed, in one write (a retried job finds nothing pending and does not do it twice)."""
+        self._scenarios.update_one({"_id": scenario_id}, {"$set": changes, "$unset": {"pending": ""}})
+
 
 def _insert_once(records: MongoCollection, record: dict[str, Any]) -> None:
     fields = {key: value for key, value in record.items() if key != "_id"}

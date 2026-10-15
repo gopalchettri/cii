@@ -252,7 +252,7 @@ Each row: ID · requirement · source · status. The traceability matrix (§1.14
 | FR-REM-01 | Request a plan for an accepted generated scenario (202). One plan record per scenario. | SDD §3 #11, V1 treatment.py:425-611 |
 | FR-REM-02 | Request a plan for a hand-written scenario: save the scenario (accepted), then plan; `Idempotency-Key` required. | V1 treatment.py:336-379, sessions.py:824-1188 |
 | FR-REM-03 | All register fields are optional; unknown fields are refused (422); `""` means "not given". | V1 schemas_treatment.py:147-288 |
-| FR-REM-04 | Before planning, a scenario with no control gets controls now; with still none, answer 503 `controls_not_ready`. | OWNER 2026-10-05, V1 control_mapping.py:1981-2063 |
+| FR-REM-04 | Before planning, a scenario with no control gets controls, by its plan job (G262: a request makes no AI call); a scenario never ends with none (no control of its type: the nearest of another type, flagged). | OWNER 2026-10-05, V1 control_mapping.py:1981-2063 |
 | FR-REM-05 | Freeze every input of a version in a snapshot; free text redacted and capped at 2,000 characters. | V1 treatment.py:217-273, treatment_input.py:46-72 |
 | FR-REM-06 | The AI drafts one "Mitigate" plan: controls to implement and actions with durations and dependencies, never dates. | V1 prompts.py:1328-1438 |
 | FR-REM-07 | Code (not AI) checks the plan, drops controls outside the scenario's library controls, and schedules dates. | V1 treatment.py:410-633, treatment_schedule.py:488-536 |
@@ -292,7 +292,7 @@ Each row: ID · requirement · source · status. The traceability matrix (§1.14
 | ID | Requirement | Source | Status |
 |---|---|---|---|
 | FR-RT-01 | Live updates by Server-Sent Events at `GET /v1/sessions/{session_id}/events`, with the same identity headers as HTTP: the current status at once, then every change. | OWNER 2026-10-08 (SSE, not Socket.IO; Redis pub/sub between pods) (owner, 2026-10-09; guide §0) | Built |
-| FR-RT-02 | Events `session.updated` (Built) and `remediation.updated` (Planned, `GET /v1/remediation/{remediation_id}/events`). Refusals (401/403/404/503) are ordinary problem responses before the stream starts. | OWNER 2026-10-08 | Built (session) / Planned (remediation) |
+| FR-RT-02 | Events `session.updated` and `remediation.updated` (`GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events`, v1's address, G258). Refusals (401/403/404/503) are ordinary problem responses before the stream starts. | OWNER 2026-10-08 | Built |
 | FR-JOB-01 | Three queues: `tsg_threats`, `tsg_scenarios`, `tsg_maintenance`. | SDD §5 | Built |
 | FR-JOB-02 | A job survives a worker crash: lease, reaper, fenced writes, retry with back-off. | SDD §5 | Built |
 | FR-OPS-01 | `/health`; `/ready` checks MongoDB, SQL Server, Redis and at least one worker per routed queue; `/metrics` on the API port, public, refreshes the store and worker gauges before it answers. | SDD §8, OWNER 2026-10-08 | Built |
@@ -1629,7 +1629,7 @@ FastAPI + SSE + Redis + Celery, not Socket.IO).
 |---|---|
 | Module name | Real-time |
 | Purpose | Live progress without polling |
-| Responsibility | The SSE route #8 `GET /v1/sessions/{session_id}/events`; `EventHub` (one shared Redis subscription per API process); publishers used by workers and services; `GET /v1/remediation/{remediation_id}/events` + `publish_remediation_status` (Planned) |
+| Responsibility | The SSE route #8 `GET /v1/sessions/{session_id}/events`; `EventHub` (one shared Redis subscription per API process); publishers used by workers and services; `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events` + `publish_remediation_status` |
 | Scope | `app/realtime/event_hub.py` (`EventHub`, `RESYNC`), `app/realtime/publisher.py` (`publish_session_status`; no web code, so workers never load the API), `app/api/routers/events.py` (the SSE route #8, `check_session_for_caller`), `app/services/session_status.py` (`find_status_for_caller`: 404 / 403 / 503; `read_current_status`); the status read is `find_session_status` in `app/data_access/sessions.py` |
 | Non-scope | Building status bodies (each domain's model does: `SessionStatus.from_record`, `RemediationStatus.from_record`) |
 | Inputs | HTTP GET with the identity headers; Redis messages on `tsg:events:*` |
@@ -1689,8 +1689,8 @@ the same headers, errors and logs as every other call, and it needs no client li
    saved; the client sees it on its next read or reconnect).
 - IO: per event 1 Redis publish (worker) and 1 Mongo read per open stream per burst; per open stream 0 extra Redis connections; per connect
   2 small Mongo reads (check + first status).
-- Planned: `GET /v1/remediation/{remediation_id}/events` and `publish_remediation_status` — the same steps with
-  `RemediationStatus` and channel `tsg:events:remediation:<id>`.
+- `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events` and `publish_remediation_status` — the same steps with `RemediationStatus` and channel
+  `tsg:events:remediation:<id>`.
 
 **Worked example.** A reviewer's page shows run `7f3c…`. The platform backend opens
 `GET /v1/sessions/7f3c…/events` with its key and identity headers and relays to the browser. It gets
@@ -2162,8 +2162,8 @@ sends one message after each batch that wrote scenarios ("card first, controls l
    it is free, expired, a next turn on its way (no holder), or the message's own (a retry keeps its task id). Held
    by another delivery → this message ends at once, mapping nothing. Example: ten messages for one run delivered in
    the same millisecond → one maps, nine end (live test 2026-10-11: a look-then-claim check let all ten through and
-   they held every worker thread). Renewed after each scenario and every 30 s while one maps. A plan request's
-   top-up (Rule R1T) never takes it: it claims its one scenario atomically, as a delivery does.
+   they held every worker thread). Renewed after each scenario and every 30 s while one maps. A plan job
+   completing its input (Rule R1T) never takes it: it claims its one scenario atomically, as a delivery does.
 1. Loop, at most `Controls.PER_DELIVERY` (= `Generation.WRITER_BATCH`, 6) times: `ControlLeases.claim`
    (`data_access/scenario_controls.py`): one `find_one_and_update` takes the oldest current written scenario of the
    run whose controls are `queued`, or `running` with an expired lease → `running`, `task_id`, `lease_until`
@@ -2489,11 +2489,11 @@ AI, checks and schedules it in code, keeps every version, and lets the risk owne
 | Processing | Rules R1–R10 below |
 | Outputs | `RemediationStatus`, `RemediationResult`; events `remediation.updated` |
 | APIs | #11–#17 |
-| Database | `tsg_remediations` (§12.2); reads `tsg_scenarios`, `tsg_sessions`; writes a manual run + scenario and control top-ups **through M09's `SessionRepository` / `ScenarioRepository`** (`app/data_access/sessions.py`, `scenarios.py`; one owner per collection) |
+| Database | `tsg_remediations` (§12.2); reads `tsg_scenarios`, `tsg_sessions`; writes a manual run + scenario (and, in its plan job, a scenario's controls and attackers) **through M09's `SessionRepository` / `ScenarioRepository`** (`app/data_access/sessions.py`, `scenarios.py`; one owner per collection) |
 | Dependencies | M01, M02, M04, M05, M06, M07, M08, M09 (repositories), M10 (`ControlMapper`), M13 (audit) |
 | Configuration | `Remediation.*` constants |
 | Security | Entity check on every record; risk owner's name masked in logs; snapshot text redacted |
-| Errors | §19; reasons `scenario_not_accepted`, `plan_already_exists`, `generation_in_progress`, `not_complete`, `version_not_found`, `controls_not_ready`, `idempotency_key_conflict`, `actor_library_empty` |
+| Errors | §19; reasons `scenario_not_accepted`, `plan_already_exists`, `generation_in_progress`, `not_complete`, `version_not_found`, `control_library_empty`, `idempotency_key_conflict`, `actor_library_empty` |
 | Logging | `plan.*` audit records (request payload with risk owner masked; outcome; decisions) |
 | Concurrency | Unique `scenario_id`; epoch = version number; optimistic filter on `accepted_version` for decisions |
 | Testing | T-REM-01..24 |
@@ -2508,8 +2508,9 @@ AI, checks and schedules it in code, keeps every version, and lets the risk owne
 2. Read the scenario (projection: entity, session, status, decision, controls, content summary) → none 404; other
    entity 403; not `done` or not `accepted` → 409 `scenario_not_accepted`.
 3. `find_one({scenario_id})` on `tsg_remediations` → exists → 409 `plan_already_exists` (use regenerate).
-4. **Controls top-up** (FR-REM-04, Rule R1T after this rule) when the scenario's controls are not `done`, or `done` with no
-   item.
+4. No AI call (G262): when the scenario's controls are not mapped (or every one was retired since), the version's
+   snapshot is **pending** and its plan job maps them first (Rule R1T after this rule). An empty control library → 409
+   `control_library_empty` at once.
 5. Resolve register `existing_controls` in memory (M05 Rule L3, tolerant mode).
 6. Build snapshot version 1 in memory (Rule R4).
 7. Insert `{scenario_id (unique), session_id, entity_id, asset_id, source, register, versions: [{version: 1, status:
@@ -2518,28 +2519,33 @@ AI, checks and schedules it in code, keeps every version, and lets the risk owne
    `scenario_id` (a parallel request won) → 409 `plan_already_exists`.
 8. `send_job(tsg_write_plan, id, 1)`; audit `plan.requested` (payload, risk owner masked); publish; **202**
    `{remediation_id, scenario_id, version: 1, status: queued}`.
-- IO: 2 reads + 1 insert + 1 publish + 1 audit (+ top-up when needed, R1T).
+- IO: 2 reads + 1 insert + 1 publish + 1 audit; no AI call.
 
-**Rule R1T — Controls top-up inside a request** (used by R1, R2 and R8). It shares S10's per-scenario lease, so a
+**Rule R1T — The plan job completes a pending input** (used by R1, R2 and R8; G262, owner 2026-10-15). Until G262
+the request mapped missing controls itself, with a 20 s deadline, and matched a hand-written scenario's attackers:
+with many users at once those AI calls queued (16 AI places shared with the workers, an API call waiting at most
+30 s) and the request answered 503 `controls_not_ready` or AI busy, each one holding an API thread meanwhile. Now the
+request saves a pending snapshot `{pending: true, scenario_id, register_part}` (the register frozen then) and the plan
+job (`app/worker/plan_inputs.py`) completes it before writing the plan:
+1. A hand-written scenario's attackers (R2 step 4), then its new wording proposed (R2 step 3), audited as the person
+   who asked (`pending.by`); saved on the scenario with `pending` removed in one write (a retried job does neither
+   twice).
+2. Controls, when not mapped: claimed under S10's per-scenario lease (the claim below, task id `<job task>:plan`),
+   mapped by `ControlMapper` (a worker waits up to `AiLimits.WORKER_SLOT_WAIT_SECONDS` for an AI place), saved fenced;
+   the run's counts refreshed. Held by the controls job now → waited for (every `Controls.PLAN_WAIT_POLL_SECONDS`, at
+   most `Controls.LEASE_SECONDS`) and its result used; still held → `Unavailable`, the job is given back for its
+   back-off. An outage frees the controls (generated: queued; hand-written: failed, claimable by the retry) and the job
+   retries (`Lease.RETRY_DELAYS_SECONDS`, `Lease.MAX_ATTEMPTS`). An empty library → the version fails
+   `control_library_empty`. It shares S10's per-scenario lease, so a
 worker and the API never write one scenario's controls at the same time, and it has a hard 20-second deadline.
-1. Claim: `find_one_and_update({_id, status: "done", $or: [{controls.status: {$in: [queued, failed]}},
+   The claim: `find_one_and_update({_id, status: "done", $or: [{controls.status: {$in: [queued, failed, cancelled]}},
    {controls.status: running, controls.lease_until < now}, {controls.status: done, controls.items: []},
-   {controls: {$exists: false}}]}, {$set: controls.status running, controls.task_id "<request_id>:<uuid4 hex>" (unique),
-   controls.lease_until now+120 s (`Controls.LEASE_SECONDS`), controls.last_attempt_at now; $inc controls.attempts})`.
-   No match because a worker holds a live lease → 503 `controls_not_ready`, `Retry-After: 30` (the worker is
-   mapping it now).
-2. `ControlMapper.map_controls(scenario, context, deadline_seconds=20)`: AI slot wait ≤ 10 s, the query embedding and the
-   rerank each get the time left and **no** retries: `ai_deadline(until)` (`app/ai/common.py`, Built 2026-10-11,
-   G188) around the mapping; a call that would start past the deadline is `Unavailable` at once. It reaches chat calls
-   and pooled embedding batches too (G193, G194).
-3. Success → fenced write on `controls.task_id` (`status done, items, mapped_at`), as S10 step 3.
-4. Any failure or an empty result → write `controls.status` back (`queued, queued_at now` for a generated scenario,
-   so the worker retries it; `failed` for a hand-written one, never mapped in the background) and answer 503
-   `controls_not_ready`, `Retry-After: 30`.
-- Why a deadline and no retries: the caller is waiting on an HTTP request. A long in-request retry would outlive the
-  caller's 30-second timeout, and the caller's own retry would then race its first request.
-- The API process builds its in-memory control index on its first top-up (vectors come from the cache).
-- IO: 1 claim + 1 embedding call + 1 rerank call + 1 write.
+   {controls: {$exists: false}}]}, {$set: controls.status running, controls.task_id, controls.lease_until now+120 s,
+   controls.last_attempt_at now; $inc controls.attempts})`.
+3. The snapshot (Rule R4) from the stored register half, saved on the version (`lease.write`, fenced); a regenerate's
+   lost controls become warnings (`no_longer_mapped`). Then R3 writes the plan.
+- IO (in the job): 0-1 attacker ranking (1 embedding call) + 0-1 procedure call + 1 claim + 1 embedding call + 1
+  rerank call + 2 writes; the request itself: none.
 
 **R2 — Request a plan for a hand-written scenario** (FR-REM-02). Body `{manual_scenario: {asset_id,
 supporting_system_ids[1..MAX_SUPPORTING_SYSTEMS], sector_id?, subsector_id?, service_id?, threat_category? {id?|name?}, threat_type
@@ -2554,17 +2560,17 @@ register…}`; header `Idempotency-Key` **required** (422 without it); `scenario
      same ids.
    - None → continue at step 2.
 2. Asset checks with `tsg_GetAssetContext` (as M09 S1 steps 3–4); build the frozen context (R-3).
-3. Threat identity (M05 L2): resolve in memory, including the category rule (L2 step 5). A new type or threat →
-   `propose_threat(source="manual")` (1 procedure call; SQL down → 503, nothing saved). A curator-rejected wording is
-   saved without a library id and noted (`library_status: curator_rejected`).
-4. Actor (FR-THR-07): `find_actors` ranks the actors linked to the type against `"<type>: <threat>.
-   <threat_scenario>"`; first = acting, next ≤ 3 = alternates. No linked actor → the
-   single closest library actor,
-   flagged `closest_attacker` (no AI fit call: the person already described the attack). The library has no live
-   actor → 503 `actor_library_empty`, nothing saved.
+3. Threat identity (M05 L2): resolve in memory, including the category rule (L2 step 5). A new type or threat is
+   saved `pending.proposal: true` and proposed by the plan job (`propose_threat(source="manual")`, R1T step 1). A
+   curator-rejected wording is saved without a library id and noted (`library_status: curator_rejected`).
+4. Actor (FR-THR-07), by the plan job (R1T step 1; G262: the request calls no AI): `find_actors` ranks the actors
+   linked to the type against `"<type>: <threat>. <threat_scenario>"`; first = acting, next ≤ 3 = alternates. No
+   linked actor → the single closest library actor, flagged `closest_attacker` (no AI fit call: the person already
+   described the attack). The scenario is saved with `actors: []`, `pending.actors: true`. The library has no live
+   actor → 503 `actor_library_empty` at the request (in memory), nothing saved.
 5. Controls: `mapped_controls` given → resolved strictly (M05 L3: unknown, retired or duplicate → 422) and stored as
-   `controls {status: done, items, mapped_at}` (rank = order given, `match: given`). None given → the top-up (R1T)
-   runs after step 6.
+   `controls {status: done, items, mapped_at}` (rank = order given, `match: given`). None given → mapped by the plan
+   job (R1T step 2).
 6. Save with **deterministic ids** from the key, through M09's repositories:
    - run `uuid5(entity:key:"run")`: `kind: manual`, `idempotency_key`, `status: done`, `step: scenarios`,
      `active: false`, the frozen context, no plan;
@@ -2573,8 +2579,9 @@ register…}`; header `Idempotency-Key` **required** (422 without it); `scenario
      `why_applies: null`, `findings: []` (W5 rules are for AI text only), `systems` = the request's systems with the
      first one as the entry point, `route.status` by count (1 system confirmed, ≥ 2 assumed, 0 standalone).
    Both are upserts, so a retry after a crash lands on the same documents.
-7. Continue with R1 steps 4–8 (top-up only if step 5 stored no control). Answer **202** `{remediation_id,
-   session_id, scenario_id, version, status}`.
+7. Continue with R1 steps 4–8 (the snapshot is pending: its attackers, and its controls if step 5 stored none,
+   are the plan job's). Answer **202** `{remediation_id, session_id, scenario_id, version, status, is_manual,
+   replayed}`.
 - IO: 1 run read (+1 remediation read on replay) + 1 SQL context call + 0–1 procedure call + 1 embedding call
   (actor ranking) + 2 upserts + R1's writes.
 
@@ -2660,7 +2667,7 @@ Dates: A1 01 Oct–14 Oct, A2 01 Oct–10 Oct, A3 15 Oct–04 Nov, A4 05 Nov–*
 **R8 — Regenerate** (FR-REM-08). Body `{}` (any field → 422).
 1. Read the record; the scenario must still be accepted (409 `scenario_not_accepted`).
 2. The top-level `status` (= the latest version's) must be `done` or `failed` (else 409 `generation_in_progress`).
-3. Top-up controls if the scenario has none (R1T).
+3. No AI call: a scenario with no mapped control gets a pending snapshot (R1T).
 4. New snapshot: register half copied from the latest version's snapshot; scenario/controls half rebuilt now; a
    warning for each control the previous version had that is no longer mapped.
 5. Conditional update `{_id, job.epoch: n, status ∈ {done, failed}}` → in one write: copy the top-level `status` and
@@ -2732,7 +2739,7 @@ the rule:
   remediation.py` (R3). Routes in `api/routers/remediation.py`; #28 in `api/routers/events.py` (one SSE loop for #8
   and #28).
 - **R1.** IO: 3 reads (the scenario, an existing plan, the run's frozen context) + 1 insert + 1 audit + 1 publish
-  (+ the top-up). The plan record also stores `title` (the scenario's, else the threat's) and starts `decision_seq`
+  (no AI call: R1T). The plan record also stores `title` (the scenario's, else the threat's) and starts `decision_seq`
   at 0 (a missing field never matches a decision's filter).
 - **R1T.** A claim that finds the controls mapped meanwhile uses them (no 503); an empty library or no compatible
   control is 409 with that code (a retry cannot change it, so never 503 + Retry-After); a generated scenario given
@@ -2750,7 +2757,7 @@ the rule:
 - **Module review (S56).** An independent review found 14 points, each fixed at its cause with a test (G165-G177):
   the register is resolved before anything is saved or mapped, a stored register never refuses on a later library
   change, every mapped control retired means mapped again, no person's name in logs, no unredacted text or
-  database id to the AI, a cancelled top-up never runs, the run's counts follow every top-up change.
+  database id to the AI, the run's counts follow every change of a scenario's controls.
 - **R8-R9.** The record's `decision` is re-derived on every append too (pending unless a version is accepted), and
   every append bumps `decision_seq`, so a decision made on the older read reads again. Rule: accepted while a version
   is; pending while the latest version or a done one waits (a version being written or failed counts as waiting);
@@ -2784,7 +2791,7 @@ runbook are in `docs/EXTERNAL_INTELLIGENCE.md`.
 | Non-scope | Deciding threat relevance (M10); the library (M05); the controls search (does not read evidence yet) |
 | Inputs | The six public feeds; a stored threat and the run's frozen context (`EvidenceAtWrite`) |
 | Outputs | `tsg_intel`, `tsg_external_feed_status` (a row per source and the switch), `tsg_external_intelligence_snapshots` (the pointer `active`), vectors in `tsg_embeddings` (corpus `external_intelligence`); on a plan threat `evidence` + `intel_search` + `known_groups` (G230); on a scenario `content.evidence`, `evidence_mode`, `applicability`, `intel_search`, `known_groups` (G230), `prompt_version` |
-| APIs | `GET/PUT /v1/tsg/intel/switch`, `GET /v1/tsg/intel/health`, `POST /v1/tsg/intel/refresh`, `GET /v1/tsg/intel/refresh/{job_id}`, `POST /v1/tsg/intel/sources/{source}/revoke` and `.../approve` (admin key); the scenario view gains `evidence_mode`, `evidence`, `evidence_search`, `known_groups` (G230: the real named groups beside the actor) (null or empty when not an evidence story) |
+| APIs | `GET/PUT /v1/tsg/intel/switch`, `GET /v1/tsg/intel/health`, `POST /v1/tsg/intel/refresh`, `GET /v1/tsg/intel/refresh/{job_id}`, `POST /v1/tsg/intel/sources/{source}/revoke` and `.../approve` (no key on any, G256); the scenario view gains `evidence_mode`, `evidence`, `evidence_search`, `known_groups` (G230: the real named groups beside the actor) (null or empty when not an evidence story) |
 | Configuration | `EXTERNAL_INTELLIGENCE_ENABLED` (master; default OFF in code, dev says true explicitly), `EVIDENCE_SIMILARITY_THRESHOLD` (per environment: each reranker scores on its own scale; outside dev start-up refuses it unset while enabled), `CII_NVD_API_KEY` (optional); feed addresses and limits are constants (`IntelUrl`, `IntelLimits`, `IntelOperationsLimits`, `EvidenceLimits`, `TextSafety`) |
 | Security | Feed text is untrusted: sanitised, size-limited, quarantined when it reads as instructions; reaches a prompt only as plain numbered facts inside a delimited untrusted block, never with ids, links or titles; delimiter look-alikes stripped; code rules block ids, unknown markers, unmarked precedent, an unknown-applicability vulnerability stated as fact and an echoed injection phrase |
 | Errors | Feed failure keeps old data; a feed cut short (under half of the source's current records) is a failed fetch that stores and retires nothing; an evidence outage writes the scenario inferred and is retried by a later batch; an evidence failure never fails or retries a write |
@@ -3069,9 +3076,10 @@ find and name pods by these (M14). The API Route `/` (public, like the observabi
    (the list is in item 5, "Stopping v1") before v2's workers start. v1 will be removed.
 4. **The pods reach the AI gateway through the corporate proxy**, as v1 does: every container that calls the AI (api,
    every worker, beat) gets `HTTP_PROXY` and `HTTPS_PROXY` = `http://10.61.192.2:8080`, and the pod template gets a
-   `hostAliases` entry `10.231.255.253` → `llmapi.govai.ae`. v1 sets no `NO_PROXY` and no `TZ`. v2 needs no code for
-   this (litellm and the OpenAI client read the proxy variables). On a laptop that has a proxy set, use
-   `NO_PROXY=llmapi.govai.ae` instead (what v1's `LITELLM_BYPASS_PROXY=true` does).
+   `hostAliases` entry `10.231.255.253` → `llmapi.govai.ae`. The env file used for OpenShift sets
+   `CII_AI_BYPASS_PROXY=false` so the AI calls use that proxy (the gate refuses true; G255). On the UAT Windows
+   server it is true (v1's `LITELLM_BYPASS_PROXY`): the host of every `litellm_proxy/` model goes on `NO_PROXY`,
+   because that server's proxy cannot reach the gateway. The env file is the only switch.
 5. **v1 UAT reference values — use unless M15 decides otherwise** (read from v1's UAT deployment, 2026-10-08).
 
 | Topic | v1 UAT value | For v2 |
@@ -3108,7 +3116,7 @@ process and problem bodies on the wire. Only single-document writes are atomic (
 | C09 | Client ↔ live updates | SSE (§13.6) | `GET /v1/sessions/{id}/events` + identity headers | `session.updated` events (`data` = `SessionStatus`) | entity check before the stream | problem response (401/403/404/503) before the stream | stream stays open; keep-alive every 15 s | client reconnects after `retry` (3 s) | reconnecting is harmless (current status first) | identity headers | — |
 | C10 | Any service or task → audit (Built, `app/services/audit.py`) | `record_audit(action, actor, target, before, after, details)` | dicts | none | action is an `AuditAction` enum | swallowed + logged (`audit.write_failed`) + counted (`tsg_audit_failures_total`) | Mongo 5 s | none | — | — | separate insert after the main write |
 | C11 | M09 promote (#27) / M11 R2 → M05 | `propose_threat(category, type, threat, source, created_by, actor_ids)` | names, ids | `{threat_type_id, threat_catalogue_id, outcome}` | L2 decides in memory; the procedure re-checks names | `Unavailable` → 503 (the person retries) | login 5 s, query 30 s | caller retries | natural key in the procedure | — | inside the procedure |
-| C12 | M11 → M10 | `ControlMapper.map_controls(scenario, context, deadline_seconds=20)` (top-up, R1T) | scenario dict | control list | — | `Unavailable` / deadline → 503 `controls_not_ready` | 20 s in total; no retries | caller retries after `Retry-After` | per-scenario lease shared with S10 | — | fenced write on `controls.task_id` |
+| C12 | M11 → M10 | `ControlMapper.map_controls(scenario, context, snapshot)` (the plan job, R1T) | scenario dict | control list | — | `Unavailable` → the job's back-off | the worker's AI-slot wait (300 s) | the job retries (`Lease.MAX_ATTEMPTS`) | per-scenario lease shared with S10 | — | fenced write on `controls.task_id` |
 | C13 | M09 write job → M12 | `IntelService.blocks_for(paths, context)` | paths + context | `{path_id: {intel: [...], citable_ids: [...], techniques: [...]}}` | — | never raises (fail-open); empty until Phase 6 | Mongo 30 s | none | read-only | — | — |
 | C14 | M13 admin job task → M05, M06, M12 | dispatch by `kind`: `embeddings_build` → `build_indexes`, `library_import` → `import_rows`, `intel_refresh` → `refresh_feeds`, `techniques_rebuild` → `rebuild_techniques`; each gets `on_progress(done, total, note)` | job params | result dict | params validated at the endpoint | as each module | per module | job back-off | one active job per kind | admin key at the endpoint (beat: internal) | fenced progress writes |
 
@@ -3155,7 +3163,7 @@ the lease expires. Persistence: every state is in MongoDB; Redis holds only copi
 | `superseded_by` | null → id of the newer version | set by the regenerate job after the new version is saved as done (again on a retry, idempotently) |
 | `decision` | `pending`, `accepted`, `rejected` | pending → accepted (accept); pending → rejected (reject); accepted → pending (only when another version of the same path is accepted with `replace_accepted`) |
 | `controls.status` (generated, done scenarios only; failure and blocked documents have no `controls`) | `queued`, `running`, `done`, `failed` | queued → running (claim by a worker or the API top-up) → done; running → queued (outage, attempts < 5); → failed (attempts ≥ 5); running with an expired lease → claimable again; failed → queued (sweep, ≥ 30 min later) |
-| `controls.status` (hand-written) | absent, `done`, `failed` | set by R2 (given controls) or the top-up R1T only; never by the background |
+| `controls.status` (hand-written) | `queued`, `running`, `done`, `failed` | set by R2 (given controls) or its plan job (R1T) only; never by the background |
 | `library_promotion` | absent → set | written by #27 when a person promotes the scenario's AI threat (R-10); calling again changes nothing |
 
 Invalid: accept a rejected scenario (409); reject an accepted one (409); accept a failure scenario (409); regenerate a
@@ -3312,7 +3320,7 @@ sequenceDiagram
 | Input | Run id |
 | Authentication | Internal |
 | Validation | Scenario current, done, generated |
-| Business rules | ≥ 1 control; every control at or above the cut-off; twins folded; hand-written scenarios only via the top-up |
+| Business rules | ≥ 1 control; every control at or above the cut-off; twins folded; hand-written scenarios only via their plan job |
 | Processing | M09 S10 + M10 C1–C7; sweep S11 |
 | AI / retrieval | One embedding + one rerank per scenario |
 | Persistence | Per-scenario claim and fenced write; counts |
@@ -3334,13 +3342,13 @@ sequenceDiagram
 | Validation | Schema (`extra="forbid"`); scenario accepted and done; no plan yet |
 | Business rules | Top-up controls if missing (≤ 20 s); snapshot; strategy "Mitigate"; dates by code |
 | Processing | M11 R1 (+ R1T) → R3 |
-| AI / retrieval | Plan AI call (+ embedding and rerank for a top-up) |
+| AI / retrieval | Plan AI call (+ embedding and rerank when the plan job maps missing controls); none in the request |
 | Persistence | Remediation insert; fenced version write |
 | Integration | Redis |
 | Output | 202 `{remediation_id, scenario_id, version, status}`; then `remediation.updated`; result via #16 |
 | Audit | `plan.requested`, `plan.completed` |
 | Notification | `remediation.updated` |
-| Errors | 409 `scenario_not_accepted`, `plan_already_exists`; 503 `controls_not_ready` |
+| Errors | 409 `scenario_not_accepted`, `plan_already_exists`, `control_library_empty` |
 | Retry / recovery | Lease, back-off; `generation_failed` / `invalid_plan` end the version (regenerate to try again) |
 | Completion state | Version 1 `done` |
 
@@ -3351,7 +3359,7 @@ sequenceDiagram
     participant M as MongoDB
     participant W as Worker
     participant AI as AI models
-    C->>A: POST /v1/remediation {scenario_id, register}
+    C->>A: POST /v1/remediation {is_manual: false, session_id, scenario_id, register}
     A->>M: read scenario (accepted?) / plan exists?
     A->>AI: embed + rerank (only if the scenario has no control; ≤ 20 s)
     A->>M: insert remediation (version 1 queued, snapshot)
@@ -3373,13 +3381,13 @@ sequenceDiagram
 | Validation | Schema; asset and systems; threat identity (L2); control references (L3, strict) |
 | Business rules | One key space per entity; an unknown threat becomes a pending library entry; actor never blank; given controls or a top-up; deterministic ids |
 | Processing | M11 R2 → R3 |
-| AI / retrieval | Actor ranking (embedding); top-up (embedding + rerank) if no control given; plan AI call |
+| AI / retrieval | In the plan job: actor ranking (embedding), control mapping (embedding + rerank) if no control given, plan AI call; none in the request |
 | Persistence | Manual run + scenario upserts (through M09 repositories); remediation insert |
 | Integration | SQL `tsg_GetAssetContext`, `tsg_ResolveThreat` |
 | Output | 202 (200 on replay) `{remediation_id, session_id, scenario_id, version, status}` |
 | Audit | `plan.requested` (+ `library.proposed`) |
 | Notification | `remediation.updated` |
-| Errors | 422 / 403 / 404 / 409 `idempotency_key_conflict` / 503 `actor_library_empty`, `controls_not_ready` |
+| Errors | 422 / 403 / 404 / 409 `idempotency_key_conflict`, `control_library_empty` / 503 `actor_library_empty` |
 | Retry / recovery | Replaying with the same key resumes safely (a crash after saving the scenario continues with the same ids) |
 | Completion state | Scenario accepted; version 1 done |
 
@@ -3803,7 +3811,7 @@ import X` (§5 guard 5, no exemption).
 | `Admin` (new class, Planned) | `MAX_DECISIONS = 100`, `IMPORT_MAX_ACTORS = 40`, `JOB_KEEP_DAYS = 90`; enum `AdminJobKind` (`embeddings_build`, `library_import`, `intel_refresh`, `techniques_rebuild`) |
 | `Audit`, `AuditAction`, `AuditTarget` (Built in `app/core/constants/`; used by `app/services/audit.py`) | `Audit.KEEP_DAYS = 365`, `Audit.ADMIN_USER = "admin"`; `LogEvent.AUDIT_RECORDED`, `LogEvent.AUDIT_WRITE_FAILED`; enum `AuditTarget` — Built: `API_CLIENT = "api_client"` (others added with their features); enum `AuditAction` — Built: `key.minted`, `key.revoked`; Planned (each added with its feature): `run.started`, `run.next_set`, `run.regenerated`, `scenario.accepted`, `scenario.rejected`, `library.promoted`, `plan.requested`, `plan.completed`, `plan.regenerated`, `plan.accepted`, `plan.rejected`, `library.proposed`, `library.decided`, `admin.job_started`, `admin.job_finished` (these three Built 2026-10-11, with `AuditTarget.ADMIN_JOB`) |
 | `ConflictReason` (Planned; one enum for M09 and M11) | `active_session_exists`, `idempotency_key_conflict`, `generation_in_progress`, `run_failed`, `nothing_left`, `nothing_to_accept`, `target_reached`, `scenarios_abandoned`, `asset_busy`, `manual_scenario`, `version_not_current`, `duplicate_version`, `scenarios_not_decidable`, `unknown`, `already_accepted`, `already_rejected`, `failure_scenario`, `library_inactive`, `scenario_not_accepted`, `plan_already_exists`, `not_complete`, `changed_concurrently`, `job_in_progress`, `nothing_to_promote` |
-| Other reasons (same file) | 403: `asset_not_owned`, `system_not_linked`; 422: `type_mismatch`; 503: `controls_not_ready`, `actor_library_empty`, `ai_busy` |
+| Other reasons (same file) | 403: `asset_not_owned`, `system_not_linked`; 422: `type_mismatch`; 503: `actor_library_empty`, `ai_busy` |
 | `Limits` (add) | `IDEMPOTENCY_KEY_MAX = 200` |
 | `Timeouts`, `Limits` (Built 2026-10-08, code review) | `Timeouts.READY_CHECK_REUSE_SECONDS = 2` (M03), `Timeouts.RECORD_WRITE_SECONDS = 5` (M13 AD4; also the AI call records), `Limits.MAX_IDENTITY_CHARS = 256` (M02) |
 | `Timeouts`, `LogEvent` (Built 2026-10-09, G97) | `Timeouts.REDIS_HEALTH_CHECK_SECONDS = 30` (M01 P1), `LogEvent.JOB_REAP_FAILED` (`job.reap_failed`, M07 J9) |
@@ -3990,8 +3998,8 @@ Library table columns used by the write procedures (checked in DevTest5): `IsAct
 - Body size: every request at most `CII_MAX_REQUEST_MB` (2 MB), whatever its `Content-Type`; a setting in `.env`
   (BR-OPS-01, M01 P3; owner, 2026-10-09: one limit). No endpoint takes file uploads; one that does later gets its own
   limit by its address, never by the `Content-Type`.
-- Timeouts: an endpoint never waits on AI except the plan top-up (#11, #14), which has a hard 20 s deadline (M11
-  R1T). Callers use a 30 s client timeout.
+- Timeouts: no endpoint waits on AI (G262: the plan requests #11 and #14 leave their AI steps to the plan job).
+  Callers use a 30 s client timeout.
 - Retries: callers retry 503 after `Retry-After`; 409 means "look at the state", not "retry".
 
 ### 13.2 Scenario endpoints (M09)
@@ -4036,15 +4044,18 @@ it is mapped (`controls.items[].description`). The reads leave out what no view 
 
 ### 13.3 Remediation endpoints (M11)
 
+TSG v1's shape (owner, 2026-10-15, G258): ONE request for both kinds of scenario (v1's `RemediationPlanBody`),
+then every call on a plan at v1's address `PLAN = /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan`; v2's status words and answers are kept. A plan is found by
+its scenario (unique `scenario_id` index: one read); 404 when the scenario has no plan or is in another run.
+
 | # | Method · path | Purpose | Request | Success | Errors (reason) | Idempotency | Audit |
 |---|---|---|---|---|---|---|---|
-| 11 | `POST /v1/remediation` | Request a plan | `{scenario_id, …register}` **or** `{manual_scenario {…}, …register}` (+ `Idempotency-Key` required for manual) | 202 `{remediation_id, session_id, scenario_id, version, status}` (200 on replay) | 403 · 404 · 409 scenario_not_accepted, plan_already_exists, idempotency_key_conflict · 422 (incl. type_mismatch, required_facts_missing) · 503 controls_not_ready, actor_library_empty | unique scenario_id; key on the manual run | plan.requested |
-| 12 | `POST /v1/remediation/{remediation_id}/accept` | Accept a version | `{version?, comment?}` (default newest done; comment ≤ 2,000) | 200 `RemediationStatus` | 403 · 404 version_not_found · 409 not_complete, scenario_not_accepted, changed_concurrently | same version twice = same result | plan.accepted |
-| 13 | `POST /v1/remediation/{remediation_id}/reject` | Reject a version | `{version?, comment?}` | 200 `RemediationStatus` | as #12 | same | plan.rejected |
-| 14 | `POST /v1/remediation/{remediation_id}/regenerate` | New version | `{}` | 202 `{version}` | 409 generation_in_progress, scenario_not_accepted · 503 controls_not_ready | epoch filter | plan.regenerated |
-| 15 | `GET /v1/remediation/{remediation_id}/status` | Progress | — | 200 `RemediationStatus` | 403 · 404 | read | — |
-| 16 | `GET /v1/remediation/{remediation_id}/result` | The plan | `?include_history` | 200 `RemediationResult` | 403 · 404 | read | — |
-| 17 | `GET /v1/remediation` | Find / list | `?session_id&scenario_id&status&decision&risk_level&limit&offset` | 200 `{items: [RemediationSummary], total}` | 422 | read | — |
+| 11 | `POST /v1/remediation` | Request a plan | `{is_manual: false, session_id, scenario_id, …register}` **or** `{is_manual: true, manual_scenario {asset_id, entity_id, supporting_system_id, …, threat_category_id/_name?, threat_type_id/_name, threat_id/_name, threat_scenario, risk_statement, mapped_controls?}, …register}` (+ `Idempotency-Key` required for manual); mixing the kinds → 422 (v1's four messages) | 202 `{remediation_id, session_id, scenario_id, version, status, is_manual, replayed}` (200 on replay, `replayed: true`) | 403 (incl. `manual_scenario.entity_id` not the caller's) · 404 (incl. scenario not in that run) · 409 scenario_not_accepted, plan_already_exists, idempotency_key_conflict, control_library_empty · 422 (incl. type_mismatch, required_facts_missing) · 503 actor_library_empty (no AI call: G262) | unique scenario_id; key on the manual run | plan.requested |
+| 15 | `GET PLAN/status` | Progress | — | 200 `RemediationStatus` | 403 · 404 | read | — |
+| 16 | `GET PLAN` | The plan (the result) | `?include_history` | 200 `RemediationResult` | 403 · 404 | read | — |
+| 12 · 13 | `POST PLAN/review` | Accept or reject a version (v1's one review call) | `{decision: accepted\|rejected, version?, comment?}` (default newest done; comment ≤ 2,000; `pending` → 422) | 200 `RemediationStatus` | 403 · 404 version_not_found · 409 not_complete, scenario_not_accepted, changed_concurrently | same decision twice = same result | plan.accepted / plan.rejected |
+| 14 | `POST PLAN/regenerate` | Regenerate: new version | `{}` | 202 `PlanRequested` | 409 generation_in_progress, scenario_not_accepted, control_library_empty | epoch filter | plan.regenerated |
+| 17 | `GET /v1/sessions/{session_id}/treatment-plans` · `GET /v1/entities/{entity_id}/treatment-plans` | A run's plans · the entity's register | `?status&decision&risk_level&limit&offset` | 200 `{items: [RemediationSummary], total}` | 403 (another entity's run, or a path entity not the caller's) · 404 run · 422 | read | — |
 
 Register fields (all optional): `existing_controls[≤50]` (id, code, name or text), `likelihood_rating`,
 `impact_rating`, `final_risk_rating` (decimal), `risk_level` (Critical\|High\|Medium\|Low or another label),
@@ -4057,7 +4068,7 @@ accepted_version, decision, progress{generation, review, overall}, error, update
 `RemediationResult` = `RemediationStatus` + `{shown_version, scenario{scenario_id, title, statement, risk_statement,
 category, threat, actors, controls}, register_data, plan{…} (fields in M11 R10; the dates and timelines are on the
 plan and its actions), warnings[], versions?[]}`. #11 and #14 may also answer 409 `no_compatible_control` /
-`control_library_empty` (the top-up cannot map a control) and #6 409 `hand_written` (M11 as built).
+`control_library_empty` (no control could ever be kept) and #6 409 `hand_written` (M11 as built).
 `RemediationSummary` (list item of #17) — fields in M11 R10.
 
 ### 13.4 Embedding endpoints (served by M13, work done by M06) and API-client endpoints (M02)
@@ -4084,7 +4095,7 @@ plan and its actions), warnings[], versions?[]}`. #11 and #14 may also answer 40
 | Item | Detail |
 |---|---|
 | #8 | `GET /v1/sessions/{session_id}/events` → `200 text/event-stream` (Built) |
-| Planned twin | `GET /v1/remediation/{remediation_id}/events` (same rules, `remediation.updated`) |
+| Plan twin | `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events` (same rules, `remediation.updated`) |
 | Request | The usual headers `X-API-Key`, `X-User-Id`, `X-Entity-Id`, `X-Tenant-Id` |
 | Before streaming | 401 identity · 403 another entity's run · 404 unknown run · 503 store down — ordinary problem bodies |
 | Stream | first `event: session.updated` with the current `SessionStatus` (and `retry: 3000`), then one per change; `: ping` comment after 15 s of silence; headers `Cache-Control: no-cache`, `X-Accel-Buffering: no` |
@@ -4101,7 +4112,7 @@ another entity's run or plan is 403, an unknown one 404. Each change is audited 
 | 29 | `GET /v1/jobs` | My work queued or running, oldest first: finding threats, writing scenarios, matching controls (a finished run whose controls are still being matched), writing a remediation plan | 200 `{jobs[{kind, session_id, remediation_id, asset_id, asset_name, status, queued_at, created_at, attempts, user_id, progress{planned, written, remaining, controls_waiting}}], total}` (at most 200 runs and 200 plans listed; `total` counts them all) | 401 | — |
 | 30 | `POST /v1/sessions/{session_id}/cancel` | Stop a run now, keep what is done | 200 `RunBoard` (`session_status` and `overall` `cancelled`, "Cancelled by user … at …") | 403 · 404 · 409 nothing_to_cancel | run.cancelled |
 | 31 | `DELETE /v1/sessions/{session_id}` | Remove a run for good, with its scenarios and remediation plans | 200 `{session_id, scenarios, remediation_plans}` (how many were removed) | 403 · 404 · 409 cancel_first (its job, a scenario's controls or one of its plans is still queued or running) | session.deleted |
-| 32 | `POST /v1/remediation/{remediation_id}/cancel` | Stop a remediation plan being written | 200 `{remediation_id, status: cancelled}` | 403 · 404 · 409 nothing_to_cancel | plan.cancelled |
+| 32 | `POST /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/cancel` | Stop a remediation plan being written | 200 `{remediation_id, status: cancelled}` | 403 · 404 · 409 nothing_to_cancel | plan.cancelled |
 
 **Cancel, in plain words.** The run becomes `cancelled` and its asset is free for a new run. Nothing is taken
 from the workers by force: a worker writes only while it owns the job, and it checks that right before it
@@ -4142,7 +4153,7 @@ unknown values). The OpenAPI file is compared in CI with the previous release; a
 |---|---|---|
 | Start run, next set, regenerate, request plan, regenerate plan, admin jobs | async (202) | minutes of AI work; HTTP must answer in < 1 s |
 | Status, results, lists, accept, reject, decide plan version, pending decisions | sync | one or a few database round trips |
-| Controls top-up during a plan request | sync inside the request, hard 20 s deadline, no retries (M11 R1T) | the plan must not start without a control (owner rule); rare (only when controls are missing) |
+| Controls missing at a plan request | mapped by the plan job, never the request (M11 R1T, G262) | the plan must not start without a control (owner rule); with many users an in-request AI step answered 503 |
 | Promote to library (#27) | sync | a person asks for it; 1 procedure call per AI step threat (usually one) |
 | Live updates | async push (Redis pub/sub) | many clients, many pods |
 | Reaper, controls retry sweep, scheduling of index warm-up / intel / techniques | scheduled (beat) | recovery and freshness |
@@ -4217,7 +4228,7 @@ UAT reaches all three through the LiteLLM gateway at `https://llmapi.govai.ae` (
 | 8 | `consistency_check` | W7 | plan + scenario slot `C#` | `{cards:[{slot, consistent, problems[]}]}` | problems when inconsistent | ask once more; still → `unchecked` note |
 | 9 | `remediation_plan` | R3 | snapshot (without register and warnings) | `PlanDraft` (R5) | pydantic model; R6 checks | version `failed` (`generation_failed` / `invalid_plan`) |
 | 10 | `embed` | search, index, duplicates | texts | vectors | count, order, size (M04 A5) | asked again (3 retries); still short → `Unavailable`, the job retries later; wrong size → `EmbeddingSizeMismatch`, the job fails |
-| 11 | `rerank` | C4, top-up | query + ≤ 40 documents | scores 0–100 | every document scored once | asked again (3 retries); still short → `Unavailable`, the job retries later |
+| 11 | `rerank` | C4, the plan job (R1T) | query + ≤ 40 documents | scores 0–100 | every document scored once | asked again (3 retries); still short → `Unavailable`, the job retries later |
 
 ### 15.3 Deterministic logic vs AI
 
@@ -4455,7 +4466,7 @@ Pattern for every failure: **Detect → Log → Recover/Retry → Notify → Res
 | MongoDB down | driver error | `dependency.unavailable` | API pods unready (M03); worker: back-off 15→120 s, 5 attempts | alert `MongoDown` | 503 (router, or the handler + Retry-After) | — |
 | SQL Server down | `OperationalError` | `dependency.unavailable` | API pods unready (M03); running jobs serve the last library copy; promote (#27) answers 503 | alert `SqlDown` | 503 (router) | — |
 | Redis down | send fails | `job.send_failed` | API pods unready (M03); records already queued stay in MongoDB and the reaper re-sends them once Redis answers and their queue is empty (while it cannot count a queue it sends nothing, `job.queue_size_unknown`) | alert `RedisDown` | 503 (router) | — |
-| AI busy / down | litellm errors | `ai.call` failures | 3 retries + fallback model; job back-off; slot wait (the API top-up: no retries, 20 s deadline) | alert `AiErrorRateHigh` | 503 (API top-up) | — |
+| AI busy / down | litellm errors | `ai.call` failures | 3 retries + fallback model; job back-off; slot wait (the API makes no AI call: G262) | alert `AiErrorRateHigh` | — | — |
 | AI answer unreadable | JSON / schema check | finding / note | one corrective re-ask; then rule-specific (not assessed, failure scenario, failed version) | — | visible in results | plan outcome |
 | AI answer truncated | `finish_reason=length` | note | split the batch (gate) or fail the item | — | — | — |
 | Timeout | bounded waits (NFR-12) | as the store/AI above | as above | as above | 503 | — |
@@ -4490,7 +4501,7 @@ Pattern for every failure: **Detect → Log → Recover/Retry → Notify → Res
 | Double click on "next set" / "regenerate" | conditional update on the epoch read | one 202, one 409 `generation_in_progress` |
 | Accept and reject the same scenario at once | `update_many` filters `decision: pending` | only one wins; the other lists the id in `skipped` (`changed_concurrently`) |
 | Two versions of one path accepted at once | unique partial index `{session_id, path_id}` where accepted; the same path twice in one call is refused before any write | one wins; the other lists its id in `skipped` (or 409 `duplicate_version` when found before writing) |
-| Controls of one scenario mapped by a worker and the API top-up at once | the same per-scenario claim (`controls.task_id`, lease) | one maps; the other gets 503 `controls_not_ready` (API) or skips it (worker) |
+| Controls of one scenario mapped by the controls job and a plan job at once | the same per-scenario claim (`controls.task_id`, lease) | one maps; the plan job waits for it and uses its result (R1T step 2), the controls job skips it |
 | Beat and an operator start the same admin job | `AdminJobService.start` + unique partial index `{kind}` where active | one job; the other gets 409 (operator) or skips (beat) |
 | Two plan decisions at once | optimistic filter on `accepted_version` | one wins; the other retries once, then 409 |
 | Two plan requests for one scenario | unique `scenario_id` | second → 409 `plan_already_exists` |
@@ -4720,7 +4731,7 @@ v1's UAT values (replicas, resources, probes, grace periods, disruption budgets,
 | T-PATH-01..06 | one path per threat, path fields, three passes, tie-break, target cut, freeze |
 | T-WRT-01..22 | canonical check, every W5 finding, repair keep/discard, plan check paths, why-applies, sibling similarity, unique titles, failure scenario, abandoned after 5, citations |
 | T-CTL-01..10 | query clip, pool filter, shortlist 40, cut-off keep-all, nearest fallback, twins, ranks, broken result, retries, 30-min sweep |
-| T-REM-01..24 | both create paths, replay, schema limits, top-up + 503, snapshot shape, AI shape errors, R6 checks, scheduler golden example (40 days, 09 Nov 2026) and repairs, regenerate, accept/reject any version, one accepted, concurrency, list filters |
+| T-REM-01..24 | both create paths, replay, schema limits, no AI in the request (pending snapshot, many at once), snapshot shape, AI shape errors, R6 checks, scheduler golden example (40 days, 09 Nov 2026) and repairs, regenerate, accept/reject any version, one accepted, concurrency, list filters |
 | T-EMB-01..08 | search parity (Built: `tests/test_search.py`), index build API, job conflict |
 | T-EMB-09..11 | callers during a build share its failure instead of repeating it; a slow build of an older library never replaces the newer one (Built 2026-10-08: `tests/test_search.py`); an interrupted build still answers the callers waiting on it (Built 2026-10-09) |
 | T-LIB-01..14 | load (controls with their `AssetType`, only the four agreed values: `test_library_loads_threats_with_stride_categories_and_controls_with_their_asset_type`, renamed 2026-10-09) + stamp (it covers exactly the 7 tables the app reads: `test_the_library_stamp_covers_exactly_the_tables_the_app_reads`, 2026-10-09) + outage, a failed check counted in `tsg_library_check_failures_total` (Built: `tests/test_library.py`; the test that edits a library row runs only when `CII_ENV=dev`, never auto-commits, waits at most 2 s for a lock (`SET LOCK_TIMEOUT 2000`), rolls back and disposes its engine), identity resolution, control refs strict/tolerant, propose outcomes, list/decide, import dry run |
@@ -4867,7 +4878,7 @@ documentation are in place.
 | Embedding jobs collection | `tsg_embedding_jobs` (SDD §4) | `tsg_admin_jobs` (all admin jobs) | one job model |
 | Endpoints | 22 | 27 (+ 4 admin, + #27 promote-to-library) | owner 2026-10-08 |
 | Start-run body | contains `entity_id` (SYS §2.3) | entity only from the header | one source of identity |
-| Error code `ai_unavailable` | listed (SDD §7A) | code `unavailable` + `reason` (`ai_busy`, `controls_not_ready`, …) | one 503 code |
+| Error code `ai_unavailable` | listed (SDD §7A) | code `unavailable` + `reason` (`ai_busy`, `actor_library_empty`, …) | one 503 code |
 | Grafana/Flower login | behind login (SDD §9) | no login: Grafana, Flower, Prometheus, Alertmanager, Loki and the API's `/metrics`, `/health`, `/ready` are public on the one Route host (D-10) | OWNER 2026-10-08: public, no login |
 | Remediation accept | "accept it" | accept or reject **any** version | owner 2026-10-08 |
 | Audit | "audit trail" (owner extra) without a store | `tsg_audit` (Built; `key.minted`, `key.revoked` today) | OWNER 2026-10-08 (design Q&A) |
@@ -5133,6 +5144,35 @@ documentation are in place.
 | G230 | owner request | Run 57bc320b (intelligence on): the cards' threat actors read vague: a type such as "Nation-state/APT" names no real attacker, so a GRC analyst cannot tell who does this (owner 2026-10-14: "Name the real group, also similar from the database as well. If not relevant from the database use near possible"). The actor library holds only the 9 types; ATT&CK in `tsg_intel` names 130 groups, but the import kept a group's name only (at most 5 users per technique, mostly malware and campaigns for OT) and dropped who it is, its id, the campaign -> group links and the group -> malware links | Import (`attack_groups.py`): each group's ATT&CK id, page, who it is (first sentence of its description) and kind (state / criminal / ransomware / hacktivist: the first sentence decides, by sponsorship, attribution or origin words ("suspected Iranian threat group", "China-based"), crime before origin; else the whole description without origin; never by whom it targeted); each technique record gains `data.groups`: every group behind it directly, through a campaign attributed to it, or through malware it uses (`through`, `how`), direct first, at most `KnownGroups.PER_TECHNIQUE`; `real_world_use` unchanged (facts and stories unchanged). The checkpoint carries the reader's format (`AttackReading.FORMAT`, 3): an older one reads the unchanged file again once (live 2026-10-14: format 2 left 68 of 175 groups unknown, origin words fixed that). Picking (`engine/external_intelligence/known_groups.py`, no AI call): of the acting actor's kind (from a word in its name; External attacker any kind; insider, vendor, user: none recorded), (1) behind the card's evidence, (2) behind another technique the same search found (similar), (3) only when neither: the nearest by shared attacker goals (tactics); none of its kind: the groups known for the attack, `fits_actor: false`; at most `KnownGroups.SHOWN` (3). Worked out in the evidence search (the group map built once per corpus), kept on the plan with the evidence (a retry or regenerate reuses it), copied to `content.known_groups` with the number its technique is cited by; `ScenarioView.known_groups`; console card and Word export. Never in the story (G122). Not adopted: named groups in the actor library or as the acting actor (G122/C9), group records of their own (a new kind for one field) | Verify: import tests (kinds, the three links, once each, cap, unsafe description, poisoned name, older checkpoint re-read), picking tests (order, similar, nearest, insider, any kind, cap), the finder end to end, the write job ON (request names the actor, plan keeps them, card cites [n]) and OFF (none); mutation proofs; live: refresh ATT&CK once, then an ON run on asset 1166 |
 | G231 | fix | Owner 2026-10-14: scenarios not created in another run. Logs (read from the bottom) and the records: run f88ddcec gave up 7 of 12 paths at once, 5 for `citation_unsupported`; run 75fef9b5 1 of 6. The code rule passed every one of those citations ("APT38 has used this technique [1]" with a fact "APT38, a threat group, has used this technique"); the flag came from the AI plan check's `unsupported_citations` (G229: final, no rewrite). Cause: the plan check's evidence block showed only facts, never what an entry is about, and the facts say "has used this technique": the check could not tell which technique and judged sound citations unsupported ("no specific technique named"). With every path selected (12 under a limit of 15) no reserve replaced them | Fixed (owner chose: tell the check the technique): `evidence_block(brief, named=True)` for the plan check only adds each entry's subject (`technique`: its own name, else `about`), cleaned like a fact; the writer's block is unchanged (no framework name reaches a story, prompt versions unchanged), no AI call added; the check keeps its veto for a claim the entry really does not support. Not adopted: making the check's flag a warning (owner) | Verify: prompt test (the name in the plan check's block, never the writer's; no id, link or source in either); 3/3 mutations caught; live: re-run asset 1166 |
 | G232 | owner request | Owner 2026-10-14 (UAE-specific threat and actor relevance, no AI call added): the app did not know the country; ATT&CK says whom each group attacked ("targeted the Middle East", "Emirati journalists", "aviation and energy") but the import kept only a group's first sentence; sources were not labelled; one more card of run f99bcdb6 was lost because a sentence saying HOW the attack works cited its technique without naming a past attacker. Owner chose: named groups beside the actor UAE first (the actor stays a type), ATT&CK now and aeCERT/CSC/DESC feeds after legal approval, a planning tie-break, the country from `.env` | `THREAT_CONTEXT_COUNTRY` ("UAE" or "United Arab Emirates"; an unknown country stops start-up) and constants `PLACE_WORDS`, `COUNTRY_REGIONS`, `SECTOR_WORDS`. Import (`place_words.targets_of`, format 5): each group's places and sectors it ATTACKED, read from its whole description after what says where it comes from is left out ("a UAE-based group that targeted Kuwait" attacked Kuwait; what a group IS, "BlackOasis is a Middle Eastern threat group", is its origin: live 2026-10-14 it was the one wrong tag of 26; a group's own name is never a place it attacked; within the cap of `KnownGroups.PER_TECHNIQUE` the groups that attacked a known place are kept first, then direct users, then by name: the alphabetical cap kept a Gulf group for 304 of 807 techniques and 525 of 2066 such links, now all 347 techniques and 1754 links, the same 10 per technique; format 5). Real groups ranked within each step: attacked the country, the region, the asset's sector (from its sector, sub-sector, critical service), then as G230; each with `relevance`, shown by the API (`known_groups[].relevance`; live 2026-10-14 the API view dropped it, so the console never showed why). Sources labelled `scope` country / regional / global by the groups behind them (`Nearness.scope`). New final rule `country_claim_unsupported`: a sentence saying something HAPPENED in the country must cite a country source. `supports()`: only an "it happened before" sentence (perfect tense, a past action, a year, an incident) needs the cited entry's name; a sentence saying how the attack works is the plan check's. Planning (intelligence on): the country is a fact in the landscape; each threat is matched by keywords only (BM25 over the technique texts) and `country_relevance` {scope, techniques, groups} kept on the threat; the path ranking prefers a nearer threat after the coverage keys, before impact. The story writer's brief has `country`; the original writer and intelligence off are unchanged; prompt wording and versions unchanged. Not adopted: a named group as the acting actor (owner kept G122), scraping aeCERT/CSC/DESC pages (no feed, legal), an emirate (no location fact) | Verify: 19 tests + 4 origin wordings + the cap order (places/sectors and origin never a target, ranking and why, scope, the two citation rules, planning relevance and tie-break never beats coverage, the country only when on, the setting, the finder, the writer block, the planning job); 17/17 mutations caught; 1712 tests twice; live: re-import ATT&CK, run asset 1166 |
+| G233 | owner review | Owner 2026-10-14 ("how external threat feeds are used to create the scenario? i see gap"): with the feeds on, a scenario was built exactly as without them; the feeds added one precedent sentence. The writer got only a technique's goals, two real attackers' names and its mitigations | A MITRE ATT&CK technique's facts now open with "How it works:" (its own description's first 1-2 whole sentences, at most `EvidenceLimits.DESCRIPTION_MAX_CHARS` 300, kept at import as `data.how_it_works`) and each real attacker's fact tells how it used it (that relationship's note: `EvidenceFact.USED_BY_HOW` / `CAMPAIGN_USED_HOW`); story writer rule 2 adds: build the attack's steps from those facts and mark each step with its number (version stays `scenario writer-evidence-1`; the original writer untouched). Free text is used ONLY from ATT&CK (a curated source): vulnerability and advisory facts stay structured-only. The citation check reads names from the new facts too, the names inside the account included ("..., Sandworm Team used ...") | 703 of 706 enterprise techniques carry how it works (real file, 2026-10-14); tests: facts, fallback, never for a vulnerability, names read, writer rule; mutations caught |
+| G234 | owner review | Same review: scenario 1 of run 57bc320b (a stolen password) got "Sensitive OT Data Protection in AI" and "AI Security Awareness for OT Users"; the control search never read the feeds' mitigations (a known limit) | `Evidence.mitigations` (the names its facts say, at most 3, stored with the cited evidence, shown by the API); the control query's head carries "Mitigations (MITRE ATT&CK): ..." (the cited evidence's, each once, at most `Controls.QUERY_MITIGATIONS` 6), so the search and the reranker read them and they are never cut; `controls.made_with.mitigations` records them. No AI call | tests: carried, in the head, capped, none without evidence, shown; mutations caught |
+| G235 | defect | Session b84e7fc0: a card said APT33 "used this attack: Web Protocols" while it cited only Command Message: the groups were picked before writing, against all found evidence, and never re-picked | The search keeps up to `KnownGroups.CANDIDATES` (9) groups; when the scenario is saved the card shows SHOWN (3): groups behind a cited technique first ("used this attack [n]"), a group behind a technique the card does not show is "used a related attack"; the UAE/region/sector order kept within. No AI call | tests; mutations caught |
+| G236 | owner choice | Equal groups on vendor/insider cards were ordered by name only | Tie-break: relevance, then how many of the card's attacks, then a group that used it itself before one linked through its malware, then the name | test; mutation caught |
+| G237 | defect | Three real ATT&CK techniques (T1699 Direct Prompt Injection, T1608.007 AI Result Poisoning, T1700 AI-Enabled Exfiltration) were quarantined whole: one sentence DESCRIBING an attack on AI ("instructing the LLM to ignore previous instructions") rejected the record | `SourceTextGuard.clean_sentences`: a description (ATT&CK technique and group, KEV description and action, NVD description, ICS summary and mitigations) is screened sentence by sentence; only flagged sentences go (logged with a count and a hash, never the text); what is left is screened again as a whole (a split payload is still caught); no clean sentence, or an unsafe name, still quarantines the record. NVD screens the description alone, then id + rating + it. `AttackReading.FORMAT` 6 | real file: 0 rejected (was 3); tests with ATT&CK's own sentences, split payload, poisoned sources updated; mutations caught |
+| G238 | defect | The first plan after a data reload ranked with the old copy (run 0ffdeabd: 0 of 37 threats near; the new data: 29) and a worker's first plan waited up to 2 minutes: planning borrowed the writer's evidence index, rebuilt in the background. Owner: 2 minutes is too long | Planning reads its own small copy (`worker/external_intelligence/relevance_corpus.py`): the ATT&CK techniques straight from `tsg_intel` (807, about 0.1 s), kept in memory and read again only when the active snapshot pointer moves; never waits; `IntelAccess.plan_intel` returns the nearness and the stamp from the same read (the plan records the snapshot it ranked with). `KnownGroups.PLAN_INDEX_WAIT_SECONDS` and `IntelWorkEvent.STAMP_FAILED` deleted | tests: reuse, re-read on a newer pointer, failure plans without it, same-read stamp; mutations caught |
+| G239 | defect | Leftovers in MongoDB: `tsg_intel_feeds`, `tsg_intel_snapshots` (an earlier build), `test_ai_calls` (a test run before G212) and 2,696 vectors of the renamed corpus "intel", never cleaned: each build retires only within the corpora it knows | `LibraryVectors.retire_unknown_corpora` at every start: a vector of a corpus no code knows goes at once (TTL). The three collections backed up to `cii/backups/mongo_leftovers_2026-10-14.json` (git-ignored) and dropped (owner's go-ahead) | test; mutation caught; laptop: 12 collections left |
+| G240 | defect (test) | `test_the_laptop_model_is_waited_for...` failed once in four full runs (the one that took 251 s on a loaded laptop): it expected 2 of 6 searches to give up while 4 held the reranker for a fixed 0.2 s; a thread started late found a place freed and did not give up | The test's model now answers only once the expected waiters have given up (`GiveUpCountingGate`, `BusyUntilGivenUp`): no clock race. The app is unchanged | 10 of 10 under 6 CPU-burning processes; full suite green |
+| G241 | defect (review) | Cross-check of G233–G239 (2026-10-14) found 7 gaps: (1) `named_by` read every template matching one fact, and "how" sentences gave acronyms (e.g. "SSH") as names, so a sentence citing a technique was taken as naming a group; (2) mitigations were read from any hit, so a vulnerability or advisory could steer the control search; (3) a feed with no technique raised and was re-read at every plan; (4) every clean description was screened twice, once whole and once per sentence; (5) the unknown-corpus retirement re-stamped already retired vectors at every start, pushing their deletion out for ever; (6) the writer rule could be read as the real group acting here; (7) the data example in EXTERNAL_INTELLIGENCE.md lacked scope and mitigations | (1) one template per fact, and an all-caps word of ≤5 letters is no name; (2) `safe_mitigations` returns nothing unless the hit is a technique; (3) "no technique" is cached as an answer for that snapshot; (4) a clean description takes one whole pass and only a flagged one is split; (5) only vectors not yet retired are retired; (6) the rule says "(never as that real attacker acting here)"; (7) example updated. A mutation of each fix makes a test fail (8/8 killed); 1750 tests pass twice; ruff and mypy clean |
+| G242 | defect (live) | Run 45b8c63b (2026-10-14, 7 minutes after the ATT&CK reload): the plan ranked with the new snapshot (G238) but every card's evidence came from the old one (6ff44cfd, no "How it works" facts): the evidence index keeper learns of a newer snapshot only when a search asks, and that search still gets the old index; since G238 planning no longer asks, so the writer's first batch was the first to ask | Each worker follows the active snapshot every IntelLimits.SWITCH_CACHE_SECONDS from a daemon thread started at worker_ready (`start_following_active_snapshot`), whatever the traffic; a rebuild from stored vectors takes ~1.2 s, so a published snapshot is in use within about a minute, and a failed first build is retried without waiting for a search. Only with the env master switch on, and asks only while the run-time switch is on. 5/5 mutations caught; 1752 tests pass |
+| G243 | owner decision | Owner 2026-10-14 after run 45b8c63b: 30 of the last 120 mapped cards were non-AI threats given AI controls (OT credential theft got only "Sensitive OT Data Protection in AI"; OT command abuse got "AI Automation Restriction"). The reranker over-scores the library's AI-for-OT controls ("OT commands", "OT data") on any OT card; a shorter focused query was measured and made the picks worse | Controls of the domain "Artificial Intelligence & Autonomous Technologies" (Controls.AI_DOMAIN) take part in a card's control search only when its threat type or name says it is about AI (Controls.AI_THREAT_WORDS: AI, GenAI, LLM, ML as words, or "artificial intelligence", "machine learning", "large language model"), narrowed before the top-k cut like the IT/OT rule (G211). `controls.made_with.ai_controls` records it. No AI call. 6/6 mutations caught |
+| G244 | owner decision | Run 45b8c63b: the AI service timed out (408) on 1 of 20 relevance-gate batches, twice; each time the plan job restarted and re-asked all 20, 19 of them already answered: 58 calls instead of ~21, ~4 extra minutes | A retried job (attempt 2 or later; a job is retried only after a temporary outage, never for an unusable answer) reuses the usable ("ok") answer it got for the exact same prompt: tsg_ai_calls now records `task_id` and `prompt_hash` (sha256 of the messages), indexed; a first attempt reads nothing; a store fault asks the model. Checked on the real run: 18 of 19 attempt-2 prompts and 20 of 20 attempt-3 prompts were identical to answered ones. The call record step moved out of ChatModel (`chat_messages.record_chat_call`), keeping it under 150 lines. 6/6 mutations caught |
+| G245 | defect | The owner's trailing space in writing_prompts.py (kept word for word) was stripped again: `ruff format` removes it | The formatter leaves that file alone (pyproject `[tool.ruff.format] exclude`); a full `ruff format app` was run to prove it; `tests/test_owner_prompt_file.py` fails if the space or the exclusion goes |
+| G246 | defect (live) | Run 5f2e072a (asset 1166): 4 of 6 first cards blocked. One was a false block: "…against the Incident Detection & Response Platform … until incident alerts queue and then fail [1]" was read as a past event (the bare word "incident"), so it needed a group's name; the AI plan check had judged the draft consistent. The same keyword test read past participles describing a noun ("a targeted phishing email", "with compromised credentials") as past actions. (The other 3 blocks were the AI plan check's own judgments: one fair, an embellished APT41 account; two strict) | `_says_it_happened`: "incident" counts only with a past qualifier ("a similar/past/previous/documented … incident"); a past action word counts only when it is not describing a noun (not after an article, determiner, preposition or "use", not opening the sentence, not a passive of what can be). Both the citation-support and the country-claim checks use it. 5/5 mutations caught; 1770 tests pass |
+| G248 | owner decision | Owner 2026-10-15 ("undo the feed-built steps"), after runs 5f2e072a, d772a905 and 72be5f98: 13 of 18 first cards were set aside (72%) against 21 of 76 before G233 (28%); unsupported citations 56% against 14%. The writer stretched the real-attack accounts ("as CyberAv3ngers locked PLCs [2], the attacker could encrypt configuration databases") and the plan check rightly rejected them | G233's steps are undone: no "How it works" fact, a real attacker is named only ("X, a threat group, has used this technique."), the story writer's rule 2 and rule 13 are as before G233 (G247's wording goes with them), the ATT&CK reader keeps no `how_it_works` (AttackReading.FORMAT "7": the next refresh reads ATT&CK again). Kept: D (one "campaign"), G234 (mitigations guide controls), G235-G246. Tests pin the plain facts, the reader's data and the absent step rule |
+| G249 | owner decision | Owner 2026-10-15: "make the code read the control candidate value": the code carried its own CONTROL_CANDIDATES (40), used whenever the env file had no line, so two places said how many controls are searched (the laptop's .env says 8) | `control_candidates` has no value in code: it is read only from the env file (.env, .env.uat, .env.example all set it); a missing or empty line stops start-up with "CONTROL_CANDIDATES: field required". The console help and the guides say so. Test: the env value is the one used, and start-up stops without it |
+| G250 | owner decision | Owner 2026-10-15: "if no citation is found, suggest the nearest possible one". A story citing none of its sources was thrown away (G229, final, no rewrite): about 1 card in 10; runs a13d9385 and 0a8456d0 lost 2 of 12 so. A code-added [n] was rejected (the code cannot know which sentence a source supports: a false citation), and so was a rewrite (2 more AI calls) | `NO_EVIDENCE_CITED` is a warning, not final, never asks for the rewrite. The card is kept with the best-scored source of its threat as `content.related_evidence` (no number, no claim), `evidence` stays the numbered cited ones (G224), mode `related`; the API shows `related_evidence`, the console "Related intelligence (closest match, not cited by any sentence)". A brief with no source at all is still never finished. Control search unchanged (cited mitigations only). 6/6 mutations caught; 1769 tests |
+| G251 | review | Cross-check of G250 (2026-10-15): two code notes (`evidence_checks.py`, `scenario_views.py`) and the management page `WHAT_IS_EVIDENCE.html` still said a scenario citing no source is dropped | Notes and page now say: every scenario shows at least one public source; usually cited with [1]; citing none, the closest source is shown as "Related intelligence (not cited)", never as proof of a sentence; a threat with no source at all is not written. No behaviour change. Owner chose to leave control advice for related-source cards as it is |
+| G252 | owner decision | Owner 2026-10-15 ("if we need to make the rule a little loose I am okay"): last 14 runs of asset 1166: 36 of 92 stories lost, 22 of them ONLY for one footnote that said more than its source ("ALLANITE … in regional campaigns [1]") | `citation_repair.repair_citations` (no AI call): a story blocked only by footnote faults (citation unsupported, link missing, country claim) loses the flagged footnote: the sentence goes when it claims a past event or names what its source names (`says_it_happened`, `named_by`), else only the marker; the code rules run again (still blocked: left as it was); a `citation_removed` warning tells the reviewer. `Finding.markers` carries the flagged numbers from the code check and the AI plan check. 7/7 mutations caught |
+| G253 | owner decision | Same review: the writer could footnote only a sentence naming a real group, so it stretched those accounts or cited nothing (5 of 16 kept stories had no footnote) | Writer rule 13: the marked sentence is either a step that IS the entry's technique (as its title says), adding no detail, or what the named group/software/campaign/vendor/product did, in the entry's own words. Prompt version unchanged; the code check (G232/G246) and the AI rule 8 ("the same technique") already accept it. 1/1 mutation caught |
+| G254 | owner decision | Owner 2026-10-15: "with external intelligence on, if no evidence or citation is identified, provide at least 1 which is nearby; do not make it empty". A threat whose search found no source above the threshold was never written | `EvidenceSelector.nearest`: when nothing passes, the best technique (else the best candidate whose product is not ruled out) is kept as `nearest_evidence` on the threat (best over the retries; real evidence on a retry wins); the evidence gate writes the story; the writer never gets it (no footnote to a weak match); the card shows it as `related_evidence`, mode `nearest` ("Closest match found, below the relevance check, not cited"). Only a search with no candidate at all writes nothing. Every served story now shows a source. 10/10 mutations caught |
+| G255 | UAT run | UAT Windows server 2026-10-15: every AI call went through the corporate proxy (`503 ERR_CONNECT_FAIL 110`), run failed after 5 tries; v2 had dropped v1's `LITELLM_BYPASS_PROXY` and relied on a per-window `$env:NO_PROXY` line. The same log printed the AI key: the OpenAI client logs request headers at `CII_LOG_LEVEL=DEBUG` | `CII_AI_BYPASS_PROXY` (default true; one switch, a line in every env file): each AI model factory puts the host of every `litellm_proxy/` model (`LITELLM_MODEL_PREFIX`) on `NO_PROXY`/`no_proxy` (`ai.common.bypass_proxy_for_ai`); every other host (another provider, the intel feeds) keeps the proxy. OpenShift: the env file sets it false; `gen_openshift_config --gate` refuses true (the gateway is proxy-only there). The `openai` logger is capped at WARNING like litellm's (G221). Owner: rotate the AI key |
+| G256 | owner decision | Owner 2026-10-15: the external-intelligence first run (health, refresh, reading the refresh) is called by hand in UAT and prod, "no admin key no api key"; then "for external_intelligence do not add any admin or api key" | Every `/v1/tsg/intel/*` endpoint takes no key: health, refresh and reading it, the switch, revoke and approve; each change is audited as `X-User-Id`, else `admin`. Accepted: anyone who reaches the API can switch the feature off or revoke a source (deletes its data). Other admin routes (api-clients, library, embeddings) keep the admin key. `test_health_and_a_refresh_need_no_key`, `test_the_switch_revoke_and_approve_need_no_key` |
+| G257 | owner decision | Owner 2026-10-15 was told "PUT /v1/tsg/intel/switch {enabled:false} stops the imports and POST /refresh is refused", then "implement it": the refresh checked only the env master, so with the run-time switch off it answered 202 and queued a job the worker could only fail | `IntelRefreshes.start` asks the switch (`is_enabled`: env master AND run-time) and answers 409 "External intelligence is off" with nothing queued; an approve while it is off returns `refresh_job_id: null` (turning the switch on queues the refresh). The worker keeps its own check (another pod may hold the old value up to 60 s). `test_a_refresh_is_refused_while_the_runtime_switch_is_off` |
+| G258 | owner decision | Owner 2026-10-15: "make sure the remediation endpoints are similar to tsg v1"; then: v1's ONE request for both kinds of scenario is the format of `POST /v1/remediation`; the other endpoints similar; status words stay v2's; history and AI-evidence endpoints not required; v1's `POST .../treatment-plan` and `/v1/remediation-plans` not needed | `PlanRequest`: `is_manual` (required) + `session_id` + `scenario_id`, or `manual_scenario` in v1's flat shape (`entity_id` = X-Entity-Id else 403; `threat_category_id/_name`, `threat_type_id/_name`, `threat_id/_name`); mixing the kinds → 422 with v1's four messages; the answer adds `is_manual`, `replayed`. Every other plan call at v1's address `/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan` (`/status`, `?include_history`, `/review {decision}`, `/regenerate`, `/cancel`, `/events`) and the lists at `/v1/sessions/{id}/treatment-plans` and `/v1/entities/{id}/treatment-plans`; the plan is found by its scenario (unique index, one read); the old `/v1/remediation/{id}/...` addresses are gone (no legacy code). Answers, words and storage unchanged. Left out: v1's `library` block, board rows for scenarios without a plan, a per-version `plan_id` (v2 numbers versions). `test_the_two_kinds_are_never_mixed`, `test_the_old_v2_addresses_are_gone` |
+| G259 | owner decision | Owner 2026-10-15: "if EXTERNAL_INTELLIGENCE_ENABLED is true, request to run the relevant api to fill the data instead flooding the console with errors". With the feature on and nothing imported, every scenario path's evidence search was an outage (`no_intelligence_snapshot`), retried until the job failed, and every index build retry logged `snapshot_build_failed` | `POST /v1/sessions` answers 409 `intel_no_data` at once while the switch is on and the active snapshot indexes nothing (one small read, only while on), naming `POST /v1/tsg/intel/refresh` and `GET /v1/tsg/intel/health`; the index keeper logs ONE `external_intelligence.no_data_yet` line per process naming the import, its retries stay quiet until data comes (said again if all data goes); any other build failure is still logged each time. `test_nothing_imported_yet_says_once_which_api_to_run_then_retries_quietly`, `test_on_with_nothing_imported_refuses_a_run_before_any_other_read` |
+| G260 | owner decision | Owner 2026-10-15: "provide proper comment in the swagger api and also make them in order for easy configuration and testing" | `/docs` opens with how to call the API (the four identity headers, the admin key, background work); 11 numbered groups (`ApiTag`, `app/api/openapi_docs.py`) in set-up-then-test order: health, API keys, library embeddings, external intelligence, runs, review, remediation plans, my jobs, live updates, library curation, service mapper; each endpoint has a numbered summary in its group's order and a plain-English description (what to send, what comes back, the main refusals). Routers are included in that order. Owner (same day, "api which will return the result is missing, what is new version api?"): titles "3. Read a plan (the result)" and "5. Regenerate: write a new version (v2, v3...)", addresses unchanged. No behaviour change |
+| G261 | live E2E (superseded by G262) | Laptop E2E 2026-10-15 (stack run by the owner; local CPU reranker): a hand-written plan request's control top-up passed its 20 s deadline. Rule R1T step 4 rightly failed the scenario's controls (the background never maps a hand-written scenario), but the 503 said "they are being mapped now", the stored error "the controls job maps them" and the run status "they are tried again later": nothing ever did, so a caller that waited was left with a plan-less scenario | The three messages follow the scenario's kind: `CONTROLS_NOT_READY_MANUAL`, `TOP_UP_LATE_MANUAL`, `BoardMessage.CONTROLS_FAILED_MANUAL` tell the caller to send the same request again (same `Idempotency-Key`), which maps the controls and starts the plan, answering 202 `replayed: true` (v1). Generated scenarios unchanged. `test_too_slow_a_top_up_tells_each_kind_of_scenario_what_maps_it_now`, `test_a_retry_after_the_controls_were_not_ready_starts_the_plan_as_a_replay`, run-board test; mutants of both fixes fail. The rest of the E2E passed: intel switch/import refusal, plan flow (request, 409, 403, SSE, result, review, regenerate, cancel, v3, lists, old addresses 404), hand-written flow, a full run (6 of 15 written, controls matched), plan on the new run |
+| G262 | owner decision | Owner 2026-10-15 after G261: "this can happen in UAT when multiple concurrent users use the service". A plan request matched missing controls inside the request (20 s deadline) and a hand-written scenario's attackers; with many users the AI calls queue (16 places shared with the workers; an API call waits ≤ 30 s), so the request answered 503 (`controls_not_ready`, AI busy) and held an API thread meanwhile. Owner chose "API does no AI work" and "provide the near possible control" | `POST /v1/remediation` and regenerate make no AI call: they save a pending snapshot and answer 202 at once; the plan job (`app/worker/plan_inputs.py`, R1T) ranks a hand-written scenario's attackers, proposes its new wording, maps missing controls under the scenario's lease (waits for the controls job's mapping and uses it), saves the snapshot, then plans; outages retry the job (workers wait 300 s for an AI place). No control of the scenario's asset type: the nearest of another type, flagged (`ControlMessage.OTHER_TYPE`); only an empty library is refused (409 `control_library_empty`, in memory). Removed: `ControlsTopUp`, the 20 s top-up, `controls_not_ready`, `ai_deadline` and its plumbing, `no_compatible_control`. `test_many_plan_requests_at_once_all_answer_202_and_their_jobs_write_every_plan`, `tests/test_plan_inputs.py`; 4 mutants caught |
 | G213 | owner decision (superseded by G215) | Session f0c52f04 (asset 1207: SCADA, ICS and OT telecom, all OT) had 21 scenarios, many "same in meaning" (owner): one scenario per kind of attack per system told the same story once per system, e.g. "Exposure of operational grid data" three times, and titles (never naming a system) read alike | Fixed (owner chose "merge into one"; no padding to 20-25): after grouping and the best-threat pick, one AI call per kind of attack with two or more scenarios on systems (`AiTask.SAME_SCENARIO`, temperature 0, `same_scenario_prompt`: "the same attacker action leading to the same harm … differing only in which supporting system … if in doubt, keep them separate") names the groups; code merges each into ONE scenario on all its systems (`attack_paths/same_scenario.py`), written around the member whose threat was judged on the most of them (then the strongest); a member on a system that threat was never judged on stays apart (or merges with the group's other leftovers); the others' threats join `also_applies`; each merge is kept on the plan (`plan.merged`: path, systems, threats, the AI's reason); a scenario on the asset itself is never merged; an unreadable answer merges nothing (note `SAME_SCENARIO_NOT_CHECKED`). `path_on` builds every path (`system:<id>`, `systems:<ids>`, `asset`). `planner-2026-10-12.5`. Tests `tests/test_same_scenario.py`; 8 mutation proofs; independent review (4 fixes). Also: `tsg_GetAssetContext` part 5 may return its dropdown names by `value` or by `id` (owner: "use what is there in the updated stored procedure"; an id-based procedure was a bare 500, KeyError 'value'); any other shape is a named `setup_error` |
 | G214 | owner decision | Owner 2026-10-12: "I want to control this maintenance and worker such that if anything which required deletion or canceling, I can do it" and "a list of in progress or in queue jobs such that I can review them"; there was no way but MongoDB by hand | Fixed (owner chose: no admin key, each organisation its own runs; delete = gone for good; cancel = stop now, keep what is done): #29–#32 (§13.8). `Status.CANCELLED` for a run, its controls and a plan; claim, reaper, controls claim and delivery never take a cancelled one; next set and regenerate accept it (its controls re-queued, `cancelled` cleared). Independent review (each fix with a test): a writer and a regenerate check they still own the run right before each save (`PlanProgress.hold`), so an answer that comes back after a cancel or delete is never saved; the cancel ends the controls delivery lease; the sweep settles a cancelled run's controls whatever their age and removes a deleted run's leftover scenarios; the run's counts are refreshed after every controls change (Rule S12); a deleted run's or plan's stream sends `*.deleted` and ends; the list reads through two new `tsg_sessions` indexes (`entity_id, status, created_at` and the partial `controls_waiting_by_entity`) and `total` counts all; delete removes children first and the run last (a retry finishes it); a replaced version's old controls never count as work; a run cancelled before its plan answers 409 `run_cancelled`. Second review (2026-10-12): a cancelled job's AI calls stop within one lease renewal (`core/lease_signal.py`, checked at the AI slot), and it ends with no outcome and an info line (`job.stopped_by_owner`), never a retry, a failure or a success; a stopped set's summary reads cancelled; with no set left, a next set resumes stopped controls; resumed controls are sent at once; a delete tells each plan's watchers; a plan request racing a delete is removed (404); `find_context` of a gone run is 404 (was KeyError, 500); a decision on a plan deleted meanwhile is 404 (was an assert, 500); the console page shows cancelled and ends its stream on delete. Owner follow-up ("Yes fix it"): a next set or regenerate racing a delete answers 409 `run_being_deleted` (the delete marks the run first, then checks for work; a refused delete takes its mark off). Tests `tests/test_job_control.py` (+ writing, regenerate, SSE, sweep, worker, AI and plan-request tests); 46 mutation proofs |
 

@@ -1,8 +1,8 @@
 """A new version of a remediation plan: only while its scenario is
-still accepted and its latest version is done or failed. The new version's snapshot is made now (the
-register from the record, read against the current library; the scenario and its controls as they are now),
-with a warning for each control the previous version had that is no longer mapped. One conditional append,
-then the plan job is sent."""
+still accepted and its latest version is done, failed or cancelled. The new version's snapshot is made now
+with no AI call (the register from the record, read against the current library; the scenario and its
+controls as they are now), with a warning for each control the previous version had that is no longer
+mapped; or pending, completed by its plan job (G262). One conditional append, then the plan job is sent."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -12,7 +12,6 @@ from app.core.constants import (
     AuditTarget,
     ConflictReason,
     RemediationMessage,
-    SnapshotWarning,
     Status,
     TaskName,
 )
@@ -22,6 +21,7 @@ from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.data_access.remediation_versions import RemediationVersions
 from app.data_access.remediations import RemediationRepository
+from app.engine.remediation.snapshot import is_pending, no_longer_mapped
 from app.models.api_clients import Principal
 from app.models.remediation import PlanRequested
 from app.models.remediation_requests import RegisterData
@@ -49,7 +49,9 @@ class PlanRegeneration:
         assert scenario is not None  # refuse_read_only refused a missing one
         register = RegisterData.model_validate(read["register"])
         snapshot = self._snapshots.make(register, scenario, stored=True)
-        snapshot["warnings"] += self._no_longer_mapped(remediation_id, latest, snapshot)
+        if not is_pending(snapshot):  # a pending one gets its warnings from its plan job
+            previous = self._plans.find_snapshot(remediation_id, latest) or {}
+            snapshot["warnings"] += no_longer_mapped(previous, snapshot, latest)
         now, version = datetime.now(UTC), latest + 1
         job = {"task": TaskName.WRITE_PLAN, "epoch": version, "task_id": None, "attempts": 0, "due_at": now}
         item = new_version(version, principal, snapshot, now)
@@ -68,17 +70,6 @@ class PlanRegeneration:
             version=version,
             status=Status.QUEUED,
         )
-
-    def _no_longer_mapped(self, remediation_id: str, latest: int, snapshot: dict[str, Any]) -> list[str]:
-        """The previous version's mapped controls the scenario has lost since (one version's snapshot
-        read)."""
-        previous = self._plans.find_snapshot(remediation_id, latest) or {}
-        now_mapped = {item["control_code"] for item in snapshot["existing_controls"]["library_mapped"]}
-        return [
-            SnapshotWarning.CONTROL_NO_LONGER_MAPPED.format(code=item["control_code"], version=latest)
-            for item in (previous.get("existing_controls") or {}).get("library_mapped") or []
-            if item["control_code"] not in now_mapped
-        ]
 
 
 def read_owned(versions: RemediationVersions, principal: Principal, remediation_id: str) -> dict[str, Any]:

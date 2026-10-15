@@ -37,6 +37,10 @@ POISON = {
 SMUGGLING = (
     "Real text [click](https://evil.test/x) <b>bold</b> <img src=https://evil.test/p.png> www.evil.test end​"
 )
+#: G237: a DESCRIPTION is screened sentence by sentence; a poison with a clean sentence of its own ("Fine.")
+#: loses only its poisoned sentence, and the record is kept with nothing hostile in it.
+DESCRIPTIONS = {"shortDescription", "requiredAction", "description"}
+CLEAN_LEAD = {POISON["role"]}
 HOSTILE_FRAGMENTS = ("ignore", "evil.test", "http", "system:", "​", "‮", "```")
 
 
@@ -62,8 +66,12 @@ def test_kev_quarantines_a_poisoned_field(field: str, poison: str) -> None:
     entry = {**kev_fixtures.GOOD, field: poison}
     body = kev_fixtures._kev_body([kev_fixtures.GOOD | {"cveID": "CVE-2024-0009"}, entry])
     result = CisaKnownExploitedSource(serving(body)).download_changes(None)
-    assert [r.external_id for r in result.records] == ["CVE-2024-0009"]
-    assert _quarantined(result) == ["CVE-2024-0001"]
+    if field in DESCRIPTIONS and poison in CLEAN_LEAD:
+        assert [r.external_id for r in result.records] == ["CVE-2024-0009", "CVE-2024-0001"]
+        assert _quarantined(result) == []
+    else:
+        assert [r.external_id for r in result.records] == ["CVE-2024-0009"]
+        assert _quarantined(result) == ["CVE-2024-0001"]
     _assert_nothing_hostile_is_stored(result)
 
 
@@ -123,7 +131,8 @@ def test_attack_quarantines_a_poisoned_technique(field: str, poison: str) -> Non
     bundle = attack_fixtures._bundle([attack_fixtures._tech("t--5", "T5555", **{field: poison})])
     bundle["objects"][-2]["name"] = poison if field == "name" else "Network Scan"
     result = _attack(bundle)
-    assert "T5555" in _quarantined(result) or field == "name"
+    kept = field in DESCRIPTIONS and poison in CLEAN_LEAD
+    assert ("T5555" in _quarantined(result)) is not kept or field == "name"
     _assert_nothing_hostile_is_stored(result)
     assert all(poison[:15].lower() not in r.text.lower() for r in result.records)
 
@@ -209,11 +218,32 @@ def _nvd(item: dict[str, Any]) -> FetchResult:
 
 
 @pytest.mark.parametrize("poison", list(POISON.values()), ids=list(POISON))
-def test_nvd_quarantines_a_poisoned_summary(poison: str) -> None:
+def test_nvd_quarantines_a_wholly_poisoned_summary(poison: str) -> None:
+    item = copy.deepcopy(nvd_fixtures.LOG4SHELL)
+    item["cve"]["descriptions"][0]["value"] = poison
+    result = _nvd(item)
+    if poison in CLEAN_LEAD:  # "Fine." is a clean sentence of its own (G237)
+        assert _quarantined(result) == [] and len(result.records) == 1
+        _assert_summary_is_clean(result.records[0].text)
+    else:
+        assert result.records == () and _quarantined(result) == ["CVE-2021-44228"]
+
+
+@pytest.mark.parametrize("poison", list(POISON.values()), ids=list(POISON))
+def test_nvd_drops_only_the_poisoned_sentence_of_a_summary(poison: str) -> None:
+    """G237: the CVE's own clean sentence stays; the poisoned one never reaches a store."""
     item = copy.deepcopy(nvd_fixtures.LOG4SHELL)
     item["cve"]["descriptions"][0]["value"] = f"Apache Log4j2 flaw. {poison}"
     result = _nvd(item)
-    assert result.records == () and _quarantined(result) == ["CVE-2021-44228"]
+    assert _quarantined(result) == [] and "Apache Log4j2 flaw." in result.records[0].text
+    _assert_summary_is_clean(result.records[0].text)
+
+
+def _assert_summary_is_clean(text: str) -> None:
+    """An NVD record's summary (its data holds patch links, which are expected)."""
+    lowered = text.lower()
+    assert not any(bad in lowered for bad in HOSTILE_FRAGMENTS), text
+    assert not re.search(r"</?[a-z!]", lowered) and "maintenance mode" not in lowered, text
 
 
 def test_nvd_poisoned_cpe_vendor_and_patch_url_do_not_survive() -> None:

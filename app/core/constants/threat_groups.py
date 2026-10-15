@@ -27,10 +27,12 @@ class KnownGroupMatch(StrEnum):
 
 class KnownGroups:
     SHOWN: Final = 3  # groups on one card
+    #: G235: groups kept with a threat's evidence, so the card can show those behind what its story cites
+    #: (picked when the scenario is saved, not before it is written).
+    CANDIDATES: Final = 9
     PER_TECHNIQUE: Final = 10  # groups the import keeps per technique: direct users first, then by name
     WHO_CHARS: Final = 200  # the first sentence of a group's own description
     TECHNIQUES_PER_THREAT: Final = 3  # G232: the techniques a planned threat reads most like (keywords only)
-    PLAN_INDEX_WAIT_SECONDS: Final = 120  # G232: planning waits this long for a first evidence index
 
 
 class GroupRelevance(StrEnum):

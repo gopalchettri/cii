@@ -12,6 +12,8 @@ class LogEvent(StrEnum):
     DEPENDENCY_UNAVAILABLE = "dependency.unavailable"
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
+    AI_CALL_REUSED = "ai.call_reused"  # G244: a retried job's earlier answer, no AI call made
+    AI_CALL_REUSE_FAILED = "ai.call_reuse_failed"  # the record store could not be read: asked
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
     AI_CALL_UNAVAILABLE = "ai.call_unavailable"  # the provider error class and HTTP status of an outage
     AI_SLOTS_BUSY = "ai.slots_busy"
@@ -42,8 +44,6 @@ class LogEvent(StrEnum):
     CONTROLS_MAPPED = "controls.mapped"
     CONTROLS_NOT_MAPPED = "controls.not_mapped"  # no compatible control, an empty library or a setting to fix
     CONTROLS_MAP_FAILED = "controls.map_failed"  # an unexpected error: that scenario only, the stack logged
-    CONTROLS_TOPPED_UP = "controls.topped_up"  # mapped inside a plan request (Rule R1T)
-    CONTROLS_TOP_UP_GIVEN_BACK = "controls.top_up_given_back"  # late or an outage: the controls job maps it
     WRITER_OUTAGE_SETTLED = "writer.outage_settled"  # an outage only some paths kept hitting: failure cards
     WRITER_PATH_ABANDONED = "writer.path_abandoned"  # failed or blocked Generation.MAX_PATH_ATTEMPTS times
     WRITER_REGENERATE_FAILED = (
@@ -77,9 +77,11 @@ class LogEvent(StrEnum):
     EXTERNAL_INTELLIGENCE_SNAPSHOT_ACTIVATED = "external_intelligence.snapshot_activated"
     EXTERNAL_INTELLIGENCE_SNAPSHOT_SUPERSEDED = "external_intelligence.snapshot_superseded"
     EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED = "external_intelligence.snapshot_build_failed"
+    EXTERNAL_INTELLIGENCE_NO_DATA = "external_intelligence.no_data_yet"  # once per process: run the import
     EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED = "external_intelligence.evidence_search_failed"
     EXTERNAL_INTELLIGENCE_SWITCH_CHANGED = "external_intelligence.switch_changed"
     EXTERNAL_INTELLIGENCE_TEXT_QUARANTINED = "external_intelligence.text_quarantined"
+    EXTERNAL_INTELLIGENCE_SENTENCES_REMOVED = "external_intelligence.sentences_removed"  # G237: the rest kept
     # The step trace (DEBUG_STEP_OUTPUT=true only): every workflow step's inputs, results, output and time.
     STEP_STARTED = "step.started"
     STEP_RESULT = "step.result"

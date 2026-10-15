@@ -17,8 +17,9 @@ from app.core.exceptions import Invalid
 from app.engine.shared.names import name_match_key, threat_name_without_code
 from app.models.library import ThreatLibrary
 from app.models.remediation import ThreatIdentity
-from app.models.remediation_requests import CategoryRef, LibraryRef, ManualScenario
+from app.models.remediation_requests import LibraryRef, ManualScenario
 
+#: Where a refusal points: v1's flat fields, e.g. body.manual_scenario.threat_type_id.
 _FIELD = "body.manual_scenario.{part}"
 Errors = list[dict[str, str]]
 
@@ -37,6 +38,7 @@ class _Known:
 
 def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> ThreatIdentity:
     errors: Errors = []
+    reason: ConflictReason | None = None  # TYPE_MISMATCH: the library files the threat under another type
     types = _types(library)
     threat_type = _named(types, scenario.threat_type, "threat_type", errors)
     threat = _named(_threats(library), scenario.threat, "threat", errors)
@@ -46,12 +48,12 @@ def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> ThreatId
         if threat_type is None or threat_type.row_id != threat.type_id:
             shown = library_type.name if library_type else str(threat.type_id)
             message = RemediationMessage.TYPE_MISMATCH.format(threat=threat.name, library_type=shown)
-            errors.append({"field": _FIELD.format(part="threat_type"), "message": message})
+            part = "threat_type_id" if scenario.threat_type_id is not None else "threat_type_name"
+            errors.append({"field": _FIELD.format(part=part), "message": message})
+            reason = ConflictReason.TYPE_MISMATCH
         threat_type = library_type
     category = _category(library, scenario.threat_category, threat, threat_type, errors)
     if errors:
-        mismatch = any(error["field"].endswith("threat_type") for error in errors)
-        reason = ConflictReason.TYPE_MISMATCH if mismatch else None
         raise Invalid(RemediationMessage.THREAT_REFS_INVALID, errors=errors, reason=reason)
     return ThreatIdentity(
         category=category,
@@ -108,19 +110,19 @@ def _named(rows: Sequence[_Known], ref: LibraryRef, part: str, errors: Errors) -
     by_id = _first(rows, lambda row: row.row_id == ref.id)
     if by_id is None:
         message = RemediationMessage.UNKNOWN_ID.format(id=ref.id)
-        errors.append({"field": _FIELD.format(part=f"{part}.id"), "message": message})
+        errors.append({"field": _FIELD.format(part=f"{part}_id"), "message": message})
         return None
     if ref.name and named is not by_id:
         message = RemediationMessage.ID_NAME_DISAGREE.format(
             id=ref.id, library_name=by_id.name, name=ref.name
         )
-        errors.append({"field": _FIELD.format(part=f"{part}.name"), "message": message})
+        errors.append({"field": _FIELD.format(part=f"{part}_name"), "message": message})
     return by_id
 
 
 def _category(
     library: ThreatLibrary,
-    ref: CategoryRef | None,
+    ref: LibraryRef | None,
     threat: _Known | None,
     threat_type: _Known | None,
     errors: Errors,
@@ -132,10 +134,10 @@ def _category(
         return filed[0] if filed else (threat_type.category if threat_type else None)
     name = dict(library.category_ids).get(ref.id, "") if ref.id is not None else str(ref.name)
     category = next((c for c in StrideCategory if c.value.casefold() == name.casefold()), None)
-    field = _FIELD.format(part="threat_category")
+    field = _FIELD.format(part="threat_category_id" if ref.id is not None else "threat_category_name")
     if ref.id is not None and ref.name and name and ref.name.casefold() != name.casefold():  # both must agree
         message = RemediationMessage.ID_NAME_DISAGREE.format(id=ref.id, library_name=name, name=ref.name)
-        errors.append({"field": f"{field}.name", "message": message})
+        errors.append({"field": _FIELD.format(part="threat_category_name"), "message": message})
     elif category is None:
         message = RemediationMessage.CATEGORY_UNKNOWN.format(name=name or ref.id)
         errors.append({"field": field, "message": message})

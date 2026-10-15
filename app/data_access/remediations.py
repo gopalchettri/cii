@@ -16,9 +16,11 @@ from app.models.remediation import RemediationStatus
 #: The list filters (#17): each with the newest-first sort is one index scan. scenario_id has its unique
 #: index.
 _LIST_FILTERS = ("status", "decision", "risk_level", "session_id")
-#: What a plan request reads of its scenario: who owns it, whether it is accepted, its content and controls.
+#: What a plan request (and its plan job, G262) reads of its scenario: who owns it, whether it is accepted,
+#: its content and controls, and what its plan job still has to find (a hand-written scenario's attackers).
 _SCENARIO_FIELDS = dict.fromkeys(
-    ("entity_id", "session_id", "asset_id", "source", "status", "decision", "content", "controls"), 1
+    ("entity_id", "session_id", "asset_id", "source", "status", "decision", "content", "controls", "pending"),
+    1,
 )
 
 

@@ -10,8 +10,18 @@ from app.core.constants.runs import Generation
 
 class Controls:
     QUERY_MAX_CHARS: Final = 4_000  # one scenario's control query, cut from the end
+    QUERY_MITIGATIONS: Final = 6  # G234: the cited evidence's mitigations the query's head carries
+    # G243 (owner 2026-10-14): a control of this library domain is mapped only to a card whose threat type or
+    # name says it is about AI ("AI Abuse", "personal GenAI data leakage"); acronyms match case-sensitively.
+    AI_DOMAIN: Final = "Artificial Intelligence & Autonomous Technologies"
+    AI_THREAT_WORDS: Final = (
+        r"\b(?:AI|GenAI|LLMs?|ML)\b|(?i:artificial intelligence|machine learning|large language model)"
+    )
     MAX_ATTEMPTS: Final = 5  # then failed; the sweep tries again after RETRY_FAILED_AFTER_SECONDS
     LEASE_SECONDS: Final = 120  # one scenario's mapping, and a run's delivery (G195), renewed while it runs
+    # A plan job whose scenario another job maps now waits for that mapping, checking this often, at most
+    # LEASE_SECONDS (G262): a retry would spend one of its few attempts on waiting.
+    PLAN_WAIT_POLL_SECONDS: Final = 5
     RETRY_FAILED_AFTER_SECONDS: Final = 1_800
     SWEEP_EVERY_SECONDS: Final = 300
     RESEND_QUEUED_AFTER_SECONDS: Final = 600  # a queued mapping no worker took: its message was lost
@@ -33,6 +43,11 @@ class ControlMessage(StrEnum):
     )
     SHORTFALL = "{kept} control(s) kept: the minimum is {least}, but only {kept} compatible control(s) exist."
     LEFT_OUT = "{count} more control(s) reached the threshold; MAX_CONTROLS keeps the best {most}."
+    # Owner 2026-10-15 ("provide the near possible control"): never no control for lack of the asset's type.
+    OTHER_TYPE = (
+        "No control of asset type(s) {types} exists; the nearest control(s) of another type are kept: check "
+        "that they fit."
+    )
 
 
 class ControlMatch(StrEnum):

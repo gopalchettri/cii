@@ -14,6 +14,7 @@ from app.core.constants import (
     ConflictReason,
     Decision,
     RemediationMessage,
+    RunKind,
     ScenarioStatus,
     Status,
     TaskName,
@@ -25,7 +26,7 @@ from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.data_access.remediations import RemediationRepository
 from app.models.api_clients import Principal
-from app.models.remediation import PlanRequested
+from app.models.remediation import PlanStarted
 from app.models.remediation_requests import PlanRequest, RegisterData
 from app.realtime.publisher import publish_remediation_status
 from app.services.audit import audit_target, caller_actor, record_audit
@@ -38,14 +39,15 @@ class PlanRequestService:
         self._plans, self._snapshots = plans, snapshots
 
     @traced("remediation.request")
-    def request(self, principal: Principal, body: PlanRequest) -> PlanRequested:
+    def request(self, principal: Principal, body: PlanRequest) -> PlanStarted:
         """A generated scenario's plan (a hand-written one: app/services/remediation/manual.py)."""
-        assert body.scenario_id is not None  # the route sends a hand-written scenario to ManualPlans
-        return self.plan_scenario(principal, body, self._accepted_scenario(principal, body.scenario_id))
+        assert body.session_id is not None and body.scenario_id is not None  # PlanRequest: is_manual=false
+        scenario = self._accepted_scenario(principal, body.session_id, body.scenario_id)
+        return self.plan_scenario(principal, body, scenario)
 
     def plan_scenario(
         self, principal: Principal, register: RegisterData, scenario: dict[str, Any]
-    ) -> PlanRequested:
+    ) -> PlanStarted:
         """R1 steps 3-8 for an accepted scenario, generated or hand-written: one plan per scenario (checked
         before any control is mapped), the snapshot, one insert, the job sent."""
         if (existing := self._plans.find_for_scenario(scenario["_id"])) is not None:
@@ -58,18 +60,26 @@ class PlanRequestService:
             self._plans.remove(record["_id"])
             raise NotFound(RemediationMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario["_id"]))
         _announce(principal, record)
-        return PlanRequested(
+        return PlanStarted(
             remediation_id=record["_id"],
             session_id=record["session_id"],
             scenario_id=record["scenario_id"],
             version=1,
             status=Status.QUEUED,
+            is_manual=record["source"] == RunKind.MANUAL,
         )
 
-    def _accepted_scenario(self, principal: Principal, scenario_id: str) -> dict[str, Any]:
+    def _accepted_scenario(self, principal: Principal, session_id: str, scenario_id: str) -> dict[str, Any]:
+        """404 unknown or in another run (v1: "scenario not found in this session"), 403 another entity's, 409
+        not accepted."""
         scenario = self._plans.find_scenario(scenario_id)
         if scenario is None:
             raise NotFound(RemediationMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id))
+        if scenario["session_id"] != session_id:
+            message = RemediationMessage.SCENARIO_NOT_IN_SESSION.format(
+                scenario_id=scenario_id, session_id=session_id
+            )
+            raise NotFound(message)
         if scenario["entity_id"] != principal.entity_id:
             raise Forbidden(RemediationMessage.SCENARIO_OTHER_ENTITY.format(scenario_id=scenario_id))
         if not still_accepted(scenario):

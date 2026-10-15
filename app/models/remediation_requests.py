@@ -1,7 +1,9 @@
-"""Request bodies of the remediation API Every register field is optional and `""` means "not given";
-an unknown field is refused (422), never ignored."""
+"""Request bodies of the remediation API: a plan request (both kinds of scenario) and its register data. Every
+register field is optional and `""` means "not given"; an unknown field is refused (422), never ignored. The
+review and regenerate bodies are remediation_reviews.py."""
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, ClassVar
@@ -19,7 +21,8 @@ from pydantic import (
 )
 
 from app.core.constants import Limits, Remediation, RemediationMessage, Review, YesNo
-from app.models.scenarios import StartRunRequest
+from app.models.remediation_examples import PLAN_REQUEST_EXAMPLES
+from app.models.scenarios import SqlId, StartRunRequest
 
 #: What a library control code looks like ("CII-CID-202"): groups joined by separators, with a digit. It only
 #: routes a plain string; nothing is refused for failing it.
@@ -66,10 +69,9 @@ _Name = Annotated[Annotated[str, Field(max_length=Remediation.NAME_MAX_CHARS)] |
 _Justification = Annotated[
     Annotated[str, Field(max_length=Remediation.JUSTIFICATION_MAX_CHARS)] | None, Blank
 ]
-_Comment = Annotated[Annotated[str, Field(max_length=Remediation.COMMENT_MAX_CHARS)] | None, Blank]
 _ThreatName = Annotated[Annotated[str, Field(max_length=Remediation.THREAT_NAME_MAX_CHARS)] | None, Blank]
 _TypeName = Annotated[Annotated[str, Field(max_length=Remediation.TYPE_NAME_MAX_CHARS)] | None, Blank]
-_ScenarioId = Annotated[Annotated[str, Field(max_length=Review.MAX_ID_CHARS)] | None, Blank]
+_RecordId = Annotated[Annotated[str, Field(max_length=Review.MAX_ID_CHARS)] | None, Blank]
 
 
 class ControlRef(BaseModel):
@@ -199,30 +201,20 @@ def _has_letters(name: str | None) -> str | None:
     return name
 
 
-class LibraryRef(BaseModel):
-    """A threat-library row named by its id, its name, or both (both must then agree: the library decides)."""
+@dataclass(frozen=True)
+class LibraryRef:
+    """A library category, type or threat as a hand-written scenario names it (id, name or both)."""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    id: Annotated[Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)] | None, Blank] = None
-    name: Annotated[_ThreatName, AfterValidator(_has_letters)] = None
-
-    @model_validator(mode="after")
-    def check_it_names_a_row(self) -> "LibraryRef":
-        if self.id is None and not self.name:
-            raise ValueError(RemediationMessage.LIBRARY_REF_EMPTY)
-        return self
+    id: int | None
+    name: str | None
 
 
-class TypeRef(LibraryRef):
-    """A threat type: its name fits Threat_Type.ThreatTypeName, so a proposal never fails inside SQL
-    Server."""
-
-    name: Annotated[_TypeName, AfterValidator(_has_letters)] = None
-
-
-class CategoryRef(LibraryRef):
-    name: Annotated[_Name, AfterValidator(_has_letters)] = None
+#: A library row's id in a hand-written scenario: blank means not given.
+_LibraryId = Annotated[Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)] | None, Blank]
+#: A library row's name: blank means not given; punctuation or spaces alone → 422 (never a nameless row).
+_CategoryName = Annotated[_Name, AfterValidator(_has_letters)]
+_TypeNameText = Annotated[_TypeName, AfterValidator(_has_letters)]
+_ThreatNameText = Annotated[_ThreatName, AfterValidator(_has_letters)]
 
 
 _Statement = Annotated[
@@ -231,43 +223,75 @@ _Statement = Annotated[
 
 
 class ManualScenario(StartRunRequest):
-    """A hand-written scenario (Rule R2): the asset and systems as a run start names them (the same checks),
-    the threat by library row, and the two statements. It has no title (A-11): `scenario_title` is refused."""
+    """A hand-written scenario (Rule R2), v1's `manual_scenario` (owner, 2026-10-15): the asset and systems as
+    a run start names them (the same checks), the entity, the threat by library row in v1's six flat fields,
+    and the two statements. The type and the threat are each named by id, name or both; the category is
+    optional (else the threat's, else the type's). It has no title (A-11): `scenario_title` is refused."""
 
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=True)
     FIELD_PREFIX: ClassVar[str] = "body.manual_scenario"
 
-    threat_category: CategoryRef | None = None  # none → the threat's or the type's category
-    threat_type: TypeRef
-    threat: LibraryRef
+    entity_id: SqlId = Field(description="The caller's entity, as v1 sends it: must equal X-Entity-Id (403).")
+    threat_category_id: _LibraryId = None
+    threat_category_name: _CategoryName = None
+    threat_type_id: _LibraryId = None
+    threat_type_name: _TypeNameText = None
+    threat_id: _LibraryId = None
+    threat_name: _ThreatNameText = None
     threat_scenario: _Statement  # " " is not a statement: stripped, then at least one character
     risk_statement: _Statement
     mapped_controls: Annotated[ScenarioControls | None, Blank] = None  # none → mapped as a generated one
 
-
-class PlanRequest(RegisterData):
-    """Body of #11: a plan for one accepted generated scenario (`scenario_id`) or for a hand-written one
-    (`manual_scenario`, with an Idempotency-Key), the register's data beside it."""
-
-    scenario_id: _ScenarioId = None
-    manual_scenario: ManualScenario | None = None
-
     @model_validator(mode="after")
-    def check_one_scenario(self) -> "PlanRequest":
-        if (self.scenario_id is None) == (self.manual_scenario is None):
-            raise ValueError(RemediationMessage.ONE_SCENARIO)
+    def check_the_threat_is_named(self) -> "ManualScenario":
+        if self.threat_type_id is None and not self.threat_type_name:
+            raise ValueError(RemediationMessage.THREAT_TYPE_REQUIRED)
+        if self.threat_id is None and not self.threat_name:
+            raise ValueError(RemediationMessage.THREAT_REQUIRED)
         return self
 
+    @property
+    def threat_category(self) -> LibraryRef | None:
+        if self.threat_category_id is None and not self.threat_category_name:
+            return None
+        return LibraryRef(self.threat_category_id, self.threat_category_name)
 
-class DecisionRequest(BaseModel):
-    """Body of #12 accept and #13 reject: a version (default: the newest done one) and a comment."""
+    @property
+    def threat_type(self) -> LibraryRef:
+        return LibraryRef(self.threat_type_id, self.threat_type_name)
 
-    model_config = ConfigDict(extra="forbid")
+    @property
+    def threat(self) -> LibraryRef:
+        return LibraryRef(self.threat_id, self.threat_name)
 
-    version: Annotated[int, Field(gt=0)] | None = None
-    comment: _Comment = None
 
+class PlanRequest(RegisterData):
+    """Body of `POST /v1/remediation`: v1's ONE request for both kinds of scenario (owner, 2026-10-15), each
+    kind sending its own half (mixing them is a 422), and the register's data."""
 
-class RegenerateRequest(BaseModel):
-    """Body of #14: nothing (the latest version's register data is reused); any field → 422."""
+    model_config = ConfigDict(json_schema_extra={"examples": PLAN_REQUEST_EXAMPLES})
 
-    model_config = ConfigDict(extra="forbid")
+    is_manual: bool = Field(
+        description="false: the scenario already exists in TSG (send session_id + scenario_id). true: a "
+        "person wrote it (send manual_scenario and an Idempotency-Key header); TSG saves it and plans it."
+    )
+    session_id: _RecordId = Field(None, description="is_manual=false only: the run that holds the scenario.")
+    scenario_id: _RecordId = Field(None, description="is_manual=false only: the accepted scenario to plan.")
+    manual_scenario: ManualScenario | None = Field(
+        None, description="is_manual=true only: the scenario a person wrote."
+    )
+
+    @model_validator(mode="after")
+    def check_one_kind(self) -> "PlanRequest":
+        """v1's `_one_kind`: each kind sends its own half and never the other's."""
+        if self.is_manual:
+            if self.manual_scenario is None:
+                raise ValueError(RemediationMessage.MANUAL_NEEDS_SCENARIO)
+            if self.session_id is not None or self.scenario_id is not None:
+                raise ValueError(RemediationMessage.MANUAL_SENDS_NO_IDS)
+        else:
+            if self.session_id is None or self.scenario_id is None:
+                raise ValueError(RemediationMessage.GENERATED_NEEDS_IDS)
+            if self.manual_scenario is not None:
+                raise ValueError(RemediationMessage.GENERATED_SENDS_NO_SCENARIO)
+        return self

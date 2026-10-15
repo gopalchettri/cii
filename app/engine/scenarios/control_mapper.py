@@ -1,7 +1,8 @@
-"""A written scenario's controls: only library controls
-compatible with its asset and systems, found by meaning from its scenario AND risk statements, scored by the
-reranker, never written by an AI."""
+"""A written scenario's controls: library controls compatible with its asset and systems (when none of its
+type exists, the nearest of another type, flagged: owner 2026-10-15), found by meaning from its scenario AND
+risk statements, scored by the reranker, never written by an AI."""
 
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -10,6 +11,8 @@ from app.core.config import get_settings
 from app.core.constants import (
     CONTROL_TIERS,
     EMBEDDING_SOURCE_TABLE,
+    ControlMessage,
+    Controls,
     EmbeddingCorpus,
     ErrorCode,
     ErrorMessage,
@@ -24,6 +27,8 @@ from app.models.library import LibraryControl, place_asset_types
 from app.search.snapshot import LibrarySnapshot
 from app.search.texts import describe_control
 
+_ABOUT_AI = re.compile(Controls.AI_THREAT_WORDS)
+
 
 class ControlMapper:
     def __init__(self, rerank: RerankModel) -> None:
@@ -34,8 +39,9 @@ class ControlMapper:
         self, scenario: dict[str, Any], context: FrozenContext, snapshot: LibrarySnapshot
     ) -> ControlMapping:
         """Every compatible control at or above CONTROL_SIMILARITY_THRESHOLD, best first, at most
-        MAX_CONTROLS; else the nearest up to MIN_CONTROLS, with a warning (never zero, G227).
-        ControlsNotMapped when the library is empty or no control fits the asset type; an outage is raised."""
+        MAX_CONTROLS; else the nearest up to MIN_CONTROLS, with a warning (never zero, G227). No control of
+        the asset's type at all: the nearest MIN_CONTROLS of any type, with a warning (owner 2026-10-15).
+        ControlsNotMapped only when the library is empty; an outage is raised."""
         content = scenario["content"]
         if not snapshot.library.control_library:
             raise ControlsNotMapped(ErrorCode.CONTROL_LIBRARY_EMPTY, ErrorMessage.CONTROL_LIBRARY_EMPTY)
@@ -48,23 +54,45 @@ class ControlMapper:
         )
         rule = control_rule()  # CONTROL_CANDIDATES, the threshold, MIN/MAX_CONTROLS (G225, G227)
         query = control_query(content, context, systems)
-        (found,) = snapshot.find_controls([query.text], rule.candidates, allowed)
+        about_ai = is_about_ai(content.get("threat") or {})
+        found, other_type = _compatible_else_nearest(snapshot, query.text, rule, allowed, about_ai)
         threat = (content.get("threat") or {}).get("name")
         if step_detail_enabled():
             _trace_shortlist(threat, context, systems, allowed, len(query.text), len(found))
-        if not found:  # no control fits: never one of another type in its place
-            types = ", ".join(sorted(allowed)) or "none recorded"
-            message = ErrorMessage.NO_COMPATIBLE_CONTROL.format(types=types)
-            raise ControlsNotMapped(ErrorCode.NO_COMPATIBLE_CONTROL, message)
         candidates = [control for control, _ in found]
         scores = self._rerank.score_relevance(
             query.text, [describe_control(control) for control in candidates]
         )
         scored = list(zip(candidates, scores, strict=True))
         mapping, twins = select_controls(scored, rule, query.text)
+        if other_type:  # never a strong set of another type: the nearest only, flagged as such
+            mapping = replace(mapping, items=mapping.items[: rule.least], warning=other_type, left_out=0)
         if step_detail_enabled():
             _trace_rerank_and_cutoff(threat, scored, rule, mapping, twins)
-        return replace(mapping, query_shortened=query.shortened)
+        return replace(
+            mapping, query_shortened=query.shortened, mitigations=query.mitigations, ai_controls=about_ai
+        )
+
+
+def _compatible_else_nearest(
+    snapshot: LibrarySnapshot, query: str, rule: ControlRule, allowed: frozenset[str], about_ai: bool
+) -> tuple[list[tuple[LibraryControl, float]], str | None]:
+    """The compatible shortlist; when no control of the scenario's types exists, every control's (the AI rule
+    too), with the warning that says so. Never empty: the library is not empty here."""
+    (found,) = snapshot.find_controls([query], rule.candidates, allowed, ai_controls=about_ai)
+    if found:
+        return found, None
+    types = ", ".join(sorted(allowed)) or "none recorded"
+    (nearest,) = snapshot.find_controls([query], rule.candidates)
+    return nearest, ControlMessage.OTHER_TYPE.format(types=types)
+
+
+def is_about_ai(threat: dict[str, Any]) -> bool:
+    """G243 (owner 2026-10-14): whether a card's threat is about AI, by its type and name ("AI Abuse",
+    "Shadow SaaS or personal GenAI data leakage"). Only such a card may get a control of the AI domain: 30 of
+    120 cards had one for a non-AI threat (OT credential theft got "Sensitive OT Data Protection in AI"), as
+    the reranker over-scores AI-for-OT controls on any OT card."""
+    return bool(_ABOUT_AI.search(f"{threat.get('type') or ''} {threat.get('name') or ''}"))
 
 
 def _scenario_systems(content: dict[str, Any], context: FrozenContext) -> list[dict[str, Any]]:
@@ -133,5 +161,7 @@ def controls_record(mapping: ControlMapping, snapshot: LibrarySnapshot) -> dict[
             "min_controls": settings.min_controls,
             "max_controls": settings.max_controls,
             "query_shortened": list(mapping.query_shortened),  # labels only (G227)
+            "mitigations": list(mapping.mitigations),  # G234: the evidence's, which guided the search
+            "ai_controls": mapping.ai_controls,  # G243: whether AI-domain controls could be chosen
         },
     }

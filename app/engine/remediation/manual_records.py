@@ -1,7 +1,8 @@
 """A hand-written scenario saved as a run and a scenario (BLUEPRINT M11 R2 step 6; BUILD_PLAN S55), under ids
 derived from the entity and the Idempotency-Key, so a retry after a crash lands on the same documents. The
 scenario carries every field a generated one does (lists and views read them alike), is accepted by the
-person who wrote it, and has no title (A-11). Pure."""
+person who wrote it, and has no title (A-11). Its attackers, and the library proposal of a new wording, are
+its plan job's (`pending`, G262): a request makes no AI call. Pure."""
 
 import uuid
 from datetime import datetime
@@ -65,12 +66,12 @@ def manual_scenario_record(  # noqa: PLR0913 — one record, whole
     scenario: ManualScenario,
     ids: tuple[str, str],
     identity: ThreatIdentity,
-    actors: tuple[tuple[PlannedActor, ...], bool],
     context: FrozenContext,
     controls: dict[str, Any],
+    by: dict[str, Any],
     now: datetime,
 ) -> dict[str, Any]:
-    """`actors`: (the acting actor then its alternates, whether the acting one is only the closest)."""
+    """`by`: who asked (the audit actor of the library proposal its plan job may make)."""
     run_id, scenario_id = ids
     return {
         "_id": scenario_id,
@@ -87,7 +88,9 @@ def manual_scenario_record(  # noqa: PLR0913 — one record, whole
         "decided_at": now,
         "replaces": None,
         "superseded_by": None,
-        "content": _content(scenario, identity, actors, context),
+        "content": _content(scenario, identity, context),
+        # What its plan job finds first (app/worker/plan_inputs.py); removed once found.
+        "pending": {"actors": True, "proposal": identity.status is None, "by": by},
         "findings": [],  # the code checks are for AI text only (W5)
         "plan_check": None,
         "controls": controls,
@@ -96,7 +99,7 @@ def manual_scenario_record(  # noqa: PLR0913 — one record, whole
     }
 
 
-def _actor_records(planned: tuple[PlannedActor, ...], closest: bool) -> list[dict[str, Any]]:
+def actor_records(planned: tuple[PlannedActor, ...], closest: bool) -> list[dict[str, Any]]:
     """The acting attacker then its alternates, as a generated scenario's: the acting one flagged when it is
     only the closest match, and when it did not reach ACTOR_SIMILARITY_THRESHOLD."""
     return [
@@ -111,16 +114,10 @@ def _actor_records(planned: tuple[PlannedActor, ...], closest: bool) -> list[dic
     ]
 
 
-def _content(
-    scenario: ManualScenario,
-    identity: ThreatIdentity,
-    actors: tuple[tuple[PlannedActor, ...], bool],
-    context: FrozenContext,
-) -> dict[str, Any]:
-    """The scenario as the person wrote it, with its threat as the library knows it, its attackers and its
-    systems (the first is the entry point)."""
+def _content(scenario: ManualScenario, identity: ThreatIdentity, context: FrozenContext) -> dict[str, Any]:
+    """The scenario as the person wrote it, with its threat as the library knows it and its systems (the first
+    is the entry point); its attackers come from its plan job."""
     names = {system["id"]: system["name"] for system in context.systems}
-    planned, closest = actors
     return {
         "title": None,
         "statement": scenario.threat_scenario,
@@ -138,7 +135,7 @@ def _content(
             "library_status": identity.status,
             "ai_generated": False,
         },
-        "actors": _actor_records(planned, closest),
+        "actors": [],
         "systems": [
             {"id": system_id, "name": names[system_id], "entry_point": i == 0}
             for i, system_id in enumerate(scenario.supporting_system_ids)
@@ -150,7 +147,7 @@ def _content(
 
 
 def given_controls(controls: tuple[LibraryControl, ...], now: datetime) -> dict[str, Any]:
-    """The person's own controls, in the order given; none given → waiting for the request's top-up."""
+    """The person's own controls, in the order given; none given → waiting for its plan job (G262)."""
     if not controls:
         return {"status": Status.QUEUED, "attempts": 0, "queued_at": now}
     items = [

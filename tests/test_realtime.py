@@ -27,6 +27,7 @@ from app.realtime import event_hub
 from app.realtime.event_hub import RESYNC, EventHub, _offer
 from app.realtime.publisher import publish_remediation_status, publish_session_status, session_channel
 from app.services.api_clients import get_api_client_service
+from tests.plan_addresses import plan_url
 
 
 @pytest.fixture(scope="module")
@@ -165,7 +166,7 @@ def test_a_plan_stream_gets_its_status_at_once_and_each_published_change(
 ) -> None:
     """#28: the same hub and rules as #8, on the plan's own channel; two changes (_next_after_publishing)."""
     plan_id = _insert_plan(86)
-    url = f"{server_url}/v1/remediation/{plan_id}/events"
+    url = f"{server_url}{plan_url(plan_id, 'events')}"
     with httpx.Client(timeout=15) as client, client.stream("GET", url, headers=identity) as response:
         assert response.status_code == 200
         events = _events(response)
@@ -179,8 +180,9 @@ def test_a_plan_stream_gets_its_status_at_once_and_each_published_change(
             get_mongodb()[Collection.REMEDIATIONS].update_one({"_id": plan_id}, {"$set": {"status": changed}})
             name, status = _next_after_publishing(events, partial(publish_remediation_status, plan_id))
             assert (name, status["latest_status"]) == (Event.REMEDIATION_UPDATED, changed)
-    for refused, expected in ((_insert_plan(99), 403), (uuid.uuid4().hex, 404)):
-        answer = httpx.get(f"{server_url}/v1/remediation/{refused}/events", headers=identity, timeout=10)
+    unknown = f"/v1/sessions/run/scenarios/{uuid.uuid4().hex}/treatment-plan/events"
+    for refused, expected in ((plan_url(_insert_plan(99), "events"), 403), (unknown, 404)):
+        answer = httpx.get(f"{server_url}{refused}", headers=identity, timeout=10)
         assert answer.status_code == expected
 
 

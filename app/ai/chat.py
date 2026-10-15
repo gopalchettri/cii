@@ -9,23 +9,22 @@ from functools import partial
 from typing import Any
 
 import litellm
-import structlog
 
+from app.ai.answer_reuse import earlier_reply
 from app.ai.chat_messages import (
-    build_call_record,
     build_conversation,
     count_prompt_chars,
     parse_json_object,
+    record_chat_call,
 )
 from app.ai.common import (
     build_api_key_header,
-    call_timeout,
+    bypass_proxy_for_ai,
     call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
 from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
-from app.core import metrics
 from app.core.config import get_settings
 from app.core.constants import (
     CHAT_TEMPERATURES,
@@ -34,7 +33,6 @@ from app.core.constants import (
     AiTask,
     Collection,
     ErrorMessage,
-    LogEvent,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
@@ -42,8 +40,6 @@ from app.core.singletons import singleton
 from app.core.tracing import record_detail, step_detail_enabled, traced
 from app.data_access.ai_calls import AiCallRecords
 from app.models.ai import ChatModelProfile
-
-log = structlog.get_logger(__name__)
 
 #: A task's own check of an answer: the problems found, an empty list when the answer is right.
 AnswerChecker = Callable[[dict[str, Any]], list[str]]
@@ -77,7 +73,7 @@ def _build_request_options(profile: ChatModelProfile, task: AiTask) -> dict[str,
     # pick the shape.
     options: dict[str, Any] = {
         "max_tokens": profile.max_output_tokens,
-        "timeout": call_timeout(profile.timeout_seconds),  # less under a caller's deadline (ai_deadline)
+        "timeout": profile.timeout_seconds,
         "stream": False,
     }
     if profile.supports_json_mode:
@@ -186,16 +182,20 @@ class ChatModel:
                     task=task, chars=prompt_chars, limit=self._max_input_chars
                 )
             )
+        if (reused := earlier_reply(self._call_records, task, messages)) is not None:  # G244: a retry
+            return parse_json_object(reused), reused
         model, response, seconds = self._call_first_available_model(task, messages)
         choice = response.choices[0]
         reply = choice.message.content or ""
         if getattr(choice, "finish_reason", None) == "length":
-            self._record_chat_call(task, model, messages, response, seconds, AiOutcome.UNREADABLE)
+            record_chat_call(
+                self._call_records, task, model, messages, response, seconds, AiOutcome.UNREADABLE
+            )
             raise TruncatedAiAnswer(ErrorMessage.AI_ANSWER_TRUNCATED.format(task=task, model=model))
         answer = parse_json_object(reply)
         # One outcome per call in the metrics, never "ok" AND "unreadable".
         outcome = AiOutcome.UNREADABLE if answer is None else AiOutcome.OK
-        self._record_chat_call(task, model, messages, response, seconds, outcome)
+        record_chat_call(self._call_records, task, model, messages, response, seconds, outcome)
         return answer, reply
 
     def _call_first_available_model(self, task: AiTask, messages: list[dict]) -> tuple[str, Any, float]:
@@ -226,24 +226,6 @@ class ChatModel:
         assert outage is not None  # at least one model is configured
         raise outage
 
-    def _record_chat_call(
-        self,
-        task: AiTask,
-        model: str,
-        messages: list[dict],
-        response: Any,
-        seconds: float,
-        outcome: AiOutcome,
-    ) -> None:
-        """One outcome per call: counted and logged, then copied to tsg_ai_calls, so every prompt and answer
-        of a run can be found."""
-        record = build_call_record(task, model, messages, response, seconds, outcome)
-        _update_call_metrics(task, model, outcome, record["tokens_in"], record["tokens_out"], seconds)
-        try:
-            self._call_records.insert(record)
-        except Exception:  # noqa: BLE001 — ponytail: the audit copy must never fail the AI call; logged instead
-            log.warning(LogEvent.AI_CALL_RECORD_FAILED, task=task, exc_info=True)
-
 
 def _with_correction_turn(
     messages: list[dict[str, str]], reply: str, problems: list[str], max_chars: int
@@ -262,28 +244,10 @@ def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChe
     return [ErrorMessage.AI_REPLY_NOT_A_JSON_OBJECT] if answer is None else check_answer(answer)
 
 
-def _update_call_metrics(
-    task: AiTask, model: str, outcome: AiOutcome, tokens_in: int, tokens_out: int, seconds: float
-) -> None:
-    """The metrics and the log line of one chat call."""
-    metrics.AI_CALLS.labels(task, model, outcome).inc()
-    metrics.AI_TOKENS.labels(task, model, "in").inc(tokens_in)
-    metrics.AI_TOKENS.labels(task, model, "out").inc(tokens_out)
-    metrics.AI_SECONDS.labels(task, model).observe(seconds)
-    log.info(
-        LogEvent.AI_CALL,
-        task=task,
-        model=model,
-        outcome=outcome,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        seconds=round(seconds, 2),
-    )
-
-
 @singleton
 def get_chat_model() -> ChatModel:
     settings = get_settings()
+    bypass_proxy_for_ai(settings)
     call_records = AiCallRecords(get_mongodb()[Collection.AI_CALLS])
     model_names = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []

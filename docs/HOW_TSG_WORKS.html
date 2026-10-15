@@ -129,7 +129,7 @@ dd { margin: 0; color: var(--muted); }
   | TSG API (FastAPI, Python 3.12)                                                           |
   | checks the API key (stored hashed), the entity, the request (2 MB max) and repeats       |
   | reads the asset&#x27;s facts from SQL Server when a run starts (stored procedure)             |
-  | /v1/sessions: runs + review   /v1/remediation   /v1/tsg/*: admin   live updates (SSE)    |
+  | /v1/sessions: runs, review, plans   /v1/tsg/*: admin   live updates (SSE)                 |
   +-----------+-----------------------------+-----------------------------------------+------+
               |                             |                                         ^
               | read / write                | send a job (ids only)                   | live updates

@@ -18,7 +18,7 @@ import structlog
 
 from app.ai import EmbeddingModel, RerankModel, get_embedding_model, get_rerank_model
 from app.core.config import get_settings
-from app.core.constants import Dependency, IntelLimits, LogEvent
+from app.core.constants import Dependency, IntelLimits, IntelMessage, LogEvent
 from app.core.database import get_mongodb
 from app.core.singletons import singleton
 from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
@@ -61,6 +61,7 @@ class EvidenceIndexKeeper:
         self._failures = 0
         self._retry_at = 0.0
         self._check_at = 0.0
+        self._told_no_data = False  # "no data yet: run the import" is logged once per process, not per retry
 
     def peek_index(self) -> EvidenceIndex:
         """The index in use, starting nothing (health checks)."""
@@ -104,7 +105,7 @@ class EvidenceIndexKeeper:
             index = self._build_until_settled()
         except Exception as exc:  # noqa: BLE001 - handed to whoever waits; the index in use keeps serving
             self._settle_failure()
-            log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error=type(exc).__name__)
+            self._log_failure(exc)
             future.set_exception(exc)
         else:
             future.set_result(index)
@@ -115,8 +116,19 @@ class EvidenceIndexKeeper:
             with self._lock:
                 if not self._again:
                     self._running, self._wanted, self._failures = None, False, 0
+                    self._told_no_data = False  # data came: should it all go, say so again
                     return index
                 self._again = False
+
+    def _log_failure(self, exc: Exception) -> None:
+        """Nothing imported yet (owner, 2026-10-15): ONE line per process naming the import to run, then the
+        retries stay quiet until data comes; any other failure is logged each time."""
+        if isinstance(exc, EvidenceIndexRefused) and exc.no_data:
+            if not self._told_no_data:
+                self._told_no_data = True
+                log.warning(LogEvent.EXTERNAL_INTELLIGENCE_NO_DATA, action=IntelMessage.NO_DATA_YET.value)
+            return
+        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error=type(exc).__name__)
 
     def _settle_failure(self) -> None:
         with self._lock:

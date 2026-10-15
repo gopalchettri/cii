@@ -17,7 +17,7 @@ from app.data_access.remediations import RemediationRepository
 from app.engine.remediation.decisions import decision_update, newest_done_version, version_status
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
-from app.models.remediation_requests import DecisionRequest
+from app.models.remediation_reviews import DecisionRequest
 from app.realtime.publisher import publish_remediation_status
 from app.services.audit import audit_target, caller_actor, record_audit
 from app.services.remediation.regenerate import read_owned, refuse_read_only

@@ -98,9 +98,10 @@ def test_an_external_attacker_takes_any_kind_and_a_kind_with_no_group_known_fall
     assert _names(picked) == [("Faraway", THIS, False)]
 
 
-def test_at_most_three_and_none_without_evidence() -> None:
-    many = GroupMap.from_hits([_hit("T9", ("impact",), *(_group(f"G{n}", NS) for n in range(6)))])
-    assert len(pick_known_groups("Nation-state/APT", ["T9"], [], many)) == KnownGroups.SHOWN
+def test_at_most_the_candidates_and_none_without_evidence() -> None:
+    """G235: the search keeps up to CANDIDATES; the card shows SHOWN of them once its story is written."""
+    many = GroupMap.from_hits([_hit("T9", ("impact",), *(_group(f"G{n}", NS) for n in range(12)))])
+    assert len(pick_known_groups("Nation-state/APT", ["T9"], [], many)) == KnownGroups.CANDIDATES
     assert pick_known_groups("Nation-state/APT", [], [], GROUPS) == ()
 
 
@@ -112,3 +113,47 @@ def test_the_finder_returns_the_groups_behind_what_it_found_for_the_threats_acto
     result, _ = one(finder, dataclasses.replace(request_of(), actor="Cybercriminal"))
     assert [group.name for group in result.groups] == ["Crime"]
     assert result.groups[0].as_doc()["how"] == "Crime did it."
+
+
+def test_among_equals_a_group_that_used_the_attack_itself_comes_first() -> None:
+    """G236: same relevance, same number of the card's attacks: a direct use before a use through malware,
+    whatever the names (Aardvark used it only through its malware; Zebra used it itself)."""
+    groups = GroupMap.from_hits(
+        [_hit("T9", ("impact",), _group("Aardvark", NS, "Spyware"), _group("Zebra", NS))]
+    )
+    assert [group.name for group in pick_known_groups("Nation-state/APT", ["T9"], [], groups)] == [
+        "Zebra",
+        "Aardvark",
+    ]
+
+
+def test_the_card_shows_the_groups_behind_what_its_story_cites() -> None:
+    """G235 (session b84e7fc0: "used this attack: Web Protocols" on a card citing only Command Message): the
+    groups are picked again once the story is written. Groups behind a cited technique come first, with its
+    number; a group behind a technique the card does not show used a related attack, never "this" one."""
+    from app.engine.scenarios.writing.scenario_record import _known_groups
+
+    def group(name: str, technique: str, match: str = KnownGroupMatch.USED_THIS_TECHNIQUE) -> dict[str, Any]:
+        return {"name": name, "technique": technique, "match": match}
+
+    related = KnownGroupMatch.USED_RELATED_TECHNIQUE
+    candidates = [
+        *(group(name, "T1071.001") for name in ("APT33", "APT37", "APT42")),
+        group("Leviathan", "T1692.001"),
+        group("Kimsuky", "T0001", related),
+    ]
+    shown = _known_groups({"known_groups": candidates}, [{"ref": "T1692.001", "n": 1}])
+    assert [(g["name"], g["cited"], g["match"]) for g in shown] == [
+        ("Leviathan", 1, KnownGroupMatch.USED_THIS_TECHNIQUE),
+        ("APT33", None, KnownGroupMatch.USED_RELATED_TECHNIQUE),
+        ("APT37", None, KnownGroupMatch.USED_RELATED_TECHNIQUE),
+    ]
+    assert len(shown) == KnownGroups.SHOWN
+
+
+def test_the_search_keeps_what_reduces_each_technique_on_its_evidence() -> None:
+    """G234: a search's evidence carries its mitigations (the names its facts say) for the controls."""
+    docs = [technique_doc("T1", mitigations=["Access Management", "Audit"], tactics=["impact"])]
+    finder, _ = finder_of(docs)
+    result, _ = one(finder, request_of())
+    assert [item.mitigations for item in result.evidence] == [("Access Management", "Audit")]

@@ -1,5 +1,6 @@
 """What the API shows of remediation plans (BLUEPRINT M11 R10; BUILD_PLAN S53): a plan's status (#15, #28),
-its result without snapshots and its scenario's summary (#16), an entity's plans (#17). Read only."""
+its result without snapshots and its scenario's summary (#16), an entity's or a run's plans (#17). A plan is
+found by its id or by its scenario (the unique scenario_id index: one read either way). Read only."""
 
 from typing import Any
 
@@ -25,9 +26,14 @@ class RemediationReads:
         record = self._plans.find_one({"_id": remediation_id}, RemediationStatus.RECORD_FIELDS)
         return None if record is None else RemediationStatus.from_record(record)
 
-    def find_result(self, remediation_id: str) -> dict[str, Any] | None:
-        """The whole plan record but its versions' snapshots (never shown, the largest part)."""
-        return self._plans.find_one({"_id": remediation_id}, {"versions.snapshot": 0})
+    def find_status_of_scenario(self, scenario_id: str) -> RemediationStatus | None:
+        """The scenario's plan status, as find_status."""
+        record = self._plans.find_one({"scenario_id": scenario_id}, RemediationStatus.RECORD_FIELDS)
+        return None if record is None else RemediationStatus.from_record(record)
+
+    def find_result_of_scenario(self, scenario_id: str) -> dict[str, Any] | None:
+        """The scenario's whole plan record but its versions' snapshots (never shown, the largest part)."""
+        return self._plans.find_one({"scenario_id": scenario_id}, {"versions.snapshot": 0})
 
     def list_for_entity(self, entity_id: int, filters: dict[str, Any], offset: int, limit: int) -> Page:
         """Newest first: one index scan per filter (ensure_indexes) and one count with the same filter."""

@@ -42,6 +42,11 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
 }
 
 
+#: A model name with this prefix is served by the LiteLLM gateway (UAT's llmapi.govai.ae); only those hosts
+#: skip the corporate proxy when CII_AI_BYPASS_PROXY=true.
+LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
+
+
 class AiLimits:
     """Same for every model. Per-model values (tokens, timeout, vector size…) live in app/ai/profiles.py."""
 

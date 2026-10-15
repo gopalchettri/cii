@@ -54,8 +54,8 @@ DOWNLOADS = {
 
 
 def pinned_versions() -> dict[str, str]:
-    """{tool: version} from the template's `image: ${REGISTRY}/<tool>:<tag>` lines (a leading v dropped)."""
-    lines = re.findall(r"image: \$\{REGISTRY\}/([\w-]+):v?([\w.]+)", TEMPLATE.read_text(encoding="utf-8"))
+    """{tool: version} from the UAT file's `image: <mirror>/<tool>:<tag>` lines (a leading v dropped)."""
+    lines = re.findall(r"image: \S+/([\w-]+):v?([\w.]+)\s", TEMPLATE.read_text(encoding="utf-8"))
     return dict(lines)
 
 

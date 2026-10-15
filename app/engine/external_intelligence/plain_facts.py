@@ -34,6 +34,13 @@ class PlainFactWriter:
         cleaned = (self._cleaner.clean(sentence, TextSafety.MAX_FACT_CHARS) for sentence in build(data))
         return tuple(dict.fromkeys(sentence for sentence in cleaned if sentence))[: EvidenceLimits.MAX_FACTS]
 
+    def safe_mitigations(self, hit: IntelHit) -> tuple[str, ...]:
+        """G234: what reduces an ATT&CK technique, by the names its facts use: the control query labels them
+        "MITRE ATT&CK", so an advisory's remediation (even a short one that reads as a name) never comes."""
+        if hit.kind != IntelKind.TECHNIQUE or not isinstance(hit.data, dict):
+            return ()
+        return tuple(self._sentences.mitigation_names(hit.data))
+
     def safe_title(self, hit: IntelHit) -> str:
         """The record's title when it is plain words; its own id otherwise (the id is shown, not said)."""
         return self._cleaner.clean(hit.title, TextSafety.MAX_TITLE_CHARS) or hit.external_id
