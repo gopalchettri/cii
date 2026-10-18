@@ -2,7 +2,7 @@
 EXTERNAL_INTELLIGENCE_ENABLED=true"): with external intelligence on, the write job holds back every story with
 no evidence, enforced in code with no AI call added: a threat whose search kept no source at or above the
 threshold fails its path for good before any write call; one whose search could not be made waits as an
-outage; a story left citing nothing is kept hidden and its path given up. The style is decided once per
+outage; a story left citing nothing is kept hidden and its path tried again. The style is decided once per
 delivery, and a switch in doubt makes the delivery wait. Each cited entry keeps its dates, role and claim."""
 
 from typing import Any
@@ -15,6 +15,7 @@ from app.core.constants import (
     ErrorCode,
     EvidenceRole,
     FindingCode,
+    Generation,
     ScenarioStatus,
     TaskName,
 )
@@ -62,27 +63,25 @@ def test_nothing_found_fails_its_path_for_good_with_no_write_call(intel: Intel, 
     assert plan["threats"][0]["intel_search"]["searched_at"]
 
 
-def test_a_story_left_citing_nothing_is_kept_hidden_and_its_path_given_up(
+def test_a_story_left_citing_nothing_is_kept_hidden_and_its_path_tried_again(
     intel: Intel, story_chat: Any
 ) -> None:
-    """NO_EVIDENCE_CITED is final: after the one rewrite still citing none of its sources, the story is never
-    served and its path is not tried again."""
-    answer, given = story_chat.responders[AiTask.WRITE_SCENARIO], []
+    """A story citing none of its sources is never served: each draft counts an attempt and the path is
+    written again, until it is given up after MAX_PATH_ATTEMPTS."""
+    answer = story_chat.responders[AiTask.WRITE_SCENARIO]
 
     def citing_nothing(prompt: str) -> dict[str, Any]:
-        given.append(answer(prompt) | {"scenario_statement": STORY_PLAIN, "evidence_links": []})
-        return given[-1]
+        return answer(prompt) | {"scenario_statement": STORY_PLAIN, "evidence_links": []}
 
     story_chat.responders[AiTask.WRITE_SCENARIO] = citing_nothing
-    story_chat.responders[AiTask.REWRITE_SCENARIO] = lambda _: given[-1]
     record_id = _queued_run(["Threat 1"])
-    assert _deliver_until_done(record_id) == 1
+    assert _deliver_until_done(record_id) == Generation.MAX_PATH_ATTEMPTS
     (card,) = _scenarios_of(record_id)
     assert card["status"] == ScenarioStatus.BLOCKED and "controls" not in card
     assert FindingCode.NO_EVIDENCE_CITED in {finding["code"] for finding in card["findings"]}
     path = _sessions().find_one({"_id": record_id})["plan"]["paths"][0]
-    assert (path["abandoned"], path["attempts"], path["served"]) == (True, 1, None)
-    assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == 1
+    assert (path["abandoned"], path["attempts"], path["served"]) == (True, Generation.MAX_PATH_ATTEMPTS, None)
+    assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS
 
 
 def test_the_switch_is_read_once_per_batch(intel: Intel) -> None:

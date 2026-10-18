@@ -18,7 +18,7 @@ class ScenarioStatus(StrEnum):
 
     DONE = "done"  # written: served and counted
     FAILED = "failed"  # the writer's answer stayed unreadable: a visible failure card; the path is retried
-    BLOCKED = "blocked"  # a blocker survived the one rewrite: kept for audit only; the path is retried
+    BLOCKED = "blocked"  # a blocker was found: kept for audit only; the path is retried
 
 
 class ScenarioOutcome(StrEnum):
@@ -50,7 +50,7 @@ class FindingCode(StrEnum):
 
 
 class FindingMessage(StrEnum):
-    """What a finding says: shown to the reviewer, and listed to the writer in the one rewrite."""
+    """What a finding says: stored on the scenario and shown with it."""
 
     UNKNOWN_ID = "Names {labels}: internal labels the platform never gave this scenario. Remove them."
     UNCITED_ADVISORY_ID = "Cites {ids}, which no threat intelligence supplied. Remove the advisory numbers."
@@ -72,7 +72,7 @@ class FindingMessage(StrEnum):
     )
 
 
-#: How strongly each finding is enforced: a blocker asks the one rewrite and, still there, blocks.
+#: How strongly each finding is enforced: a blocker keeps the scenario from being served.
 FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
     FindingCode.UNKNOWN_ID: FindingSeverity.BLOCKER,
     FindingCode.UNCITED_ADVISORY_ID: FindingSeverity.BLOCKER,
@@ -84,10 +84,8 @@ FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
     FindingCode.NEAR_DUPLICATE: FindingSeverity.BLOCKER,
 }
 
-#: A scenario still blocked by one of these after its rewrite is final: its path is given up at once.
-FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset(
-    {FindingCode.SCENARIO_MISMATCH, FindingCode.NO_EVIDENCE_CITED, FindingCode.NEAR_DUPLICATE}
-)
+#: A scenario blocked by one of these is final: no new attempt can change it, so its path is given up.
+FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset({FindingCode.NEAR_DUPLICATE})
 
 
 class Route(StrEnum):
@@ -100,7 +98,7 @@ class Route(StrEnum):
 class PlanCheckStatus(StrEnum):
     CONSISTENT = "consistent"
     INCONSISTENT = "inconsistent"  # its problems are notes on the scenario
-    UNCHECKED = "unchecked"  # the check could not be made: a warning says so
+    UNCHECKED = "unchecked"  # not made: an exact check blocks, or its answer stayed unusable (a warning)
 
 
 class PathProblem(StrEnum):

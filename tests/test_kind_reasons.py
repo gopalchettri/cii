@@ -84,7 +84,7 @@ def test_the_cards_threat_block_shows_the_threats_own_category() -> None:
     }
     brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
     draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
-    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE, False)
+    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE)
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     record = written_record(run, path, threat, brief, written) | {"_id": "s1", "session_id": "run-1"}
     view = build_scenario_view(record)

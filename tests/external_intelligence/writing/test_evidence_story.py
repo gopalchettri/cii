@@ -155,16 +155,18 @@ def test_a_story_with_valid_markers_and_no_ids_passes() -> None:
     assert _codes(_DRAFT, brief) == []
     chat = _chat_answering([draft_answer(_DRAFT)], [_CONSISTENT])
     written = write_scenario(chat, brief)
-    assert written.draft.statement == STORY_MARKED and not is_blocked(written) and not written.rewritten
+    assert written.draft.statement == STORY_MARKED and not is_blocked(written)
 
 
 @pytest.mark.parametrize("ident", ["CVE-2024-0001", "ICSA-24-001-01"])
-def test_an_advisory_id_in_the_prose_is_blocked_then_rewritten_once(ident: str) -> None:
+def test_an_advisory_id_in_the_prose_is_blocked_with_no_reviewer_call(ident: str) -> None:
     leaky = _with_statement(STORY_MARKED.replace("before [1]", f"before ({ident}) [1]"))
-    chat = _chat_answering([draft_answer(leaky)], [_CONSISTENT, _CONSISTENT], [draft_answer(_DRAFT)])
+    chat = _chat_answering([draft_answer(leaky)], [])
     written = write_scenario(chat, _story_brief(TECHNIQUE))
-    assert written.rewritten and written.draft.statement == STORY_MARKED and not is_blocked(written)
-    assert ident in chat.asked(AiTask.REWRITE_SCENARIO)[0]
+    assert [finding.code for finding in written.findings] == [FindingCode.UNCITED_ADVISORY_ID]
+    assert is_blocked(written) and not is_final(written) and [task for task, _ in chat.calls] == [
+        AiTask.WRITE_SCENARIO
+    ]
 
 
 def test_a_marker_naming_no_entry_blocks_and_with_intelligence_off_any_marker_does() -> None:
@@ -198,19 +200,14 @@ def test_a_sentence_citing_an_unsupported_source_is_taken_out() -> None:
     assert [(f.code, finding_severity(f)) for f in written.findings] == [
         (FindingCode.CITATION_REMOVED, FindingSeverity.WARNING)
     ]
-    assert written.plan_check.unsupported == (2,) and AiTask.REWRITE_SCENARIO not in [
-        task for task, _ in chat.calls
-    ]
+    assert written.plan_check.unsupported == (2,)
 
 
-def test_a_story_left_citing_nothing_is_blocked_for_good_after_its_one_rewrite() -> None:
-    chat = _chat_answering(
-        [draft_answer(_DRAFT)], [_unsupported(1), _CONSISTENT], [draft_answer(_with_statement(STORY_PLAIN))]
-    )
+def test_a_story_left_citing_nothing_is_blocked_and_its_path_may_be_tried_again() -> None:
+    chat = _chat_answering([draft_answer(_DRAFT)], [_unsupported(1)])
     brief = _story_brief(TECHNIQUE)
     written = write_scenario(chat, brief)
-    assert is_blocked(written) and is_final(written) and written.rewritten
-    assert [task for task, _ in chat.calls].count(AiTask.REWRITE_SCENARIO) == 1
+    assert is_blocked(written) and not is_final(written)
     assert FindingCode.NO_EVIDENCE_CITED in {finding.code for finding in written.findings}
     run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
     path = {"path_id": "p1", "category": "Tampering", "systems": [321]}
@@ -222,7 +219,7 @@ def test_the_stored_scenario_carries_only_the_evidence_it_cites_renumbered_from_
     brief = _story_brief(TECHNIQUE, _VULNERABILITY)
     second = "Attackers could exploit a workstation flaw to run their own code [2]."
     draft = dataclasses.replace(_DRAFT, statement=STORY_PLAIN + " " + second, evidence_links=((2, "flaw"),))
-    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE, False)
+    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE)
     run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
     path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
     record = written_record(run, path, threat, brief, written)

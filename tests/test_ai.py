@@ -820,31 +820,6 @@ def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pyte
     assert (record["record_id"], record["request_id"]) == ("run-7", "req-9")
 
 
-def test_the_rewrite_quotes_the_earlier_answer_with_its_problems(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Step 12's one rewrite (S22): the earlier answer is the assistant turn and the correction lists its
-    problems; an unusable rewrite is asked once more in that same conversation."""
-    sent: list[list[dict]] = []
-    replies = iter(['{"draft": 2}', '{"title": "Better"}'])
-
-    def capture(**kwargs: object) -> SimpleNamespace:
-        sent.append(kwargs["messages"])  # type: ignore[arg-type]
-        return _json_response(next(replies))
-
-    monkeypatch.setattr(litellm, "completion", capture)
-    answer = _chat_model().ask_again_for_checked_json(
-        AiTask.REWRITE_SCENARIO,
-        "system",
-        "brief",
-        {"title": "First"},
-        ["Names no asset."],
-        lambda reply: [] if "title" in reply else ["title is required"],
-    )
-    assert answer == {"title": "Better"} and len(sent) == 2
-    assert [message["role"] for message in sent[0]] == ["system", "user", "assistant", "user"]
-    assert sent[0][2]["content"] == '{"title": "First"}' and "- Names no asset." in sent[0][3]["content"]
-    assert sent[1][:3] == sent[0][:3] and "title is required" in sent[1][-1]["content"]
-
-
 def test_the_local_reranker_scores_one_request_at_a_time() -> None:
     """G199 (live test 2026-10-11): one CPU prediction already uses every core; ten at once, a worker's
     threads, thrashed and none finished in 38 minutes. The local model takes one request at a time; the scores

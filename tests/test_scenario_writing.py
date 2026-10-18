@@ -1,5 +1,5 @@
-"""Scenario writing (Step 12): the brief, the owner's prompts, the exact safety checks, the reviewer, the one
-rewrite, and what is stored and shown. Fake AI models, no network."""
+"""Scenario writing (Step 12): the brief, the owner's prompts, the exact safety checks, the reviewer, and
+what is stored and shown. Fake AI models, no network."""
 
 import copy
 import dataclasses
@@ -116,11 +116,10 @@ def _brief_of(threat: dict[str, Any], budget: int = 30_000, **path: Any) -> Any:
     return build_brief({threat["key"]: threat}, record | path, CONTEXT, budget, _LIVE)
 
 
-def _chat_answering(writes: list[Any], checks: list[Any], rewrites: list[Any] = ()) -> FakeChatModel:
+def _chat_answering(writes: list[Any], checks: list[Any]) -> FakeChatModel:
     chat = FakeChatModel()
     chat.queue(AiTask.WRITE_SCENARIO, *writes)
     chat.queue(AiTask.PLAN_CHECK, *checks)
-    chat.queue(AiTask.REWRITE_SCENARIO, *rewrites)
     return chat
 
 
@@ -128,15 +127,16 @@ def _calls(chat: FakeChatModel) -> list[AiTask]:
     return [task for task, _ in chat.calls]
 
 
-def test_only_a_safety_fault_a_mismatch_no_citation_or_a_copy_blocks_and_three_are_final() -> None:
+def test_only_a_safety_fault_a_mismatch_no_citation_or_a_copy_blocks_and_only_a_copy_is_final() -> None:
     """A reviewer's rule verdict is a note, never a blocker; a check not made, a warning."""
     blockers = {code for code, severity in FINDING_SEVERITIES.items() if severity == FindingSeverity.BLOCKER}
-    assert {FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID} | FINAL_FINDINGS <= blockers
     assert {
+        FindingCode.UNKNOWN_ID,
+        FindingCode.UNCITED_ADVISORY_ID,
         FindingCode.SCENARIO_MISMATCH,
         FindingCode.NO_EVIDENCE_CITED,
-        FindingCode.NEAR_DUPLICATE,
-    } == FINAL_FINDINGS
+    } | FINAL_FINDINGS <= blockers
+    assert {FindingCode.NEAR_DUPLICATE} == FINAL_FINDINGS
     assert FINDING_SEVERITIES[FindingCode.PLAN_CHECK] == FindingSeverity.NOTE
     assert FINDING_SEVERITIES[FindingCode.PLAN_CHECK_NOT_MADE] == FindingSeverity.WARNING
     assert FINDING_SEVERITIES[FindingCode.CITATION_REMOVED] == FindingSeverity.WARNING
@@ -145,7 +145,6 @@ def test_only_a_safety_fault_a_mismatch_no_citation_or_a_copy_blocks_and_three_a
         (Finding(FindingCode.PLAN_CHECK, "m"),),
         PlanCheck(PlanCheckStatus.CONSISTENT),
         Route.STANDALONE,
-        False,
     )
     assert not is_blocked(written)
     assert finding_record(Finding(FindingCode.UNKNOWN_ID, "m")) == {
@@ -328,11 +327,11 @@ def test_an_unusable_plan_check_is_a_warning_and_an_outage_retries_the_job() -> 
         _plan_checked(Unavailable("AI down"))
 
 
-def test_a_clean_first_draft_is_kept_after_two_calls_and_a_note_asks_no_rewrite() -> None:
+def test_a_clean_draft_is_kept_after_two_calls_and_a_note_blocks_nothing() -> None:
     noted = {"rules": {"5": "broken - the impact is broad"}, "same_threat": True, "same_impact": True}
     chat = _chat_answering([draft_answer(_CLEAN)], [noted])
     written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert written.draft == _READ and not written.rewritten and not is_blocked(written)
+    assert written.draft == _READ and not is_blocked(written)
     assert [finding.code for finding in written.findings] == [FindingCode.PLAN_CHECK]
     assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
 
@@ -353,31 +352,21 @@ def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None
     assert write_scenario(chat, _brief_of(_plan_threat(systems=()))).draft.entry_point == ""
 
 
-def test_a_mismatch_blocks_then_one_rewrite_listing_it_and_a_better_rewrite_is_kept() -> None:
-    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH, _CONSISTENT], [draft_answer(_CLEAN)])
+def test_a_mismatch_blocks_after_one_write_and_is_not_final() -> None:
+    """The blocked draft counts an attempt and its path is written again later."""
+    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH])
     written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert written.rewritten and not is_blocked(written)
-    assert _calls(chat) == [
-        AiTask.WRITE_SCENARIO,
-        AiTask.PLAN_CHECK,
-        AiTask.REWRITE_SCENARIO,
-        AiTask.PLAN_CHECK,
-    ]
-    assert "no longer describes the plan's threat" in chat.asked(AiTask.REWRITE_SCENARIO)[0]
-    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH, _MISMATCH], [draft_answer(_CLEAN)])
-    kept = write_scenario(chat, _brief_of(_plan_threat()))
-    assert is_blocked(kept) and is_final(kept) and kept.rewritten  # a tie keeps the rewrite; still final
+    assert is_blocked(written) and not is_final(written)
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
 
 
-def test_a_worse_or_unusable_rewrite_keeps_the_first_draft() -> None:
+def test_a_draft_the_exact_checks_block_makes_no_reviewer_call() -> None:
     labelled = draft_answer(_CLEAN) | {"scenario_statement": _CLEAN.statement + " SYS7 helps."}
-    worse = labelled | {"risk_statement": _CLEAN.risk + " CVE-2025-0001 too."}
-    chat = _chat_answering([labelled], [_CONSISTENT, _MISMATCH], [worse])
-    kept = write_scenario(chat, _brief_of(_plan_threat()))
-    assert not kept.rewritten and [finding.code for finding in kept.findings] == [FindingCode.UNKNOWN_ID]
-    chat = _chat_answering([labelled], [_CONSISTENT], [{"bad": 1}, {"bad": 2}])
-    assert not write_scenario(chat, _brief_of(_plan_threat())).rewritten
-    assert _calls(chat).count(AiTask.REWRITE_SCENARIO) == 2
+    chat = _chat_answering([labelled], [])
+    written = write_scenario(chat, _brief_of(_plan_threat()))
+    assert [finding.code for finding in written.findings] == [FindingCode.UNKNOWN_ID]
+    assert written.plan_check == PlanCheck(PlanCheckStatus.UNCHECKED) and not is_final(written)
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO]
 
 
 def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again() -> None:
@@ -513,7 +502,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     brief = _brief_of(_plan_threat())
     note = Finding(FindingCode.PLAN_CHECK, "The impact is broad.")
     check = PlanCheck(PlanCheckStatus.INCONSISTENT, ("The impact is broad.",))
-    written = WrittenScenario(_READ, (note,), check, Route.STANDALONE, True, "Unauthorised firmware update")
+    written = WrittenScenario(_READ, (note,), check, Route.STANDALONE, "Unauthorised firmware update")
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     path = {
         "path_id": "p1",
@@ -536,7 +525,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     ]
     assert view.validation_status == ValidationStatus.OK and view.validation_notes == ["The impact is broad."]
     assert view.threat.threat_name == "Unauthorised firmware update" and view.threat.scope_rank == 3
-    assert (view.controls_status, record["rewritten"], view.evidence) == ("queued", True, [])
+    assert (view.controls_status, record["rewritten"], view.evidence) == ("queued", False, [])
 
 
 def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None:
@@ -548,7 +537,7 @@ def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None
     brief = build_brief({threat["key"]: threat}, path, context, 30_000, _LIVE)
     assert brief_entry_point_options(brief) == ("[REDACTED]", "[REDACTED]")
     draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
-    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE, False)
+    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE)
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": context.to_record()}
     assert written_record(run, path, threat, brief, written)["content"]["systems"] == [
         {"id": 321, "name": "scada01.plant.local", "entry_point": True},

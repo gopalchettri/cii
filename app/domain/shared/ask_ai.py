@@ -24,23 +24,6 @@ def ask_ai_and_check(chat: ChatModel, task: AiTask, prompt: ChatPrompt, read_ans
     return meaning
 
 
-def ask_ai_again_with_problems(  # noqa: PLR0913 — one conversation, whole
-    chat: ChatModel,
-    task: AiTask,
-    prompt: ChatPrompt,
-    earlier_answer: dict[str, Any],
-    problems: list[str],
-    read_answer: _AnswerReader,
-) -> Any:
-    """What a new checked answer means, asked in the conversation that gave `earlier_answer` with its
-    `problems` listed (the scenario writer's one rewrite); raises as ask_ai_and_check does."""
-    answer = chat.ask_again_for_checked_json(
-        task, *prompt, earlier_answer, problems, lambda candidate: read_answer(candidate)[1]
-    )
-    meaning, _ = read_answer(answer)
-    return meaning
-
-
 def answer_item_problems(contract: type[BaseModel], item: Any, where: str) -> list[str]:
     """One answer item checked against its contract, as re-ask problems; only the fields the contract
     declares are judged."""

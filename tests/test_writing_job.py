@@ -342,15 +342,13 @@ def test_a_retry_after_a_crash_still_sends_the_written_scenarios_controls_messag
 def test_a_blocked_scenario_is_kept_hidden_and_its_path_tried_again(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
-    """T-WRT-10 (S25): a blocker that survives the one rewrite hides the scenario and counts as an attempt."""
-    brief = json.dumps({"entry_point_options": ["SCADA server"], "threat": {"threat": "Threat 1"}})
+    """T-WRT-10 (S25): a blocked draft hides the scenario and counts as an attempt."""
 
     def cites_an_advisory(user_prompt: str) -> dict[str, Any]:
         answer = _answer_for(user_prompt)
         return answer | {"scenario_statement": answer["scenario_statement"] + " CVE-2024-1234 helps."}
 
     chat.responders[AiTask.WRITE_SCENARIO] = cites_an_advisory
-    chat.responders[AiTask.REWRITE_SCENARIO] = lambda _: cites_an_advisory("BRIEF:\n" + brief)
     record_id = _queued_run(["Threat 1"])
     writing.write_batch(JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first"))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)

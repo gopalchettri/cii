@@ -117,21 +117,19 @@ class AiTask(StrEnum):
     RELEVANCE_GATE = "relevance_gate"
     GAP_FILL = "gap_fill"
     WRITE_SCENARIO = "write_scenario"
-    REWRITE_SCENARIO = "rewrite_scenario"  # the one rewrite, in the same conversation
     PLAN_CHECK = "plan_check"  # does the written scenario carry out its plan
     REMEDIATION_PLAN = "remediation_plan"
     EMBED = "embed"
     RERANK = "rerank"
 
 
-#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so rewrites differ.
+#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a retry differs.
 CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
     AiTask.PLAN_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
-    AiTask.REWRITE_SCENARIO: None,
 }
 
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
@@ -214,7 +212,6 @@ class LogEvent(StrEnum):
     PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
     PLANNER_PLAN_MADE = "planner.plan_made"
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
-    WRITER_REWRITE_UNUSABLE = "writer.rewrite_unusable"  # the first draft is kept
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"

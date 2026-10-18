@@ -25,7 +25,7 @@ class ErrorCode(StrEnum):
     EVIDENCE_NOT_FOUND = (
         "evidence_not_found"  # intelligence on and no evidence: a reserve path may replace it
     )
-    SCENARIO_BLOCKED = "scenario_blocked"  # a regenerated version still broke a fixed rule after its rewrite
+    SCENARIO_BLOCKED = "scenario_blocked"  # a regenerated version broke a fixed rule
     SETUP_ERROR = "setup_error"  # the server is set up wrongly: the operator fixes it, a retry cannot
 
 
@@ -122,7 +122,7 @@ class ErrorMessage(StrEnum):
         "its permissions in the settings."
     )
     REGENERATE_BLOCKED = (
-        "The new version still broke a fixed rule after its rewrite ({codes}): it is kept for audit only, "
+        "The new version broke a fixed rule ({codes}): it is kept for audit only, "
         "and this version stays current."
     )
     UNEXPECTED = "Unexpected error. Quote the X-Request-Id header when reporting it."

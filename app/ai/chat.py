@@ -2,7 +2,6 @@
 corrective re-ask for a task that checks its answer, and one record per call (metrics, log line, audit copy in
 tsg_ai_calls)."""
 
-import json
 import time
 from collections.abc import Callable
 from functools import partial
@@ -125,24 +124,6 @@ class ChatModel:
         """A JSON answer `check_answer` accepts. A rejected first answer is asked again once, in the same
         conversation, with its problems (§9); a second rejection raises UnreadableAiAnswer."""
         return self._ask_until_checked(task, build_conversation(system_prompt, user_prompt), check_answer)
-
-    def ask_again_for_checked_json(  # noqa: PLR0913 — one conversation, whole
-        self,
-        task: AiTask,
-        system_prompt: str,
-        user_prompt: str,
-        earlier_answer: dict[str, Any],
-        problems: list[str],
-        check_answer: AnswerChecker,
-    ) -> dict[str, Any]:
-        """A new answer in the conversation that gave `earlier_answer`: it is quoted back with `problems` in
-        §9's correction turn, and the new answer is checked as ask_for_checked_json checks (one re-ask). The
-        scenario writer's one rewrite (Step 12)."""
-        earlier = json.dumps(earlier_answer, ensure_ascii=False)
-        messages = build_conversation(system_prompt, user_prompt)
-        return self._ask_until_checked(
-            task, _with_correction_turn(messages, earlier, problems, self._max_input_chars), check_answer
-        )
 
     def _ask_until_checked(
         self, task: AiTask, messages: list[dict[str, str]], check_answer: AnswerChecker

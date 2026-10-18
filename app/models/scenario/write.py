@@ -89,13 +89,12 @@ class PlanCheck:
 
 @dataclass(frozen=True)
 class WrittenScenario:
-    """The draft kept (the original or its one rewrite) with what was found in it."""
+    """The draft written with what was found in it."""
 
     draft: ScenarioDraft
     findings: tuple[Finding, ...]  # the code rules' findings and the plan check's notes
     plan_check: PlanCheck
     route: Route
-    rewritten: bool  # the rewrite was kept
     title_qualifier: str = ""  # the threat's name as a title carries it, to tell two same titles apart
 
 

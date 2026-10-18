@@ -63,18 +63,6 @@ class FakeChatModel:
                 return answer
         raise UnreadableAiAnswer(f"{task}: {check_answer(answer)[:3]}")
 
-    def ask_again_for_checked_json(  # noqa: PLR0913 — ChatModel's signature
-        self,
-        task: AiTask,
-        system_prompt: str,
-        user_prompt: str,
-        earlier_answer: dict[str, Any],
-        problems: list[str],
-        check_answer: Callable[[dict[str, Any]], list[str]],
-    ) -> dict[str, Any]:
-        """The one rewrite: answered like ask_for_checked_json, recorded with the problems it was given."""
-        return self.ask_for_checked_json(task, system_prompt, "\n".join(problems), check_answer)
-
     def _answer(self, task: AiTask, user_prompt: str) -> dict[str, Any]:
         self.calls.append((task, user_prompt))
         answer: Answer = self.queued[task].pop(0) if self.queued[task] else self.responders[task]
@@ -86,14 +74,10 @@ class FakeChatModel:
     def _with_system_reasons(self, task: AiTask, answer: dict[str, Any], user_prompt: str) -> dict[str, Any]:
         """A writer answer that gives no system_reasons gets one per supporting system of the brief it
         answers (G216) and one with no why_applies a sentence (G268), so a test about something else need not
-        write them; a test of either gives its own (empty included).
-        A write answers its own prompt (paths are written at once: the last call may be another path's); a
-        rewrite, the last write's."""
-        if task not in (AiTask.WRITE_SCENARIO, AiTask.REWRITE_SCENARIO) or not isinstance(answer, dict):
+        write them; a test of either gives its own (empty included)."""
+        if task != AiTask.WRITE_SCENARIO or not isinstance(answer, dict):
             return answer
-        writes = (user for called, user in reversed(self.calls) if called == AiTask.WRITE_SCENARIO)
-        brief = user_prompt if task == AiTask.WRITE_SCENARIO else next(writes, "")
-        names = brief_system_names(brief)
+        names = brief_system_names(user_prompt)
         reasons = {name: f"It could affect {name}." for name in names}
         filled = {"system_reasons": reasons, "why_applies": WHY_APPLIES}
         return {key: value for key, value in filled.items() if key not in answer} | answer

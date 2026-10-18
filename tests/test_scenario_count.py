@@ -78,7 +78,7 @@ def test_a_scenario_is_written_on_its_paths_system_only() -> None:
     assert [system["name"] for system in brief.systems] == ["SCADA server"]
     assert brief.other_systems == ("Historian",)
     draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
-    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE, False)
+    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE)
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     card = written_record(run, path, threat, brief, written)["content"]["systems"]
     assert card == [{"id": 321, "name": "SCADA server", "entry_point": True}]  # never the Historian

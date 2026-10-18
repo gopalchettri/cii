@@ -61,7 +61,6 @@ from app.domain.scenario.plan import attacker_unsupported, raw_system_facts
 from app.domain.shared.ask_ai import (
     ChatPrompt,
     answer_item_problems,
-    ask_ai_again_with_problems,
     ask_ai_and_check,
 )
 from app.domain.shared.names import (
@@ -113,7 +112,7 @@ def brief_entry_point_options(brief: WriterBrief) -> tuple[str, ...]:
 
 
 def draft_answer(draft: ScenarioDraft) -> dict[str, Any]:
-    """The draft as the writer's answer reads, for the one rewrite to follow."""
+    """The draft as the writer's answer reads, for the reviewer."""
     answer: dict[str, Any] = {
         "scenario_title": draft.title,
         "scenario_statement": draft.statement,
@@ -631,7 +630,7 @@ def _broken_rules(answer: PlanCheckAnswer) -> tuple[str, ...]:
 
 
 def _mismatch(answer: PlanCheckAnswer) -> tuple[Finding, ...]:
-    """A statement of another threat, or a risk of another impact: a blocker the rewrite may clear."""
+    """A statement of another threat, or a risk of another impact: a blocker a new attempt may clear."""
     wrong = [
         part for part, same in (("threat", answer.same_threat), ("impact", answer.same_impact)) if not same
     ]
@@ -658,40 +657,29 @@ def _read_plan_check(answer: dict[str, Any]) -> tuple[PlanCheckAnswer | None, li
     return (None, problems) if problems else (PlanCheckAnswer.model_validate(answer), [])
 
 
-# --- the writer: write, check, review, at most one rewrite
+# --- the writer: write, check, review
 
 #: Each sentence with the space after it.
 _SENTENCE = re.compile(r"[^.!?]*(?:[.!?]+|$)\s*")
 
 
 def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
-    """The scenario for `brief`, reviewed; with a blocker, ONE rewrite listing them, and the draft with fewer
-    blockers kept (the rewrite on a tie). An unreadable first answer raises; an outage raises Unavailable."""
+    """The scenario for `brief`, written once, then checked and reviewed. An unreadable answer raises; an
+    outage raises Unavailable."""
     prompt = writer_prompt(brief)
     systems = tuple(system.name for system in brief.supporting_systems)
     read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    first = _reviewed(chat, brief, ask_ai_and_check(chat, AiTask.WRITE_SCENARIO, prompt, read), False)
-    if not is_blocked(first):
-        return first
-    problems = [
-        finding.message for finding in first.findings if finding_severity(finding) == FindingSeverity.BLOCKER
-    ]
-    try:
-        draft = ask_ai_again_with_problems(
-            chat, AiTask.REWRITE_SCENARIO, prompt, draft_answer(first.draft), problems, read
-        )
-    except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(LogEvent.WRITER_REWRITE_UNUSABLE, error=str(exc))
-        return first
-    second = _reviewed(chat, brief, draft, True)
-    return second if _blockers(second) <= _blockers(first) else first
+    return _reviewed(chat, brief, ask_ai_and_check(chat, AiTask.WRITE_SCENARIO, prompt, read))
 
 
-def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft, rewritten: bool) -> WrittenScenario:
-    """The draft checked by the safety rules and the reviewer, its unsupported citations taken out; an
-    evidence story citing nothing is blocked."""
+def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:
+    """The draft checked by the safety rules, then by the reviewer unless they block it, its unsupported
+    citations taken out; an evidence story citing nothing is blocked."""
     findings = check_exact_rules(draft, brief)
-    check, notes = check_against_plan(chat, brief, draft)
+    if any(finding_severity(finding) == FindingSeverity.BLOCKER for finding in findings):
+        check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
+    else:
+        check, notes = check_against_plan(chat, brief, draft)
     if check.unsupported:
         draft = _without_sentences_citing(draft, set(check.unsupported))
         markers = ", ".join(f"[{n}]" for n in check.unsupported)
@@ -701,12 +689,7 @@ def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft, rewritt
     if brief.style is WriterStyle.EVIDENCE_STORY and not markers_of(f"{draft.statement}\n{draft.risk}"):
         message = FindingMessage.NO_EVIDENCE_CITED.format(count=len(brief.evidence))
         notes += (Finding(FindingCode.NO_EVIDENCE_CITED, message),)
-    return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, rewritten, brief.threat)
-
-
-def _blockers(written: WrittenScenario) -> int:
-    """How many blocking findings a written scenario has."""
-    return sum(finding_severity(finding) == FindingSeverity.BLOCKER for finding in written.findings)
+    return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, brief.threat)
 
 
 def _without_sentences_citing(draft: ScenarioDraft, numbers: set[int]) -> ScenarioDraft:
@@ -837,7 +820,7 @@ def written_record(
         "content": content,
         "findings": [finding_record(finding) for finding in written.findings],
         "plan_check": plan_check_record(written.plan_check),
-        "rewritten": written.rewritten,
+        "rewritten": False,  # stored field: scenarios are never rewritten
     }
     if status == ScenarioStatus.DONE:
         record["controls"] = {"status": Status.QUEUED, "attempts": 0, "queued_at": now}
