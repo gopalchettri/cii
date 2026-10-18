@@ -53,6 +53,16 @@ def test_env_files_match_settings(name: str) -> None:
     assert (missing, unknown) == ([], []), f"{name}: missing {missing}, not read by the app {unknown}"
 
 
+def test_the_plan_version_cap_is_configurable_within_one_to_forty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REGENERATIONS_MAX_VERSION_COUNT: 1 to 40 versions per plan (40 keeps a record under 16 MB)."""
+    monkeypatch.setenv("REGENERATIONS_MAX_VERSION_COUNT", "25")
+    assert Settings().regenerations_max_version_count == 25  # type: ignore[call-arg]
+    for refused in ("0", "41"):
+        monkeypatch.setenv("REGENERATIONS_MAX_VERSION_COUNT", refused)
+        with pytest.raises(ValidationError, match="regenerations_max_version_count|REGENERATIONS"):
+            Settings()  # type: ignore[call-arg]
+
+
 def test_operational_limits_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CII_MAX_REQUEST_MB", "3")
     monkeypatch.setenv("CII_MAX_CONCURRENT_AI_CALLS", "0")  # 0 = no limit

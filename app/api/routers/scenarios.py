@@ -8,14 +8,8 @@ from fastapi import Header as HeaderParam
 
 from app.api.dependencies import Caller, CallersRun, CallersRunWithCoverage, Limit, Offset, ScenarioId
 from app.core.constants import ApiTag, Decision, Header, Limits
-from app.models.scenario.views import (
-    RunBoard,
-    RunResults,
-    ScenarioList,
-    ScenarioView,
-    StartRunRequest,
-    build_board,
-)
+from app.models.scenario.views import RunBoard, RunResults, ScenarioList, ScenarioView, StartRunRequest
+from app.services.scenario.results import build_board
 from app.services.scenario.runs import RunService, ScenarioQueries, get_run_service, get_scenario_queries
 
 router = APIRouter(tags=[ApiTag.RUNS])

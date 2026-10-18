@@ -1,8 +1,6 @@
 """The library's curation: a person proposes an accepted scenario's AI-written threat as a pending row, and a
 curator lists, approves or rejects the pending rows."""
 
-import hashlib
-import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -10,20 +8,22 @@ from typing import Any
 from app.core.constants import (
     AuditAction,
     AuditTarget,
-    ConflictReason,
-    Decision,
     LibrarySource,
-    PromotionOutcome,
-    ResolveOutcome,
-    ReviewMessage,
     SessionMessage,
 )
 from app.core.database import get_stored_procedure_client
-from app.core.exceptions import Conflict, NotFound
+from app.core.exceptions import NotFound
 from app.core.singletons import singleton
 from app.data_access.admin.repository import audit_records
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.scenario.repository import ScenarioSessionRepository, scenario_sessions, scenarios
+from app.domain.library import (
+    accepted_ai_threat_key,
+    decision_operation_key,
+    promotion_outcome,
+    scenario_actor_ids,
+    threat_to_promote,
+)
 from app.domain.scenario.plan import library_threats_named
 from app.models.api_clients import Principal
 from app.models.library import ThreatLibrary, ThreatProposal
@@ -31,12 +31,6 @@ from app.models.library_curation import LibraryDecisions
 from app.models.scenario.views import PromotedThreat, PromotionResult, SessionStatus
 from app.search.library_cache import get_library_service
 from app.services.audit import admin_actor, audit_target, caller_actor
-
-#: tsg_ResolveThreat's answer as a promotion outcome; any other answer: the library has it already.
-_PROMOTION_OUTCOME = {
-    ResolveOutcome.CREATED_PENDING: PromotionOutcome.INSERTED,
-    ResolveOutcome.CURATOR_REJECTED: PromotionOutcome.CURATOR_REJECTED,
-}
 
 
 class LibraryCuration:
@@ -52,10 +46,9 @@ class LibraryCuration:
         """One outcome per id in one transaction, and one audit row findable by any of its ids. The same
         decisions sent again (a retry) answer the first answer; another call on decided ids answers
         already_approved or already_rejected."""
-        payload = {"approve": decisions.approve, "reject": decisions.reject, "decided_by": decided_by}
-        payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        operation_key = decision_operation_key(decisions.approve, decisions.reject, decided_by)
         results, applied_now = self._library.decide_pending_threats(
-            f"decide:{payload_hash}", decisions.approve, decisions.reject, decided_by
+            operation_key, decisions.approve, decisions.reject, decided_by
         )
         if not applied_now:  # answered from its operation record: audited when it was applied
             return {"results": results}
@@ -82,9 +75,7 @@ class LibraryPromotion:
         """Proposes the accepted scenario's AI threat to the curators: 404 not in the run, 409 not accepted or
         a library threat, 503 while SQL Server is down (nothing recorded) or its answer was lost (retry)."""
         scenario, threat = self._accepted_ai_threat(run.session_id, scenario_id)
-        actors = (scenario.get("content") or {}).get("actors") or []
-        actor_ids = tuple(actor["id"] for actor in actors if actor.get("id"))
-        result = self._propose(scenario_id, threat, actor_ids, principal)
+        result = self._propose(scenario_id, threat, scenario_actor_ids(scenario), principal)
         promotion = {
             "by": principal.user_id,
             "by_client": principal.client_id,
@@ -106,20 +97,12 @@ class LibraryPromotion:
         if scenario is None:
             message = SessionMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id, session_id=session_id)
             raise NotFound(message)
-        if scenario.get("decision") != Decision.ACCEPTED:
-            message = ReviewMessage.SCENARIO_NOT_ACCEPTED.format(scenario_id=scenario_id)
-            raise Conflict(message, reason=ConflictReason.SCENARIO_NOT_ACCEPTED)
-        reference = (scenario.get("content") or {}).get("threat") or {}
+        key = accepted_ai_threat_key(scenario, scenario_id)
         threat = None
-        if reference.get("ai_generated") and reference.get("key"):
-            found = self._sessions.get(
-                fields="plan_threat", **{"_id": session_id, "plan.threats.key": reference["key"]}
-            )
+        if key is not None:
+            found = self._sessions.get(fields="plan_threat", **{"_id": session_id, "plan.threats.key": key})
             threat = (((found or {}).get("plan") or {}).get("threats") or [None])[0]
-        if threat is None:
-            message = ReviewMessage.NOTHING_TO_PROMOTE.format(scenario_id=scenario_id)
-            raise Conflict(message, reason=ConflictReason.NOTHING_TO_PROMOTE)
-        return scenario, threat
+        return scenario, threat_to_promote(threat, scenario_id)
 
     def _propose(
         self, scenario_id: str, threat: dict[str, Any], actor_ids: tuple[int, ...], principal: Principal
@@ -134,7 +117,7 @@ class LibraryPromotion:
                 threat["category"], type_name, name, LibrarySource.AI, principal.user_id, actor_ids
             )
             proposed, _ = self._library.propose_threat(f"promote:{scenario_id}", proposal)
-            outcome = _PROMOTION_OUTCOME.get(proposed.outcome, PromotionOutcome.EXISTING)
+            outcome = promotion_outcome(proposed.outcome)
             type_id, catalogue_id = proposed.type_id, proposed.catalogue_id
         return PromotedThreat(
             threat=name,

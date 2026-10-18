@@ -20,7 +20,9 @@ from app.domain.scenario.plan import (
     describe_asset_for_ai,
     merge_reworded_threats,
     merge_same_threats,
+    not_judged_count,
     parse_verdict,
+    threat_from_library,
 )
 from app.domain.shared.names import replace_codes_with_names
 from app.domain.shared.parallel import run_in_parallel
@@ -148,7 +150,7 @@ def test_an_unusable_batch_costs_only_its_own_threats_and_the_run_is_partial(
     findings = finder(chat).find_threats(CONTEXT)
     denial = audit_of(findings, S.DENIAL_OF_SERVICE)
     assert [threat.name for threat in findings.threats] == [RANSOMWARE.name]  # its good verdict is kept
-    assert denial.judged_ids == {RANSOMWARE.catalogue_id} and denial.not_judged == 1
+    assert denial.judged_ids == {RANSOMWARE.catalogue_id} and not_judged_count(denial) == 1
     plan = build_plan(findings, 0)
     assert any(S.DENIAL_OF_SERVICE in path["categories"] for path in plan["paths"])  # it has a scenario
     assert plan["not_assessed"] == [S.DENIAL_OF_SERVICE]  # and the gap is still shown
@@ -171,7 +173,7 @@ def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_ga
     chat.responders[AiTask.RELEVANCE_GATE] = picking
     rerank = FakeRerankModel(_TYPE_MATCHES)
     findings = finder(chat, rerank).find_threats(CONTEXT)
-    (ai_threat,) = [threat for threat in findings.threats if not threat.from_library]
+    (ai_threat,) = [threat for threat in findings.threats if not threat_from_library(threat)]
     assert ai_threat.key == "ai:engineering workstation takeover"
     assert (ai_threat.type_id, ai_threat.type_name) == (5, "Privilege misuse")  # the library type
     assert listed[_PROPOSAL["threat"]] == [INSIDER.name]  # its type's linked actor, never the AI's text
@@ -189,7 +191,7 @@ def test_a_proposal_whose_type_matches_no_library_type_is_never_planned() -> Non
     chat = planner_chat({_PROPOSAL["threat"]: ["SYS1"]})
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL | {"threat_type": "Quantum sabotage"})
     findings = finder(chat, FakeRerankModel()).find_threats(CONTEXT)  # no type scores at the bar
-    assert all(threat.from_library for threat in findings.threats)
+    assert all(threat_from_library(threat) for threat in findings.threats)
     assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
 
 
@@ -220,7 +222,7 @@ def test_a_proposal_repeating_a_library_threat_is_dropped_at_the_threat_threshol
         chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(proposal)
         scores = {(proposal["threat"], ADMIN_ABUSE.name): 80.0} | _TYPE_MATCHES
         found = finder(chat, FakeRerankModel(scores)).find_threats(CONTEXT)
-        return [threat.name for threat in found.threats if not threat.from_library]
+        return [threat.name for threat in found.threats if not threat_from_library(threat)]
 
     assert ai_threats() == []
     monkeypatch.setattr(get_settings(), "threat_similarity_threshold", 85.0)

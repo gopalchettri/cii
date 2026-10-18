@@ -144,3 +144,17 @@ def test_accepting_another_version_puts_the_accepted_one_back_to_pending(plans: 
         (Decision.ACCEPTED, "u1"),
     ]
     assert (record["accepted_version"], record["decision_seq"]) == (2, 2)
+
+
+def test_an_unknown_stored_status_or_decision_is_read_as_a_safe_default(plans: RemediationPlans) -> None:
+    """D7: a value no release knows (a newer one's, a hand edit) never answers 500: the status reads failed,
+    the decision pending, the plan's and a version's alike."""
+    remediation_id = _plan(
+        plans, status="paused", decision="escalated", versions=[_version(1) | {"status": "x"}]
+    )
+    status = get_remediation_status(remediation_id)
+    assert status is not None
+    assert (status.latest_status, status.decision) == (Status.FAILED, Decision.PENDING)
+    read = plans.get(fields="change", _id=remediation_id)
+    assert read is not None and read["versions"][0]["status"] == Status.FAILED
+    assert [found["status"] for found in plans.list(_id=remediation_id)] == [Status.FAILED]

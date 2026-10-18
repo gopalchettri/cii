@@ -223,6 +223,7 @@ admin_jobs = AdminJobRepository(
     ],
     ttl=[("created_at", AdminJobs.KEEP_DAYS * _DAY_SECONDS)],
     field_lists={"without_active_flag": {"active": 0}},
+    schema_version=1,
 )
 api_clients = ApiClientRepository(
     Collection.API_CLIENTS,
@@ -231,20 +232,24 @@ api_clients = ApiClientRepository(
         {"keys": "name", "unique": True, "partialFilterExpression": {"active": True}},
     ],
     field_lists={"without_key_hash": {"key_hash": 0}},
+    schema_version=1,
 )
 audit_records = AuditRepository(
     Collection.AUDIT,
     indexes=[{"keys": [("actor.entity_id", 1), ("at", -1)]}, {"keys": [("target.id", 1), ("at", -1)]}],
     ttl=[("at", Audit.KEEP_DAYS * _DAY_SECONDS)],
+    schema_version=1,
 )
 ai_calls = AiCallRepository(
     Collection.AI_CALLS,
     indexes=[{"keys": [("task_id", 1), ("prompt_hash", 1)]}],  # a retried job's earlier answer
     ttl=[("created_at", AiLimits.CALL_RECORD_DAYS * _DAY_SECONDS)],
+    schema_version=1,
 )
-query_vectors = VectorRepository(Collection.QUERY_VECTORS)
+query_vectors = VectorRepository(Collection.QUERY_VECTORS, schema_version=1)
 library_vectors = LibraryVectorRepository(
     Collection.EMBEDDINGS,
     # a row's vectors now and before; the vectors made since (count_library_vectors_made_since)
     indexes=[{"keys": [("corpus", 1), ("sources.id", 1)]}, {"keys": [("created_at", 1), ("corpus", 1)]}],
+    schema_version=1,
 )

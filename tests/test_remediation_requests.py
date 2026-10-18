@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,6 +32,7 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, NotFound
+from app.data_access.jobs.repository import DELETING_MARK
 from app.data_access.remediation.repository import remediation_plans
 from app.data_access.scenario.repository import scenario_sessions
 from app.models.library import LibraryControl
@@ -348,5 +350,24 @@ def test_a_plan_requested_as_its_run_is_deleted_never_outlives_its_scenario(
         service.plan_scenario(
             principal, PlanRequest.model_validate(generated(scenario_id, **REGISTER)), scenario
         )  # type: ignore[arg-type]
+    assert get_mongodb()[Collection.REMEDIATIONS].count_documents(generated(scenario_id)) == 0
+    assert world["sent"] == []
+
+
+def test_a_plan_requested_as_its_run_is_being_deleted_answers_409_and_is_removed(
+    world: dict[str, Any],
+) -> None:
+    """D4: the run's delete marked it before the insert: 409 run_being_deleted, as a next set answers, and no
+    plan is left for the delete's check for work to trip on."""
+    scenario_id = _scenario()
+    scenario = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})
+    marked = {"$set": {DELETING_MARK: datetime.now(UTC)}}
+    get_mongodb()[Collection.SESSIONS].update_one({"_id": scenario["session_id"]}, marked)
+    principal = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
+    with pytest.raises(Conflict) as refused:
+        _service().plan_scenario(
+            principal, PlanRequest.model_validate(generated(scenario_id, **REGISTER)), scenario
+        )  # type: ignore[arg-type]
+    assert refused.value.reason == ConflictReason.RUN_BEING_DELETED
     assert get_mongodb()[Collection.REMEDIATIONS].count_documents(generated(scenario_id)) == 0
     assert world["sent"] == []

@@ -1,12 +1,17 @@
 """tsg_remediations: one remediation plan per scenario (a unique index, race-free) with its versions, and the
 plan's guarded writes: a new version, a decision, and the plan job's version writes under its job lease."""
 
-from datetime import datetime
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
-from app.core.constants import Collection, Decision, Status
-from app.data_access.base import MongoRepository
-from app.data_access.jobs.repository import JobLease, ended_job_fields
+import structlog
+
+from app.core.constants import Collection, Decision, LogEvent, Status
+from app.core.database import get_mongodb
+from app.data_access.base import MongoRepository, Record
+from app.data_access.jobs.repository import JobLease, ended_job_fields, is_scenario_session_being_deleted
 from app.models.remediation import RemediationStatus
 from app.models.remediation_reviews import DecisionChange
 from app.models.remediation_views import RemediationSummary
@@ -49,10 +54,30 @@ _DECISION_WITH_A_NEW_VERSION = {
 }
 #: The decision stamp's fields, cleared on a version put back to pending.
 _STAMP_FIELDS = ("decided_by", "decided_by_client", "decided_at", "review_comment")
+#: What an unknown stored value is read back as (logged): a status nothing is decided on, a decision waiting.
+_SAFE_DEFAULTS: dict[str, StrEnum] = {"status": Status.FAILED, "decision": Decision.PENDING}
+
+log = structlog.get_logger(__name__)
 
 
 class RemediationPlans(MongoRepository):
     """tsg_remediations with its rules on top of the plain reads and writes."""
+
+    def get(self, fields: str | Iterable[str] | None = None, **where: Any) -> Record | None:
+        """The first plan matching `where`, its stored status and decision values read tolerantly."""
+        found = super().get(fields, **where)
+        return None if found is None else _readable(found)
+
+    def list(
+        self,
+        fields: str | Iterable[str] | None = None,
+        sort: str | Iterable[str] | None = None,
+        skip: int = 0,
+        limit: int = 0,
+        **where: Any,
+    ) -> list[Record]:
+        """Every plan matching `where`, its stored status and decision values read tolerantly."""
+        return [_readable(found) for found in super().list(fields, sort, skip, limit, **where)]
 
     def create_remediation_plan_version(
         self,
@@ -139,6 +164,38 @@ class RemediationPlans(MongoRepository):
         lease.update_job(changes | ended_job_fields(Status.DONE), [{"v.version": lease.epoch}])
 
 
+def is_plan_run_being_deleted(session_id: str) -> bool:
+    """Whether the plan's run (its tsg_sessions record) carries its delete's mark, or is gone already."""
+    return is_scenario_session_being_deleted(get_mongodb()[Collection.SESSIONS], session_id)
+
+
+def stop_remediation_plan_version(remediation_id: str, version: int) -> None:
+    """Ends `version`'s job cancelled on tsg_remediations while it still waits or runs (a regenerate that lost
+    the race with its run's delete)."""
+    now = datetime.now(UTC)
+    get_mongodb()[Collection.REMEDIATIONS].update_one(
+        {"_id": remediation_id, "job.epoch": version, "status": {"$in": [Status.QUEUED, Status.RUNNING]}},
+        {"$set": ended_job_fields(Status.CANCELLED, now) | {"updated_at": now}},
+    )
+
+
+def _readable(record: Record) -> Record:
+    """The plan with an unknown stored status or decision (its own or a version's) read back as a safe
+    default and logged, so one bad stored value never answers 500."""
+    for item in (record, *(record.get("versions") or ())):
+        for field, default in _SAFE_DEFAULTS.items():
+            if field in item and item[field] not in type(default):
+                log.warning(
+                    LogEvent.REMEDIATION_STORED_VALUE_UNKNOWN,
+                    remediation_id=record.get("_id"),
+                    field=field,
+                    value=str(item[field]),
+                    read_as=default,
+                )
+                item[field] = default
+    return record
+
+
 def _with_outcome(latest: int) -> dict[str, Any]:
     """The versions, the latest one with the record's status and error copied onto its item."""
     return {
@@ -169,4 +226,6 @@ remediation_plans = RemediationPlans(
         "summary": RemediationSummary.RECORD_FIELDS,
         "result": {"versions.snapshot": 0},
     },
+    required=("_id", "scenario_id"),
+    schema_version=1,
 )

@@ -5,10 +5,12 @@ from collections.abc import Iterator
 
 import pytest
 from pymongo import InsertOne
+from pymongo.errors import OperationFailure, WriteError
 
+from app.core.constants import Collection
 from app.core.database import get_mongodb
 from app.core.exceptions import DuplicateRecord
-from app.data_access.base import MongoRepository
+from app.data_access.base import MongoRepository, schema_version_of
 
 SCRATCH = "tsg_test_base_repository"
 
@@ -147,3 +149,55 @@ def test_bulk_write_skips_duplicates_and_keeps_order(records: MongoRepository) -
 def test_a_collection_may_be_passed_instead_of_a_name(records: MongoRepository) -> None:
     _add(records, 1)
     assert MongoRepository(get_mongodb()[SCRATCH]).count(_id="r1") == 1
+
+
+def test_create_and_save_stamp_the_schema_version_and_a_record_without_one_reads_as_1(
+    records: MongoRepository,
+) -> None:
+    records.create({"_id": "r1", "title": "first"})
+    assert records.get(_id="r1")["schema_version"] == 1
+    MongoRepository(records.collection, schema_version=2).save({"_id": "r1", "title": "again"})
+    assert schema_version_of(records.get(_id="r1")) == 2
+    assert "schema_version" not in records.get({"title": 0}, _id="r1")  # an exclusion shows what it did
+    records.collection.insert_one({"_id": "old", "title": "stored before versions"})
+    assert schema_version_of(records.get(_id="old")) == 1
+
+
+def test_the_validator_refuses_a_record_missing_a_required_field() -> None:
+    name = f"{SCRATCH}_validated"
+    get_mongodb().drop_collection(name)
+    validated = MongoRepository(get_mongodb()[name], required=("_id", "title"))
+    try:
+        validated.create_indexes()  # a new collection: created with the validator
+        validated.create_indexes()  # an existing one: collMod, idempotent
+        assert validated.create({"_id": "ok", "title": "t"}) == "ok"
+        with pytest.raises(WriteError):
+            validated.create({"_id": "no-title"})
+    finally:
+        get_mongodb().drop_collection(name)
+
+
+def test_the_start_up_validators_are_on_the_scenario_collections() -> None:
+    for collection, field in ((Collection.SESSIONS, "entity_id"), (Collection.SCENARIOS, "session_id")):
+        options = get_mongodb()[collection].options()
+        assert field in options["validator"]["$jsonSchema"]["required"], collection
+        assert (options["validationLevel"], options["validationAction"]) == ("moderate", "error")
+
+
+class _OldServer:
+    """A collection on a server that refuses collMod."""
+
+    name = "old"
+
+    def __init__(self) -> None:
+        self.database = self
+
+    def list_collection_names(self, **_: object) -> list[str]:
+        return [self.name]
+
+    def command(self, *_: object, **__: object) -> None:
+        raise OperationFailure("no such command: collMod")
+
+
+def test_a_server_refusing_the_validator_never_stops_start_up() -> None:
+    MongoRepository(_OldServer(), required=("_id",)).create_indexes()  # type: ignore[arg-type]

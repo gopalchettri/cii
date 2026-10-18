@@ -975,7 +975,7 @@ $(function () {
   var state = { sid: null, session: null, results: null, plans: null, filter: "all", frames: [] };
   var NONE = $.Deferred().resolve().promise();
   var RUNNING = function (st) { return st === "queued" || st === "running"; };   // a remediation plan's latest_status
-  // The run's status body (app/models/run_board.py): one word per stage, what to do now, the scenario numbers.
+  // The run's status body (app/services/scenario/results.py): one word per stage, what to do now, the scenario numbers.
   function prog(s) { return (s && s.progress) || {}; }
   function runActive(s) { return !!s && s.session_status === "active"; }        // a job is queued or running
   var RAIL = { PENDING: "idle", RUNNING: "running", COMPLETE: "done", ERROR: "error", CANCELLED: "idle" };  // CANCELLED: G214
@@ -1065,7 +1065,7 @@ $(function () {
   function renderAll() { renderRail(); renderMeter(); renderScenarios(); renderPlans(); refreshWalk(); }
   function scnList() { return (state.results && state.results.scenarios) || []; }
 
-  // ---------------- the scenario meter: progress.scenario_count (app/models/run_board.py) ----------------
+  // ---------------- the scenario meter: progress.scenario_count (app/services/scenario/results.py) ----------------
   function meterHtml(mini) {
     if (!state.sid) return '<div class="mtop">No session yet</div>';
     var p = prog(state.session), c = p.scenario_count || {};
@@ -1186,7 +1186,7 @@ $(function () {
     if (!$("#apiKey").val() || !$("#entityId").val()) { toast("Connection details missing", "Fill in X-API-Key and X-Entity-Id.", "warn"); return; }
     if (asset == null || isNaN(asset)) { toast("Asset id needed", "Enter the numeric asset id.", "warn"); return; }
     if (!systems.length || systems.some(isNaN)) { toast("Supporting systems needed", "Enter one or more numeric ids, comma separated.", "warn"); return; }
-    // StartRunRequest (app/models/scenarios.py): extra="forbid", so only these keys; the entity comes from X-Entity-Id.
+    // StartRunRequest (app/models/scenario/views.py): extra="forbid", so only these keys; the entity comes from X-Entity-Id.
     var body = { asset_id: asset, supporting_system_id: systems };
     var bad = false;
     $.each(opt, function (k, v) { if (v === null) return; if (isNaN(v)) bad = true; else body[k] = v; });
@@ -1239,12 +1239,12 @@ $(function () {
   // ==================== module: scenarios ====================
   // ====================================================================================
   // SCENARIOS: the review cards (accept, reject, regenerate, next set, details) on ScenarioView
-  // (app/models/scenarios.py). Private names start with "scn".
+  // (app/models/scenario/views.py). Private names start with "scn".
   // ====================================================================================
   function scnMem() { return scnMem.v || (scnMem.v = { regen: {}, busy: {}, open: {} }); }
   function scnPath(rest) { return "/v1/sessions/" + encodeURIComponent(state.sid) + rest; }
   function scnFind(id) { return scnList().filter(function (s) { return s.scenario_id === id; })[0] || null; }
-  // ScenarioView (app/models/scenario_views.py, v1's layout): the text is in `scenario`, the review in accepted/rejected_*.
+  // ScenarioView (app/models/scenario/views.py, v1's layout): the text is in `scenario`, the review in accepted/rejected_*.
   function scnText(s) { return (s && s.scenario) || {}; }
   function scnDecision(s) { return s.accepted ? "accepted" : s.rejected_at || s.rejected_by ? "rejected" : "pending"; }
   // A failed card (ScenarioStatus failed) has no decision to make; otherwise the decision is the status.
@@ -1329,36 +1329,7 @@ $(function () {
     var n = all.map(function (a) { return a.actor_name; });
     return n.length ? esc(n.join(", ")) : '<span class="faint">None linked</span>';
   }
-  // ---------- real groups (ScenarioView.known_groups, G230: a card written with external intelligence; none: nothing shown) ----------
-  var GROUP_KIND = { nation_state: "state group", cybercriminal: "criminal group", ransomware: "ransomware group", hacktivist: "hacktivist group" };
-  var GROUP_MATCH = { used_this_technique: "used this attack", used_related_technique: "used a similar attack", nearest: "closest match" };
-  // G232: why a group is near this asset, and what a source tells about place (THREAT_CONTEXT_COUNTRY).
-  var GROUP_NEAR = { targeted_country: "attacked this country", targeted_region: "attacked the region", targeted_sector: "attacked your sector" };
   var EV_SCOPE = { country: "this country", regional: "regional", global: "global" };
-  function groupWhy(g) {
-    return (GROUP_MATCH[g.match] || g.match) + (g.through ? " through " + g.through : "") + ": " + (g.technique_title || g.technique) + (g.cited ? " [" + g.cited + "]" : "");
-  }
-  function groupNear(g) {
-    return (g.relevance || []).map(function (r) { return GROUP_NEAR[r] || r; }).join(", ");
-  }
-  function groupsNote(s) {
-    return (s.known_groups || []).some(function (g) { return !g.fits_actor; }) ? "No group of this attacker type is recorded; these groups are known for this attack." : "";
-  }
-  function scnGroups(s) {
-    var l = s.known_groups || [];
-    return l.length ? '<div class="lbl">Real groups known for this attack</div><ul class="ev-list">' + l.map(function (g) {
-      var name = /^https?:\/\//i.test(g.url || "") ? '<a href="' + attr(g.url) + '" target="_blank" rel="noopener noreferrer">' + esc(g.name) + "</a>" : esc(g.name);
-      return '<li title="' + attr(g.how || "") + '"><span><b>' + name + "</b>" + (GROUP_KIND[g.kind] ? " · " + GROUP_KIND[g.kind] : "") +
-        (groupNear(g) ? " · <i>" + esc(groupNear(g)) + "</i>" : "") + "</span>" +
-        '<span class="ev-t">' + esc(groupWhy(g)) + "</span>" + (g.who ? '<span class="faint">' + esc(g.who) + "</span>" : "") + "</li>";
-    }).join("") + "</ul>" + (groupsNote(s) ? '<p class="faint">' + esc(groupsNote(s)) + "</p>" : "") : "";
-  }
-  function groupText(s) {
-    var l = s.known_groups || [];
-    return l.length ? " Real groups known for this attack: " + l.map(function (g) {
-      return g.name + (GROUP_KIND[g.kind] ? " (" + GROUP_KIND[g.kind] + ")" : "") + (groupNear(g) ? ", " + groupNear(g) : "") + ", " + groupWhy(g);
-    }).join("; ") + "." + (groupsNote(s) ? " " + groupsNote(s) : "") : "";
-  }
   // ---------- evidence (ScenarioView.evidence: what the text cites by [n], app/models/external_intelligence/evidence_view.py) ----------
   function evOf(s, n) { return (s.evidence || []).filter(function (e) { return e.n === n; })[0] || null; }
   function evRef(s, n) { return '<span class="ev-ref" tabindex="0" data-ev-scn="' + attr(s.scenario_id) + '" data-ev-n="' + n + '">' + n + "</span>"; }
@@ -1426,7 +1397,7 @@ $(function () {
                esc(s.regenerate_error.message || "") + "</div>" : "") +
              '<div class="lbl">Threat Scenario</div>' + scnClamp(id, "s", x.scenario_statement, s) + evList(s) +
              '<div class="lbl">Risk Statement</div>' + scnClamp(id, "r", x.risk_statement, s) +
-             '<div class="lbl">Threat actor</div><p>' + scnActors(s) + "</p>" + scnGroups(s) +
+             '<div class="lbl">Threat actor</div><p>' + scnActors(s) + "</p>" +
              '<div class="lbl">Supporting Systems</div>' + scnSystems(s) +
              '<div class="lbl">Controls</div>' + (scnCtlState(s) || scnChips(s));
     }
@@ -1451,8 +1422,7 @@ $(function () {
       (st === "failed" ? '<div class="callout warn"><code>' + esc((s.failure || {}).code) + "</code> " + esc((s.failure || {}).message) + "</div>" : "") +
       (st !== "failed"
         ? sec("Scenario", '<p style="white-space:pre-line">' + (x.scenario_statement ? evText(s, x.scenario_statement) : "—") + "</p>") +
-          ((s.evidence || []).length ? sec(s.evidence_mode === "nearest" ? "Closest match cited (below the relevance check)" : "Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
-          ((s.related_evidence || []).length ? sec(s.evidence_mode === "nearest" ? "Closest match found (below the relevance check, not cited)" : "Related intelligence (closest match, not cited by any sentence)", s.related_evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, false) + "</div>"; }).join("")) : "") +
+          ((s.evidence || []).length ? sec("Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
           sec("Risk", "<p>" + (x.risk_statement ? evText(s, x.risk_statement) : val(null)) + "</p>") +
           ((x.assumptions || []).length ? sec("Assumptions", ul(x.assumptions)) : "") +
           sec("Supporting systems", sys.length ? '<table class="tbl"><thead><tr><th>System</th><th>Applicable</th><th>Entry point</th><th>Reason</th></tr></thead><tbody>' +
@@ -1462,7 +1432,7 @@ $(function () {
       sec("Threat", kv([["Category", val(x.threat_category ? x.threat_category + ((x.contributing_categories || []).length ? " (also " + x.contributing_categories.join(", ") + ")" : "") : null)],
                         ["Type", val(t.threat_type)], ["Name", val(t.threat_name)],
                         ["Origin", val(t.is_threat_ai_generated ? "Proposed by the AI (gap fill, stage 2.7)" : t.threat_catalogue_id != null ? "Library threat " + t.threat_catalogue_id : null)]])) +
-      sec("Threat actor", "<p>" + scnActors(s) + "</p>" + scnGroups(s)) +
+      sec("Threat actor", "<p>" + scnActors(s) + "</p>") +
       (st !== "failed" ? sec("Checks (stages 3.6–3.7)", kv([
           ["Validation", val(s.validation_status)], ["Warnings", ul(s.validation_errors)], ["Plan-check notes", ul(s.validation_notes)],
           ["Route", val(x.route_status)]])) : "") +
@@ -2256,7 +2226,7 @@ $(function () {
             ["Body or `X-Entity-Id` invalid, or an unknown field", "422 `validation_error` with `errors[{field, message}]` — the request ends", null],
             ["Valid", "continue", "1.2"]],
       nx: ["1.2"], out: "Principal + StartRunRequest, handed to `RunService.start`.",
-      c: ["app/api/routers/scenarios.py:start_run", "app/api/dependencies.py:get_authenticated_principal", "app/models/scenarios.py:StartRunRequest"] },
+      c: ["app/api/routers/scenarios.py:start_run", "app/api/dependencies.py:get_authenticated_principal", "app/models/scenario/views.py:StartRunRequest"] },
 
     { id: "1.2", s: "1", t: "Replay an idempotent start", run: "API · `RunService.start`",
       from: ["1.1"], in: "The principal, the body and the optional `Idempotency-Key`.",
@@ -2269,7 +2239,7 @@ $(function () {
             ["Same key, different body or asset, or the key belongs to a manual run", "409 `conflict`, reason `idempotency_key_conflict`", null],
             ["No key, or a key not used yet", "continue", "1.3"]],
       nx: ["1.3"], out: "Nothing new; the request continues.",
-      c: ["app/services/scenarios/runs.py:_replay", "app/services/scenarios/runs.py:request_fingerprint"] },
+      c: ["app/services/scenario/runs.py:RunService", "app/domain/scenario/plan.py:request_fingerprint"] },
 
     { id: "1.3", s: "1", t: "Read the asset context from SQL Server", run: "API · `AssetContextRepository.read`",
       from: ["1.2"], in: "entity_id (from `X-Entity-Id`), asset_id, supporting_system_ids, service_id, sector or sub-sector id.",
@@ -2281,11 +2251,11 @@ $(function () {
       dec: [["SQL Server unreachable", "503 `unavailable` with `Retry-After: 5` — the request ends", null],
             ["Rows read", "freeze them", "1.4"]],
       nx: ["1.4"], out: "The raw rows, handed to `freeze_context`.",
-      c: ["app/data_access/scenario/runs.py:AssetContextRepository", "scripts/sql/tsg_GetAssetContext.sql"] },
+      c: ["app/data_access/library/repository.py:SqlServerRepository", "scripts/sql/tsg_GetAssetContext.sql"] },
 
     { id: "1.4", s: "1", t: "Check ownership and freeze the context", run: "API · `freeze_context`",
       from: ["1.3"], in: "The 5 result sets and the request ids.",
-      p: ["`_check_head_columns`: `id`, `name`, `category_code` must exist (else 500 `setup_error`).",
+      p: ["`_check_procedure_columns`: `id`, `name`, `category_code` must exist (else 500 `setup_error`).",
           "`_check_ownership`: no asset row → 403 `asset_not_owned`; a system not linked to the asset → 403 `system_not_linked` (with `details.system_ids`); an unknown service or sector → 404.",
           "`_check_sector`: a sector that is not the sub-sector's parent → 422.",
           "Coded columns become option names (a single-select 0 or NULL = unanswered; multi-selects are JSON id arrays); decimals → float, dates → ISO text, names whitespace-collapsed.",
@@ -2300,7 +2270,7 @@ $(function () {
             ["A required setting names a column the procedure does not return", "500 `setup_error`", null],
             ["All checks pass", "create the run record", "1.5"]],
       nx: ["1.5"], out: "The frozen context, stored as `tsg_sessions.context` in 1.5.", st: "tsg_sessions.context (not returned by the API)",
-      c: ["app/services/scenarios/context.py:freeze_context", "app/services/scenarios/property_selection.py:check_required", "app/models/asset_context.py:FrozenContext"] },
+      c: ["app/domain/scenario/plan.py:freeze_context", "app/domain/scenario/plan.py:check_required", "app/models/asset_context.py:FrozenContext"] },
 
     { id: "1.5", s: "1", t: "Create the run record (one active run per asset)", run: "API · `SessionRepository.insert_run`",
       from: ["1.4"], in: "Principal, request, request hash, frozen context.",
@@ -2311,7 +2281,7 @@ $(function () {
             ["Inserted", "announce it", "1.6"]],
       m: "The inserted run record.",
       nx: ["1.6"], out: "A queued run in `tsg_sessions`.", st: "tsg_sessions",
-      c: ["app/services/scenarios/runs.py:new_run_record", "app/data_access/scenario/runs.py:SessionRepository"] },
+      c: ["app/services/scenario/runs.py:RunService", "app/data_access/scenario/repository.py:ScenarioSessionRepository"] },
 
     { id: "1.6", s: "1", t: "Queue the job, audit, answer 202", run: "API · `_announce`",
       from: ["1.5"], in: "The new run's `_id` and `job.epoch` (1).",
@@ -2323,7 +2293,7 @@ $(function () {
       dec: [["Always", "202 with the RunBoard; the worker takes over", "2.1"]],
       nx: ["2.1"], out: "202 Accepted with the RunBoard (and header `X-Request-Id`).",
       osh: "{ session_id, entity_id, asset_id, asset_name, user_id, session_status: \"active\",\n  progress: {threats: \"PENDING\", scenarios: \"PENDING\", controls: \"PENDING\", overall: \"pending\",\n    timings: {threats: null, scenarios: null, controls: null}, error_message: {},\n    last_next_set: null, last_regen: null,\n    scenario_count: {total: null, served: 0, remaining: null, complete: false,\n                     pending_review: 0, accepted: 0, rejected: 0}},\n  updated_at }",
-      c: ["app/services/scenarios/runs.py:_announce", "app/worker/jobs.py:send_job", "app/worker/celery_app.py"] },
+      c: ["app/services/scenario/runs.py:RunService", "app/worker/celery_app.py:send_job", "app/worker/celery_app.py"] },
 
     // ------------------------------------------------------------------ STEP 2
     { id: "2.1", s: "2", t: "A worker claims the job (lease)", run: "worker · task `tsg_find_threats` (threads pool, 10 threads, prefetch 1, acks late)",
@@ -2342,7 +2312,7 @@ $(function () {
             ["A final error (`plan_refused`, `actor_library_empty`, `ai_misconfigured`, `ai_answer_unusable`)", "the run fails with that code, never retried", "X.1"],
             ["Claimed", "threat finding starts", "2.2"]],
       nx: ["2.2"], out: "The run is `running` in step `threats`.",
-      c: ["app/worker/tasks/scenarios.py:find_threats", "app/worker/jobs.py:run_leased_job", "app/data_access/job_records.py:JobLease", "app/worker/tasks/scenarios.py:plan_run"] },
+      c: ["app/worker/tasks/scenarios.py:find_threats", "app/worker/jobs.py:run_leased_job", "app/data_access/jobs/repository.py:JobLease", "app/worker/tasks/scenarios.py:plan_run"] },
 
     { id: "2.2", s: "2", t: "Take the library snapshot", run: "worker · `ThreatFinder.find_threats`",
       from: ["2.1"], in: "The frozen context; the process-wide library cache.",
@@ -2356,7 +2326,7 @@ $(function () {
       dec: [["No live threat actor", "`PlanRefused(ACTOR_LIBRARY_EMPTY)` before any AI call → the run fails `actor_library_empty`", "X.1"],
             ["Library ready", "describe the asset", "2.3"]],
       nx: ["2.3"], out: "Library snapshot + threats grouped by category. `plan.made_with` later records the models and the library hashes.",
-      c: ["app/engine/scenarios/finding/threat_finder.py:ThreatFinder", "app/search/service.py:LibrarySearch", "app/search/library_cache.py:LibraryService", "app/search/texts.py"] },
+      c: ["app/domain/scenario/plan.py:ThreatFinder", "app/search/service.py:LibrarySearch", "app/search/library_cache.py:LibraryService", "app/search/texts.py"] },
 
     { id: "2.3", s: "2", t: "Describe the asset for the AI (landscape)", run: "worker · `describe_asset_for_ai`",
       from: ["2.2"], in: "The frozen context (asset, asset_context, systems with aliases).",
@@ -2364,136 +2334,82 @@ $(function () {
           "Asset part: `ASSET: ` + JSON of {asset, asset_context, supporting_systems: []}, lead keys sector, sub_sector, critical_service, asset_priority first, cut to max(budget // 4, 400) = 7,500 characters.",
           "Each system: a head `SYS1 \"name\": ` (name ≤80) + its facts as JSON from `facts_safe_for_prompt`, which drops database keys, blanks and placeholders (n/a, none, tbd, unknown) and redacts secrets, emails and internal hosts.",
           "Each system's facts get `share = (budget − asset part − heads) // systems` characters."],
-      k: [["ThreatFinding.ASSET_SHARE_MIN_CHARS", "400", "core/constants/planner.py"], ["ThreatFinding.MIN_SYSTEM_FACT_CHARS", "150", "core/constants/planner.py"], ["ThreatFinding.SYSTEM_NAME_CHARS", "80", "core/constants/planner.py"]],
+      k: [["ThreatFinding.ASSET_SHARE_MIN_CHARS", "400", "core/constants/planning.py"], ["ThreatFinding.MIN_SYSTEM_FACT_CHARS", "150", "core/constants/planning.py"], ["ThreatFinding.SYSTEM_NAME_CHARS", "80", "core/constants/planning.py"]],
       m: "`Landscape` — the text every AI judgement in step 2 reads.",
       sh: "{ text, facts_shortened_note,\n  system_ids: {alias → id}, system_names: {alias → name},\n  sector }",
       na: ["The landscape text is not stored on the run; it survives only inside `tsg_ai_calls.prompt` for 14 days (import those records to see it)."],
       dec: [["A system's facts exceed its share and the share is below 150", "`PlanRefused(SYSTEMS_DO_NOT_FIT)` → the run fails `plan_refused`", "X.1"],
-            ["Facts longer than the share (share ≥150)", "clipped, note `FACTS_SHORTENED`", "2.4"],
-            ["Fits", "build the queries", "2.4"]],
-      nx: ["2.4"], out: "The landscape, used by 2.6, 2.7, 2.9 and 2.10.",
-      c: ["app/engine/scenarios/finding/asset_landscape.py:describe_asset_for_ai", "app/engine/shared/prompt_redaction.py:facts_safe_for_prompt"] },
+            ["Facts longer than the share (share ≥150)", "clipped, note `FACTS_SHORTENED`", "2.6"],
+            ["Fits", "judge the library threats", "2.6"]],
+      nx: ["2.6"], out: "The landscape, used by 2.6, 2.7 and 2.10.",
+      c: ["app/domain/scenario/plan.py:describe_asset_for_ai", "app/domain/shared/prompt_redaction.py:facts_safe_for_prompt"] },
 
-    { id: "2.4", s: "2", t: "Build the search queries per STRIDE category", run: "worker · `library_search_queries`",
-      from: ["2.3"], in: "The frozen context and one STRIDE category at a time (only categories with at least one library threat).",
-      p: ["Head = `{Category}. {STRIDE_DEFINITIONS[category]} {sector, sub-sector, critical service}`.",
-          "One query per supporting system plus one for the asset: the head + that part's string and string-list facts, cleaned as in 2.3 (`last_dr_test_date` excluded).",
-          "Each query is clipped to `QUERY_MAX_CHARS` 1,500; empty ones are dropped."],
-      k: [["Search.QUERY_MAX_CHARS", "1,500", "core/constants/library.py"]],
-      m: "`{category: [query text, …]}`.",
-      na: ["Query texts are never stored. `tsg_query_vectors` keeps only `{model}|sha256(text)` and the vector, for 14 days."],
-      dec: [["Always", "search the library", "2.5"]],
-      nx: ["2.5"], out: "Queries per category.",
-      c: ["app/engine/scenarios/finding/asset_landscape.py:library_search_queries"] },
-
-    { id: "2.5", s: "2", t: "Hybrid retrieval: BM25 + vector + reciprocal-rank fusion", run: "worker · `snapshot.find_threats` → `HybridIndex.search`",
-      from: ["2.4"], in: "Every category's queries; the THREAT corpus (`{type_name}: {name}` per library threat).",
-      p: ["One `find_threats(queries, top_k = 10)` call. Each query is masked to its own category's threats BEFORE each leg is cut, so out-of-scope rows never take a place.",
-          "Embedding: `embed_search_queries` (once for all queries) — key `{model}|sha256(text)` read from `tsg_query_vectors`; misses are embedded and stored; vectors are L2-normalised.",
-          "Keyword leg (`KeywordIndex`, BM25): tokenizer = replace `[^\\w\\s]` with a space, casefold, split. score = Σ idf·tf·(k1+1) / (tf + k1·(1 − b + b·len/avg_len)), idf = ln(1 + (N − df + 0.5)/(df + 0.5)). A repeated query word counts again.",
-          "Vector leg: cosine = `vectors @ query_vector`. If any in-scope row reaches `VECTOR_FLOOR` 0.60, rows below it are zeroed; if none does, every positive row stays.",
-          "Each leg ranks its positive scores best-first (`rank_best_first`, depth = top_k); a zero score never votes.",
-          "`fuse_by_rank`: RRF score = Σ 1/(60 + rank) over both legs (rank 1 in both ≈ 0.0328).",
-          "Exact-text override: a row whose tokenized text equals the tokenized query is placed first with score 1.0.",
-          "Per category, each threat keeps its best score over that category's queries, ordered `(−score, catalogue_id)`; then each shortlisted threat is appended to every other category it maps to."],
-      k: [["Search.BM25_K1", "1.5", "core/constants/library.py"], ["Search.BM25_B", "0.75", "core/constants/library.py"],
-          ["Search.VECTOR_FLOOR", "0.60", "core/constants/library.py"], ["Search.RRF_K", "60", "core/constants/library.py"],
-          ["Search.THREATS_PER_QUERY (top_k)", "10", "core/constants/library.py"]],
-      m: "Per category, an ordered shortlist of library threats (scores held in memory only).",
-      na: ["BM25, cosine and RRF scores, and the shortlist order, are computed in memory and never stored. Only with `DEBUG_STEP_OUTPUT=true` does the step `threats.search_shortlists` log a redacted preview (first 3 items).",
-           "`plan.categories[].shortlisted` keeps only the shortlist's size."],
-      dec: [["Always", "No score cut-off: retrieval only ORDERS the candidates. Every library threat of the category still reaches the gate; the order decides which batch judges it first.", "2.6"]],
-      nx: ["2.6"], out: "`{category: [LibraryThreat…]}`, the extended shortlist.", demo: "retrieval",
-      c: ["app/engine/scenarios/finding/threat_finder.py:_search_library_per_category", "app/search/snapshot.py", "app/search/indexes.py:HybridIndex",
-          "app/search/indexes.py:KeywordIndex", "app/search/indexes.py:fuse_by_rank", "app/ai/embeddings.py:EmbeddingModel"] },
-
-    { id: "2.6", s: "2", t: "Relevance gate: the AI judges every candidate", run: "worker · 6 categories at once; gate batches share a pool of 16; Redis AI slots `CII_MAX_CONCURRENT_AI_CALLS` (16)",
-      from: ["2.5"], in: "The extended shortlist, the landscape, each threat's linked actor names.",
-      p: ["`CategoryChecker.check_category`: candidates = the shortlist first, then every other library threat of the category in `catalogue_id` order (`whole_category = true`); only threats whose AssetType fits the asset or a chosen system (G211; the rest are counted in a plan note). After all six: code keeps each accepted threat only on the systems its AssetType fits (else `asset_type_mismatch`), refuses a need under every category, then gap-fills a category left empty.",
-          "`RelevanceGate.judge_library_threats` packs items `{slot: R1…, threat_type, threat (codes stripped), attackers}` into batches of at most 20 items and 48,000 prompt characters.",
+    { id: "2.6", s: "2", t: "Relevance gate: the AI judges every candidate", run: "worker · `_CategoryJudge.judge_category`, 6 categories at once; gate batches share one pool",
+      from: ["2.3"], in: "Every library threat of the category that fits the run, the landscape, each threat's linked actor names.",
+      p: ["Every library threat of the category whose AssetType fits the asset or a chosen system is judged. There is no search shortlist. After all six categories: code keeps each accepted threat only on the systems its AssetType fits (else `asset_type_mismatch`), refuses a need under every category, then gap-fills a category left empty.",
+          "`_judge` packs items `{slot: R1…, threat_type, threat (codes stripped), attackers}` into batches of `GATE_BATCH_SIZE` (10).",
           "Prompt `relevance_gate_prompt` (version `PLANNER_PROMPT_VERSION`) with the landscape; temperature 0.0. The reply must be `{verdicts: [{slot, relevant, systems, reason, impact, confidence, needs}]}`; a verdict whose `needs` is not empty is refused (`needs_unrecorded`, under every category).",
           "`_read_verdicts`: every asked slot answered exactly once; `systems` known aliases; `relevant` a boolean; `impact` HIGH/MEDIUM/LOW when relevant; `confidence` an integer 0–100; a non-empty `reason`. One problem rejects the whole batch (then the corrective re-ask, X.2).",
           "An accepted verdict: aliases → system ids, reason ≤500 chars, impact rank HIGH 3 / MEDIUM 2 / LOW 1."],
-      k: [["ThreatFinding.GATE_BATCH_MAX_ITEMS", "20", "core/constants/planner.py"], ["Batch prompt room", "48,000 chars (ThreatFinding.PROMPT_SHARE 0.8 × 60,000)", "core/constants/planner.py"],
-          ["ThreatFinding.CATEGORIES_AT_ONCE / AI_BATCHES_AT_ONCE", "6 / 16", "core/constants/planner.py"], ["Temperature", "0.0", "core/constants/ai.py"]],
+      k: [["GATE_BATCH_SIZE", "10", "domain/scenario/plan.py"], ["ThreatFinding.CATEGORIES_AT_ONCE / AI_BATCHES_AT_ONCE", "6 / 4", "core/constants/planning.py"],
+          ["Temperature", "0.0", "core/constants/common.py"]],
       m: "`CategoryFindings` per category.",
-      sh: "{ accepted: [(LibraryThreat, Verdict{systems, reason, impact, confidence})],\n  audit: { category, shortlisted, judged, whole_category, relevant, gap_fill,\n           rejected: [{threat, library_id, code: \"not_relevant\" | \"not_judged\", reason}], note } }",
+      sh: "{ accepted: [(LibraryThreat, Verdict{systems, reason, impact, confidence})],\n  audit: { category, judged_ids, gap_fill,\n           rejected: [{threat, library_id, code: \"not_relevant\" | \"not_judged\" | \"needs_unrecorded\"}] } }",
       na: ["A rejected verdict's impact, confidence and systems are not stored — only its code and reason."],
-      dec: [["A batch's answer was cut off and it has more than one item", "split in half; ask each half", "2.6"],
-            ["Unreadable, or a single item still cut off", "ask the whole batch once more (`last_try`)", "2.6"],
-            ["The last try fails too", "only THAT batch's threats are rejected `not_judged` (note `THREATS_NOT_JUDGED`); the category keeps its other verdicts, gets no gap-fill, is listed in `plan.not_assessed` (not fully assessed) and the run will end `partial`", "2.8"],
+      dec: [["A batch still unreadable or cut off after the corrective re-ask", "only THAT batch's threats are `not_judged`; the category gets no gap fill, is listed in `plan.not_assessed` and the run will end `partial`", "2.8"],
             ["`Unavailable` / a final error", "propagates to the job", "X.1"],
             ["Every candidate judged and none relevant (or the category has no library threat)", "ask the AI for a missing threat", "2.7"],
             ["At least one relevant", "consolidate the list", "2.8"]],
       nx: ["2.7", "2.8"], out: "Accepted library threats with their verdicts; the category audit.", st: "plan.categories[] and plan.threats[] (written in 2.11)",
-      c: ["app/engine/scenarios/finding/category_check.py:CategoryChecker", "app/engine/scenarios/finding/relevance_gate.py:RelevanceGate",
-          "app/engine/scenarios/finding/threat_prompts.py:relevance_gate_prompt", "app/models/planner_replies.py:RelevanceVerdict"] },
+      c: ["app/domain/scenario/plan.py:_CategoryJudge", "app/domain/scenario/plan.py:relevance_gate_prompt", "app/domain/scenario/plan.py:parse_verdict", "app/models/scenario/plan.py:RelevanceVerdict"] },
 
-    { id: "2.7", s: "2", t: "AI gap fill for an empty category", run: "worker · `propose_ai_threat`, at most once per category",
-      from: ["2.6"], in: "The category, its audit (the rejected library names), the landscape, the refused names (pending and curator-rejected).",
-      p: ["`gap_fill_prompt` lists the rejected library names that fit; up to 2 attempts, each with its own corrective re-ask.",
+    { id: "2.7", s: "2", t: "AI gap fill for an empty category", run: "worker · `_CategoryJudge.fill_gap`, at most once per category",
+      from: ["2.6"], in: "The category, its audit (the rejected library names), the landscape.",
+      p: ["Asked only when no library threat of the category applies and every one was judged. `gap_fill_prompt` lists the rejected library names; one ask with its corrective re-ask.",
           "`_read_proposal`: `applies` a boolean; when true `threat_type`, `threat`, `attacker`, `reason` required, type + threat ≤3,500 chars, systems known aliases.",
-          "Refused wording: compared by `name_match_key` with pending and curator-rejected library names.",
-          "`_repeats_a_library_threat`: a fresh hybrid search of the proposal in the category (top 10, floor 0.60), then the reranker scores it against the candidates' names (0–100).",
-          "`_judge_proposal`: the same relevance gate with one item.",
-          "`closest_type`: hybrid search of the types used in the category (no floor), then rerank.",
-          "Accepted → `_as_threat`: key `ai:{name_match_key}`, type = the matched library type; systems, impact, confidence and reason come from the gate verdict (the AI's own attacker and systems are discarded)."],
-      k: [["THREAT_SIMILARITY_THRESHOLD", "75 (setting)", "core/config.py"], ["ThreatFinding.GAP_FILL_MAX_CHARS", "3,500", "core/constants/planner.py"],
-          ["ThreatFinding.LIBRARY_MATCH_CANDIDATES", "10", "core/constants/planner.py"]],
-      m: "`audit.gap_fill` = one of `accepted`, `none_applies`, `rejected`, `redundant`, `not_assessed`, `untyped`, `previously_rejected`.",
+          "`_is_library_threat`: a hybrid search of the proposal in the category (top 10), then the reranker scores it against the candidates' names (0–100).",
+          "The same relevance gate with one item, with the attackers of the matched type.",
+          "`find_threat_types` + `_best_match`: the library type the proposal belongs to, at or above THREAT_SIMILARITY_THRESHOLD.",
+          "Accepted → `_ai_threat`: type = the matched library type; systems, impact, confidence and the attacker pick come from the gate verdict."],
+      k: [["THREAT_SIMILARITY_THRESHOLD", "75 (setting)", "core/config.py"], ["ThreatFinding.GAP_FILL_MAX_CHARS", "3,500", "core/constants/planning.py"],
+          ["ThreatFinding.LIBRARY_MATCH_CANDIDATES", "10", "core/constants/planning.py"]],
+      m: "`audit.gap_fill`: `not_assessed` when the ask could not be made or answered; otherwise zero or one AI threat.",
       na: ["The raw proposal (its attacker and systems) and the rerank scores are not stored; the proposal survives only in `tsg_ai_calls.response`."],
-      dec: [["Both attempts unreadable", "`not_assessed`, note `GAP_FILL_NOT_ASSESSED`; the category adds no threat", "2.8"],
-            ["`applies` is false", "`none_applies` (note = the AI's reason)", "2.8"],
-            ["A wording a curator rejected or still reviews", "rejected `ai_previously_rejected`", "2.8"],
-            ["Best rerank score ≥ 75 against a library threat", "`redundant`, rejected `ai_redundant`", "2.8"],
-            ["The gate says not relevant", "rejected `ai_rejected`", "2.8"],
-            ["No library type scores ≥ 75", "`untyped`, rejected `ai_untyped` (a note for a curator)", "2.8"],
-            ["Otherwise", "`accepted`: one AI threat joins the list", "2.8"]],
+      dec: [["Unreadable after the corrective re-ask", "`not_assessed`; the category adds no threat", "2.8"],
+            ["`applies` is false, or it repeats a library threat of the category", "no AI threat", "2.8"],
+            ["No library type reaches the threshold, or the gate says not relevant", "no AI threat", "2.8"],
+            ["Otherwise", "one AI threat joins the list", "2.8"]],
       nx: ["2.8"], out: "Zero or one AI threat for the category.",
-      c: ["app/engine/scenarios/finding/ai_gap_fill.py:propose_ai_threat", "app/engine/scenarios/finding/library_matcher.py:LibraryMatcher", "app/ai/rerank.py:RerankModel"] },
+      c: ["app/domain/scenario/plan.py:_CategoryJudge", "app/domain/scenario/plan.py:gap_fill_prompt", "app/ai/rerank.py:RerankModel"] },
 
     { id: "2.8", s: "2", t: "Merge identical threats and rewordings", run: "worker · `merge_same_threats`, `merge_reworded_threats`",
       from: ["2.6", "2.7"], in: "Every accepted library threat as a `PlannedThreat` (key `lib:{id}`) and every accepted AI threat (key `ai:…`).",
       p: ["`merge_same_threats`: the same key → `merge_two_threats` (categories and systems unioned, impact and confidence the max, the kept threat's reason).",
-          "An AI threat whose name key equals a library threat's: same `type_id` → folded (`same_name`); a different type → both kept, note `TYPE_CONFLICT_KEPT_APART`.",
+          "An AI threat named like a library threat of the same type is folded into it (the library record is canonical).",
           "`merge_reworded_threats` (only with at least one AI threat): labels without the asset name are embedded; an AI threat with cosine ≥0.98 to a library threat or an earlier AI threat of the same `type_id` is folded (`same_wording`). Library threats are never folded here."],
-      k: [["ThreatFinding.AI_DUPLICATE_COSINE", "0.98", "core/constants/planner.py"]],
-      m: "A shorter threat list; the folds.", sh: "folded: [{key, name, kept, reason: same_name | same_wording, score, why}]",
-      dec: [["Always", "check for the same attack described twice", "2.9"]],
-      nx: ["2.9"], out: "The de-duplicated list.", st: "plan.folded[]",
-      c: ["app/engine/scenarios/threat_list/duplicate_merge.py:merge_same_threats", "app/engine/scenarios/threat_list/duplicate_merge.py:merge_reworded_threats"] },
+      k: [["ThreatFinding.AI_DUPLICATE_COSINE", "0.98", "core/constants/planning.py"]],
+      m: "A shorter threat list.",
+      dec: [["Always", "assign attackers", "2.10"]],
+      nx: ["2.10"], out: "The de-duplicated list.",
+      c: ["app/domain/scenario/plan.py:merge_same_threats", "app/domain/scenario/plan.py:merge_reworded_threats"] },
 
-    { id: "2.9", s: "2", t: "Same-attack check (AI)", run: "worker · `SameAttackCheck.merge_same_attacks`",
-      from: ["2.8"], in: "Threats that share at least one system with another (no system = system 0, the asset).",
-      p: ["Slots `THR1..` sorted by (systems, key); batches limited by prompt room (48,000 chars), no item cap; batches of fewer than 2 are skipped; up to 16 in parallel.",
-          "`_read_group`: at least 2 known, unrepeated slots, a reason, every pair shares a system, and the same `type_id`. A partly valid answer keeps its valid groups.",
-          "The survivor (`pick_surviving_threat`): library before AI, then the lowest library id, path id, text digest. The reason is clipped to 300 chars; earlier folds are re-pointed to the survivor.",
-          "Reading of the code: two threats that share a system but fall in different batches are never compared."],
-      m: "Groups of threats folded into one survivor.",
-      dec: [["Nothing valid after the corrective re-ask", "note `SAME_ATTACK_NOT_CHECKED`, nothing folded", "2.10"],
-            ["Valid groups", "members folded (`same_attack`)", "2.10"]],
-      nx: ["2.10"], out: "The final threat list.", st: "plan.folded[] (reason same_attack)",
-      c: ["app/engine/scenarios/threat_list/same_attack_check.py:SameAttackCheck", "app/engine/scenarios/threat_list/threat_codes.py"] },
-
-    { id: "2.10", s: "2", t: "Assign attackers", run: "worker · `AttackerAssigner`, `choose_actors`",
-      from: ["2.9"], in: "Each threat (type, name, reason), the sector, the THREAT_ACTOR index, each threat type's linked actors.",
+    { id: "2.10", s: "2", t: "Assign attackers", run: "worker · `assign_attackers`, `choose_actors`",
+      from: ["2.8"], in: "Each threat (type, name, reason), the sector, the THREAT_ACTOR index, each threat type's linked actors.",
       p: ["Query `{type_name}: {name}. {reason} {sector}`; `find_actors` ranks actors with the same BM25 + vector RRF (no floor, every actor).",
-          "A threat with linked actors: the ranking orders only the linked ones; the first is `acting`, up to 3 more are `alternate` (`Actors.MAX` = 4).",
-          "No linked actor: the closest pool = actors linked to any type; with `ACTOR_SIMILARITY_THRESHOLD` = 0 (default) the top 3 by ranking are offered and the first acts, `closest: true`.",
-          "Embedding unavailable: re-raised when a threat has no linked actor; otherwise the library's name order is used (`actors_ranked: false`).",
+          "A threat with linked actors: the ranking orders only the linked ones. One attacker acts; there are no alternates.",
+          "No linked actor: the vetted pool (actors linked to any type), nearest first, flagged `closest`.",
           "G229, no AI call here: the relevance gate (2.6) already named each threat's pick from its own list, a reason and each listed actor's suitability. `choose_actors` keeps the pick; among actors rated as suitable it prefers the one acting for fewer threats so far (threats taken highest impact first).",
           "`replace_codes_with_names` turns SYSn / THRn codes back into names in every reason and note."],
-      k: [["Actors.MAX", "4", "core/constants/library.py"], ["ThreatFinding.ATTACKER_OPTIONS", "3", "core/constants/planner.py"], ["ACTOR_SIMILARITY_THRESHOLD", "0 (setting)", "core/config.py"]],
-      m: "`PlannedThreat.actors[{id, name, role: acting | alternate, closest, below_threshold}]`, `attacker_check`, `attacker_check_reason`.",
+            m: "`PlannedThreat.actors[{id, name, role: acting}]`, `closest_attacker`, `attacker_check`, `attacker_check_reason`.",
       dec: [["`chosen`", "the gate's pick acts", "2.11"], ["`balanced`", "an equally suitable, less-used actor acts", "2.11"],
             ["`none_fits`", "the nearest stays, flagged", "2.11"], ["No usable pick", "`not_checked`: the ranking decides, note `ATTACKERS_RANKED_ONLY`", "2.11"]],
-      nx: ["2.11"], out: "`ThreatFindings {threats, audits, folded, notes, library_stamp}`.",
-      c: ["app/engine/scenarios/threat_list/attacker_assignment.py:AttackerAssigner", "app/engine/scenarios/threat_list/attacker_choice.py:choose_actors"] },
+      nx: ["2.11"], out: "`ThreatFindings {threats, audits, landscape, library_stamp, category_ids}`.",
+      c: ["app/domain/scenario/plan.py:assign_attackers", "app/domain/scenario/plan.py:choose_actors", "app/domain/scenario/plan.py:ThreatFinder"] },
 
-    { id: "2.11", s: "2", t: "Rank scenarios and freeze the plan", run: "worker · `AttackPathSelector.build_plan`, then `plan_changes`",
+    { id: "2.11", s: "2", t: "Rank scenarios and freeze the plan", run: "worker · `build_plan`, then `plan_changes`",
       from: ["2.10"], in: "`ThreatFindings`; the setting `TOTAL_SCENARIO_COUNT`.",
-      p: ["Each threat becomes one planned scenario (`AttackPath`): `path_id = sha256(step keys)[:16]`, impact = the max step impact, confidence = the min.",
-          "`rank_paths` compares tuples, never a numeric score. Pass 1 (category coverage): STRIDE order, one strongest scenario per uncovered category (`category_coverage`). Pass 2 (system coverage): repeatedly the scenario adding the most new systems, until none adds one (`path_coverage`); a scenario on the asset itself waits for pass 3. Pass 3: the rest by (−impact, −confidence, tie-break) (`risk_significance`). Tie-break: library first, lowest library id, path_id, name digest.",
+      p: ["`_group_by_attack`: one planned scenario (`AttackPath`) per kind of attack (STRIDE category) per route of systems, or on the asset itself. The strongest threat no earlier group took tells it; the group's other threats are kept as `also_applies`.",
+          "`rank_paths`: impact, then confidence, then the STRIDE order, then the tie-break (library before AI, the lowest library id).",
           "`select_up_to_target(ranked, TOTAL_SCENARIO_COUNT)`: 0 (default) = every scenario; N > 0 = the top N, the rest `selected: false, unselected_reason: target_reached`. It never pads up to N.",
           "The worker adds `frozen_at` and `made_with` (chat, embedding and rerank models, library hashes).",
           "One fenced write: `plan`, `step: scenarios`, `counts.planned = counts.remaining = selected`, `timings.threats_s`, `plan_note` = \"{N} attack paths selected; 0 written, {N} still to write, set by set.\". Then `session.updated`."],
@@ -2504,29 +2420,29 @@ $(function () {
       dec: [["At least one scenario selected", "`set_and_first_batch(paths, 6)` and `hand_over(tsg_write_scenarios)`: status back to `queued`, step `scenarios`", "3.1"],
             ["Nothing selected", "`finish`: status `done`, `active: false`; `last_action.outcome` = `partial` if a category was not assessed, else `complete` — the run ends", null]],
       nx: ["3.1"], out: "A frozen plan and a queued writing job.", st: "tsg_sessions.plan (not returned by the API)",
-      c: ["app/engine/scenarios/attack_paths/path_selector.py:AttackPathSelector", "app/engine/scenarios/attack_paths/path_ranking.py:rank_paths",
-          "app/engine/scenarios/attack_paths/path_selector.py:select_up_to_target", "app/worker/tasks/scenarios.py:plan_changes"] },
+      c: ["app/domain/scenario/plan.py:build_plan", "app/domain/scenario/plan.py:rank_paths", "app/domain/scenario/plan.py:select_up_to_target", "app/worker/tasks/scenarios.py:plan_run"] },
 
     // ------------------------------------------------------------------ STEP 3
     { id: "3.1", s: "3", t: "Choose the set and the batch", run: "worker · task `tsg_write_scenarios`, queue `tsg_scenarios` (claimed as in 2.1)",
       from: ["2.11", "5.5", "3.10"], in: "`plan.paths` and the set size (6 at the start, 6 for each next set).",
       p: ["`next_set_paths(paths, size)`: selected scenarios still to write (`not served and not abandoned`), by `rank`, the first `size`.",
-          "`next_paths_to_write`: within the set, never-tried scenarios first `(attempts > 0, rank)`, at most `WRITER_BATCH` 6, each `{path_id, replaces: null}`.",
+          "`next_paths_to_write`: within the set, never-tried scenarios first `(attempts > 0, rank)`, at most `WRITER_BATCH` 4, each `{path_id, replaces: null}`.",
           "Stored on the job as `job.set` and `job.batch`."],
-      k: [["Generation.WRITER_BATCH", "6", "core/constants/runs.py"], ["INITIAL_SET_SIZE / NEXT_SET_SIZE", "6 / 6 (settings)", "core/config.py"]],
+      k: [["Generation.WRITER_BATCH", "4", "core/constants/jobs.py"], ["INITIAL_SET_SIZE / NEXT_SET_SIZE", "6 / 6 (settings)", "core/config.py"]],
       m: "`job.batch = [{path_id, replaces}]`.",
-      dec: [["An item has `replaces` (a regenerate)", "the Regenerator writes it", "5.6"], ["Otherwise", "write the batch", "3.2"]],
-      nx: ["3.2"], out: "One batch of up to 6 scenarios.",
-      c: ["app/engine/scenarios/attack_paths/path_progress.py:next_set_paths", "app/engine/scenarios/attack_paths/path_progress.py:next_paths_to_write"] },
+      dec: [["An item has `replaces` (a regenerate)", "the same write job writes a new version", "5.6"], ["Otherwise", "write the batch", "3.2"]],
+      nx: ["3.2"], out: "One batch of up to 4 scenarios.",
+      c: ["app/domain/scenario/plan.py:next_set_paths", "app/domain/scenario/plan.py:next_paths_to_write"] },
 
     { id: "3.2", s: "3", t: "Route the batch and write in parallel", run: "worker · `write_batch` → `BatchWriter.write`",
       from: ["3.1"], in: "`job.batch`, the plan's threats and scenarios, the frozen context.",
       p: ["A scenario already written (status done, not superseded) is recorded `served` with no AI call.",
-          "`write_at_once` runs each remaining scenario in a `ThreadPoolExecutor(min(6, n))`; each outcome is saved on the job's own thread as soon as it is done (3.9)."],
+          "With external intelligence on, `EvidenceAtWrite.attach` searches the evidence of each threat about to be written, once per threat; a story whose threat has no usable evidence is held back (`evidence_problem`) with no AI call.",
+          "`write_at_once` runs each remaining scenario in a thread pool; each outcome is saved on the job's own thread as soon as it is done (3.9)."],
       m: "One writing task per scenario.",
       dec: [["Scenario already written", "marked served, no AI", "3.10"], ["Otherwise", "build its brief", "3.3"]],
       nx: ["3.3"], out: "Per-scenario writing tasks.",
-      c: ["app/worker/tasks/writing.py:write_batch", "app/worker/tasks/writing.py:BatchWriter", "app/worker/path_writing.py:write_at_once"] },
+      c: ["app/worker/tasks/writing.py:BatchWriter", "app/worker/tasks/writing.py:write_at_once", "app/worker/external_intelligence/evidence_at_write.py:EvidenceAtWrite", "app/domain/scenario/write.py:evidence_problem"] },
 
     { id: "3.3", s: "3", t: "Build the writer's brief", run: "worker · `build_brief` (no AI)",
       from: ["3.2"], in: "One planned scenario's threat (category, type, name, reason, actors, systems), the frozen context, other scenarios' statements.",
@@ -2540,32 +2456,21 @@ $(function () {
             ["A threat system is not in the run's context", "`SYSTEM_NOT_IN_RUN`; abandoned", "3.9"],
             ["Brief ready", "write the draft", "3.4"]],
       nx: ["3.4"], out: "The brief.",
-      c: ["app/engine/scenarios/writing/brief_builder.py:build_brief"] },
+      c: ["app/domain/scenario/write.py:build_brief", "app/worker/path_writing.py:PathWriter"] },
 
-    { id: "3.4", s: "3", t: "Write the draft (AI)", run: "worker · `ScenarioWriter.write_scenario`",
+    { id: "3.4", s: "3", t: "Write the draft (AI)", run: "worker · `write_scenario`",
       from: ["3.3"], in: "The brief.",
       p: ["`ask_ai_and_check`, task WRITE_SCENARIO: system prompt `WRITER_SYSTEM_PROMPT` (12 rules), user text `BRIEF:` + JSON {asset, category, attacker, threat{threat_type, threat, why_it_applies}, systems, entry_point_options, other_scenarios}.",
           "`_read_draft` checks the contract: `scenario_title`, `scenario_statement`, `risk_statement` non-blank; `assumptions` a list; `entry_point` must match one option by `name_match_key`.",
           "Problems → one corrective re-ask in the same conversation (≤20 problems, each ≤200 chars)."],
       m: "A draft.", sh: "{ scenario_title, scenario_statement, risk_statement, assumptions: [], entry_point }",
       dec: [["Still unreadable or cut off", "`PathFailure(generation_failed)` — not final: retried in a later batch", "3.9"],
-            ["A usable draft", "clean it", "3.5"]],
-      nx: ["3.5"], out: "The first draft.",
-      c: ["app/engine/scenarios/writing/scenario_writer.py:ScenarioWriter", "app/engine/scenarios/writing/writing_prompts.py", "app/engine/shared/ask_ai.py:ask_ai_and_check"] },
-
-    { id: "3.5", s: "3", t: "Clean the draft (code)", run: "worker · `clean_draft`",
-      from: ["3.4", "3.8"], in: "A draft and its brief.",
-      p: ["Title: framework codes, framework names (MITRE, ATT&CK, CVE, NIST…), standards codes (ISO / IEC / ISA / IEEE / ANSI + a number) and the asset, system and attacker names are removed; dangling words trimmed. Nothing left → the cleaned threat name, then the category.",
-          "Statement and assumptions: technique codes, CAPEC-n, TID-n, GUIDs and hex strings of 32+ characters are removed unless the brief contains them; blank and repeated assumptions dropped.",
-          "Risk: the same code removal, then `lead_with_consequence` turns \"Because X, Y.\" into \"Y, because X.\".",
-          "Advisory numbers (CVE-…) are deliberately left in so the exact rules can block them."],
-      m: "The cleaned draft.",
-      dec: [["Always", "apply the exact rules", "3.6"]],
-      nx: ["3.6"], out: "The cleaned draft.",
-      c: ["app/engine/scenarios/writing/draft_cleanup.py:clean_draft"] },
+            ["A usable draft", "apply the exact rules", "3.6"]],
+      nx: ["3.6"], out: "The first draft.",
+      c: ["app/domain/scenario/write.py:write_scenario", "app/domain/scenario/write.py:writer_prompt", "app/domain/shared/ask_ai.py:ask_ai_and_check"] },
 
     { id: "3.6", s: "3", t: "Exact rules (code)", run: "worker · `check_exact_rules`",
-      from: ["3.5"], in: "The cleaned title, statement, risk and assumptions; the brief.",
+      from: ["3.4", "3.8"], in: "The draft's title, statement, risk and assumptions; the brief.",
       p: ["`unknown_id` — BLOCKER: an internal label `SYS\\d+` / `THR\\d+` the brief does not contain.",
           "`uncited_advisory_id` — BLOCKER: a CVE, ICSA, GHSA, MS or VU# number the brief does not contain.",
           "`attacker_not_named` — WARNING: the acting attacker (or half of its name) is not in the statement.",
@@ -2575,40 +2480,41 @@ $(function () {
       m: "findings[{code, severity, message}].",
       dec: [["Always", "check against the plan", "3.7"]],
       nx: ["3.7"], out: "Findings.", st: "tsg_scenarios.findings → API `validation.findings`",
-      c: ["app/engine/scenarios/writing/exact_rules.py:check_exact_rules"] },
+      c: ["app/domain/scenario/write.py:check_exact_rules"] },
 
-    { id: "3.7", s: "3", t: "Check the draft against the plan (AI)", run: "worker · `PlanChecker.check_against_plan`",
+    { id: "3.7", s: "3", t: "The reviewer checks the draft against the plan (AI)", run: "worker · `check_against_plan`",
       from: ["3.6"], in: "The draft and `PLAN:{asset, critical_service, category, attacker, threat, systems, other_systems}`.",
       p: ["Task PLAN_CHECK, temperature 0.0, `PLAN_CHECK_SYSTEM_PROMPT` (7 consistency rules); user text `PLAN:` + `SCENARIO:`."],
-      k: [["Writing.MAX_PLAN_PROBLEMS", "10", "core/constants/writing.py"]],
+      k: [["Writing.MAX_PLAN_PROBLEMS", "10", "core/constants/scenario.py"]],
       m: "`plan_check {status, problems}`.",
       dec: [["Consistent", "`status: consistent`, no problems", "3.8"],
             ["Inconsistent", "up to 10 problems (≤300 chars), also saved as NOTE findings `plan_check`", "3.8"],
             ["Unreadable or cut off", "`status: unchecked` + note `plan_check_not_made`", "3.8"],
             ["`Unavailable`", "the job retries", "X.1"]],
       nx: ["3.8"], out: "The plan-check result.",
-      c: ["app/engine/scenarios/writing/ai_plan_check.py"] },
+      c: ["app/domain/scenario/write.py:check_against_plan", "app/domain/scenario/write.py:plan_check_prompt"] },
 
     { id: "3.8", s: "3", t: "Rewrite once, keep the better draft", run: "worker · `ScenarioWriter`",
       from: ["3.7"], in: "The first draft, its findings and plan check.",
-      p: ["Problems = every finding except `plan_check_not_made` (plan-check notes do count).",
-          "No problems → keep the first draft.",
-          "Otherwise ONE rewrite: `ask_ai_again_with_problems`, task REWRITE_SCENARIO, same conversation, every problem listed; the rewrite is cleaned and checked again (3.5–3.7).",
-          "Keep the second if `_score(second) <= _score(first)`, where `_score = (blocker count, problem count)`; an unusable rewrite keeps the first."],
+      p: ["No BLOCKER → keep the first draft.",
+          "A sentence citing a source the reviewer finds unsupported is taken out (note `citation_removed`).",
+          "A BLOCKER → ONE rewrite: task REWRITE_SCENARIO, same conversation, every blocker listed; the rewrite is checked again (3.6–3.7).",
+          "Keep the rewrite when it has no more blockers than the first; an unusable rewrite keeps the first."],
       m: "The kept draft and whether it was `rewritten`.",
       dec: [["The kept draft still has a BLOCKER", "saved `blocked` (hidden, never served)", "3.9"], ["No blocker", "saved `done`", "3.9"]],
       nx: ["3.9"], out: "The draft to save.",
-      c: ["app/engine/scenarios/writing/scenario_writer.py:ScenarioWriter"] },
+      c: ["app/domain/scenario/write.py:write_scenario"] },
 
-    { id: "3.9", s: "3", t: "Save the card and update the scenario's state", run: "worker · `BatchWriter._save`, `PlanProgress.record`",
+    { id: "3.9", s: "3", t: "Save the card and update the scenario's state", run: "worker · `PathSaver.save`, `HeldScenarios.save`, `PlanProgress.record`",
       from: ["3.8", "3.3", "3.4"], in: "The kept draft, or a failure.",
       p: ["Scenario id = `uuid5(NAMESPACE_URL, tsg:{session}:{path}:{version})`.",
           "`written_record`: status `blocked` if any BLOCKER, else `done`; `source: generated`, `decision: pending`, `content{title, statement, risk_statement, why_applies, assumptions, category, contributing_categories, threat{key, type, name, library_id, ai_generated}, actors, systems[{id, name, entry_point}], route, prompt_version}`, `findings`, `plan_check`, `rewritten`. Only `done` gets `controls{status: queued}`.",
+          "Duplicate check (`HeldScenarios.save`, `duplicate_of`): a scenario telling the same threat as the same kind on the same systems, or in the same words, as another path's scenario of this run or of the asset's other runs gets the BLOCKER `near_duplicate` and is kept hidden.",
           "`save_with_unique_title`: title, then `title (qualifier)`, then `title (2)`, `(3)`… against the index `one_title_per_run_all_versions`.",
           "A failure becomes `failure_record`: status `failed`, `failure{code, message}`.",
           "The planned scenario: written → `served = id`; else `attempts + 1` and `abandoned = final or attempts ≥ 5`.",
           "`PlanProgress.record` refreshes the counts, writes `plan.paths`, `counts` and `plan_note`, then publishes `session.updated`."],
-      k: [["Generation.MAX_PATH_ATTEMPTS", "5", "core/constants/runs.py"]],
+      k: [["Generation.MAX_PATH_ATTEMPTS", "5", "core/constants/jobs.py"]],
       m: "One scenario document and the planned scenario's new state.",
       sh: "tsg_scenarios: { _id, session_id, path_id, version, source, status: done|blocked|failed,\n  decision: \"pending\", replaces, superseded_by, content{…}, findings[], plan_check,\n  rewritten, controls{status: \"queued\"} | failure{code, message} }",
       dec: [["`done`", "a visible card; its controls are queued", "3.10"],
@@ -2617,7 +2523,7 @@ $(function () {
             ["`PathNotWritable`", "failure card; the scenario is abandoned at once", "3.10"],
             ["A final job error", "the whole run fails", "X.1"]],
       nx: ["3.10"], out: "A saved card (visible in `/results` unless blocked).", st: "tsg_scenarios",
-      c: ["app/engine/scenarios/writing/scenario_record.py:written_record", "app/engine/scenarios/writing/scenario_record.py:failure_record", "app/worker/plan_progress.py:PlanProgress"] },
+      c: ["app/domain/scenario/write.py:written_record", "app/domain/scenario/write.py:failure_record", "app/domain/scenario/write.py:duplicate_of", "app/worker/path_writing.py:HeldScenarios", "app/worker/plan_progress.py:PlanProgress"] },
 
     { id: "3.10", s: "3", t: "Hand over or finish the set", run: "worker · `PlanProgress.continue_or_finish`",
       from: ["3.9", "3.2"], in: "The batch's outcomes, `job.set`, the plan's scenarios.",
@@ -2636,28 +2542,28 @@ $(function () {
       from: ["3.10", "5.6", "6.3", "4.5"], in: "The run id; scenarios whose `controls.status` is queued (or running with an expired lease).",
       p: ["Triggered by a written batch, a regenerate, the sweep, a plan job's give-back after an outage, or the previous delivery's next turn.",
           "One delivery per run at a time (lease 120 s).",
-          "`RunControls.map_all`: up to 6 scenarios per turn; `ControlLeases.claim` takes the oldest waiting scenario (status done; the newest or an accepted version) → `running`, `lease_until + 120 s`, `attempts + 1`, renewed every 30 s."],
-      k: [["Controls.PER_DELIVERY", "6", "core/constants/controls.py"], ["Controls.LEASE_SECONDS", "120", "core/constants/controls.py"]],
+          "`RunControls.map_all`: up to 4 scenarios per turn; `claim_scenario_controls` takes the oldest waiting scenario (status done; the newest or an accepted version) → `running`, `lease_until + 120 s`, `attempts + 1`, renewed every 30 s."],
+      k: [["Controls.PER_DELIVERY", "4", "core/constants/planning.py"], ["Controls.LEASE_SECONDS", "120", "core/constants/planning.py"]],
       m: "One claimed scenario at a time.",
       dec: [["A scenario claimed", "build its query", "4.2"], ["Nothing waits", "release the delivery", null]],
       nx: ["4.2"], out: "A scenario to map. While any wait, the RunBoard shows `progress.controls: RUNNING`.",
-      c: ["app/worker/tasks/controls.py:RunControls", "app/data_access/scenario/scenarios.py"] },
+      c: ["app/worker/tasks/controls.py:RunControls", "app/data_access/scenario/repository.py:ScenarioControlsRepository"] },
 
     { id: "4.2", s: "4", t: "Allowed control types and the query", run: "worker · `ControlMapper.map_controls`",
       from: ["4.1"], in: "The scenario content, the asset and its systems' `category_code`.",
       p: ["An empty control library → `ControlsNotMapped(control_library_empty)`.",
           "Allowed AssetTypes (`place_asset_types`, G211) = `COMPATIBLE_ASSET_TYPES` over the scenario's own systems' category codes, or the asset's when it is on the asset itself or no system code is recorded: IT → {IT, IT\\OT}; OT → {OT, IT\\OT}; IT\\OT → all three (G211: IT\\OT is both; IT-OT is not a value). A control with no type, or a value that is not a type, always fits.",
           "`control_query` (G227): a head (`Category:`, `Threat: {type}: {name}`, `Attacker:`, `Title:`, `Asset: name (type)`), then each system (`System {name}: facts`), `Asset facts:`, `Scenario:`, `Risk:`; redacted. The room left after the head (4,000 chars in all) is shared fairly: a part shorter than its share stays whole, the longest are shortened, none is dropped; the shortened parts are recorded in `made_with.query_shortened`."],
-      k: [["Controls.QUERY_MAX_CHARS", "4,000", "core/constants/controls.py"]],
+      k: [["Controls.QUERY_MAX_CHARS", "4,000", "core/constants/planning.py"]],
       m: "The query text and the allowed-type mask.",
       dec: [["Library empty", "failed `control_library_empty`", "4.5"], ["OK", "search", "4.3"]],
       nx: ["4.3"], out: "Query + mask.", st: "tsg_scenarios.controls.query (not returned by the API)",
-      c: ["app/engine/scenarios/control_mapper.py:ControlMapper", "app/engine/scenarios/control_query.py:control_query", "app/core/constants/controls.py"] },
+      c: ["app/domain/scenario/controls.py:ControlMapper", "app/domain/scenario/controls.py:control_query", "app/core/constants/planning.py"] },
 
     { id: "4.3", s: "4", t: "Hybrid shortlist of CONTROL_CANDIDATES controls", run: "worker · `snapshot.find_controls` → `HybridIndex.search`",
       from: ["4.2"], in: "The query, the allowed-type mask, the CONTROL corpus (`{name}: {description}`).",
       p: ["`find_controls([query], CONTROL_CANDIDATES, allowed)` (from the env file only, G249; at least MAX_CONTROLS, checked at start-up).",
-          "The same search as 2.5: BM25 (1.5 / 0.75) + cosine with floor 0.60 + RRF (k 60), each leg cut to CONTROL_CANDIDATES, exact-text override."],
+          "The hybrid search (X.4): BM25 + cosine with floor 0.60 + RRF (k 60), each leg cut to CONTROL_CANDIDATES, exact-text override."],
       k: [["CONTROL_CANDIDATES", "set in .env (required)", ".env (setting, G227, G249)"]],
       m: "Up to CONTROL_CANDIDATES candidate controls (scores in memory).",
       na: ["The shortlist and its BM25 / cosine / RRF scores are never stored."],
@@ -2677,32 +2583,32 @@ $(function () {
       na: ["Rerank scores of the controls below the cut-off are not stored."],
       dec: [["Always", "save", "4.5"]],
       nx: ["4.5"], out: "The scenario's mapped controls.",
-      c: ["app/engine/scenarios/control_mapper.py:ControlMapper", "app/engine/scenarios/control_selection.py:select_controls", "app/ai/rerank.py:RerankModel"] },
+      c: ["app/domain/scenario/controls.py:ControlMapper", "app/domain/scenario/controls.py:select_controls", "app/ai/rerank.py:RerankModel"] },
 
-    { id: "4.5", s: "4", t: "Save, retry and sweep", run: "worker · `controls_record`, `ControlLeases.finish`; beat task `tsg_retry_controls`",
+    { id: "4.5", s: "4", t: "Save, retry and sweep", run: "worker · `controls_record`, `update_scenario_controls`; beat task `tsg_retry_controls`",
       from: ["4.4", "4.2", "4.3"], in: "The kept controls, or an error.",
       p: ["`controls_record` → `controls{status: done, items, warning, query, made_with{rerank_model, embedding_model, library, threshold}, mapped_at}`.",
           "After each scenario: the counts are refreshed (`controls_waiting`) and `session.updated` is published; after 6 the delivery is handed over; nothing waiting → released.",
           "The sweep `tsg_retry_controls` (every 300 s) re-queues mappings queued for more than 600 s, running with an expired lease, or failed with `last_attempt_at` older than 1,800 s. There is no final \"exhausted\" state."],
-      k: [["Controls.SWEEP_EVERY_SECONDS", "300", "core/constants/controls.py"], ["Controls.RETRY_FAILED_AFTER_SECONDS", "1,800", "core/constants/controls.py"]],
+      k: [["Controls.SWEEP_EVERY_SECONDS", "300", "core/constants/planning.py"], ["Controls.RETRY_FAILED_AFTER_SECONDS", "1,800", "core/constants/planning.py"]],
       m: "`controls` on the scenario.",
       dec: [["`ControlsNotMapped`", "`controls.status: failed`, `error{code, message}`; the sweep retries after 30 min", "4.1"],
             ["A temporary outage", "given back: failed after 5 attempts, else queued `unavailable`; Celery retries after 15/30/60/120 s", "X.1"],
             ["A final job error", "the scenario fails; not retried", "X.1"],
             ["Mapped", "the card is complete for review and planning", "5.1"]],
       nx: ["5.1"], out: "API `controls_status` and `controls[control_id, control_code, itot, domain, control_name, control_description, map_rank, score, match_type, match_reason]` on each ScenarioView.", st: "tsg_scenarios.controls",
-      c: ["app/engine/scenarios/control_mapper.py:controls_record", "app/data_access/scenario/scenarios.py:ControlSweep", "app/worker/tasks/controls.py"] },
+      c: ["app/domain/scenario/controls.py:controls_record", "app/data_access/scenario/repository.py:ScenarioControlsRepository", "app/worker/tasks/controls.py:retry_controls"] },
 
     // ------------------------------------------------------------------ STEP 5
     { id: "5.1", s: "5", t: "Read the results", run: "API · GET routes",
       from: ["3.10", "4.5"], in: "The session id.",
       p: ["`GET /v1/sessions/{id}/results?include_replaced&offset&limit` (limit 50 by default, max 500): current versions (the newest, or one already decided), never blocked, oldest first.",
-          "`ScenarioView` (v1's results format, G267: v1's fields in v1's order, then v2's own; a failure card has `scenario: null`, its reason in `validation_errors`; `include_replaced=true` nests the path's older versions in `replaced_scenarios`; v1's `replaces_accepted_version`, `generation_epoch`, `scenario_number`, `gen_*`, `library`, `controls_mapped`/`controls_mapping_exhausted`, `scope`, `actor`, `threat_source`, `review_flags`, `control_match_status`): `scenario{threat_category, contributing_categories, threat_type, threat_name, supporting_systems_involved[supporting_system_id, supporting_system, is_entry_point, justification, is_applicable], scenario_title, scenario_statement (statement + \"Why this threat applies: \" + why_applies), risk_statement, assumptions, route_status}`, `threat{threat_id, threat_type, threat_name, threat_catalogue_id, is_threat_ai_generated, grounding_score, scope_rank, …}`, `actors[actor_id, actor_name, role, closest_match, below_threshold, selection, selection_reason]`, `known_groups[name, attack_id, url, kind, who, match, fits_actor, technique, technique_title, through, how, cited]` (G230, intelligence on), `controls_status`, `controls[]`, `accepted`, `accepted_by/at`, `rejected_by/at`, `validation_status: ok | warning`, `validation_errors` (warnings), `validation_notes` (plan check), `scenario_source`, `replaced_scenarios`, `replaced_by`, version, failure, regenerate_error.",
-          "`GET /v1/sessions/{id}` → RunBoard (`session_status`, `progress`); its numbers come from the counts `RunCounts.refresh` recomputes (current versions, never blocked)."],
+          "`ScenarioView` (v1's results format, G267: v1's fields in v1's order, then v2's own; a failure card has `scenario: null`, its reason in `validation_errors`; `include_replaced=true` nests the path's older versions in `replaced_scenarios`; v1's `replaces_accepted_version`, `generation_epoch`, `scenario_number`, `gen_*`, `library`, `controls_mapped`/`controls_mapping_exhausted`, `scope`, `actor`, `threat_source`, `review_flags`, `control_match_status`): `scenario{threat_category, contributing_categories, threat_type, threat_name, supporting_systems_involved[supporting_system_id, supporting_system, is_entry_point, justification, is_applicable], scenario_title, scenario_statement (statement + \"Why this threat applies: \" + why_applies), risk_statement, assumptions, route_status}`, `threat{threat_id, threat_type, threat_name, threat_catalogue_id, is_threat_ai_generated, grounding_score, scope_rank, …}`, `actors[actor_id, actor_name, role, closest_match, below_threshold, selection, selection_reason]`, `evidence[]` (intelligence on), `controls_status`, `controls[]`, `accepted`, `accepted_by/at`, `rejected_by/at`, `validation_status: ok | warning`, `validation_errors` (warnings), `validation_notes` (plan check), `scenario_source`, `replaced_scenarios`, `replaced_by`, version, failure, regenerate_error.",
+          "`GET /v1/sessions/{id}` → RunBoard (`session_status`, `progress`); its numbers come from the counts `count_scenarios_of_session` recomputes (current versions, never blocked); `build_board` builds it."],
       m: "`RunResults {session_id, entity_id, asset_id, asset_name, user_id, progress, scenarios, total}`.",
       dec: [["Decide cards", "accept or reject", "5.2"], ["Want more scenarios", "next set", "5.5"], ["A card is weak", "regenerate", "5.6"]],
       nx: ["5.2", "5.5", "5.6"], out: "What the reviewer sees.",
-      c: ["app/api/routers/scenarios.py", "app/models/scenario_views.py:ScenarioView", "app/models/run_board.py", "app/data_access/scenario/scenarios.py:RunCounts"] },
+      c: ["app/api/routers/scenarios.py", "app/services/scenario/results.py:build_scenario_view", "app/services/scenario/results.py:build_board", "app/models/scenario/views.py:ScenarioView"] },
 
     { id: "5.2", s: "5", t: "The review gate", run: "API · `check_review_open`",
       from: ["5.1"], in: "The run's status and step; the request body.",
@@ -2714,7 +2620,7 @@ $(function () {
       dec: [["Run queued or running", "409 `generation_in_progress`", null], ["Run failed in step threats", "409 `run_failed`", null],
             ["Accept", "", "5.3"], ["Reject", "", "5.4"]],
       nx: ["5.3", "5.4"], out: "The decision request goes on.",
-      c: ["app/services/scenarios/review.py:check_review_open"] },
+      c: ["app/domain/scenario/review.py:check_review_open"] },
 
     { id: "5.3", s: "5", t: "Accept", run: "API · `POST /v1/sessions/{id}/accept`",
       from: ["5.2"], in: "`{scenario_ids: [..] | \"all\", replace_accepted: false}`",
@@ -2726,7 +2632,7 @@ $(function () {
       m: "`AcceptResult`.", sh: "{ accepted: [], replaced: [], skipped: [{scenario_id, reason}], controls_pending: [] }",
       dec: [["Accepted", "the scenario can get a remediation plan", "6.1"], ["Refused id(s)", "409 with the reasons", null]],
       nx: ["6.1"], out: "Accepted scenarios (`accepted: true`, `accepted_by`, `accepted_at`).",
-      c: ["app/services/scenarios/review.py:ReviewService", "app/engine/scenarios/review_checks.py:why_ids_cannot_be_decided"] },
+      c: ["app/services/scenario/review.py:ReviewService", "app/domain/scenario/review.py:why_ids_cannot_be_decided"] },
 
     { id: "5.4", s: "5", t: "Reject", run: "API · `POST /v1/sessions/{id}/scenarios/reject`",
       from: ["5.2"], in: "`{scenario_ids: [1..50]}`",
@@ -2736,11 +2642,11 @@ $(function () {
       m: "`RejectResult {rejected[], skipped[]}`.",
       dec: [["Rejected", "a fresh version can still be regenerated", "5.6"], ["Nothing else", "the card stays rejected", null]],
       nx: ["5.6"], out: "Rejected scenarios.",
-      c: ["app/services/scenarios/review.py:ReviewService"] },
+      c: ["app/services/scenario/review.py:ReviewService"] },
 
     { id: "5.5", s: "5", t: "Generate the next set", run: "API · `POST /v1/sessions/{id}/scenarios/next-set`, then the worker",
       from: ["5.1"], in: "No body; the plan's scenarios.",
-      p: ["`next_set(paths, NEXT_SET_SIZE 6)` (path_progress, G268): the next open paths; none open, the ones given up for an outside cause, tried again (G265). One rule with `counts.remaining`.",
+      p: ["`RunActions.next_set` takes the next NEXT_SET_SIZE open paths (`set_and_first_batch`, G268); none open, the ones given up for an outside cause, tried again (G265). One rule with `counts.remaining`.",
           "`queue_again`: one conditional update (status done or failed, step scenarios, the epoch unchanged) → `status: queued`, `active: true`, epoch + 1, `last_action {kind: next_set, outcome: running}`.",
           "202 `{session_id, user_id, status: generating | mapping_controls, epoch}` (v1's shape, G268)."],
       m: "A queued writing job.",
@@ -2749,31 +2655,32 @@ $(function () {
             ["The run changed meanwhile", "409 `generation_in_progress`", null],
             ["Queued", "the writer runs again", "3.1"]],
       nx: ["3.1"], out: "`{session_id, user_id, status, epoch}`; RunBoard `session_status: active`, `progress.scenarios: RUNNING`, `progress.last_next_set {outcome: running, requested, epoch}`; when the set ends `{outcome, requested, delivered, reason, remaining, epoch}` (G268: `reason` is the 409 the next click gets when nothing is left).",
-      c: ["app/services/scenarios/run_actions.py:next_set", "app/data_access/scenario/runs.py:RunActionRecords", "app/engine/scenarios/attack_paths/path_progress.py:why_no_path_left"] },
+      c: ["app/services/scenario/runs.py:RunActions", "app/domain/scenario/plan.py:set_and_first_batch", "app/domain/scenario/plan.py:why_no_path_left"] },
 
-    { id: "5.6", s: "5", t: "Regenerate scenarios", run: "API · `POST /v1/sessions/{id}/regenerate/scenarios`, then `Regenerator`",
+    { id: "5.6", s: "5", t: "Regenerate scenarios", run: "API · `POST /v1/sessions/{id}/regenerate/scenarios`, then the write job",
       from: ["5.1", "5.4", "3.1"], in: "`{scenario_ids}`",
       p: ["`why_ids_cannot_be_regenerated`: `unknown`, `failure_scenario`, `hand_written`, `version_not_current`, `duplicate_version` → 409 `scenarios_not_regenerable`. Any decision state may be regenerated.",
           "The batch `[{path_id, replaces: scenario_id}]` is queued with `queue_again` (`last_action.kind: regenerate`).",
-          "`Regenerator` heals first (a successor already saved supersedes the old version with no AI call), then writes the rest (3.3–3.8) with `other_scenarios` = every done statement of the scenario.",
+          "The write job (3.2) heals first (a successor already saved supersedes the old version with no AI call), then writes the rest (3.3–3.9) with `other_scenarios` = every done statement of the scenario.",
           "Blocked → saved hidden, the old version gets `regenerate_error{code: scenario_blocked}`; failure → `regenerate_error`; success → the new version is saved (`replaces` = old id), the old one gets `superseded_by`.",
           "Outcome `complete` if every target got its new version, else `partial`; attempts never increase."],
       m: "New scenario versions.",
       dec: [["A new version saved", "its controls are mapped", "4.1"], ["The old version was accepted", "accept the new one with `replace_accepted`", "5.3"],
             ["Refused id(s)", "409 `scenarios_not_regenerable`", null]],
       nx: ["4.1", "5.3"], out: "Version n + 1 of the scenario.",
-      c: ["app/services/scenarios/run_actions.py", "app/worker/regenerator.py:Regenerator", "app/engine/scenarios/review_checks.py:why_ids_cannot_be_regenerated"] },
+      c: ["app/services/scenario/runs.py:RunActions", "app/domain/scenario/review.py:why_ids_cannot_be_regenerated", "app/worker/tasks/writing.py:BatchWriter", "app/worker/path_writing.py:PathSaver"] },
 
     { id: "5.7", s: "5", t: "Promote an AI threat to the library", run: "API · `POST /v1/sessions/{id}/scenarios/{sid}/promote-to-library`",
       from: ["5.3"], in: "An accepted scenario whose threat the AI proposed (gap fill, 2.7).",
       p: ["The scenario must be in the run (404) and accepted (409 `scenario_not_accepted`); its `content.threat` must be AI-generated with a key found in the frozen plan, else 409 `nothing_to_promote`.",
           "The in-memory library answers first by normalised name (`library_threats_named`): a live or pending threat → `existing`.",
           "Otherwise `propose_threat`: the SQL procedure re-checks under a lock and inserts a pending (inactive) row → `inserted`; a curator approves or rejects it later. Accepting a scenario never does this.",
+          "The call runs through the operation record `promote:{scenario_id}` (X.6): a retry gets the stored answer, or replays the same parameters.",
           "First call only: `record_promotion` + audit `library.promoted`; a repeat is quiet."],
       m: "`PromotionResult`.", sh: "{ scenario_id, results: [{threat, threat_type, threat_type_id, threat_catalogue_id, outcome: inserted | existing}] }",
       dec: [["SQL Server down", "503; nothing recorded", null], ["Done", "a pending library row a curator reviews", null]],
       nx: [], out: "A pending library threat (or the existing one).",
-      c: ["app/services/scenarios/promotion.py:LibraryPromotion"] },
+      c: ["app/services/library_curation.py:LibraryPromotion", "app/data_access/library/repository.py:SqlServerRepository"] },
 
     // ------------------------------------------------------------------ STEP 6
     { id: "6.1", s: "6", t: "Request a remediation plan", run: "API · `POST /v1/remediation` → `PlanRequestService.request`",
@@ -2803,7 +2710,7 @@ $(function () {
       m: "A manual run + an accepted scenario.",
       dec: [["Replay", "200 with the earlier PlanStarted, `replayed: true`", null], ["Saved", "build the snapshot", "6.2"]],
       nx: ["6.2"], out: "An accepted, hand-written scenario.",
-      c: ["app/services/remediation/manual.py:ManualPlans", "app/services/remediation/manual_scenarios.py", "app/engine/remediation/threat_identity.py", "app/engine/remediation/manual_records.py"] },
+      c: ["app/services/remediation/manual.py:ManualPlans", "app/services/remediation/manual_scenarios.py", "app/domain/remediation/threat_identity.py", "app/domain/remediation/manual_records.py"] },
 
     { id: "6.2", s: "6", t: "Snapshot, register half", run: "API · `register_half`",
       from: ["6.1", "6.M"], in: "The register data.",
@@ -2815,7 +2722,7 @@ $(function () {
       m: "The register half of the snapshot.",
       dec: [["Contradictory references", "422", null], ["OK", "make sure the controls are mapped", "6.3"]],
       nx: ["6.3"], out: "`existing_controls.register_controls`, `risk_assessment`, `register`, advisories.",
-      c: ["app/engine/remediation/register.py:register_half", "app/engine/remediation/references.py:resolve_controls"] },
+      c: ["app/domain/remediation/register.py:register_half", "app/domain/remediation/references.py:resolve_controls"] },
 
     { id: "6.3", s: "6", t: "Missing inputs: left to the plan job", run: "API · `SnapshotMaker.make` (no AI call) → worker · `PlanInputs.complete`",
       from: ["6.2"], in: "The scenario's `controls` and, for a hand-written one, its `pending` attackers.",
@@ -2823,7 +2730,7 @@ $(function () {
           "Controls mapped and attackers known: the snapshot is built now (6.4). Else the version gets a PENDING snapshot (the register half only) and the answer is still 202 at once.",
           "The plan job then ranks a hand-written scenario's attackers (and proposes its new wording), maps missing controls under the scenario's control lease (waiting for the controls job's mapping when it holds the lease, and using it), saves the full snapshot on the version, then plans.",
           "No control of the scenario's asset type: the nearest of another type is kept, flagged (owner 2026-10-15)."],
-      k: [["Controls.PLAN_WAIT_POLL_SECONDS", "5", "core/constants/controls.py"], ["Controls.LEASE_SECONDS", "120", "core/constants/controls.py"]],
+      k: [["Controls.PLAN_WAIT_POLL_SECONDS", "5", "core/constants/planning.py"], ["Controls.LEASE_SECONDS", "120", "core/constants/planning.py"]],
       m: "A complete snapshot, now or in the plan job.",
       dec: [["Empty control library", "409 `control_library_empty` at the request (in memory)", null],
             ["The controls job holds the lease", "the plan job waits for it and uses its result; still held after the lease → retried later", "4.1"],
@@ -2841,7 +2748,7 @@ $(function () {
       na: ["The snapshot is never returned by the API (`versions[].snapshot` is excluded from every read)."],
       dec: [["Always", "create the record", "6.5"]],
       nx: ["6.5"], out: "The snapshot.", st: "tsg_remediations.versions[].snapshot",
-      c: ["app/engine/remediation/snapshot.py:build_snapshot"] },
+      c: ["app/domain/remediation/snapshot.py:build_snapshot"] },
 
     { id: "6.5", s: "6", t: "Create the plan record and queue the job", run: "API · `new_plan_record`, `_announce`",
       from: ["6.4"], in: "The snapshot, the register, the scenario ids.",
@@ -2850,7 +2757,7 @@ $(function () {
       m: "A queued plan record.",
       dec: [["Always", "202; the worker takes over", "6.6"]],
       nx: ["6.6"], out: "202 `PlanStarted` (keep session_id + scenario_id: they address the plan from now on).", osh: "{ remediation_id, session_id, scenario_id, version: 1, status: \"queued\", is_manual, replayed: false }", st: "tsg_remediations",
-      c: ["app/services/remediation/requests.py:new_plan_record", "app/services/remediation/requests.py:PlanRequestService"] },
+      c: ["app/domain/remediation/plan_rules.py:new_plan_record", "app/services/remediation/requests.py:PlanRequestService"] },
 
     { id: "6.6", s: "6", t: "A worker claims the plan job", run: "worker · task `tsg_write_plan(record_id, epoch = version)`",
       from: ["6.5", "7.3"], in: "The Celery message.",
@@ -2869,7 +2776,7 @@ $(function () {
       m: "The AI's draft plan (judgement only: what, who, how urgent, how long, what it waits for — never dates).",
       dec: [["Unreadable after the re-ask, or cut off", "fails `generation_failed`", "X.1"], ["A valid draft", "code finishes it", "6.8"]],
       nx: ["6.8"], out: "PlanDraft.",
-      c: ["app/engine/remediation/planner.py", "app/engine/remediation/prompts.py:plan_prompt", "app/models/remediation.py:PlanDraft"] },
+      c: ["app/domain/remediation/planner.py", "app/domain/remediation/prompts.py:plan_prompt", "app/models/remediation.py:PlanDraft"] },
 
     { id: "6.8", s: "6", t: "Finish the plan (code)", run: "worker · `finish`, `_library_controls`",
       from: ["6.7"], in: "The draft and the snapshot.",
@@ -2880,7 +2787,7 @@ $(function () {
       m: "The plan with library-stamped controls and warnings.",
       dec: [["No action", "`invalid_plan`", "X.1"], ["OK", "schedule it", "6.9"]],
       nx: ["6.9"], out: "The plan, ready to schedule.",
-      c: ["app/engine/remediation/planner.py"] },
+      c: ["app/domain/remediation/planner.py"] },
 
     { id: "6.9", s: "6", t: "Schedule: offsets, critical path, dates (code)", run: "worker · `scheduler.schedule` (pure, by action POSITION)",
       from: ["6.8"], in: "`remediation_action_plan[]` (duration_days, depends_on, dependencies) and the window from `risk_assessment.assessment_window`.",
@@ -2894,7 +2801,7 @@ $(function () {
       m: "Each action's start, finish, dates and timeline sentence.",
       dec: [["Always", "check the schedule and save", "6.10"]],
       nx: ["6.10"], out: "A dated plan.", demo: "schedule",
-      c: ["app/engine/remediation/scheduler.py:schedule", "app/engine/remediation/scheduler.py:_offsets", "app/engine/remediation/scheduler.py:_critical_path"] },
+      c: ["app/domain/remediation/scheduler.py:schedule", "app/domain/remediation/scheduler.py:_offsets", "app/domain/remediation/scheduler.py:_critical_path"] },
 
     { id: "6.10", s: "6", t: "Schedule checks and save", run: "worker · `schedule_warnings`, `write_version`",
       from: ["6.9"], in: "The dated plan and the computed schedule.",
@@ -2904,7 +2811,7 @@ $(function () {
       m: "A finished version.",
       dec: [["Always", "ready for a decision", "7.1"]],
       nx: ["7.1"], out: "`latest_status: done`, `progress.overall: awaiting_review`.", st: "tsg_remediations.versions[]",
-      c: ["app/engine/remediation/schedule_checks.py:schedule_warnings", "app/worker/tasks/remediation.py:write_version"] },
+      c: ["app/domain/remediation/schedule_checks.py:schedule_warnings", "app/worker/tasks/remediation.py:write_version"] },
 
     // ------------------------------------------------------------------ STEP 7
     { id: "7.1", s: "7", t: "Read the plan", run: "API · GET /v1/sessions/{id}/scenarios/{id}/treatment-plan…",
@@ -2928,7 +2835,7 @@ $(function () {
       dec: [["Accepted", "FINAL OUTPUT: RemediationResult with `accepted_version` — the scenario's treatment plan", null],
             ["Rejected", "regenerate for a new version", "7.3"]],
       nx: ["7.3"], out: "The end of the flow: an accepted, dated remediation plan for an accepted threat scenario.",
-      c: ["app/services/remediation/decisions.py:PlanDecisions", "app/engine/remediation/decisions.py"] },
+      c: ["app/services/remediation/decisions.py:PlanDecisions", "app/domain/remediation/decisions.py"] },
 
     { id: "7.3", s: "7", t: "Regenerate a plan", run: "API · `POST …/treatment-plan/regenerate`",
       from: ["7.1", "7.2"], in: "`{}` (any field → 422).",
@@ -2939,7 +2846,7 @@ $(function () {
       m: "A queued new version.",
       dec: [["Queued", "the worker writes it", "6.6"], ["Refused", "409", null]],
       nx: ["6.6"], out: "Version n + 1 (earlier versions stay in `versions[]`).",
-      c: ["app/services/remediation/regenerate.py:PlanRegeneration", "app/data_access/remediation_versions.py"] },
+      c: ["app/services/remediation/regenerate.py:PlanRegeneration", "app/data_access/remediation/repository.py:RemediationPlans"] },
 
     // ------------------------------------------------------------------ SHARED
     { id: "X.1", s: "X", t: "Job lease, retry and reaper", run: "every worker job (`run_leased_job`) + beat task reaper (every 60 s)",
@@ -2954,10 +2861,10 @@ $(function () {
       m: "A retry, or a final failure.",
       dec: [["Retry", "the same stage runs again from its start", null], ["Final failure", "the run or plan version ends `failed`; the error is in the RunBoard's `progress.error_message` / RemediationStatus", null]],
       nx: [], out: "RunBoard `session_status: failed`, `progress.error_message {stage: why}` (or RemediationStatus `latest_status: failed`).",
-      c: ["app/worker/jobs.py:run_leased_job", "app/data_access/job_records.py:JobLease", "app/worker/reaper.py", "app/worker/heartbeat.py"] },
+      c: ["app/worker/jobs.py:run_leased_job", "app/data_access/jobs/repository.py:JobLease", "app/worker/reaper.py", "app/worker/heartbeat.py"] },
 
-    { id: "X.2", s: "X", t: "One AI chat call", run: "every chat task (relevance_gate, gap_fill, same_attack, write_scenario, rewrite_scenario, plan_check, remediation_plan)",
-      from: ["2.6", "2.7", "2.9", "2.10", "3.4", "3.7", "3.8", "6.7"], in: "A task, a prompt, an answer checker.",
+    { id: "X.2", s: "X", t: "One AI chat call", run: "every chat task (relevance_gate, gap_fill, write_scenario, rewrite_scenario, plan_check, remediation_plan)",
+      from: ["2.6", "2.7", "3.4", "3.7", "3.8", "6.7"], in: "A task, a prompt, an answer checker.",
       p: ["`ask_ai_and_check` → one ask, then ONE corrective re-ask in the same conversation listing ≤20 problems (≤200 chars each). Still bad → `UnreadableAiAnswer`.",
           "A prompt above 60,000 chars → `TruncatedAiAnswer` before any call; `finish_reason == length` → `TruncatedAiAnswer`.",
           "Request: `max_tokens` 12,288, JSON object response, `reasoning_effort: none`, temperature per task.",
@@ -2967,7 +2874,7 @@ $(function () {
       m: "A checked JSON answer, or an error.", sh: "tsg_ai_calls: { created_at, task, model, outcome, record_id (session or remediation id),\n  request_id, prompt (messages), response, tokens_in, tokens_out, seconds }",
       dec: [["Answer valid", "back to the calling stage", null], ["Unreadable / cut off", "the calling stage's own branch", null], ["Unavailable", "job back-off", "X.1"]],
       nx: [], out: "The answer; a `tsg_ai_calls` record (not exposed by the API — import it).",
-      c: ["app/engine/shared/ask_ai.py:ask_ai_and_check", "app/ai/chat.py", "app/ai/common.py:call_with_retries", "app/data_access/ai_calls.py"] },
+      c: ["app/domain/shared/ask_ai.py:ask_ai_and_check", "app/ai/chat.py", "app/ai/common.py:call_with_retries", "app/data_access/admin/repository.py:AiCallRepository"] },
 
     { id: "X.3", s: "X", t: "Live status and SSE", run: "API · `GET /v1/sessions/{id}/events`, `GET /v1/sessions/{id}/scenarios/{id}/treatment-plan/events`",
       from: ["2.1", "2.11", "3.9", "4.5", "5.3", "6.10", "7.2"], in: "A publish: Redis channel `tsg:events:session:{id}` carrying only the record id (best effort).",
@@ -2982,19 +2889,49 @@ $(function () {
       c: ["app/realtime/publisher.py:publish_session_status", "app/realtime/event_hub.py", "app/api/routers/events.py:_status_stream"] },
 
     { id: "X.4", s: "X", t: "The hybrid search engine", run: "in memory, per library snapshot (≈1.8k rows)",
-      from: ["2.5", "2.7", "2.10", "4.3"], in: "A query text, its vector, top_k, an optional allowed-rows mask, a vector floor, a leg depth.",
+      from: ["2.7", "2.10", "4.3"], in: "A query text, its vector, top_k, an optional allowed-rows mask, a vector floor, a leg depth.",
       p: ["Keyword leg: BM25 over texts tokenized once (k1 1.5, b 0.75, idf ln(1 + (N − df + 0.5)/(df + 0.5))).",
           "Vector leg: L2-normalised rows · the query vector (cosine).",
           "The mask is applied to both legs BEFORE they are cut; the vector floor (0.60 for threats and controls; none for actors and types) zeroes rows below it only when some row reaches it.",
           "`rank_best_first`: positive scores only, ties in position order.",
           "`fuse_by_rank`: Σ 1/(60 + rank); merging by RANK means the two score scales never need calibrating.",
           "An exact tokenized text match comes first with score 1.0 (two different threats once had cosine 0.969)."],
-      k: [["Search.RRF_K", "60", "core/constants/library.py"], ["Search.VECTOR_FLOOR", "0.60", "core/constants/library.py"]],
+      k: [["Search.RRF_K", "60", "core/constants/planning.py"], ["Search.VECTOR_FLOOR", "0.60", "core/constants/planning.py"]],
       m: "`[SearchHit(position, score)]`, best first.",
       na: ["Scores are never persisted anywhere."],
       dec: [["Always", "hits go back to the caller", null]],
       nx: [], out: "Ordered hits.", demo: "retrieval",
-      c: ["app/search/indexes.py:HybridIndex", "app/search/indexes.py:rank_best_first", "app/search/indexes.py:fuse_by_rank"] }
+      c: ["app/search/indexes.py:HybridIndex", "app/search/indexes.py:rank_best_first", "app/search/indexes.py:fuse_by_rank"] },
+
+    { id: "X.5", s: "X", t: "The code layers", run: "every request and every job",
+      from: [], in: "A request (api) or a job message (worker).",
+      p: ["`app/api`: the routes. They check the caller and the body, call one service, and return its answer.",
+          "`app/services`: per-request coordination only. Load (data_access), decide (a domain function), save (data_access), audit, publish. Services also build the API answers: the v1 results format, the session board, coverage.",
+          "`app/domain`: every business rule, as pure functions. What may be accepted, rejected, regenerated, started or cancelled; required facts; context rules; planning, writing and controls. `domain/scenario` holds plan.py, write.py and controls.py; `domain/remediation` the plan rules; `domain/external_intelligence` the evidence rules.",
+          "`app/data_access`: one repository per module folder (`scenario`, `remediation`, `jobs`, `library`, `admin`, `external_intelligence`), each a `repository.py` on `base.py` (`MongoRepository`). Record ↔ object mapping lives next to the repository that reads and writes it.",
+          "`app/models`: data shapes only (dataclasses and pydantic classes with their validation).",
+          "`app/worker`: the Celery tasks; each job takes its lease, then calls domain and data_access.",
+          "`app/search`: the in-memory library snapshot and the hybrid search (X.4). `app/realtime`: live status (X.3). `app/ai`: the chat, embedding and rerank clients (X.2). `app/core`: settings, constants, database clients, errors, logging.",
+          "Imports go one way: api → services → domain / data_access / worker. Domain imports only core, models, ai and search."],
+      m: "One place for each kind of code.",
+      dec: [["Always", "each stage above names the file that does it", null]],
+      nx: [], out: "The file list under each stage (\"Code\").",
+      c: ["app/data_access/base.py:MongoRepository", "app/domain/scenario/plan.py", "app/domain/scenario/write.py", "app/domain/scenario/controls.py", "tests/test_code_conventions.py"] },
+
+    { id: "X.6", s: "X", t: "SQL Server writes: operation records", run: "API and worker · `SqlServerRepository.run_sql_operation`",
+      from: ["5.7"], in: "One write procedure (tsg_ResolveThreat, tsg_DecidePendingThreats) and its parameters.",
+      p: ["Before the call, a `tsg_sql_operations` record is written `pending` with the procedure and the parameters. Its id names the write: `promote:{scenario_id}`, `propose:{scenario_id}`, `decide:{payload_hash}`.",
+          "Done: the stored result is returned. No SQL call.",
+          "The answer was lost (`OutcomeUnknown`): the record becomes `requires_reconciliation`. The next attempt replays the stored parameters exactly; every write procedure dedupes on the SQL side.",
+          "SQL Server confirmed a rollback: the record becomes `not_applied` and the error is raised.",
+          "A young pending record (under 60 s): 409 `operation_in_progress`. Each attempt writes its outcome fenced on its own attempt id.",
+          "A finished record expires after 30 days."],
+      k: [["SqlOperations.PENDING_SECONDS", "60", "core/constants/common.py"], ["SqlOperations.KEEP_DAYS", "30", "core/constants/common.py"]],
+      m: "The procedure's result sets, and whether this call ran it.",
+      sh: "tsg_sql_operations: { _id, procedure, parameters, status: pending | done | not_applied | requires_reconciliation,\n  started_at, finished_at, attempt, reconciling, reconciled, result }",
+      dec: [["Done before", "the stored result", null], ["Answer lost", "the next attempt replays it", null], ["Another attempt is young", "409 `operation_in_progress`", null]],
+      nx: [], out: "A write that is never applied twice and never guessed.", st: "tsg_sql_operations",
+      c: ["app/data_access/library/repository.py:SqlServerRepository", "app/core/constants/common.py:SqlOperations"] }
   ];
 
   // ====================================================================================
@@ -3018,10 +2955,10 @@ $(function () {
     "1.1": "Principal + validated StartRunRequest", "1.2": "replay (200) or go on", "1.3": "5 SQL result sets", "1.4": "FrozenContext (SYS1..n aliases)",
     "1.5": "run record, status queued", "1.6": "Celery message + 202 RunBoard",
     "2.1": "leased job + FrozenContext", "2.2": "library snapshot (4 indexes) + threats by category", "2.3": "Landscape text (≤30,000 chars)",
-    "2.4": "search queries per category", "2.5": "ordered shortlist per category", "2.6": "relevance verdicts + category audits",
-    "2.7": "0 or 1 AI threat per empty category", "2.8": "de-duplicated threat list + folds", "2.9": "same-attack folds",
+    "2.6": "relevance verdicts + category audits",
+    "2.7": "0 or 1 AI threat per empty category", "2.8": "de-duplicated threat list + folds",
     "2.10": "threats with attackers (ThreatFindings)", "2.11": "frozen plan (ranked scenarios) + queued writing job",
-    "3.1": "job.batch (≤6 scenarios)", "3.2": "one writing task per scenario", "3.3": "WriterBrief", "3.4": "first draft", "3.5": "cleaned draft",
+    "3.1": "job.batch (≤4 scenarios)", "3.2": "one writing task per scenario", "3.3": "WriterBrief", "3.4": "first draft",
     "3.6": "findings (blockers, warnings)", "3.7": "plan_check", "3.8": "kept draft", "3.9": "scenario record + plan state",
     "3.10": "status, counts, queued controls job",
     "4.1": "one claimed scenario", "4.2": "control query + allowed types", "4.3": "shortlist of ≤40 controls", "4.4": "kept controls (rank, score, match)",
@@ -3032,13 +2969,13 @@ $(function () {
     "6.4": "full snapshot", "6.5": "plan record + 202 PlanRequested", "6.6": "claimed plan job + snapshot", "6.7": "PlanDraft",
     "6.8": "finished plan + warnings", "6.9": "dated plan + critical path", "6.10": "saved plan version",
     "7.1": "RemediationResult", "7.2": "decision, accepted_version", "7.3": "version n+1 queued",
-    "X.1": "retry, or a final failure", "X.2": "checked answer + tsg_ai_calls record", "X.3": "SSE frames", "X.4": "ordered hits"
+    "X.1": "retry, or a final failure", "X.2": "checked answer + tsg_ai_calls record", "X.3": "SSE frames", "X.4": "ordered hits", "X.5": "one place per kind of code", "X.6": "a write applied once"
   };
   // How often a stage runs inside its step.
   var LOOP_NOTE = {
-    "2.4": "once per STRIDE category", "2.5": "one search call for every category's queries", "2.6": "once per category · 6 categories in parallel",
+    "2.6": "once per category · 6 categories in parallel",
     "2.7": "once per empty category", "3.1": "once per batch", "3.2": "once per batch", "3.3": "once per scenario · ≤6 in parallel",
-    "3.4": "once per scenario", "3.5": "once per draft", "3.6": "once per draft", "3.7": "once per draft", "3.8": "once per scenario",
+    "3.4": "once per scenario", "3.6": "once per draft", "3.7": "once per draft", "3.8": "once per scenario",
     "3.9": "once per scenario", "3.10": "once per batch", "4.1": "once per delivery turn", "4.2": "once per scenario · ≤6 per turn",
     "4.3": "once per scenario", "4.4": "once per scenario", "4.5": "once per scenario", "6.6": "once per plan version", "6.7": "once per plan version",
     "6.8": "once per plan version", "6.9": "once per plan version", "6.10": "once per plan version"
@@ -3056,8 +2993,8 @@ $(function () {
   // The same steps and stages in everyday words, for a reader who does not read code.
   var STEP_PLAIN = {
     "1": "The platform asks TSG to assess one asset. TSG checks who is asking, reads everything the database knows about the asset and its supporting systems, freezes a copy of it and puts the real work on a queue. The caller gets an answer straight away.",
-    "2": "A background worker works out which threats from the threat library really apply to this asset. It searches the library by words and by meaning, asks an AI to judge every candidate, lets the AI propose a missing threat where the library has none, removes duplicates, picks a likely attacker for each threat, and freezes an ordered list of scenarios to write.",
-    "3": "For each planned scenario, an AI writes the readable text. Code tidies it and checks hard rules, a second AI call checks it against the plan, the AI may rewrite it once, and the better draft is saved as a card a person can review.",
+    "2": "A background worker works out which threats from the threat library really apply to this asset. It asks an AI to judge every library threat that fits the asset, lets the AI propose a missing threat where the library has none, removes duplicates, picks a likely attacker for each threat, and freezes an ordered list of scenarios to write.",
+    "3": "For each planned scenario, an AI writes the readable text. Code checks hard rules, a reviewer AI checks it against the plan and its evidence, the AI rewrites it once when a rule blocks it, a near copy of another scenario is held back, and the kept draft is saved as a card a person can review.",
     "4": "For each written scenario, TSG searches the control library for the security controls that best address it, lets a ranking model score each candidate, and keeps the good matches.",
     "5": "A person reviews the cards: accepts the good ones, rejects the bad ones, asks for more scenarios, or asks for a new version of one.",
     "6": "For an accepted scenario, TSG gathers every fact the planner needs, an AI drafts the remediation plan (which controls, which actions, who, how long), and code checks it and computes the schedule and the critical path.",
@@ -3074,19 +3011,15 @@ $(function () {
     "2.1": "A background worker takes the job and holds a renewable lease on it, so if that worker dies another one can take over.",
     "2.2": "The worker takes a snapshot of the threat library (threats, threat types, attackers, controls) and builds two search indexes over it: one for words, one for meaning.",
     "2.3": "It writes a compact description of the asset and its systems for the AI, removing secrets and empty values and fitting it into a size budget.",
-    "2.4": "For each of the six STRIDE threat categories (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) it builds search sentences: the category's definition plus each system's facts.",
-    "2.5": "It searches the threat library twice for each sentence — by matching words (BM25) and by matching meaning (vectors) — and merges the two rankings into one shortlist. This only sets the order in which threats are checked next: nothing is thrown away here. The worked example below shows the arithmetic.",
     "2.6": "An AI reads the asset description and, in batches of up to 20, decides for every library threat of the category: does it apply to this asset, on which systems, with what impact, how confidently? Only threats judged relevant continue.",
     "2.7": "If no library threat of a category applies, the AI may propose one new threat. TSG keeps it only if it is not a re-wording of an existing or rejected library threat, passes the same relevance check, and matches a known threat type.",
     "2.8": "Duplicates are merged: the same threat found in two categories becomes one, and an AI threat that means the same as another (meaning similarity 0.98 or more) is folded into it.",
-    "2.9": "The AI is asked whether two threats on the same systems really describe the same attack; if they do, they become one.",
     "2.10": "Each threat gets an attacker. The library's attackers linked to the threat type are ranked with the same word + meaning search; the best one acts, up to three are alternates. When the attacker is only a nearest guess, the AI checks that it fits.",
-    "2.11": "The threats are grouped: one scenario per kind of attack (STRIDE) on each system, or on the asset itself. The AI picks the threat each scenario is written around; the group's other threats stay as also_applies. Scenarios that are the same attack with the same harm through different systems become one scenario on all of them (G213). Scenarios are ordered so every threat category is covered first, then every system, then by impact and confidence. This ordered list is frozen as the run's plan, and the writing job is queued.",
+    "2.11": "The threats are grouped: one scenario per kind of attack (STRIDE) on each route of systems, or on the asset itself. The strongest threat tells it; the group's other threats stay as also_applies. Scenarios are ordered by impact, then confidence. This ordered list is frozen as the run's plan, and the writing job is queued.",
     "3.1": "The next set of scenarios is taken from the frozen plan, six at a time; inside a set, scenarios never tried before go first.",
     "3.2": "Up to six scenarios are written at the same time; a planned scenario that is already written is skipped.",
     "3.3": "For each scenario a brief is prepared for the AI writer: the asset, the attacker, the threat and why it applies, the systems involved, and other scenarios to avoid repeating.",
     "3.4": "The AI writes the scenario: a title, a scenario statement, a risk statement, assumptions and the entry point. If the answer is malformed, the AI is told exactly what is wrong once and asked again.",
-    "3.5": "Code tidies the text: it removes framework codes and internal identifiers from the title and rewrites the risk sentence so it starts with the consequence.",
     "3.6": "Code checks hard rules: no invented system codes or advisory numbers (these block the scenario), and warns if the asset or the attacker is not mentioned or other systems are named.",
     "3.7": "A second AI call checks the scenario against the plan: the right asset, attacker, threat and systems. Any problem is noted.",
     "3.8": "If anything was found, the AI rewrites the scenario once with the list of problems, and the better of the two drafts is kept.",
@@ -3094,7 +3027,7 @@ $(function () {
     "3.10": "When the batch is done, control mapping starts for the new cards, and either the next batch of the set begins or the run is marked done (or partial, if something could not be done).",
     "4.1": "A background worker picks up scenarios that still need security controls, up to six per turn.",
     "4.2": "It builds a search text from the scenario and keeps only controls that fit the asset's type (IT, OT or both).",
-    "4.3": "It searches the control library with the same word + meaning search as threats (see the worked example in 2.5) and keeps the best CONTROL_CANDIDATES candidates (the number set in .env).",
+    "4.3": "It searches the control library with the same word + meaning search as threats (see the worked example in X.4) and keeps the best CONTROL_CANDIDATES candidates (the number set in .env).",
     "4.4": "A ranking model (the reranker) reads the scenario and each candidate control together and scores the match from 0 to 100. Controls at or above CONTROL_SIMILARITY_THRESHOLD are kept, at most MAX_CONTROLS (10); if fewer than MIN_CONTROLS (1) reach it, the nearest ones are added, marked \"nearest\", so a scenario is never left without a control.",
     "4.5": "The controls are saved on the scenario. Failures are retried automatically: a sweep runs every 5 minutes and retries failed mappings after 30 minutes.",
     "5.1": "The reviewer reads the scenario cards and the run's counters.",
@@ -3121,10 +3054,10 @@ $(function () {
     "X.1": "Every background job holds a renewable lease. Temporary outages are retried after growing pauses (15, 30, 60, 120 seconds) up to 5 times; permanent errors stop the job with a clear code.",
     "X.2": "Every AI call gets one chance to correct a malformed answer, is retried on network errors, falls back to a second model, and is recorded for 14 days.",
     "X.3": "The screen gets live updates: whenever the run changes, the server pushes the new status.",
-    "X.4": "The search engine behind 2.5, 2.7, 2.10 and 4.3: one list ranked by matching words, one ranked by matching meaning, merged by position. The worked example in 2.5 shows every number."
+    "X.4": "The search engine behind 2.7, 2.10 and 4.3: one list ranked by matching words, one ranked by matching meaning, merged by position. The worked example below shows every number."
   };
 
-  // ---------- worked example of the search (2.5): every intermediate number, computed by the same rules as app/search/indexes.py ----------
+  // ---------- worked example of the search (X.4): every intermediate number, computed by the same rules as app/search/indexes.py ----------
   function demoRows() {
     return DEMO.corpus.split("\n").map(function (l) {
       var i = l.lastIndexOf("|"); return i < 0 ? null : { text: l.slice(0, i).trim(), cos: parseFloat(l.slice(i + 1)) };
@@ -3168,7 +3101,7 @@ $(function () {
     return '<div class="ex"><div class="ex-hd"><span class="pv cd">Code</span> method from <code>app/search/indexes.py</code> &nbsp;·&nbsp; ' +
       '<span class="pv il">Illustrative</span> data: a made-up 6-row library and typed-in cosines (real cosines need the embedding model). ' +
       '<span class="muted">(edit it below)</span></div>' +
-      step(0, "The input", "One search sentence (built in 2.4) and the library rows of its category. In the real run there are about 1,800 rows and one sentence per system; here, six rows.",
+      step(0, "The input", "One search sentence and the library rows it may match. In the real run there are about 1,800 rows and one sentence per system; here, six rows.",
            '<p><b>Query:</b> ' + esc(q) + "</p>" + corpusTbl) +
       step(1, "Turn text into words", "Punctuation is removed, everything is lower-cased and the text is split on spaces. The same is done once to every library row.",
            '<div class="sf-k">' + qt.map(function (t) { return "<span>" + esc(t) + "</span>"; }).join("") + "</div><p class=\"muted\">" + qt.length + " query words.</p>") +
@@ -3199,8 +3132,8 @@ $(function () {
   function scheduleExplainHtml() {
     var acts = WORKED.split("\n").map(function (l) { var p = l.split("|"); return { action_id: p[0].trim(), duration_days: parseInt(p[1], 10), depends_on: (p[2] || "").split(/[,\s]+/).filter(Boolean) }; });
     var r = schedule(acts, "2026-10-01");
-    return '<div class="ex"><div class="ex-hd"><span class="pv cd">Code</span> rules from <code>app/engine/remediation/scheduler.py</code>, on the worked example in ' +
-      "<code>app/engine/remediation/prompts.py</code> (A1=2 days, A2=3←A1, A3=4←A1, A4=2←A2+A3), with a mitigation start of 2026-10-01.</div>" +
+    return '<div class="ex"><div class="ex-hd"><span class="pv cd">Code</span> rules from <code>app/domain/remediation/scheduler.py</code>, on the worked example in ' +
+      "<code>app/domain/remediation/prompts.py</code> (A1=2 days, A2=3←A1, A3=4←A1, A4=2←A2+A3), with a mitigation start of 2026-10-01.</div>" +
       '<div class="ex-step"><h5><span class="ex-n">1</span>Start = when everything it waits for has finished</h5><p class="ex-plain">An action with no prerequisite starts on day 0; ' +
       "otherwise on the day its latest prerequisite finishes. Finish = start + days.</p>" +
       tblHtml(["Action", "Days", "Waits for", "Starts on day", "Finishes on day", "Dates", "Timeline sentence"], r.rows.map(function (x) {
@@ -3236,19 +3169,15 @@ $(function () {
     "2.1": ["Queued job", "session id", "Running job", "lease held · asset facts loaded"],
     "2.2": ["Threat library (SQL)", "threats · types · attackers · controls", "Library snapshot", "word index + meaning index · threats per category"],
     "2.3": ["Frozen asset facts", "asset · systems", "Asset description for the AI", "one text, at most 30,000 characters"],
-    "2.4": ["Asset facts + threat category", "6 STRIDE categories", "Search sentences", "one per system + one for the asset"],
-    "2.5": ["Search sentences", "+ threat library index", "Ordered shortlist", "top 10 threats per sentence"],
     "2.6": ["Shortlist + asset description", "every threat of the category", "Relevance verdicts", "applies? · which systems · impact · confidence"],
     "2.7": ["Category with no relevant threat", "+ asset description", "0 or 1 new threat (AI)", "type · name · systems · impact"],
     "2.8": ["All relevant threats", "library + AI", "Threats without duplicates", "duplicates folded"],
-    "2.9": ["Threats on the same systems", "", "Threats without repeats", "same attacks folded"],
     "2.10": ["Threats", "+ attacker library", "Threats with attackers", "1 acting + up to 3 alternates"],
     "2.11": ["Threats with attackers", "", "Frozen plan", "ranked scenarios · number planned"],
     "3.1": ["Frozen plan", "planned scenarios", "Batch", "up to 6 scenarios"],
     "3.2": ["Batch", "", "Writing tasks", "one per scenario, run together"],
     "3.3": ["Planned scenario + asset facts", "threat · attacker · systems", "Writer's brief", "everything the AI writer needs"],
     "3.4": ["Writer's brief", "", "Draft scenario (AI)", "title · scenario · risk · assumptions · entry point"],
-    "3.5": ["Draft scenario", "", "Cleaned draft", "codes removed · risk starts with the consequence"],
     "3.6": ["Cleaned draft + brief", "", "Rule findings", "blockers · warnings"],
     "3.7": ["Draft + plan", "", "Plan check (AI)", "consistent · or its problems"],
     "3.8": ["Draft + problems", "", "Kept draft", "the better of up to 2 drafts"],
@@ -3291,11 +3220,11 @@ $(function () {
   var TRACE = {
     "1.1": ["run.start"], "1.2": ["run.start"], "1.3": ["run.start"], "1.4": ["run.start"], "1.5": ["run.start"], "1.6": ["run.start"],
     "2.1": ["worker.plan_run", "threats.find"], "2.2": ["search.build_snapshot", "library.reload", "ai.embed_library_texts"],
-    "2.3": ["threats.build_landscape"], "2.4": ["threats.search_queries"], "2.5": ["search.find_threats", "threats.search_shortlists", "ai.embed_queries"],
+    "2.3": ["threats.build_landscape"],
     "2.6": ["threats.category_check", "threats.relevance_batch", "threats.check_categories"], "2.7": ["threats.gap_fill", "threats.library_match"],
-    "2.8": ["threats.merge", "threats.fold_rewordings"], "2.9": ["threats.same_attack"],
+    "2.8": ["threats.merge", "threats.fold_rewordings"],
     "2.10": ["threats.assign_actors", "search.find_actors", "threats.attacker_check"], "2.11": ["paths.plan", "paths.best_threat", "paths.rank", "paths.apply_target"],
-    "3.1": ["worker.write_batch"], "3.2": ["worker.write_batch"], "3.3": ["writing.brief"], "3.4": ["writing.write"], "3.5": ["writing.clean"],
+    "3.1": ["worker.write_batch"], "3.2": ["worker.write_batch"], "3.3": ["writing.brief"], "3.4": ["writing.write"],
     "3.6": ["writing.rules"], "3.7": ["writing.plan_check"], "3.8": ["writing.write"],
     "4.1": ["worker.map_controls"], "4.2": ["controls.map"], "4.3": ["search.find_controls"], "4.4": ["controls.map", "ai.rerank"], "4.5": ["controls.map"],
     "5.3": ["review.accept"], "5.4": ["review.reject"], "5.5": ["run.next_set"], "5.6": ["run.regenerate"], "5.7": ["library.promote"],
@@ -3705,7 +3634,7 @@ $(function () {
         (w.st ? "<p><b>Stored in:</b> <code>" + esc(w.st) + "</code></p>" : "") +
         (w.na || []).map(function (x) { return '<p class="muted"><span class="pv na">Not stored</span> ' + md(x) + "</p>"; }).join("") + "</div></div>" +
       '<div class="sf-sec dec"><div class="sf-lab">Decision</div><div>' + dec + "</div></div>" +
-      (w.id === "2.5" ? '<div class="sf-sec proc"><div class="sf-lab">Worked example</div><div>' + searchExplainHtml() + retrievalDemoHtml() + "</div></div>" : "") +
+      (w.id === "X.4" ? '<div class="sf-sec proc"><div class="sf-lab">Worked example</div><div>' + searchExplainHtml() + retrievalDemoHtml() + "</div></div>" : "") +
       (w.id === "6.9" ? '<div class="sf-sec proc"><div class="sf-lab">Worked example</div><div>' + scheduleExplainHtml() + scheduleDemoHtml() + "</div></div>" : "") +
       (rt.length ? '<details class="sf-rt"><summary>Runtime evidence (' + rt.length + ")</summary>" + rt.map(function (x) { return evbHtml(x[1]); }).join("") + "</details>" : "") +
       "</div>";
@@ -3949,7 +3878,6 @@ $(function () {
     "2.1": function (c) { return [["out", apiSession(c, ["session_status", "progress.threats", "progress.overall", "progress.error_message", "updated_at"])], ["mid", impPanel(c.sess, "job", "job (the lease)", "tsg_sessions")]]; },
     "2.2": function (c) { return [["out", impPanel(c.sess, "plan.made_with", "plan.made_with (models and library hashes)", "tsg_sessions")]]; },
     "2.3": function (c) { return [["mid", callsPanel(c, ["relevance_gate"], "The landscape as sent: inside each relevance_gate prompt")]]; },
-    "2.5": function (c) { return [["mid", categoriesPanel(c, [["Category", function (a) { return esc(a.category); }], ["Shortlisted", function (a) { return esc(a.shortlisted); }]])]]; },
     "2.6": function (c) {
       return [["mid", categoriesPanel(c, [["Category", function (a) { return esc(a.category); }], ["Shortlisted", function (a) { return esc(a.shortlisted); }],
                 ["Judged", function (a) { return esc(Array.isArray(a.judged) ? a.judged.length : a.judged); }], ["Relevant", function (a) { return esc(Array.isArray(a.relevant) ? a.relevant.length : a.relevant); }],
@@ -3963,7 +3891,6 @@ $(function () {
               ["mid", callsPanel(c, ["gap_fill"])], ["out", threatsPanel(c, function (t) { return t.ai_generated; }, "AI threats kept (plan.threats, ai_generated)")]];
     },
     "2.8": function (c) { return [["out", foldedPanel(c, ["same_name", "same_wording"], "Folds by name or wording")]]; },
-    "2.9": function (c) { return [["out", foldedPanel(c, ["same_attack"], "Folds by same attack")], ["mid", callsPanel(c, ["same_attack"])]]; },
     "2.10": function (c) { return [["out", scnPanel(c, ["actors"], "Actors on the traced scenario")], ["out", threatsPanel(c, function () { return true; }, "Every planned threat and its actors")], ["mid", callsPanel(c, ["relevance_gate"])]]; },
     "2.11": function (c) { return [["out", apiSession(c, ["progress.threats", "progress.timings.threats", "progress.scenario_count.total", "progress.scenario_count.remaining", "progress.error_message.threats"])], ["mid", pathsPanel(c)],
                                    ["mid", c.sess && c.sess.plan ? evb("im", "Plan notes", "tsg_sessions · plan", jpre(pick(c.sess.plan, ["target", "notes", "not_assessed", "no_valid_threat", "frozen_at", "prompt_version"]))) : null]]; },
@@ -3971,14 +3898,6 @@ $(function () {
     "3.2": function (c) { return [["out", apiSession(c, ["session_status", "progress.scenarios"])], ["in", impPanel(c.sess, "job.batch", "job.batch", "tsg_sessions")]]; },
     "3.3": function (c) { return [["in", scnPanel(c, ["scenario.threat_category", "scenario.contributing_categories", "threat", "actors", "scenario.supporting_systems_involved"], "What the brief was built from (the traced scenario)")]]; },
     "3.4": function (c) { return [["out", scnPanel(c, ["scenario.scenario_title", "scenario.scenario_statement", "scenario.risk_statement", "scenario.assumptions", "scenario.supporting_systems_involved"])], ["mid", callsPanel(c, ["write_scenario"])]]; },
-    "3.5": function (c) {
-      var raw = c.calls.filter(function (x) { return x.task === "write_scenario" || x.task === "rewrite_scenario"; }).map(function (x) {
-        var r = x.response; try { r = typeof r === "string" ? JSON.parse(r) : r; } catch (e) { r = {}; }
-        return [esc(x.task), esc((r && r.scenario_title) || "?")];
-      });
-      return [["out", scnPanel(c, ["scenario.scenario_title", "scenario.scenario_statement", "scenario.risk_statement"], "After clean-up (stored)")],
-              ["mid", raw.length ? evb("im", "Titles as the AI wrote them (before clean-up)", "tsg_ai_calls · response.scenario_title", tblHtml(["Task", "Raw title"], raw)) : null]];
-    },
     "3.6": function (c) { return [["out", scnPanel(c, ["validation_status", "validation_errors", "scenario.route_status"])]]; },
     "3.7": function (c) { return [["out", scnPanel(c, ["validation_notes"])], ["mid", callsPanel(c, ["plan_check"])]]; },
     "3.8": function (c) { return [["mid", impPanel(c.idoc, "rewritten", "rewritten", "tsg_scenarios")], ["mid", callsPanel(c, ["rewrite_scenario"])], ["out", scnPanel(c, ["validation_status", "validation_errors"])]]; },
@@ -4059,7 +3978,7 @@ $(function () {
   // a few letters such as ß).
   function tokenize(t) { return String(t).replace(/[^\p{L}\p{N}\p{M}_\s]/gu, " ").toLowerCase().split(/\s+/).filter(Boolean); }
   function retrieval(query, rows, topK) {
-    var K1 = 1.5, B = 0.75, FLOOR = 0.60, RRF = 60;                        // Search.* in app/core/constants/library.py
+    var K1 = 1.5, B = 0.75, FLOOR = 0.60, RRF = 60;                        // Search.* in app/core/constants/planning.py
     var docs = rows.map(function (r) { return tokenize(r.text); }), N = docs.length;
     var avg = docs.reduce(function (a, d) { return a + d.length; }, 0) / (N || 1), df = {};
     var tf = docs.map(function (d) { var c = {}; d.forEach(function (t) { c[t] = (c[t] || 0) + 1; }); Object.keys(c).forEach(function (t) { df[t] = (df[t] || 0) + 1; }); return c; });
@@ -4096,7 +4015,7 @@ $(function () {
     renderIO();
   }
 
-  // ---------- demo 2: the scheduler (app/engine/remediation/scheduler.py), on the traced plan or the prompt's worked example ----------
+  // ---------- demo 2: the scheduler (app/domain/remediation/scheduler.py), on the traced plan or the prompt's worked example ----------
   var WORKED = "A1 | 2 |\nA2 | 3 | A1\nA3 | 4 | A1\nA4 | 2 | A2, A3";      // prompts.py: A1=2, A2=3←A1, A3=4←A1, A4=2←A2+A3 → 8
   function joined(ids) { return ids.length === 1 ? ids[0] : ids.slice(0, -1).join(", ") + " and " + ids[ids.length - 1]; }
   function addDays(iso, n) { var d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
@@ -4148,7 +4067,7 @@ $(function () {
     return '<div class="wk-demo"><div class="eh" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
       (live ? '<span class="pv rt">Runtime · API</span><b>Recompute the traced plan\'s schedule in the browser</b><span class="muted">From the actions\' ' +
               "<code>duration_days</code> and <code>depends_on</code> as the API returned them, with scheduler.py's rules; compared below with the dates the server wrote.</span>"
-            : '<span class="pv cd">Code</span><b>The worked example from the plan prompt</b><span class="muted"><code>app/engine/remediation/prompts.py</code>: ' +
+            : '<span class="pv cd">Code</span><b>The worked example from the plan prompt</b><span class="muted"><code>app/domain/remediation/prompts.py</code>: ' +
               "A1=2, A2=3←A1, A3=4←A1, A4=2←A2+A3 → 8 days. Edit it to see each rule fire (e.g. a forward reference, 0 days).</span>") + "</div>" +
       '<div class="sub-h">Actions: <code>id | days | depends on</code></div><textarea id="sdActs" style="min-height:110px">' + esc(text) + "</textarea>" +
       '<div class="row" style="margin-top:6px">mitigation_start_date <input id="sdAnchor" type="date" value="' + attr(anchor) + '">' +
@@ -4325,7 +4244,7 @@ $(function () {
     .on("change", "[data-rdcallsel]", function () { pickIdx(walk.callIdx, $(this).attr("data-rdcallsel"), this.value); })
     .on("click", "[data-rdsub]", function () { pickIdx(walk.subIdx, $(this).attr("data-rdsub"), $(this).attr("data-i")); })
     .on("change", "[data-rdsubsel]", function () { pickIdx(walk.subIdx, $(this).attr("data-rdsubsel"), this.value); });
-  // #walk=step-2 opens a step's sub-steps; #walk=2.5 also opens that sub-step's details.
+  // #walk=step-2 opens a step's sub-steps; #walk=2.6 also opens that sub-step's details.
   function fromHash() {
     var m = /#walk=(step-)?([\w.]+)/.exec(location.hash);
     if (!m) return null;

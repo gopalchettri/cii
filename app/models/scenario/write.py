@@ -7,21 +7,15 @@ from typing import Any
 from pydantic import BaseModel, field_validator, model_validator
 
 from app.core.constants import (
-    FINAL_FINDINGS,
-    FINDING_SEVERITIES,
-    STORY_FINDING_SEVERITIES,
     AnswerProblem,
     ErrorCode,
-    EvidenceMode,
     FindingCode,
-    FindingSeverity,
     PlanCheckStatus,
     Route,
     StoryFindingCode,
     StrideCategory,
     WriterStyle,
 )
-from app.models.library import ThreatLibrary
 
 
 @dataclass(frozen=True)
@@ -31,15 +25,6 @@ class LiveLibrary:
     threat_ids: frozenset[int]
     type_ids: frozenset[int]  # an AI-proposed threat stays writable while its library type is active
     actor_ids: frozenset[int]
-
-    @classmethod
-    def of(cls, library: ThreatLibrary) -> "LiveLibrary":
-        """The active ids of `library`."""
-        return cls(
-            frozenset(threat.catalogue_id for threat in library.threats),
-            frozenset(threat.type_id for threat in library.threats),
-            frozenset(actor.actor_id for actor in library.actors),
-        )
 
 
 @dataclass(frozen=True)
@@ -73,16 +58,6 @@ class WriterBrief:
     # Every supporting system of the run, applicable or not: the writer gives each a reason.
     supporting_systems: tuple[BriefSystem, ...] = ()
 
-    @property
-    def evidence_mode(self) -> EvidenceMode:
-        """Source-documented when the brief carries evidence, else inferred."""
-        return EvidenceMode.SOURCE_DOCUMENTED if self.evidence else EvidenceMode.INFERRED
-
-    @property
-    def entry_point_options(self) -> tuple[str, ...]:
-        """The threat's systems; none = the attack reaches the asset itself."""
-        return tuple(system["name"] for system in self.systems)
-
 
 @dataclass(frozen=True)
 class ScenarioDraft:
@@ -95,37 +70,11 @@ class ScenarioDraft:
     evidence_links: tuple[tuple[int, str], ...] = ()  # (marker n, the claim entry n supports)
     why_applies: str = ""  # the writer's own sentence on why the threat applies ("" when it gave none)
 
-    def to_answer(self) -> dict[str, Any]:
-        """The draft as the writer's answer reads, for the one rewrite to follow."""
-        answer: dict[str, Any] = {
-            "scenario_title": self.title,
-            "scenario_statement": self.statement,
-            "risk_statement": self.risk,
-            "assumptions": list(self.assumptions),
-            "entry_point": self.entry_point,
-        }
-        if self.evidence_links:
-            answer["evidence_links"] = [{"n": n, "claim": claim} for n, claim in self.evidence_links]
-        if self.why_applies:
-            answer["why_applies"] = self.why_applies
-        return answer | ({"system_reasons": dict(self.system_reasons)} if self.system_reasons else {})
-
 
 @dataclass(frozen=True)
 class Finding:
     code: FindingCode | StoryFindingCode
     message: str
-
-    @property
-    def severity(self) -> FindingSeverity:
-        """How serious the finding's code is."""
-        if isinstance(self.code, StoryFindingCode):
-            return STORY_FINDING_SEVERITIES[self.code]
-        return FINDING_SEVERITIES[self.code]
-
-    def to_record(self) -> dict[str, str]:
-        """The finding as the scenario stores it."""
-        return {"code": self.code, "severity": self.severity, "message": self.message}
 
 
 @dataclass(frozen=True)
@@ -136,16 +85,6 @@ class PlanCheck:
     same_threat: bool = True  # the statement, and the cause its risk gives, carry the plan's threat
     same_impact: bool = True  # the risk is the consequence of that same scenario's impact
     unsupported: tuple[int, ...] = ()  # markers whose entries do not support their sentences
-
-    def to_record(self) -> dict[str, Any]:
-        """The check as stored: a check not made records no verdict, never a pass nobody judged."""
-        made = self.status is not PlanCheckStatus.UNCHECKED
-        verdicts = {
-            "same_threat": self.same_threat if made else None,
-            "same_impact": self.same_impact if made else None,
-        }
-        reviewed = {"problems": list(self.problems), "unsupported": list(self.unsupported)}
-        return {"status": self.status, **reviewed, **verdicts}
 
 
 @dataclass(frozen=True)
@@ -158,23 +97,6 @@ class WrittenScenario:
     route: Route
     rewritten: bool  # the rewrite was kept
     title_qualifier: str = ""  # the threat's name as a title carries it, to tell two same titles apart
-
-    @property
-    def blocked(self) -> bool:
-        """True when any finding is a blocker."""
-        return any(finding.severity == FindingSeverity.BLOCKER for finding in self.findings)
-
-    @property
-    def final(self) -> bool:
-        """Blocked by a rule no new attempt is asked to fix: its path is given up at once."""
-        return any(finding.code in FINAL_FINDINGS for finding in self.findings)
-
-    @property
-    def blocker(self) -> str:
-        """The code of the finding that blocks it, a final one first ("": none)."""
-        blockers = [finding for finding in self.findings if finding.severity == FindingSeverity.BLOCKER]
-        first = min(blockers, key=lambda finding: finding.code not in FINAL_FINDINGS, default=None)
-        return str(first.code) if first else ""
 
 
 @dataclass(frozen=True)

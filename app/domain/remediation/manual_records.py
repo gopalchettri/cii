@@ -4,20 +4,74 @@ scenario carries every field a generated one does (lists and views read them ali
 person who wrote it, and has no title (A-11). Its attackers, and the library proposal of a new wording, are
 its plan job's (`pending`, G262): a request makes no AI call. Pure."""
 
+import hashlib
+import json
 import uuid
 from datetime import datetime
 from typing import Any
 
-from app.core.constants import ControlMatch, Decision, Route, RunKind, ScenarioStatus, Status, Step
+from app.core.constants import (
+    ConflictReason,
+    ControlMatch,
+    Decision,
+    ErrorCode,
+    Header,
+    PlanMessage,
+    RemediationMessage,
+    Route,
+    RunKind,
+    ScenarioStatus,
+    SessionMessage,
+    Status,
+    Step,
+)
+from app.core.exceptions import Conflict, Forbidden, Invalid, Unavailable
 from app.models.api_clients import Principal
 from app.models.asset_context import FrozenContext
-from app.models.library import LibraryControl
+from app.models.library import LibraryActor, LibraryControl
 from app.models.remediation import ThreatIdentity
-from app.models.remediation_requests import ManualScenario
+from app.models.remediation_requests import ManualScenario, PlanRequest
 from app.models.scenario.plan import PlannedActor
 
 #: A hand-written scenario's path: one per manual run.
 MANUAL_PATH = "manual"
+
+
+def check_manual_request(principal: Principal, body: PlanRequest, key: str | None) -> ManualScenario:
+    """The hand-written scenario a plan is requested for: 422 without an Idempotency-Key, 403 when the body
+    names another entity (v1 sends the entity in the body: the caller's only)."""
+    if not key:
+        message = RemediationMessage.IDEMPOTENCY_KEY_REQUIRED
+        raise Invalid(message, errors=[{"field": f"header.{Header.IDEMPOTENCY_KEY}", "message": message}])
+    manual = body.manual_scenario
+    assert manual is not None  # PlanRequest: is_manual=true
+    if manual.entity_id != principal.entity_id:
+        raise Forbidden(SessionMessage.ENTITY_MISMATCH_BODY)
+    return manual
+
+
+def manual_request_fingerprint(body: PlanRequest) -> str:
+    """SHA-256 of the whole request (scenario and register): a key replays only the request it first named."""
+    return hashlib.sha256(json.dumps(body.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+
+
+def check_same_manual_request(earlier: dict[str, Any], manual: ManualScenario, fingerprint: str) -> None:
+    """409 idempotency_key_conflict when the key's earlier run is not this hand-written request."""
+    same = (
+        earlier.get("kind") == RunKind.MANUAL
+        and earlier["asset_id"] == manual.asset_id
+        and earlier.get("request_hash") == fingerprint
+    )
+    if not same:
+        raise Conflict(
+            SessionMessage.IDEMPOTENCY_KEY_CONFLICT, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT
+        )
+
+
+def check_actor_library(actors: tuple[LibraryActor, ...]) -> None:
+    """503 while the threat library has no attacker: its plan job could never name one."""
+    if not actors:
+        raise Unavailable(PlanMessage.ACTOR_LIBRARY_EMPTY, reason=ErrorCode.ACTOR_LIBRARY_EMPTY)
 
 
 def manual_ids(entity_id: int, idempotency_key: str) -> tuple[str, str]:

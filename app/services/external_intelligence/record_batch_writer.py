@@ -5,9 +5,10 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 
-from app.core.constants import IntelLimits, IntelMessage, IntelOperationsLimits, IntelSource
+from app.core.constants import IntelLimits, IntelMessage, IntelSource
 from app.core.exceptions import IntelFetchFailed
 from app.data_access.external_intelligence.repository import IntelRecordRepository
+from app.domain.external_intelligence.refresh_rules import is_cut_short_feed, is_empty_complete_feed
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import SaveCounts
 
@@ -45,7 +46,7 @@ def write_fetch_result(
     """Store `result` in batches of IntelLimits.BATCH_SIZE and retire what a complete result left out; return
     the counts stored and how many records were retired. An empty complete result fails the source; a partial
     one retires nothing. Raises ClaimLost when `still_ours()`, asked before every write, turns False."""
-    if not result.records and not result.partial:
+    if is_empty_complete_feed(len(result.records), result.partial):
         raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=source)
     seen = {record.external_id for record in result.records}
     if not result.partial:
@@ -73,5 +74,5 @@ def _refuse_a_cut_short_feed(records: IntelRecordRepository, source: IntelSource
     """Raise WriteRefused when a complete result holds under MIN_RETIRE_RATIO of the current records."""
     current = list_current_external_ids(records, source)
     kept = len(current & seen)
-    if current and kept < IntelOperationsLimits.MIN_RETIRE_RATIO * len(current):
+    if is_cut_short_feed(len(current), kept):
         raise WriteRefused(RefreshMessage.CUT_SHORT.format(source=source, kept=kept, current=len(current)))

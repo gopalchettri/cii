@@ -34,14 +34,22 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
 from app.data_access.scenario.repository import ScenarioRepository, TitleTaken, scenarios
+from app.domain.scenario.plan import planned_threat_record
 from app.domain.scenario.write import (
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
+    brief_entry_point_options,
     build_brief,
     check_against_plan,
     check_exact_rules,
+    draft_answer,
     failure_record,
+    finding_record,
+    finding_severity,
+    is_blocked,
+    is_final,
     plan_check_prompt,
+    plan_check_record,
     scenario_id,
     title_candidates,
     with_word_limits,
@@ -50,7 +58,6 @@ from app.domain.scenario.write import (
     written_record,
 )
 from app.models.scenario.plan import PlannedActor
-from app.models.scenario.views import ScenarioView
 from app.models.scenario.write import (
     Finding,
     LiveLibrary,
@@ -61,6 +68,7 @@ from app.models.scenario.write import (
     ScenarioDraft,
     WrittenScenario,
 )
+from app.services.scenario.results import build_scenario_view
 from tests.fakes import WHY_APPLIES, FakeChatModel
 from tests.planner_samples import CONTEXT, planned, system_row
 
@@ -91,7 +99,7 @@ def _plan_threat(systems: tuple[int, ...] = (321,), **fields: Any) -> dict[str, 
         actors=actors,
         reason="Vendor sessions on the SCADA server could push firmware. Mail ops@grid.example.",
     )
-    record = threat.to_record() | fields
+    record = planned_threat_record(threat) | fields
     if "reason" in fields and "reasons" not in fields:  # one reason given: every category's
         record["reasons"] = {category: fields["reason"] for category in record["categories"]}
     return record
@@ -138,8 +146,8 @@ def test_only_a_safety_fault_a_mismatch_no_citation_or_a_copy_blocks_and_three_a
         Route.STANDALONE,
         False,
     )
-    assert not written.blocked
-    assert Finding(FindingCode.UNKNOWN_ID, "m").to_record() == {
+    assert not is_blocked(written)
+    assert finding_record(Finding(FindingCode.UNKNOWN_ID, "m")) == {
         "code": "unknown_id",
         "severity": "blocker",
         "message": "m",
@@ -147,10 +155,10 @@ def test_only_a_safety_fault_a_mismatch_no_citation_or_a_copy_blocks_and_three_a
 
 
 def test_the_answer_contracts_need_every_text_and_a_verdict_per_rule() -> None:
-    assert ScenarioAnswer.model_validate(_CLEAN.to_answer()).entry_point == "SCADA server"
+    assert ScenarioAnswer.model_validate(draft_answer(_CLEAN)).entry_point == "SCADA server"
     for field in ("scenario_title", "scenario_statement", "risk_statement"):
         with pytest.raises(ValidationError, match="must not be empty"):
-            ScenarioAnswer.model_validate(_CLEAN.to_answer() | {field: "  "})
+            ScenarioAnswer.model_validate(draft_answer(_CLEAN) | {field: "  "})
     verdicts = {"1": "holds", "4": 'broken: "push firmware" - two systems linked'}
     assert PlanCheckAnswer.model_validate({"rules": verdicts, "same_threat": True, "same_impact": True})
     for rules in ({"1": "maybe"}, {}):
@@ -163,7 +171,7 @@ def test_the_answer_contracts_need_every_text_and_a_verdict_per_rule() -> None:
     [(FindingSeverity.WARNING, ValidationStatus.WARNING), (FindingSeverity.NOTE, ValidationStatus.OK)],
 )
 def test_only_a_warning_shows_validation_warning(severity: FindingSeverity, status: ValidationStatus) -> None:
-    view = ScenarioView.from_record(
+    view = build_scenario_view(
         {
             "_id": "s1",
             "session_id": "r1",
@@ -182,7 +190,7 @@ def test_the_brief_holds_only_the_paths_systems_and_no_database_id() -> None:
     """Only this threat's systems, by name; the run's others listed apart; no id, alias or secret."""
     brief = _brief_of(_plan_threat())
     assert [system["name"] for system in brief.systems] == ["SCADA server"]
-    assert brief.entry_point_options == ("SCADA server",) and brief.other_systems == ("Historian",)
+    assert brief_entry_point_options(brief) == ("SCADA server",) and brief.other_systems == ("Historian",)
     assert (brief.attacker, brief.threat, brief.threat_type) == (
         "Cybercriminal",
         "Unauthorised firmware update",
@@ -192,7 +200,7 @@ def test_the_brief_holds_only_the_paths_systems_and_no_database_id() -> None:
     leaked = [
         token for token in ("321", "322", "103", "SYS1", '"id"', "alias", "ops@grid.example") if token in sent
     ]
-    assert leaked == [] and _brief_of(_plan_threat(systems=())).entry_point_options == ()
+    assert leaked == [] and brief_entry_point_options(_brief_of(_plan_threat(systems=()))) == ()
 
 
 @pytest.mark.parametrize(
@@ -257,7 +265,7 @@ def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_js
     ]
     system, user = plan_check_prompt(brief, _CLEAN)
     plan_text, scenario_text = user.removeprefix("PLAN:\n").split("\nSCENARIO:\n")
-    assert system.startswith(PLAN_CHECK_SYSTEM_PROMPT) and json.loads(scenario_text) == _CLEAN.to_answer()
+    assert system.startswith(PLAN_CHECK_SYSTEM_PROMPT) and json.loads(scenario_text) == draft_answer(_CLEAN)
     assert json.loads(plan_text)["critical_service"] == "Electricity transmission"
     assert CHAT_TEMPERATURES[AiTask.PLAN_CHECK] == 0.0
 
@@ -309,26 +317,26 @@ def test_every_broken_rule_is_a_note_and_a_changed_threat_is_a_mismatch() -> Non
 def test_an_unusable_plan_check_is_a_warning_and_an_outage_retries_the_job() -> None:
     check, notes = _plan_checked({"consistent": "maybe"}, {"verdict": "fine"})
     assert check == PlanCheck(PlanCheckStatus.UNCHECKED)
-    assert [(note.code, note.severity) for note in notes] == [
+    assert [(note.code, finding_severity(note)) for note in notes] == [
         (FindingCode.PLAN_CHECK_NOT_MADE, FindingSeverity.WARNING)
     ]
-    assert (check.to_record()["same_threat"], check.to_record()["same_impact"]) == (None, None)
+    assert (plan_check_record(check)["same_threat"], plan_check_record(check)["same_impact"]) == (None, None)
     with pytest.raises(Unavailable):
         _plan_checked(Unavailable("AI down"))
 
 
 def test_a_clean_first_draft_is_kept_after_two_calls_and_a_note_asks_no_rewrite() -> None:
     noted = {"rules": {"5": "broken - the impact is broad"}, "same_threat": True, "same_impact": True}
-    chat = _chat_answering([_CLEAN.to_answer()], [noted])
+    chat = _chat_answering([draft_answer(_CLEAN)], [noted])
     written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert written.draft == _READ and not written.rewritten and not written.blocked
+    assert written.draft == _READ and not written.rewritten and not is_blocked(written)
     assert [finding.code for finding in written.findings] == [FindingCode.PLAN_CHECK]
     assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
 
 
 def test_an_unreadable_answer_is_asked_once_more_and_twice_fails_the_scenario() -> None:
-    no_risk = {key: value for key, value in _CLEAN.to_answer().items() if key != "risk_statement"}
-    elsewhere = _CLEAN.to_answer() | {"entry_point": "scada  SERVER"}  # an offered option, any spelling
+    no_risk = {key: value for key, value in draft_answer(_CLEAN).items() if key != "risk_statement"}
+    elsewhere = draft_answer(_CLEAN) | {"entry_point": "scada  SERVER"}  # an offered option, any spelling
     chat = _chat_answering([no_risk, elsewhere], [_CONSISTENT])
     assert write_scenario(chat, _brief_of(_plan_threat())).draft == _READ
     assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
@@ -338,14 +346,14 @@ def test_an_unreadable_answer_is_asked_once_more_and_twice_fails_the_scenario() 
 
 
 def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None:
-    chat = _chat_answering([_CLEAN.to_answer() | {"entry_point": "Grid Control Centre"}], [_CONSISTENT])
+    chat = _chat_answering([draft_answer(_CLEAN) | {"entry_point": "Grid Control Centre"}], [_CONSISTENT])
     assert write_scenario(chat, _brief_of(_plan_threat(systems=()))).draft.entry_point == ""
 
 
 def test_a_mismatch_blocks_then_one_rewrite_listing_it_and_a_better_rewrite_is_kept() -> None:
-    chat = _chat_answering([_CLEAN.to_answer()], [_MISMATCH, _CONSISTENT], [_CLEAN.to_answer()])
+    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH, _CONSISTENT], [draft_answer(_CLEAN)])
     written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert written.rewritten and not written.blocked
+    assert written.rewritten and not is_blocked(written)
     assert _calls(chat) == [
         AiTask.WRITE_SCENARIO,
         AiTask.PLAN_CHECK,
@@ -353,13 +361,13 @@ def test_a_mismatch_blocks_then_one_rewrite_listing_it_and_a_better_rewrite_is_k
         AiTask.PLAN_CHECK,
     ]
     assert "no longer describes the plan's threat" in chat.asked(AiTask.REWRITE_SCENARIO)[0]
-    chat = _chat_answering([_CLEAN.to_answer()], [_MISMATCH, _MISMATCH], [_CLEAN.to_answer()])
+    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH, _MISMATCH], [draft_answer(_CLEAN)])
     kept = write_scenario(chat, _brief_of(_plan_threat()))
-    assert kept.blocked and kept.final and kept.rewritten  # a tie keeps the rewrite; still final
+    assert is_blocked(kept) and is_final(kept) and kept.rewritten  # a tie keeps the rewrite; still final
 
 
 def test_a_worse_or_unusable_rewrite_keeps_the_first_draft() -> None:
-    labelled = _CLEAN.to_answer() | {"scenario_statement": _CLEAN.statement + " SYS7 helps."}
+    labelled = draft_answer(_CLEAN) | {"scenario_statement": _CLEAN.statement + " SYS7 helps."}
     worse = labelled | {"risk_statement": _CLEAN.risk + " CVE-2025-0001 too."}
     chat = _chat_answering([labelled], [_CONSISTENT, _MISMATCH], [worse])
     kept = write_scenario(chat, _brief_of(_plan_threat()))
@@ -371,8 +379,8 @@ def test_a_worse_or_unusable_rewrite_keeps_the_first_draft() -> None:
 
 def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again() -> None:
     """A reason missing for one system is re-asked; a name is matched case and spacing forgiven."""
-    half = _CLEAN.to_answer() | {"system_reasons": {"scada  SERVER": "It could stop the server."}}
-    whole = _CLEAN.to_answer() | {
+    half = draft_answer(_CLEAN) | {"system_reasons": {"scada  SERVER": "It could stop the server."}}
+    whole = draft_answer(_CLEAN) | {
         "system_reasons": {"SCADA server": "It could stop it.", "Historian": "Its records stay."}
     }
     chat = _chat_answering([half, whole], [_CONSISTENT])
@@ -512,7 +520,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
         "systems": [321],
     }
     record = written_record(run, path, _plan_threat(), brief, written)
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     text = view.scenario
     assert record["_id"] == scenario_id("run-1", "p1", 1) and view.status == ScenarioStatus.DONE
     assert text.scenario_statement == f"{_CLEAN.statement}\n\nWhy this threat applies: {WHY_APPLIES}"
@@ -535,8 +543,8 @@ def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None
     threat = _plan_threat(systems=(321, 322))
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
     brief = build_brief({threat["key"]: threat}, path, context, 30_000, _LIVE)
-    assert brief.entry_point_options == ("[REDACTED]", "[REDACTED]")
-    draft = dataclasses.replace(_CLEAN, entry_point=brief.entry_point_options[0])
+    assert brief_entry_point_options(brief) == ("[REDACTED]", "[REDACTED]")
+    draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
     written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE, False)
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": context.to_record()}
     assert written_record(run, path, threat, brief, written)["content"]["systems"] == [

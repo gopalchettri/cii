@@ -200,6 +200,7 @@ intel_feeds = IntelFeedRepository(
             "$or": [{"claimed_at": None}, {"claimed_at": {"$lt": before}}]
         },
     },
+    schema_version=1,
 )
 intel_records = IntelRecordRepository(
     Collection.INTEL,
@@ -217,13 +218,15 @@ intel_records = IntelRecordRepository(
         "sources": lambda sources: {"source": {"$in": list(sources)}},
         "external_ids": lambda ids: {"external_id": {"$in": list(ids)}},
     },
+    schema_version=1,
 )
 intel_snapshots = IntelSnapshotRepository(
     Collection.EXTERNAL_INTELLIGENCE_SNAPSHOTS,
     indexes=({"keys": [("state", 1), ("built_at", -1)], "name": "by_state_and_age"},),
     field_lists={"description": {"_id": 0}},
+    schema_version=1,
 )
 #: tsg_embeddings as external intelligence purges it (its indexes belong to the embeddings repository).
 intel_vectors = MongoRepository(
-    Collection.EMBEDDINGS, conditions={"used_only_by_source": _vectors_used_only_by}
+    Collection.EMBEDDINGS, conditions={"used_only_by_source": _vectors_used_only_by}, schema_version=1
 )

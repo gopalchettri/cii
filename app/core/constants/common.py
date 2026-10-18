@@ -205,6 +205,7 @@ class LogEvent(StrEnum):
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
     DEPENDENCY_UNAVAILABLE = "dependency.unavailable"
     MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
+    MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REUSED = "ai.call_reused"  # a retried job's earlier answer, no AI call made
@@ -247,6 +248,7 @@ class LogEvent(StrEnum):
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
+    REMEDIATION_STORED_VALUE_UNKNOWN = "remediation.stored_value_unknown"  # read back as a safe default
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"

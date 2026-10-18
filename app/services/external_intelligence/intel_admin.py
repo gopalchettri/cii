@@ -7,13 +7,7 @@ from typing import Any
 import structlog
 
 from app.core.config import Settings, get_settings
-from app.core.constants import (
-    EVIDENCE_THRESHOLD_CALIBRATED_ON,
-    AuditAction,
-    AuditTarget,
-    IntelRefreshMessage,
-    IntelSource,
-)
+from app.core.constants import AuditAction, AuditTarget, IntelRefreshMessage, IntelSource
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
 from app.data_access.admin.repository import audit_records
@@ -23,6 +17,7 @@ from app.data_access.external_intelligence.repository import (
     intel_records,
     intel_snapshots,
 )
+from app.domain.external_intelligence.evidence_settings import evidence_settings
 from app.models.external_intelligence.switch_state import SwitchState
 from app.search.external_intelligence.index_keeper import get_evidence_index_keeper
 from app.services.audit import admin_actor, audit_target
@@ -68,7 +63,8 @@ class IntelAdmin:
 
     def describe_health(self) -> dict[str, Any]:
         """The health report with the evidence settings. With the master switch off, only the switch state."""
-        evidence = self._evidence_settings()
+        settings = self._settings
+        evidence = evidence_settings(settings.rerank_model, settings.evidence_similarity_threshold)
         if not self._settings.external_intelligence_enabled:
             state = SwitchState(env_enabled=False).as_doc()  # no store is read while off
             return {
@@ -121,17 +117,6 @@ class IntelAdmin:
             return self._refreshes.start(requested_by, source)["job_id"]
         except Conflict:
             return None  # one is already queued or running and does the work, or the switch is off
-
-    def _evidence_settings(self) -> dict[str, Any]:
-        """The reranker's name (never its path), the threshold and whether an operator calibrated it there."""
-        model = self._settings.rerank_model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-        calibrated_on = EVIDENCE_THRESHOLD_CALIBRATED_ON.get(model)
-        return {
-            "rerank_model": model,
-            "threshold": self._settings.evidence_similarity_threshold,
-            "threshold_calibrated": calibrated_on is not None,
-            "threshold_calibrated_on": calibrated_on,
-        }
 
 
 @singleton

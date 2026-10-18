@@ -15,7 +15,6 @@ from app.core.constants import (
     Decision,
     ErrorCode,
     ErrorMessage,
-    FindingSeverity,
     Generation,
     LogEvent,
     ScenarioOutcome,
@@ -28,10 +27,14 @@ from app.data_access.jobs.repository import JobLease
 from app.data_access.scenario.repository import TitleTaken, scenarios
 from app.domain.scenario.plan import is_still_to_write
 from app.domain.scenario.write import (
+    blocking_codes,
+    blocking_finding_code,
     build_brief,
     duplicate_of,
     failure_record,
     generation_stamp,
+    is_final,
+    live_library_of,
     scenario_id,
     title_candidates,
     write_scenario,
@@ -40,7 +43,7 @@ from app.domain.scenario.write import (
 from app.domain.shared.names import name_match_key, shorten_text
 from app.models.asset_context import FrozenContext
 from app.models.library import ThreatLibrary
-from app.models.scenario.write import LiveLibrary, PathFailure, WriterBrief, WrittenScenario
+from app.models.scenario.write import PathFailure, WriterBrief, WrittenScenario
 from app.worker.plan_progress import PlanProgress
 
 log = structlog.get_logger(__name__)
@@ -66,7 +69,7 @@ class PathWriter:
     ) -> None:
         self._run_id, self._style, self._chat = run["_id"], style, chat
         self._budget = chat.max_prompt_chars // 2  # the facts' share of the model input
-        self._live = LiveLibrary.of(library)
+        self._live = live_library_of(library)
         self._context = FrozenContext.from_record(run["context"])
         self.threats = {threat["key"]: threat for threat in run["plan"]["threats"]}
 
@@ -130,7 +133,7 @@ class HeldScenarios:
         """Save the record `build` makes of `written` under a title of its own; a near copy first gets the
         final NEAR_DUPLICATE blocker (kept hidden). Return the record, whether it was saved, and `written`."""
         record = build(written)
-        if not written.blocked:
+        if not blocking_codes(written):
             if self._own_run is None:
                 run = self._run
                 self._own_run, self._elsewhere = scenarios.list_scenarios_for_duplicate_check(
@@ -202,7 +205,7 @@ class PathSaver:
             self._log_saved(record, saved, reason)
         else:
             record, saved, written = self._save_written(path, *outcome, started_at)
-            reason, final = written.blocker, written.final  # a final rule gives the path up
+            reason, final = blocking_finding_code(written), is_final(written)  # a final rule: given up
         if not saved or record["status"] == ScenarioStatus.DONE:  # not saved: its scenario was already there
             self._progress.record({path_id: {"served": record["_id"]}})
             return
@@ -256,8 +259,7 @@ class PathSaver:
             return
         record, _, written = self._save_written(path, *outcome, started_at, old)
         if record["status"] != ScenarioStatus.DONE:  # kept hidden, for audit only
-            codes = sorted({f.code for f in written.findings if f.severity == FindingSeverity.BLOCKER})
-            message = ErrorMessage.REGENERATE_BLOCKED.format(codes=", ".join(codes))
+            message = ErrorMessage.REGENERATE_BLOCKED.format(codes=", ".join(blocking_codes(written)))
             self._note_failure(old["_id"], ErrorCode.SCENARIO_BLOCKED, message)
             return
         supersede_scenario_version(old["_id"], record["_id"])
@@ -281,7 +283,7 @@ class PathSaver:
             return record
 
         record, saved, written = self._held.save(written, build)
-        self._log_saved(record, saved, written.blocker)
+        self._log_saved(record, saved, blocking_finding_code(written))
         return record, saved, written
 
     def _log_saved(self, record: dict[str, Any], saved: bool, reason: str) -> None:

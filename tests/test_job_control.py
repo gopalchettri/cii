@@ -37,6 +37,7 @@ from app.data_access.scenario.repository import (
     scenario_controls,
     scenario_sessions,
 )
+from app.domain.scenario.review import cancel_stamp_seen
 from app.models.api_clients import Principal
 from app.services import jobs as jobs_module
 from app.services.api_clients import get_api_client_service
@@ -314,6 +315,25 @@ def test_a_deleted_runs_scenario_saved_meanwhile_goes_with_it(entity: int) -> No
     assert get_mongodb()[Collection.SCENARIOS].find_one({"_id": stray}) is None
 
 
+def test_a_deleted_runs_failure_and_blocked_cards_go_too_and_a_live_runs_stay(entity: int) -> None:
+    """A failure or blocked card saved after its run was deleted has no controls waiting: the sweep still
+    removes it, never a card of a run that exists."""
+    gone, live = uuid.uuid4().hex, _run(entity, Status.DONE)
+    cards = {
+        run_id: [
+            _scenario(run_id, Status.QUEUED, entity_id=entity, status=status, controls=None)
+            for status in (ScenarioStatus.FAILED, ScenarioStatus.BLOCKED)
+        ]
+        for run_id in (gone, live)
+    }
+    scenario_controls.requeue_stalled_controls()
+    left = {
+        found["_id"]
+        for found in get_mongodb()[Collection.SCENARIOS].find({"session_id": {"$in": [gone, live]}})
+    }
+    assert left == set(cards[live])
+
+
 def test_a_delete_cut_short_is_finished_by_calling_it_again(
     client: TestClient, api_key: str, entity: int
 ) -> None:
@@ -503,6 +523,21 @@ def test_a_cancel_landing_during_a_resume_stands(entity: int, monkeypatch: pytes
         return being_deleted(sessions, session_id)
 
     monkeypatch.setattr(job_repository_module, "is_scenario_session_being_deleted", cancel_lands_meanwhile)
-    assert records.resume_scenario_controls(run_id) == 0
+    assert records.resume_scenario_controls(run_id, earlier["at"]) == 0
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["cancelled"]["user_id"] == "u9" and _controls(stopped) == Status.CANCELLED
+
+
+def test_a_cancel_landing_after_the_caller_read_the_run_stands(entity: int) -> None:
+    """D8: the resume read the cancel stamp itself, so a cancel landing between the caller's status read and
+    the resume passed as the one the caller saw and was undone. The guard now uses the stamp it saw."""
+    earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
+    run_id = _run(entity, Status.DONE, cancelled=earlier)
+    stopped, waiting = _scenario(run_id, Status.CANCELLED), _scenario(run_id, Status.QUEUED)
+    seen = find_status_for_caller(run_id, entity)
+    records = JobControlRepository(get_mongodb())
+    records.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
+    assert records.resume_scenario_controls(run_id, cancel_stamp_seen(seen)) == 0
+    stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
+    assert stored["cancelled"]["user_id"] == "u9"
+    assert _controls(stopped) == _controls(waiting) == Status.CANCELLED

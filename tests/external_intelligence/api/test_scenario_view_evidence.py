@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import Decision, RunKind, ScenarioStatus
-from app.models.scenario.views import ScenarioView
+from app.services.scenario.results import build_scenario_view
 from tests.external_intelligence.conftest import STORY_MARKED
 from tests.external_intelligence.fakes import TECHNIQUE
 
@@ -29,7 +29,7 @@ def test_only_the_evidence_the_text_cites_is_shown_in_marker_order_without_score
     second = {"n": 2, **TECHNIQUE.as_doc(), "ref": "T0001", "title": "Other"}
     third = {"n": 3, **TECHNIQUE.as_doc(), "ref": "T0002", "title": "Never cited"}
     statement = STORY_MARKED.replace("before [1]", "before [2] and again [1]")
-    view = ScenarioView.from_record(
+    view = build_scenario_view(
         _record(
             statement=statement,
             evidence=[first, second, third],
@@ -47,5 +47,5 @@ def test_only_the_evidence_the_text_cites_is_shown_in_marker_order_without_score
 
 
 def test_a_scenario_with_no_evidence_shows_null_and_empty() -> None:
-    view = ScenarioView.from_record(_record(statement="It could stop."))
+    view = build_scenario_view(_record(statement="It could stop."))
     assert (view.evidence_mode, view.evidence, view.evidence_search) == (None, [], None)

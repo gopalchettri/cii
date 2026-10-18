@@ -3,13 +3,16 @@ order. Code checks every AI verdict; an outage is raised and the job retries."""
 
 import dataclasses
 import functools
+import hashlib
 import itertools
 import json
 from collections import Counter, defaultdict
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import structlog
 
@@ -23,6 +26,7 @@ from app.ai import (
     get_embedding_model,
     get_rerank_model,
 )
+from app.core.asset_types import asset_type_fits
 from app.core.config import get_settings
 from app.core.constants import (
     STRIDE_DEFINITIONS,
@@ -35,17 +39,23 @@ from app.core.constants import (
     ErrorCode,
     GapFillOutcome,
     Generation,
+    IntelMessage,
     LibraryRowKind,
     LogEvent,
     PlanMessage,
     PromotionOutcome,
+    PropertyMessage,
+    ReviewMessage,
+    RunKind,
+    SessionMessage,
     StrideCategory,
     ThreatFinding,
     UnselectedReason,
 )
-from app.core.exceptions import PlanRefused
+from app.core.exceptions import Conflict, Forbidden, Invalid, NotFound, PlanRefused, SetupError
 from app.core.redaction import redact
 from app.core.singletons import singleton
+from app.domain.scenario.library_rules import compatible_asset_types, place_asset_types
 from app.domain.shared.ask_ai import (
     ChatPrompt,
     answer_item_problems,
@@ -61,15 +71,13 @@ from app.domain.shared.names import (
     threat_name_without_code,
 )
 from app.domain.shared.parallel import run_in_shared_pool
-from app.domain.shared.prompt_redaction import facts_safe_for_prompt
-from app.models.asset_context import FrozenContext
+from app.domain.shared.prompt_redaction import DATABASE_KEYS, facts_safe_for_prompt
+from app.models.asset_context import AssetContextRows, FrozenContext, Row
 from app.models.library import (
     LibraryActor,
     LibraryThreat,
     LibraryThreatType,
     ThreatLibrary,
-    compatible_asset_types,
-    place_asset_types,
 )
 from app.models.scenario.plan import (
     ActorCandidates,
@@ -84,13 +92,126 @@ from app.models.scenario.plan import (
     RelevanceVerdict,
     ThreatFindings,
     Verdict,
-    attacker_unsupported,
-    in_stride_order,
 )
+from app.models.scenario.views import StartRunRequest
 from app.search.service import LibrarySearch, get_library_search
-from app.search.snapshot import LibrarySnapshot
+from app.search.snapshot import LibrarySnapshot, linked_actors_by_type
 
 log = structlog.get_logger(__name__)
+
+# --- what the plan's shapes mean
+
+#: The tie-break's "no library id": after every real one.
+_NO_LIBRARY_ID = 1 << 62
+
+
+def in_stride_order(categories: set[StrideCategory]) -> tuple[StrideCategory, ...]:
+    """The categories in STRIDE order."""
+    return tuple(category for category in STRIDE_DEFINITIONS if category in categories)
+
+
+def attacker_unsupported(check: str | None, acting: Mapping[str, Any]) -> bool:
+    """True when no check backs the acting attacker (`acting` as stored), so none is attributed; a
+    curator-linked actor stays. `check`: how the attacker was decided (AttackerCheck)."""
+    if check == AttackerCheck.NONE_FITS:
+        return True
+    return bool(acting.get("closest")) and check in (AttackerCheck.NOT_CHECKED, AttackerCheck.RANKED)
+
+
+def verdict_applies(verdict: Verdict) -> bool:
+    """Relevant on recorded facts alone: the AI may assume a detail, never that something exists."""
+    return verdict.relevant and not verdict.needs
+
+
+def threat_from_library(threat: PlannedThreat) -> bool:
+    """True when the threat comes from the library."""
+    return threat.catalogue_id is not None
+
+
+def threat_reason_for(threat: PlannedThreat, kind: str) -> str:
+    """Why it applies as `kind`: the gate's reason for that category, else its own reason."""
+    return dict(threat.kind_reasons).get(kind, threat.reason)
+
+
+def threat_reasons_by_kind(threat: PlannedThreat) -> dict[str, str]:
+    """Every category's own reason."""
+    return {str(category): threat_reason_for(threat, category) for category in threat.categories}
+
+
+def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
+    """The threat as the plan stores it; evidence keys only when it was searched."""
+    record: dict[str, Any] = {
+        "key": threat.key,
+        "library_id": threat.catalogue_id,
+        "ai_generated": not threat_from_library(threat),
+        "type": {"id": threat.type_id, "name": threat.type_name},
+        "name": threat.name,
+        "category": threat.categories[0],
+        "categories": list(threat.categories),
+        "systems": list(threat.systems),
+        "reason": threat.reason,
+        "reasons": threat_reasons_by_kind(threat),
+        "impact": threat.impact,
+        "confidence": threat.confidence,
+        "actors": [
+            {"id": actor.actor_id, "name": actor.name, "role": actor.role, "closest": threat.closest_attacker}
+            for actor in threat.actors
+        ],
+        "attacker_check": threat.attacker_check,
+        "attacker_check_reason": threat.attacker_check_reason or None,
+    }
+    if threat.intel_search is not None:
+        record["evidence"] = [entry.as_doc() for entry in threat.evidence]
+        record["intel_search"] = threat.intel_search.as_doc()
+    return record
+
+
+def not_judged_count(audit: CategoryAudit) -> int:
+    """Threats whose gate batch stayed unusable after its retries: the category is not fully assessed."""
+    return sum(rejected["code"] == CandidateRejection.NOT_JUDGED for rejected in audit.rejected)
+
+
+def attack_path_id(path: AttackPath) -> str:
+    """A stable id from the path's threats and scope."""
+    keys = "|".join(step.key for step in path.steps) + (f"@{path.scope}" if path.scope else "")
+    return hashlib.sha256(keys.encode()).hexdigest()[:16]
+
+
+def attack_path_categories(path: AttackPath) -> tuple[StrideCategory, ...]:
+    """The first step's main category, then the others in STRIDE order."""
+    first = path.steps[0].categories[0]
+    rest = {category for step in path.steps for category in step.categories} - {first}
+    return (first, *in_stride_order(rest))
+
+
+def attack_path_systems(path: AttackPath) -> tuple[int, ...]:
+    """Every system the path's steps touch, sorted."""
+    return tuple(sorted({system for step in path.steps for system in step.systems}))
+
+
+def attack_path_from_library(path: AttackPath) -> bool:
+    """True when every step comes from the library."""
+    return all(threat_from_library(step) for step in path.steps)
+
+
+def attack_path_impact(path: AttackPath) -> int:
+    """The highest impact of the path's steps."""
+    return max(step.impact for step in path.steps)
+
+
+def attack_path_confidence(path: AttackPath) -> float:
+    """The lowest confidence of the path's steps."""
+    return min(step.confidence for step in path.steps)
+
+
+def attack_path_tie_break(path: AttackPath) -> tuple[bool, int, str, str]:
+    """The same order on every run: library before AI, the lowest library id, the path id, the text."""
+    library_ids = [step.catalogue_id for step in path.steps if step.catalogue_id is not None]
+    text = " -> ".join(step.name for step in path.steps)
+    digest = hashlib.sha256(" ".join(text.lower().split()).encode()).hexdigest()
+    lowest = min(library_ids, default=_NO_LIBRARY_ID)
+    return (not attack_path_from_library(path), lowest, attack_path_id(path), digest)
+
 
 # --- the landscape: the asset and its systems as one text
 
@@ -357,7 +478,7 @@ class _CategoryJudge:
                 audit.rejected.append(_rejected(threat, CandidateRejection.NOT_JUDGED))
                 continue
             audit.judged_ids.add(threat.catalogue_id)
-            if verdict.applies:
+            if verdict_applies(verdict):
                 accepted.append((threat, verdict))
             else:
                 code = (
@@ -441,7 +562,7 @@ class _CategoryJudge:
             audit.gap_fill = GapFillOutcome.NOT_ASSESSED
             return None
         verdict = verdicts[item["slot"]]
-        return _ai_threat(audit.category, proposal, verdict, matched) if verdict.applies else None
+        return _ai_threat(audit.category, proposal, verdict, matched) if verdict_applies(verdict) else None
 
     def _is_library_threat(self, threat: str, category: StrideCategory) -> bool:
         """Whether a proposal is a library threat of the category this run judged (and found not to apply)."""
@@ -573,7 +694,11 @@ def _keep_on_matching_systems(
     kept = []
     for threat in threats:
         own = by_id.get(threat.catalogue_id) if threat.catalogue_id is not None else None
-        systems = tuple(s for s in threat.systems if own is None or own.fits(system_fits.get(s, frozenset())))
+        systems = tuple(
+            s
+            for s in threat.systems
+            if own is None or asset_type_fits(own.asset_type, system_fits.get(s, frozenset()))
+        )
         kept.append(threat if systems == threat.systems else dataclasses.replace(threat, systems=systems))
     return kept
 
@@ -596,8 +721,12 @@ def _placed(
 ) -> Verdict | None:
     """The verdict on only the places its threat's type fits; None when it fits none of them."""
     if not verdict.systems:  # the asset itself
-        return verdict if threat.fits(asset_fits) else None
-    systems = tuple(system for system in verdict.systems if threat.fits(system_fits.get(system, frozenset())))
+        return verdict if asset_type_fits(threat.asset_type, asset_fits) else None
+    systems = tuple(
+        system
+        for system in verdict.systems
+        if asset_type_fits(threat.asset_type, system_fits.get(system, frozenset()))
+    )
     if not systems:
         return None
     return verdict if systems == verdict.systems else dataclasses.replace(verdict, systems=systems)
@@ -618,7 +747,7 @@ def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThrea
         impact=max(kept.impact, other.impact),
         confidence=max(kept.confidence, other.confidence),
         actor_pick=kept.actor_pick or other.actor_pick,
-        kind_reasons=tuple((other.reasons_by_kind() | kept.reasons_by_kind()).items()),
+        kind_reasons=tuple((threat_reasons_by_kind(other) | threat_reasons_by_kind(kept)).items()),
     )
 
 
@@ -634,9 +763,13 @@ def merge_same_threats(threats: list[PlannedThreat]) -> list[PlannedThreat]:
     for threat in threats:
         seen = by_key.get(threat.key)
         by_key[threat.key] = threat if seen is None else merge_two_threats(seen, threat)
-    library_names = {(_name_key(t.name), t.type_id): t.key for t in by_key.values() if t.from_library}
+    library_names = {(_name_key(t.name), t.type_id): t.key for t in by_key.values() if threat_from_library(t)}
     for threat in sorted(by_key.values(), key=lambda t: t.key):
-        twin = None if threat.from_library else library_names.get((_name_key(threat.name), threat.type_id))
+        twin = (
+            None
+            if threat_from_library(threat)
+            else library_names.get((_name_key(threat.name), threat.type_id))
+        )
         if twin is not None:
             by_key[twin] = merge_two_threats(by_key[twin], by_key.pop(threat.key))
     return [by_key[key] for key in sorted(by_key)]
@@ -647,7 +780,7 @@ def merge_reworded_threats(
 ) -> list[PlannedThreat]:
     """An AI threat whose name means what a library threat's or an earlier AI threat's of the same type means
     (cosine at least AI_DUPLICATE_COSINE, the asset's name left out) is folded into it; one embedding call."""
-    ai_threats = [threat for threat in threats if not threat.from_library]
+    ai_threats = [threat for threat in threats if not threat_from_library(threat)]
     if not ai_threats:
         return threats
     labels = {
@@ -656,7 +789,7 @@ def merge_reworded_threats(
     texts = list(dict.fromkeys(labels.values()))
     vectors = dict(zip(texts, embeddings.embed_search_queries(texts), strict=True))
     by_key = {threat.key: threat for threat in threats}
-    compared = [t.key for t in threats if t.from_library]  # library threats, then each AI threat kept
+    compared = [t.key for t in threats if threat_from_library(t)]  # library threats, then each AI threat kept
     for threat in ai_threats:
         vector = vectors[labels[threat.key]]
         twin = next(
@@ -695,7 +828,7 @@ def assign_attackers(
     library = snapshot.library.threat_library
     pool = _vetted_attackers(library)
     by_threat = {threat.catalogue_id: threat.linked_actors for threat in library.threats}
-    by_type = library.linked_actors_by_type()
+    by_type = linked_actors_by_type(library)
     linked = [
         by_threat.get(t.catalogue_id, ()) if t.catalogue_id is not None else by_type.get(t.type_id, ())
         for t in threats
@@ -810,7 +943,11 @@ class ThreatFinder:
         """The six categories at once, their gate calls in one shared pool; the asset-type fit and the needs
         refusal; then any gap fill. In STRIDE order."""
         allowed = _run_asset_types(context)
-        fitting = [threat for threat in snapshot.library.threat_library.threats if threat.fits(allowed)]
+        fitting = [
+            threat
+            for threat in snapshot.library.threat_library.threats
+            if asset_type_fits(threat.asset_type, allowed)
+        ]
         by_category = {
             category: [t for t in fitting if category in t.categories] for category in StrideCategory
         }
@@ -837,7 +974,7 @@ def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
         reason=replace_codes_with_names(threat.reason, names),
         attacker_check_reason=replace_codes_with_names(threat.attacker_check_reason, names),
     )
-    if threat.from_library:
+    if threat_from_library(threat):
         return threat
     return dataclasses.replace(
         threat,
@@ -895,7 +1032,7 @@ def path_on(
 
 def _strength(threat: PlannedThreat) -> tuple[Any, ...]:
     """Impact, then confidence, then the paths' tie-break: library before AI, the lowest library id."""
-    return (-threat.impact, -threat.confidence, *AttackPath((threat,)).tie_break())
+    return (-threat.impact, -threat.confidence, *attack_path_tie_break(AttackPath((threat,))))
 
 
 def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
@@ -903,10 +1040,10 @@ def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
     return sorted(
         paths,
         key=lambda path: (
-            -path.impact,
-            -path.confidence,
-            _STRIDE_ORDER.index(path.categories[0]),
-            *path.tie_break(),
+            -attack_path_impact(path),
+            -attack_path_confidence(path),
+            _STRIDE_ORDER.index(attack_path_categories(path)[0]),
+            *attack_path_tie_break(path),
         ),
     )
 
@@ -927,17 +1064,18 @@ def build_plan(findings: ThreatFindings, target: int) -> dict[str, Any]:
     """The plan the run freezes: every threat once, its paths ranked and the `target` (TOTAL_SCENARIO_COUNT,
     0 = no cap) best selected, and the categories that could not be fully assessed."""
     grouped = _group_by_attack(findings.threats)
-    also_applies = {path.path_id: others for path, others in grouped}
+    also_applies = {attack_path_id(path): others for path, others in grouped}
     ranked = rank_paths(path for path, _ in grouped)
     records = [
-        _path_record(path, rank, findings.category_ids, also_applies[path.path_id])
+        _path_record(path, rank, findings.category_ids, also_applies[attack_path_id(path)])
         for rank, path in enumerate(ranked, start=1)
     ]
-    covered = {category for path in ranked for category in path.categories}
+    covered = {category for path in ranked for category in attack_path_categories(path)}
     return {
         "prompt_version": PLANNER_PROMPT_VERSION,
         "threats": [
-            threat.to_record() | {"category_id": findings.category_ids.get(threat.categories[0].lower())}
+            planned_threat_record(threat)
+            | {"category_id": findings.category_ids.get(threat.categories[0].lower())}
             for threat in findings.threats
         ],
         "paths": select_up_to_target(records, target),
@@ -946,7 +1084,7 @@ def build_plan(findings: ThreatFindings, target: int) -> dict[str, Any]:
         "not_assessed": [
             audit.category
             for audit in findings.audits
-            if audit.not_judged
+            if not_judged_count(audit)
             or (audit.category not in covered and audit.gap_fill == GapFillOutcome.NOT_ASSESSED)
         ],
     }
@@ -958,7 +1096,7 @@ def _path_record(
     """A path as the plan holds it: its threats by key, the card's category with its library id."""
     category = path.steps[-1].categories[0]
     return {
-        "path_id": path.path_id,
+        "path_id": attack_path_id(path),
         "rank": rank,
         "served": None,
         "attempts": 0,
@@ -966,10 +1104,10 @@ def _path_record(
         "steps": [step.key for step in path.steps],
         "category": category,
         "category_id": category_ids.get(category.lower()),
-        "categories": list(path.categories),
-        "systems": list(path.systems),
-        "impact": path.impact,
-        "confidence": path.confidence,
+        "categories": list(attack_path_categories(path)),
+        "systems": list(attack_path_systems(path)),
+        "impact": attack_path_impact(path),
+        "confidence": attack_path_confidence(path),
         "also_applies": also_applies,
     }
 
@@ -1083,3 +1221,313 @@ def _found_no_evidence(threat: dict[str, Any]) -> bool:
     search = threat.get("intel_search")
     searched = search is not None and search.get("failure") is None and search.get("snapshot_id") is not None
     return searched and not threat.get("evidence")
+
+
+# --- the run's frozen context: the procedure's rows as the facts every step reads, checked first
+
+#: Coded columns holding one saved option value, and the option code that names it.
+SINGLE_SELECT_CODES: Final = {
+    "accessability_channel": "acc-channel",
+    "hosting_location": "hosting-location",
+    "network_connectivity_primary_dr": "network-connectivity",
+    "dr_drill_frequency": "dr-drill",
+    "managed_by": "managed-by",
+}
+#: Coded columns holding a JSON array of saved option values, or the names the procedure already joined.
+MULTI_SELECT_CODES: Final = {
+    "technology_used": "technology-used",
+    "database_platforms": "database-platforms",
+    "targeted_users": "targeted-users",
+    "saas_platform_list": "saas-platforms",
+    "public_cloud_platforms": "pub-c-platforms",
+}
+_SINGLE_CODES: Final = {**SINGLE_SELECT_CODES, "asset_priority": "priority"}
+_NAME_FACTS: Final = ("critical_service", "sector", "sub_sector")
+_NEVER_TESTED_YEAR: Final = 1900  # SQL Server's minimum date: "never", not a real date
+#: Names a fact column may not have: the app's own (alias) and the keys every prompt drops.
+_RESERVED_NAMES: Final = (frozenset(ContextProperties.ALWAYS_USED) | DATABASE_KEYS) - set(
+    ContextProperties.HEAD
+)
+_ASSET_SETTING, _SYSTEM_SETTING = "ASSET_PROPERTIES_REQUIRED", "SYSTEM_PROPERTIES_REQUIRED"
+_ALWAYS_REQUIRED: Final = frozenset({"name"})  # every prompt, card and search names the asset and its systems
+
+
+def freeze_context(request: StartRunRequest, rows: AssetContextRows) -> FrozenContext:
+    """The run's frozen context from the procedure's rows: 403/404/422 for the request, 500 for a procedure
+    set up wrong."""
+    _check_procedure_columns(rows)
+    _check_ownership(request, rows)
+    assert rows.asset is not None
+    _check_sector(request, rows.sector)
+    _warn_unlinked_service(request, rows.services)
+    options = _option_names_by_code(rows.options)
+    systems_by_id = {row["id"]: row for row in rows.systems}
+    asset_facts = _facts_of_row(rows.asset, options)
+    systems = [
+        _frozen_system(systems_by_id[system_id], f"{ThreatFinding.SYSTEM_ALIAS}{position}", options)
+        for position, system_id in enumerate(request.supporting_system_ids, start=1)
+    ]
+    asset = _head_columns(rows.asset)
+    check_required(request, {"name": asset["name"], **asset_facts}, systems)
+    return FrozenContext(asset, asset_facts, systems, _missing_facts(systems))
+
+
+def _display_name(value: Any) -> Any:
+    """A name as prompts and cards show it: runs of whitespace collapsed to one space."""
+    return " ".join(value.split()) if isinstance(value, str) else value
+
+
+def _check_procedure_columns(rows: AssetContextRows) -> None:
+    """500 setup_error when a row lacks a head column, a fact has a reserved name, or the dropdown names
+    lack code, name and value (or id)."""
+    for kind, found in (("asset", [rows.asset] if rows.asset else []), ("supporting system", rows.systems)):
+        if not found:
+            continue
+        if any(column not in row for row in found for column in ContextProperties.HEAD):
+            columns = ", ".join(ContextProperties.HEAD)
+            raise SetupError(PropertyMessage.HEAD_MISSING.format(columns=columns, rows=kind))
+        facts = set(found[0]) - set(ContextProperties.HEAD)  # one result set: every row has its columns
+        # A reserved name would replace SYS1..n, or count as recorded while the AI never saw it.
+        if reserved := sorted(facts & _RESERVED_NAMES):
+            raise SetupError(PropertyMessage.RESERVED.format(columns=", ".join(reserved), rows=kind))
+    if rows.options and not _option_key(rows.options[0]):
+        raise SetupError(PropertyMessage.OPTIONS_OUT_OF_DATE.format(found=", ".join(rows.options[0])))
+
+
+def _check_ownership(request: StartRunRequest, rows: AssetContextRows) -> None:
+    """403 an asset the entity does not own or a system not linked; 404 an unknown service or sector."""
+    if rows.asset is None:
+        raise Forbidden(
+            SessionMessage.ASSET_NOT_OWNED.format(asset_id=request.asset_id),
+            reason=ConflictReason.ASSET_NOT_OWNED,
+        )
+    linked = {row["id"] for row in rows.systems}
+    unlinked = [system_id for system_id in request.supporting_system_ids if system_id not in linked]
+    if unlinked:
+        message = SessionMessage.SYSTEMS_NOT_LINKED.format(system_ids=unlinked, asset_id=request.asset_id)
+        raise Forbidden(message, reason=ConflictReason.SYSTEM_NOT_LINKED, details={"system_ids": unlinked})
+    if request.service_id is not None and not any(row["id"] == request.service_id for row in rows.services):
+        raise NotFound(SessionMessage.SERVICE_NOT_FOUND.format(service_id=request.service_id))
+    asked_sector = request.subsector_id or request.sector_id
+    if asked_sector is not None and rows.sector is None:
+        raise NotFound(SessionMessage.SECTOR_NOT_FOUND.format(sector_id=asked_sector))
+
+
+def _check_sector(request: StartRunRequest, row: Row | None) -> None:
+    """422 when a sector_id sent with a sub-sector is not its parent."""
+    if row is None or request.subsector_id is None or request.sector_id is None:
+        return
+    top_id = row["parent_id"] if row["parent_id"] is not None else row["id"]
+    if top_id != request.sector_id:
+        message = SessionMessage.SECTOR_NOT_PARENT.format(
+            sector_id=request.sector_id, subsector_id=request.subsector_id, parent_id=top_id
+        )
+        raise Invalid(message, errors=[{"field": f"{request.FIELD_PREFIX}.sector_id", "message": message}])
+
+
+def _warn_unlinked_service(request: StartRunRequest, rows: list[Row]) -> None:
+    """Logs an asked service the asset is not linked to; it is used anyway."""
+    if request.service_id is not None and not any(row["linked"] for row in rows):
+        log.warning(
+            LogEvent.CONTEXT_SERVICE_NOT_LINKED, asset_id=request.asset_id, service_id=request.service_id
+        )
+
+
+def _option_names_by_code(rows: list[Row]) -> dict[str, dict[int, str]]:
+    """{option code in lower case (SQL compares codes case-insensitively): {saved number: name}}."""
+    names: dict[str, dict[int, str]] = {}
+    key = _option_key(rows[0]) if rows else None
+    for row in rows:
+        if key and (row["name"] or "").strip():  # a blank option name names nothing: reads as unanswered
+            names.setdefault(str(row["code"]).strip().lower(), {})[row[key]] = row["name"]
+    return names
+
+
+def _option_key(row: Row) -> str | None:
+    """The column a dropdown-names row holds its number in (value or id), when it has code and name."""
+    if any(column not in row for column in ContextProperties.OPTION_COLUMNS):
+        return None
+    return next((key for key in ContextProperties.OPTION_KEYS if key in row), None)
+
+
+def _single_select_name(raw: int | str | None, code: str, options: dict[str, dict[int, str]]) -> str | None:
+    """The saved option's name, or the name the procedure already gave; None when unanswered (NULL or the
+    form's 0) or unknown (logged)."""
+    if isinstance(raw, str):
+        number = _whole_number(raw)
+        if number is None:
+            return _display_name(raw) or None
+        raw = number
+    if not raw:
+        return None
+    name = options.get(code, {}).get(raw)
+    if name is None:
+        log.warning(LogEvent.CONTEXT_OPTION_VALUE_NOT_FOUND, code=code, value=raw)
+    return name
+
+
+def _multi_select_names(raw: str | None, code: str, options: dict[str, dict[int, str]]) -> list[str] | None:
+    """Names of a JSON array of saved values (an unknown item dropped alone, as SQL's TRY_CAST); a broken
+    array is none; a text that is no array is the names the procedure already joined."""
+    text = (raw or "").strip()
+    try:
+        items = json.loads(text) if text else []
+    except ValueError:
+        if text.startswith("["):
+            return None
+        return [name for name in (part.strip() for part in text.split(",")) if name] or None
+    known = options.get(code, {})
+    values = map(_whole_number, items if isinstance(items, list) else [])
+    return [known[value] for value in values if value in known] or None
+
+
+def _whole_number(item: Any) -> int | None:
+    """6 or "6" -> 6; null, true, 6.5 or "x" -> None (as SQL's TRY_CAST(... AS INT))."""
+    try:
+        return int(str(item))
+    except ValueError:
+        return None
+
+
+def _stored_value(value: Any) -> Any:
+    """A column's value as MongoDB stores it and a prompt reads it: a DECIMAL as a number, a date as ISO text
+    (SQL Server's minimum date as None), binary as None, any other type as text."""
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, date):  # a datetime too
+        return None if value.year <= _NEVER_TESTED_YEAR else value.isoformat()
+    if isinstance(value, bytes | bytearray | memoryview):
+        return None
+    return str(value)
+
+
+def _fact_value(column: str, value: Any, options: dict[str, dict[int, str]]) -> Any:
+    """One column's fact: option names for a coded column, collapsed spaces for a name, else its value."""
+    if column in _SINGLE_CODES:
+        return _single_select_name(value, _SINGLE_CODES[column], options)
+    if column in MULTI_SELECT_CODES:
+        return _multi_select_names(value, MULTI_SELECT_CODES[column], options)
+    if column in _NAME_FACTS:
+        return _display_name(value)
+    return _stored_value(value)
+
+
+def _facts_of_row(row: Row, options: dict[str, dict[int, str]]) -> dict[str, Any]:
+    """Every column of a procedure row but its head, in the procedure's order."""
+    return {
+        column: _fact_value(column, value, options)
+        for column, value in row.items()
+        if column not in ContextProperties.HEAD
+    }
+
+
+def _head_columns(row: Row) -> dict[str, Any]:
+    """A row's id, display name and category code."""
+    return {"id": row["id"], "name": _display_name(row["name"]), "category_code": row["category_code"]}
+
+
+def _frozen_system(row: Row, alias: str, options: dict[str, dict[int, str]]) -> dict[str, Any]:
+    """A supporting system as the run freezes it: id, alias, head and facts."""
+    return {"id": row["id"], "alias": alias, **_head_columns(row), **_facts_of_row(row, options)}
+
+
+def _missing_facts(systems: list[dict[str, Any]]) -> list[str]:
+    """The system facts not one system in scope records: shown to the reviewer, never a reason to refuse."""
+    first = systems[0] if systems else {}  # one result set: every system has the same columns
+    columns = [column for column in first if column not in ContextProperties.ALWAYS_USED]
+    return sorted(
+        column
+        for column in columns
+        if not any(facts_safe_for_prompt({"fact": system.get(column)}) for system in systems)
+    )
+
+
+def check_required(
+    request: StartRunRequest, asset_facts: dict[str, Any], systems: list[dict[str, Any]]
+) -> None:
+    """500 when a required name is no column of the procedure; else 422 naming every required fact not
+    recorded (as the AI would be shown it), the asset's first, then each system's in request order."""
+    settings = get_settings()
+    required_asset = settings.required_asset_properties | _ALWAYS_REQUIRED
+    required_system = settings.required_system_properties | _ALWAYS_REQUIRED
+    _check_returned(_ASSET_SETTING, required_asset, asset_facts)
+    for system in systems[:1]:  # every system row has the procedure's same columns
+        _check_returned(_SYSTEM_SETTING, required_system, system)
+    gaps: list[tuple[str, str, list[str]]] = []  # (field, owner, names)
+    by_field: dict[str, list[str]] = {}
+    for name in _not_recorded(asset_facts, required_asset):  # sector & co come from the request's own fields
+        field = ContextProperties.REQUEST_FIELDS.get(name, "asset_id")
+        by_field.setdefault(f"{request.FIELD_PREFIX}.{field}", []).append(name)
+    gaps += [(field, f"asset {request.asset_id}", names) for field, names in by_field.items()]
+    for index, system in enumerate(systems):
+        if names := _not_recorded(system, required_system):
+            gaps.append(
+                (f"{request.FIELD_PREFIX}.supporting_system_id.{index}", f"system {system['id']}", names)
+            )
+    if gaps:
+        _refuse_missing_facts(gaps)
+
+
+def _check_returned(setting: str, required: frozenset[str], facts: dict[str, Any]) -> None:
+    """500 setup_error naming the required names the procedure does not return."""
+    if absent := sorted(required - facts.keys()):
+        raise SetupError(PropertyMessage.NOT_RETURNED.format(setting=setting, names=", ".join(absent)))
+
+
+def _not_recorded(facts: dict[str, Any], required: frozenset[str]) -> list[str]:
+    """The required names, in the facts' order, whose value the AI would not be shown."""
+    return [name for name in facts if name in required and not facts_safe_for_prompt({"fact": facts[name]})]
+
+
+def _refuse_missing_facts(gaps: list[tuple[str, str, list[str]]]) -> None:
+    """422 required_facts_missing with one error per field: names and ids, never a value."""
+    errors = [
+        {"field": field, "message": PropertyMessage.NOT_RECORDED.format(owner=owner, names=", ".join(names))}
+        for field, owner, names in gaps
+    ]
+    detail = PropertyMessage.REQUIRED_MISSING.format(
+        gaps="; ".join(f"{owner}: {', '.join(names)}" for _, owner, names in gaps)
+    )
+    raise Invalid(detail, reason=ConflictReason.REQUIRED_FACTS_MISSING, errors=errors)
+
+
+def request_fingerprint(request: StartRunRequest) -> str:
+    """SHA-256 of the request's canonical JSON (systems as a set): what a replayed key must match."""
+    canonical = request.model_dump(mode="json") | {
+        "supporting_system_ids": sorted(request.supporting_system_ids)
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+
+
+def check_same_start_request(earlier: dict[str, Any], request: StartRunRequest) -> None:
+    """409 idempotency_key_conflict when the run that took the key is hand-written or another request's."""
+    fingerprint = request_fingerprint(request)
+    if (
+        earlier.get("kind") == RunKind.MANUAL
+        or earlier["asset_id"] != request.asset_id
+        or earlier.get("request_hash", fingerprint) != fingerprint
+    ):
+        message = SessionMessage.IDEMPOTENCY_KEY_CONFLICT
+        raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
+
+
+def check_intel_has_data(active_snapshot: dict[str, Any]) -> None:
+    """409 intel_no_data when the active intelligence snapshot indexes nothing."""
+    if not (active_snapshot.get("counts") or {}).get("indexed"):
+        raise Conflict(IntelMessage.NO_DATA_YET, reason=ConflictReason.INTEL_NO_DATA)
+
+
+#: The message of each reason a next set has no path left to write.
+_NONE_LEFT: Final = {
+    ConflictReason.NOTHING_LEFT: ReviewMessage.NOTHING_LEFT,
+    ConflictReason.TARGET_REACHED: ReviewMessage.TARGET_REACHED,
+    ConflictReason.SCENARIOS_ABANDONED: ReviewMessage.SCENARIOS_ABANDONED,
+}
+
+
+def nothing_left_to_write(session_id: str, paths: Iterable[dict[str, Any]]) -> Conflict:
+    """409 naming why a next set has no path left: all written, the scenario count reached, or given up."""
+    reason = why_no_path_left(paths)
+    return Conflict(_NONE_LEFT[reason].format(session_id=session_id), reason=reason)

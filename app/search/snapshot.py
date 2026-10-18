@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from app.ai import EmbeddingModel
+from app.core.asset_types import asset_type_fits
 from app.core.constants import Controls, EmbeddingCorpus, StrideCategory
 from app.core.tracing import traced
 from app.models.library import (
@@ -24,11 +25,18 @@ from app.models.library import (
 from app.search.indexes import HybridIndex
 
 
+def linked_actors_by_type(library: ThreatLibrary) -> dict[int, tuple[LibraryActor, ...]]:
+    """The actors the library links to each type (ThreatType_ThreatActor_Map): a type's own record, else
+    what its live threats carry (G108: an AI threat takes those of the library type it matched)."""
+    by_threat = {threat.type_id: threat.linked_actors for threat in library.threats}
+    return by_threat | {threat_type.type_id: threat_type.linked_actors for threat_type in library.types}
+
+
 def threat_types_of(library: ThreatLibrary) -> tuple[LibraryThreatType, ...]:
     """The types the live threats use, by id, each with the actors the library links to it: an AI proposal's
     matched type lists them to the relevance gate, so its attacker is judged (owner 2026-10-17: "a
     defensible relationship"), never only the nearest by similarity."""
-    linked = library.linked_actors_by_type()
+    linked = linked_actors_by_type(library)
     pairs = sorted({(threat.type_id, threat.type_name) for threat in library.threats})
     return tuple(LibraryThreatType(*pair, linked_actors=linked.get(pair[0], ())) for pair in pairs)
 
@@ -76,7 +84,9 @@ class LibrarySnapshot:
         fits = (
             np.ones(len(threats), dtype=bool)
             if allowed_types is None
-            else np.array([threat.fits(allowed_types) for threat in threats], dtype=bool)
+            else np.array(
+                [asset_type_fits(threat.asset_type, allowed_types) for threat in threats], dtype=bool
+            )
         )
         scopes = [self._threats_in_category[category] & fits for _, category in queries]
         texts = [query for query, _ in queries]
@@ -100,7 +110,7 @@ class LibrarySnapshot:
         # ponytail: the mask is rebuilt per call (1,288 comparisons); cache it per allowed set if it shows.
         mask = np.array(
             [
-                (allowed_types is None or control.fits(allowed_types))
+                (allowed_types is None or asset_type_fits(control.asset_type, allowed_types))
                 and (ai_controls or control.domain != Controls.AI_DOMAIN)
                 for control in controls
             ],

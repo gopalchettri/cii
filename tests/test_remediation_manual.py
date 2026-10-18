@@ -29,9 +29,10 @@ from app.core.constants import (
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.scenario.repository import scenario_sessions
+from app.domain.remediation.manual_records import manual_request_fingerprint
 from app.models.library import LoadedLibraries
 from app.models.remediation_requests import PlanRequest
-from app.services.remediation.manual import ManualPlans, _fingerprint, get_manual_plans
+from app.services.remediation.manual import ManualPlans, get_manual_plans
 from app.services.remediation.manual_scenarios import ManualScenarios
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
@@ -205,7 +206,7 @@ def test_the_key_is_required_and_names_one_request(
     get_mongodb()[Collection.SESSIONS].insert_one(
         {"_id": uuid.uuid4().hex, "entity_id": 86, "asset_id": 103, "kind": RunKind.GENERATED,
          "idempotency_key": generated, "status": "done", "updated_at": datetime.now(UTC),
-         "request_hash": _fingerprint(PlanRequest.model_validate(new_wording))}
+         "request_hash": manual_request_fingerprint(PlanRequest.model_validate(new_wording))}
     )  # fmt: skip
     taken = _post(client, api_key, new_wording, generated)
     assert (taken.status_code, taken.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)

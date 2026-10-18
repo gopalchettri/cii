@@ -29,10 +29,10 @@ from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Conflict
 from app.data_access.jobs.repository import JobRepository
 from app.data_access.library.repository import SqlServerRepository
-from app.data_access.scenario.repository import scenario_sessions
+from app.data_access.scenario.repository import scenario_sessions, session_status_from_record
 from app.models.api_clients import Principal
 from app.models.asset_context import FrozenContext
-from app.models.scenario.views import SessionStatus, StartRunRequest
+from app.models.scenario.views import StartRunRequest
 from app.services.api_clients import get_api_client_service
 from app.services.scenario import runs as runs_module
 from app.services.scenario.runs import RunService, get_run_service
@@ -240,7 +240,7 @@ def test_a_run_s_status_and_the_controls_step(client: TestClient, api_key: str) 
         "step": Step.SCENARIOS,
         "counts": {"controls_waiting": 2},
     }
-    assert SessionStatus.from_record(record).step == Step.CONTROLS
+    assert session_status_from_record(record).step == Step.CONTROLS
 
 
 def _scenario(session_id: str, path_id: str, version: int, **fields: Any) -> str:

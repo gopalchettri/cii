@@ -1,7 +1,5 @@
 """API-client use cases: mint (secret shown once), list, revoke, and verify a caller's key."""
 
-import hashlib
-import math
 import secrets
 import time
 import uuid
@@ -12,19 +10,13 @@ from app.core.constants import ApiClientMessage, ApiKey, AuditAction, AuditTarge
 from app.core.exceptions import Conflict, DuplicateRecord, NotFound
 from app.core.singletons import singleton
 from app.data_access.admin.repository import ApiClientRepository, api_clients, audit_records
+from app.domain.api_keys import could_be_minted_key, hash_api_key
 from app.services.audit import admin_actor, audit_target
-
-#: Every minted key: the prefix + secrets.token_urlsafe(RANDOM_BYTES), 4 characters per 3 bytes, no padding.
-_MINTED_KEY_LENGTH = len(ApiKey.PREFIX) + math.ceil(ApiKey.RANDOM_BYTES * 4 / 3)
 
 
 def _as_client(stored: dict[str, Any]) -> dict[str, Any]:
     """A stored client with its id as `client_id` (`_id` is only MongoDB's name for it)."""
     return {"client_id": stored.pop("_id"), **stored}
-
-
-def hash_api_key(raw_key: str) -> str:
-    return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
 class ApiClientService:
@@ -90,7 +82,7 @@ class ApiClientService:
         """The client id owning an active key, or None. Cached per process for Cache.API_KEY_TTL_SECONDS,
         so a revocation reaches every pod within that time. A key that cannot be one TSG minted (wrong prefix
         or length) is refused without a MongoDB read: junk keys from anyone cost nothing."""
-        if not raw_key.startswith(ApiKey.PREFIX) or len(raw_key) != _MINTED_KEY_LENGTH:
+        if not could_be_minted_key(raw_key):
             return None
         key_hash = hash_api_key(raw_key)
         cached = self._verified.get(key_hash)

@@ -160,7 +160,7 @@ def replay_ranking(plan: dict[str, Any]) -> tuple[int, int]:
     """rank_paths over the plan's own paths, each rebuilt from its stored threat and systems (the merges,
     G213, are on the record: the replay re-asks no AI): (same place, paths)."""
     from app.core.constants import StrideCategory
-    from app.domain.scenario.plan import path_on, rank_paths
+    from app.domain.scenario.plan import attack_path_id, path_on, rank_paths
     from app.models.scenario.plan import PlannedThreat
 
     threats = [
@@ -183,7 +183,7 @@ def replay_ranking(plan: dict[str, Any]) -> tuple[int, int]:
         path_on(by_key[path["steps"][0]], tuple(path["systems"]), StrideCategory(path["categories"][0]))
         for path in plan["paths"]
     )
-    again = {path.path_id: rank for rank, path in enumerate(ranking, start=1)}
+    again = {attack_path_id(path): rank for rank, path in enumerate(ranking, start=1)}
     stored = {path["path_id"]: path["rank"] for path in plan["paths"]}
     return sum(again.get(path_id) == place for path_id, place in stored.items()), len(stored)
 

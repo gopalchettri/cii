@@ -5,11 +5,12 @@ import json
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC
-from typing import Any
 
 import structlog
 
+from app.core.asset_types import canonical_asset_type, unknown_asset_type
 from app.core.constants import LibraryRowKind, LogEvent, StrideCategory
+from app.core.database import Row
 from app.models.library import (
     LibraryActor,
     LibraryControl,
@@ -18,11 +19,8 @@ from app.models.library import (
     PendingLibraryRow,
     RejectedLibraryThreat,
     ThreatLibrary,
-    canonical_asset_type,
-    unknown_asset_type,
 )
 
-Row = dict[str, Any]
 log = structlog.get_logger(__name__)
 _STRIDE_ORDER: dict[str, int] = {category.value: index for index, category in enumerate(StrideCategory)}
 

@@ -12,6 +12,7 @@ import pytest
 from pymongo.errors import DuplicateKeyError
 
 from app.ai import reranks_in_background
+from app.core.asset_types import asset_type_fits, unknown_asset_type
 from app.core.config import get_settings
 from app.core.constants import (
     Collection,
@@ -33,17 +34,11 @@ from app.data_access.scenario.repository import (
     controls_deliveries,
     scenario_controls,
     scenarios,
+    session_status_from_record,
 )
 from app.domain.scenario.controls import ControlMapper
-from app.models.library import (
-    LibraryControl,
-    ThreatLibrary,
-    asset_type_fits,
-    compatible_asset_types,
-    place_asset_types,
-    unknown_asset_type,
-)
-from app.models.scenario.views import SessionStatus
+from app.domain.scenario.library_rules import compatible_asset_types, place_asset_types
+from app.models.library import LibraryControl, ThreatLibrary
 from app.search.service import LibrarySearch
 from app.worker.tasks import controls as controls_job
 from tests.fakes import FakeEmbeddings
@@ -130,7 +125,7 @@ def test_an_unnamed_duplicate_key_is_checked_never_taken_as_written(written: int
         assert clashing.save_scenario({"_id": "s1"}) is False
 
 
-#: As the run freezes it (services/scenario/runs.py): the asset's IT/OT code is `asset.category_code`;
+#: As the run freezes it (domain/scenario/plan.py): the asset's IT/OT code is `asset.category_code`;
 #: `asset_context.asset_type` is the platform's free-text type.
 _OT_CONTEXT = dataclasses.replace(
     CONTEXT,
@@ -479,7 +474,7 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     step reads `controls` only while controls wait; a repeated message maps nothing twice."""
     record_id = mapping_run["record_id"]
     waiting = _run_record(record_id) | {"counts": {"controls_waiting": 2}}
-    assert SessionStatus.from_record(waiting).step == "controls"
+    assert session_status_from_record(waiting).step == "controls"
     mapping = controls_job.RunControls._map_one
     monkeypatch.setattr(  # each mapping takes 20 ms at least: the status adds up its controls time
         controls_job.RunControls,
@@ -499,7 +494,7 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     assert _run_record(record_id)["counts"]["controls_waiting"] == 0
     assert _run_record(record_id)["timings"]["controls_s"] >= 0.04  # the two mappings, added up
     assert mapping_run["published"] == [record_id] * 2
-    assert SessionStatus.from_record(_run_record(record_id)).step == "scenarios"
+    assert session_status_from_record(_run_record(record_id)).step == "scenarios"
     assert _deliver(record_id, "task-2") == 0
 
 

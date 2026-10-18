@@ -190,6 +190,11 @@ class Settings(ScenarioOutputSettings):
     # NEXT_SET_SIZE. A review batch size, never a limit: the total still comes from TOTAL_SCENARIO_COUNT.
     initial_set_size: int = Field(default=6, ge=1, validation_alias="INITIAL_SET_SIZE")
     next_set_size: int = Field(default=6, ge=1, validation_alias="NEXT_SET_SIZE")
+    # Versions kept per remediation plan: all live in one MongoDB record (100-400 KB each), and MongoDB
+    # refuses a record over 16 MB, so 40 is the hard upper limit. 10 = the first plan + 9 regenerates.
+    regenerations_max_version_count: int = Field(
+        default=10, ge=1, le=40, validation_alias="REGENERATIONS_MAX_VERSION_COUNT"
+    )
 
     # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for both: a control
     # kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, ScenarioOutputSettings); an AI-proposed threat that
@@ -238,7 +243,7 @@ class Settings(ScenarioOutputSettings):
     def refuse_always_used_properties(self) -> "Settings":
         """Every environment: id, name, category_code and alias are always used, never a fact a run can lack;
         requiring one stops start-up. A name the procedure does not return is refused at the first run, which
-        is when the procedure is read (property_selection.check_required)."""
+        is when the procedure is read (app/domain/scenario/plan.py check_required)."""
         for setting, text in (
             ("ASSET_PROPERTIES_REQUIRED", self.asset_properties_required),
             ("SYSTEM_PROPERTIES_REQUIRED", self.system_properties_required),

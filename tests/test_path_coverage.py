@@ -4,9 +4,11 @@ not covered."""
 from datetime import UTC, datetime
 
 from app.core.constants import CoverageGap
+from app.data_access.scenario.repository import COVERAGE_FIELDS, SESSION_STATUS_FIELDS
 from app.domain.scenario.plan import build_plan
 from app.models.scenario.plan import ThreatFindings
-from app.models.scenario.views import COVERAGE_FIELDS, SessionStatus, coverage_record, run_coverage
+from app.models.scenario.views import SessionStatus
+from app.services.scenario.results import coverage_record, run_coverage
 from tests.planner_samples import S, planned
 from tests.test_attack_paths import LANDSCAPE
 
@@ -138,7 +140,7 @@ def test_the_results_work_coverage_out_from_the_plan_on_every_read() -> None:
 def test_the_status_never_reads_the_plan_paths_or_the_systems() -> None:
     """G228: the status is read on every run check and live update; only the results show the coverage, so
     only they read what it is worked out from."""
-    read = SessionStatus.RECORD_FIELDS
+    read = SESSION_STATUS_FIELDS
     assert not [key for key in read if key.startswith(("plan.paths", "context.systems"))]
     assert "coverage" not in SessionStatus.model_fields
 
@@ -164,7 +166,7 @@ def test_each_given_up_path_names_its_threat_and_its_own_reason() -> None:
     """G268 (run 89b47690: "the results give each one's reason" showed two identical codes and two ids):
     each entry carries its threat's name and its newest card's sentence for that reason: a blocked draft's
     finding of that code (else its first blocker), a failure card's message; nothing kept, None."""
-    from app.models.scenario.views import explain_given_up
+    from app.services.scenario.results import explain_given_up
 
     given_up = [
         {"path_id": "p1", "reason": "target_not_named", "replaced_by": None},

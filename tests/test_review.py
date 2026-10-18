@@ -24,11 +24,12 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.scenario.repository import scenarios
+from app.data_access.scenario.repository import scenarios, session_status_from_record
 from app.domain.scenario.plan import why_no_path_left
+from app.domain.scenario.review import decided_stamp
 from app.models.api_clients import Principal
 from app.models.library import LibraryThreat, ThreatLibrary
-from app.models.scenario.views import AcceptRequest, ScenarioIdsRequest, SessionStatus
+from app.models.scenario.views import AcceptRequest, ScenarioIdsRequest
 from app.services.api_clients import get_api_client_service
 from app.services.scenario import review as review_module
 from app.services.scenario.review import ReviewService, get_review_service
@@ -267,7 +268,7 @@ def test_two_calls_at_the_same_moment_exactly_one_wins(
     """T-SCN-19: an accept and a reject of one scenario, then two accepts of two versions of one path (the
     unique index decides): one changes it, the other reports changed_concurrently; never both."""
     record_id = _run()
-    run = SessionStatus.from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
+    run = session_status_from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
     principal = Principal("client", "u1", 86, "DESC")
     target = _scenario(record_id, "p1")
     accept, reject = _at_the_same_moment(
@@ -361,7 +362,7 @@ def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_h
 
     record_id = _run()
     target = _scenario(record_id, "p1")
-    run = SessionStatus.from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
+    run = session_status_from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
     refresh, calls = scenarios.update_scenario_session_counts, []
 
     def fails_once(session_id: str) -> dict[str, int]:
@@ -387,7 +388,7 @@ def test_one_refused_id_never_leaves_the_others_untried() -> None:
     refused = _scenario(record_id, "p1")
     _scenario(record_id, "p1", decision=Decision.ACCEPTED, version=2)
     others = [_scenario(record_id, f"p{number}") for number in range(2, 6)]
-    stamp = review_module.decided_stamp(Principal("client", "u1", 86, "DESC"))
+    stamp = decided_stamp(Principal("client", "u1", 86, "DESC"), datetime.now(UTC), uuid.uuid4().hex)
     ids = [refused, *others]
     changed = scenarios.update_scenario_decisions(ids, Decision.PENDING, Decision.ACCEPTED, stamp)
     assert changed == 4
@@ -401,7 +402,7 @@ def test_two_identical_clicks_at_once_audit_and_count_once(
     """G145: both clicks answer accepted; only the one whose write changed it records it."""
     record_id = _run()
     target = _scenario(record_id, "p1")
-    run = SessionStatus.from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
+    run = session_status_from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
     principal = Principal("client", "u1", 86, "DESC")
     one, two = _at_the_same_moment(
         monkeypatch,

@@ -6,11 +6,12 @@ from typing import Any
 
 import structlog
 
-from app.core.constants import Decision, Dependency, LogEvent, RemediationMessage, SessionMessage, Status
-from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Forbidden, NotFound
+from app.core.constants import Decision, Dependency, LogEvent, RemediationMessage, Status
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, NotFound
 from app.core.singletons import singleton
 from app.data_access.remediation.repository import remediation_plans
 from app.data_access.scenario.repository import scenarios
+from app.domain.remediation.plan_rules import check_own_entity, check_plan_of_scenario
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
 from app.models.remediation_views import RemediationList, RemediationResult, RemediationSummary
@@ -29,8 +30,8 @@ class RemediationQueries:
         """The scenario's plan as shown, with the scenario it treats; 404/403 as every plan route."""
         record = remediation_plans.get(fields="result", scenario_id=scenario_id)
         status = None if record is None else RemediationStatus.from_record(record)
-        _of_scenario(status, principal.entity_id, session_id, scenario_id)
-        assert record is not None  # _of_scenario refused a missing plan
+        check_plan_of_scenario(status, principal.entity_id, session_id, scenario_id)
+        assert record is not None  # check_plan_of_scenario refused a missing plan
         scenario = scenarios.get(fields=_SCENARIO_SUMMARY_FIELDS, _id=scenario_id)
         return RemediationResult.from_records(record, scenario, include_history)
 
@@ -45,8 +46,7 @@ class RemediationQueries:
         limit: int,
     ) -> RemediationList:
         """The entity's plans (the entity in the path must be the caller's, else 403), newest first."""
-        if entity_id != principal.entity_id:
-            raise Forbidden(SessionMessage.ENTITY_MISMATCH)
+        check_own_entity(entity_id, principal.entity_id)
         return self.run_plans(entity_id, None, status, decision, risk_level, offset, limit)
 
     def run_plans(  # noqa: PLR0913 — the list's filters, each its own query parameter
@@ -77,7 +77,7 @@ def find_plan_for_caller(session_id: str, scenario_id: str, entity_id: int) -> R
     """The plan of a scenario in a run, as every `.../treatment-plan` route reads it first: 404 when the
     scenario has no plan or is not in this run, 403 another entity's."""
     status = get_remediation_status_of_scenario(scenario_id)
-    return _of_scenario(status, entity_id, session_id, scenario_id)
+    return check_plan_of_scenario(status, entity_id, session_id, scenario_id)
 
 
 def read_current_remediation_status(remediation_id: str) -> dict[str, Any] | None:
@@ -103,18 +103,6 @@ def get_remediation_status_of_scenario(scenario_id: str) -> RemediationStatus | 
     """Reads the scenario's remediation plan status from tsg_remediations (id-only gate read), if any."""
     record = remediation_plans.get(fields="status", scenario_id=scenario_id)
     return None if record is None else RemediationStatus.from_record(record)
-
-
-def _of_scenario(
-    status: RemediationStatus | None, entity_id: int, session_id: str, scenario_id: str
-) -> RemediationStatus:
-    """The scenario's plan: 404 none or not in this run, 403 another entity's."""
-    if status is None or status.session_id != session_id:
-        message = RemediationMessage.PLAN_NOT_REQUESTED.format(scenario_id=scenario_id, session_id=session_id)
-        raise NotFound(message)
-    if status.entity_id != entity_id:
-        raise Forbidden(RemediationMessage.PLAN_OTHER_ENTITY.format(remediation_id=status.remediation_id))
-    return status
 
 
 @singleton

@@ -8,12 +8,15 @@ no control could ever be kept."""
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.constants import ErrorCode, ErrorMessage
-from app.core.exceptions import Conflict
 from app.core.singletons import singleton
 from app.data_access.scenario.repository import ScenarioSessionRepository, scenario_sessions
 from app.domain.remediation.register import register_half
-from app.domain.remediation.snapshot import build_snapshot, inputs_ready, pending_snapshot
+from app.domain.remediation.snapshot import (
+    build_snapshot,
+    check_control_library,
+    inputs_ready,
+    pending_snapshot,
+)
 from app.models.asset_context import FrozenContext
 from app.models.remediation_requests import RegisterData
 from app.search.library_cache import LibraryService, get_library_service
@@ -27,8 +30,7 @@ class SnapshotMaker:
         """`stored`: the register a regenerate rebuilds from (a library change since is a warning). The
         register is resolved first: one it refuses (422) saves nothing."""
         library = self._library.get_control_library()
-        if not library:
-            raise Conflict(ErrorMessage.CONTROL_LIBRARY_EMPTY, reason=ErrorCode.CONTROL_LIBRARY_EMPTY)
+        check_control_library(library)
         retired = self._library.get_retired_controls()
         register_part = register_half(register, library, datetime.now(UTC).date(), stored, retired)
         by_id = {row.control_id: row for row in library}

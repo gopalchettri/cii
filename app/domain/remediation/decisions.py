@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from app.core.constants import Decision, Status
+from app.core.constants import ConflictReason, Decision, RemediationMessage, Status
+from app.core.exceptions import Conflict, NotFound
 from app.models.remediation_reviews import DecisionChange
 
 
@@ -21,6 +22,25 @@ def newest_done_version(read: dict[str, Any]) -> int | None:
         (item["version"] for item in read["versions"] if version_status(read, item) == Status.DONE),
         default=None,
     )
+
+
+def decidable_version(read: dict[str, Any], asked: int | None, remediation_id: str) -> int:
+    """The version to decide: the one asked for, else the newest done one; 404 when it does not exist, 409
+    when it is not done (still being written, or failed)."""
+    version = asked if asked is not None else newest_done_version(read)
+    if version is None:
+        message = RemediationMessage.NO_DONE_VERSION.format(remediation_id=remediation_id)
+        raise Conflict(message, reason=ConflictReason.NOT_COMPLETE)
+    item = next((item for item in read["versions"] if item["version"] == version), None)
+    if item is None:
+        message = RemediationMessage.VERSION_NOT_FOUND.format(remediation_id=remediation_id, version=version)
+        raise NotFound(message, reason=ConflictReason.VERSION_NOT_FOUND)
+    if (status := version_status(read, item)) != Status.DONE:
+        message = RemediationMessage.NOT_COMPLETE.format(
+            version=version, remediation_id=remediation_id, status=status
+        )
+        raise Conflict(message, reason=ConflictReason.NOT_COMPLETE)
+    return version
 
 
 def record_decision(

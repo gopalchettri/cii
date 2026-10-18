@@ -12,12 +12,11 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.exceptions import Invalid, SetupError
+from app.domain.scenario import plan as plan_module
 from app.domain.scenario.controls import control_query
-from app.domain.scenario.plan import describe_asset_for_ai, raw_system_facts
+from app.domain.scenario.plan import check_required, describe_asset_for_ai, raw_system_facts
 from app.models.asset_context import AssetContextRows, FrozenContext
 from app.models.scenario.views import StartRunRequest
-from app.services.scenario import runs as runs_module
-from app.services.scenario.runs import check_required
 
 LOCATION, TECHNOLOGY = "Marker location Site Alpha", "Marker technology Stack Omega"
 NEW_FACT = "Marker recovery notes Gamma"
@@ -47,7 +46,7 @@ def _system_row(system_id: int, **changes: Any) -> dict[str, Any]:
         "id": system_id, "name": f"System {system_id}", "category_code": "IT", "category_name": "IT",
         "past_incidents": None, "technology_used": "[21]", "dr_location": None,
         "last_dr_test_date": datetime(1900, 1, 1), "rto_target_mins": Decimal(0),
-        **dict.fromkeys(runs_module.SINGLE_SELECT_CODES),
+        **dict.fromkeys(plan_module.SINGLE_SELECT_CODES),
         **dict.fromkeys(("backup_tested", "backup_multi_site", "document_drp_exists")),
     }  # fmt: skip
     return row | changes
@@ -81,7 +80,7 @@ def _texts(context: FrozenContext) -> str:
 
 
 def _freeze(rows: AssetContextRows) -> FrozenContext:
-    return runs_module.freeze_context(REQUEST, rows)
+    return plan_module.freeze_context(REQUEST, rows)
 
 
 def test_a_column_removed_from_the_procedure_reaches_no_step() -> None:
@@ -309,15 +308,15 @@ def test_dropdown_names_the_procedure_already_gave_are_kept() -> None:
     """G217: the owner's procedure names dropdowns itself (by option id): "Historian, Windows" and "In-house"
     reached the app as text and were dropped as unknown saved values."""
     options = {"technology-used": {1: "SCADA"}, "managed-by": {1: "In-house"}}
-    assert runs_module._multi_select_names("Historian, Windows", "technology-used", options) == [
+    assert plan_module._multi_select_names("Historian, Windows", "technology-used", options) == [
         "Historian",
         "Windows",
     ]
-    assert runs_module._multi_select_names("[1]", "technology-used", options) == [
+    assert plan_module._multi_select_names("[1]", "technology-used", options) == [
         "SCADA"
     ]  # saved values, as before
     assert (
-        runs_module._multi_select_names("[1, x", "technology-used", options) is None
+        plan_module._multi_select_names("[1, x", "technology-used", options) is None
     )  # a broken array: none
-    assert runs_module._single_select_name("In-house", "managed-by", options) == "In-house"
-    assert runs_module._single_select_name(1, "managed-by", options) == "In-house"
+    assert plan_module._single_select_name("In-house", "managed-by", options) == "In-house"
+    assert plan_module._single_select_name(1, "managed-by", options) == "In-house"

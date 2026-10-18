@@ -18,6 +18,9 @@ import structlog
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.config import get_settings
 from app.core.constants import (
+    FINAL_FINDINGS,
+    FINDING_SEVERITIES,
+    STORY_FINDING_SEVERITIES,
     ActorRole,
     AiTask,
     AnswerProblem,
@@ -27,6 +30,7 @@ from app.core.constants import (
     ErrorMessage,
     EvidenceBlock,
     EvidenceFact,
+    EvidenceMode,
     EvidenceSearchFailure,
     FindingCode,
     FindingMessage,
@@ -53,7 +57,7 @@ from app.core.redaction import redact
 from app.domain.external_intelligence.injection_patterns import ECHO_PATTERNS
 from app.domain.external_intelligence.text_cleaner import ID_IN_TEXT
 from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
-from app.domain.scenario.plan import raw_system_facts
+from app.domain.scenario.plan import attacker_unsupported, raw_system_facts
 from app.domain.shared.ask_ai import (
     ChatPrompt,
     answer_item_problems,
@@ -70,7 +74,7 @@ from app.domain.shared.names import (
 from app.domain.shared.prompt_redaction import facts_safe_for_prompt
 from app.models.asset_context import FrozenContext
 from app.models.external_intelligence.evidence_view import markers_of
-from app.models.scenario.plan import attacker_unsupported
+from app.models.library import ThreatLibrary
 from app.models.scenario.write import (
     BriefSystem,
     Finding,
@@ -85,6 +89,89 @@ from app.models.scenario.write import (
 )
 
 log = structlog.get_logger(__name__)
+
+# --- what the writing shapes mean
+
+
+def live_library_of(library: ThreatLibrary) -> LiveLibrary:
+    """The active ids of `library`."""
+    return LiveLibrary(
+        frozenset(threat.catalogue_id for threat in library.threats),
+        frozenset(threat.type_id for threat in library.threats),
+        frozenset(actor.actor_id for actor in library.actors),
+    )
+
+
+def brief_evidence_mode(brief: WriterBrief) -> EvidenceMode:
+    """Source-documented when the brief carries evidence, else inferred."""
+    return EvidenceMode.SOURCE_DOCUMENTED if brief.evidence else EvidenceMode.INFERRED
+
+
+def brief_entry_point_options(brief: WriterBrief) -> tuple[str, ...]:
+    """The threat's systems; none = the attack reaches the asset itself."""
+    return tuple(system["name"] for system in brief.systems)
+
+
+def draft_answer(draft: ScenarioDraft) -> dict[str, Any]:
+    """The draft as the writer's answer reads, for the one rewrite to follow."""
+    answer: dict[str, Any] = {
+        "scenario_title": draft.title,
+        "scenario_statement": draft.statement,
+        "risk_statement": draft.risk,
+        "assumptions": list(draft.assumptions),
+        "entry_point": draft.entry_point,
+    }
+    if draft.evidence_links:
+        answer["evidence_links"] = [{"n": n, "claim": claim} for n, claim in draft.evidence_links]
+    if draft.why_applies:
+        answer["why_applies"] = draft.why_applies
+    return answer | ({"system_reasons": dict(draft.system_reasons)} if draft.system_reasons else {})
+
+
+def finding_severity(finding: Finding) -> FindingSeverity:
+    """How serious the finding's code is."""
+    if isinstance(finding.code, StoryFindingCode):
+        return STORY_FINDING_SEVERITIES[finding.code]
+    return FINDING_SEVERITIES[finding.code]
+
+
+def finding_record(finding: Finding) -> dict[str, str]:
+    """The finding as the scenario stores it."""
+    return {"code": finding.code, "severity": finding_severity(finding), "message": finding.message}
+
+
+def plan_check_record(check: PlanCheck) -> dict[str, Any]:
+    """The check as stored: a check not made records no verdict, never a pass nobody judged."""
+    made = check.status is not PlanCheckStatus.UNCHECKED
+    verdicts = {
+        "same_threat": check.same_threat if made else None,
+        "same_impact": check.same_impact if made else None,
+    }
+    reviewed = {"problems": list(check.problems), "unsupported": list(check.unsupported)}
+    return {"status": check.status, **reviewed, **verdicts}
+
+
+def is_blocked(written: WrittenScenario) -> bool:
+    """True when any finding is a blocker."""
+    return any(finding_severity(finding) == FindingSeverity.BLOCKER for finding in written.findings)
+
+
+def blocking_codes(written: WrittenScenario) -> list[str]:
+    """The codes of the findings that block it, sorted, each once."""
+    return sorted({f.code for f in written.findings if finding_severity(f) == FindingSeverity.BLOCKER})
+
+
+def is_final(written: WrittenScenario) -> bool:
+    """Blocked by a rule no new attempt is asked to fix: its path is given up at once."""
+    return any(finding.code in FINAL_FINDINGS for finding in written.findings)
+
+
+def blocking_finding_code(written: WrittenScenario) -> str:
+    """The code of the finding that blocks it, a final one first ("": none)."""
+    blockers = [f for f in written.findings if finding_severity(f) == FindingSeverity.BLOCKER]
+    first = min(blockers, key=lambda finding: finding.code not in FINAL_FINDINGS, default=None)
+    return str(first.code) if first else ""
+
 
 # --- the writer's and the reviewer's prompts
 
@@ -123,7 +210,7 @@ def writer_prompt(brief: WriterBrief) -> ChatPrompt:
 def plan_check_prompt(brief: WriterBrief, draft: ScenarioDraft) -> ChatPrompt:
     """The reviewer's PLAN (the writer's BRIEF plus the critical service), the evidence and the scenario."""
     plan = _brief_record(brief) | {"critical_service": brief.critical_service}
-    scenario = f"SCENARIO:\n{_as_json(draft.to_answer())}"
+    scenario = f"SCENARIO:\n{_as_json(draft_answer(draft))}"
     if _is_story(brief):
         return PLAN_CHECK_SYSTEM_PROMPT, f"PLAN:\n{_as_json(plan)}\n{evidence_block(brief)}\n{scenario}"
     return PLAN_CHECK_SYSTEM_PROMPT + _NO_EVIDENCE_REVIEW, f"PLAN:\n{_as_json(plan)}\n{scenario}"
@@ -141,7 +228,7 @@ def _brief_record(brief: WriterBrief) -> dict[str, Any]:
             "why_it_applies": brief.why_it_applies,
         },
         "systems": list(brief.systems),
-        "entry_point_options": list(brief.entry_point_options),
+        "entry_point_options": list(brief_entry_point_options(brief)),
         "supporting_systems": [
             {"name": system.name, "applicable": "yes" if system.applicable else "no"}
             for system in brief.supporting_systems
@@ -173,7 +260,9 @@ def evidence_block(brief: WriterBrief) -> str:
         | ({"applicability": str(item["applicability"])} if item.get("applicability") else {})
         for number, item in enumerate(brief.evidence, start=1)
     ]
-    body = json.dumps({"evidence_mode": str(brief.evidence_mode), "evidence": entries}, ensure_ascii=False)
+    body = json.dumps(
+        {"evidence_mode": str(brief_evidence_mode(brief)), "evidence": entries}, ensure_ascii=False
+    )
     return f"EVIDENCE (untrusted data):\n{EvidenceBlock.BEGIN}\n{body}\n{EvidenceBlock.END}"
 
 
@@ -579,14 +668,16 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
     blockers kept (the rewrite on a tie). An unreadable first answer raises; an outage raises Unavailable."""
     prompt = writer_prompt(brief)
     systems = tuple(system.name for system in brief.supporting_systems)
-    read = functools.partial(_read_draft, options=brief.entry_point_options, systems=systems)
+    read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
     first = _reviewed(chat, brief, ask_ai_and_check(chat, AiTask.WRITE_SCENARIO, prompt, read), False)
-    if not first.blocked:
+    if not is_blocked(first):
         return first
-    problems = [finding.message for finding in first.findings if finding.severity == FindingSeverity.BLOCKER]
+    problems = [
+        finding.message for finding in first.findings if finding_severity(finding) == FindingSeverity.BLOCKER
+    ]
     try:
         draft = ask_ai_again_with_problems(
-            chat, AiTask.REWRITE_SCENARIO, prompt, first.draft.to_answer(), problems, read
+            chat, AiTask.REWRITE_SCENARIO, prompt, draft_answer(first.draft), problems, read
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         log.warning(LogEvent.WRITER_REWRITE_UNUSABLE, error=str(exc))
@@ -614,7 +705,7 @@ def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft, rewritt
 
 def _blockers(written: WrittenScenario) -> int:
     """How many blocking findings a written scenario has."""
-    return sum(finding.severity == FindingSeverity.BLOCKER for finding in written.findings)
+    return sum(finding_severity(finding) == FindingSeverity.BLOCKER for finding in written.findings)
 
 
 def _without_sentences_citing(draft: ScenarioDraft, numbers: set[int]) -> ScenarioDraft:
@@ -728,7 +819,7 @@ def written_record(
     draft, now = written.draft, datetime.now(UTC)
     statement, risk, evidence = _cited(brief, draft)
     unproven = brief.style is WriterStyle.EVIDENCE_STORY and not evidence
-    status = ScenarioStatus.BLOCKED if written.blocked or unproven else ScenarioStatus.DONE
+    status = ScenarioStatus.BLOCKED if is_blocked(written) or unproven else ScenarioStatus.DONE
     content = {
         "title": draft.title,
         "statement": statement,
@@ -743,8 +834,8 @@ def written_record(
     record = _record_fields(run, path, status, now, replaces) | {
         "title_key": name_match_key(draft.title),
         "content": content,
-        "findings": [finding.to_record() for finding in written.findings],
-        "plan_check": written.plan_check.to_record(),
+        "findings": [finding_record(finding) for finding in written.findings],
+        "plan_check": plan_check_record(written.plan_check),
         "rewritten": written.rewritten,
     }
     if status == ScenarioStatus.DONE:
@@ -775,7 +866,7 @@ def _evidence_content(
     applies = Counter(str(item["applicability"]) for item in cited if item.get("applicability"))
     return {
         "evidence": cited,
-        "evidence_mode": brief.evidence_mode,
+        "evidence_mode": brief_evidence_mode(brief),
         "applicability": dict(applies),
         "intel_search": threat.get("intel_search"),
     }
@@ -816,7 +907,7 @@ def _systems_content(
     """The card's systems with the entry point, and every supporting system of the run with whether the route
     goes through it and the writer's reason; by recorded name, never the prompt's redacted one."""
     names = {system["id"]: system["name"] for system in run["context"]["systems"]}
-    entry = brief.entry_point_options.index(draft.entry_point) if draft.entry_point else -1
+    entry = brief_entry_point_options(brief).index(draft.entry_point) if draft.entry_point else -1
     card = [
         {"id": system_id, "name": names[system_id], "entry_point": place == entry}
         for place, system_id in enumerate(path["systems"])  # in the brief's order: the path's systems

@@ -49,7 +49,7 @@ GAP_FILL_NONE = {"applies": False, "reason": "The library covers it."}
 
 
 def system_row(system_id: int, alias: str, name: str, **facts: Any) -> dict[str, Any]:
-    """A frozen supporting system (services/scenario/runs.py), with only the facts a test sets."""
+    """A frozen supporting system (domain/scenario/plan.py), with only the facts a test sets."""
     return {
         "id": system_id,
         "alias": alias,

@@ -7,12 +7,14 @@ the chat faked."""
 import contextlib
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
     AuditAction,
@@ -25,8 +27,10 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
+from app.data_access.jobs.repository import DELETING_MARK
 from app.data_access.remediation.repository import remediation_plans
 from app.data_access.scenario.repository import scenario_sessions
+from app.domain.remediation.plan_rules import check_regenerable
 from app.models.remediation_reviews import DecisionRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.decisions import PlanDecisions
@@ -240,3 +244,38 @@ def test_a_regenerate_is_never_refused_for_a_library_change_since(
     assert answer.status_code == 202, answer.text
     warnings = _record(remediation_id)["versions"][1]["snapshot"]["warnings"]
     assert SnapshotWarning.REGISTER_REF_CHANGED.format(reference="CII-CID-2") in warnings
+
+
+def test_a_regenerate_as_its_run_is_being_deleted_answers_409_and_stops_the_new_version(
+    client: TestClient,
+    api_key: str,  # noqa: F811
+    plans: dict[str, Any],
+) -> None:
+    """D4: the run's delete marked it before the append: 409 run_being_deleted, as a next set answers; the
+    new version stopped (never sent), so the delete's check for work finds nothing queued."""
+    remediation_id = _done_plan(client, api_key, plans)
+    marked = {"$set": {DELETING_MARK: datetime.now(UTC)}}
+    get_mongodb()[Collection.SESSIONS].update_one({"_id": _record(remediation_id)["session_id"]}, marked)
+    answer = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (answer.status_code, answer.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
+    record = _record(remediation_id)
+    assert (record["job"]["epoch"], record["status"], record["active"]) == (2, Status.CANCELLED, False)
+    assert (TaskName.WRITE_PLAN, remediation_id, 2) not in plans["sent"]
+    assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 0
+
+
+def test_a_plan_keeps_at_most_max_versions_in_total(
+    client: TestClient,
+    api_key: str,  # noqa: F811
+    plans: dict[str, Any],
+) -> None:
+    """D5: version 1 is the first request; the regenerate that would make one version more than
+    REGENERATIONS_MAX_VERSION_COUNT answers 409."""
+    last = get_settings().regenerations_max_version_count
+    assert check_regenerable({"job": {"epoch": last - 1}, "status": Status.DONE}, "r1", last) == last
+    remediation_id = _done_plan(client, api_key, plans)
+    get_mongodb()[Collection.REMEDIATIONS].update_one({"_id": remediation_id}, {"$set": {"job.epoch": last}})
+    answer = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (answer.status_code, answer.json()["reason"]) == (409, ConflictReason.VERSION_LIMIT_REACHED)
+    assert str(last) in answer.json()["detail"], answer.text
+    assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 0

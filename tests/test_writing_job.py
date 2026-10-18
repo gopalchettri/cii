@@ -27,7 +27,7 @@ from app.core.database import get_mongodb
 from app.core.exceptions import LeaseLost, Unavailable
 from app.data_access.jobs.repository import JobLease, JobRepository
 from app.data_access.scenario.repository import JobControlRepository, scenarios
-from app.domain.scenario.plan import next_paths_to_write, next_set_paths
+from app.domain.scenario.plan import next_paths_to_write, next_set_paths, planned_threat_record
 from app.models.scenario.plan import PlannedActor
 from app.worker import jobs, plan_progress
 from app.worker.tasks import writing
@@ -52,7 +52,9 @@ def _queued_run(
     or the first `first_set` (INITIAL_SET_SIZE), and its batch that set's first six."""
     record_id = uuid.uuid4().hex
     threats = [
-        planned(f"lib:{number}", name, systems=systems, actors=_ACTORS, reason="It applies.").to_record()
+        planned_threat_record(
+            planned(f"lib:{number}", name, systems=systems, actors=_ACTORS, reason="It applies.")
+        )
         for number, name in enumerate(threat_names, start=1)
     ]
     paths = [

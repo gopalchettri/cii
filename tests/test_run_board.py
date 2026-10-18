@@ -10,7 +10,9 @@ from app.core.constants import BoardMessage, ControlMatch, RunActionKind, RunKin
 from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
-from app.models.scenario.views import ScenarioCount, ScenarioView, SessionStatus, StageTimings, build_board
+from app.data_access.scenario.repository import session_status_from_record
+from app.models.scenario.views import ScenarioCount, SessionStatus, StageTimings
+from app.services.scenario.results import build_board, build_scenario_view
 
 _FAILED = {"error": {"code": "unavailable", "message": "The AI service is down."}, "attempts": 3}
 #: A run whose first set of 6 (of 10 planned) is written.
@@ -28,7 +30,7 @@ def _run(**fields: Any) -> SessionStatus:
         "user_id": "u-7",
         "context": {"asset": {"name": "Grid Centre"}},
     }
-    return SessionStatus.from_record(record | fields)
+    return session_status_from_record(record | fields)
 
 
 def _written(status: Status = Status.DONE, /, **counts: int) -> dict[str, Any]:
@@ -198,7 +200,7 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
         "content": {"category": "Tampering", "threat": threat},
         "created_at": datetime.now(UTC),
     }
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     block = view.threat
     assert (block.grounding_status, block.library_threat_type, block.library_threat_name) == (
         "unverified",
@@ -214,7 +216,7 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
     )
     # Reviewer 2026-10-12: proposed now, so it has a library id while a curator decides: still the person's.
     pending = record | {"content": {"threat": threat | {"library_id": 901, "library_status": "pending"}}}
-    waiting = ScenarioView.from_record(pending)
+    waiting = build_scenario_view(pending)
     assert waiting.threat.grounding_status == "unverified"
     assert waiting.library is not None and waiting.library.threat.status == "inserted"
 
@@ -239,7 +241,7 @@ def test_a_control_shows_its_description_and_why_it_was_kept() -> None:
         },
         "created_at": datetime.now(UTC),
     }
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     (control,) = view.controls
     assert (control.control_description, control.itot, control.map_rank) == ("Apply vendor patches.", "OT", 1)
     assert control.match_type == "NEAREST" and control.match_reason.startswith("No control reached")

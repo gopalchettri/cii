@@ -26,7 +26,18 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PlanRefused
-from app.domain.scenario.plan import PLANNER_PROMPT_VERSION, build_plan, describe_asset_for_ai, rank_paths
+from app.domain.scenario.plan import (
+    PLANNER_PROMPT_VERSION,
+    attack_path_categories,
+    attack_path_confidence,
+    attack_path_from_library,
+    attack_path_id,
+    attack_path_impact,
+    attack_path_systems,
+    build_plan,
+    describe_asset_for_ai,
+    rank_paths,
+)
 from app.models.scenario.plan import AttackPath, PlannedThreat, ThreatFindings
 from app.worker import jobs
 from app.worker.tasks import scenarios as scenario_tasks
@@ -87,13 +98,23 @@ def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_s
         "ai:wipe", "Wipe", (321,), categories=(S.TAMPERING, S.REPUDIATION), impact=3, confidence=60.0
     )
     path = AttackPath((phishing, wipe))  # a chain an owner-approved rule could make (none today)
-    assert path.path_id == hashlib.sha256(b"lib:7|ai:wipe").hexdigest()[:16]
-    assert path.categories == (S.SPOOFING, S.TAMPERING, S.REPUDIATION)
-    assert (path.systems, path.impact, path.confidence, path.from_library) == ((321, 322), 3, 60.0, False)
+    assert attack_path_id(path) == hashlib.sha256(b"lib:7|ai:wipe").hexdigest()[:16]
+    assert attack_path_categories(path) == (S.SPOOFING, S.TAMPERING, S.REPUDIATION)
+    assert (
+        attack_path_systems(path),
+        attack_path_impact(path),
+        attack_path_confidence(path),
+        attack_path_from_library(path),
+    ) == ((321, 322), 3, 60.0, False)
     findings = replace(findings_of(wipe), category_ids={"tampering": 5, "spoofing": 1})
     record, as_repudiation = build_plan(findings, 0)["paths"]  # every kind
     on_route = AttackPath((wipe,), scope="Tampering@system:321")  # the kind and the route name the path
-    assert record["path_id"] == on_route.path_id != AttackPath((wipe,)).path_id != as_repudiation["path_id"]
+    assert (
+        record["path_id"]
+        == attack_path_id(on_route)
+        != attack_path_id(AttackPath((wipe,)))
+        != as_repudiation["path_id"]
+    )
     assert record["steps"] == ["ai:wipe"] and record["systems"] == [321]
     assert as_repudiation["category"] == S.REPUDIATION and as_repudiation["steps"] == ["ai:wipe"]
     assert record["category"] == S.TAMPERING and record["categories"] == [S.TAMPERING, S.REPUDIATION]

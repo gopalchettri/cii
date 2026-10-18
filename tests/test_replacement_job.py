@@ -21,7 +21,7 @@ from app.core.constants import (
     ScenarioStatus,
 )
 from app.core.database import get_mongodb
-from app.models.scenario.views import run_coverage
+from app.services.scenario.results import run_coverage
 from tests.fakes import FakeChatModel
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _answer_for,
@@ -173,7 +173,7 @@ def test_the_results_name_a_given_up_paths_threat_and_its_own_reason(chat: FakeC
     """G268: the results' coverage.given_up reads each path's newest card (one query): the threat's name and
     the blocked draft's own sentence for its reason, never just a code and an id."""
     from app.data_access.scenario.repository import scenarios
-    from app.models.scenario.views import explain_given_up
+    from app.services.scenario.results import explain_given_up
 
     _mismatched_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=2)

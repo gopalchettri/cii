@@ -10,8 +10,7 @@ import pytest
 
 from app.core.constants import RunActionKind, RunClash, Status, Step
 from app.core.exceptions import LeaseLost
-from app.data_access.scenario.repository import scenario_sessions
-from app.models.scenario.views import SessionStatus
+from app.data_access.scenario.repository import scenario_sessions, session_status_from_record
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +50,7 @@ def test_a_manual_start_is_saved_once_and_another_body_is_refused() -> None:
 def test_of_two_clicks_on_one_epoch_one_queues_and_a_deleting_session_is_told_so() -> None:
     record = _session()
     scenario_sessions.create(record)
-    status = SessionStatus.from_record(record)
+    status = session_status_from_record(record)
     batch = [{"path_id": "p1"}]
     assert scenario_sessions.update_scenario_session_job(status, RunActionKind.REGENERATE, batch) is None
     assert (
@@ -61,7 +60,7 @@ def test_of_two_clicks_on_one_epoch_one_queues_and_a_deleting_session_is_told_so
     marked = _session(deleting_at=datetime.now(UTC))
     scenario_sessions.create(marked)
     clash = scenario_sessions.update_scenario_session_job(
-        SessionStatus.from_record(marked), RunActionKind.NEXT_SET, batch
+        session_status_from_record(marked), RunActionKind.NEXT_SET, batch
     )
     assert clash is RunClash.DELETING
 

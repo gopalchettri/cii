@@ -3,19 +3,22 @@ Idempotency-Key is required and shares its space with run starts: the same key a
 answer (200, nothing new); the key of a generated run, of another asset or of another body is 409. A first
 request makes the scenario (manual_scenarios.py), then follows the generated path."""
 
-import hashlib
-import json
 from typing import Any
 
-from app.core.constants import ConflictReason, Header, RemediationMessage, RunKind, SessionMessage
+from app.core.constants import ConflictReason
 from app.core.database import get_stored_procedure_client
-from app.core.exceptions import Conflict, Forbidden, Invalid
+from app.core.exceptions import Conflict
 from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.remediation.repository import PLANNED_SCENARIO_FIELDS
 from app.data_access.scenario.repository import ScenarioSessionRepository, scenario_sessions, scenarios
-from app.domain.remediation.manual_records import manual_ids
+from app.domain.remediation.manual_records import (
+    check_manual_request,
+    check_same_manual_request,
+    manual_ids,
+    manual_request_fingerprint,
+)
 from app.models.api_clients import Principal
 from app.models.remediation import PlanStarted
 from app.models.remediation_requests import ManualScenario, PlanRequest
@@ -37,14 +40,9 @@ class ManualPlans:
     @traced("remediation.manual_request")
     def request(self, principal: Principal, body: PlanRequest, key: str | None) -> tuple[PlanStarted, bool]:
         """(the plan, True when it was created now; False for a replay of the same key and body)."""
-        if not key:
-            message = RemediationMessage.IDEMPOTENCY_KEY_REQUIRED
-            raise Invalid(message, errors=[{"field": f"header.{Header.IDEMPOTENCY_KEY}", "message": message}])
-        manual = body.manual_scenario
-        assert manual is not None  # PlanRequest: is_manual=true
-        if manual.entity_id != principal.entity_id:  # v1 sends the entity in the body: the caller's only
-            raise Forbidden(SessionMessage.ENTITY_MISMATCH_BODY)
-        fingerprint = _fingerprint(body)
+        manual = check_manual_request(principal, body, key)
+        assert key is not None  # check_manual_request refused a missing one
+        fingerprint = manual_request_fingerprint(body)
         scenario = self._earlier_scenario(principal, manual, key, fingerprint)
         if scenario is not None and (replayed := self._replayed(scenario["_id"])) is not None:
             return replayed, False
@@ -68,14 +66,7 @@ class ManualPlans:
         earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
-        same = (
-            earlier.get("kind") == RunKind.MANUAL
-            and earlier["asset_id"] == manual.asset_id
-            and earlier.get("request_hash") == fingerprint
-        )
-        if not same:
-            message = SessionMessage.IDEMPOTENCY_KEY_CONFLICT
-            raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
+        check_same_manual_request(earlier, manual, fingerprint)
         return scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=manual_ids(principal.entity_id, key)[1])
 
     def _replayed(self, scenario_id: str) -> PlanStarted | None:
@@ -91,11 +82,6 @@ class ManualPlans:
             is_manual=True,
             replayed=True,
         )
-
-
-def _fingerprint(body: PlanRequest) -> str:
-    """SHA-256 of the whole request (scenario and register): a key replays only the request it first named."""
-    return hashlib.sha256(json.dumps(body.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
 
 
 @singleton

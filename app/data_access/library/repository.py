@@ -19,17 +19,17 @@ from app.core.constants import (
 from app.core.database import Row, StoredProcedureClient
 from app.core.exceptions import Conflict, OutcomeUnknown
 from app.data_access.base import MongoRepository
+from app.data_access.library.rows import (
+    control_library_from_rows,
+    pending_threat_from_row,
+    threat_library_from_rows,
+)
 from app.models.asset_context import AssetContextRows
 from app.models.library import (
     LibraryStamp,
     LoadedLibraries,
     ProposedThreat,
     ThreatProposal,
-)
-from app.models.library_rows import (
-    control_library_from_rows,
-    pending_threat_from_row,
-    threat_library_from_rows,
 )
 from app.models.scenario.views import StartRunRequest
 
@@ -52,6 +52,7 @@ sql_operations = MongoRepository(
     Collection.SQL_OPERATIONS,
     ttl=[("finished_at", SqlOperations.KEEP_DAYS * 86_400)],
     conditions={"attempt_allowed": _attempt_allowed},
+    schema_version=1,
 )
 
 

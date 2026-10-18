@@ -40,13 +40,18 @@ from app.data_access.jobs.repository import (
     JobRepository,
     failed_job_fields,
 )
-from app.data_access.scenario.repository import JobControlRepository, scenario_sessions
+from app.data_access.scenario.repository import (
+    JobControlRepository,
+    scenario_sessions,
+    session_status_from_record,
+)
+from app.domain.scenario.review import why_ids_cannot_be_regenerated
 from app.domain.scenario.write import _newest_within, scenario_id
 from app.models.api_clients import Principal
 from app.models.scenario.views import ScenarioIdsRequest, SessionStatus
 from app.services.api_clients import get_api_client_service
 from app.services.scenario import runs as runs_module
-from app.services.scenario.runs import get_run_actions, why_ids_cannot_be_regenerated
+from app.services.scenario.runs import get_run_actions
 from app.worker import path_writing
 from app.worker.tasks import writing
 from tests.test_writing_job import _answer_for, _queued_run, chat, sent  # noqa: F401 — fixtures by name
@@ -180,7 +185,7 @@ def test_next_set_twice_or_at_once_queues_one_job(
     assert (again.status_code, again.json()["reason"]) == (409, ConflictReason.GENERATION_IN_PROGRESS)
 
     record_id = _interrupted_run()
-    run = SessionStatus.from_record(_sessions().find_one({"_id": record_id}))
+    run = session_status_from_record(_sessions().find_one({"_id": record_id}))
     barrier, read = threading.Barrier(2), scenario_sessions.get
 
     def read_then_wait(fields: Any = None, **where: Any) -> dict[str, Any] | None:
@@ -536,7 +541,7 @@ def test_a_failed_job_never_leaves_the_run_reading_running() -> None:
     def queued_run() -> str:
         record_id = uuid.uuid4().hex
         _sessions().insert_one(
-            {"_id": record_id, "status": Status.QUEUED, "updated_at": datetime.now(UTC),
+            {"_id": record_id, "entity_id": 86, "status": Status.QUEUED, "updated_at": datetime.now(UTC),
              "last_action": {"kind": RunActionKind.NEXT_SET, "outcome": RunActionOutcome.RUNNING},
              "job": {"task": TaskName.WRITE_SCENARIOS, "epoch": 2, "due_at": datetime.now(UTC)}}
         )  # fmt: skip
@@ -664,7 +669,9 @@ def test_a_regenerate_resumes_the_controls_only_after_a_cancel(
         monkeypatch.setattr(runs_module, name, lambda *args, **kwargs: None)
     monkeypatch.setattr(runs_module.audit_records, "create_audit_record", lambda *args, **kwargs: None)
     resumed: list[str] = []
-    controls = SimpleNamespace(resume_scenario_controls=lambda session_id: resumed.append(session_id) or 0)
+    controls = SimpleNamespace(
+        resume_scenario_controls=lambda session_id, cancelled_at: resumed.append(session_id) or 0
+    )
     sessions = SimpleNamespace(update_scenario_session_job=lambda *args: None)
     targets = {"s1": {"path_id": "p1", "status": ScenarioStatus.DONE}}
     monkeypatch.setattr(runs_module, "list_review_targets", lambda *args: targets)

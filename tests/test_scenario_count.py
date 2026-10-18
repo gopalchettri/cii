@@ -6,7 +6,7 @@ import dataclasses
 from app.core.constants import ContextProperties, PlanCheckStatus, Route, StrideCategory, ThreatFinding
 from app.domain.scenario.controls import control_query
 from app.domain.scenario.plan import describe_asset_for_ai, gap_fill_prompt, relevance_gate_prompt
-from app.domain.scenario.write import build_brief, written_record
+from app.domain.scenario.write import brief_entry_point_options, build_brief, written_record
 from app.models.scenario.write import PlanCheck, WrittenScenario
 from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
@@ -77,7 +77,7 @@ def test_a_scenario_is_written_on_its_paths_system_only() -> None:
     brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
     assert [system["name"] for system in brief.systems] == ["SCADA server"]
     assert brief.other_systems == ("Historian",)
-    draft = dataclasses.replace(_CLEAN, entry_point=brief.entry_point_options[0])
+    draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
     written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE, False)
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     card = written_record(run, path, threat, brief, written)["content"]["systems"]

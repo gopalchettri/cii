@@ -23,6 +23,7 @@ from app.core.constants import (
 )
 from app.core.redaction import clipped_text, redact
 from app.data_access.admin.repository import audit_records
+from app.domain.scenario.library_rules import compatible_asset_types
 from app.domain.shared.names import shorten_text
 from app.models.asset_context import FrozenContext
 from app.models.external_intelligence.evidence import EvidenceBatchSummary
@@ -32,7 +33,6 @@ from app.models.external_intelligence.evidence_request import (
     RecordedProduct,
     RecordedProducts,
 )
-from app.models.library import compatible_asset_types
 from app.worker.external_intelligence.intel_access import IntelAccess
 from app.worker.plan_progress import PlanProgress
 

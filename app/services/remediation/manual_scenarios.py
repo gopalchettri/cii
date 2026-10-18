@@ -8,12 +8,13 @@ saves nothing."""
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.constants import ConflictReason, ErrorCode, PlanMessage, SessionMessage
-from app.core.exceptions import Conflict, DuplicateRecord, Unavailable
+from app.core.constants import ConflictReason, SessionMessage
+from app.core.exceptions import Conflict, DuplicateRecord
 from app.core.tracing import traced
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.scenario.repository import scenario_sessions, scenarios
 from app.domain.remediation.manual_records import (
+    check_actor_library,
     given_controls,
     manual_ids,
     manual_run_record,
@@ -21,11 +22,11 @@ from app.domain.remediation.manual_records import (
 )
 from app.domain.remediation.references import resolve_controls
 from app.domain.remediation.threat_identity import resolve_threat
+from app.domain.scenario.plan import freeze_context
 from app.models.api_clients import Principal
 from app.models.remediation_requests import PlanRequest
 from app.search.library_cache import LibraryService
 from app.services.audit import caller_actor
-from app.services.scenario.runs import freeze_context
 
 
 class ManualScenarios:
@@ -46,8 +47,7 @@ class ManualScenarios:
         context = freeze_context(manual, rows)
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()
-        if not loaded.threat_library.actors:  # in memory: its plan job could never name an attacker
-            raise Unavailable(PlanMessage.ACTOR_LIBRARY_EMPTY, reason=ErrorCode.ACTOR_LIBRARY_EMPTY)
+        check_actor_library(loaded.threat_library.actors)  # in memory
         identity = resolve_threat(loaded.threat_library, manual)
         # The register too: a refused one (an id and a code naming two rows) must save nothing, or a corrected
         # retry under the same key would meet its orphaned scenario (409).

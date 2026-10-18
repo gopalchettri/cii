@@ -15,6 +15,7 @@ from app.core.constants import (
     Controls,
     Decision,
     JobControl,
+    Lease,
     PlanMessage,
     RunActionKind,
     RunActionOutcome,
@@ -35,7 +36,7 @@ from app.data_access.jobs.repository import (
     is_scenario_session_being_deleted,
     new_job,
 )
-from app.models.scenario.views import COVERAGE_FIELDS, SessionStatus, running_action
+from app.models.scenario.views import SessionStatus
 
 #: The versions a reviewer works with: the newest of each attack path, and any older one already decided.
 CURRENT_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": {"$ne": Decision.PENDING}}]}
@@ -244,6 +245,8 @@ scenarios = ScenarioRepository(
     indexes=_SCENARIO_INDEXES,
     conditions=_SCENARIO_CONDITIONS,
     field_lists=_SCENARIO_FIELD_LISTS,
+    required=("_id", "session_id", "status"),
+    schema_version=1,
 )
 
 
@@ -270,14 +273,45 @@ _SESSION_INDEXES = (
         "partialFilterExpression": {"counts.controls_waiting": {"$gt": 0}},
     },
 )
+#: The session fields the status body reads: never the plan's threats and paths, nor the context's facts.
+SESSION_STATUS_FIELDS: dict[str, int] = {
+    "entity_id": 1,
+    "asset_id": 1,
+    "status": 1,
+    "step": 1,
+    "counts": 1,
+    "last_action": 1,
+    "job.error": 1,
+    "job.attempts": 1,
+    "updated_at": 1,
+    "kind": 1,
+    "user_id": 1,
+    "context.asset.name": 1,
+    "timings": 1,
+    "last_next_set": 1,
+    "last_regen": 1,
+    "plan.not_assessed": 1,
+    "cancelled": 1,
+    "job.epoch": 1,
+}
+_PATH_FIELDS = (
+    "path_id", "systems", "categories", "selected", "abandoned", "served", "abandoned_reason", "replaced_by",
+)  # fmt: skip
+#: What the results read of a run to work its coverage out: a few small fields per path.
+COVERAGE_FIELDS: dict[str, int] = {
+    "plan.target": 1,
+    **{f"plan.paths.{field}": 1 for field in _PATH_FIELDS},
+    "context.systems.id": 1,
+    "context.systems.name": 1,
+}
 _SESSION_FIELD_LISTS = {
-    "status": SessionStatus.RECORD_FIELDS,
-    "status_and_coverage": SessionStatus.RECORD_FIELDS | COVERAGE_FIELDS,
+    "status": SESSION_STATUS_FIELDS,
+    "status_and_coverage": SESSION_STATUS_FIELDS | COVERAGE_FIELDS,
     "coverage": COVERAGE_FIELDS,
     "context": {"context": 1},
     "attack_paths": {"plan.paths": 1},
     "plan_threat": {"plan.threats.$": 1},
-    "replay": {**SessionStatus.RECORD_FIELDS, "kind": 1, "request_hash": 1},
+    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1},
     "writing": {
         "entity_id": 1,
         "asset_id": 1,
@@ -296,6 +330,41 @@ _CLEARED_BY_A_NEW_ACTION = {
     "timings.controls_s": "",
     "cancelled": "",
 }
+
+
+def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
+    """The status of a tsg_sessions record read with SESSION_STATUS_FIELDS."""
+    counts, job = record.get("counts") or {}, record.get("job") or {}
+    step = record.get("step")
+    # A done run still mapping its controls reads `controls` ("card first, controls later").
+    if record["status"] == Status.DONE and counts.get("controls_waiting", 0) > 0:
+        step = Step.CONTROLS
+    return SessionStatus(
+        session_id=record["_id"],
+        entity_id=record["entity_id"],
+        asset_id=record["asset_id"],
+        status=record["status"],
+        step=step,
+        counts=counts,
+        last_action=record.get("last_action"),
+        error=job.get("error"),
+        updated_at=record["updated_at"],
+        kind=record.get("kind") or RunKind.GENERATED,
+        user_id=record.get("user_id"),
+        asset_name=((record.get("context") or {}).get("asset") or {}).get("name"),
+        attempts=job.get("attempts") or 0,
+        timings=record.get("timings") or {},
+        last_next_set=record.get("last_next_set"),
+        last_regen=record.get("last_regen"),
+        not_assessed=(record.get("plan") or {}).get("not_assessed") or [],
+        cancelled=record.get("cancelled"),
+        epoch=job.get("epoch") or 0,
+    )
+
+
+def running_action(kind: RunActionKind, started_at: datetime) -> dict[str, Any]:
+    """A run's `last_action` as an action starts: its kind, still running, and when it started."""
+    return {"kind": kind, "outcome": RunActionOutcome.RUNNING, "reason": None, "started_at": started_at}
 
 
 class ScenarioSessionRepository(MongoRepository):
@@ -435,7 +504,11 @@ def _running_summary(
 
 
 scenario_sessions = ScenarioSessionRepository(
-    Collection.SESSIONS, indexes=_SESSION_INDEXES, field_lists=_SESSION_FIELD_LISTS
+    Collection.SESSIONS,
+    indexes=_SESSION_INDEXES,
+    field_lists=_SESSION_FIELD_LISTS,
+    required=("_id", "entity_id"),
+    schema_version=1,
 )
 
 
@@ -460,6 +533,9 @@ _CLAIMED_FIELDS = dict.fromkeys(
 )
 #: The scenarios the sweep looks after: written, never hand-written (those are mapped in their plan request).
 _SWEPT = {"status": ScenarioStatus.DONE, "source": {"$ne": RunKind.MANUAL}}
+#: How far back the sweep looks for scenarios of any status whose session is gone: a write racing a delete
+#: lands within one job's longest run. ponytail: scans the session_id index, a created_at index if it is slow.
+_ORPHANS_WRITTEN_WITHIN = timedelta(seconds=Lease.MAX_JOB_SECONDS)
 
 
 def _controls_waiting(_: Any = True) -> Record:
@@ -577,10 +653,14 @@ class ScenarioControlsRepository(MongoRepository):
         return sorted(session_ids)
 
     def _settle_stopped_scenario_sessions(self) -> None:
-        """tsg_scenarios: controls waiting on a cancelled session stop, with its counts; a deleted session's
-        scenarios go."""
+        """tsg_scenarios: controls waiting on a cancelled session stop, with its counts; every scenario of a
+        deleted session goes, whatever its status (failure and blocked cards too)."""
         waiting = {**_SWEPT, "controls.status": {"$in": STOPPABLE_CONTROLS}} | MAPPED_VERSIONS
-        session_ids = self.collection.distinct("session_id", waiting)
+        waiting_ids = set(self.collection.distinct("session_id", waiting))
+        recent = {"created_at": {"$gte": datetime.now(UTC) - _ORPHANS_WRITTEN_WITHIN}}
+        session_ids = [
+            found for found in waiting_ids | set(self.collection.distinct("session_id", recent)) if found
+        ]
         if not session_ids:
             return
         states = {
@@ -588,7 +668,7 @@ class ScenarioControlsRepository(MongoRepository):
             for record in controls_deliveries.list(fields=["status"], _id={"$in": session_ids})
         }
         if cancelled := [
-            session_id for session_id in session_ids if states.get(session_id) == Status.CANCELLED
+            session_id for session_id in waiting_ids if states.get(session_id) == Status.CANCELLED
         ]:
             self.collection.update_many(
                 {**waiting, "session_id": {"$in": cancelled}},
@@ -656,8 +736,9 @@ scenario_controls = ScenarioControlsRepository(
         "controls_waiting": _controls_waiting,
         "controls_mapped": {"controls.status": Status.DONE, "controls.items.0": {"$exists": True}},
     },
+    schema_version=1,
 )
-controls_deliveries = ControlsDeliveryRepository(Collection.SESSIONS)
+controls_deliveries = ControlsDeliveryRepository(Collection.SESSIONS, schema_version=1)
 
 
 #: Job control: the owner's cancel, resume and delete of scenario sessions and remediation plans.
@@ -759,14 +840,14 @@ class JobControlRepository:
         )
         return bool(stopped.modified_count)
 
-    def resume_scenario_controls(self, session_id: str) -> int | None:
+    def resume_scenario_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
         """A scenario session resumed on purpose: the controls a cancel stopped wait again (how many), and a
         session not at work reads done again. None when it is being deleted (nothing resumed). Checked after
         the re-queue, so either this sees the delete's mark or the delete's check for work sees these
-        controls. A cancel landing meanwhile wins: the session is updated only while its cancel stamp is the
-        one read first, else the re-queue is undone and nothing is resumed (0)."""
-        read = self._sessions.find_one({"_id": session_id}, {"cancelled.at": 1}) or {}
-        stamp_read = {"_id": session_id, "cancelled.at": (read.get("cancelled") or {}).get("at")}
+        controls. A cancel landing since the caller read the session wins: the session is updated only while
+        its cancel stamp is still `cancelled_at` (the one the caller saw, None for none), else the re-queue is
+        undone and nothing is resumed (0)."""
+        stamp_read = {"_id": session_id, "cancelled.at": cancelled_at}
         requeued = self._scenarios.update_many(
             {"session_id": session_id, "controls.status": Status.CANCELLED},
             {"$set": {"controls.status": Status.QUEUED, "controls.queued_at": datetime.now(UTC)}},

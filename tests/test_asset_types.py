@@ -7,6 +7,7 @@ from typing import Any
 
 from structlog.testing import capture_logs
 
+from app.core.asset_types import asset_type_fits, asset_type_label, canonical_asset_type
 from app.core.constants import (
     AiTask,
     AssetType,
@@ -14,7 +15,7 @@ from app.core.constants import (
     LogEvent,
     StrideCategory,
 )
-from app.models.library import LibraryThreat, asset_type_label, canonical_asset_type
+from app.models.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -174,7 +175,9 @@ def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent()
 
     with capture_logs() as logs:
         (control,) = load_library_from(control_sets=_Controls().execute_procedure(None)).control_library
-    assert control.fits(set()) and [entry["event"] for entry in logs] == [LogEvent.LIBRARY_ASSET_TYPE_UNKNOWN]
+    assert asset_type_fits(control.asset_type, set()) and [entry["event"] for entry in logs] == [
+        LogEvent.LIBRARY_ASSET_TYPE_UNKNOWN
+    ]
 
 
 class _Procedures:

@@ -10,7 +10,6 @@ from app.core.constants import (
     JobControlMessage,
     JobKind,
     Status,
-    TaskName,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
@@ -18,14 +17,14 @@ from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.data_access.admin.repository import audit_records
 from app.data_access.scenario.repository import JobControlRepository
+from app.domain.jobs import check_run_cancel_stopped_something, run_job_kind_and_status
 from app.models.api_clients import Principal
 from app.models.jobs import JobList, JobProgress, JobView, PlanCancelled, SessionDeleted
-from app.models.scenario.views import RunBoard, SessionStatus, build_board
+from app.models.scenario.views import RunBoard, SessionStatus
 from app.realtime.publisher import publish_remediation_status, publish_session_status
 from app.services.audit import audit_target, caller_actor
+from app.services.scenario.results import build_board
 from app.services.scenario.runs import find_status_for_caller
-
-_WORKING = (Status.QUEUED, Status.RUNNING)
 
 
 class JobService:
@@ -50,9 +49,7 @@ class JobService:
         stopped, controls = self._records.cancel_scenario_session(
             run.session_id, principal.entity_id, _who(principal)
         )
-        if not stopped and not controls:
-            message = JobControlMessage.NOTHING_TO_CANCEL.format(session_id=run.session_id)
-            raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
+        check_run_cancel_stopped_something(run.session_id, stopped, controls)
         publish_session_status(run.session_id)
         after = {"job_stopped": stopped, "controls_cancelled": controls}
         target = audit_target(AuditTarget.SESSION, run.session_id)
@@ -101,17 +98,13 @@ def _run_job(record: dict[str, Any]) -> JobView:
     """A run as the list shows it: finding threats or writing scenarios while its job is queued or running,
     else matching its scenarios' controls."""
     job, counts = record.get("job") or {}, record.get("counts") or {}
-    working = record["status"] in _WORKING
-    if not working:
-        kind = JobKind.CONTROLS
-    else:
-        kind = JobKind.THREATS if job.get("task") == TaskName.FIND_THREATS else JobKind.SCENARIOS
+    kind, status = run_job_kind_and_status(record["status"], job.get("task"))
     return JobView(
         kind=kind,
         session_id=record["_id"],
         asset_id=record.get("asset_id"),
         asset_name=((record.get("context") or {}).get("asset") or {}).get("name"),
-        status=record["status"] if working else Status.RUNNING,
+        status=status,
         queued_at=job.get("due_at"),
         created_at=record.get("created_at"),
         attempts=job.get("attempts") or 0,

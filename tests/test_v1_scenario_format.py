@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from app.core.constants import ControlMatch, Decision, RunKind
-from app.models.scenario.views import ScenarioView
+from app.services.scenario.results import build_scenario_view
 
 V1_KEYS = [
     "scenario_id", "scenario", "threat", "actors", "controls", "accepted", "replaces_accepted_version",
@@ -86,7 +86,7 @@ def _content(**changes: Any) -> dict[str, Any]:
 
 
 def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
-    shown = ScenarioView.from_record(_record()).model_dump()
+    shown = build_scenario_view(_record()).model_dump()
     assert list(shown) == V1_KEYS + V2_EXTRAS
     assert list(shown["scenario"]) == [
         "threat_category", "contributing_categories", "threat_type", "threat_name",
@@ -114,7 +114,7 @@ def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
 
 
 def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
-    view = ScenarioView.from_record(_record())
+    view = build_scenario_view(_record())
     assert (view.actor, view.threat_source, view.threat_type_source) == (
         "Nation-state/APT",
         "LIBRARY",
@@ -143,7 +143,7 @@ def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
 def test_a_scenario_written_before_shows_no_generation_times() -> None:
     record = _record()
     record.pop("generation")
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     assert (view.generation_epoch, view.gen_started_at, view.gen_finished_at, view.gen_seconds) == (None,) * 4
 
 
@@ -154,7 +154,7 @@ def test_a_scenario_written_before_shows_no_generation_times() -> None:
 def test_the_scope_is_the_asset_one_system_or_a_combination(
     systems: list[dict[str, Any]], scope_type: str, scope_key: str
 ) -> None:
-    scope = ScenarioView.from_record(_record(**_content(systems=systems))).scope
+    scope = build_scenario_view(_record(**_content(systems=systems))).scope
     assert scope is not None and (scope.scope_type, scope.scope_key) == (scope_type, scope_key)
 
 
@@ -164,7 +164,7 @@ def test_an_ai_proposed_threat_on_an_assumed_route_with_a_nearest_control_is_fla
     note = {"code": "plan_check", "severity": "note", "message": "The plan check disagreed."}
     record = _record(**_content(threat=threat, route={"status": "unknown"}), findings=[note])
     record["controls"] = {"status": "done", "items": [nearest]}
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     assert view.review_flags == ["AI_PROPOSED_TYPE", "AI_PROPOSED_THREAT", "ASSUMED_ROUTE", "PLAN_CHECK",
                                  "NEAREST_CONTROL"]  # fmt: skip
     assert (view.threat_source, view.threat_type_source, view.control_match_status) == (
@@ -186,7 +186,7 @@ def test_an_ai_proposed_threat_on_an_assumed_route_with_a_nearest_control_is_fla
 def test_the_controls_flags_follow_the_mapping(
     controls: dict[str, Any], mapped: bool, exhausted: bool, reason: str | None, match_status: str | None
 ) -> None:
-    view = ScenarioView.from_record(_record(controls=controls))
+    view = build_scenario_view(_record(controls=controls))
     assert (view.controls_mapped, view.controls_mapping_exhausted) == (mapped, exhausted)
     assert (view.controls_mapping_exhaustion_reason, view.control_match_status) == (reason, match_status)
     assert ("CONTROL_LIBRARY_GAP" in view.review_flags) == (match_status == "CONTROL_LIBRARY_GAP")
@@ -199,7 +199,7 @@ def test_a_failure_card_is_v1s_null_scenario_with_its_reason() -> None:
     }
     record = _record(status="failed", failure=failure)
     record.pop("controls")
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     assert view.scenario is None and view.failure == failure
     assert (view.validation_status, view.validation_errors) == ("warning", [failure["message"]])
     assert "VALIDATION_EXCEPTION" in view.review_flags and view.control_match_status is None
@@ -213,9 +213,9 @@ def test_a_failure_card_whose_attacker_no_check_supports_names_no_v1_actor() -> 
     acting = {"id": 68, "name": "Nation-state/APT", "role": "acting", "closest": True, "selection": "ranked"}
     record = _record(status="failed", failure=failure) | _content(actors=[acting])
     record.pop("controls")
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     assert view.actor is None and [actor.role for actor in view.actors] == ["acting"]
-    assert ScenarioView.from_record(_record() | _content(actors=[acting])).actor == "Nation-state/APT"
+    assert build_scenario_view(_record() | _content(actors=[acting])).actor == "Nation-state/APT"
 
 
 @pytest.mark.parametrize(
@@ -232,7 +232,7 @@ def test_a_hand_written_card_says_where_its_threat_stands_in_the_library(
     threat = {"type": "Drone intrusion", "type_id": 12, "name": "Rogue drone", "library_id": 901,
               "library_status": library_status, "ai_generated": False}  # fmt: skip
     record = _record(source=RunKind.MANUAL, **_content(threat=threat, title=None, why_applies=None))
-    view = ScenarioView.from_record(record)
+    view = build_scenario_view(record)
     assert view.library is not None
     assert view.library.threat.model_dump() == {"name": "Rogue drone", "status": threat_status}
     assert view.library.threat_type.model_dump() == {"name": "Drone intrusion", "status": "existing"}

@@ -7,11 +7,12 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
+import structlog
 from pymongo import ReturnDocument
 from pymongo.collection import Collection as MongoCollection
-from pymongo.errors import BulkWriteError, DuplicateKeyError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
 
-from app.core.constants import ErrorMessage
+from app.core.constants import ErrorMessage, LogEvent
 from app.core.database import expire_documents_after, get_mongodb
 from app.core.exceptions import DuplicateRecord
 
@@ -21,6 +22,15 @@ Condition = Mapping[str, Any] | Callable[[Any], Mapping[str, Any]]
 
 _DUPLICATE_KEY = 11000  # MongoDB's error code for a value a unique index already holds
 _INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
+#: The field create and save stamp with the repository's record shape version.
+SCHEMA_VERSION_FIELD = "schema_version"
+
+log = structlog.get_logger(__name__)
+
+
+def schema_version_of(record: Mapping[str, Any]) -> int:
+    """The version of a record's shape; a record stored before versions were stamped is version 1."""
+    return int(record.get(SCHEMA_VERSION_FIELD, 1))
 
 
 def duplicate_index_name(error: DuplicateKeyError) -> str:
@@ -63,15 +73,16 @@ class MongoRepository:
         ttl: Iterable[tuple[str, int | Callable[[], int]]] = (),
         conditions: Mapping[str, Condition] | None = None,
         field_lists: Mapping[str, Iterable[str] | Mapping[str, int]] | None = None,
+        required: Iterable[str] = (),
+        schema_version: int = 1,
     ) -> None:
-        """`collection`: its name (resolved on first use, never at import) or a pymongo Collection (tests, the
-        job lease). `indexes`: create_index keywords ({"keys", "name", "unique"}). `ttl`: (field, seconds or a
-        function giving them from the settings) per expiry."""
+        """`collection`: its name (resolved on first use, never at import) or a pymongo Collection (tests,
+        the job lease). `indexes`: create_index keywords. `ttl`: (field, seconds or a function) per expiry.
+        `required`: what the validator asks of a record. `schema_version`: stamped by each create and save."""
         self._collection = collection
-        self._indexes = tuple(indexes)
-        self._ttl = tuple(ttl)
-        self._conditions = dict(conditions or {})
-        self._field_lists = dict(field_lists or {})
+        self._indexes, self._ttl = tuple(indexes), tuple(ttl)
+        self._conditions, self._field_lists = dict(conditions or {}), dict(field_lists or {})
+        self._required, self._stamp = tuple(required), {SCHEMA_VERSION_FIELD: schema_version}
 
     @property
     def collection(self) -> MongoCollection:
@@ -81,7 +92,8 @@ class MongoRepository:
         return self._collection
 
     def create_indexes(self) -> None:
-        """Every index and TTL expiry of the collection; idempotent, run at start-up."""
+        """The collection's validator, every index and TTL expiry; idempotent, run at start-up."""
+        _apply_validator(self.collection, self._required)
         for index in self._indexes:
             self.collection.create_index(**index)
         for field, seconds in self._ttl:
@@ -90,7 +102,7 @@ class MongoRepository:
     def create(self, record: Record) -> Any:
         """Inserts a new record, returns its _id; DuplicateRecord names the unique index that refused it."""
         try:
-            return self.collection.insert_one(record).inserted_id
+            return self.collection.insert_one(record | self._stamp).inserted_id
         except DuplicateKeyError as error:
             raise DuplicateRecord(duplicate_index_name(error)) from error
 
@@ -99,7 +111,7 @@ class MongoRepository:
         record with that _id exists that may not be replaced; DuplicateRecord for any other unique index."""
         query = self.filter({"_id": record["_id"], **(only_if or {})})
         try:
-            self.collection.replace_one(query, record, upsert=True)
+            self.collection.replace_one(query, record | self._stamp, upsert=True)
         except DuplicateKeyError as error:
             index_name = duplicate_index_name(error)
             if index_name == "_id_":
@@ -211,12 +223,35 @@ def _projection(
         return None
     if isinstance(fields, str):
         fields = field_lists[fields]
-    return fields if isinstance(fields, Mapping) else dict.fromkeys(fields, 1)
+    projection = fields if isinstance(fields, Mapping) else dict.fromkeys(fields, 1)
+    if projection and not any(projection.values()):  # an exclusion: what callers show stays as it was
+        return {**projection, SCHEMA_VERSION_FIELD: 0}
+    return projection
 
 
 def _update_document(changes: Mapping[str, Any]) -> Mapping[str, Any]:
     """Plain fields go in $set; a document of $ operators is used as it is."""
     return changes if any(key.startswith("$") for key in changes) else {"$set": dict(changes)}
+
+
+def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> None:
+    """A $jsonSchema validator refusing a new or changed record without a `required` field: collMod on an
+    existing collection, else the collection created with it; a server or user refusing it is logged."""
+    if not required:
+        return
+    options = {
+        "validator": {"$jsonSchema": {"bsonType": "object", "required": list(required)}},
+        "validationLevel": "moderate",  # records stored invalid before stay writable
+        "validationAction": "error",
+    }
+    database, name = collection.database, collection.name
+    try:
+        if database.list_collection_names(filter={"name": name}):
+            database.command("collMod", name, **options)
+        else:
+            database.create_collection(name, **options)
+    except PyMongoError as error:  # an older server or no collMod right: start-up goes on without it
+        log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, error=str(error))
 
 
 def create_all_indexes(job_collections: Iterable[str] = ()) -> None:

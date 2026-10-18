@@ -125,6 +125,10 @@ class RemediationMessage(StrEnum):
         "Version {version} of remediation plan '{remediation_id}' is still being written: regenerate it once "
         "it is done or failed."
     )
+    VERSION_LIMIT_REACHED = (
+        "Remediation plan '{remediation_id}' already has {max_versions} versions, the most one plan keeps "
+        "(REGENERATIONS_MAX_VERSION_COUNT): accept or reject one of them instead of regenerating."
+    )
     CHANGED_CONCURRENTLY = (
         "Remediation plan '{remediation_id}' changed while this decision was made: read it again."
     )

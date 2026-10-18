@@ -6,8 +6,9 @@ from app.api.dependencies import get_authenticated_principal
 from app.core.constants import Collection, ErrorCode, Limits
 from app.core.database import get_mongodb
 from app.core.exceptions import Unauthorized
+from app.domain.api_keys import hash_api_key
 from app.models.api_clients import Principal
-from app.services.api_clients import get_api_client_service, hash_api_key
+from app.services.api_clients import get_api_client_service
 from tests.conftest import ADMIN
 
 URL = "/v1/tsg/api-clients"

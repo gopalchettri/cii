@@ -29,8 +29,12 @@ from app.domain.scenario.write import (
     WRITER_SYSTEM_PROMPT,
     build_brief,
     check_exact_rules,
+    draft_answer,
     evidence_block,
     evidence_problem,
+    finding_severity,
+    is_blocked,
+    is_final,
     plan_check_prompt,
     with_word_limits,
     write_scenario,
@@ -149,17 +153,17 @@ def test_a_fact_cannot_close_the_block_fake_a_heading_or_carry_an_instruction() 
 def test_a_story_with_valid_markers_and_no_ids_passes() -> None:
     brief = _story_brief(TECHNIQUE)
     assert _codes(_DRAFT, brief) == []
-    chat = _chat_answering([_DRAFT.to_answer()], [_CONSISTENT])
+    chat = _chat_answering([draft_answer(_DRAFT)], [_CONSISTENT])
     written = write_scenario(chat, brief)
-    assert written.draft.statement == STORY_MARKED and not written.blocked and not written.rewritten
+    assert written.draft.statement == STORY_MARKED and not is_blocked(written) and not written.rewritten
 
 
 @pytest.mark.parametrize("ident", ["CVE-2024-0001", "ICSA-24-001-01"])
 def test_an_advisory_id_in_the_prose_is_blocked_then_rewritten_once(ident: str) -> None:
     leaky = _with_statement(STORY_MARKED.replace("before [1]", f"before ({ident}) [1]"))
-    chat = _chat_answering([leaky.to_answer()], [_CONSISTENT, _CONSISTENT], [_DRAFT.to_answer()])
+    chat = _chat_answering([draft_answer(leaky)], [_CONSISTENT, _CONSISTENT], [draft_answer(_DRAFT)])
     written = write_scenario(chat, _story_brief(TECHNIQUE))
-    assert written.rewritten and written.draft.statement == STORY_MARKED and not written.blocked
+    assert written.rewritten and written.draft.statement == STORY_MARKED and not is_blocked(written)
     assert ident in chat.asked(AiTask.REWRITE_SCENARIO)[0]
 
 
@@ -170,7 +174,9 @@ def test_a_marker_naming_no_entry_blocks_and_with_intelligence_off_any_marker_do
     ]
     original = _story_brief(TECHNIQUE, style=WriterStyle.ORIGINAL)
     (marker,) = check_exact_rules(_DRAFT, original)
-    assert marker.code == StoryFindingCode.UNKNOWN_MARKER and marker.severity == FindingSeverity.BLOCKER
+    assert (
+        marker.code == StoryFindingCode.UNKNOWN_MARKER and finding_severity(marker) == FindingSeverity.BLOCKER
+    )
     assert "the real-world claim it marks" in marker.message
     assert _codes(_with_statement(STORY_PLAIN), original) == []
 
@@ -186,10 +192,10 @@ def test_a_sentence_citing_an_unsupported_source_is_taken_out() -> None:
     two = dataclasses.replace(
         _DRAFT, statement=STORY_MARKED + _SECOND, evidence_links=((1, STORY_CLAIM), (2, "x"))
     )
-    chat = _chat_answering([two.to_answer()], [_unsupported("[2]", 9)])
+    chat = _chat_answering([draft_answer(two)], [_unsupported("[2]", 9)])
     written = write_scenario(chat, _story_brief(TECHNIQUE, _VULNERABILITY))
     assert written.draft.statement == STORY_MARKED and written.draft.evidence_links == ((1, STORY_CLAIM),)
-    assert [(f.code, f.severity) for f in written.findings] == [
+    assert [(f.code, finding_severity(f)) for f in written.findings] == [
         (FindingCode.CITATION_REMOVED, FindingSeverity.WARNING)
     ]
     assert written.plan_check.unsupported == (2,) and AiTask.REWRITE_SCENARIO not in [
@@ -199,11 +205,11 @@ def test_a_sentence_citing_an_unsupported_source_is_taken_out() -> None:
 
 def test_a_story_left_citing_nothing_is_blocked_for_good_after_its_one_rewrite() -> None:
     chat = _chat_answering(
-        [_DRAFT.to_answer()], [_unsupported(1), _CONSISTENT], [_with_statement(STORY_PLAIN).to_answer()]
+        [draft_answer(_DRAFT)], [_unsupported(1), _CONSISTENT], [draft_answer(_with_statement(STORY_PLAIN))]
     )
     brief = _story_brief(TECHNIQUE)
     written = write_scenario(chat, brief)
-    assert written.blocked and written.final and written.rewritten
+    assert is_blocked(written) and is_final(written) and written.rewritten
     assert [task for task, _ in chat.calls].count(AiTask.REWRITE_SCENARIO) == 1
     assert FindingCode.NO_EVIDENCE_CITED in {finding.code for finding in written.findings}
     run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}

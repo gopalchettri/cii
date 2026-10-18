@@ -2,23 +2,19 @@
 and stored, then the evidence index rebuilt. A failing source never stops the others; its last data stays."""
 
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import structlog
 
-from app.core.constants import (
-    REFRESH_AFTER_HOURS,
-    AuditAction,
-    AuditTarget,
-    Dependency,
-    IntelLimits,
-    IntelSource,
-    LogEvent,
-    TaskName,
-)
+from app.core.constants import AuditAction, AuditTarget, Dependency, IntelSource, LogEvent, TaskName
 from app.core.exceptions import IntelFetchFailed
 from app.data_access.admin.repository import audit_records
 from app.data_access.external_intelligence.repository import IntelFeedRepository, IntelRecordRepository
+from app.domain.external_intelligence.refresh_rules import (
+    claim_stale_before,
+    is_refresh_due,
+    trusted_checkpoint,
+)
 from app.models.external_intelligence.refresh_summary import RefreshResult, RefreshSummary, SourceRefresh
 from app.models.external_intelligence.source_health import (
     SourceHealth,
@@ -95,8 +91,7 @@ class SourceRefresher:
         health = None if doc is None else SourceHealth.from_doc(doc)
         if health is None or not (forced or self._is_due(health, now)):
             return SourceRefresh(source, RefreshResult.SKIPPED)
-        stale_before = now - timedelta(seconds=IntelLimits.CLAIM_STALE_SECONDS)
-        claim = self._feeds.claim_intel_feed_refresh(source, now, stale_before)
+        claim = self._feeds.claim_intel_feed_refresh(source, now, claim_stale_before(now))
         if claim is None:
             return SourceRefresh(source, RefreshResult.SKIPPED)
         try:
@@ -111,9 +106,9 @@ class SourceRefresher:
 
     def _is_due(self, health: SourceHealth, now: datetime) -> bool:
         """True when the source never succeeded, its last run was cut short, or its period has passed."""
-        if health.last_success_at is None or self._feeds.count(_id=health.source, more_pending=True):
-            return True
-        return now - health.last_success_at >= timedelta(hours=REFRESH_AFTER_HOURS[health.source])
+        never_succeeded = health.last_success_at is None  # due whatever its row holds: no read
+        more_pending = not never_succeeded and bool(self._feeds.count(_id=health.source, more_pending=True))
+        return is_refresh_due(health.source, health.last_success_at, more_pending, now)
 
     def _download_and_store(
         self,
@@ -124,7 +119,7 @@ class SourceRefresher:
         now: datetime,
     ) -> SourceRefresh:
         """Download the source's changes and store them under the claim; a revoke meanwhile purges again."""
-        result = fetcher.download_changes(_trusted_checkpoint(health))
+        result = fetcher.download_changes(trusted_checkpoint(health.checkpoint, health.source_version))
         if result is None:  # the source's version marker is the one already stored, or it has nothing to ask
             return self._nothing_new(source, claim, health, now)
         if not self._feeds.count(_id=source, approved=True):  # revoked while it downloaded
@@ -209,12 +204,6 @@ def _announce(done: SourceRefresh) -> None:
         **asdict(done.counts),
         retired=done.retired,
     )
-
-
-def _trusted_checkpoint(health: SourceHealth) -> str | None:
-    """The stored checkpoint, trusted only with its version (they are saved together): a row missing either
-    is downloaded in full."""
-    return health.checkpoint if health.source_version is not None else None
 
 
 def _reason(exc: BaseException) -> str:

@@ -1,12 +1,8 @@
 """A run's use cases: start it from the asset's frozen facts, give it more work (next set, regenerate), and
 read runs and their scenarios."""
 
-import hashlib
-import json
 import uuid
-from collections import Counter
-from datetime import UTC, date, datetime
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any, Final
 
 import structlog
@@ -18,28 +14,22 @@ from app.core.constants import (
     AuditAction,
     AuditTarget,
     ConflictReason,
-    ContextProperties,
     Decision,
     Dependency,
     IntelDocId,
-    IntelMessage,
     JobControlMessage,
     LogEvent,
-    PropertyMessage,
     ReviewMessage,
     RunActionKind,
     RunClash,
     RunKind,
-    ScenarioStatus,
     SessionMessage,
     Status,
     Step,
-    TargetProblem,
     TaskName,
-    ThreatFinding,
 )
 from app.core.database import get_mongodb, get_stored_procedure_client
-from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Conflict, Forbidden, Invalid, NotFound, SetupError
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Conflict, Forbidden, NotFound
 from app.core.singletons import singleton
 from app.data_access.admin.repository import audit_records
 from app.data_access.external_intelligence.repository import intel_snapshots
@@ -48,13 +38,27 @@ from app.data_access.library.repository import SqlServerRepository
 from app.data_access.scenario.repository import (
     JobControlRepository,
     ScenarioSessionRepository,
+    running_action,
     scenario_sessions,
     scenarios,
+    session_status_from_record,
 )
-from app.domain.scenario.plan import set_and_first_batch, why_no_path_left
-from app.domain.shared.prompt_redaction import DATABASE_KEYS, facts_safe_for_prompt
+from app.domain.scenario.plan import (
+    check_intel_has_data,
+    check_same_start_request,
+    freeze_context,
+    nothing_left_to_write,
+    request_fingerprint,
+    set_and_first_batch,
+)
+from app.domain.scenario.review import (
+    cancel_stamp_seen,
+    check_review_open,
+    controls_were_cancelled,
+    regenerate_batch,
+)
 from app.models.api_clients import Principal
-from app.models.asset_context import AssetContextRows, FrozenContext, Row
+from app.models.asset_context import FrozenContext
 from app.models.scenario.views import (
     RunActionStarted,
     RunResults,
@@ -63,44 +67,16 @@ from app.models.scenario.views import (
     ScenarioView,
     SessionStatus,
     StartRunRequest,
-    build_board,
-    explain_given_up,
-    run_coverage,
-    running_action,
 )
 from app.realtime.publisher import publish_session_status
 from app.services.audit import audit_target, caller_actor
 from app.services.external_intelligence.switch import get_external_intelligence_switch
-from app.services.scenario.review import check_review_open, list_review_targets
+from app.services.scenario.results import build_board, build_scenario_view, explain_given_up, run_coverage
+from app.services.scenario.review import list_review_targets
 from app.worker.celery_app import send_job
 
 log = structlog.get_logger(__name__)
 
-#: Coded columns holding one saved option value, and the option code that names it.
-SINGLE_SELECT_CODES: Final = {
-    "accessability_channel": "acc-channel",
-    "hosting_location": "hosting-location",
-    "network_connectivity_primary_dr": "network-connectivity",
-    "dr_drill_frequency": "dr-drill",
-    "managed_by": "managed-by",
-}
-#: Coded columns holding a JSON array of saved option values, or the names the procedure already joined.
-MULTI_SELECT_CODES: Final = {
-    "technology_used": "technology-used",
-    "database_platforms": "database-platforms",
-    "targeted_users": "targeted-users",
-    "saas_platform_list": "saas-platforms",
-    "public_cloud_platforms": "pub-c-platforms",
-}
-_SINGLE_CODES: Final = {**SINGLE_SELECT_CODES, "asset_priority": "priority"}
-_NAME_FACTS: Final = ("critical_service", "sector", "sub_sector")
-_NEVER_TESTED_YEAR: Final = 1900  # SQL Server's minimum date: "never", not a real date
-#: Names a fact column may not have: the app's own (alias) and the keys every prompt drops.
-_RESERVED_NAMES: Final = (frozenset(ContextProperties.ALWAYS_USED) | DATABASE_KEYS) - set(
-    ContextProperties.HEAD
-)
-_ASSET_SETTING, _SYSTEM_SETTING = "ASSET_PROPERTIES_REQUIRED", "SYSTEM_PROPERTIES_REQUIRED"
-_ALWAYS_REQUIRED: Final = frozenset({"name"})  # every prompt, card and search names the asset and its systems
 _RUN_COUNTS: Final = (
     "planned",
     "written",
@@ -113,261 +89,13 @@ _RUN_COUNTS: Final = (
     "controls_waiting",
     "controls_failed",
 )
-_NONE_LEFT: Final = {
-    ConflictReason.NOTHING_LEFT: ReviewMessage.NOTHING_LEFT,
-    ConflictReason.TARGET_REACHED: ReviewMessage.TARGET_REACHED,
-    ConflictReason.SCENARIOS_ABANDONED: ReviewMessage.SCENARIOS_ABANDONED,
-}
-
-
-def freeze_context(request: StartRunRequest, rows: AssetContextRows) -> FrozenContext:
-    """The run's frozen context from the procedure's rows: 403/404/422 for the request, 500 for a procedure
-    set up wrong."""
-    _check_procedure_columns(rows)
-    _check_ownership(request, rows)
-    assert rows.asset is not None
-    _check_sector(request, rows.sector)
-    _warn_unlinked_service(request, rows.services)
-    options = _option_names_by_code(rows.options)
-    systems_by_id = {row["id"]: row for row in rows.systems}
-    asset_facts = _facts_of_row(rows.asset, options)
-    systems = [
-        _frozen_system(systems_by_id[system_id], f"{ThreatFinding.SYSTEM_ALIAS}{position}", options)
-        for position, system_id in enumerate(request.supporting_system_ids, start=1)
-    ]
-    asset = _head_columns(rows.asset)
-    check_required(request, {"name": asset["name"], **asset_facts}, systems)
-    return FrozenContext(asset, asset_facts, systems, _missing_facts(systems))
-
-
-def _display_name(value: Any) -> Any:
-    """A name as prompts and cards show it: runs of whitespace collapsed to one space."""
-    return " ".join(value.split()) if isinstance(value, str) else value
-
-
-def _check_procedure_columns(rows: AssetContextRows) -> None:
-    """500 setup_error when a row lacks a head column, a fact has a reserved name, or the dropdown names
-    lack code, name and value (or id)."""
-    for kind, found in (("asset", [rows.asset] if rows.asset else []), ("supporting system", rows.systems)):
-        if not found:
-            continue
-        if any(column not in row for row in found for column in ContextProperties.HEAD):
-            columns = ", ".join(ContextProperties.HEAD)
-            raise SetupError(PropertyMessage.HEAD_MISSING.format(columns=columns, rows=kind))
-        facts = set(found[0]) - set(ContextProperties.HEAD)  # one result set: every row has its columns
-        # A reserved name would replace SYS1..n, or count as recorded while the AI never saw it.
-        if reserved := sorted(facts & _RESERVED_NAMES):
-            raise SetupError(PropertyMessage.RESERVED.format(columns=", ".join(reserved), rows=kind))
-    if rows.options and not _option_key(rows.options[0]):
-        raise SetupError(PropertyMessage.OPTIONS_OUT_OF_DATE.format(found=", ".join(rows.options[0])))
-
-
-def _check_ownership(request: StartRunRequest, rows: AssetContextRows) -> None:
-    """403 an asset the entity does not own or a system not linked; 404 an unknown service or sector."""
-    if rows.asset is None:
-        raise Forbidden(
-            SessionMessage.ASSET_NOT_OWNED.format(asset_id=request.asset_id),
-            reason=ConflictReason.ASSET_NOT_OWNED,
-        )
-    linked = {row["id"] for row in rows.systems}
-    unlinked = [system_id for system_id in request.supporting_system_ids if system_id not in linked]
-    if unlinked:
-        message = SessionMessage.SYSTEMS_NOT_LINKED.format(system_ids=unlinked, asset_id=request.asset_id)
-        raise Forbidden(message, reason=ConflictReason.SYSTEM_NOT_LINKED, details={"system_ids": unlinked})
-    if request.service_id is not None and not any(row["id"] == request.service_id for row in rows.services):
-        raise NotFound(SessionMessage.SERVICE_NOT_FOUND.format(service_id=request.service_id))
-    asked_sector = request.subsector_id or request.sector_id
-    if asked_sector is not None and rows.sector is None:
-        raise NotFound(SessionMessage.SECTOR_NOT_FOUND.format(sector_id=asked_sector))
-
-
-def _check_sector(request: StartRunRequest, row: Row | None) -> None:
-    """422 when a sector_id sent with a sub-sector is not its parent."""
-    if row is None or request.subsector_id is None or request.sector_id is None:
-        return
-    top_id = row["parent_id"] if row["parent_id"] is not None else row["id"]
-    if top_id != request.sector_id:
-        message = SessionMessage.SECTOR_NOT_PARENT.format(
-            sector_id=request.sector_id, subsector_id=request.subsector_id, parent_id=top_id
-        )
-        raise Invalid(message, errors=[{"field": f"{request.FIELD_PREFIX}.sector_id", "message": message}])
-
-
-def _warn_unlinked_service(request: StartRunRequest, rows: list[Row]) -> None:
-    """Logs an asked service the asset is not linked to; it is used anyway."""
-    if request.service_id is not None and not any(row["linked"] for row in rows):
-        log.warning(
-            LogEvent.CONTEXT_SERVICE_NOT_LINKED, asset_id=request.asset_id, service_id=request.service_id
-        )
-
-
-def _option_names_by_code(rows: list[Row]) -> dict[str, dict[int, str]]:
-    """{option code in lower case (SQL compares codes case-insensitively): {saved number: name}}."""
-    names: dict[str, dict[int, str]] = {}
-    key = _option_key(rows[0]) if rows else None
-    for row in rows:
-        if key and (row["name"] or "").strip():  # a blank option name names nothing: reads as unanswered
-            names.setdefault(str(row["code"]).strip().lower(), {})[row[key]] = row["name"]
-    return names
-
-
-def _option_key(row: Row) -> str | None:
-    """The column a dropdown-names row holds its number in (value or id), when it has code and name."""
-    if any(column not in row for column in ContextProperties.OPTION_COLUMNS):
-        return None
-    return next((key for key in ContextProperties.OPTION_KEYS if key in row), None)
-
-
-def _single_select_name(raw: int | str | None, code: str, options: dict[str, dict[int, str]]) -> str | None:
-    """The saved option's name, or the name the procedure already gave; None when unanswered (NULL or the
-    form's 0) or unknown (logged)."""
-    if isinstance(raw, str):
-        number = _whole_number(raw)
-        if number is None:
-            return _display_name(raw) or None
-        raw = number
-    if not raw:
-        return None
-    name = options.get(code, {}).get(raw)
-    if name is None:
-        log.warning(LogEvent.CONTEXT_OPTION_VALUE_NOT_FOUND, code=code, value=raw)
-    return name
-
-
-def _multi_select_names(raw: str | None, code: str, options: dict[str, dict[int, str]]) -> list[str] | None:
-    """Names of a JSON array of saved values (an unknown item dropped alone, as SQL's TRY_CAST); a broken
-    array is none; a text that is no array is the names the procedure already joined."""
-    text = (raw or "").strip()
-    try:
-        items = json.loads(text) if text else []
-    except ValueError:
-        if text.startswith("["):
-            return None
-        return [name for name in (part.strip() for part in text.split(",")) if name] or None
-    known = options.get(code, {})
-    values = map(_whole_number, items if isinstance(items, list) else [])
-    return [known[value] for value in values if value in known] or None
-
-
-def _whole_number(item: Any) -> int | None:
-    """6 or "6" -> 6; null, true, 6.5 or "x" -> None (as SQL's TRY_CAST(... AS INT))."""
-    try:
-        return int(str(item))
-    except ValueError:
-        return None
-
-
-def _stored_value(value: Any) -> Any:
-    """A column's value as MongoDB stores it and a prompt reads it: a DECIMAL as a number, a date as ISO text
-    (SQL Server's minimum date as None), binary as None, any other type as text."""
-    if value is None or isinstance(value, bool | int | float | str):
-        return value
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, date):  # a datetime too
-        return None if value.year <= _NEVER_TESTED_YEAR else value.isoformat()
-    if isinstance(value, bytes | bytearray | memoryview):
-        return None
-    return str(value)
-
-
-def _fact_value(column: str, value: Any, options: dict[str, dict[int, str]]) -> Any:
-    """One column's fact: option names for a coded column, collapsed spaces for a name, else its value."""
-    if column in _SINGLE_CODES:
-        return _single_select_name(value, _SINGLE_CODES[column], options)
-    if column in MULTI_SELECT_CODES:
-        return _multi_select_names(value, MULTI_SELECT_CODES[column], options)
-    if column in _NAME_FACTS:
-        return _display_name(value)
-    return _stored_value(value)
-
-
-def _facts_of_row(row: Row, options: dict[str, dict[int, str]]) -> dict[str, Any]:
-    """Every column of a procedure row but its head, in the procedure's order."""
-    return {
-        column: _fact_value(column, value, options)
-        for column, value in row.items()
-        if column not in ContextProperties.HEAD
-    }
-
-
-def _head_columns(row: Row) -> dict[str, Any]:
-    """A row's id, display name and category code."""
-    return {"id": row["id"], "name": _display_name(row["name"]), "category_code": row["category_code"]}
-
-
-def _frozen_system(row: Row, alias: str, options: dict[str, dict[int, str]]) -> dict[str, Any]:
-    """A supporting system as the run freezes it: id, alias, head and facts."""
-    return {"id": row["id"], "alias": alias, **_head_columns(row), **_facts_of_row(row, options)}
-
-
-def _missing_facts(systems: list[dict[str, Any]]) -> list[str]:
-    """The system facts not one system in scope records: shown to the reviewer, never a reason to refuse."""
-    first = systems[0] if systems else {}  # one result set: every system has the same columns
-    columns = [column for column in first if column not in ContextProperties.ALWAYS_USED]
-    return sorted(
-        column
-        for column in columns
-        if not any(facts_safe_for_prompt({"fact": system.get(column)}) for system in systems)
-    )
-
-
-def check_required(
-    request: StartRunRequest, asset_facts: dict[str, Any], systems: list[dict[str, Any]]
-) -> None:
-    """500 when a required name is no column of the procedure; else 422 naming every required fact not
-    recorded (as the AI would be shown it), the asset's first, then each system's in request order."""
-    settings = get_settings()
-    required_asset = settings.required_asset_properties | _ALWAYS_REQUIRED
-    required_system = settings.required_system_properties | _ALWAYS_REQUIRED
-    _check_returned(_ASSET_SETTING, required_asset, asset_facts)
-    for system in systems[:1]:  # every system row has the procedure's same columns
-        _check_returned(_SYSTEM_SETTING, required_system, system)
-    gaps: list[tuple[str, str, list[str]]] = []  # (field, owner, names)
-    by_field: dict[str, list[str]] = {}
-    for name in _not_recorded(asset_facts, required_asset):  # sector & co come from the request's own fields
-        field = ContextProperties.REQUEST_FIELDS.get(name, "asset_id")
-        by_field.setdefault(f"{request.FIELD_PREFIX}.{field}", []).append(name)
-    gaps += [(field, f"asset {request.asset_id}", names) for field, names in by_field.items()]
-    for index, system in enumerate(systems):
-        if names := _not_recorded(system, required_system):
-            gaps.append(
-                (f"{request.FIELD_PREFIX}.supporting_system_id.{index}", f"system {system['id']}", names)
-            )
-    if gaps:
-        _refuse_missing_facts(gaps)
-
-
-def _check_returned(setting: str, required: frozenset[str], facts: dict[str, Any]) -> None:
-    """500 setup_error naming the required names the procedure does not return."""
-    if absent := sorted(required - facts.keys()):
-        raise SetupError(PropertyMessage.NOT_RETURNED.format(setting=setting, names=", ".join(absent)))
-
-
-def _not_recorded(facts: dict[str, Any], required: frozenset[str]) -> list[str]:
-    """The required names, in the facts' order, whose value the AI would not be shown."""
-    return [name for name in facts if name in required and not facts_safe_for_prompt({"fact": facts[name]})]
-
-
-def _refuse_missing_facts(gaps: list[tuple[str, str, list[str]]]) -> None:
-    """422 required_facts_missing with one error per field: names and ids, never a value."""
-    errors = [
-        {"field": field, "message": PropertyMessage.NOT_RECORDED.format(owner=owner, names=", ".join(names))}
-        for field, owner, names in gaps
-    ]
-    detail = PropertyMessage.REQUIRED_MISSING.format(
-        gaps="; ".join(f"{owner}: {', '.join(names)}" for _, owner, names in gaps)
-    )
-    raise Invalid(detail, reason=ConflictReason.REQUIRED_FACTS_MISSING, errors=errors)
 
 
 def refuse_without_intel_data() -> None:
     """409 intel_no_data while external intelligence is on and its active snapshot indexes nothing."""
     if not get_external_intelligence_switch().is_enabled():
         return
-    active = intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {}
-    if not (active.get("counts") or {}).get("indexed"):
-        raise Conflict(IntelMessage.NO_DATA_YET, reason=ConflictReason.INTEL_NO_DATA)
+    check_intel_has_data(intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {})
 
 
 class RunService:
@@ -399,7 +127,7 @@ class RunService:
                 raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
             return replayed, False
         _announce_start(principal, record, context)
-        return SessionStatus.from_record(record), True
+        return session_status_from_record(record), True
 
     def _replay(self, principal: Principal, request: StartRunRequest, key: str) -> SessionStatus | None:
         """The run that took this key, when it is the same request; 409 when the key named another request or
@@ -407,16 +135,8 @@ class RunService:
         earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
-        fingerprint = _request_fingerprint(request)
-        if (
-            earlier.get("kind") == RunKind.MANUAL
-            or earlier["asset_id"] != request.asset_id
-            or earlier.get("request_hash", fingerprint) != fingerprint
-        ):
-            raise Conflict(
-                SessionMessage.IDEMPOTENCY_KEY_CONFLICT, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT
-            )
-        return SessionStatus.from_record(earlier)
+        check_same_start_request(earlier, request)
+        return session_status_from_record(earlier)
 
 
 def _active_session_id(sessions: ScenarioSessionRepository, entity_id: int, asset_id: int) -> str | None:
@@ -441,14 +161,6 @@ def _announce_start(principal: Principal, record: dict[str, Any], context: Froze
     )
 
 
-def _request_fingerprint(request: StartRunRequest) -> str:
-    """SHA-256 of the request's canonical JSON (systems as a set): what a replayed key must match."""
-    canonical = request.model_dump(mode="json") | {
-        "supporting_system_ids": sorted(request.supporting_system_ids)
-    }
-    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
-
-
 def _new_run_record(
     principal: Principal, request: StartRunRequest, idempotency_key: str | None, context: FrozenContext
 ) -> dict[str, Any]:
@@ -463,7 +175,7 @@ def _new_run_record(
         "client_id": principal.client_id,  # the calling system: stored, never shown, never used to refuse
         "asset_id": request.asset_id,
         "request": request.model_dump(exclude={"asset_id"}),
-        "request_hash": _request_fingerprint(request),
+        "request_hash": request_fingerprint(request),
         "context": context.to_record(),
         "status": Status.QUEUED,
         "step": Step.THREATS,
@@ -500,12 +212,11 @@ class RunActions:
         if asked:
             epoch = self._queue_write_job(principal, run, RunActionKind.NEXT_SET, batch, asked)
             return _started(run, ActionStatus.GENERATING, epoch)
-        resumed = self._resume_controls(run.session_id)
+        resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run))
         if resumed is None:
             raise _being_deleted(run.session_id)
         if not resumed:
-            reason = why_no_path_left(paths)
-            raise Conflict(_NONE_LEFT[reason].format(session_id=run.session_id), reason=reason)
+            raise nothing_left_to_write(run.session_id, paths)
         publish_session_status(run.session_id)
         target = audit_target(AuditTarget.SESSION, run.session_id)
         after = {"controls_resumed": resumed}
@@ -520,11 +231,7 @@ class RunActions:
         """Queues a new version of each chosen scenario; 409 scenarios_not_regenerable names each bad id."""
         check_review_open(run)
         targets = list_review_targets(run.session_id, request.scenario_ids)
-        errors = why_ids_cannot_be_regenerated(request.scenario_ids, targets)
-        if errors:
-            message = ReviewMessage.NOT_REGENERABLE
-            raise Conflict(message, reason=ConflictReason.SCENARIOS_NOT_REGENERABLE, errors=errors)
-        batch = [{"path_id": targets[sid]["path_id"], "replaces": sid} for sid in request.scenario_ids]
+        batch = regenerate_batch(request.scenario_ids, targets)
         epoch = self._queue_write_job(principal, run, RunActionKind.REGENERATE, batch)
         return _started(run, ActionStatus.REGENERATING, epoch)
 
@@ -551,8 +258,8 @@ class RunActions:
             message = ReviewMessage.GENERATION_IN_PROGRESS.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.GENERATION_IN_PROGRESS)
         epoch = run.epoch + 1
-        if _controls_were_cancelled(run):  # a cancelled run is resumed whole
-            self._resume_controls(run.session_id)
+        if controls_were_cancelled(run):  # a cancelled run is resumed whole
+            self._resume_controls(run.session_id, None)  # the new job cleared the cancel stamp it saw
         send_job(TaskName.WRITE_SCENARIOS, run.session_id, epoch)  # a lost send is re-sent by the reaper
         publish_session_status(run.session_id)
         action = AuditAction.RUN_NEXT_SET if kind == RunActionKind.NEXT_SET else AuditAction.RUN_REGENERATED
@@ -561,47 +268,13 @@ class RunActions:
         audit_records.create_audit_record(action, caller_actor(principal), target, after=after)
         return epoch
 
-    def _resume_controls(self, session_id: str) -> int | None:
-        """Queues again and sends the controls a cancel stopped; None when the run is being deleted."""
-        resumed = self._controls.resume_scenario_controls(session_id)
+    def _resume_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
+        """Queues again and sends the controls a cancel stopped, unless a cancel other than the one stamped
+        `cancelled_at` (the one the caller saw) landed since; None when the run is being deleted."""
+        resumed = self._controls.resume_scenario_controls(session_id, cancelled_at)
         if resumed:
             send_job(TaskName.MAP_CONTROLS, session_id, 0)  # the epoch is never checked for controls
         return resumed
-
-
-def why_ids_cannot_be_regenerated(
-    scenario_ids: list[str], targets: dict[str, dict[str, Any]]
-) -> list[dict[str, str]]:
-    """Why each id cannot be regenerated: only the current written version of a path, one per path (a failure
-    card is retried by the write job itself, so two jobs never write one path)."""
-    versions_per_path = Counter(target["path_id"] for target in targets.values())
-    errors = []
-    for scenario_id in scenario_ids:
-        target = targets.get(scenario_id)
-        if target is None:
-            reason: TargetProblem | None = TargetProblem.UNKNOWN
-        elif target["status"] != ScenarioStatus.DONE:
-            reason = TargetProblem.FAILURE_SCENARIO
-        elif target.get("source") == RunKind.MANUAL:
-            reason = TargetProblem.HAND_WRITTEN
-        elif target.get("superseded_by"):
-            reason = TargetProblem.VERSION_NOT_CURRENT
-        elif versions_per_path[target["path_id"]] > 1:
-            reason = TargetProblem.DUPLICATE_VERSION
-        else:
-            reason = None
-        if reason is not None:
-            errors.append({"scenario_id": scenario_id, "reason": reason})
-    return errors
-
-
-def _controls_were_cancelled(run: SessionStatus) -> bool:
-    """True when the run shows a cancel: cancelled, stamped by one, or holding cancelled controls."""
-    return (
-        run.status == Status.CANCELLED
-        or run.cancelled is not None
-        or run.counts.get("controls_cancelled", 0) > 0
-    )
 
 
 def _started(run: SessionStatus, status: ActionStatus, epoch: int) -> RunActionStarted:
@@ -617,7 +290,7 @@ def _being_deleted(session_id: str) -> Conflict:
 
 def find_status_for_caller(session_id: str, entity_id: int) -> SessionStatus:
     """The status of a run the caller's entity owns: 404 unknown, 403 another entity's."""
-    return SessionStatus.from_record(read_session_for_caller(session_id, entity_id, "status"))
+    return session_status_from_record(read_session_for_caller(session_id, entity_id, "status"))
 
 
 def read_session_for_caller(session_id: str, entity_id: int, fields: str) -> dict[str, Any]:
@@ -640,7 +313,7 @@ def read_current_status(session_id: str) -> dict[str, Any] | None:
         return None
     if record is None:
         raise NotFound(SessionMessage.NOT_FOUND.format(session_id=session_id))
-    return build_board(SessionStatus.from_record(record)).model_dump(mode="json")
+    return build_board(session_status_from_record(record)).model_dump(mode="json")
 
 
 #: A page of tsg_scenarios records and the total of the read.
@@ -653,7 +326,7 @@ class ScenarioQueries:
     ) -> RunResults:
         """The run, its progress and coverage (`record`: its tsg_sessions record read once with the
         status_and_coverage field list), and a page of its current versions, oldest first."""
-        run = SessionStatus.from_record(record)
+        run = session_status_from_record(record)
         page = self._scenario_list(
             _scenario_page("created_at", offset, limit, session_id=run.session_id), include_replaced
         )
@@ -720,7 +393,7 @@ class ScenarioQueries:
             elsewhere = accepted.get(path) if record.get("decision") != Decision.ACCEPTED else None
             older = [doc for doc in replaced if (doc["session_id"], doc["path_id"]) == path]
             older = [doc for doc in older if doc["version"] < record["version"]] if include_replaced else []
-            views.append(ScenarioView.from_record(record, elsewhere, older))
+            views.append(build_scenario_view(record, elsewhere, older))
         return views
 
 

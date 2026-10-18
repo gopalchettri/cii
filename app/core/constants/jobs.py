@@ -261,6 +261,7 @@ class ConflictReason(StrEnum):
     NOTHING_TO_CANCEL = "nothing_to_cancel"
     CANCEL_FIRST = "cancel_first"  # a delete refused while a job of it is queued or running
     RUN_BEING_DELETED = "run_being_deleted"
+    VERSION_LIMIT_REACHED = "version_limit_reached"  # REGENERATIONS_MAX_VERSION_COUNT reached
     OPERATION_IN_PROGRESS = "operation_in_progress"  # the same SQL Server write is running now
     INTEL_NO_DATA = "intel_no_data"  # a run refused: external intelligence is on but nothing is imported yet
 

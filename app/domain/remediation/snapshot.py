@@ -6,10 +6,11 @@ text. Every free text passes the one door (`clip`). A plan request makes no AI c
 scenario's controls or attackers are not known yet, the version gets a pending snapshot (the register half
 only) that its plan job completes. Pure, no IO: the library is in memory."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from app.core.constants import ControlMatch, Remediation, SnapshotWarning, Status
+from app.core.constants import ControlMatch, ErrorCode, ErrorMessage, Remediation, SnapshotWarning, Status
+from app.core.exceptions import Conflict
 from app.domain.remediation.register import clip
 from app.domain.scenario.plan import raw_system_facts
 from app.domain.shared.names import name_match_key
@@ -17,6 +18,12 @@ from app.domain.shared.prompt_redaction import facts_safe_for_prompt
 from app.models.asset_context import FrozenContext
 from app.models.library import LibraryControl
 from app.search.texts import describe_control
+
+
+def check_control_library(library: Sequence[LibraryControl]) -> None:
+    """409 while the control library is empty: no control could ever be kept."""
+    if not library:
+        raise Conflict(ErrorMessage.CONTROL_LIBRARY_EMPTY, reason=ErrorCode.CONTROL_LIBRARY_EMPTY)
 
 
 def inputs_ready(scenario: dict[str, Any], controls_by_id: Mapping[int, LibraryControl]) -> bool:
