@@ -13,7 +13,6 @@ import numpy as np
 from app.ai import EmbeddingModel
 from app.core.asset_types import asset_type_fits
 from app.core.constants import Controls, EmbeddingCorpus, StrideCategory
-from app.core.tracing import traced
 from app.models.library import (
     LibraryActor,
     LibraryControl,
@@ -71,7 +70,6 @@ class LibrarySnapshot:
             for category in StrideCategory
         }
 
-    @traced("search.find_threats")
     def find_threats(
         self,
         queries: Sequence[tuple[str, StrideCategory]],
@@ -92,7 +90,6 @@ class LibrarySnapshot:
         texts = [query for query, _ in queries]
         return self._search(EmbeddingCorpus.THREAT, threats, texts, top_k, scopes)
 
-    @traced("search.find_controls")
     def find_controls(
         self,
         queries: Sequence[str],
@@ -118,7 +115,6 @@ class LibrarySnapshot:
         )
         return self._search(EmbeddingCorpus.CONTROL, controls, queries, top_k, [mask] * len(queries))
 
-    @traced("search.find_actors")
     def find_actors(
         self, queries: Sequence[str], top_k: int, allowed_ids: Sequence[Collection[int] | None] | None = None
     ) -> list[list[tuple[LibraryActor, float]]]:
@@ -139,7 +135,6 @@ class LibrarySnapshot:
             leg_depth=len(actors),
         )
 
-    @traced("search.find_threat_types")
     def find_threat_types(
         self, queries: Sequence[str], top_k: int, category: StrideCategory | None = None
     ) -> list[list[tuple[LibraryThreatType, float]]]:

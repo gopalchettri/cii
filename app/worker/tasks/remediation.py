@@ -22,7 +22,6 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import JobFailed
-from app.core.tracing import traced
 from app.data_access.admin.repository import audit_records
 from app.data_access.jobs.repository import JobLease
 from app.data_access.remediation.repository import remediation_plans
@@ -38,7 +37,6 @@ def write_plan(self: Task, record_id: str, epoch: int) -> None:
     run_leased_job(self, Collection.REMEDIATIONS, record_id, epoch, write_version)
 
 
-@traced("worker.write_plan")
 def write_version(lease: JobLease) -> None:
     snapshot = remediation_plans.get_remediation_plan_version_snapshot(lease.record_id, lease.epoch)
     if snapshot is None:  # a version is never removed: only a damaged record lands here

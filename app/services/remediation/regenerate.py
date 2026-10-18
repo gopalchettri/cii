@@ -11,7 +11,6 @@ from typing import Any
 from app.core.config import get_settings
 from app.core.constants import AuditAction, AuditTarget, Status, TaskName
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.admin.repository import audit_records
 from app.data_access.jobs.repository import new_job
 from app.data_access.remediation.repository import (
@@ -43,7 +42,6 @@ class PlanRegeneration:
     def __init__(self, snapshots: SnapshotMaker) -> None:
         self._snapshots = snapshots
 
-    @traced("remediation.regenerate")
     def regenerate(self, principal: Principal, remediation_id: str) -> PlanRequested:
         read = read_owned(principal, remediation_id)
         scenario = scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=read["scenario_id"])

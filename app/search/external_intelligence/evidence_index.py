@@ -141,5 +141,5 @@ def build_index(
     vectors = embeddings.embed_library_texts(EmbeddingCorpus.EXTERNAL_INTELLIGENCE, texts, sources)
     if len(vectors) != len(texts):
         raise EvidenceIndexRefused(IntelMessage.SNAPSHOT_INCONSISTENT, rows=len(texts), vectors=len(vectors))
-    hybrid = HybridIndex(texts, vectors, labels=[hit.title for hit in corpus.hits])
+    hybrid = HybridIndex(texts, vectors)
     return EvidenceIndex(corpus, hybrid, embeddings, rerank, rerank_model)

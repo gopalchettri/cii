@@ -56,13 +56,6 @@
       "problemMatcher": []
     },
     {
-      // Read-only: re-runs a run's search and ranking into logs/replay-<id>.log for tsg_console.html.
-      "label": "TSG: replay a run's inner steps",
-      "type": "shell",
-      "command": ".venv\\Scripts\\python scripts\\replay_run_steps.py '${input:runId}'",
-      "problemMatcher": []
-    },
-    {
       "label": "TSG: make a test run (laptop)",
       "type": "shell",
       "command": ".venv\\Scripts\\python scripts\\debug_tools.py run-make",

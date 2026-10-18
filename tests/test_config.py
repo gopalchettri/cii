@@ -23,7 +23,7 @@ def _settings(**changes: object) -> Settings:
 
 def _env_name(field_name: str) -> str:
     """The environment name a setting is read from: its own name when the owner chose one without the CII_
-    prefix (DEBUG_STEP_OUTPUT), else CII_<FIELD>."""
+    prefix (TOTAL_SCENARIO_COUNT), else CII_<FIELD>."""
     alias = Settings.model_fields[field_name].validation_alias
     return alias if isinstance(alias, str) else f"CII_{field_name.upper()}"
 
@@ -123,37 +123,6 @@ def test_a_deployment_that_forgets_cii_env_gets_production_checks(monkeypatch: p
     unsafe = {**values, "cors_origins": "*", "admin_api_key": "a" * 40}
     with pytest.raises(ValidationError, match="CII_CORS_ORIGINS"):
         Settings(_env_file=None, **unsafe)  # no .env: the laptop's says dev
-
-
-def test_step_tracing_reads_the_owners_unprefixed_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DEBUG_STEP_OUTPUT", "true")
-    assert Settings().debug_step_output is True  # type: ignore[call-arg]
-    monkeypatch.setenv("DEBUG_STEP_OUTPUT", "false")
-    assert Settings().debug_step_output is False  # type: ignore[call-arg]
-    monkeypatch.setenv("DEBUG_STEP_OUTPUT", "maybe")
-    with pytest.raises(ValidationError, match="DEBUG_STEP_OUTPUT"):
-        Settings()  # type: ignore[call-arg]
-
-
-def test_step_detail_reads_the_owners_unprefixed_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DEBUG_STEP_DETAIL", "true")
-    assert Settings().debug_step_detail is True  # type: ignore[call-arg]
-    monkeypatch.setenv("DEBUG_STEP_DETAIL", "false")
-    assert Settings().debug_step_detail is False  # type: ignore[call-arg]
-    monkeypatch.setenv("DEBUG_STEP_DETAIL", "maybe")
-    with pytest.raises(ValidationError, match="DEBUG_STEP_DETAIL"):
-        Settings()  # type: ignore[call-arg]
-
-
-def test_step_top_reads_the_owners_name_and_keeps_1_to_40(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ranked inner record keeps 1 to 40 entries: 40 is the most one logged mapping shows."""
-    for value in (1, 40):
-        monkeypatch.setenv("DEBUG_STEP_TOP", str(value))
-        assert Settings().debug_step_top == value  # type: ignore[call-arg]
-    for text in ("0", "41", "abc"):
-        monkeypatch.setenv("DEBUG_STEP_TOP", text)
-        with pytest.raises(ValidationError, match="DEBUG_STEP_TOP"):
-            Settings()  # type: ignore[call-arg]
 
 
 def test_total_scenario_count_reads_the_owners_unprefixed_name(monkeypatch: pytest.MonkeyPatch) -> None:

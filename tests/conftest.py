@@ -25,10 +25,6 @@ TEST_LOG_DIR = os.path.join(tempfile.gettempdir(), "cii-test-logs")
 shutil.rmtree(TEST_LOG_DIR, ignore_errors=True)
 os.makedirs(TEST_LOG_DIR, exist_ok=True)
 os.environ["CII_LOG_DIR"] = TEST_LOG_DIR
-# The step trace stays off unless a test turns it on (test_step_tracing.py): with the developer's
-# DEBUG_STEP_OUTPUT=true, every app start-up in a test switched it on and cached the trace's logger, so later
-# tests capturing step lines saw none (2026-10-11).
-os.environ["DEBUG_STEP_OUTPUT"] = os.environ["DEBUG_STEP_DETAIL"] = "false"
 # Scenario sets at their defaults, whatever the developer's .env says for a live test (G196).
 os.environ["INITIAL_SET_SIZE"] = os.environ["NEXT_SET_SIZE"] = "6"
 # The similarity thresholds at their defaults too (G200): a developer may set others for a live test.

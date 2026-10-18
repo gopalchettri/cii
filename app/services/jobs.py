@@ -14,7 +14,6 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.admin.repository import audit_records
 from app.data_access.scenario.repository import JobControlRepository
 from app.domain.jobs import check_run_cancel_stopped_something, run_job_kind_and_status
@@ -41,7 +40,6 @@ class JobService:
         jobs.sort(key=lambda job: (job.created_at is None, job.created_at))
         return JobList(jobs=jobs, total=run_total + plan_total)
 
-    @traced("run.cancel")
     def cancel_run(self, principal: Principal, run: SessionStatus) -> RunBoard:
         """Stop the run now: its job, and the controls still being matched for its scenarios. What is written
         stays readable and decidable; a next set or regenerate resumes it on purpose. 409 when nothing of it
@@ -58,7 +56,6 @@ class JobService:
         )
         return build_board(find_status_for_caller(run.session_id, principal.entity_id))
 
-    @traced("run.delete")
     def delete_run(self, principal: Principal, run: SessionStatus) -> SessionDeleted:
         """Remove the run for good, with its scenarios and remediation plans. 409 cancel_first while anything
         of it is queued or running: nothing is ever deleted under a worker."""
@@ -77,7 +74,6 @@ class JobService:
         )
         return SessionDeleted(session_id=run.session_id, **removed)
 
-    @traced("plan.cancel")
     def cancel_plan(self, principal: Principal, remediation_id: str) -> PlanCancelled:
         """Stop a plan being written (409 when it is not); 404/403 come from the route's CallersPlan."""
         if not self._records.cancel_remediation_plan(remediation_id, principal.entity_id, _who(principal)):

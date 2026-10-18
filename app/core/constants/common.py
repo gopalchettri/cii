@@ -102,16 +102,6 @@ class Limits:
     RETRY_AFTER_SECONDS: Final = 5  # the Retry-After of every 503
 
 
-class Tracing:
-    """What one logged value of the step trace (app/core/tracing.py) may show."""
-
-    PREVIEW_CHARS: Final = 1_000  # a text value is clipped here, after redaction
-    PREVIEW_ITEMS: Final = 3  # a longer list shows its count and its first items
-    PREVIEW_KEYS: Final = 40  # a mapping or object shows at most this many fields
-    PREVIEW_DEPTH: Final = 4  # nested deeper than this, a value shows only its type
-    DETAIL_TOP: Final = 10  # entries a ranked inner record keeps by default
-
-
 class AiOutcome(StrEnum):
     """tsg_ai_calls_total{outcome}."""
 
@@ -270,7 +260,3 @@ class LogEvent(StrEnum):
     EXTERNAL_INTELLIGENCE_SWITCH_CHANGED = "external_intelligence.switch_changed"
     EXTERNAL_INTELLIGENCE_TEXT_QUARANTINED = "external_intelligence.text_quarantined"
     EXTERNAL_INTELLIGENCE_SENTENCES_REMOVED = "external_intelligence.sentences_removed"
-    STEP_STARTED = "step.started"  # the step trace (DEBUG_STEP_OUTPUT=true only)
-    STEP_RESULT = "step.result"
-    STEP_FINISHED = "step.finished"
-    STEP_FAILED = "step.failed"

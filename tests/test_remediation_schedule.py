@@ -3,10 +3,7 @@ owner-approved golden example, every repair and every consistency warning. Pure,
 
 from typing import Any
 
-from structlog.testing import capture_logs
-
 from app.core.constants import PlanWarning
-from app.core.tracing import set_step_detail, set_step_tracing, traced_step
 from app.domain.remediation.scheduler import schedule
 
 WINDOW = {"timeline_start_date": "2026-10-01", "timeline_end_date": "2026-12-31", "total_days": 92}
@@ -153,22 +150,3 @@ def test_a_plan_with_no_action_has_no_timeline() -> None:
     assert schedule(plan, _snapshot()) == []
     timeline = (plan["mitigation_timeline"], plan["mitigation_timeline_days"], plan["critical_path"])
     assert timeline == (None, None, [])
-
-
-def test_with_step_detail_on_the_schedule_and_critical_path_are_traced() -> None:
-    """A1=2, A2=3 after A1, A3=4 after A1, A4=2 after A2 and A3: A3 (ends day 6) sets A4's start, so the
-    critical path is A1 > A3 > A4, 8 days."""
-    plan = _plan(_act("A1", 2), _act("A2", 3, ("A1",)), _act("A3", 4, ("A1",)), _act("A4", 2, ("A2", "A3")))
-    set_step_tracing(True)
-    set_step_detail(True, 10)
-    try:
-        with capture_logs() as logs, traced_step("remediation.plan"):
-            schedule(plan, _snapshot())
-    finally:
-        set_step_detail(False)
-        set_step_tracing(False)
-    records = {line["results"]["sub"]: line["results"] for line in logs if "results" in line}
-    assert records["schedule"]["output"]["A4"] == "2 days, starts day 6, after A2 + A3"
-    assert records["schedule"]["input"] == {"actions": 4, "dependency_warnings": 0}
-    path = {"total_days": 8, "path": "A1 > A3 > A4", "planned_end": "2026-10-08"}
-    assert records["critical path"]["output"] == path

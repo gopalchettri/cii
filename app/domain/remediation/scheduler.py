@@ -9,7 +9,6 @@ from datetime import date, timedelta
 from typing import Any
 
 from app.core.constants import PlanText, PlanWarning, Remediation
-from app.core.tracing import record_detail, step_detail_enabled
 from app.domain.remediation.schedule_checks import schedule_warnings
 from app.models.remediation import ActionSchedule
 
@@ -31,9 +30,6 @@ def schedule(plan: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     total = max(finish, default=0)
     path = [names[p] for p in _critical_path(finish, via)]
     planned_end = _shift(anchor, total - 1) if anchor is not None and actions else None
-    if step_detail_enabled():
-        _trace_schedule(names, durations, starts, waits_for, len(dependency_warnings))
-        _trace_critical_path(total, path, planned_end)
     _write_plan_timeline(plan, anchor, planned_end, total, path)
     computed = ActionSchedule(
         tuple(action_ids),
@@ -46,25 +42,6 @@ def schedule(plan: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     )
     warnings += dependency_warnings + _past_calendar(anchor, total)
     return warnings + schedule_warnings(plan, snapshot, computed)
-
-
-def _trace_schedule(
-    names: list[str], durations: list[int], starts: list[int], waits_for: list[list[str]], dropped: int
-) -> None:
-    """`dropped`: the dependency warnings (references dropped, prose disagreeing, ids repeated). The log
-    preview shows the first Tracing.PREVIEW_KEYS actions and counts the rest."""
-    produced = {
-        name: f"{days} days, starts day {start}, after {' + '.join(deps) or '-'}"
-        for name, days, start, deps in zip(names, durations, starts, waits_for, strict=True)
-    }
-    given = {"actions": len(names), "dependency_warnings": dropped}
-    record_detail("schedule", given=given, produced=produced)
-
-
-def _trace_critical_path(total: int, path: list[str], planned_end: date | None) -> None:
-    end = planned_end.isoformat() if planned_end is not None else "no window"
-    produced = {"total_days": total, "path": " > ".join(path), "planned_end": end}
-    record_detail("critical path", given={"actions_on_path": len(path)}, produced=produced)
 
 
 def _durations(actions: list[dict[str, Any]], names: list[str]) -> tuple[list[int], list[str]]:

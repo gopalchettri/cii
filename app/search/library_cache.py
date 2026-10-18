@@ -16,7 +16,6 @@ from app.core.constants import Cache, Dependency, LogEvent
 from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.library.repository import SqlServerRepository
 from app.models.library import LibraryControl, LoadedLibraries, ThreatLibrary
 
@@ -42,7 +41,6 @@ class LibraryService:
     def get_retired_controls(self) -> tuple[LibraryControl, ...]:
         return self.get_loaded_libraries().retired_controls
 
-    @traced("library.reload")
     def reload_if_library_changed(self) -> None:
         """Load both libraries when any table's fingerprint changed. The fingerprint is read BEFORE
         loading, so an edit made during a load is caught by the next check, never missed."""

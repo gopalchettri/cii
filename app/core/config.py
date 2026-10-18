@@ -18,7 +18,6 @@ from app.core.constants import (
     EvidenceSettingMessage,
     Limits,
     PropertyMessage,
-    Tracing,
 )
 from app.core.singletons import singleton
 
@@ -166,19 +165,6 @@ class Settings(ScenarioOutputSettings):
     # Most AI calls at once across all pods; 0 = no limit. v1 runs 16 (TSG_MAX_CONCURRENT_LLM_CALLS).
     # Enforced by the AI slot limiter (app/ai/slots.py): a call waits for a free slot.
     max_concurrent_ai_calls: int = Field(default=16, ge=0)
-
-    # when true, every workflow step logs its redacted inputs, results, output, time
-    # taken and errors (app/core/tracing.py); when false, only the operational, security and audit logs. The
-    # env name is the owner's own, without the CII_ prefix. Step lines are INFO: CII_LOG_LEVEL must be INFO or
-    # DEBUG.
-    debug_step_output: bool = Field(default=False, validation_alias="DEBUG_STEP_OUTPUT")
-    # Owner's names, without the CII_ prefix: DEBUG_STEP_DETAIL adds the inner sub-step records (BM25,
-    # similarity, merges, ranking…) inside each traced step, only when DEBUG_STEP_OUTPUT is true; a ranked
-    # record keeps its DEBUG_STEP_TOP best entries (1-40).
-    debug_step_detail: bool = Field(default=False, validation_alias="DEBUG_STEP_DETAIL")
-    debug_step_top: int = Field(
-        default=Tracing.DETAIL_TOP, ge=1, le=Tracing.PREVIEW_KEYS, validation_alias="DEBUG_STEP_TOP"
-    )
 
     # How many scenarios a run writes
     # 0 = every valid path found; N = the N most relevant, the rest kept in the plan as target_reached.

@@ -11,7 +11,6 @@ from app.core.constants import AuditAction, AuditTarget, RemediationMessage, Run
 from app.core.exceptions import DuplicateRecord, NotFound
 from app.core.redaction import REDACTED
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.admin.repository import audit_records
 from app.data_access.jobs.repository import new_job
 from app.data_access.remediation.repository import (
@@ -40,7 +39,6 @@ class PlanRequestService:
     def __init__(self, snapshots: SnapshotMaker) -> None:
         self._snapshots = snapshots
 
-    @traced("remediation.request")
     def request(self, principal: Principal, body: PlanRequest) -> PlanStarted:
         """A generated scenario's plan (a hand-written one: app/services/remediation/manual.py)."""
         assert body.session_id is not None and body.scenario_id is not None  # PlanRequest: is_manual=false

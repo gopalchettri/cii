@@ -11,7 +11,6 @@ import structlog
 
 from app.core.config import Settings
 from app.core.redaction import MASKED, SECRET_FIELD_NAME
-from app.core.tracing import set_step_detail, set_step_tracing
 
 #: Our loggers: every module's structlog.get_logger(__name__) ("app.…") and the request log ("http").
 _OUR_LOGGERS: Final = ("app", "http")
@@ -25,10 +24,7 @@ def mask_secret_values(_logger: Any, _name: str, event: MutableMapping[str, Any]
 
 
 def configure_logging(settings: Settings, role: str | None = None) -> None:
-    """JSON lines to stdout; with CII_LOG_DIR set (laptop), also to <log_dir>/<role>.log (api, worker-…). The
-    step trace (DEBUG_STEP_OUTPUT, DEBUG_STEP_DETAIL) is switched on or off here, once per process."""
-    set_step_tracing(settings.debug_step_output)
-    set_step_detail(settings.debug_step_detail, settings.debug_step_top)
+    """JSON lines to stdout; with CII_LOG_DIR set (laptop), also to <log_dir>/<role>.log (api, worker-…)."""
     level = settings.log_level
     logging.basicConfig(stream=sys.stdout, format="%(message)s")  # does nothing once a handler exists
     # G263: DEBUG is for our code only. On the root it also printed every library's debug lines (each MongoDB

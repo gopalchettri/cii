@@ -19,7 +19,6 @@ from app.core.constants import (
     RiskLevel,
 )
 from app.core.exceptions import JobFailed
-from app.core.tracing import record_detail, step_detail_enabled, traced
 from app.domain.remediation.prompts import PLAN_PROMPT_VERSION, plan_prompt
 from app.domain.remediation.scheduler import schedule
 from app.domain.shared.ask_ai import answer_item_problems, ask_ai_and_check
@@ -34,7 +33,6 @@ class RemediationPlanner:
     def __init__(self, chat: ChatModel) -> None:
         self._chat = chat
 
-    @traced("remediation.plan")
     def plan(self, snapshot: dict[str, Any]) -> FinishedPlan:
         """One plan version from its frozen snapshot. Raises JobFailed `generation_failed` when the answer is
         still unusable after its one re-ask, `invalid_plan` when it has no action; an outage (Unavailable)
@@ -102,23 +100,7 @@ def _library_controls(table: dict[str, Any], mapped: list[dict[str, Any]]) -> tu
     every_one_covered = bool(mapped) and all(row["covered_by_register"] for row in mapped)
     if every_one_covered and table["control_coverage"] == ControlCoverage.GAPS:
         in_register.append(PlanWarning.ALL_COVERED_BUT_GAPS)
-    if step_detail_enabled():
-        _trace_library_controls(kept, mapped, dropped, in_register)
     return dropped, in_register
-
-
-def _trace_library_controls(
-    kept: list[dict[str, Any]], mapped: list[dict[str, Any]], dropped: list[str], in_register: list[str]
-) -> None:
-    record_detail(
-        "library controls",
-        given={"mapped": ", ".join(row["control_code"] for row in mapped) or "none"},
-        produced={
-            "kept": ", ".join(control["control_code"] for control in kept) or "none",
-            "dropped": " | ".join(dropped) or "none",
-            "already_in_register": " | ".join(in_register) or "none",
-        },
-    )
 
 
 def _urgency_warnings(plan: dict[str, Any], level: str | None) -> list[str]:

@@ -8,12 +8,11 @@ rows): one search is a dictionary walk plus one matrix multiply."""
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
 from app.core.constants import Search
-from app.core.tracing import detail_top, ranked, record_detail, step_detail_enabled
 from app.models.search import SearchHit
 
 _NOT_A_WORD = re.compile(r"[^\w\s]")
@@ -67,10 +66,6 @@ class KeywordIndex:
             )
         return scores
 
-    def word_weights(self, tokens: Iterable[str]) -> dict[str, float]:
-        """Each of `tokens` the corpus holds, with its idf (the step trace's matched words)."""
-        return {token: round(self._idf[token], 3) for token in tokens if token in self._idf}
-
 
 def rank_best_first(scores: np.ndarray, depth: int) -> list[int]:
     """Positions best first, equal scores in position order; a zero score is left out, so a leg that knows
@@ -91,15 +86,9 @@ def fuse_by_rank(rankings: Sequence[list[int]]) -> list[tuple[int, float]]:
 class HybridIndex:
     """One searchable list of texts: a keyword leg and a vector leg, merged by rank."""
 
-    def __init__(
-        self, texts: Sequence[str], vectors: np.ndarray, labels: Sequence[str] | None = None
-    ) -> None:
-        """`labels`: each row's name in the step trace (default: its position)."""
+    def __init__(self, texts: Sequence[str], vectors: np.ndarray) -> None:
         self._keywords = KeywordIndex(texts)
         self._vectors = vectors  # L2-normalised rows, aligned with texts
-        self._labels = (
-            list(labels) if labels is not None else [str(position) for position in range(len(texts))]
-        )
         self._by_exact_text: dict[str, list[int]] = {}
         for position, text in enumerate(texts):
             self._by_exact_text.setdefault(" ".join(tokenize(text)), []).append(position)
@@ -124,8 +113,6 @@ class HybridIndex:
         if allowed is not None:
             keyword_scores = np.where(allowed, keyword_scores, 0.0)
             vector_scores = np.where(allowed, vector_scores, 0.0)
-        if step_detail_enabled():
-            self._trace_legs(query, keyword_scores, vector_scores, allowed, vector_floor)
         if vector_floor is not None and (vector_scores >= vector_floor).any():
             vector_scores = np.where(vector_scores >= vector_floor, vector_scores, 0.0)
         depth = leg_depth or top_k
@@ -138,59 +125,4 @@ class HybridIndex:
         ]
         hits = [SearchHit(position, 1.0) for position in exact]
         hits += [SearchHit(position, score) for position, score in fused if position not in exact]
-        if step_detail_enabled():
-            self._trace_merge(query, meaning, keywords, exact, hits)
         return hits[:top_k]
-
-    def _top(self, scores: np.ndarray) -> dict[str, float]:
-        """The step trace's best rows: {"<position> <label>": score}, positive scores only."""
-        return ranked((f"{p} {self._labels[p]}", scores[p]) for p in rank_best_first(scores, detail_top()))
-
-    def _trace_legs(
-        self,
-        query: str,
-        keyword_scores: np.ndarray,
-        cosines: np.ndarray,
-        allowed: np.ndarray | None,
-        vector_floor: float | None,
-    ) -> None:
-        """The keyword leg and the vector leg of one search, the cosines before the floor drops any."""
-        item = query  # whole: one category's queries share a long first part
-        in_scope = int(allowed.sum()) if allowed is not None else len(self._labels)
-        tokens = tokenize(query)
-        record_detail(
-            "words → BM25",
-            item,
-            given={"query": query, "tokens": " ".join(tokens), "rows_in_scope": in_scope},
-            produced={"matched_words": self._keywords.word_weights(tokens), "top": self._top(keyword_scores)},
-        )
-        at_floor = None if vector_floor is None else int((cosines >= vector_floor).sum())
-        record_detail(
-            "meaning → similarity",
-            item,
-            given={"rows_in_scope": in_scope, "floor": vector_floor},
-            produced={
-                "floor_applied": bool(at_floor),
-                "rows_at_or_above_floor": at_floor,
-                "top": self._top(cosines),
-            },
-        )
-
-    def _trace_merge(
-        self, query: str, meaning: list[int], keywords: list[int], exact: list[int], hits: list[SearchHit]
-    ) -> None:
-        """How the two legs' rankings merged: exact-text rows first (1.0), then by reciprocal rank."""
-        shown = detail_top()
-        record_detail(
-            "merge by rank (RRF)",
-            query,
-            given={
-                "keyword_ranking": " | ".join(self._labels[p] for p in keywords[:shown]) or "none",
-                "meaning_ranking": " | ".join(self._labels[p] for p in meaning[:shown]) or "none",
-                "k": Search.RRF_K,
-            },
-            produced={
-                "exact_text_match": " | ".join(self._labels[p] for p in exact) or "none",
-                "top": ranked((f"{hit.position} {self._labels[hit.position]}", hit.score) for hit in hits),
-            },
-        )

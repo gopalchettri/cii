@@ -24,7 +24,6 @@ from app.core.config import get_settings
 from app.core.constants import AiLimits, AiOutcome, AiTask, ErrorMessage
 from app.core.lease_signal import raise_if_lease_lost
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.models.ai import RerankModelProfile
 
 #: What the local reranker loads its model with (pyproject's "local" extra; requirements.txt).
@@ -54,7 +53,6 @@ class RerankModel:
         self._turns = LocalTurns()  # the local model: loaded once, one prediction at a time, scenarios first
         self._slots = slots  # remote calls only: a local model shares no provider
 
-    @traced("ai.rerank")
     def score_relevance(self, query: str, documents: list[str]) -> list[float]:
         if not documents:
             return []

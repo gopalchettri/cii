@@ -9,7 +9,6 @@ from app.core.constants import ConflictReason
 from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.remediation.repository import PLANNED_SCENARIO_FIELDS
 from app.data_access.scenario.repository import ScenarioSessionRepository, scenario_sessions, scenarios
@@ -37,7 +36,6 @@ class ManualPlans:
     ) -> None:
         self._sessions, self._manual_scenarios, self._requests = sessions, manual_scenarios, requests
 
-    @traced("remediation.manual_request")
     def request(self, principal: Principal, body: PlanRequest, key: str | None) -> tuple[PlanStarted, bool]:
         """(the plan, True when it was created now; False for a replay of the same key and body)."""
         manual = check_manual_request(principal, body, key)

@@ -10,7 +10,6 @@ from typing import Any
 
 from app.core.constants import ConflictReason, SessionMessage
 from app.core.exceptions import Conflict, DuplicateRecord
-from app.core.tracing import traced
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.scenario.repository import scenario_sessions, scenarios
 from app.domain.remediation.manual_records import (
@@ -37,7 +36,6 @@ class ManualScenarios:
     ) -> None:
         self._asset_contexts, self._library = asset_contexts, library
 
-    @traced("remediation.manual_scenario")
     def save(self, principal: Principal, body: PlanRequest, key: str, request_hash: str) -> dict[str, Any]:
         """The scenario as saved (accepted by its writer), its run beside it. Everything a 422 could refuse is
         checked before the first write; no AI is called."""

@@ -10,11 +10,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from structlog.testing import capture_logs
 
-from app.core.constants import ErrorMessage, LogEvent, StrideCategory
+from app.core.constants import ErrorMessage, StrideCategory
 from app.core.exceptions import Unavailable
-from app.core.tracing import set_step_detail, set_step_tracing, traced_step
 from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, ThreatLibrary
 from app.search.indexes import HybridIndex, KeywordIndex, fuse_by_rank, tokenize
 from app.search.service import LibrarySearch
@@ -121,31 +119,6 @@ def test_the_vector_leg_keeps_only_close_rows_when_any_are_close_else_the_best_a
         0,
         1,
     ]  # none reaches 0.60 (0.42, 0.34): best ones count
-
-
-def test_a_traced_search_logs_its_words_meaning_and_merge_by_label() -> None:
-    index = HybridIndex(
-        ["Ransomware", "Phishing email"], np.vstack([_unit(1, 0), _unit(0, 1)]), labels=["Ransom", "Phish"]
-    )
-    set_step_tracing(True)
-    set_step_detail(True, 5)
-    try:
-        with capture_logs() as logs, traced_step("t"):
-            hits = index.search("ransomware attack", _unit(1, 0.1), top_k=2)
-    finally:
-        set_step_tracing(False)
-        set_step_detail(False)
-    assert [hit.position for hit in hits] == [0]  # tracing changes nothing
-    details = {
-        line["results"]["sub"]: line["results"] for line in logs if line["event"] == LogEvent.STEP_RESULT
-    }
-    assert list(details) == ["words → BM25", "meaning → similarity", "merge by rank (RRF)"]
-    assert details["words → BM25"]["input"]["tokens"] == "ransomware attack"
-    assert list(details["words → BM25"]["output"]["top"]) == ["0 Ransom"]
-    assert details["meaning → similarity"]["output"]["floor_applied"] is True
-    assert details["meaning → similarity"]["output"]["rows_at_or_above_floor"] == 1
-    merged = details["merge by rank (RRF)"]
-    assert (merged["input"]["keyword_ranking"], merged["output"]["exact_text_match"]) == ("Ransom", "none")
 
 
 def _library(control_name: str) -> SimpleNamespace:

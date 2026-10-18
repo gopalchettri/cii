@@ -35,7 +35,6 @@ from app.core.constants import (
 )
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
-from app.core.tracing import record_detail, step_detail_enabled, traced
 from app.data_access.admin.repository import AiCallRepository, ai_calls
 from app.models.ai import ChatModelProfile
 
@@ -151,8 +150,6 @@ class ChatModel:
         problems = _find_answer_problems(answer, check_answer)
         if answer is not None and not problems:
             return answer
-        if step_detail_enabled():
-            record_detail("re-ask problems", given={"task": task}, produced={"problems": "; ".join(problems)})
         answer, _ = self._ask_and_read_answer(
             task, _with_correction_turn(messages, reply, problems, self._max_input_chars)
         )
@@ -168,7 +165,6 @@ class ChatModel:
         share of this (the fallback model's limit included, so either can answer)."""
         return self._max_input_chars
 
-    @traced("ai.chat")
     def _ask_and_read_answer(
         self, task: AiTask, messages: list[dict[str, str]]
     ) -> tuple[dict[str, Any] | None, str]:

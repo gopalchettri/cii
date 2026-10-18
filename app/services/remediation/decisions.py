@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from app.core.constants import AuditAction, AuditTarget, ConflictReason, Decision, RemediationMessage
 from app.core.exceptions import Conflict, NotFound
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.admin.repository import audit_records
 from app.data_access.remediation.repository import remediation_plans
 from app.data_access.scenario.repository import scenarios
@@ -32,7 +31,6 @@ class PlanDecisions:
     def reject(self, principal: Principal, remediation_id: str, body: DecisionRequest) -> RemediationStatus:
         return self._decide(principal, remediation_id, body, Decision.REJECTED)
 
-    @traced("remediation.decide")
     def _decide(
         self, principal: Principal, remediation_id: str, body: DecisionRequest, decision: Decision
     ) -> RemediationStatus:

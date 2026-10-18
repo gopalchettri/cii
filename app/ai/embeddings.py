@@ -28,7 +28,6 @@ from app.core import metrics
 from app.core.config import get_settings
 from app.core.constants import AiOutcome, AiTask, Cache, EmbeddingCorpus, ErrorMessage, LogEvent
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.data_access.admin.repository import (
     LibraryVectorRepository,
     VectorRepository,
@@ -75,7 +74,6 @@ class EmbeddingModel:
         self._library = library
         self._queries = queries
 
-    @traced("ai.embed_queries")
     def embed_search_queries(self, texts: list[str]) -> np.ndarray:
         """One L2-normalised float32 row per search query. Kept Cache.QUERY_VECTOR_DAYS; only the text's hash
         is stored, never the text."""
@@ -87,7 +85,6 @@ class EmbeddingModel:
         )
         return matrix
 
-    @traced("ai.embed_library_texts")
     def embed_library_texts(
         self, corpus: EmbeddingCorpus, texts: list[str], sources: list[Doc]
     ) -> np.ndarray:

@@ -12,7 +12,6 @@ import structlog
 from app.ai import EmbeddingModel, get_embedding_model
 from app.core.constants import EMBEDDING_SOURCE_TABLE, Cache, EmbeddingCorpus, LogEvent
 from app.core.singletons import singleton
-from app.core.tracing import traced
 from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, LoadedLibraries
 from app.search.indexes import HybridIndex
 from app.search.library_cache import LibraryService, get_library_service
@@ -110,7 +109,6 @@ class _SnapshotBuilder:
         self._embeddings = embeddings
         self._corpora: dict[EmbeddingCorpus, _Corpus] = {}
 
-    @traced("search.build_snapshot")
     def build(self, library: LoadedLibraries) -> LibrarySnapshot:
         threats, actors = library.threat_library.threats, library.threat_library.actors
         controls, threat_types = library.control_library, threat_types_of(library.threat_library)
@@ -148,7 +146,7 @@ class _SnapshotBuilder:
         if previous is not None and previous[0] == texts and previous[1] == sources:
             return previous[2]
         vectors = self._embeddings.embed_library_texts(corpus, texts, sources)
-        index = HybridIndex(texts, vectors, labels=[str(source["label"]) for source in sources])
+        index = HybridIndex(texts, vectors)
         self._corpora[corpus] = (texts, sources, index)
         return index
 
