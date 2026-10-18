@@ -1,16 +1,16 @@
 """One immutable evidence index (the corpus and its keyword + vector index) shared by every thread, and its
-two searches: candidates of the asset's IT / OT types, then the reranker's 0-100 scores. Indicators of
-compromise never reach a model."""
+two searches: candidates of the asset's IT / OT types from approved sources, then the reranker's 0-100
+scores. Indicators of compromise never reach a model."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 
 import numpy as np
 
 from app.ai import EmbeddingModel, RerankModel
-from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, IntelMessage
+from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, IntelMessage, IntelSource
 from app.models.external_intelligence.evidence import IntelHit
 from app.models.external_intelligence.evidence_corpus import EvidenceCorpus
 from app.search.indexes import HybridIndex
@@ -44,6 +44,8 @@ class EvidenceIndexRefused(Exception):
 
 
 _EMPTY = EvidenceCorpus((), (), "")
+#: The snapshot id of a corpus that settled empty: searched, and nothing found.
+EMPTY_SNAPSHOT_ID = "empty"
 
 
 class EvidenceIndex:
@@ -56,14 +58,18 @@ class EvidenceIndex:
         embeddings: EmbeddingModel,
         rerank: RerankModel,
         rerank_model: str = "",
+        *,
+        settled: bool = True,
     ) -> None:
         self._corpus = corpus
+        self._settled = settled  # False only for the placeholder served until the first build ends
         self._hybrid = hybrid
         self._embeddings = embeddings
         self._rerank = rerank
         self.rerank_model = rerank_model  # the model whose 0-100 scores the threshold is cut on
         self.built_at = datetime.now(UTC)
         self._asset_types = np.array([hit.asset_type for hit in corpus.hits])
+        self._sources = [frozenset({hit.source, *hit.joined}) for hit in corpus.hits]
 
     def reuse_for(self, corpus: EvidenceCorpus) -> "EvidenceIndex | None":
         """A new index over `corpus` that shares this one's vectors, when the corpus differs only in what the
@@ -74,8 +80,11 @@ class EvidenceIndex:
 
     @property
     def snapshot_id(self) -> str | None:
-        """The same for the same corpus in every process, so a stored audit names one snapshot."""
-        return self._corpus.checksum[:24] if self._corpus.hits else None
+        """The same for the same corpus in every process, so a stored audit names one snapshot. A corpus that
+        settled empty gives EMPTY_SNAPSHOT_ID; the placeholder before the first build gives None."""
+        if self._corpus.hits:
+            return self._corpus.checksum[:24]
+        return EMPTY_SNAPSHOT_ID if self._settled else None
 
     @property
     def has_records(self) -> bool:
@@ -93,15 +102,18 @@ class EvidenceIndex:
         return self._corpus
 
     def find_candidates(
-        self, searches: Sequence[tuple[str, frozenset[str]]], limit: int
+        self, searches: Sequence[tuple[str, frozenset[str]]], limit: int, approved: Collection[IntelSource]
     ) -> list[list[IntelHit]]:
-        """Per (search text, asset types): the `limit` nearest records of those types (filtered before the
-        top-k cut), not yet scored; one embedding call for all, none for a search nothing can answer."""
+        """Per (search text, asset types): the `limit` nearest records of those types whose sources (its own
+        and those joined into it) are all `approved`, both filtered before the top-k cut, not yet scored; one
+        embedding call for all, none for a search nothing can answer."""
         found: list[list[IntelHit]] = [[] for _ in searches]
         if self._hybrid is None or limit < 1:
             return found
         queries = [remove_indicators(text) for text, _ in searches]
-        allowed = [np.isin(self._asset_types, list(types)) for _, types in searches]
+        approved_sources = frozenset(approved)
+        from_approved = np.array([sources <= approved_sources for sources in self._sources], dtype=bool)
+        allowed = [np.isin(self._asset_types, list(types)) & from_approved for _, types in searches]
         asked = [i for i, fits in enumerate(allowed) if fits.any() and queries[i]]
         if not asked:
             return found
@@ -123,9 +135,12 @@ class EvidenceIndex:
         return sorted(scored, key=lambda hit: (-hit.score, hit.external_id))
 
 
-def empty_index(embeddings: EmbeddingModel, rerank: RerankModel, rerank_model: str = "") -> EvidenceIndex:
-    """No index yet: every search finds nothing and the scenarios are written as without intelligence."""
-    return EvidenceIndex(_EMPTY, None, embeddings, rerank, rerank_model)
+def empty_index(
+    embeddings: EmbeddingModel, rerank: RerankModel, rerank_model: str = "", *, settled: bool = False
+) -> EvidenceIndex:
+    """An index with nothing to search. Settled: the corpus is empty, so every search finds no evidence. Else
+    the placeholder until the first build ends: it names no snapshot, so a write waits as for an outage."""
+    return EvidenceIndex(_EMPTY, None, embeddings, rerank, rerank_model, settled=settled)
 
 
 def build_index(

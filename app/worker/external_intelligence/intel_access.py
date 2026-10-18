@@ -91,10 +91,11 @@ class IntelAccess:
         return self._refresher()
 
     def find_evidence(
-        self, requests: Sequence[EvidenceRequest], stale: bool
+        self, requests: Sequence[EvidenceRequest], stale: bool, approved: Collection[IntelSource]
     ) -> tuple[list[EvidenceResult], EvidenceBatchSummary]:
-        """One batch's evidence (one embedding call), the finder told whether the intelligence is stale."""
-        return self._finder().find_evidence(requests, stale=stale)
+        """One batch's evidence (one embedding call) from `approved` sources, the finder told whether the
+        intelligence is stale."""
+        return self._finder().find_evidence(requests, stale=stale, approved=approved)
 
     def approved_sources(self) -> list[IntelSource]:
         """The sources Legal still allows."""

@@ -2,7 +2,7 @@
 calls, a switch, and a refresher. The real classes replace the stubs at merge; these tests only rely on the
 documented signatures."""
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -47,13 +47,15 @@ class FakeFinder:
         self.evidence: tuple[Evidence, ...] = (TECHNIQUE,)
 
     def find_evidence(
-        self, requests: Sequence[EvidenceRequest], *, stale: bool
+        self, requests: Sequence[EvidenceRequest], *, stale: bool, approved: Collection[IntelSource]
     ) -> tuple[list[EvidenceResult], EvidenceBatchSummary]:
         self.calls.append((requests, stale))
         if self.raises:
             raise RuntimeError("a bug in the search")
-        results = [self._result_of(request, stale) for request in requests]
-        used = 0 if self.down else len(self.evidence) * len(requests)
+        # as the real index: a record of a source no longer approved is never a candidate
+        evidence = tuple(item for item in self.evidence if {item.source, *item.joined} <= set(approved))
+        results = [self._result_of(request, stale, evidence) for request in requests]
+        used = 0 if self.down else len(evidence) * len(requests)
         summary = EvidenceBatchSummary(
             SNAPSHOT,
             {"mitre_attack_ics": "r1"},
@@ -64,13 +66,15 @@ class FakeFinder:
         )
         return results, summary
 
-    def _result_of(self, request: EvidenceRequest, stale: bool) -> EvidenceResult:
+    def _result_of(
+        self, request: EvidenceRequest, stale: bool, evidence: tuple[Evidence, ...]
+    ) -> EvidenceResult:
         failure = EvidenceSearchFailure.UNAVAILABLE if self.down else None
         considered = () if self.down else (Considered("T0839", 91.0, EvidenceDecision.USED),)
         search = EvidenceSearchRecord(
             request.text, tuple(sorted(request.asset_types)), SNAPSHOT, 1.0, considered, stale, failure
         )
-        return EvidenceResult(() if self.down else self.evidence, search)
+        return EvidenceResult(() if self.down else evidence, search)
 
 
 class FakeSwitch:

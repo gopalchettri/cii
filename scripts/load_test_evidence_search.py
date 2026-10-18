@@ -22,6 +22,7 @@ from app.domain.external_intelligence.rerank_gate import RerankGate  # noqa: E40
 from app.search.external_intelligence.corpus_builder import build_corpus  # noqa: E402
 from app.search.external_intelligence.evidence_index import build_index  # noqa: E402
 from tests.external_intelligence.evidence_fakes import (  # noqa: E402
+    ALL_SOURCES,
     CountingRerank,
     TextEmbeddings,
     request_of,
@@ -45,7 +46,7 @@ def one_batch(finder: EvidenceFinder, user: int) -> float:
     word = WORDS[user % 5]
     requests = [request_of(f"Threat: {word} {user} {part}", {"IT"}) for part in range(REQUESTS_PER_BATCH)]
     started = time.perf_counter()
-    finder.find_evidence(requests, stale=False)
+    finder.find_evidence(requests, stale=False, approved=ALL_SOURCES)
     return time.perf_counter() - started
 
 

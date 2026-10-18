@@ -17,12 +17,14 @@ from app.core.constants import (
 from app.models.external_intelligence.intel_record import IntelRecord
 from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import (
+    EMPTY_SNAPSHOT_ID,
     EvidenceIndexRefused,
     build_index,
     empty_index,
     remove_indicators,
 )
 from tests.external_intelligence.evidence_fakes import (
+    ALL_SOURCES,
     NOW,
     ScoredBy,
     TextEmbeddings,
@@ -99,7 +101,7 @@ def test_indicators_are_never_embedded_or_sent_to_the_reranker() -> None:
     rerank = ScoredBy()
     index = build_index(corpus, embeddings := TextEmbeddings(), rerank)
     assert all(word not in embeddings.library_texts[0] for word in ("evil", "10.1.2.3", "a" * 40))
-    index.find_candidates([("ransomware 192.168.0.1 https://c2.example", frozenset({"IT"}))], 3)
+    index.find_candidates([("ransomware 192.168.0.1 https://c2.example", frozenset({"IT"}))], 3, ALL_SOURCES)
     assert embeddings.query_texts == ["ransomware"]
     index.score_candidates("ransomware 192.168.0.1", index.corpus.hits)
     assert rerank.calls[0][0] == "ransomware" and "evil" not in rerank.calls[0][1][0]
@@ -112,11 +114,26 @@ def test_a_search_sees_only_records_that_fit_the_asset_type_chosen_before_the_cu
     index, _ = _index(docs)
 
     def found(types: str, limit: int = 10) -> list[str]:
-        (hits,) = index.find_candidates([(QUERY, frozenset(COMPATIBLE_ASSET_TYPES[types]))], limit)
+        searches = [(QUERY, frozenset(COMPATIBLE_ASSET_TYPES[types]))]
+        (hits,) = index.find_candidates(searches, limit, ALL_SOURCES)
         return _ids(hits)
 
     assert set(found("IT")) == {"T1", "T3", "CVE-1"} and set(found("OT")) == {"T2", "T3"}
     assert len(found("IT", 2)) == 2  # cut AFTER the filter: other types never took a place
+
+
+def test_a_revoked_sources_records_are_cut_before_the_top_k_and_never_take_an_approved_ones_place() -> None:
+    docs = [technique_doc(f"T{n}") for n in range(4)]  # mitre_attack_enterprise: "ransomware encrypts files"
+    vulnerabilities = [vulnerability_doc(cve, "Backup", "Flood") for cve in ("CVE-1", "CVE-2")]  # less near
+    index, embeddings = _index([*docs, *vulnerabilities, epss_doc("CVE-2")])
+    search = [("ransomware encrypts files", frozenset({"IT"}))]
+    (top,) = index.find_candidates(search, 3, ALL_SOURCES)
+    assert {hit.source for hit in top} == {IntelSource.ATTACK_ENTERPRISE}  # approved, they fill the top-k
+    revoked = {IntelSource.ATTACK_ENTERPRISE, IntelSource.FIRST_EPSS}
+    (top,) = index.find_candidates(search, 3, [s for s in IntelSource if s not in revoked])
+    assert _ids(top) == ["CVE-1"]  # CVE-2 also rests on the revoked EPSS score joined into it
+    assert index.find_candidates(search, 3, [IntelSource.CISA_ICS]) == [[]]
+    assert embeddings.calls.count("query") == 2  # a search only revoked records could answer is not made
 
 
 def test_all_searches_of_a_batch_are_embedded_in_one_call_and_an_unanswerable_one_is_not() -> None:
@@ -126,7 +143,7 @@ def test_all_searches_of_a_batch_are_embedded_in_one_call_and_an_unanswerable_on
         ("Threat: phishing", frozenset({"IT"})),
         (QUERY, frozenset({"OT"})),
     ]
-    answers = index.find_candidates(searches, 3)
+    answers = index.find_candidates(searches, 3, ALL_SOURCES)
     assert embeddings.calls.count("query") == 1 and embeddings.query_texts == [QUERY, "Threat: phishing"]
     assert _ids(answers[0]) == ["T1"] and answers[2] == []
 
@@ -149,10 +166,11 @@ def test_an_index_over_the_same_texts_shares_its_vectors_and_a_changed_text_does
     assert empty_index(embeddings, ScoredBy()).reuse_for(moved) is None
 
 
-def test_the_empty_index_finds_nothing_and_says_so() -> None:
+def test_the_empty_index_finds_nothing_and_says_whether_it_settled() -> None:
     index = empty_index(TextEmbeddings(), ScoredBy())
-    assert (index.snapshot_id, index.has_records) == (None, False)
-    assert index.find_candidates([(QUERY, frozenset({"IT"}))], 3) == [[]]
+    assert (index.snapshot_id, index.has_records) == (None, False)  # the placeholder: no snapshot yet
+    assert index.find_candidates([(QUERY, frozenset({"IT"}))], 3, ALL_SOURCES) == [[]]
+    assert empty_index(TextEmbeddings(), ScoredBy(), settled=True).snapshot_id == EMPTY_SNAPSHOT_ID
 
 
 def test_rows_and_vectors_out_of_step_are_refused() -> None:

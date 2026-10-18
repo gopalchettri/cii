@@ -13,7 +13,6 @@ from app.core.constants import (
     AuditAction,
     AuditTarget,
     EvidenceLimits,
-    EvidenceSearchFailure,
     IntelKind,
     IntelLimits,
     IntelSource,
@@ -110,13 +109,10 @@ class EvidenceAtWrite:
     ) -> EvidenceByThreat:
         """One audited search batch (one embedding call): each threat's fields with when it was searched,
         from approved sources only."""
-        results, summary = self._access.find_evidence(list(requests.values()), stale)
+        results, summary = self._access.find_evidence(list(requests.values()), stale, approved)
         self._audit(summary)
         searched_at = datetime.now(UTC).isoformat()
-        return {
-            key: _approved_only(_plan_fields(result, searched_at), approved)
-            for key, result in zip(requests, results, strict=True)
-        }
+        return {key: _plan_fields(result, searched_at) for key, result in zip(requests, results, strict=True)}
 
     def _unsearched(self, path_ids: Iterable[str], approved: set[IntelSource]) -> list[str]:
         """The distinct threats of these paths with no search yet. A kept search whose evidence rests on a
@@ -207,21 +203,6 @@ def _plan_fields(result: EvidenceResult, searched_at: str) -> dict[str, Any]:
         "evidence": [item.as_doc() | {"searched_at": searched_at} for item in result.evidence],
         "intel_search": result.search.as_doc() | {"searched_at": searched_at},
     }
-
-
-def _approved_only(fields: dict[str, Any], approved: set[IntelSource]) -> dict[str, Any]:
-    """A search's fields without what came from a revoked source (this worker's index may still hold its
-    records until it follows the next snapshot)."""
-    evidence = [item for item in fields["evidence"] if _from_approved(item, approved)]
-    if len(evidence) == len(fields["evidence"]):
-        return fields
-    if not evidence:
-        # Nothing left: the top-k was chosen among the revoked source's records, so it is an outage, not a
-        # settled "no evidence": the path waits for the rebuilt index. ponytail: a search that kept nothing
-        # at all is trusted as settled even in that window; its candidates carry no source to tell.
-        failed = fields["intel_search"] | {"failure": EvidenceSearchFailure.UNAVAILABLE}
-        return {"evidence": [], "intel_search": failed}
-    return fields | {"evidence": evidence}
 
 
 def _from_approved(item: dict[str, Any], approved: set[IntelSource]) -> bool:

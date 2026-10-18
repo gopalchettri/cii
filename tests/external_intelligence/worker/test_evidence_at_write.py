@@ -248,9 +248,9 @@ def test_a_threat_whose_kept_evidence_names_a_revoked_source_is_searched_again(
 def test_a_search_on_an_index_not_yet_rebuilt_never_cites_the_revoked_source(
     intel: Intel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """G268: the worker's index follows the snapshot pointer only every SWITCH_CACHE_SECONDS, so right after a
-    revoke it still finds the revoked source. What it finds there is dropped. Before, the search was trusted
-    to run on the rebuilt index, so the new version cited the revoked one."""
+    """The worker's index follows the snapshot pointer only every SWITCH_CACHE_SECONDS, so right after a
+    revoke it still holds the revoked source: the batch's approved sources go to the search, which never
+    offers it."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     monkeypatch.setattr(intel.access, "approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
@@ -278,21 +278,17 @@ def test_a_regenerate_of_a_story_while_the_switch_cannot_be_read_waits_for_it(in
     assert scenarios.find_one({"_id": scenario_id(record_id, "p1", 2)}) is None
 
 
-def test_a_search_left_with_nothing_once_the_revoked_source_is_dropped_waits_for_the_rebuilt_index(
+def test_a_search_whose_only_records_were_revoked_finds_no_evidence_and_is_no_outage(
     intel: Intel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Right after a revoke the worker's index still holds the revoked source, so a search there that found
-    only its records was chosen among them (top-k, cut-off): an outage, never settled empty. The
-    regenerate waits and nothing is kept. Before, the threat was settled with no evidence and every later
-    write on it failed "no evidence" for the rest of the run."""
+    """Revoked records are cut before the top-k, so a search only they could answer settles with no evidence:
+    the regenerate keeps the old version with evidence_not_found and never waits as for an outage."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
-    kept = _threat_docs(record_id)["Threat 1"]["intel_search"]
     monkeypatch.setattr(intel.access, "approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
-    with pytest.raises(Unavailable):  # the fake finder still answers with TECHNIQUE (mitre_attack_ics) only
-        _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
-    assert get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)}) is None
-    assert _threat_docs(record_id)["Threat 1"]["intel_search"] == kept  # no new search kept on the plan
+    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))  # the fake holds mitre_attack_ics only
+    old = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 1)})
+    assert old["superseded_by"] is None and old["regenerate_error"]["code"] == ErrorCode.EVIDENCE_NOT_FOUND
 
 
 def test_a_kept_entry_whose_joined_source_was_revoked_is_searched_again() -> None:

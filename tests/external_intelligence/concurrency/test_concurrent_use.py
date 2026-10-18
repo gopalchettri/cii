@@ -10,6 +10,7 @@ from app.domain.external_intelligence.rerank_gate import RerankGate
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
 from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 from tests.external_intelligence.evidence_fakes import (
+    ALL_SOURCES,
     CountingRerank,
     MemoryFeeds,
     MemoryPointer,
@@ -52,10 +53,16 @@ def _shape(results) -> list[tuple]:
 def test_many_users_get_exactly_what_a_serial_run_gives_and_never_each_others_evidence() -> None:
     keeper = _keeper(_docs())
     finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3))
-    serial = {user: _shape(finder.find_evidence(_requests(user), stale=False)[0]) for user in range(USERS)}
+    serial = {
+        user: _shape(finder.find_evidence(_requests(user), stale=False, approved=ALL_SOURCES)[0])
+        for user in range(USERS)
+    }
 
     def work(user: int) -> list:
-        return [_shape(finder.find_evidence(_requests(user), stale=False)[0]) for _ in range(BATCHES)]
+        return [
+            _shape(finder.find_evidence(_requests(user), stale=False, approved=ALL_SOURCES)[0])
+            for _ in range(BATCHES)
+        ]
 
     with ThreadPoolExecutor(USERS) as pool:
         concurrent = list(pool.map(work, range(USERS)))
@@ -75,7 +82,12 @@ def test_the_gate_is_never_exceeded_by_many_batches_at_once() -> None:
     keeper = _keeper(_docs(), rerank)
     finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3))
     with ThreadPoolExecutor(USERS) as pool:
-        list(pool.map(lambda user: finder.find_evidence(_requests(user), stale=False), range(USERS * 2)))
+        list(
+            pool.map(
+                lambda user: finder.find_evidence(_requests(user), stale=False, approved=ALL_SOURCES),
+                range(USERS * 2),
+            )
+        )
     assert 1 <= rerank.most <= 3
 
 
@@ -102,7 +114,9 @@ def test_a_rebuild_during_searches_keeps_serving_whole_indexes_and_swaps_at_once
     seen: list[str | None] = []
 
     def search(_: int) -> None:
-        (result,), summary = finder.find_evidence([request_of("Threat: ransomware number 1")], stale=False)
+        (result,), summary = finder.find_evidence(
+            [request_of("Threat: ransomware number 1")], stale=False, approved=ALL_SOURCES
+        )
         seen.append(summary.snapshot_id)
         assert result.search.snapshot_id == summary.snapshot_id
 
@@ -112,7 +126,7 @@ def test_a_rebuild_during_searches_keeps_serving_whole_indexes_and_swaps_at_once
     gate.set()
     new = rebuilding.result(10)
     assert new is not old and keeper.current_index() is new
-    finder.find_evidence([request_of()], stale=False)
+    finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)
 
 
 def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_left_them() -> None:

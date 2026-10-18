@@ -18,6 +18,7 @@ from app.models.external_intelligence.evidence_request import (
 from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import build_index
 from tests.external_intelligence.evidence_fakes import (
+    ALL_SOURCES,
     ScoredBy,
     TextEmbeddings,
     advisory_doc,
@@ -47,7 +48,7 @@ def verdict(docs: list[dict], *rows: RecordedProduct, scores: dict[str, float] |
     index = build_index(build_corpus(docs), TextEmbeddings(), ScoredBy(scores or {}))
     finder = EvidenceFinder(lambda: index, 1.0, gate=RerankGate(1))
     request = EvidenceRequest("Threat: ransomware", ALL_TYPES, RecordedProducts(tuple(rows)))
-    (result,), _ = finder.find_evidence([request], stale=False)
+    (result,), _ = finder.find_evidence([request], stale=False, approved=ALL_SOURCES)
     return result
 
 

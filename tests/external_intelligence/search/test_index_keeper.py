@@ -8,7 +8,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from app.core.constants import IntelLimits, IntelSource, LogEvent
-from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
+from app.search.external_intelligence.evidence_index import EMPTY_SNAPSHOT_ID, EvidenceIndexRefused
 from app.search.external_intelligence.index_keeper import (
     RETRY_FIRST_SECONDS,
     EvidenceIndexKeeper,
@@ -113,6 +113,17 @@ def test_sources_approved_but_empty_keep_the_old_index_and_all_revoked_empties_i
     assert not empty.has_records and pointer.active["counts"]["indexed"] == 0
     other, *_ = _keeper([technique_doc("T1")], pointer=pointer)  # another process, still holding the old data
     assert pointer.active["checksum"] == empty.corpus.checksum != first.corpus.checksum
+
+
+def test_an_empty_corpus_settles_as_the_empty_snapshot_and_only_a_pending_first_build_names_none() -> None:
+    keeper, _, pointer, _ = _keeper([])
+    assert keeper.peek_index().snapshot_id is None  # the first build is pending: a write waits
+    with pytest.raises(EvidenceIndexRefused):
+        keeper.rebuild_index().result(10)
+    assert keeper.peek_index().snapshot_id == EMPTY_SNAPSHOT_ID and pointer.active is None  # nothing imported
+    revoked, _, pointer, _ = _keeper([technique_doc("T1")], feeds=MemoryFeeds([]))  # every source revoked
+    settled = revoked.rebuild_index().result(10)
+    assert settled.snapshot_id == EMPTY_SNAPSHOT_ID == pointer.active["snapshot_id"]
 
 
 def test_two_rebuilds_asked_at_once_share_one_build_and_a_request_during_it_reads_once_more() -> None:

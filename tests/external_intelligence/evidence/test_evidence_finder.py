@@ -7,6 +7,7 @@ from typing import Any
 from app.core.constants import (
     Applicability,
     AssetType,
+    ErrorCode,
     EvidenceDecision,
     EvidenceLimits,
     EvidenceRole,
@@ -16,9 +17,12 @@ from app.core.constants import (
 from app.core.exceptions import Unavailable
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import RerankGate
+from app.domain.scenario.write import evidence_problem
+from app.models.scenario.write import PathFailure
 from app.search.external_intelligence.corpus_builder import build_corpus
-from app.search.external_intelligence.evidence_index import build_index, empty_index
+from app.search.external_intelligence.evidence_index import EMPTY_SNAPSHOT_ID, build_index, empty_index
 from tests.external_intelligence.evidence_fakes import (
+    ALL_SOURCES,
     ScoredBy,
     TextEmbeddings,
     advisory_doc,
@@ -41,7 +45,7 @@ def finder_of(docs: list[dict], rerank: ScoredBy | None = None, threshold: float
 
 
 def one(finder: EvidenceFinder, request: Any, *, stale: bool = False):
-    results, summary = finder.find_evidence([request], stale=stale)
+    results, summary = finder.find_evidence([request], stale=stale, approved=ALL_SOURCES)
     return results[0], summary
 
 
@@ -139,8 +143,9 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     result, summary = one(finder, request_of())
     assert result.evidence == () and result.search.snapshot_id is None and result.search.considered == ()
     assert (summary.snapshot_id, summary.threats_searched, summary.source_versions) == (None, 0, {})
+    assert isinstance(evidence_problem({"intel_search": result.search.as_doc()}), Unavailable)  # it waits
     full, embeddings = finder_of([technique_doc("T1")])
-    results, summary = full.find_evidence([], stale=True)
+    results, summary = full.find_evidence([], stale=True, approved=ALL_SOURCES)
     assert (
         results == []
         and summary.snapshot_id is None
@@ -149,10 +154,22 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     )
 
 
+def test_a_settled_empty_index_finds_no_evidence_and_the_path_is_given_up_not_retried() -> None:
+    empty = empty_index(TextEmbeddings(), ScoredBy(), settled=True)
+    result, _ = one(EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1)), request_of())
+    search = result.search
+    assert (result.evidence, search.snapshot_id, search.failure) == ((), EMPTY_SNAPSHOT_ID, None)
+    problem = evidence_problem({"intel_search": search.as_doc(), "evidence": []})
+    assert isinstance(problem, PathFailure) and problem.final
+    assert problem.code == ErrorCode.EVIDENCE_NOT_FOUND
+
+
 def test_an_embedding_outage_leaves_every_request_without_evidence_and_says_why() -> None:
     finder, embeddings = finder_of([technique_doc("T1")])
     embeddings.queries_down = True
-    results, summary = finder.find_evidence([request_of(), request_of("Threat: other")], stale=False)
+    results, summary = finder.find_evidence(
+        [request_of(), request_of("Threat: other")], stale=False, approved=ALL_SOURCES
+    )
     assert all(r.evidence == () and r.search.failure == EvidenceSearchFailure.UNAVAILABLE for r in results)
     assert (summary.threats_searched, summary.threats_with_evidence) == (2, 0)
 
@@ -166,7 +183,7 @@ def test_a_rerank_outage_costs_only_the_request_it_hit() -> None:
 
     finder, _ = finder_of([technique_doc("T1")], DownFor())
     first, second = finder.find_evidence(
-        [request_of(), request_of("Threat: phishing ransomware")], stale=False
+        [request_of(), request_of("Threat: phishing ransomware")], stale=False, approved=ALL_SOURCES
     )[0]
     assert refs(first) == {"T1"} and second.evidence == ()
     assert second.search.failure == EvidenceSearchFailure.UNAVAILABLE
@@ -175,7 +192,7 @@ def test_a_rerank_outage_costs_only_the_request_it_hit() -> None:
 def test_all_requests_of_a_batch_are_embedded_in_one_call() -> None:
     finder, embeddings = finder_of([technique_doc("T1")])
     requests = [request_of(f"Threat: ransomware {n}") for n in range(5)]
-    results, summary = finder.find_evidence(requests, stale=False)
+    results, summary = finder.find_evidence(requests, stale=False, approved=ALL_SOURCES)
     assert embeddings.calls.count("query") == 1 and len(results) == 5 and summary.threats_searched == 5
 
 
@@ -248,7 +265,7 @@ def test_no_source_at_the_threshold_means_no_evidence_and_nothing_near_offered()
 
 def test_a_vulnerability_entry_names_the_sources_joined_into_it() -> None:
     """Its EPSS fact rests on FIRST EPSS, not on its own source (CISA KEV): the entry says so, so a revoke of
-    EPSS reaches the evidence kept on a plan (evidence_at_write._from_approved)."""
+    EPSS keeps it out of every later search (EvidenceIndex.find_candidates)."""
     docs = [vulnerability_doc("CVE-2024-0009", "Siemens", "WinCC"), epss_doc("CVE-2024-0009", 0.34)]
     result, _ = one(finder_of(docs)[0], request_of(**WINCC))
     assert result.evidence[0].as_doc()["joined"] == [IntelSource.FIRST_EPSS]

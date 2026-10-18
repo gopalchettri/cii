@@ -3,7 +3,7 @@ threat behind the process gate, then the rule-based choice of what counts as evi
 be made leaves that threat without evidence and says why; it never fails the batch."""
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 
 import structlog
 
@@ -16,6 +16,7 @@ from app.core.constants import (
     EvidenceRole,
     EvidenceSearchFailure,
     IntelKind,
+    IntelSource,
     LogEvent,
 )
 from app.core.exceptions import TEMPORARY_ERRORS
@@ -60,27 +61,31 @@ class EvidenceFinder:
         self._selector = EvidenceSelector(threshold, PlainFactWriter())
 
     def find_evidence(
-        self, requests: Sequence[EvidenceRequest], *, stale: bool
+        self, requests: Sequence[EvidenceRequest], *, stale: bool, approved: Collection[IntelSource]
     ) -> tuple[list[EvidenceResult], EvidenceBatchSummary]:
-        """One result per request, in order, and what the batch did."""
+        """One result per request, in order, and what the batch did; candidates are of `approved` sources."""
         search = self._provider()
         searched = bool(requests) and search.has_records
         if searched:
-            results = self._search_all(search, requests, stale)
-        else:
-            results = [EvidenceResult((), self._record(search, r, None, False)) for r in requests]
+            results = self._search_all(search, requests, stale, approved)
+        else:  # nothing to search: settled empty, or no snapshot yet (search.snapshot_id says which)
+            snapshot = search.snapshot_id
+            results = [EvidenceResult((), self._record(search, r, snapshot, False)) for r in requests]
         return results, _summary(search, results, stale and searched, searched)
 
     def _search_all(
-        self, search: EvidenceIndex, requests: Sequence[EvidenceRequest], stale: bool
+        self,
+        search: EvidenceIndex,
+        requests: Sequence[EvidenceRequest],
+        stale: bool,
+        approved: Collection[IntelSource],
     ) -> list[EvidenceResult]:
-        """Embed every request in one call (the IT / OT filter applied before ranking), then rerank and
-        choose each request's candidates, a few at once."""
+        """Embed every request in one call (the IT / OT and approved-source filters applied before ranking),
+        then rerank and choose each request's candidates, a few at once."""
         snapshot, down = search.snapshot_id, EvidenceSearchFailure.UNAVAILABLE
+        searches = [(request.text, request.asset_types) for request in requests]
         try:
-            candidates = search.find_candidates(
-                [(request.text, request.asset_types) for request in requests], EvidenceLimits.CANDIDATES
-            )
+            candidates = search.find_candidates(searches, EvidenceLimits.CANDIDATES, approved)
         except _SEARCH_ERRORS:  # the embedding service: no request gets evidence, the batch goes on
             log.warning(
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=len(requests), exc_info=True

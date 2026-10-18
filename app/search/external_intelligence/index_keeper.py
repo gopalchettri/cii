@@ -21,10 +21,11 @@ from app.data_access.external_intelligence.repository import (
     intel_records,
     intel_snapshots,
 )
-from app.models.external_intelligence.evidence_corpus import EvidenceCorpus, SnapshotDescription
+from app.models.external_intelligence.evidence_corpus import SnapshotDescription
 from app.models.external_intelligence.source_health import sources_in_registry_order
 from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import (
+    EMPTY_SNAPSHOT_ID,
     EvidenceIndex,
     EvidenceIndexRefused,
     build_index,
@@ -54,7 +55,7 @@ class EvidenceIndexKeeper:
         self._embeddings, self._rerank = embeddings, rerank
         self._embedding_model, self._rerank_model = embedding_model, rerank_model
         self._clock = clock
-        self._index = empty_index(embeddings, rerank, rerank_model)
+        self._index = empty_index(embeddings, rerank, rerank_model, settled=False)
         self._lock = threading.Lock()  # guards the fields below; never held during a build or a read
         self._running: Future[EvidenceIndex] | None = None
         self._read_again = False  # a rebuild was asked for while one ran
@@ -142,21 +143,20 @@ class EvidenceIndexKeeper:
     def _build_and_swap(self) -> EvidenceIndex:
         """Build the approved records' index aside (unless in use already), publish it and swap it in."""
         approved = sources_in_registry_order(self._feeds.list(["_id"], sources=True, approved=True))
+        empty = empty_index(self._embeddings, self._rerank, self._rerank_model, settled=True)
         try:
             corpus = build_corpus(self._records.stream_current_intel_records(approved), self._embedding_model)
         except EvidenceIndexRefused:
             if approved:  # sources are approved but hold nothing: a broken refresh, not an order to empty
+                if self._index.snapshot_id is None:  # nothing imported yet: no evidence, not an outage
+                    self._index = empty
                 raise
-            corpus = EvidenceCorpus((), (), "")  # every source revoked: nothing may stay searchable
+            corpus = empty.corpus  # every source revoked: nothing may stay searchable
         current = self._index
-        if corpus.checksum == current.corpus.checksum:
-            return current
-        if not corpus.hits:
-            index = empty_index(self._embeddings, self._rerank, self._rerank_model)
-        else:
-            index = current.reuse_for(corpus) or build_index(
-                corpus, self._embeddings, self._rerank, self._rerank_model
-            )
+        if corpus.checksum == current.corpus.checksum and current.snapshot_id is not None:
+            return current  # never the placeholder: it stands for no build, not for an empty corpus
+        index = current.reuse_for(corpus) if corpus.hits else empty
+        index = index or build_index(corpus, self._embeddings, self._rerank, self._rerank_model)
         publish_index(self._snapshots, index, self._embedding_model, self._rerank_model)
         self._index = index  # the swap: readers see the old index or the new one, never a mix
         return index
@@ -198,7 +198,7 @@ def publish_index(
     if active is not None and active.get("checksum") == index.corpus.checksum:
         return
     description = SnapshotDescription(
-        index.snapshot_id or "empty",
+        index.snapshot_id or EMPTY_SNAPSHOT_ID,
         index.built_at,
         index.source_versions,
         index.corpus.counts(),
