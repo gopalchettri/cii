@@ -27,7 +27,9 @@ from app.core.constants import (
     ErrorMessage,
     Lease,
     Queue,
+    SqlOperationStatus,
     Status,
+    StoredProcedure,
     TaskName,
     Worker,
 )
@@ -35,6 +37,7 @@ from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
 from app.data_access.jobs.repository import JobLease, JobRepository, ended_job_fields
+from app.data_access.library.repository import SqlServerRepository
 from app.domain.shared.parallel import raise_most_retryable
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
 from app.worker.celery_app import BrokerUnavailable, count_waiting_messages
@@ -162,6 +165,22 @@ def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(publishe
     assert retry.value.countdown == Lease.RETRY_DELAYS_SECONDS[0]
     assert record["status"] == Status.QUEUED and record["job"]["due_at"] > datetime.now(UTC)
     assert published == [record_id, record_id]  # running, then queued again
+
+
+def test_a_job_meeting_a_young_pending_sql_operation_is_retried_not_failed(published: list[str]) -> None:
+    """A SQL Server write an earlier attempt left pending only means waiting: the job backs off until the
+    record is older than SqlOperations.PENDING_SECONDS and its replay may run."""
+    record_id, operation_id = _insert_job(), f"propose:{uuid.uuid4().hex}"
+    pending = {"status": SqlOperationStatus.PENDING, "started_at": datetime.now(UTC), "parameters": {}}
+    get_mongodb()[Collection.SQL_OPERATIONS].insert_one({"_id": operation_id, **pending})
+    sql = SqlServerRepository(SimpleNamespace(execute_procedure=lambda *_args, **_kwargs: []))  # type: ignore[arg-type]
+
+    def propose(_lease: JobLease) -> None:
+        sql.run_sql_operation(operation_id, StoredProcedure.RESOLVE_THREAT, {})
+
+    with pytest.raises(RetryRequested):
+        jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, propose)
+    assert _records().find_one({"_id": record_id})["status"] == Status.QUEUED
 
 
 def test_a_mongo_outage_while_claiming_is_retried_after_the_first_delay(
@@ -598,8 +617,8 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
 
 
 def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Before: a hung job (a deadlock, an endless loop) renewed its lease for ever, so the reaper never took
-    it over and its run stayed running."""
+    """A hung job (a deadlock, an endless loop) stops renewing, so the reaper takes it over, and makes no more
+    AI calls meanwhile."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
     monkeypatch.setattr(jobs.Lease, "MAX_JOB_SECONDS", 0.1)
     renewals: list[int] = []
@@ -609,6 +628,8 @@ def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch:
         renewed = len(renewals)
         time.sleep(0.2)
         assert len(renewals) == renewed  # stopped: the lease now runs out and the reaper takes the job
+        with pytest.raises(LeaseLost):
+            raise_if_lease_lost()
     assert 0 < renewed < 10
 
 

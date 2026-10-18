@@ -161,9 +161,7 @@ class PlanInputs:
             if mapped is not None and inputs_ready(mapped, by_id):
                 return mapped["controls"]["items"]
             if time.monotonic() >= until:
-                raise Unavailable(
-                    RemediationMessage.CONTROLS_BEING_MAPPED.format(seconds=Controls.LEASE_SECONDS)
-                )
+                raise _controls_being_mapped()
             time.sleep(Controls.PLAN_WAIT_POLL_SECONDS)
 
     def _map(
@@ -182,12 +180,14 @@ class PlanInputs:
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
             self._give_back(claimed, task_id, describe_outage(exc))
+            if isinstance(exc, LeaseLost) and str(exc) == scenario_id:  # its control lease, not the job's
+                raise _controls_being_mapped() from exc
             raise
         record = controls_record(mapping, snapshot)
         if not scenario_controls.update_scenario_controls(
             scenario_id, task_id, attempts, Status.DONE, mapping=record
         ):  # its claim was taken over meanwhile
-            raise Unavailable(RemediationMessage.CONTROLS_BEING_MAPPED.format(seconds=Controls.LEASE_SECONDS))
+            raise _controls_being_mapped()
         self._settle(claimed, time.perf_counter() - started)
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=True)
         return record["items"]
@@ -206,6 +206,11 @@ class PlanInputs:
         """The run's counts and its watchers after one of its scenarios' controls changed state."""
         scenarios.update_scenario_session_counts(claimed["session_id"], seconds)
         publish_session_status(claimed["session_id"])
+
+
+def _controls_being_mapped() -> Unavailable:
+    """The plan job given back for its normal retry while the scenario's controls are not mapped yet."""
+    return Unavailable(RemediationMessage.CONTROLS_BEING_MAPPED.format(seconds=Controls.LEASE_SECONDS))
 
 
 class _ControlsLease:

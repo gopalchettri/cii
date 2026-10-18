@@ -1,10 +1,12 @@
 """A plan job completing its version's pending input (app/worker/plan_inputs.py, G262: a plan request makes
 no AI call): a mapping the run's controls job makes now is waited for and used, never doubled; an outage frees
-the scenario's controls and retries the job; a regenerate's lost controls are warned about; an empty control
-library is refused by the request itself. The test database; the plan job's AI faked."""
+the scenario's controls and retries the job; a cancel stops a mapping at its next AI call; a regenerate's lost
+controls are warned about; an empty control library is refused by the request itself. The test database; the
+plan job's AI faked."""
 
 import contextlib
 import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -12,10 +14,12 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from app.core.constants import AiTask, Collection, Controls, ErrorCode, SnapshotWarning, Status, TaskName
 from app.core.database import get_mongodb
-from app.core.exceptions import Conflict, Unavailable
+from app.core.exceptions import Conflict, LeaseLost, Unavailable
+from app.core.lease_signal import raise_if_lease_lost
 from app.models.library import LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation import regenerate as regenerate_module
@@ -122,6 +126,51 @@ def test_an_outage_frees_the_scenarios_controls_and_the_retry_maps_and_plans(
     _deliver(remediation_id)
     assert world["mapper"].asked == [scenario_id, scenario_id]
     assert _record(remediation_id)["status"] == Status.DONE
+
+
+@pytest.mark.parametrize("cancelled", ["plan", "run"])
+def test_a_cancel_stops_the_plan_jobs_mapping_and_only_a_plan_cancel_ends_the_job(
+    client: TestClient,
+    api_key: str,  # noqa: F811
+    world: dict[str, Any],  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    cancelled: str,
+) -> None:
+    """The mapping's next AI call sees either lease lost. A plan cancel ends the delivery as stopped by its
+    owner; a run cancel (the scenario's control lease lost) gives the plan job back for its normal retry."""
+    monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
+    scenario_id = _scenario(controls={"status": Status.QUEUED, "attempts": 0})
+    remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
+    stopped_by: list[str] = []
+
+    def map_until_stopped(*_args: Any) -> None:
+        if cancelled == "plan":
+            plans = get_mongodb()[Collection.REMEDIATIONS]
+            plans.update_one({"_id": remediation_id}, {"$set": {"status": Status.CANCELLED}})
+        else:  # a run cancel stops the controls being mapped
+            cards = get_mongodb()[Collection.SCENARIOS]
+            cards.update_one({"_id": scenario_id}, {"$set": {"controls.status": Status.CANCELLED}})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:  # every AI call checks the signal first
+            try:
+                raise_if_lease_lost()
+            except LeaseLost as exc:
+                stopped_by.append(str(exc))
+                raise
+            time.sleep(0.01)
+
+    monkeypatch.setattr(world["mapper"], "map_controls", map_until_stopped)
+    with capture_logs() as logs:
+        _deliver(remediation_id)
+    events = [entry["event"] for entry in logs]
+    record = _record(remediation_id)
+    assert "job.lease_lost" not in events
+    if cancelled == "plan":
+        assert stopped_by == [remediation_id] and "job.stopped_by_owner" in events
+        assert record["status"] == Status.CANCELLED
+    else:
+        assert stopped_by == [scenario_id] and "job.retry_scheduled" in events
+        assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 1)
 
 
 @pytest.fixture

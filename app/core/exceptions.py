@@ -73,6 +73,10 @@ class DuplicateRecord(Conflict):
         self.index_name = index_name
 
 
+class OperationInProgress(Conflict):
+    """Another attempt of the same SQL Server write is still young: the API answers 409, a job retries."""
+
+
 class SetupError(AppError):
     """The server's own set-up is wrong (a procedure, a setting): 500 naming what to fix, logged."""
 
@@ -90,9 +94,11 @@ class OutcomeUnknown(Unavailable):
     Retried through its operation record (tsg_sql_operations), which replays the same parameters."""
 
 
-#: A store or AI service busy or down for now: the job is given back and retried later.
+#: A store or AI service busy or down for now, or a SQL Server write still in progress: the job is given back
+#: and retried later.
 TEMPORARY_ERRORS: tuple[type[Exception], ...] = (
     Unavailable,
+    OperationInProgress,
     *MONGO_UNAVAILABLE_ERRORS,
     *REDIS_UNAVAILABLE_ERRORS,
 )

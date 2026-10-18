@@ -75,8 +75,9 @@ class AiSlots:
     @contextmanager
     def hold_slot(self, hold_seconds: int) -> Iterator[None]:
         """Holds one slot while the call runs; Unavailable when none frees up within the wait. LeaseLost,
-        before the wait and after it, for a job that lost its lease meanwhile (its owner cancelled it, G214):
-        every AI call passes here, so a stopped job spends nothing more, holding no slot another run needs."""
+        before the wait, while it waits and after it, for a job that lost its lease meanwhile (its owner
+        cancelled it): every AI call passes here, so a stopped job spends nothing more, holding no slot
+        another run needs."""
         raise_if_lease_lost()
         if self._redis is None or self._cap == 0:
             yield
@@ -105,6 +106,7 @@ class AiSlots:
         deadline = time.monotonic() + wait
         pause = AiLimits.SLOT_FIRST_PAUSE_SECONDS
         while not self._take_free_slot(keys=[AiLimits.SLOTS_KEY], args=[self._cap, hold_seconds, call_id]):
+            raise_if_lease_lost()
             if time.monotonic() + pause > deadline:
                 log.warning(LogEvent.AI_SLOTS_BUSY, cap=self._cap, waited_seconds=round(wait, 1))
                 raise Unavailable(ErrorMessage.AI_BUSY.format(seconds=round(wait)))

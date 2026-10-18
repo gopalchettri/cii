@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from pymongo.errors import DuplicateKeyError
+from structlog.testing import capture_logs
 
 from app.ai import reranks_in_background
 from app.core.asset_types import asset_type_fits, unknown_asset_type
@@ -26,7 +27,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import ControlsNotMapped, Unavailable
+from app.core.exceptions import ControlsNotMapped, LeaseLost, Unavailable
 from app.data_access.scenario.repository import (
     ControlsDeliveryRepository,
     ScenarioRepository,
@@ -544,6 +545,24 @@ def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps
         controls = _controls_of(f"{record_id}-{number}")
         assert (controls["status"], [item["code"] for item in controls["items"]]) == (Status.DONE, ["C-IT"])
         assert controls["warning"].startswith("No control of asset type(s) ")
+
+
+def test_a_run_cancelled_during_its_mapping_ends_it_quietly(mapping_run: dict[str, Any]) -> None:
+    """The reranker's LeaseLost after a cancel is no fault: nothing is logged as a failed mapping."""
+    record_id = mapping_run["record_id"]
+
+    class _Cancelled(_ScoresByText):
+        def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+            get_mongodb()[Collection.SCENARIOS].update_many(
+                {"session_id": record_id}, {"$set": {"controls.status": Status.CANCELLED}}
+            )
+            raise LeaseLost(f"{record_id}-1")
+
+    mapping_run["rerank"] = _Cancelled({})
+    with capture_logs() as logs:
+        assert _deliver(record_id, "task-1") == 0
+    assert "controls.map_failed" not in [entry["event"] for entry in logs]
+    assert _controls_of(f"{record_id}-2")["status"] == Status.CANCELLED
 
 
 def test_the_sweep_sends_one_message_per_run_it_requeued(mapping_run: dict[str, Any]) -> None:

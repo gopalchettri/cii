@@ -13,7 +13,8 @@ from app.ai import slots
 from app.ai.slots import AiSlots
 from app.core.constants import AiLimits
 from app.core.database import get_redis_client
-from app.core.exceptions import Unavailable
+from app.core.exceptions import LeaseLost, Unavailable
+from app.core.lease_signal import lease_lost_signal
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +57,17 @@ def test_no_free_slot_within_the_wait_is_unavailable() -> None:
         pass
     with impatient.hold_slot(hold_seconds=60):  # freed when the first call ended
         pass
+
+
+def test_a_job_that_loses_its_lease_while_waiting_for_a_slot_stops_waiting() -> None:
+    busy = AiSlots(get_redis_client(), cap=1, wait_seconds=5)
+    patient = AiSlots(get_redis_client(), cap=1, wait_seconds=30)
+    with busy.hold_slot(hold_seconds=60), lease_lost_signal("cancelled-run") as lost:
+        threading.Timer(0.2, lost.set).start()
+        started = time.monotonic()
+        with pytest.raises(LeaseLost), patient.hold_slot(hold_seconds=60):
+            pass
+        assert time.monotonic() - started < 3
 
 
 def test_the_slot_of_a_process_that_died_frees_itself() -> None:

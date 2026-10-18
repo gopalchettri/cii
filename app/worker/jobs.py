@@ -69,8 +69,8 @@ class RenewableLease(Protocol):
 def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
     """Renew the lease every Lease.RENEW_EVERY_SECONDS while the work runs, from a background thread, for at
     most Lease.MAX_JOB_SECONDS: a hung job then loses its lease to the reaper, which counts the attempt. A
-    renewal that finds the lease lost (a cancel, G214) sets the job's signal: its next AI call raises
-    LeaseLost (core/lease_signal.py), as its next fenced write does."""
+    renewal that finds the lease lost (a cancel), or the time limit, sets the job's signal: its next AI call
+    raises LeaseLost (core/lease_signal.py), as its next fenced write does."""
     stopped = threading.Event()
     deadline = time.monotonic() + Lease.MAX_JOB_SECONDS
 
@@ -78,7 +78,8 @@ def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
         while not stopped.wait(Lease.RENEW_EVERY_SECONDS):
             if time.monotonic() >= deadline:
                 log.warning(LogEvent.JOB_TOO_LONG, record_id=lease.record_id, seconds=Lease.MAX_JOB_SECONDS)
-                return  # its writes now fail (LeaseLost) once the reaper takes the job over
+                lost.set()  # no more AI calls; its writes fail (LeaseLost) once the reaper takes the job over
+                return
             try:
                 if not lease.renew():
                     lost.set()  # no more AI calls; the work's next fenced write raises LeaseLost too

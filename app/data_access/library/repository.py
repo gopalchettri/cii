@@ -17,7 +17,7 @@ from app.core.constants import (
     StoredProcedure,
 )
 from app.core.database import Row, StoredProcedureClient
-from app.core.exceptions import Conflict, OutcomeUnknown
+from app.core.exceptions import OperationInProgress, OutcomeUnknown
 from app.data_access.base import MongoRepository
 from app.data_access.library.rows import (
     control_library_from_rows,
@@ -192,7 +192,7 @@ class SqlServerRepository:
         if not self._operations.save(started, only_if={"attempt_allowed": now}):
             message = ErrorMessage.SQL_OPERATION_IN_PROGRESS.format(operation_id=operation_id)
             details = {"operation_id": operation_id}
-            raise Conflict(message, reason=ConflictReason.OPERATION_IN_PROGRESS, details=details)
+            raise OperationInProgress(message, reason=ConflictReason.OPERATION_IN_PROGRESS, details=details)
         return attempt
 
     def _finish(self, operation_id: str, attempt: str, changes: dict[str, Any]) -> None:

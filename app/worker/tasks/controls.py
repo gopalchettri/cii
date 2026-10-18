@@ -17,7 +17,7 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.exceptions import TEMPORARY_ERRORS, ControlsNotMapped, JobFailed
+from app.core.exceptions import TEMPORARY_ERRORS, ControlsNotMapped, JobFailed, LeaseLost
 from app.data_access.scenario.repository import controls_deliveries, scenario_controls, scenarios
 from app.domain.scenario.controls import ControlMapper, controls_record
 from app.models.asset_context import FrozenContext
@@ -95,7 +95,8 @@ class RunControls:
 
     def _map_one(self, scenario: dict[str, Any]) -> int:
         """Map and save one scenario's controls: 1 when saved. A reason no retry changes fails its controls;
-        an outage gives it back and is raised; a job-wide failure fails it and is raised."""
+        an outage gives it back and is raised; a job-wide failure fails it and is raised; a lost lease skips
+        it."""
         scenario_id, attempts = scenario["_id"], scenario["controls"]["attempts"]
         try:
             lease = _ScenarioLease(self._record_id, (scenario_id, attempts), self._task_id)
@@ -114,6 +115,8 @@ class RunControls:
         except JobFailed as exc:
             self._fail(scenario_id, attempts, exc.code, exc.message)
             raise
+        except LeaseLost:  # its run was cancelled, or another delivery took the scenario over
+            return 0
         except Exception:  # one scenario's fault must not cost the run its other scenarios
             log.exception(LogEvent.CONTROLS_MAP_FAILED, scenario_id=scenario_id)
             message = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._record_id)
