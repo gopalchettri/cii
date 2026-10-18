@@ -434,16 +434,6 @@ class ScenarioSessionRepository(MongoRepository):
         being_deleted = is_scenario_session_being_deleted(self.collection, session.session_id)
         return RunClash.DELETING if being_deleted else RunClash.CHANGED
 
-    def update_scenario_session_threat_evidence(
-        self, lease: JobLease, found: dict[str, dict[str, Any]]
-    ) -> None:
-        """Save each planned threat's searched evidence (threat key -> {evidence, intel_search}) on the
-        tsg_sessions plan in one write fenced on the job lease; LeaseLost when the delivery lost it."""
-        changes: dict[str, Any] = {}
-        for number, fields in enumerate(found.values()):
-            changes |= {f"plan.threats.$[t{number}].{name}": value for name, value in fields.items()}
-        lease.update_job(changes, [{f"t{number}.key": key} for number, key in enumerate(found)])
-
     def update_scenario_session_plan(
         self,
         lease: JobLease,

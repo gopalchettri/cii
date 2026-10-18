@@ -12,7 +12,6 @@ from app.core.constants import (
     AttackerCheck,
     StrideCategory,
 )
-from app.models.external_intelligence.evidence import Evidence, EvidenceSearchRecord
 from app.models.library import LibraryThreat
 
 
@@ -64,8 +63,6 @@ class PlannedThreat:
     attacker_check: AttackerCheck | None = None
     attacker_check_reason: str = ""
     actor_pick: ActorPick | None = None  # the gate's pick, until code decides
-    evidence: tuple[Evidence, ...] = ()  # intelligence the story may cite; set at write time only
-    intel_search: EvidenceSearchRecord | None = None  # the search that found (or missed) it
 
 
 @dataclass

@@ -1,7 +1,7 @@
 """External evidence is searched when scenarios are WRITTEN (not at plan time): once per batch, for the
-threats of the paths being written only, kept on the plan so no path is searched twice and a regenerate keeps
-its numbering, an outage costing a scenario its evidence and never the scenario. The write job runs on
-the test MongoDB with the fake chat model and the fake finder (tests/external_intelligence/fakes.py)."""
+threats of the paths being written only, again on every write (a regenerate too) and kept in memory only, an
+outage costing a scenario its evidence and never the scenario. The write job runs on the test MongoDB with
+the fake chat model and the fake finder (tests/external_intelligence/fakes.py)."""
 
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 
-from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
     AuditAction,
@@ -19,7 +18,6 @@ from app.core.constants import (
     EvidenceMode,
     EvidenceSearchFailure,
     Generation,
-    IntelKind,
     IntelSource,
     ScenarioStatus,
     Status,
@@ -64,8 +62,7 @@ def test_a_batch_searches_once_and_only_for_the_threats_it_writes(intel: Intel) 
     record_id = _queued_run([f"Threat {n}" for n in range(1, 9)], first_set=3)  # 8 planned, 3 asked for
     assert _deliver_until_done(record_id) == 1
     assert len(intel.finder.calls) == 1 and len(intel.finder.calls[0][0]) == 3  # one call, three threats
-    searched = [name for name, threat in _threat_docs(record_id).items() if threat.get("intel_search")]
-    assert sorted(searched) == ["Threat 1", "Threat 2", "Threat 3"]  # the 5 not asked for are never searched
+    assert not any("intel_search" in threat for threat in _threat_docs(record_id).values())  # nothing kept
     stored = _scenarios_of(record_id)
     assert len(stored) == 3 and {s["status"] for s in stored} == {ScenarioStatus.DONE}
     for scenario in stored:
@@ -92,7 +89,7 @@ def test_a_threat_shared_by_two_paths_is_searched_once(intel: Intel) -> None:
     assert len(intel.finder.calls[0][0]) == 1
 
 
-def test_a_retry_after_an_outage_does_not_search_again(intel: Intel, story_chat: Any) -> None:
+def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -> None:
     record_id = _queued_run(["Threat 1", "Threat 2"])
     down = {"once": True}
     plain = story_chat.responders[AiTask.WRITE_SCENARIO]
@@ -109,8 +106,9 @@ def test_a_retry_after_an_outage_does_not_search_again(intel: Intel, story_chat:
     lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
     assert len(intel.finder.calls) == 1
     assert _deliver_until_done(record_id) == 1
-    assert len(intel.finder.calls) == 1 and len(_scenarios_of(record_id)) == 2  # no second search
-    assert len(_audit_rows(record_id)) == 1
+    assert len(intel.finder.calls) == 2 and len(_scenarios_of(record_id)) == 2
+    assert len(intel.finder.calls[1][0]) == 1  # only the threat still to write
+    assert len(_audit_rows(record_id)) == 2
 
 
 @pytest.mark.parametrize("fault", ["down", "raises"])
@@ -170,30 +168,24 @@ def _start_regenerate(record_id: str, first: str) -> None:
     writing.write_batch(JobRepository(_sessions()).claim_job(record_id, 2, TaskName.WRITE_SCENARIOS, "again"))
 
 
-def test_a_regenerate_keeps_the_evidence_numbering_and_searches_nothing(intel: Intel) -> None:
+def test_a_regenerate_searches_again(intel: Intel) -> None:
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1 and len(intel.finder.calls) == 1
-    first = scenario_id(record_id, "p1", 1)
-    _start_regenerate(record_id, first)
-    assert len(intel.finder.calls) == 1
-    scenarios = get_mongodb()[Collection.SCENARIOS]
-    old, new = (
-        scenarios.find_one({"_id": first}),
-        scenarios.find_one({"_id": scenario_id(record_id, "p1", 2)}),
-    )
-    assert new["content"]["evidence"] == old["content"]["evidence"] != []
-    assert new["content"]["intel_search"] == old["content"]["intel_search"]
+    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
+    assert len(intel.finder.calls) == 2
+    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
+    assert new["content"]["evidence"] != [] and new["content"]["intel_search"]["query"]
     assert new["content"]["prompt_version"] == StoryLimits.PROMPT_VERSION
 
 
 def test_a_regenerate_of_a_story_whose_threat_has_no_evidence_keeps_the_version_with_no_write_call(
     intel: Intel, story_chat: Any
 ) -> None:
-    """G229: the regenerate path cannot bypass the evidence rule: its threat's settled search holds nothing
-    usable, so the old version stays current with the reason, and no write call is spent."""
+    """G229: the regenerate path cannot bypass the evidence rule: its threat's search holds nothing usable,
+    so the old version stays current with the reason, and no write call is spent."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
-    _sessions().update_one({"_id": record_id}, {"$set": {"plan.threats.0.evidence": []}})
+    intel.finder.evidence = ()
     writes = len(story_chat.asked(AiTask.WRITE_SCENARIO))
     first = scenario_id(record_id, "p1", 1)
     _start_regenerate(record_id, first)
@@ -229,20 +221,25 @@ def test_a_regenerate_while_off_writes_a_story_again_as_the_original_writer(inte
     assert "evidence_mode" not in new["content"]
 
 
-def test_a_threat_whose_kept_evidence_names_a_revoked_source_is_searched_again(
+def test_the_evidence_an_older_plan_kept_is_never_cited_again(
     intel: Intel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """(owner 2026-10-12: "each can be revoked and purged"): no new write cites a revoked source. Before, a
-    threat kept its search for the life of the run, so a regenerate or a later batch cited it again."""
+    """(owner 2026-10-12: "each can be revoked and purged"): a plan saved by an older release keeps a
+    threat's evidence; the regenerate searches again and cites only what is approved now."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
+    kept = {
+        "plan.threats.0.evidence": [TECHNIQUE.as_doc()],
+        "plan.threats.0.intel_search": {"snapshot_id": "s"},
+    }
+    _sessions().update_one({"_id": record_id}, {"$set": kept})
     monkeypatch.setattr(intel.access, "approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
     intel.finder.evidence = (replace(TECHNIQUE, source=IntelSource.ATTACK_ENTERPRISE),)
     _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
     assert len(intel.finder.calls) == 2  # searched again, on the index rebuilt without it
     new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
-    kept = _threat_docs(record_id)["Threat 1"]["evidence"]
-    assert {e["source"] for e in [*new["content"]["evidence"], *kept]} == {IntelSource.ATTACK_ENTERPRISE}
+    assert {e["source"] for e in new["content"]["evidence"]} == {IntelSource.ATTACK_ENTERPRISE}
+    assert new["content"]["intel_search"]["snapshot_id"] == SNAPSHOT
 
 
 def test_a_search_on_an_index_not_yet_rebuilt_never_cites_the_revoked_source(
@@ -258,10 +255,7 @@ def test_a_search_on_an_index_not_yet_rebuilt_never_cites_the_revoked_source(
     intel.finder.evidence = (TECHNIQUE, enterprise)
     _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
     new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
-    threat = _threat_docs(record_id)["Threat 1"]
-    assert {e["source"] for e in [*new["content"]["evidence"], *threat["evidence"]]} == {
-        IntelSource.ATTACK_ENTERPRISE
-    }
+    assert {e["source"] for e in new["content"]["evidence"]} == {IntelSource.ATTACK_ENTERPRISE}
 
 
 def test_a_regenerate_of_a_story_while_the_switch_cannot_be_read_waits_for_it(intel: Intel) -> None:
@@ -291,30 +285,11 @@ def test_a_search_whose_only_records_were_revoked_finds_no_evidence_and_is_no_ou
     assert old["superseded_by"] is None and old["regenerate_error"]["code"] == ErrorCode.EVIDENCE_NOT_FOUND
 
 
-def test_a_kept_entry_whose_joined_source_was_revoked_is_searched_again() -> None:
-    """(owner 2026-10-12: "each can be revoked and purged"): a KEV entry also states its EPSS score and NVD
-    detail (corpus_builder._join), so a revoke of either resets it; one kept before `joined` was recorded may
-    carry both. Before, only the entry's own source was checked: a revoked EPSS fact stayed citable."""
-    kev = replace(TECHNIQUE, ref="CVE-2024-0001", kind=IntelKind.VULNERABILITY, source=IntelSource.CISA_KEV)
-    approved = {s for s in IntelSource if s != IntelSource.FIRST_EPSS}
-
-    def unsearched(entry: dict[str, Any]) -> list[str]:
-        threats = {"t": {"evidence": [entry], "intel_search": {"snapshot_id": SNAPSHOT}}}
-        progress = SimpleNamespace(paths={"p1": {"steps": ["t"]}})
-        writer = EvidenceAtWrite({}, threats, progress, None)  # type: ignore[arg-type]
-        return writer._unsearched(["p1"], approved)
-
-    assert unsearched(replace(kev, joined=(IntelSource.FIRST_EPSS,)).as_doc()) == ["t"]
-    assert unsearched(replace(kev, joined=(IntelSource.NIST_NVD,)).as_doc()) == []
-    legacy = {key: value for key, value in kev.as_doc().items() if key != "joined"}
-    assert unsearched(legacy) == ["t"]
-
-
-def test_a_batch_with_one_retry_reads_the_approved_sources_and_their_health_once(
+def test_a_threat_already_searched_is_searched_again_reading_the_feeds_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The feeds' status is read once per batch and passed down to every search. Before, the approved sources
-    were read again with the health for each search: five reads for one batch with one retry."""
+    """One search per write: a threat's earlier search is replaced by this batch's, and the approved sources
+    and their health are read once for the batch."""
     reads: list[str] = []
 
     class CountedFeeds:
@@ -327,14 +302,14 @@ def test_a_batch_with_one_retry_reads_the_approved_sources_and_their_health_once
 
     monkeypatch.setattr(intel_access, "intel_feeds", CountedFeeds())
     monkeypatch.setattr(evidence_at_write.audit_records, "create_audit_record", lambda *args, **kwargs: None)
-    monkeypatch.setattr(get_settings(), "evidence_search_retries", 1)
     finder = FakeFinder()
-    finder.evidence = ()  # settled with nothing usable: searched again in other words
     context = {"asset": {"id": 1, "name": "Grid", "category_code": None}, "asset_context": {}, "systems": []}
     run = {"_id": "run", "context": context | {"missing_facts": []}}
-    threats = {"t": {"name": "Threat 1", "type": {"name": "Malware"}}}
-    progress = SimpleNamespace(paths={"p1": {"steps": ["t"]}}, keep_evidence=lambda settled: None)
+    earlier = {"evidence": [], "intel_search": {"snapshot_id": "older", "failure": None}}
+    threats = {"t": {"name": "Threat 1", "type": {"name": "Malware"}} | earlier}
+    progress = SimpleNamespace(paths={"p1": {"steps": ["t"]}})
     access = IntelAccess(finder=lambda: finder)  # type: ignore[arg-type,return-value]
     EvidenceAtWrite(run, threats, progress, access).attach(["p1"])  # type: ignore[arg-type]
-    assert len(finder.calls) == 2  # the search and its one retry
-    assert sorted(reads) == ["approved", "health"]
+    assert len(finder.calls) == 1 and sorted(reads) == ["approved", "health"]
+    assert threats["t"]["intel_search"]["snapshot_id"] == SNAPSHOT
+    assert [entry["ref"] for entry in threats["t"]["evidence"]] == [TECHNIQUE.ref]

@@ -55,6 +55,9 @@ def write_batch(lease: JobLease) -> None:
     run = scenario_sessions.get(fields="writing", _id=lease.record_id)
     if run is None:  # deleted since the claim
         raise NotFound(SessionMessage.NOT_FOUND.format(session_id=lease.record_id))
+    for threat in run["plan"]["threats"]:  # the evidence an older plan kept: each write searches its own
+        threat.pop("evidence", None)
+        threat.pop("intel_search", None)
     library = get_library_service().get_threat_library()  # in memory; reloaded within a minute of an edit
     BatchWriter(lease, run, db, get_chat_model(), library).write()
 
@@ -78,7 +81,7 @@ class BatchWriter:
         self._lease, self._run = lease, run
         self._progress = PlanProgress(lease, run)
         self._paths = PathWriter(run, chat, library, style)
-        self._saver = PathSaver(lease, run, self._progress, self._paths.threats, self._story)
+        self._saver = PathSaver(lease, run, self._progress, self._paths.threats)
         self._evidence = EvidenceAtWrite(run, self._paths.threats, self._progress, access)
         items = [item for item in run["job"].get("batch") or [] if item["path_id"] in self._progress.paths]
         self._batch = [item["path_id"] for item in items]

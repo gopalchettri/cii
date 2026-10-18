@@ -166,10 +166,9 @@ class PathSaver:
         run: dict[str, Any],
         progress: PlanProgress,
         threats: dict[str, dict[str, Any]],
-        story: bool,
     ) -> None:
         self._lease, self._run, self._progress = lease, run, progress
-        self._threats, self._story = threats, story
+        self._threats = threats
         self._held = HeldScenarios(run)
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
@@ -216,7 +215,7 @@ class PathSaver:
             return
         log.warning(LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"])
         metrics.SCENARIOS.labels(ScenarioOutcome.ABANDONED).inc()
-        self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats, self._story)
+        self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats)
 
     def _versions_to_write(self, replaces: dict[str, str]) -> dict[str, tuple[str, ...]]:
         """A regenerate's paths still to write, each with its versions' statements (oldest first). A next

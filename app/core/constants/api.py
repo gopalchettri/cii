@@ -112,10 +112,7 @@ class ErrorMessage(StrEnum):
     PATH_NOT_WRITABLE = "Attack path {path_id} cannot be written: {problem}."
     CONTROL_LIBRARY_EMPTY = "The control library has no active control."
     PATH_AI_UNAVAILABLE = "The AI service did not answer for this attack path in {tries} tries."
-    EVIDENCE_NOT_FOUND = (
-        "No external intelligence supports this attack ({searches} search(es) made): it is not written "
-        "without evidence."
-    )
+    EVIDENCE_NOT_FOUND = "No external intelligence supports this attack: it is not written without evidence."
     EVIDENCE_SEARCH_UNAVAILABLE = "The evidence search could not be made for this attack path: {reason}."
     AI_MISCONFIGURED = (
         "The AI gateway refused model '{model}' ({error}, HTTP {status}): check the model name, the key and "

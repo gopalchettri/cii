@@ -13,7 +13,7 @@ from app.core.database import get_mongodb
 from app.data_access.admin.repository import admin_jobs
 from app.worker import lifecycle
 from app.worker.external_intelligence import warm_up as warm_up_module
-from app.worker.external_intelligence.evidence_at_write import alternative_request, evidence_request
+from app.worker.external_intelligence.evidence_at_write import evidence_request
 from app.worker.external_intelligence.refresh_task import refresh_external_intelligence, run_refresh_job
 from app.worker.external_intelligence.warm_up import (
     follow_active_snapshot,
@@ -72,14 +72,6 @@ def test_the_recorded_products_come_from_the_asset_row_and_the_threats_systems()
 def test_a_threat_naming_no_known_system_uses_every_system() -> None:
     request = evidence_request(CONTEXT, _threat(systems=[999]))
     assert len(request.recorded_products.rows) == 1 + len(CONTEXT.systems)
-
-
-def test_a_search_again_uses_other_words_with_the_same_filter_and_products() -> None:
-    """G229: a search that found nothing usable is made again in other words (no AI call)."""
-    first, again = evidence_request(CONTEXT, _threat()), alternative_request(CONTEXT, _threat(), 0)
-    assert again.text.startswith("Attack: Tampering with firmware: Unauthorised firmware update")
-    assert (again.asset_types, again.recorded_products) == (first.asset_types, first.recorded_products)
-    assert alternative_request(CONTEXT, _threat(), 1).text not in (first.text, again.text)  # keywords only
 
 
 def test_the_scheduled_refresh_runs_the_due_sources_only_while_the_switch_is_on(intel: Intel) -> None:

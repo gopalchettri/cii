@@ -244,6 +244,19 @@ def test_a_set_ends_complete_though_an_earlier_set_abandoned_a_path(
     assert _sessions().find_one({"_id": record_id})["last_action"]["outcome"] == RunActionOutcome.COMPLETE
 
 
+@pytest.mark.parametrize("older_plan", [{}, {"not_assessed": ["Spoofing"]}])
+def test_a_set_is_partial_only_when_one_of_its_paths_was_given_up(older_plan: dict[str, Any]) -> None:
+    """A plan with no not_assessed list, or one an older release saved with a category in it, ends
+    complete."""
+    changes: dict[str, Any] = {}
+    path = {"path_id": "p1", "rank": 1, "selected": True, "served": "s1", "abandoned": False, "attempts": 0}
+    plan = {"paths": [path], "frozen_at": datetime.now(UTC)} | older_plan
+    lease = SimpleNamespace(update_job=changes.update)
+    run = {"_id": "r", "plan": plan, "job": {"set": ["p1"]}}
+    plan_progress.PlanProgress(lease, run).continue_or_finish()  # type: ignore[arg-type]
+    assert changes["last_action.outcome"] == RunActionOutcome.COMPLETE
+
+
 def test_an_unreadable_path_is_retried_then_abandoned_and_the_run_ends_partial(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:

@@ -137,7 +137,7 @@ def threat_reasons_by_kind(threat: PlannedThreat) -> dict[str, str]:
 
 
 def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
-    """The threat as the plan stores it; evidence keys only when it was searched."""
+    """The threat as the plan stores it."""
     record: dict[str, Any] = {
         "key": threat.key,
         "library_id": threat.catalogue_id,
@@ -158,9 +158,6 @@ def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
         "attacker_check": threat.attacker_check,
         "attacker_check_reason": threat.attacker_check_reason or None,
     }
-    if threat.intel_search is not None:
-        record["evidence"] = [entry.as_doc() for entry in threat.evidence]
-        record["intel_search"] = threat.intel_search.as_doc()
     return record
 
 
@@ -1135,17 +1132,16 @@ def set_summary(in_set: list[dict[str, Any]], paths: list[dict[str, Any]], outco
 
 
 def best_reserve(
-    paths: Iterable[dict[str, Any]], threats: dict[str, dict[str, Any]], needs_evidence: bool
+    paths: Iterable[dict[str, Any]], threats: dict[str, dict[str, Any]]
 ) -> dict[str, Any] | None:
     """The best-ranked path the scenario count left out, to write in a failed path's place: only one whose
-    attacker is supported and, with intelligence on, whose evidence search did not already find nothing."""
+    attacker is supported."""
     reserves = (
         path
         for path in paths
         if not path["selected"]
         and path.get("unselected_reason") == UnselectedReason.TARGET_REACHED
         and _attributable(_threat_of(path, threats))
-        and not (needs_evidence and _found_no_evidence(_threat_of(path, threats)))
     )
     return min(reserves, key=lambda path: path["rank"], default=None)
 
@@ -1167,13 +1163,6 @@ def _threat_of(path: dict[str, Any], threats: dict[str, dict[str, Any]]) -> dict
 def _attributable(threat: dict[str, Any]) -> bool:
     """Whether some check supports the threat's acting attacker."""
     return not attacker_unsupported(threat.get("attacker_check"), (threat.get("actors") or [{}])[0])
-
-
-def _found_no_evidence(threat: dict[str, Any]) -> bool:
-    """A search was made and kept nothing."""
-    search = threat.get("intel_search")
-    searched = search is not None and search.get("failure") is None and search.get("snapshot_id") is not None
-    return searched and not threat.get("evidence")
 
 
 # --- the run's frozen context: the procedure's rows as the facts every step reads, checked first

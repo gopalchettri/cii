@@ -372,8 +372,7 @@ def evidence_problem(threat: dict[str, Any]) -> PathFailure | Unavailable | None
         failure = (search or {}).get("failure") or EvidenceSearchFailure.NO_SNAPSHOT
         return Unavailable(ErrorMessage.EVIDENCE_SEARCH_UNAVAILABLE.format(reason=failure))
     if not threat.get("evidence"):
-        message = ErrorMessage.EVIDENCE_NOT_FOUND.format(searches=1 + len(search.get("attempts") or ()))
-        return PathFailure(ErrorCode.EVIDENCE_NOT_FOUND, message, final=True)
+        return PathFailure(ErrorCode.EVIDENCE_NOT_FOUND, ErrorMessage.EVIDENCE_NOT_FOUND, final=True)
     return None
 
 

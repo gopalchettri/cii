@@ -43,20 +43,15 @@ class PlanProgress:
             raise LeaseLost(self._run_id)
 
     def abandon(
-        self,
-        path_id: str,
-        state: dict[str, Any],
-        reason: str,
-        threats: dict[str, dict[str, Any]],
-        evidence: bool,
+        self, path_id: str, state: dict[str, Any], reason: str, threats: dict[str, dict[str, Any]]
     ) -> str | None:
         """Give a path up for good; when the set's budget allows and a reserve exists, the reserve takes its
-        place in the same fenced write. Return the reserve's id, or None. `evidence`: intelligence on."""
+        place in the same fenced write. Return the reserve's id, or None."""
         states = {path_id: state | {"abandoned_reason": reason}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
         in_set = [path for key, path in self.paths.items() if key in self._set]
-        reserve = best_reserve(self.paths.values(), threats, evidence) if budget_left(in_set) else None
+        reserve = best_reserve(self.paths.values(), threats) if budget_left(in_set) else None
         if reserve is None:
             self.record(states)
             return None
@@ -75,11 +70,6 @@ class PlanProgress:
         figures = plan_counts(self.paths.values())
         scenario_sessions.update_scenario_session_plan(self._lease, states, figures, also)
         publish_session_status(self._run_id)
-
-    def keep_evidence(self, found: dict[str, dict[str, Any]]) -> None:
-        """Save the evidence searched for threats (key -> {evidence, intel_search}) on the plan in one fenced
-        write, so every later write of the path reuses it and its evidence numbering never changes."""
-        scenario_sessions.update_scenario_session_threat_evidence(self._lease, found)
 
     def continue_or_finish(self) -> None:
         """Hand the set's next batch to this same task, or end the set: complete, or partial when a path of

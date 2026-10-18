@@ -13,6 +13,7 @@ from app.core.constants import (
     AiTask,
     Applicability,
     ErrorCode,
+    ErrorMessage,
     EvidenceRole,
     FindingCode,
     Generation,
@@ -42,10 +43,10 @@ pytestmark = pytest.mark.usefixtures("story_chat", "sent")
 
 
 def test_the_gate_fails_a_threat_with_no_evidence_for_good_and_holds_back_an_outage() -> None:
-    settled = {"snapshot_id": "s1", "failure": None, "attempts": [{"query": "first"}]}
+    settled = {"snapshot_id": "s1", "failure": None}
     failure = evidence_problem({"evidence": [], "intel_search": settled})
     assert isinstance(failure, PathFailure) and failure.final and failure.code == ErrorCode.EVIDENCE_NOT_FOUND
-    assert "2 search(es)" in failure.message
+    assert failure.message == ErrorMessage.EVIDENCE_NOT_FOUND
     assert isinstance(evidence_problem({"intel_search": settled | {"failure": "down"}}), Unavailable)
     assert isinstance(evidence_problem({"intel_search": None}), Unavailable)  # never searched: no snapshot
     assert evidence_problem({"evidence": [{"ref": "T0839"}], "intel_search": settled}) is None
@@ -60,7 +61,6 @@ def test_nothing_found_fails_its_path_for_good_with_no_write_call(intel: Intel, 
     assert not story_chat.asked(AiTask.WRITE_SCENARIO)  # no AI call spent on a scenario that cannot be proven
     plan = _sessions().find_one({"_id": record_id})["plan"]
     assert plan["paths"][0]["abandoned"] and plan["paths"][0]["attempts"] == 1
-    assert plan["threats"][0]["intel_search"]["searched_at"]
 
 
 def test_a_story_left_citing_nothing_is_kept_hidden_and_its_path_tried_again(

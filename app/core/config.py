@@ -42,9 +42,6 @@ class ScenarioOutputSettings(BaseSettings):
     # Words in a scenario statement and in a risk statement, "min-max", for both writers.
     threat_scenario_word_limit: str = Field(default="300-400", validation_alias="THREAT_SCENARIO_WORD_LIMIT")
     risk_statement_word_limit: str = Field(default="150-200", validation_alias="RISK_STATEMENT_WORD_LIMIT")
-    # External intelligence on (G229): a threat whose search found no usable evidence is searched again with
-    # other words this many times (0-2; no AI call); still none, its scenario is not written.
-    evidence_search_retries: int = Field(default=1, ge=0, le=2, validation_alias="EVIDENCE_SEARCH_RETRIES")
     # the country the assets are in ("UAE" or "United Arab Emirates"): with external intelligence on,
     # planning and the writer read it as a fact; it ranks nothing.
     threat_context_country: str = Field(
