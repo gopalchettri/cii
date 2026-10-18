@@ -27,9 +27,11 @@ from app.data_access.scenario.repository import scenario_sessions
 from app.domain.scenario.write import evidence_problem
 from app.models.external_intelligence.evidence import Evidence
 from app.models.scenario.write import PathFailure
+from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 from app.worker.tasks import writing
 from tests.external_intelligence.conftest import STORY_PLAIN, Intel
 from tests.external_intelligence.fakes import TECHNIQUE
+from tests.external_intelligence.switch.test_switch import MemoryFlags
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _deliver_until_done,
     _queued_run,
@@ -102,9 +104,13 @@ def test_the_switch_is_read_once_per_batch(intel: Intel) -> None:
 
 
 def test_a_first_write_while_the_switch_cannot_be_read_waits_for_it(intel: Intel, story_chat: Any) -> None:
-    """G268: a switch in doubt reads off, so the delivery would write original scenarios with intelligence on.
-    It waits instead (an outage: the job is tried again), with no search and no AI call."""
-    intel.switch.known = False
+    """The real switch, its store unreadable and no value kept, is in doubt and reads off, so the delivery
+    would write original scenarios with intelligence on. It waits instead (an outage: the job is tried again),
+    with no search and no AI call."""
+    flags = MemoryFlags()
+    flags.down = True
+    switch = ExternalIntelligenceSwitch(flags)
+    intel.access.install(lambda: switch, lambda: intel.refresher)
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "one")
     with pytest.raises(Unavailable):

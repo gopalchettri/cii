@@ -4,6 +4,9 @@ exceeded, a rebuild during searches keeps serving the old index, the switch cons
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
+from app.core.config import get_settings
 from app.core.constants import AssetType
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import RerankGate
@@ -129,15 +132,18 @@ def test_a_rebuild_during_searches_keeps_serving_whole_indexes_and_swaps_at_once
     finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)
 
 
-def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_left_them() -> None:
+def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_left_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
     flags = MemoryFlags()
-    switch = ExternalIntelligenceSwitch(flags, True)
+    switch = ExternalIntelligenceSwitch(flags)
     stop = threading.Event()
     seen: list[bool] = []
 
     def read() -> None:
         while not stop.is_set():
-            seen.append(switch.is_enabled())
+            seen.append(switch.is_on())
 
     readers = [threading.Thread(target=read) for _ in range(6)]
     for reader in readers:
@@ -149,4 +155,4 @@ def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_le
     for reader in readers:
         reader.join()
     assert seen and all(isinstance(value, bool) for value in seen)
-    assert not switch.is_enabled() and flags.stored[0] is False
+    assert not switch.is_on() and flags.stored[0] is False

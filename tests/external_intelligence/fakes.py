@@ -21,6 +21,7 @@ from app.models.external_intelligence.evidence import (
 )
 from app.models.external_intelligence.evidence_request import EvidenceRequest, EvidenceResult
 from app.models.external_intelligence.switch_state import SwitchState
+from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 
 SNAPSHOT = "snap-1"
 #: A fact as the real feeds build it (EvidenceFact.USED_BY): it names a group, so a story may cite it (G268).
@@ -77,14 +78,15 @@ class FakeFinder:
         return EvidenceResult(() if self.down else evidence, search)
 
 
-class FakeSwitch:
+class FakeSwitch(ExternalIntelligenceSwitch):
+    """The real switch's is_on over a state the test sets; no store is read."""
+
     def __init__(self, enabled: bool = True) -> None:
+        super().__init__(feeds=None)  # type: ignore[arg-type]
         self.enabled = enabled
         self.known = True  # False: its store could not be read and no value was kept (it reads off)
-        self.reads = 0
 
     def state(self) -> SwitchState:
-        self.reads += 1
         return SwitchState(True, self.enabled and self.known, known=self.known)
 
 

@@ -1,5 +1,5 @@
-"""The worker's door to external intelligence. The env master switch is checked first and alone: with it off,
-or no run-time switch installed, nothing here reads a store, builds an index or calls a service."""
+"""The worker's door to external intelligence. With the env master switch off (the installed switch checks it
+first), or no run-time switch installed, nothing here reads a store or builds an index."""
 
 from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, datetime
@@ -8,8 +8,7 @@ from typing import Any, Protocol
 import structlog
 
 from app.core.config import get_settings
-from app.core.constants import ErrorMessage, IntelSource, IntelWorkEvent
-from app.core.exceptions import Unavailable
+from app.core.constants import IntelSource, IntelWorkEvent
 from app.core.singletons import singleton
 from app.data_access.external_intelligence.repository import intel_feeds
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
@@ -20,7 +19,6 @@ from app.models.external_intelligence.source_health import (
     source_health_in_registry_order,
     sources_in_registry_order,
 )
-from app.models.external_intelligence.switch_state import SwitchState
 from app.search.external_intelligence.index_keeper import get_evidence_index_keeper
 
 log = structlog.get_logger(__name__)
@@ -29,8 +27,8 @@ log = structlog.get_logger(__name__)
 class SwitchPort(Protocol):
     """The run-time switch as the worker sees it (the services layer installs it)."""
 
-    def state(self) -> SwitchState:
-        """The switch state now."""
+    def is_on(self, sure: bool = False) -> bool:
+        """True when external intelligence is on; `sure`: a switch in doubt raises Unavailable."""
 
 
 class RefresherPort(Protocol):
@@ -68,21 +66,12 @@ class IntelAccess:
         self._switch, self._refresher = switch, refresher
 
     def is_on(self, sure: bool = False) -> bool:
-        """True only when the env master switch and the run-time switch are on; no installed switch, or one
-        that cannot be read, is off. `sure`: a switch in doubt raises Unavailable instead of reading off."""
-        if not get_settings().external_intelligence_enabled:
-            return False
+        """The installed switch's is_on (`sure`: a switch in doubt raises Unavailable); no installed switch is
+        off."""
         if self._switch is None:
             log.warning(IntelWorkEvent.RUNTIME_MISSING)
             return False
-        try:
-            state: SwitchState | None = self._switch().state()
-        except Exception:  # a switch that cannot be read is off: the original writer runs
-            log.warning(IntelWorkEvent.SWITCH_UNREADABLE, exc_info=True)
-            state = None
-        if sure and (state is None or not state.known):
-            raise Unavailable(ErrorMessage.MONGO_UNREACHABLE)
-        return state is not None and state.effective
+        return self._switch().is_on(sure)
 
     def refresher(self) -> RefresherPort:
         """The installed source refresher; RuntimeError when none is installed."""

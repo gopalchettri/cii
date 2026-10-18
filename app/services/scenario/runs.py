@@ -93,7 +93,7 @@ _RUN_COUNTS: Final = (
 
 def refuse_without_intel_data() -> None:
     """409 intel_no_data while external intelligence is on and its active snapshot indexes nothing."""
-    if not get_external_intelligence_switch().is_enabled():
+    if not get_external_intelligence_switch().is_on():
         return
     check_intel_has_data(intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {})
 

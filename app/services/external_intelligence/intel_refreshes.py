@@ -43,7 +43,7 @@ class IntelRefreshes:
         """Queue a refresh and return its id. 409 while the switch is off; 422 for a source not approved; 409
         job_in_progress (details.job_id: the active one) while one is queued or running; 503 when the job
         queue is unreachable (the job is then failed, never left queued)."""
-        if not self._switch.is_enabled():
+        if not self._switch.is_on():
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         if source is not None and not self._feeds.count(_id=source, approved=True):
             raise Invalid(IntelRefreshMessage.SOURCE_NOT_APPROVED.format(source=source))

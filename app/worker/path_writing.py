@@ -1,9 +1,8 @@
 """Writing one path's scenario in a pool thread (PathWriter) and saving it, its failure card or its new
-version in the job's thread (PathSaver), a written scenario checked for a near copy first (HeldScenarios)."""
+version in the job's thread (PathSaver), a written scenario checked for a near copy right before its save."""
 
 import dataclasses
 from collections import defaultdict
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,7 +11,6 @@ import structlog
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core import metrics
 from app.core.constants import (
-    Decision,
     ErrorCode,
     ErrorMessage,
     Generation,
@@ -43,7 +41,7 @@ from app.domain.scenario.write import (
 from app.domain.shared.names import name_match_key, shorten_text
 from app.models.asset_context import FrozenContext
 from app.models.library import ThreatLibrary
-from app.models.scenario.write import PathFailure, WriterBrief, WrittenScenario
+from app.models.scenario.write import Finding, PathFailure, WriterBrief, WrittenScenario
 from app.worker.plan_progress import PlanProgress
 
 log = structlog.get_logger(__name__)
@@ -118,41 +116,12 @@ def supersede_scenario_version(old_id: str, new_id: str) -> None:
     scenarios.update(changes, _id=old_id, newest=True)
 
 
-class HeldScenarios:
-    """The duplicate-checked save of a written scenario, against the run's finished scenarios (kept up to date
-    as the delivery saves) and the asset's held scenarios of its other runs, both read at the first check."""
-
-    def __init__(self, run: dict[str, Any]) -> None:
-        self._run = run
-        self._own_run: list[dict[str, Any]] | None = None
-        self._elsewhere: list[dict[str, Any]] = []
-
-    def save(
-        self, written: WrittenScenario, build: Callable[[WrittenScenario], dict[str, Any]]
-    ) -> tuple[dict[str, Any], bool, WrittenScenario]:
-        """Save the record `build` makes of `written` under a title of its own; a near copy first gets the
-        final NEAR_DUPLICATE blocker (kept hidden). Return the record, whether it was saved, and `written`."""
-        record = build(written)
-        if not blocking_codes(written):
-            if self._own_run is None:
-                run = self._run
-                self._own_run, self._elsewhere = scenarios.list_scenarios_for_duplicate_check(
-                    run["entity_id"], run["asset_id"], run["_id"]
-                )
-            if copy := duplicate_of(record["content"], record["path_id"], self._own_run, self._elsewhere):
-                written = dataclasses.replace(written, findings=(*written.findings, copy))
-                record = build(written)
-        saved = save_with_unique_title(record, written.title_qualifier)
-        if saved and record["status"] == ScenarioStatus.DONE and self._own_run is not None:
-            self._own_run = _finished_after_save(self._own_run, record)
-        return record, saved, written
-
-
-def _finished_after_save(finished: list[dict[str, Any]], record: dict[str, Any]) -> list[dict[str, Any]]:
-    """`finished` plus a just-saved record, less the version it replaces unless a reviewer accepted it."""
-    replaced = record.get("replaces")
-    kept = [item for item in finished if item["_id"] != replaced or item.get("decision") == Decision.ACCEPTED]
-    return [*kept, {"_id": record["_id"], "path_id": record["path_id"], "content": record["content"]}]
+def _near_copy_held_now(run: dict[str, Any], record: dict[str, Any]) -> Finding | None:
+    """The final NEAR_DUPLICATE finding when `record` copies a scenario the store holds now: one of the run's
+    finished ones or one the asset's other runs hold."""
+    # ponytail: reads every held scenario of the asset; add a limit if it holds thousands
+    own, other = scenarios.list_scenarios_for_duplicate_check(run["entity_id"], run["asset_id"], run["_id"])
+    return duplicate_of(record["content"], record["path_id"], own, other)
 
 
 class PathSaver:
@@ -169,7 +138,6 @@ class PathSaver:
     ) -> None:
         self._lease, self._run, self._progress = lease, run, progress
         self._threats = threats
-        self._held = HeldScenarios(run)
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
     def to_write(self, batch: list[str], replaces: dict[str, str]) -> dict[str, tuple[str, ...]]:
@@ -272,7 +240,7 @@ class PathSaver:
         started_at: datetime | None,
         replaces: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool, WrittenScenario]:
-        """Build a written scenario's record, check it for a near copy, save and log it."""
+        """Build a written scenario's record, check it for a near copy held now, save and log it."""
         threat = self._threats[path["steps"][0]]
 
         def build(checked: WrittenScenario) -> dict[str, Any]:
@@ -281,7 +249,11 @@ class PathSaver:
             record["generation"] = generation_stamp(self._lease.epoch, started_at, record)
             return record
 
-        record, saved, written = self._held.save(written, build)
+        record = build(written)
+        if not blocking_codes(written) and (copy := _near_copy_held_now(self._run, record)):
+            written = dataclasses.replace(written, findings=(*written.findings, copy))
+            record = build(written)
+        saved = save_with_unique_title(record, written.title_qualifier)
         self._log_saved(record, saved, blocking_finding_code(written))
         return record, saved, written
 

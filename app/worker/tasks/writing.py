@@ -20,12 +20,11 @@ from app.core.constants import (
     Generation,
     Lease,
     LogEvent,
-    SessionMessage,
     TaskName,
     WriterStyle,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import NotFound, Unavailable
+from app.core.exceptions import LeaseLost, Unavailable
 from app.data_access.jobs.repository import JobLease
 from app.data_access.scenario.repository import scenario_sessions
 from app.domain.scenario.write import evidence_problem
@@ -53,8 +52,8 @@ def write_batch(lease: JobLease) -> None:
     """Load the run, the chat model and the threat library, then write the batch."""
     db = get_mongodb()
     run = scenario_sessions.get(fields="writing", _id=lease.record_id)
-    if run is None:  # deleted since the claim
-        raise NotFound(SessionMessage.NOT_FOUND.format(session_id=lease.record_id))
+    if run is None:  # deleted since the claim: stopped by its owner
+        raise LeaseLost(lease.record_id)
     for threat in run["plan"]["threats"]:  # the evidence an older plan kept: each write searches its own
         threat.pop("evidence", None)
         threat.pop("intel_search", None)

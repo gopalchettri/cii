@@ -94,7 +94,7 @@ def intelligence(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
         request.getfixturevalue("intel")
         request.getfixturevalue("story_chat")
         monkeypatch.setattr(
-            runs_module, "get_external_intelligence_switch", lambda: SimpleNamespace(is_enabled=lambda: True)
+            runs_module, "get_external_intelligence_switch", lambda: SimpleNamespace(is_on=lambda: True)
         )
         active = {"snapshot_id": "s1", "counts": {"indexed": 12}}
         monkeypatch.setattr(runs_module, "intel_snapshots", SimpleNamespace(get=lambda *_, **__: active))

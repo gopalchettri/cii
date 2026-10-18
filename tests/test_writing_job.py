@@ -2,13 +2,16 @@
 themselves to the end of the set a person asked for; on the test MongoDB, with a fake chat model."""
 
 import json
+import threading
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from celery.exceptions import Ignore
 from prometheus_client import REGISTRY
+from structlog.testing import capture_logs
 
 from app.core.constants import (
     ActorRole,
@@ -17,6 +20,7 @@ from app.core.constants import (
     ErrorCode,
     Generation,
     Lease,
+    LogEvent,
     RunActionOutcome,
     ScenarioStatus,
     Status,
@@ -462,3 +466,37 @@ def test_each_saved_scenario_says_which_write_made_it_and_when(
         stamp = scenario["generation"]
         assert stamp["epoch"] == 1 and stamp["finished_at"] == scenario["created_at"]
         assert stamp["started_at"] is not None and stamp["started_at"] <= stamp["finished_at"]
+
+
+def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_thread(
+    chat: FakeChatModel, sent: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scenario saved meanwhile is seen and two saves of one batch never race: each save reads the held
+    scenarios itself, one after the other, on the job's thread."""
+    read = scenarios.list_scenarios_for_duplicate_check
+    threads: list[int] = []
+
+    def recorded(*args: Any) -> Any:
+        threads.append(threading.get_ident())
+        return read(*args)
+
+    monkeypatch.setattr(scenarios, "list_scenarios_for_duplicate_check", recorded)
+    record_id = _queued_run(["Threat 1", "Threat 2", "Threat 3", "Threat 4"])
+    assert _deliver_until_done(record_id) == 1
+    assert threads == [threading.get_ident()] * 4
+
+
+def test_a_run_deleted_after_its_claim_ends_as_stopped_by_its_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run deleted between the claim and the job's read is a normal stop, never logged as a failure."""
+    record_id = _queued_run(["Threat 1"])
+    monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, PUBLISHED.append)
+
+    def deleted_then_written(lease: JobLease) -> None:
+        _sessions().delete_one({"_id": record_id})
+        writing.write_batch(lease)
+
+    task = SimpleNamespace(name=TaskName.WRITE_SCENARIOS, request=SimpleNamespace(id="d1"))
+    with capture_logs() as logs, pytest.raises(Ignore):
+        jobs.run_leased_job(task, Collection.SESSIONS, record_id, 1, deleted_then_written)  # type: ignore[arg-type]
+    events = [entry["event"] for entry in logs]
+    assert LogEvent.JOB_STOPPED_BY_OWNER in events and LogEvent.JOB_FAILED not in events

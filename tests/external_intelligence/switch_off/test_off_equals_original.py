@@ -21,6 +21,7 @@ from app.data_access.remediation import repository as remediation
 from app.data_access.scenario import repository as scenario_repository
 from app.domain.scenario.plan import planned_threat_record
 from app.domain.scenario.write import WRITER_PROMPT_VERSION
+from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 from app.worker import lifecycle
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence import intel_access as access_module
@@ -97,6 +98,7 @@ def test_the_master_switch_off_decides_the_original_style_before_any_read(
     original style and never searches (EvidenceAtWrite is only ever called for an evidence-story batch)."""
     monkeypatch.setattr(access_module, "intel_feeds", Untouched())
     access = IntelAccess(finder=Untouched, is_stale=Untouched)  # type: ignore[arg-type]
+    access.install(lambda: ExternalIntelligenceSwitch(Untouched()), Untouched)  # type: ignore[arg-type]
     assert access.is_on() is False
 
 
@@ -183,11 +185,3 @@ def test_the_worker_warm_up_does_nothing_while_off(monkeypatch: pytest.MonkeyPat
 def test_a_planned_threat_carries_no_evidence_key_until_it_was_searched() -> None:
     record = planned_threat_record(planned("lib:1", "Threat 1"))
     assert "evidence" not in record and "intel_search" not in record
-
-
-def test_a_switch_that_cannot_be_read_counts_as_off(intel: Intel) -> None:
-    def broken() -> Any:
-        raise OSError("the store is down")
-
-    intel.switch.state = broken  # type: ignore[method-assign]
-    assert intel.access.is_on() is False

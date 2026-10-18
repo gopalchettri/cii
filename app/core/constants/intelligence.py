@@ -102,7 +102,6 @@ class IntelWorkEvent(StrEnum):
     REFRESH_SKIPPED = "external_intelligence.refresh_skipped"
     REFRESH_JOB_FAILED = "external_intelligence.refresh_job_failed"
     RUNTIME_MISSING = "external_intelligence.runtime_missing"
-    SWITCH_UNREADABLE = "external_intelligence.switch_unreadable"
 
 
 class IntelUrl:

@@ -471,7 +471,7 @@ def test_the_counts_read_the_run_counts_index_only_and_skip_a_replaced_pending_v
 
 
 def test_the_duplicate_read_of_an_assets_other_runs_examines_that_asset_only() -> None:
-    """G268: once per write delivery, never a walk over the entity's whole register."""
+    """Once per duplicate check, never a walk over the entity's whole register."""
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
     asset = int(uuid.uuid4().hex[:12], 16)
     for number in range(20):

@@ -33,7 +33,7 @@ class MemorySwitch:
     def state(self) -> SwitchState:
         return SwitchState(self.env, self.runtime)
 
-    def is_enabled(self) -> bool:
+    def is_on(self, sure: bool = False) -> bool:
         return self.env and self.runtime
 
     def change_runtime_flag(self, enabled: bool, changed_by: str) -> SwitchState:
@@ -184,7 +184,7 @@ def test_a_refresh_is_refused_while_the_master_switch_is_off(
     client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
-    api.switch.env = False  # the real switch reads the env master once, at start-up
+    api.switch.env = False  # this fake reads no settings
     assert client.post(f"{URL}/refresh", headers=ADMIN).status_code == 409
     assert api.sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 0
 

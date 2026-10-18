@@ -81,7 +81,7 @@ def _audit(action: AuditAction) -> list[dict[str, Any]]:
 
 def _admin(monkeypatch: pytest.MonkeyPatch, *, env: bool, switch=None, purger=None, feeds=None):
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", env)
-    switch = switch or ExternalIntelligenceSwitch(Flags(), env)
+    switch = switch or ExternalIntelligenceSwitch(Flags())
     refreshes = Refreshes()
     admin = IntelAdmin(
         switch, Untouched(), refreshes, get_settings(), purger or Untouched(), feeds or Untouched()
@@ -119,7 +119,7 @@ def test_one_put_writes_exactly_one_audit_row_and_one_log_line(monkeypatch: pyte
 def test_with_the_master_switch_off_the_switch_answers_without_touching_the_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    admin, _ = _admin(monkeypatch, env=False, switch=ExternalIntelligenceSwitch(Untouched(), False))
+    admin, _ = _admin(monkeypatch, env=False, switch=ExternalIntelligenceSwitch(Untouched()))
     state = admin.read_switch()
     assert (state["env_enabled"], state["effective"]) == (False, False)
     with pytest.raises(Conflict):
