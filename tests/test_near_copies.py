@@ -1,5 +1,5 @@
-"""A duplicate is caught before a save: the same threat as the same kind on the same systems, or the very
-same words.
+"""A duplicate is caught before a save: the same threat (key or name) as the same kind on the same systems,
+or the very same words.
 Another kind, other systems or another threat told in other words is kept."""
 
 from typing import Any
@@ -57,3 +57,14 @@ def test_a_hand_written_scenario_of_the_same_live_threat_is_its_threat_and_a_pen
     assert duplicate_of(_content(), "p1", [], _held(hand_written)) is not None
     pending = hand_written | {"threat": {"library_id": 1, "library_status": "pending"}}
     assert duplicate_of(_content(), "p1", [], _held(pending)) is None
+
+
+def test_the_same_threat_name_is_the_same_threat_whatever_its_key() -> None:
+    """An AI threat later approved into the library keeps its "ai:" key on old scenarios: its name matches."""
+    accepted_ai = _content("Told first.") | {"threat": {"key": "ai:x", "name": "Firmware tampering"}}
+    library = _content("Told again.") | {"threat": {"key": "lib:9", "name": "T0839 firmware  TAMPERING"}}
+    assert duplicate_of(library, "p1", [], _held(accepted_ai)) is not None
+    pending = {"name": "Firmware tampering", "library_id": 3, "library_status": "pending"}
+    assert duplicate_of(library, "p1", [], _held(_content("Hand written.") | {"threat": pending})) is not None
+    other = _content("Other words.") | {"threat": {"key": "lib:9", "name": "Spoofed commands"}}
+    assert duplicate_of(other, "p1", [], _held(accepted_ai)) is None

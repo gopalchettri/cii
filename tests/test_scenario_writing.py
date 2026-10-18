@@ -30,6 +30,7 @@ from app.core.constants import (
     RunKind,
     ScenarioStatus,
     ValidationStatus,
+    WriterStyle,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
@@ -270,7 +271,8 @@ def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_js
     assert CHAT_TEMPERATURES[AiTask.PLAN_CHECK] == 0.0
 
 
-def test_a_made_up_label_or_advisory_id_blocks_and_one_the_brief_supplied_does_not() -> None:
+def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does() -> None:
+    """A label the brief gives is supplied; an advisory id from the asset's own facts blocks while off."""
     brief = _brief_of(_plan_threat())
     assert check_exact_rules(_CLEAN, brief) == ()
     made_up = dataclasses.replace(_CLEAN, statement=_CLEAN.statement + " SYS7 and CVE-2025-0001 help.")
@@ -278,15 +280,16 @@ def test_a_made_up_label_or_advisory_id_blocks_and_one_the_brief_supplied_does_n
         FindingCode.UNKNOWN_ID,
         FindingCode.UNCITED_ADVISORY_ID,
     ]
-    system = brief.systems[0] | {
-        "name": "MicroSCADA Pro SYS600",
-        "past_incidents": "CVE-2024-1234 was exploited",
-    }
-    supplied = dataclasses.replace(brief, systems=(system,))
+    system = brief.systems[0] | {"name": "MicroSCADA Pro SYS600"}
+    asset = brief.asset | {"description": "Patched against CVE-2024-1234 last spring."}
+    supplied = dataclasses.replace(brief, systems=(system,), asset=asset)
     told = dataclasses.replace(
         _CLEAN, statement="A cybercriminal could use CVE-2024-1234 on the MicroSCADA Pro SYS600."
     )
-    assert check_exact_rules(told, supplied) == ()
+    (advisory,) = check_exact_rules(told, supplied)
+    assert advisory.code == FindingCode.UNCITED_ADVISORY_ID and "CVE-2024-1234" in advisory.message
+    story = dataclasses.replace(supplied, style=WriterStyle.EVIDENCE_STORY)
+    assert check_exact_rules(told, story) == ()
 
 
 def _plan_checked(*answers: Any) -> tuple[PlanCheck, tuple[Finding, ...]]:

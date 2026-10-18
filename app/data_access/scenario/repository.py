@@ -55,6 +55,7 @@ _DUPLICATE_CHECK_FIELDS = (
     "decision",
     "content.statement",
     "content.threat.key",
+    "content.threat.name",
     "content.threat.library_id",
     "content.threat.library_status",
     "content.category",

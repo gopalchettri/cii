@@ -544,17 +544,18 @@ _ECHO_SANITISER = UntrustedTextSanitiser(ECHO_PATTERNS, (), ())
 
 
 def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding, ...]:
-    """Every exact finding in the texts the card serves: made-up labels and advisory ids, unknown markers and
-    instructions echoed from untrusted evidence."""
+    """Every exact finding in the texts the card serves: made-up labels, advisory ids the brief did not give
+    (any while intelligence is off), unknown markers and instructions echoed from untrusted evidence."""
     reasons = (reason for _, reason in draft.system_reasons)
     text = "\n".join(
         (draft.title, draft.statement, draft.risk, *draft.assumptions, draft.why_applies, *reasons)
     )
     given = _brief_text(brief).casefold()  # a label or number the brief gives was supplied, not made up
+    advisory_given = given if brief.style is WriterStyle.EVIDENCE_STORY else ""
     findings = []
     if labels := _unsupplied(_INTERNAL_LABEL, text, given):
         findings.append(Finding(FindingCode.UNKNOWN_ID, FindingMessage.UNKNOWN_ID.format(labels=labels)))
-    if advisories := _unsupplied(_ADVISORY_ID, text, given):
+    if advisories := _unsupplied(_ADVISORY_ID, text, advisory_given):
         message = FindingMessage.UNCITED_ADVISORY_ID.format(ids=advisories)
         findings.append(Finding(FindingCode.UNCITED_ADVISORY_ID, message))
     count = len(brief.evidence) if brief.style is WriterStyle.EVIDENCE_STORY else 0
@@ -1021,7 +1022,7 @@ def duplicate_of(
 ) -> Finding | None:
     """The finding when `content`, a new scenario of `path_id`, tells the same threat as the same kind on the
     same systems, or in the very same words, as one of its run's other paths' (`run_finished`) or one of its
-    asset's other runs' (`elsewhere`); else None."""
+    asset's other runs' (`elsewhere`, hand-written ones included); else None."""
     own_run = (item for item in run_finished if item.get("path_id") != path_id)
     for other in (*own_run, *elsewhere):
         if _same_path(content, other["content"]) or _same_words(content, other["content"]):
@@ -1032,11 +1033,10 @@ def duplicate_of(
 
 
 def _same_path(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
-    """The same threat written as the same kind on the same systems."""
-    threat = _threat_key(mine)
+    """The same threat (same key or same name) written as the same kind on the same systems."""
+    key, name = _threat_key(mine), _threat_name(mine)
     return (
-        threat is not None
-        and threat == _threat_key(theirs)
+        ((key is not None and key == _threat_key(theirs)) or (bool(name) and name == _threat_name(theirs)))
         and mine.get("category") == theirs.get("category")
         and _system_ids(mine) == _system_ids(theirs)
     )
@@ -1055,6 +1055,11 @@ def _threat_key(content: dict[str, Any]) -> str | None:
         return threat["key"]
     library_id, status = threat.get("library_id"), threat.get("library_status")
     return f"lib:{library_id}" if library_id is not None and status in (None, LibraryStatus.ACTIVE) else None
+
+
+def _threat_name(content: dict[str, Any]) -> str:
+    """The threat's name as names are matched: library code left out, normalised ('' when it has none)."""
+    return name_match_key(threat_name_without_code((content.get("threat") or {}).get("name") or ""))
 
 
 def _system_ids(content: dict[str, Any]) -> set[Any]:
