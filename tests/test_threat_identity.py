@@ -9,7 +9,7 @@ import pytest
 from app.core.constants import ConflictReason, LibraryRowKind, LibraryStatus, StrideCategory
 from app.core.exceptions import Invalid
 from app.domain.remediation.threat_identity import resolve_threat
-from app.models.library import (
+from app.models.library.library import (
     LibraryActor,
     LibraryThreat,
     LibraryThreatType,
@@ -17,7 +17,7 @@ from app.models.library import (
     RejectedLibraryThreat,
     ThreatLibrary,
 )
-from app.models.remediation_requests import ManualScenario
+from app.models.remediation.requests import ManualScenario
 
 CREW = LibraryActor(3, "Organised crime group")
 TAMPERING, ELEVATION = StrideCategory.TAMPERING, StrideCategory.ELEVATION_OF_PRIVILEGE

@@ -56,14 +56,3 @@ class WorkerHeartbeat:
                 log.warning(LogEvent.WORKER_HEARTBEAT_FAILED, exc_info=True)
             if self._stopped.wait(Worker.HEARTBEAT_SECONDS):
                 return
-
-
-def count_online_workers(queues: Iterable[str]) -> dict[str, int]:
-    """Worker pods per queue whose last heartbeat is recent enough; one Redis round trip."""
-    names = list(queues)
-    since = time.time() - Worker.ONLINE_WITHIN_SECONDS
-    with get_redis_client().pipeline(transaction=False) as pipe:
-        for queue in names:
-            pipe.zcount(Worker.HEARTBEAT_KEY.format(queue=queue), since, "+inf")
-        counts = pipe.execute()
-    return dict(zip(names, counts, strict=True))

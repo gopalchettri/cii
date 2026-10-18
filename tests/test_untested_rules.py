@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import container
 from app.core.constants import (
     AiTask,
     ConflictReason,
@@ -24,11 +25,9 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import Unavailable
-from app.data_access.jobs.repository import JobRepository
-from app.data_access.scenario.repository import scenarios
+from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import check_exact_rules, scenario_id
 from app.domain.shared.ask_ai import answers_for_asked_slots
-from app.worker.tasks import writing
 from tests.external_intelligence.evidence.test_evidence_finder import finder_of, one, refs
 from tests.external_intelligence.evidence_fakes import ScoredBy, request_of, technique_doc
 from tests.test_run_actions import (  # noqa: F401 — api_key and queued are fixtures, used by name
@@ -41,7 +40,7 @@ from tests.test_run_actions import (  # noqa: F401 — api_key and queued are fi
     queued,
 )
 from tests.test_scenario_writing import _CLEAN, _brief_of, _plan_checked, _plan_threat, _stored
-from tests.test_writing_job import chat, sent  # noqa: F401 — fixtures by name
+from tests.test_writing_job import _write_batch, chat, sent  # noqa: F401 — fixtures by name
 
 _MADE_UP = "THR7 GHSA-4f8r-qwrm-9x2c MS17-010 VU#123456 ICSMA-23-334-01"
 _ADVISORIES = ("GHSA-4f8r-qwrm-9x2c", "MS17-010", "VU#123456", "ICSMA-23-334-01")
@@ -79,7 +78,7 @@ def test_a_score_equal_to_the_threshold_is_kept() -> None:
 
 def test_another_runs_rejected_scenario_of_the_same_asset_is_not_offered_as_a_copy() -> None:
     """Only versions a reviewer accepted or has still to decide are held against a new scenario."""
-    session_id = f"run-{uuid.uuid4().hex}"
+    session_id, scenarios = f"run-{uuid.uuid4().hex}", container.get_threat_scenario_repository()
     scenarios.create_indexes()
     asset = int(uuid.uuid4().hex[:12], 16)
     rejected = _stored(f"rejected-{session_id}", "p1", asset_id=asset, decision=Decision.REJECTED)
@@ -141,7 +140,7 @@ def test_a_regenerate_the_ai_is_down_for_on_its_last_try_keeps_the_old_version_a
     _sessions().update_one({"_id": record_id}, {"$set": {"job.attempts": Lease.MAX_ATTEMPTS - 1}})
     lease = JobRepository(_sessions()).claim_job(record_id, 2, TaskName.WRITE_SCENARIOS, "last")
     assert lease is not None and lease.attempts == Lease.MAX_ATTEMPTS
-    writing.write_batch(lease)
+    _write_batch(lease)
     old = _scenarios().find_one({"_id": first})
     assert old["superseded_by"] is None and old["regenerate_error"]["code"] == ErrorCode.UNAVAILABLE
     assert _scenarios().count_documents({"session_id": record_id}) == 1

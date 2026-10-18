@@ -1,26 +1,24 @@
 """The endpoints of external intelligence: no key on any of them, validation, the switch, a refresh
-queued one at a time, and the health report with the evidence settings. The switch, the health reporter
-and the feed store are group B's and A's: fakes with their documented signatures stand in; the job queue
-is faked too."""
+queued one at a time, and the health report with the evidence settings. The switch and the intelligence
+stores are fakes with their documented signatures; the job queue is faked too."""
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.routers import external_intelligence as router_module
-from app.core.config import get_settings
-from app.core.constants import Collection, IntelSource, TaskName
+from app import container
+from app.core.config import Settings, get_settings
+from app.core.constants import Collection, FeedStatus, IntelSource, TaskName
 from app.core.database import get_mongodb
-from app.data_access.admin.repository import admin_jobs
-from app.models.external_intelligence.source_health import HealthReport
+from app.models.external_intelligence.source_health import SourceHealth
 from app.models.external_intelligence.switch_state import SwitchState
-from app.services.external_intelligence import intel_refreshes
-from app.services.external_intelligence.intel_admin import IntelAdmin
-from app.services.external_intelligence.intel_refreshes import IntelRefreshes
+from app.services.external_intelligence.external_intelligence_service import ExternalIntelligenceService
 from tests.conftest import ADMIN
+from tests.external_intelligence.evidence_fakes import MemoryKeeper
+from tests.external_intelligence.fakes import intelligence_service
 
 URL = "/v1/tsg/intel"
 KEEP = "a" * 40
@@ -36,69 +34,84 @@ class MemorySwitch:
     def is_on(self, sure: bool = False) -> bool:
         return self.env and self.runtime
 
-    def change_runtime_flag(self, enabled: bool, changed_by: str) -> SwitchState:
+    def save(self, enabled: bool, changed_by: str) -> SwitchState:
         self.runtime = enabled
         return SwitchState(self.env, enabled, None, changed_by)
 
 
-class Reporter:
-    def __init__(self, switch: MemorySwitch) -> None:
-        self.switch, self.reads = switch, 0
-
-    def describe_health(self, now: datetime) -> HealthReport:
-        self.reads += 1
-        return HealthReport(self.switch.state(), "snap-1", (), False)
-
-
 class Feeds:
+    """One fresh source in the health report; NVD revoked."""
+
     def __init__(self) -> None:
         self.approved: list[IntelSource] = []
+        self.reads = 0
 
     def count(self, **where: Any) -> int:
         source = where["_id"]
         return int(source != IntelSource.NIST_NVD or source in self.approved)  # NVD is revoked in these tests
 
+    def list(self, fields: Any = None, **where: Any) -> list[dict[str, Any]]:
+        self.reads += 1
+        now = datetime.now(UTC)
+        if where.get("approved"):
+            return [{"_id": IntelSource.CISA_KEV}]
+        fresh = SourceHealth(IntelSource.CISA_KEV, FeedStatus.OK, "c", "v", 5, now, now).as_doc()
+        return [fresh | {"_id": IntelSource.CISA_KEV}]
+
     def update_intel_feed_approval(self, source: IntelSource, approved: bool, *, create: bool = True) -> None:
-        self.approved.append(source)
+        if approved:
+            self.approved.append(source)
 
 
-class Purger:
+class Snapshots:
+    def get(self, fields: Any = None, **where: Any) -> dict[str, Any]:
+        return {"snapshot_id": "snap-1"}
+
+
+class Records:
     def __init__(self) -> None:
-        self.revoked: list[IntelSource] = []
+        self.purged: list[IntelSource] = []
 
-    def revoke_and_purge(self, source: IntelSource) -> int:
-        self.revoked.append(source)
+    def delete(self, **where: Any) -> int:
+        self.purged.append(where["source"])
         return 7
 
-    def purge_existing_only(self, source: IntelSource) -> int:  # the master switch is off
-        self.revoked.append(source)
-        return 7
+
+class Vectors:
+    def delete_vectors_used_only_by(self, source: IntelSource) -> int:
+        return 0
 
 
 class Api:
     def __init__(self) -> None:
         self.switch, self.sent = MemorySwitch(), []
-        self.reporter, self.purger = Reporter(self.switch), Purger()
-        self.feeds = Feeds()
-        self.refreshes = IntelRefreshes(admin_jobs, self.feeds, self.switch)  # type: ignore[arg-type]
-        self.admin = IntelAdmin(  # type: ignore[arg-type]
-            self.switch, self.reporter, self.refreshes, get_settings(), self.purger, self.feeds
+        self.feeds, self.records = Feeds(), Records()
+        self.service = self.build(get_settings())
+
+    def build(self, settings: Settings) -> ExternalIntelligenceService:
+        """The service over these fakes, the real admin jobs and audit, with `settings`."""
+        return intelligence_service(
+            settings=settings,
+            switch=self.switch,
+            feeds=self.feeds,
+            records=self.records,
+            snapshots=Snapshots(),
+            vectors=Vectors(),
+            index_keeper=MemoryKeeper(),
+            send_admin_job=self.send,
         )
+
+    def send(self, task: str, job_id: str) -> bool:
+        self.sent.append((task, job_id))
+        return True
 
 
 @pytest.fixture
 def api(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[Api]:
     get_mongodb()[Collection.ADMIN_JOBS].delete_many({})
     built = Api()
-
-    def send(task: str, job_id: str) -> bool:
-        built.sent.append((task, job_id))
-        return True
-
-    monkeypatch.setattr(intel_refreshes, "send_admin_job", send)
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    client.app.dependency_overrides[router_module.get_intel_admin] = lambda: built.admin
-    client.app.dependency_overrides[router_module.get_intel_refreshes] = lambda: built.refreshes
+    client.app.dependency_overrides[container.get_external_intelligence_service] = lambda: built.service
     yield built
     client.app.dependency_overrides.clear()
 
@@ -131,9 +144,7 @@ def test_the_switch_is_read_and_changed_and_the_change_is_audited(client: TestCl
     assert (
         off.status_code == 200 and off.json()["runtime_enabled"] is False and off.json()["effective"] is False
     )
-    assert (
-        api.sent == []
-    )  # turning it off queues nothing (the audit row is the switch's: test_switch_admin.py)
+    assert api.sent == []  # turning it off queues nothing (its audit row: test_switch_admin.py)
 
 
 @pytest.mark.parametrize("body", [{}, {"enabled": "yes"}, {"enabled": 1}, {"enabled": True, "extra": 1}])
@@ -208,7 +219,7 @@ def test_an_approval_with_the_runtime_switch_off_queues_nothing(client: TestClie
 
 
 def test_a_job_of_another_kind_is_not_found_here(client: TestClient, api: Api) -> None:
-    admin_jobs.create(
+    container.get_admin_job_repository().create(
         {
             "active": True,
             "_id": "emb-1",
@@ -233,7 +244,7 @@ def test_health_shows_the_evidence_settings_and_whether_they_were_calibrated(
     assert health["evidence"]["threshold_calibrated"] is True
     assert health["pending_sources"] == [] and health["no_data"] is False and health["stale"] is False
     uat = get_settings().model_copy(update={"rerank_model": "litellm_proxy/qwen3-reranker-8b-mig"})
-    api.admin = IntelAdmin(api.switch, api.reporter, api.refreshes, uat, api.purger, api.feeds)  # type: ignore[arg-type]
+    api.service = api.build(uat)
     shown = client.get(f"{URL}/health", headers=ADMIN).json()["evidence"]
     assert (shown["rerank_model"], shown["threshold_calibrated"]) == ("qwen3-reranker-8b-mig", False)
     assert shown["threshold_calibrated_on"] is None
@@ -244,9 +255,9 @@ def test_health_with_the_master_switch_off_reads_no_store(
 ) -> None:
     off = get_settings().model_copy(update={"external_intelligence_enabled": False})
     api.switch.env = False
-    api.admin = IntelAdmin(api.switch, api.reporter, api.refreshes, off, api.purger, api.feeds)  # type: ignore[arg-type]
+    api.service = api.build(off)
     health = client.get(f"{URL}/health", headers=ADMIN).json()
-    assert health["sources"] == [] and health["snapshot_id"] is None and api.reporter.reads == 0
+    assert health["sources"] == [] and health["snapshot_id"] is None and api.feeds.reads == 0
     assert health["switch"]["effective"] is False
 
 
@@ -256,7 +267,7 @@ def test_a_source_is_revoked_purged_and_audited_whatever_the_switch_says(
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
     revoked = client.post(f"{URL}/sources/nist_nvd/revoke", headers=ADMIN | {"X-User-Id": "op-3"})
     assert revoked.status_code == 200 and revoked.json() == {"source": "nist_nvd", "records_purged": 7}
-    assert api.purger.revoked == [IntelSource.NIST_NVD]
+    assert api.records.purged == [IntelSource.NIST_NVD]
     row = _audit("external_intelligence.source_revoked")[-1]
     assert row["actor"]["user_id"] == "op-3" and row["target"]["id"] == "nist_nvd"
     assert client.post(f"{URL}/sources/not_a_source/revoke", headers=ADMIN).status_code == 422

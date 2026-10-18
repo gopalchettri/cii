@@ -26,8 +26,8 @@ from app.domain.scenario.plan import (
 )
 from app.domain.shared.names import replace_codes_with_names
 from app.domain.shared.parallel import run_in_parallel
-from app.models.asset_context import FrozenContext
-from app.models.library import LibraryActor, ThreatLibrary
+from app.models.library.library import LibraryActor, ThreatLibrary
+from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.plan import ActorPick, PlannedActor, PlannedThreat, Verdict
 from app.search.service import LibrarySearch
 from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in, truncated

@@ -164,9 +164,11 @@ def test_an_advisory_id_in_the_prose_is_blocked_with_no_reviewer_call(ident: str
     chat = _chat_answering([draft_answer(leaky)], [])
     written = write_scenario(chat, _story_brief(TECHNIQUE))
     assert [finding.code for finding in written.findings] == [FindingCode.UNCITED_ADVISORY_ID]
-    assert is_blocked(written) and not is_final(written) and [task for task, _ in chat.calls] == [
-        AiTask.WRITE_SCENARIO
-    ]
+    assert (
+        is_blocked(written)
+        and not is_final(written)
+        and [task for task, _ in chat.calls] == [AiTask.WRITE_SCENARIO]
+    )
 
 
 def test_a_marker_naming_no_entry_blocks_and_with_intelligence_off_any_marker_does() -> None:

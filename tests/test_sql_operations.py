@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from app import container
 from app.core.constants import (
     AuditAction,
     Collection,
@@ -27,11 +28,14 @@ from app.core.constants import (
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Conflict, OutcomeUnknown, Unavailable
-from app.data_access.library.repository import SqlServerRepository
-from app.models.library import ThreatLibrary, ThreatProposal
-from app.models.library_curation import LibraryDecisions
-from app.services.library_curation import LibraryCuration, LibraryPromotion
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.models.library.curation import LibraryDecisions
+from app.models.library.library import ThreatLibrary, ThreatProposal
+from app.services.library.threat_library_service import ThreatLibraryService
+from app.worker.remediation.plan_inputs import _propose_manual_threat
 from tests.plan_job_fakes import fake_plan_inputs
+from tests.service_builders import threat_scenario_service
 from tests.sql_fakes import AnswerLostClient
 
 #: Deletes every row these tests made: the SQL test database is shared by the whole run, and later tests count
@@ -105,6 +109,11 @@ def _audit_rows(action: AuditAction, **where: Any) -> int:
     return get_mongodb()[Collection.AUDIT].count_documents({"action": action, **where})
 
 
+def _threats(procedures: Any) -> ThreatRepository:
+    """The real threat repository on `procedures`, with its operation records."""
+    return ThreatRepository(procedures, SqlOperationRepository(procedures))
+
+
 def _proposal(threat_name: str) -> ThreatProposal:
     return ThreatProposal("Tampering", _name("type"), threat_name, LibrarySource.AI, "user-1", ())
 
@@ -114,7 +123,7 @@ def test_the_plan_jobs_lost_proposal_is_replayed_once_and_audited_once(
 ) -> None:
     lost = AnswerLostClient(StoredProcedureClient(sql_test_engine))
     inputs, _ = fake_plan_inputs()
-    inputs._proposals = SqlServerRepository(lost)  # noqa: SLF001 — the real repository on the lost-answer client
+    inputs._threats = _threats(lost)  # noqa: SLF001 — the real repository on the lost-answer client
     scenario_id, threat_name = uuid.uuid4().hex, _name("threat")
     content = {
         "category": "Tampering",
@@ -122,10 +131,10 @@ def test_the_plan_jobs_lost_proposal_is_replayed_once_and_audited_once(
     }
     by = {"user_id": "user-1", "client_id": "client-1"}
     with pytest.raises(OutcomeUnknown) as raised:
-        inputs._propose(scenario_id, content, (), by)  # noqa: SLF001
+        _propose_manual_threat(inputs._threats, inputs._audit, scenario_id, content, (), by)  # noqa: SLF001
     assert raised.value.details == {"operation_id": f"propose:{scenario_id}"}
-    replayed = inputs._propose(scenario_id, content, (), by)  # noqa: SLF001 — the job retried
-    again = inputs._propose(scenario_id, content, (), by)  # noqa: SLF001 — and retried once more
+    replayed = _propose_manual_threat(inputs._threats, inputs._audit, scenario_id, content, (), by)  # noqa: SLF001 — the job retried
+    again = _propose_manual_threat(inputs._threats, inputs._audit, scenario_id, content, (), by)  # noqa: SLF001 — and retried once more
     assert replayed == again and replayed["content.threat.library_status"] == LibraryStatus.PENDING
     assert len(lost.calls) == 2  # the lost call and its replay; the last answer came from the record
     assert _rows_named(sql_test_engine, threat_name) == 1
@@ -138,14 +147,14 @@ def test_a_lost_promotion_is_replayed_with_its_first_parameters(
     sql_test_engine: Engine, client: TestClient
 ) -> None:
     lost = AnswerLostClient(StoredProcedureClient(sql_test_engine))
-    promotion = LibraryPromotion(SimpleNamespace(), SqlServerRepository(lost), lambda: ThreatLibrary((), ()))  # type: ignore[arg-type]
+    promotion = threat_scenario_service(threats=_threats(lost), threat_library=lambda: ThreatLibrary((), ()))
     scenario_id, threat_name = uuid.uuid4().hex, _name("threat")
     threat = {"name": threat_name, "type": {"name": _name("type")}, "category": "Tampering"}
     principal = SimpleNamespace(user_id="user-1")
     with pytest.raises(OutcomeUnknown):
-        promotion._propose(scenario_id, threat, (), principal)  # type: ignore[arg-type]  # noqa: SLF001
+        promotion._propose_threat(scenario_id, threat, (), principal)  # type: ignore[arg-type]  # noqa: SLF001
     other_wording = threat | {"type": {"name": _name("another type")}}
-    promoted = promotion._propose(scenario_id, other_wording, (), principal)  # type: ignore[arg-type]  # noqa: SLF001
+    promoted = promotion._propose_threat(scenario_id, other_wording, (), principal)  # type: ignore[arg-type]  # noqa: SLF001
     assert promoted.outcome == PromotionOutcome.EXISTING and promoted.threat_catalogue_id is not None
     assert lost.calls[0] == lost.calls[1]  # the replay sent the stored parameters, not the new ones
     assert _rows_named(sql_test_engine, threat_name) == 1
@@ -154,15 +163,15 @@ def test_a_lost_promotion_is_replayed_with_its_first_parameters(
 def test_lost_decisions_are_replayed_once_and_audited_once(
     sql_test_engine: Engine, client: TestClient
 ) -> None:
-    sql = SqlServerRepository(StoredProcedureClient(sql_test_engine))
+    sql = _threats(StoredProcedureClient(sql_test_engine))
     proposed, _ = sql.propose_threat(f"promote:{uuid.uuid4().hex}", _proposal(_name("threat")))
     lost = AnswerLostClient(StoredProcedureClient(sql_test_engine))
-    curation = LibraryCuration(SqlServerRepository(lost))
+    curation = ThreatLibraryService(_threats(lost), container.get_audit_repository())
     decisions = LibraryDecisions(approve=[proposed.catalogue_id])
     with pytest.raises(OutcomeUnknown):
-        curation.decide(decisions, "curator-1")
-    (replayed,) = curation.decide(decisions, "curator-1")["results"]
-    assert curation.decide(decisions, "curator-1")["results"] == [replayed]
+        curation.decide_pending_library_threats(decisions, "curator-1")
+    (replayed,) = curation.decide_pending_library_threats(decisions, "curator-1")["results"]
+    assert curation.decide_pending_library_threats(decisions, "curator-1")["results"] == [replayed]
     assert replayed == {"catalogue_id": proposed.catalogue_id, "outcome": "already_approved"}
     assert len(lost.calls) == 2
     assert _audit_rows(AuditAction.LIBRARY_DECIDED, **{"target.id": str(proposed.catalogue_id)}) == 1
@@ -171,7 +180,7 @@ def test_lost_decisions_are_replayed_once_and_audited_once(
 def test_a_curator_rejected_name_is_answered_curator_rejected_and_never_written_again(
     sql_test_engine: Engine, client: TestClient
 ) -> None:
-    sql = SqlServerRepository(StoredProcedureClient(sql_test_engine))
+    sql = _threats(StoredProcedureClient(sql_test_engine))
     threat_name = _name("threat")
     first, _ = sql.propose_threat(f"promote:{uuid.uuid4().hex}", _proposal(threat_name))
     assert first.outcome == ResolveOutcome.CREATED_PENDING
@@ -183,7 +192,7 @@ def test_a_curator_rejected_name_is_answered_curator_rejected_and_never_written_
 
 def test_a_running_operation_answers_409_and_a_done_one_answers_from_its_record(client: TestClient) -> None:
     calls = AnswerLostClient(SimpleNamespace(execute_procedure=lambda *_a, **_k: [[{"total": 1}]]), lost=0)  # type: ignore[arg-type]
-    sql = SqlServerRepository(calls)  # type: ignore[arg-type]
+    sql = SqlOperationRepository(calls)  # type: ignore[arg-type]
     operation_id = f"decide:{uuid.uuid4().hex}"
     get_mongodb()[Collection.SQL_OPERATIONS].insert_one(
         {

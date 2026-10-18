@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
+from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     ActionStatus,
@@ -36,24 +37,16 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import LeaseLost, NotFound
-from app.data_access.jobs.repository import (
+from app.data_access.jobs.job_repository import (
     JobRepository,
     failed_job_fields,
 )
-from app.data_access.scenario.repository import (
-    JobControlRepository,
-    scenario_sessions,
-    session_status_from_record,
-)
 from app.domain.scenario.review import why_ids_cannot_be_regenerated
 from app.domain.scenario.write import _newest_within, scenario_id
-from app.models.api_clients import Principal
-from app.models.scenario.views import ScenarioIdsRequest, SessionStatus
-from app.services.api_clients import get_api_client_service
-from app.services.scenario import runs as runs_module
-from app.services.scenario.runs import get_run_actions
-from app.worker import path_writing
-from app.worker.tasks import writing
+from app.models.admin.api_clients import Principal
+from app.models.scenario.views import ScenarioIdsRequest, SessionStatus, session_status_from_record
+from app.worker.scenario import path_writing
+from tests.service_builders import threat_scenario_service
 from tests.test_writing_job import _answer_for, _queued_run, chat, sent  # noqa: F401 — fixtures by name
 
 THREATS = [f"Threat {number}" for number in range(1, 9)]  # 8 paths: a batch of 6, then 2
@@ -61,17 +54,21 @@ THREATS = [f"Threat {number}" for number in range(1, 9)]  # 8 paths: a batch of 
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"actions-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"actions-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
 @pytest.fixture
-def queued(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[Any, ...]]]:
+def queued(client: TestClient) -> Iterator[list[tuple[Any, ...]]]:
     """The jobs the API sends."""
     messages: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(runs_module, "send_job", lambda *args: messages.append(args))
-    monkeypatch.setattr(runs_module, "publish_session_status", lambda session_id: None)
+    service = threat_scenario_service(
+        send_job=lambda *args: messages.append(args), publish_session_status=lambda session_id: None
+    )
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[container.get_threat_scenario_service] = lambda: service
     yield messages
+    overrides.pop(container.get_threat_scenario_service, None)
 
 
 @pytest.fixture
@@ -102,7 +99,7 @@ def _deliver(record_id: str, epoch: int) -> int:
         )
     ) is not None:
         deliveries += 1
-        writing.write_batch(lease)
+        container.get_scenario_write_job().write_scenario_batch(lease)
     return deliveries
 
 
@@ -118,7 +115,7 @@ def _interrupted_run() -> str:
     record_id = _queued_run(THREATS)
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     assert lease is not None
-    writing.write_batch(lease)  # writes 6 and hands the last 2 to itself
+    container.get_scenario_write_job().write_scenario_batch(lease)  # writes 6 and hands the last 2 to itself
     _sessions().update_one(
         {"_id": record_id},
         {"$set": {"status": Status.FAILED, "active": False, "step": Step.SCENARIOS,
@@ -186,7 +183,8 @@ def test_next_set_twice_or_at_once_queues_one_job(
 
     record_id = _interrupted_run()
     run = session_status_from_record(_sessions().find_one({"_id": record_id}))
-    barrier, read = threading.Barrier(2), scenario_sessions.get
+    sessions = container.get_threat_scenario_session_repository()
+    barrier, read = threading.Barrier(2), sessions.get
 
     def read_then_wait(fields: Any = None, **where: Any) -> dict[str, Any] | None:
         found = read(fields, **where)
@@ -194,12 +192,14 @@ def test_next_set_twice_or_at_once_queues_one_job(
             barrier.wait(timeout=10)
         return found
 
-    monkeypatch.setattr(scenario_sessions, "get", read_then_wait)
-    actions, principal, outcomes = get_run_actions(), Principal("client", "u1", 86, "DESC"), []
+    monkeypatch.setattr(sessions, "get", read_then_wait)
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    actions = overrides[container.get_threat_scenario_service]()
+    principal, outcomes = Principal("client", "u1", 86, "DESC"), []
 
     def click() -> None:
         try:
-            outcomes.append(actions.next_set(principal, run).epoch)
+            outcomes.append(actions.write_next_threat_scenario_set(principal, run).epoch)
         except Exception as error:  # noqa: BLE001 — the test counts what each click got
             outcomes.append(getattr(error, "reason", error))
 
@@ -451,8 +451,8 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
     replaced = _scenarios().find_one({"_id": first})["content"]["statement"]
     superseded, supersede = threading.Event(), path_writing.supersede_scenario_version
 
-    def supersede_and_tell(old_id: str, new_id: str) -> None:
-        supersede(old_id, new_id)
+    def supersede_and_tell(*args: Any) -> None:
+        supersede(*args)
         superseded.set()
 
     def answer(prompt: str) -> dict[str, Any]:
@@ -607,7 +607,7 @@ def test_a_new_version_that_comes_back_after_its_run_was_cancelled_is_never_save
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
 
     def cancelled_meanwhile(user_prompt: str) -> dict[str, Any]:
-        JobControlRepository(get_mongodb()).cancel_scenario_session(record_id, 86, {"user_id": "u1"})
+        container.get_work_control_repository().cancel_scenario_session(record_id, 86, {"user_id": "u1"})
         return _answer_for(user_prompt)
 
     fake_chat.responders[AiTask.WRITE_SCENARIO] = cancelled_meanwhile
@@ -655,7 +655,9 @@ def test_an_action_on_a_run_deleted_after_its_checks_is_not_found() -> None:
     with pytest.raises(NotFound):
         gone = {"session_id": f"run-{uuid.uuid4().hex}", "entity_id": 86, "asset_id": 103}
         run = SessionStatus(**gone, status=Status.DONE, step=Step.SCENARIOS, updated_at=datetime.now(UTC))
-        get_run_actions().next_set(Principal("client", "u1", 86, "DESC"), run)
+        container.get_threat_scenario_service().write_next_threat_scenario_set(
+            Principal("client", "u1", 86, "DESC"), run
+        )
 
 
 @pytest.mark.parametrize("cancel", [None, "status", "stamp", "controls"])
@@ -664,16 +666,19 @@ def test_a_regenerate_resumes_the_controls_only_after_a_cancel(
 ) -> None:
     """The controls are resumed only when the run shows a cancel (its status, its stamp or cancelled
     controls). Before, every regenerate spent an update and a read resuming nothing."""
-    for name in ("send_job", "publish_session_status"):
-        monkeypatch.setattr(runs_module, name, lambda *args, **kwargs: None)
-    monkeypatch.setattr(runs_module.audit_records, "create_audit_record", lambda *args, **kwargs: None)
     resumed: list[str] = []
-    controls = SimpleNamespace(
+    work_control = SimpleNamespace(
         resume_scenario_controls=lambda session_id, cancelled_at: resumed.append(session_id) or 0
     )
-    sessions = SimpleNamespace(update_scenario_session_job=lambda *args: None)
+    actions = threat_scenario_service(
+        sessions=SimpleNamespace(update_scenario_session_job=lambda *args: None),
+        work_control=work_control,
+        audit=SimpleNamespace(create_audit_record=lambda *args, **kwargs: None),
+        send_job=lambda *args: None,
+        publish_session_status=lambda session_id: None,
+    )
     targets = {"s1": {"path_id": "p1", "status": ScenarioStatus.DONE}}
-    monkeypatch.setattr(runs_module, "list_review_targets", lambda *args: targets)
+    monkeypatch.setattr(actions, "_list_review_targets", lambda *args: targets)
     shown: dict[str, Any] = {
         "status": {"status": Status.CANCELLED},
         "stamp": {"cancelled": {"user_id": "u1"}},
@@ -681,6 +686,6 @@ def test_a_regenerate_resumes_the_controls_only_after_a_cancel(
     }.get(cancel or "", {})
     finished = {"status": Status.DONE, "step": Step.SCENARIOS, "updated_at": datetime.now(UTC)}
     run = SessionStatus(**{"session_id": "run", "entity_id": 86, "asset_id": 103} | finished | shown)
-    actions = runs_module.RunActions(sessions, controls)  # type: ignore[arg-type]
-    actions.regenerate(Principal("client", "u1", 86, "DESC"), run, ScenarioIdsRequest(scenario_ids=["s1"]))
+    request = ScenarioIdsRequest(scenario_ids=["s1"])
+    actions.regenerate_threat_scenarios(Principal("client", "u1", 86, "DESC"), run, request)
     assert resumed == ([] if cancel is None else ["run"])

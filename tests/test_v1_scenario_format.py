@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from app.core.constants import ControlMatch, Decision, RunKind
-from app.services.scenario.results import build_scenario_view
+from app.domain.scenario.results import build_scenario_view
 
 V1_KEYS = [
     "scenario_id", "scenario", "threat", "actors", "controls", "accepted", "replaces_accepted_version",

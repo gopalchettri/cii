@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
+from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
@@ -29,16 +30,16 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.library.repository import SqlServerRepository
-from app.data_access.scenario.repository import scenario_sessions
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.data_access.scenario.asset_repository import AssetRepository
 from app.domain.remediation.manual_records import manual_request_fingerprint
-from app.models.library import LoadedLibraries
-from app.models.remediation_requests import PlanRequest
-from app.services.remediation.manual import ManualPlans, get_manual_plans
-from app.services.remediation.manual_scenarios import ManualScenarios
-from app.worker.tasks import remediation as plan_job
+from app.models.library.library import LoadedLibraries
+from app.models.remediation.requests import PlanRequest
+from app.services.remediation.remediation_plan_service import RemediationPlanService
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
+    RETIRED,
     _deliver,
     _service,
     api_key,
@@ -66,26 +67,39 @@ BODY = {
 }
 
 
+def _manual_service(
+    fakes: dict[str, Any], engine: Engine, controls: tuple[Any, ...]
+) -> RemediationPlanService:
+    """The remediation service on the SQL test database's assets, a library of `controls` and the world's
+    send and publish fakes."""
+    library = SimpleNamespace(
+        check_library_once=lambda: None,
+        get_loaded_libraries=lambda: LoadedLibraries((), THREATS, controls, RETIRED),
+    )
+
+    def send_job(*args: Any) -> None:
+        fakes["sent"].append(args)
+
+    return _service(
+        library=library,
+        assets=AssetRepository(StoredProcedureClient(engine)),
+        send_job=send_job,
+        publish_remediation_status=fakes["published"].append,
+    )
+
+
 @pytest.fixture
 def manual(
     client: TestClient,
     world: dict[str, Any],  # noqa: F811
     sql_test_engine: Engine,
 ) -> Iterator[dict[str, Any]]:
-    """ManualPlans on the SQL test database's asset 103 (entity 86) and the fakes; the plan job's fakes
-    (world: mapper, search, proposals, chat)."""
-    library = SimpleNamespace(
-        check_library_once=lambda: None,
-        get_loaded_libraries=lambda: LoadedLibraries((), THREATS, tuple(CONTROLS.values())),
-    )
-    scenarios = ManualScenarios(
-        SqlServerRepository(StoredProcedureClient(sql_test_engine)),
-        library,  # type: ignore[arg-type]
-    )
-    built = ManualPlans(scenario_sessions, scenarios, _service())
-    client.app.dependency_overrides[get_manual_plans] = lambda: built  # type: ignore[attr-defined]
+    """The remediation service on the SQL test database's asset 103 (entity 86) and the fakes; the plan job's
+    fakes (world: mapper, search, proposals, chat)."""
+    built = _manual_service(world, sql_test_engine, tuple(CONTROLS.values()))
+    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: built  # type: ignore[attr-defined]
     yield world
-    client.app.dependency_overrides.pop(get_manual_plans, None)  # type: ignore[attr-defined]
+    client.app.dependency_overrides.pop(container.get_remediation_plan_service, None)  # type: ignore[attr-defined]
 
 
 def _post(client: TestClient, key: str, body: dict[str, Any], idempotency_key: str | None) -> Any:
@@ -226,9 +240,10 @@ def test_a_parallel_request_with_the_key_and_another_body_is_refused(
     never planned from (or replayed as) the first's scenario."""
     key = uuid.uuid4().hex
     assert _post(client, api_key, BODY, key).status_code == 202
-    real_get = scenario_sessions.get
+    sessions = container.get_threat_scenario_session_repository()
+    real_get = sessions.get
     monkeypatch.setattr(
-        scenario_sessions,
+        sessions,
         "get",
         lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
     )
@@ -324,7 +339,8 @@ def test_a_deleted_runs_key_reused_with_another_wording_proposes_the_new_one(
         return [[row | {"outcome": ResolveOutcome.CREATED_PENDING}]]
 
     procedures = SimpleNamespace(execute_procedure=resolve_threat)
-    monkeypatch.setattr(plan_job.get_plan_inputs(), "_proposals", SqlServerRepository(procedures))  # type: ignore[arg-type]
+    threats = ThreatRepository(procedures, SqlOperationRepository(procedures))  # type: ignore[arg-type]
+    monkeypatch.setattr(manual["inputs"], "_threats", threats)
     key, headers = uuid.uuid4().hex, IDENTITY | {Header.API_KEY: api_key}
     first = _post(client, api_key, _with(threat_name="Logic bomb"), key).json()
     manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
@@ -346,13 +362,8 @@ def test_an_empty_control_library_refuses_a_hand_written_request_before_anything
 ) -> None:
     """409 control_library_empty before the first write, so a retry under the same key once the library is
     back is a first request, never a 409 against an orphaned scenario."""
-    library = SimpleNamespace(
-        check_library_once=lambda: None,
-        get_loaded_libraries=lambda: LoadedLibraries((), THREATS, ()),
-    )
-    scenarios = ManualScenarios(SqlServerRepository(StoredProcedureClient(sql_test_engine)), library)  # type: ignore[arg-type]
-    built = ManualPlans(scenario_sessions, scenarios, _service())
-    client.app.dependency_overrides[get_manual_plans] = lambda: built  # type: ignore[attr-defined]
+    built = _manual_service(manual, sql_test_engine, ())
+    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: built  # type: ignore[attr-defined]
     key = uuid.uuid4().hex
     refused = _post(client, api_key, _with(mapped_controls=None), key)
     assert (refused.status_code, refused.json()["reason"]) == (409, ErrorCode.CONTROL_LIBRARY_EMPTY)

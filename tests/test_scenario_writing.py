@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app import container
 from app.ai import UnreadableAiAnswer
 from app.core.constants import (
     CHAT_TEMPERATURES,
@@ -34,8 +35,9 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
-from app.data_access.scenario.repository import ScenarioRepository, TitleTaken, scenarios
+from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
 from app.domain.scenario.plan import planned_threat_record
+from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
@@ -69,7 +71,6 @@ from app.models.scenario.write import (
     ScenarioDraft,
     WrittenScenario,
 )
-from app.services.scenario.results import build_scenario_view
 from tests.fakes import WHY_APPLIES, FakeChatModel
 from tests.planner_samples import CONTEXT, planned, system_row
 
@@ -384,7 +385,8 @@ def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again()
     assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
 
 
-def _scenarios() -> ScenarioRepository:
+def _scenarios() -> ThreatScenarioRepository:
+    scenarios = container.get_threat_scenario_repository()
     scenarios.create_indexes()
     return scenarios
 
@@ -480,7 +482,7 @@ def test_the_duplicate_read_of_an_assets_other_runs_examines_that_asset_only() -
         )
     scenarios.save_scenario(_stored(f"earlier-{session_id}", "p1", asset_id=asset))
     asked: list[dict[str, Any]] = []
-    spy = ScenarioRepository(SimpleNamespace(find=lambda query, fields, **_: asked.append(query) or []))  # type: ignore[arg-type]
+    spy = ThreatScenarioRepository(SimpleNamespace(find=lambda query, fields, **_: asked.append(query) or []))  # type: ignore[arg-type]
     spy.list_scenarios_for_duplicate_check(86, asset, session_id)
     explained = get_mongodb()[Collection.SCENARIOS].find(asked[0]).explain()
     assert explained["executionStats"]["totalDocsExamined"] == 1

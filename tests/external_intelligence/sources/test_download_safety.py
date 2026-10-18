@@ -10,11 +10,11 @@ import pytest
 
 from app.core.constants import IntelMessage, IntelSource, SourceDownload
 from app.core.exceptions import IntelFetchFailed
-from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
-from app.services.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
-from app.services.external_intelligence.sources.http_download import HttpDownloader
-from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
-from app.services.external_intelligence.sources.nist_nvd_details_source import NvdApiClient
+from app.worker.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
+from app.worker.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
+from app.worker.external_intelligence.sources.http_download import HttpDownloader
+from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
+from app.worker.external_intelligence.sources.nist_nvd_details_source import NvdApiClient
 from tests.external_intelligence.sources import test_cisa_ics_advisories_source as ics_fixtures
 from tests.external_intelligence.sources import test_kev_and_epss_sources as kev_fixtures
 from tests.external_intelligence.sources import test_mitre_attack_source as attack_fixtures

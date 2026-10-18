@@ -1,5 +1,5 @@
-"""scenario_sessions rules: unique-clash mapping, insert-once manual start, guarded new write job, fenced plan
-write with counts newer-wins."""
+"""Scenario session repository rules: unique-clash mapping, insert-once manual start, guarded new write job,
+fenced plan write with counts newer-wins."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -10,7 +10,11 @@ import pytest
 
 from app.core.constants import RunActionKind, RunClash, Status, Step
 from app.core.exceptions import LeaseLost
-from app.data_access.scenario.repository import scenario_sessions, session_status_from_record
+from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
+from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.models.scenario.views import session_status_from_record
+
+scenario_sessions = ThreatScenarioSessionRepository(scenarios=ThreatScenarioRepository())
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +94,7 @@ def test_the_plan_write_is_fenced_and_keeps_a_newer_count(monkeypatch: pytest.Mo
     record["counts"] = {"written": 9}
     scenario_sessions.create(record)
     counted = SimpleNamespace(count_scenarios_of_session=lambda _: {"written": 1})
-    monkeypatch.setattr("app.data_access.scenario.repository.scenarios", counted)
+    monkeypatch.setattr(scenario_sessions, "_scenarios", counted)
     lease = SimpleNamespace(record_id=record["_id"], **job)
     figures = {"planned": 1, "remaining": 0}
     scenario_sessions.update_scenario_session_plan(lease, {"p1": {"served": "s1"}}, figures)  # type: ignore[arg-type]

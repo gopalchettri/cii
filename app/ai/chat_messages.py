@@ -10,7 +10,7 @@ import structlog
 
 from app.core import metrics
 from app.core.constants import AiOutcome, AiTask, LogEvent
-from app.data_access.admin.repository import AiCallRepository
+from app.data_access.admin.ai_call_repository import AiCallRepository
 
 log = structlog.get_logger(__name__)
 

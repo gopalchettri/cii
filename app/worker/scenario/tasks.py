@@ -1,0 +1,56 @@
+"""The scenario tasks: tsg_find_threats, tsg_write_scenarios, tsg_map_controls and tsg_retry_controls, each
+asking the container for its job when it runs."""
+
+import structlog
+from celery import Task
+
+from app.core.constants import Collection, Lease, TaskName
+from app.core.exceptions import TEMPORARY_ERRORS
+from app.data_access.jobs.job_repository import JobLease
+from app.worker.celery_app import celery_app
+from app.worker.jobs import run_leased_job
+
+
+@celery_app.task(name=TaskName.FIND_THREATS, bind=True)
+def find_threats(self: Task, record_id: str, epoch: int) -> None:
+    """Celery task: plan the run; a plan refusal fails it for good, an outage retries the job."""
+    from app import container
+
+    def plan(lease: JobLease) -> None:
+        container.get_plan_job().plan_threat_scenario_session(lease)
+
+    run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan, fields=("context",))
+
+
+@celery_app.task(name=TaskName.WRITE_SCENARIOS, bind=True)
+def write_scenarios(self: Task, record_id: str, epoch: int) -> None:
+    """Celery task: write the run's current batch under the run's job lease."""
+    from app import container
+
+    def write_batch(lease: JobLease) -> None:
+        container.get_scenario_write_job().write_scenario_batch(lease)
+
+    run_leased_job(self, Collection.SESSIONS, record_id, epoch, write_batch)
+
+
+@celery_app.task(name=TaskName.MAP_CONTROLS, bind=True)
+def map_controls(self: Task, record_id: str, epoch: int) -> None:
+    """Celery task: take the run's delivery lease and map its waiting scenarios; an outage retries the
+    message after the back-off."""
+    from app import container
+
+    structlog.contextvars.bind_contextvars(record_id=record_id)  # jobs.run_job binds it; this task skips it
+    try:
+        container.get_controls_job().map_threat_scenario_controls(record_id, self.request.id)
+    except TEMPORARY_ERRORS as exc:
+        delays = Lease.RETRY_DELAYS_SECONDS
+        raise self.retry(countdown=delays[min(self.request.retries, len(delays) - 1)], exc=exc) from exc
+
+
+@celery_app.task(name=TaskName.RETRY_CONTROLS)
+def retry_controls() -> None:
+    """Beat task: requeue stalled mappings, then send one message per run they belong to that no delivery
+    serves."""
+    from app import container
+
+    container.get_controls_job().retry_stalled_controls()

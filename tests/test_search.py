@@ -13,7 +13,13 @@ import pytest
 
 from app.core.constants import ErrorMessage, StrideCategory
 from app.core.exceptions import Unavailable
-from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, ThreatLibrary
+from app.models.library.library import (
+    LibraryActor,
+    LibraryControl,
+    LibraryThreat,
+    LibraryThreatType,
+    ThreatLibrary,
+)
 from app.search.indexes import HybridIndex, KeywordIndex, fuse_by_rank, tokenize
 from app.search.service import LibrarySearch
 from tests.fakes import FakeEmbeddings

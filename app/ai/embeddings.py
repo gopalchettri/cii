@@ -1,5 +1,5 @@
 """Embedding gateway: one L2-normalised vector per text, each text embedded once per model and stored with
-what it is (app/data_access/admin/repository.py): library texts in tsg_embeddings, search queries in
+what it is (app/data_access/admin/): library texts in tsg_embeddings, search queries in
 tsg_query_vectors."""
 
 import contextvars
@@ -17,25 +17,19 @@ import structlog
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
-    apply_proxy_settings,
     build_api_key_header,
     call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.profiles import EMBEDDING_MODEL_PROFILES, find_model_profile
-from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
+from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
 from app.core import metrics
-from app.core.config import get_settings
+from app.core.config import Settings
 from app.core.constants import AiOutcome, AiTask, Cache, EmbeddingCorpus, ErrorMessage, LogEvent
-from app.core.singletons import singleton
-from app.data_access.admin.repository import (
-    LibraryVectorRepository,
-    VectorRepository,
-    library_vectors,
-    query_vectors,
-)
+from app.data_access.admin.embedding_repository import EmbeddingRepository
 from app.data_access.base import Record as Doc
-from app.models.ai import EmbeddingModelProfile
+from app.data_access.base import VectorRepository
+from app.models.ai.profiles import EmbeddingModelProfile
 
 log = structlog.get_logger(__name__)
 
@@ -51,7 +45,7 @@ class EmbeddingNotFinite(UnusableAiAnswer):
 
 class EmbeddingModel:
     """Vectors for library texts and search queries: each text embedded once per model and stored with what
-    it is (app/data_access/admin/repository.py). _EmbeddingProvider makes the calls."""
+    it is (app/data_access/admin/). _EmbeddingProvider makes the calls."""
 
     def __init__(
         self,
@@ -59,7 +53,7 @@ class EmbeddingModel:
         profile: EmbeddingModelProfile,
         base_url: str,
         api_key: str,
-        library: LibraryVectorRepository,
+        library: EmbeddingRepository,
         queries: VectorRepository,
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
@@ -267,17 +261,17 @@ def _embed_batches_in_parallel(
         pool.shutdown(wait=True, cancel_futures=True)
 
 
-@singleton
-def get_embedding_model() -> EmbeddingModel:
-    settings = get_settings()
-    apply_proxy_settings(settings)
+def embedding_model_from(
+    settings: Settings, library: EmbeddingRepository, queries: VectorRepository, slots: AiSlots
+) -> EmbeddingModel:
+    """The embedding model the settings name, with its vector stores and its limiter."""
     return EmbeddingModel(
         settings.embedding_model,
         find_model_profile(EMBEDDING_MODEL_PROFILES, settings.embedding_model),
         settings.embedding_base_url,
         settings.embedding_api_key.get_secret_value(),
-        library_vectors,
-        query_vectors,
+        library,
+        queries,
         settings.ai_key_header,
-        get_ai_slots(),
+        slots,
     )

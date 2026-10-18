@@ -1,7 +1,7 @@
 """The whole suite runs with external intelligence OFF (tests/conftest.py sets
 EXTERNAL_INTELLIGENCE_ENABLED=false), so the app's existing tests exercise the original path. A test of
-the ON path asks for the `intel` fixture: the master switch on, the run-time switch installed, and fakes
-in place of the other groups' finder and refresher."""
+the ON path asks for the `intel` fixture: the master switch on, and the app's own switch, evidence finder
+and feeds answering from fakes, with a fake refresher."""
 
 import json
 from dataclasses import dataclass
@@ -9,17 +9,11 @@ from typing import Any
 
 import pytest
 
+from app import container
 from app.core.config import get_settings
 from app.core.constants import AiTask, IntelSource
-from app.worker.external_intelligence.intel_access import IntelAccess
+from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from tests.external_intelligence.fakes import FakeFinder, FakeRefresher, FakeSwitch
-
-#: Modules that look the access up by name: each is pointed at the test's own.
-_LOOKUPS = (
-    "app.worker.tasks.writing",
-    "app.worker.tasks.scenarios",
-    "app.worker.external_intelligence.refresh_task",
-)
 
 STORY_MARKED = (
     "The SCADA server of Grid Control Centre shows operators where power flows, and the whole control room "
@@ -45,19 +39,23 @@ class Intel:
     finder: FakeFinder
     switch: FakeSwitch
     refresher: FakeRefresher
-    access: IntelAccess
+    feeds: IntelFeedRepository
 
 
 @pytest.fixture
 def intel(monkeypatch: pytest.MonkeyPatch) -> Intel:
+    """The app's own switch, finder and feeds answer from the fakes, so every job built with them (whenever it
+    was built) sees the test's state; the refresher is asked for by the task each time it runs. The app's
+    switch is fetched before the master switch turns on: built now, it keeps the suite's env value."""
     finder, switch, refresher = FakeFinder(), FakeSwitch(), FakeRefresher()
-    access = IntelAccess(finder=lambda: finder, is_stale=lambda _approved: False)  # type: ignore[arg-type]
-    access.install(lambda: switch, lambda: refresher)
-    monkeypatch.setattr(access, "approved_sources", lambda: list(IntelSource))  # a test revokes its own
+    monkeypatch.setattr(container.get_intelligence_switch(), "state", switch.state)
+    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", finder.find_evidence)
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    for module in _LOOKUPS:
-        monkeypatch.setattr(f"{module}.get_intel_access", lambda: access, raising=False)
-    return Intel(finder, switch, refresher, access)
+    feeds = container.get_intel_feed_repository()
+    monkeypatch.setattr(feeds, "list_approved_sources", lambda: list(IntelSource))  # a test revokes its own
+    monkeypatch.setattr(feeds, "list_source_health", list)  # no health rows: never stale
+    monkeypatch.setattr(container, "get_source_refresher", lambda: refresher)
+    return Intel(finder, switch, refresher, feeds)
 
 
 def story_answer(user_prompt: str) -> dict[str, Any]:

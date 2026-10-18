@@ -8,8 +8,8 @@ import pytest
 from app.core.constants import SnapshotWarning
 from app.core.exceptions import Invalid
 from app.domain.remediation.references import resolve_controls
-from app.models.library import LibraryControl
-from app.models.remediation_requests import ControlRef
+from app.models.library.library import LibraryControl
+from app.models.remediation.requests import ControlRef
 
 LIBRARY = (
     LibraryControl(1, "CII-CID-1", "OT", "Integrity", "Firmware integrity verification", "Signed firmware."),

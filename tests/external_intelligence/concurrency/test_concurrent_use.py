@@ -4,14 +4,11 @@ exceeded, a rebuild during searches keeps serving the old index, the switch cons
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
-
-from app.core.config import get_settings
 from app.core.constants import AssetType
+from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import RerankGate
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
-from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 from tests.external_intelligence.evidence_fakes import (
     ALL_SOURCES,
     CountingRerank,
@@ -132,12 +129,9 @@ def test_a_rebuild_during_searches_keeps_serving_whole_indexes_and_swaps_at_once
     finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)
 
 
-def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_left_them(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
+def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_left_them() -> None:
     flags = MemoryFlags()
-    switch = ExternalIntelligenceSwitch(flags)
+    switch = IntelligenceSwitch(flags, env_enabled=lambda: True)  # type: ignore[arg-type]
     stop = threading.Event()
     seen: list[bool] = []
 
@@ -149,8 +143,8 @@ def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_le
     for reader in readers:
         reader.start()
     for flip in range(10):
-        switch.change_runtime_flag(flip % 2 == 0, "admin")
-    switch.change_runtime_flag(False, "admin")
+        switch.save(flip % 2 == 0, "admin")
+    switch.save(False, "admin")
     stop.set()
     for reader in readers:
         reader.join()

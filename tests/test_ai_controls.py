@@ -7,7 +7,7 @@ import pytest
 
 from app.core.constants import Controls
 from app.domain.scenario.controls import ControlMapper, controls_record, is_about_ai
-from app.models.library import LibraryControl
+from app.models.library.library import LibraryControl
 from tests.test_control_mapping import _OT_CONTEXT, _SCENARIO, _ScoresByText, _snapshot
 
 _AI_CONTROL = LibraryControl(

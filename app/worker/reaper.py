@@ -13,7 +13,7 @@ from app.core import metrics
 from app.core.constants import ErrorCode, ErrorMessage, Lease, LogEvent, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, REDIS_UNAVAILABLE_ERRORS
-from app.data_access.jobs.repository import JobRepository
+from app.data_access.jobs.job_repository import JobRepository
 from app.worker.celery_app import BrokerUnavailable, celery_app, count_waiting_messages, queue_of, send_job
 from app.worker.jobs import JOB_COLLECTIONS
 

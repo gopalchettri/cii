@@ -9,27 +9,22 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.ai import get_chat_model, get_embedding_model, get_rerank_model
+from app import container
 from app.api.errors import register_exception_handlers
 from app.api.middleware import AnswerUnexpectedErrors, RequestContextMiddleware
 from app.api.openapi_docs import API_DESCRIPTION, OPENAPI_TAGS
-from app.api.routers.api_clients import router as api_clients_router
-from app.api.routers.embeddings import router as embeddings_router
-from app.api.routers.events import router as events_router
+from app.api.routers import scenario
+from app.api.routers.admin import router as admin_router
 from app.api.routers.external_intelligence import router as external_intelligence_router
 from app.api.routers.health import router as health_router
 from app.api.routers.jobs import router as jobs_router
-from app.api.routers.library_curation import router as library_curation_router
+from app.api.routers.library import router as library_router
 from app.api.routers.remediation import router as remediation_router
-from app.api.routers.review import router as review_router
-from app.api.routers.scenarios import router as scenarios_router
 from app.api.routers.service_mapper import router as service_mapper_router
 from app.core.config import get_settings
 from app.core.constants import Header
 from app.core.logging import configure_logging
-from app.data_access.base import create_all_indexes
 from app.realtime.event_hub import EventHub
-from app.worker.lifecycle import log_mongodb_topology
 
 
 def _ignore_client_gone(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
@@ -47,12 +42,7 @@ def _ignore_client_gone(loop: asyncio.AbstractEventLoop, context: dict[str, Any]
 async def application_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging(get_settings(), "api")
     asyncio.get_running_loop().set_exception_handler(_ignore_client_gone)
-    create_all_indexes()
-    log_mongodb_topology()
-    # Building the AI gateways looks up each model's profile: a model with no profile stops start-up here.
-    get_chat_model()
-    get_embedding_model()
-    get_rerank_model()
+    container.set_up_api()
     app.state.event_hub = EventHub()  # one Redis subscription for every live-update stream
     yield
     await app.state.event_hub.close()
@@ -80,15 +70,14 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     # In the order a tester sets up and tests (app/api/openapi_docs.py): Swagger lists them so.
     app.include_router(health_router)
-    app.include_router(api_clients_router)
-    app.include_router(embeddings_router)
+    app.include_router(admin_router)
     app.include_router(external_intelligence_router)
-    app.include_router(scenarios_router)
-    app.include_router(review_router)
+    app.include_router(scenario.router)
+    app.include_router(scenario.review_router)
     app.include_router(remediation_router)
     app.include_router(jobs_router)
-    app.include_router(events_router)
-    app.include_router(library_curation_router)
+    app.include_router(scenario.events_router)
+    app.include_router(library_router)
     app.include_router(service_mapper_router)
     return app
 

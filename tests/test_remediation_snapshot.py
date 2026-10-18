@@ -9,8 +9,8 @@ from typing import Any
 from app.core.constants import Remediation, SnapshotWarning
 from app.domain.remediation.register import register_half
 from app.domain.remediation.snapshot import build_snapshot
-from app.models.library import LibraryControl
-from app.models.remediation_requests import RegisterData
+from app.models.library.library import LibraryControl
+from app.models.remediation.requests import RegisterData
 from tests.planner_samples import CONTEXT
 
 TODAY = date(2026, 10, 11)

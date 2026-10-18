@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import container
 from app.core.constants import (
     AuditAction,
     Collection,
@@ -24,15 +25,13 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.scenario.repository import scenarios, session_status_from_record
 from app.domain.scenario.plan import why_no_path_left
 from app.domain.scenario.review import decided_stamp
-from app.models.api_clients import Principal
-from app.models.library import LibraryThreat, ThreatLibrary
-from app.models.scenario.views import AcceptRequest, ScenarioIdsRequest
-from app.services.api_clients import get_api_client_service
-from app.services.scenario import review as review_module
-from app.services.scenario.review import ReviewService, get_review_service
+from app.models.admin.api_clients import Principal
+from app.models.library.library import LibraryThreat, ThreatLibrary
+from app.models.scenario.views import AcceptRequest, ScenarioIdsRequest, session_status_from_record
+from app.services.scenario.threat_scenario_service import ThreatScenarioService
+from tests.service_builders import threat_scenario_service
 
 #: Library threat 1 is live; 99 was retired after its scenario was written.
 LIBRARY = ThreatLibrary(
@@ -44,17 +43,17 @@ PUBLISHED: list[str] = []
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"review-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"review-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
 @pytest.fixture
-def service(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[ReviewService]:
-    built = ReviewService(lambda: LIBRARY)
-    client.app.dependency_overrides[get_review_service] = lambda: built  # type: ignore[attr-defined]
-    monkeypatch.setattr(review_module, "publish_session_status", PUBLISHED.append)
+def service(client: TestClient) -> Iterator[ThreatScenarioService]:
+    built = threat_scenario_service(threat_library=lambda: LIBRARY, publish_session_status=PUBLISHED.append)
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[container.get_threat_scenario_service] = lambda: built
     yield built
-    client.app.dependency_overrides.pop(get_review_service, None)  # type: ignore[attr-defined]
+    overrides.pop(container.get_threat_scenario_service, None)
 
 
 def _identity(api_key: str, entity_id: int = 86) -> dict[str, str]:
@@ -102,7 +101,7 @@ def _post(client: TestClient, api_key: str, path: str, body: Any, entity_id: int
 
 
 def test_accepting_decides_once_counts_audits_and_tells_watchers(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """T-SCN-13: one update, the run's counts, one audit record, the calling system stored, a live update; a
     repeat (a double click) gives the same answer and writes nothing more."""
@@ -118,7 +117,7 @@ def test_accepting_decides_once_counts_audits_and_tells_watchers(
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})
     assert (run["counts"]["accepted"], run["counts"]["pending"]) == (2, 1)
     stored = get_mongodb()[Collection.SCENARIOS].find_one({"_id": first})
-    client_id = get_api_client_service().find_client_id_for_api_key(api_key)
+    client_id = container.get_admin_service().get_api_client_id(api_key)
     assert (stored["decided_by"], stored["decided_by_client"]) == ("u1", client_id)
     assert [record_id] == PUBLISHED and len(_audits(record_id, AuditAction.SCENARIOS_ACCEPTED)) == 1
     again = _post(client, api_key, url, {"scenario_ids": [first, second]})
@@ -129,7 +128,7 @@ def test_accepting_decides_once_counts_audits_and_tells_watchers(
 
 
 def test_every_id_at_fault_is_named_and_nothing_is_written(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """T-SCN-14: unknown (another run's scenario, a hidden blocked draft), a failure card, a rejected one, two
     versions of one path, a retired library threat: one 409 lists them all; the good id is not accepted
@@ -158,7 +157,7 @@ def test_every_id_at_fault_is_named_and_nothing_is_written(
 
 
 def test_one_accepted_version_per_path_unless_replace_accepted(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """T-SCN-15/16: a second version of an accepted path → 409 duplicate_version; with replace_accepted the
     old one goes back to pending. An older (replaced) version may be accepted again (owner, 2026-10-09)."""
@@ -176,7 +175,7 @@ def test_one_accepted_version_per_path_unless_replace_accepted(
 
 
 def test_accept_all_is_idempotent_and_never_replaces(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """T-SCN-17 (S37 ruling): every current written scenario not rejected; one already accepted is listed
     again; a path with another accepted version and a retired threat are skipped; a repeat → the same answer;
@@ -204,7 +203,7 @@ def test_accept_all_is_idempotent_and_never_replaces(
 
 
 def test_reject_is_final_and_a_repeat_changes_nothing(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """T-SCN-18: an accepted scenario cannot be rejected (decisions are final, S37); a rejected one is listed
     again on a repeat, with one audit record and the run's count."""
@@ -220,10 +219,12 @@ def test_reject_is_final_and_a_repeat_changes_nothing(
     assert get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})["counts"]["rejected"] == 1
 
 
-def _at_the_same_moment(monkeypatch: pytest.MonkeyPatch, calls: list[Callable[[], Any]]) -> list[Any]:
+def _at_the_same_moment(
+    monkeypatch: pytest.MonkeyPatch, service: ThreatScenarioService, calls: list[Callable[[], Any]]
+) -> list[Any]:
     """The calls in parallel threads, each reading its targets before any of them writes."""
     barrier = threading.Barrier(len(calls))
-    read = review_module.list_review_targets
+    read = service._list_review_targets
     waited: set[int] = set()
 
     def read_then_wait(session_id: str, ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -233,7 +234,7 @@ def _at_the_same_moment(monkeypatch: pytest.MonkeyPatch, calls: list[Callable[[]
             barrier.wait(timeout=10)
         return found
 
-    monkeypatch.setattr(review_module, "list_review_targets", read_then_wait)
+    monkeypatch.setattr(service, "_list_review_targets", read_then_wait)
     results: list[Any] = [None] * len(calls)
     errors: list[Exception | None] = [None] * len(calls)
 
@@ -256,14 +257,14 @@ def _at_the_same_moment(monkeypatch: pytest.MonkeyPatch, calls: list[Callable[[]
 
 
 def test_a_call_failing_in_its_thread_fails_the_test_with_its_own_error(
-    monkeypatch: pytest.MonkeyPatch,
+    service: ThreatScenarioService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(ZeroDivisionError):
-        _at_the_same_moment(monkeypatch, [lambda: 1 / 0, lambda: "fine"])
+        _at_the_same_moment(monkeypatch, service, [lambda: 1 / 0, lambda: "fine"])
 
 
 def test_two_calls_at_the_same_moment_exactly_one_wins(
-    service: ReviewService, monkeypatch: pytest.MonkeyPatch
+    service: ThreatScenarioService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """T-SCN-19: an accept and a reject of one scenario, then two accepts of two versions of one path (the
     unique index decides): one changes it, the other reports changed_concurrently; never both."""
@@ -271,11 +272,13 @@ def test_two_calls_at_the_same_moment_exactly_one_wins(
     run = session_status_from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
     principal = Principal("client", "u1", 86, "DESC")
     target = _scenario(record_id, "p1")
+    rejecting = ScenarioIdsRequest(scenario_ids=[target])
     accept, reject = _at_the_same_moment(
         monkeypatch,
+        service,
         [
-            lambda: service.accept(principal, run, AcceptRequest(scenario_ids=[target])),
-            lambda: service.reject(principal, run, ScenarioIdsRequest(scenario_ids=[target])),
+            lambda: service.accept_threat_scenarios(principal, run, AcceptRequest(scenario_ids=[target])),
+            lambda: service.reject_threat_scenarios(principal, run, rejecting),
         ],
     )
     assert [accept.accepted, reject.rejected].count([target]) == 1
@@ -284,6 +287,7 @@ def test_two_calls_at_the_same_moment_exactly_one_wins(
     first, second = _scenario(record_id, "p2"), _scenario(record_id, "p2", version=2)
     one, two = _at_the_same_moment(
         monkeypatch,
+        service,
         [
             lambda: _accept_or_refused(service, principal, run, first),
             lambda: _accept_or_refused(service, principal, run, second),
@@ -293,20 +297,23 @@ def test_two_calls_at_the_same_moment_exactly_one_wins(
     assert [_decision(first), _decision(second)].count(Decision.ACCEPTED) == 1
 
 
-def _accept_or_refused(service: ReviewService, principal: Principal, run: Any, scenario_id: str) -> list[str]:
+def _accept_or_refused(
+    service: ThreatScenarioService, principal: Principal, run: Any, scenario_id: str
+) -> list[str]:
     """What one of two racing accepts accepted. The loser either lost at the unique index (skipped,
     changed_concurrently) or, when the winner had already written before it read, was refused (409
     duplicate_version): both are right, and never are both accepted (the test read the second as a failure
     in 1 run of 6, 2026-10-13)."""
     try:
-        return service.accept(principal, run, AcceptRequest(scenario_ids=[scenario_id])).accepted
+        request = AcceptRequest(scenario_ids=[scenario_id])
+        return service.accept_threat_scenarios(principal, run, request).accepted
     except Conflict as refused:
         assert refused.reason == ConflictReason.DUPLICATE_VERSION
         return []
 
 
 def test_review_waits_for_generation_and_serves_the_callers_entity_only(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """Rule S3 and T-SEC: 409 generation_in_progress while queued or running (in any step), run_failed for a
     run that failed finding threats; another entity's run → 403, nothing changed."""
@@ -337,7 +344,7 @@ def test_review_waits_for_generation_and_serves_the_callers_entity_only(
     ],
 )
 def test_review_bodies_are_checked(
-    client: TestClient, api_key: str, service: ReviewService, body: Any
+    client: TestClient, api_key: str, service: ThreatScenarioService, body: Any
 ) -> None:
     """S38: 1-50 ids, each once, bounded; "all" only; an unknown (misspelt) field refused, never ignored."""
     assert _post(client, api_key, f"/v1/sessions/{_run()}/accept", body).status_code == 422
@@ -354,7 +361,7 @@ def test_why_no_path_is_left_to_write() -> None:
 
 
 def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_heals_the_counts(
-    service: ReviewService, monkeypatch: pytest.MonkeyPatch
+    service: ThreatScenarioService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """G143: the decision is saved, then the counts write fails (the caller gets 503): the audit record was
     written first; the caller's retry changes no decision, records nothing more and refreshes the counts."""
@@ -363,7 +370,8 @@ def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_h
     record_id = _run()
     target = _scenario(record_id, "p1")
     run = session_status_from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
-    refresh, calls = scenarios.update_scenario_session_counts, []
+    sessions = container.get_threat_scenario_session_repository()
+    refresh, calls = sessions.update_scenario_session_counts, []
 
     def fails_once(session_id: str) -> dict[str, int]:
         calls.append(session_id)
@@ -371,12 +379,13 @@ def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_h
             raise AutoReconnect("MongoDB went away")
         return refresh(session_id)
 
-    monkeypatch.setattr(scenarios, "update_scenario_session_counts", fails_once)
+    monkeypatch.setattr(sessions, "update_scenario_session_counts", fails_once)
     principal = Principal("client", "u1", 86, "DESC")
     with pytest.raises(AutoReconnect):
-        service.accept(principal, run, AcceptRequest(scenario_ids=[target]))
+        service.accept_threat_scenarios(principal, run, AcceptRequest(scenario_ids=[target]))
     assert len(_audits(record_id, AuditAction.SCENARIOS_ACCEPTED)) == 1
-    assert service.accept(principal, run, AcceptRequest(scenario_ids=[target])).accepted == [target]
+    answer = service.accept_threat_scenarios(principal, run, AcceptRequest(scenario_ids=[target]))
+    assert answer.accepted == [target]
     assert len(_audits(record_id, AuditAction.SCENARIOS_ACCEPTED)) == 1
     assert get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})["counts"]["accepted"] == 1
 
@@ -390,6 +399,7 @@ def test_one_refused_id_never_leaves_the_others_untried() -> None:
     others = [_scenario(record_id, f"p{number}") for number in range(2, 6)]
     stamp = decided_stamp(Principal("client", "u1", 86, "DESC"), datetime.now(UTC), uuid.uuid4().hex)
     ids = [refused, *others]
+    scenarios = container.get_threat_scenario_repository()
     changed = scenarios.update_scenario_decisions(ids, Decision.PENDING, Decision.ACCEPTED, stamp)
     assert changed == 4
     assert [_decision(scenario_id) for scenario_id in others] == [Decision.ACCEPTED] * 4
@@ -397,7 +407,7 @@ def test_one_refused_id_never_leaves_the_others_untried() -> None:
 
 
 def test_two_identical_clicks_at_once_audit_and_count_once(
-    service: ReviewService, monkeypatch: pytest.MonkeyPatch
+    service: ThreatScenarioService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """G145: both clicks answer accepted; only the one whose write changed it records it."""
     record_id = _run()
@@ -406,9 +416,10 @@ def test_two_identical_clicks_at_once_audit_and_count_once(
     principal = Principal("client", "u1", 86, "DESC")
     one, two = _at_the_same_moment(
         monkeypatch,
+        service,
         [
-            lambda: service.accept(principal, run, AcceptRequest(scenario_ids=[target])),
-            lambda: service.accept(principal, run, AcceptRequest(scenario_ids=[target])),
+            lambda: service.accept_threat_scenarios(principal, run, AcceptRequest(scenario_ids=[target])),
+            lambda: service.accept_threat_scenarios(principal, run, AcceptRequest(scenario_ids=[target])),
         ],
     )
     assert one.accepted == two.accepted == [target]
@@ -416,7 +427,7 @@ def test_two_identical_clicks_at_once_audit_and_count_once(
 
 
 def test_an_accepted_scenario_stays_listed_after_its_threat_is_retired(
-    client: TestClient, api_key: str, service: ReviewService
+    client: TestClient, api_key: str, service: ThreatScenarioService
 ) -> None:
     """G146: a repeat (by id or "all") lists an accepted scenario again even after a curator retired its
     library threat; only a pending one is refused library_inactive."""

@@ -6,11 +6,9 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from app.core.config import get_settings
 from app.core.constants import ErrorMessage, RerankGateLimits
 from app.core.exceptions import Unavailable
 from app.core.lease_signal import raise_if_lease_lost
-from app.core.singletons import singleton
 
 
 class RerankGate:
@@ -57,9 +55,3 @@ def rerank_gate_for(rerank_base_url: str) -> RerankGate:
     if rerank_base_url:
         return RerankGate(RerankGateLimits.RERANKS_AT_ONCE)
     return RerankGate(RerankGateLimits.LOCAL_RERANKS_AT_ONCE, wait_seconds=None)
-
-
-@singleton
-def get_rerank_gate() -> RerankGate:
-    """The process's rerank gate."""
-    return rerank_gate_for(get_settings().rerank_base_url)

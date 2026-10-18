@@ -8,13 +8,13 @@ import structlog
 from fastapi import Body, FastAPI
 from fastapi.testclient import TestClient
 
+from app import container
 from app.api import middleware
 from app.api.middleware import _bind_request_context
 from app.core.config import get_settings
 from app.core.constants import Header, LogEvent
 from app.core.logging import mask_secret_values
 from app.main import create_app
-from app.services.api_clients import get_api_client_service
 
 
 @pytest.fixture(scope="module")
@@ -104,7 +104,9 @@ def test_the_access_line_names_the_calling_system(
 ) -> None:
     """Owner, 2026-10-09: the platform and the chatbot each call with their own key, and each request's line
     says which system it was (None without a valid key). Nothing is refused because of it."""
-    client, api_key = get_api_client_service().mint_api_client(f"line-{uuid.uuid4().hex[:8]}", None, "test")
+    client, api_key = container.get_admin_service().create_api_client(
+        f"line-{uuid.uuid4().hex[:8]}", None, "test"
+    )
     recorded = _RecordedLines()
     monkeypatch.setattr(middleware, "log", recorded)
     identity = {Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DESC"}

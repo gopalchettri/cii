@@ -13,20 +13,31 @@ import structlog
 
 from app.core import metrics
 from app.core.constants import Cache, Dependency, LogEvent
-from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
-from app.core.singletons import singleton
-from app.data_access.library.repository import SqlServerRepository
-from app.models.library import LoadedLibraries, ThreatLibrary
+from app.data_access.library.control_repository import ControlRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.models.library.library import LibraryStamp, LoadedLibraries, ThreatLibrary
 
 log = structlog.get_logger(__name__)
 
 
-class LibraryService:
+def load_libraries(
+    threats: ThreatRepository, controls: ControlRepository, loaded_stamp: LibraryStamp | None = None
+) -> LoadedLibraries | None:
+    """The library stamp, then (when it differs from `loaded_stamp`) the threat and control libraries at it;
+    None when unchanged. The stamp is read BEFORE loading, so an edit made during a load is caught by the next
+    check, never missed (tsg_GetLibraryStamp, tsg_GetThreatLibrary, tsg_GetControlLibrary)."""
+    stamp = threats.get_library_stamp()
+    if stamp == loaded_stamp:
+        return None
+    return LoadedLibraries(stamp, threats.get_threat_library(), *controls.get_control_library())
+
+
+class LibraryCache:
     # Every process checks on its own (~100 ms SQL CPU a minute each); share one check through Redis
     # if the process count ever reaches the hundreds.
-    def __init__(self, repository: SqlServerRepository) -> None:
-        self._repository = repository
+    def __init__(self, threats: ThreatRepository, controls: ControlRepository) -> None:
+        self._threats, self._controls = threats, controls
         self._lock = threading.Lock()
         self._reload_lock = threading.Lock()  # one reload at a time: an older load never replaces a newer
         self._loaded: LoadedLibraries | None = None
@@ -41,7 +52,7 @@ class LibraryService:
         waited compares the fingerprint with the copy just loaded (no load when unchanged)."""
         with self._reload_lock:
             previous = self._loaded
-            loaded = self._repository.load_library(previous.stamp if previous else None)
+            loaded = load_libraries(self._threats, self._controls, previous.stamp if previous else None)
             if loaded is None:
                 return
             self._loaded = loaded
@@ -109,8 +120,3 @@ class LibraryService:
         while True:
             time.sleep(Cache.LIBRARY_STAMP_EVERY_SECONDS)
             self.check_library_once()
-
-
-@singleton
-def get_library_service() -> LibraryService:
-    return LibraryService(SqlServerRepository(get_stored_procedure_client()))

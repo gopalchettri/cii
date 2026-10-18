@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 
+from app import container
 from app.core.constants import (
     AuditAction,
     Collection,
@@ -24,11 +25,10 @@ from app.core.constants import (
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.library.repository import SqlServerRepository
-from app.data_access.scenario.repository import scenario_sessions
-from app.models.library import ThreatProposal
-from app.services.api_clients import get_api_client_service
-from app.services.library_curation import LibraryPromotion, get_library_promotion
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.models.library.library import ThreatProposal
+from tests.service_builders import threat_scenario_service
 
 #: The person promoting in these tests: the library rows they create carry it (CreatedBy).
 REVIEWER = f"reviewer-{uuid.uuid4().hex[:6]}"
@@ -36,17 +36,16 @@ REVIEWER = f"reviewer-{uuid.uuid4().hex[:6]}"
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"promote-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"promote-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
 @pytest.fixture
 def proposals(client: TestClient, sql_test_engine: Engine) -> Iterator[list[ThreatProposal]]:
     """The promote service on the SQL test database; every proposal that reaches SQL Server, recorded."""
-    repository = SqlServerRepository(StoredProcedureClient(sql_test_engine))
-    loaded = repository.load_library()
-    assert loaded is not None
-    library = loaded.threat_library
+    procedures = StoredProcedureClient(sql_test_engine)
+    repository = ThreatRepository(procedures, SqlOperationRepository(procedures))
+    library = repository.get_threat_library()
     sent: list[ThreatProposal] = []
     propose = repository.propose_threat
 
@@ -55,10 +54,11 @@ def proposals(client: TestClient, sql_test_engine: Engine) -> Iterator[list[Thre
         return propose(operation_id, proposal)
 
     repository.propose_threat = recorded  # type: ignore[method-assign]
-    service = LibraryPromotion(scenario_sessions, repository, lambda: library)
-    client.app.dependency_overrides[get_library_promotion] = lambda: service  # type: ignore[attr-defined]
+    service = threat_scenario_service(threats=repository, threat_library=lambda: library)
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[container.get_threat_scenario_service] = lambda: service
     yield sent
-    client.app.dependency_overrides.pop(get_library_promotion, None)  # type: ignore[attr-defined]
+    overrides.pop(container.get_threat_scenario_service, None)
     _remove_promoted_rows(sql_test_engine)
 
 
@@ -186,8 +186,9 @@ def test_sql_server_down_records_nothing(
     def down(operation_id: str, proposal: ThreatProposal) -> Any:
         raise Unavailable("SQL down")
 
-    service = client.app.dependency_overrides[get_library_promotion]()  # type: ignore[attr-defined]
-    monkeypatch.setattr(service._library, "propose_threat", down)
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    service = overrides[container.get_threat_scenario_service]()
+    monkeypatch.setattr(service._threats, "propose_threat", down)
     answer = _promote(client, api_key, record_id, scenario_id)
     assert answer.status_code == 503 and "Retry-After" in answer.headers
     assert "library_promotion" not in get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})

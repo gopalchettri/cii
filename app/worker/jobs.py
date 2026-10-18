@@ -2,7 +2,7 @@
 abandoned jobs is app/worker/reaper.py).
 
 A job lives on its MongoDB record (`status`, `job.*`; read and written by
-app/data_access/jobs/repository.py). A delivery claims it with a time-limited lease, renews the lease
+app/data_access/jobs/job_repository.py). A delivery claims it with a time-limited lease, renews the lease
 while it works, and writes only while it still owns it. If the worker dies, the lease runs out and the
 reaper hands the job to another delivery."""
 
@@ -28,7 +28,7 @@ from app.core.exceptions import (
     LeaseLost,
 )
 from app.core.lease_signal import lease_lost_signal
-from app.data_access.jobs.repository import JobLease, JobRepository, failed_job_fields
+from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields
 from app.realtime.publisher import publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
 

@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from app.core.constants import AttackReading, IntelKind, IntelRejection, IntelSource, IntelUrl
-from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
+from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
 from tests.external_intelligence.sources.web import downloader
 
 ENT, ICS = IntelSource.ATTACK_ENTERPRISE, IntelSource.ATTACK_ICS

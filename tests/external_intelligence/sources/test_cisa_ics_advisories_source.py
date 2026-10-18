@@ -8,8 +8,8 @@ import pytest
 
 from app.core.constants import IntelKind, IntelLimits, IntelRejection, IntelSource, IntelUrl
 from app.core.exceptions import IntelFetchFailed
-from app.services.external_intelligence.sources.cisa_ics_advisories_source import CisaIcsAdvisoriesSource
-from app.services.external_intelligence.sources.ics_advisory_reader import parse_versions
+from app.worker.external_intelligence.sources.cisa_ics_advisories_source import CisaIcsAdvisoriesSource
+from app.worker.external_intelligence.sources.ics_advisory_reader import parse_versions
 from tests.external_intelligence.sources.web import downloader
 
 NOW = datetime(2026, 10, 12, tzinfo=UTC)

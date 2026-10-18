@@ -18,10 +18,11 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.redaction import clipped_text, redact
-from app.data_access.admin.repository import audit_records
+from app.data_access.admin.audit_repository import AuditRepository
+from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
+from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.scenario.library_rules import compatible_asset_types
 from app.domain.shared.names import shorten_text
-from app.models.asset_context import FrozenContext
 from app.models.external_intelligence.evidence import EvidenceBatchSummary
 from app.models.external_intelligence.evidence_request import (
     EvidenceRequest,
@@ -29,8 +30,9 @@ from app.models.external_intelligence.evidence_request import (
     RecordedProduct,
     RecordedProducts,
 )
-from app.worker.external_intelligence.intel_access import IntelAccess
-from app.worker.plan_progress import PlanProgress
+from app.models.external_intelligence.source_health import FeedFreshness
+from app.models.scenario.asset_context import FrozenContext
+from app.worker.scenario.plan_progress import PlanProgress
 
 log = structlog.get_logger(__name__)
 
@@ -46,9 +48,12 @@ class EvidenceAtWrite:
         run: dict[str, Any],
         threats: dict[str, dict[str, Any]],
         progress: PlanProgress,
-        access: IntelAccess,
+        finder: EvidenceFinder,
+        feeds: IntelFeedRepository,
+        audit: AuditRepository,
     ) -> None:
-        self._run, self._threats, self._progress, self._access = run, threats, progress, access
+        self._run, self._threats, self._progress = run, threats, progress
+        self._finder, self._feeds, self._audit = finder, feeds, audit
 
     def attach(self, path_ids: Iterable[str]) -> None:
         """Search every distinct threat of these paths and set its evidence and search on it, in memory only
@@ -58,11 +63,11 @@ class EvidenceAtWrite:
         keys = [key for key in sorted(steps) if key in self._threats]
         if not keys:
             return
-        approved = set(self._access.approved_sources())  # the sources Legal allows, read once per batch
+        approved = set(self._feeds.list_approved_sources())  # the sources Legal allows, read once per batch
         context = FrozenContext.from_record(self._run["context"])
         try:
             requests = {key: evidence_request(context, self._threats[key]) for key in keys}
-            found = self._search_batch(requests, approved, self._access.is_stale(approved))
+            found = self._search_batch(requests, approved, self._is_stale(approved))
         except Exception as exc:  # a search fault never costs the batch: its paths wait as outages
             log.warning(
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, threats=len(keys), exc_info=True
@@ -79,20 +84,25 @@ class EvidenceAtWrite:
     ) -> EvidenceByThreat:
         """One audited search batch (one embedding call): each threat's fields with when it was searched,
         from approved sources only."""
-        results, summary = self._access.find_evidence(list(requests.values()), stale, approved)
-        self._audit(summary)
+        results, summary = self._finder.find_evidence(list(requests.values()), stale=stale, approved=approved)
+        self._audit_batch(summary)
         searched_at = datetime.now(UTC).isoformat()
         pairs = zip(requests, results, strict=True)
         return {key: _threat_fields(result, searched_at) for key, result in pairs}
 
-    def _audit(self, summary: EvidenceBatchSummary) -> None:
+    def _is_stale(self, approved: set[IntelSource]) -> bool:
+        """True when an approved source that has data is older than IntelLimits.STALE_AFTER_HOURS, from one
+        read of the source health."""
+        return FeedFreshness.of(self._feeds.list_source_health(), approved, datetime.now(UTC)).stale
+
+    def _audit_batch(self, summary: EvidenceBatchSummary) -> None:
         """Write one audit row per search batch (its snapshot, threats and evidence counts); each threat's
         own search is audited on its scenario (content.intel_search)."""
         if summary.snapshot_id is None:
             return
         target = {"type": AuditTarget.SESSION, "id": self._run["_id"]}
         actor = {"system": TaskName.WRITE_SCENARIOS}
-        audit_records.create_audit_record(
+        self._audit.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_EVIDENCE_USED, actor, target, after=summary.as_doc()
         )
 
@@ -144,4 +154,3 @@ def _threat_fields(result: EvidenceResult, searched_at: str) -> dict[str, Any]:
         "evidence": [item.as_doc() | {"searched_at": searched_at} for item in result.evidence],
         "intel_search": result.search.as_doc() | {"searched_at": searched_at},
     }
-

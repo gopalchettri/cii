@@ -17,7 +17,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import Conflict
-from app.domain.api_keys import could_be_minted_key, hash_api_key
+from app.domain.admin.api_keys import could_be_minted_key, hash_api_key
 from app.domain.external_intelligence.evidence_settings import evidence_settings
 from app.domain.external_intelligence.refresh_rules import (
     is_cut_short_feed,
@@ -26,7 +26,7 @@ from app.domain.external_intelligence.refresh_rules import (
     trusted_checkpoint,
 )
 from app.domain.jobs import check_run_cancel_stopped_something, run_job_kind_and_status
-from app.domain.library import accepted_ai_threat_key, decision_operation_key, promotion_outcome
+from app.domain.library.curation import accepted_ai_threat_key, decision_operation_key, promotion_outcome
 
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
 

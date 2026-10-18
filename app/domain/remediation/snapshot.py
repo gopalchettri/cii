@@ -15,8 +15,8 @@ from app.domain.remediation.register import clip
 from app.domain.scenario.plan import raw_system_facts
 from app.domain.shared.names import name_match_key
 from app.domain.shared.prompt_redaction import facts_safe_for_prompt
-from app.models.asset_context import FrozenContext
-from app.models.library import LibraryControl
+from app.models.library.library import LibraryControl
+from app.models.scenario.asset_context import FrozenContext
 from app.search.texts import describe_control
 
 
@@ -36,7 +36,8 @@ def inputs_ready(scenario: dict[str, Any], controls_by_id: Mapping[int, LibraryC
 
 
 def pending_snapshot(scenario_id: str, register_part: dict[str, Any]) -> dict[str, Any]:
-    """A version's input the plan job completes (app/worker/plan_inputs.py): the register frozen now."""
+    """A version's input the plan job completes (app/worker/remediation/plan_inputs.py): the register
+    frozen now."""
     return {"pending": True, "scenario_id": scenario_id, "register_part": register_part}
 
 

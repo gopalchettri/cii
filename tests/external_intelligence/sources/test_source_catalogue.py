@@ -1,7 +1,7 @@
 """The catalogue: six sources, in the order they must run, wired to the record store for the CVE ids."""
 
 from app.core.constants import IntelSource
-from app.services.external_intelligence.sources.source_catalogue import SourceCatalogue
+from app.worker.external_intelligence.sources.source_catalogue import SourceCatalogue
 
 
 class _Store:

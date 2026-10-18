@@ -5,14 +5,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app import container
 from app.core.constants import Collection, IntelKind, IntelLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import (
-    IntelFeedRepository,
-    IntelRecordRepository,
-    intel_feeds,
-    intel_records,
-)
+from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
+from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord
 from app.models.external_intelligence.source_health import (
@@ -51,7 +48,7 @@ def stores() -> tuple[IntelRecordRepository, IntelFeedRepository]:
     db = get_mongodb()
     for name in (Collection.INTEL, Collection.EXTERNAL_FEED_STATUS):
         db[name].delete_many({})
-    records, feeds = intel_records, intel_feeds
+    records, feeds = container.get_intel_record_repository(), container.get_intel_feed_repository()
     records.create_indexes()
     feeds.create_missing_intel_feeds()
     claim = feeds.claim_intel_feed_refresh(SOURCE, NOW - timedelta(days=1), NOW - timedelta(days=2))

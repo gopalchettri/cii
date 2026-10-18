@@ -10,8 +10,8 @@ import httpx
 import pytest
 
 from app.core.constants import IntelRejection, IntelSource
-from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
-from app.services.external_intelligence.sources.text_guard import SourceTextGuard, UnsafeSourceText
+from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
+from app.worker.external_intelligence.sources.text_guard import SourceTextGuard, UnsafeSourceText
 from tests.external_intelligence.sources import test_mitre_attack_source as attack_fixtures
 from tests.external_intelligence.sources.web import downloader
 

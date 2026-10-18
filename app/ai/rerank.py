@@ -11,20 +11,18 @@ import litellm
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
-    apply_proxy_settings,
     build_api_key_header,
     call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.local_turns import LocalTurns
 from app.ai.profiles import RERANK_MODEL_PROFILES, find_model_profile
-from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
+from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
 from app.core import metrics
-from app.core.config import get_settings
+from app.core.config import Settings
 from app.core.constants import AiLimits, AiOutcome, AiTask, ErrorMessage
 from app.core.lease_signal import raise_if_lease_lost
-from app.core.singletons import singleton
-from app.models.ai import RerankModelProfile
+from app.models.ai.profiles import RerankModelProfile
 
 #: What the local reranker loads its model with (pyproject's "local" extra; requirements.txt).
 _LOCAL_PACKAGE = "sentence_transformers"
@@ -131,20 +129,16 @@ class RerankModel:
         return self._local_model
 
 
-@singleton
-def get_rerank_model() -> RerankModel:
-    """G265 (laptop E2E 2026-10-16): a local reranker whose package is missing stops start-up here (API and
-    worker build it at start), as a model with no profile does. Before, every rerank failed at call time and
-    each write job retried for minutes as if the AI were busy."""
-    settings = get_settings()
+def rerank_model_from(settings: Settings, slots: AiSlots) -> RerankModel:
+    """The rerank model the settings name; LocalRerankerMissing for a local model whose package is not
+    installed, so start-up stops (API and worker build it at start) instead of every rerank failing later."""
     if not settings.rerank_base_url and find_spec(_LOCAL_PACKAGE) is None:
         raise LocalRerankerMissing(ErrorMessage.LOCAL_RERANKER_MISSING.format(model=settings.rerank_model))
-    apply_proxy_settings(settings)
     return RerankModel(
         settings.rerank_model,
         find_model_profile(RERANK_MODEL_PROFILES, settings.rerank_model),
         settings.rerank_base_url,
         settings.rerank_api_key.get_secret_value(),
         settings.ai_key_header,
-        get_ai_slots(),
+        slots,
     )

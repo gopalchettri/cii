@@ -6,8 +6,11 @@ from typing import Any
 from app.core.constants import ErrorMessage, StoredProcedure
 from app.core.database import Row, StoredProcedureClient
 from app.core.exceptions import OutcomeUnknown
-from app.data_access.library.repository import SqlServerRepository
-from app.models.library import LoadedLibraries
+from app.data_access.library.control_repository import ControlRepository
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.models.library.library import LoadedLibraries
+from app.search.library_cache import load_libraries
 
 _NO_THREAT_LIBRARY: list[list[Row]] = [[] for _ in range(8)]
 
@@ -36,8 +39,10 @@ def load_library_from(
     control_sets: list[list[Row]] | None = None,
     stamp_rows: list[Row] | None = None,
 ) -> LoadedLibraries:
-    """Both libraries as SqlServerRepository.load_library reads them from these result sets."""
-    loaded = SqlServerRepository(ProceduresByName(threat_sets, control_sets, stamp_rows)).load_library()  # type: ignore[arg-type]
+    """Both libraries as load_libraries reads them from these result sets."""
+    procedures = ProceduresByName(threat_sets, control_sets, stamp_rows)
+    threats = ThreatRepository(procedures, SqlOperationRepository(procedures))  # type: ignore[arg-type]
+    loaded = load_libraries(threats, ControlRepository(procedures))  # type: ignore[arg-type]
     assert loaded is not None
     return loaded
 

@@ -5,26 +5,31 @@ busy. Start-up now stops, naming the package, as it does for a model with no pro
 
 import pytest
 
+from app import container
 from app.ai import rerank
-from app.core.config import get_settings
+from app.ai.slots import UNLIMITED_AI_SLOTS
+from app.core.config import Settings, get_settings
 from app.worker import lifecycle
 
 
-def _local_setup(monkeypatch: pytest.MonkeyPatch, base_url: str, installed: bool) -> None:
-    settings = get_settings().model_copy(update={"rerank_base_url": base_url})
-    monkeypatch.setattr(rerank, "get_settings", lambda: settings)
+def _local_setup(monkeypatch: pytest.MonkeyPatch, base_url: str, installed: bool) -> Settings:
     monkeypatch.setattr(rerank, "find_spec", lambda name: object() if installed else None)
+    return get_settings().model_copy(update={"rerank_base_url": base_url})
 
 
 def test_a_local_reranker_without_its_package_stops_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
-    _local_setup(monkeypatch, "", installed=False)
+    settings = _local_setup(monkeypatch, "", installed=False)
     with pytest.raises(rerank.LocalRerankerMissing, match="sentence-transformers"):
-        rerank.get_rerank_model.__wrapped__()
+        rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS)
 
 
 def test_the_worker_refuses_to_start_and_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
-    _local_setup(monkeypatch, "", installed=False)
-    monkeypatch.setattr(lifecycle, "get_rerank_model", rerank.get_rerank_model.__wrapped__)
+    settings = _local_setup(monkeypatch, "", installed=False)
+
+    def local_model() -> rerank.RerankModel:
+        return rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS)
+
+    monkeypatch.setattr(container, "get_rerank_model", local_model)
     with pytest.raises(SystemExit, match="sentence-transformers"):
         lifecycle._prepare_stores_and_models()
 
@@ -33,5 +38,5 @@ def test_the_worker_refuses_to_start_and_says_why(monkeypatch: pytest.MonkeyPatc
 def test_a_reranker_service_or_an_installed_package_starts(
     monkeypatch: pytest.MonkeyPatch, base_url: str, installed: bool
 ) -> None:
-    _local_setup(monkeypatch, base_url, installed)
-    assert isinstance(rerank.get_rerank_model.__wrapped__(), rerank.RerankModel)
+    settings = _local_setup(monkeypatch, base_url, installed)
+    assert isinstance(rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS), rerank.RerankModel)

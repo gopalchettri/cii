@@ -102,9 +102,9 @@ def duplicates(served: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def main() -> int:
+    from app.container import get_threat_scenario_repository
     from app.core.constants import Collection
     from app.core.database import get_mongodb
-    from app.data_access.scenario.repository import scenarios
 
     run_id = (sys.argv[1] if len(sys.argv) > 1 else "") or debug_value("TSG_RUN_ID")
     db = get_mongodb()
@@ -112,7 +112,7 @@ def main() -> int:
     if not run:
         raise SystemExit(f"  No run '{run_id}'.")
     threats = {threat["key"]: threat for threat in (run.get("plan") or {}).get("threats") or []}
-    cards = scenarios.list(sort="created_at", session_id=run_id)
+    cards = get_threat_scenario_repository().list(sort="created_at", session_id=run_id)
     served = served_cards(cards)
     copies = duplicates(served)
     failed = 0

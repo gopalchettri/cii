@@ -13,8 +13,8 @@ from pydantic import SecretStr
 from app.core.constants import IntelKind, IntelLimits, IntelRejection
 from app.core.exceptions import IntelFetchFailed
 from app.models.external_intelligence.fetch_result import FetchResult
-from app.services.external_intelligence.sources import nist_nvd_details_source as nvd_module
-from app.services.external_intelligence.sources.nist_nvd_details_source import NistNvdDetailsSource
+from app.worker.external_intelligence.sources import nist_nvd_details_source as nvd_module
+from app.worker.external_intelligence.sources.nist_nvd_details_source import NistNvdDetailsSource
 
 SLEEPS: list[float] = []
 

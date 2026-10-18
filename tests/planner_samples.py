@@ -7,8 +7,8 @@ from typing import Any
 
 from app.core.constants import AiTask, StrideCategory
 from app.domain.scenario.plan import ThreatFinder
-from app.models.asset_context import FrozenContext
-from app.models.library import LibraryActor, LibraryThreat, RejectedLibraryThreat, ThreatLibrary
+from app.models.library.library import LibraryActor, LibraryThreat, RejectedLibraryThreat, ThreatLibrary
+from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.plan import CategoryAudit, PlannedThreat, ThreatFindings
 from app.search.service import LibrarySearch
 from tests.fakes import FakeChatModel, FakeEmbeddings, FakeRerankModel, items_in

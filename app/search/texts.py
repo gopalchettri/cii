@@ -1,6 +1,6 @@
 """The text each library row is searched by: v1's texts, so v1 and v2 rank alike."""
 
-from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType
+from app.models.library.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType
 
 
 def describe_threat(threat: LibraryThreat) -> str:

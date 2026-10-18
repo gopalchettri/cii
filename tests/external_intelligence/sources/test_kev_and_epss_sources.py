@@ -7,8 +7,8 @@ import pytest
 
 from app.core.constants import IntelKind, IntelRejection, IntelSource
 from app.core.exceptions import IntelFetchFailed
-from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
-from app.services.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
+from app.worker.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
+from app.worker.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
 from tests.external_intelligence.sources.web import serving
 
 ANY_CVE = {f"CVE-2024-{n:04d}" for n in range(10_000)}

@@ -1,15 +1,21 @@
-"""The plan job's input completion (app/worker/plan_inputs.py, G262: a plan request makes no AI call) on
+"""The plan job's input completion (app/worker/remediation/plan_inputs.py: a plan request makes no AI call) on
 fakes: the control mapping (the scenarios it was asked for, one library control back; it can be made to wait,
-as a busy AI does), the attacker search (the queries it got) and the library proposal (what was proposed)."""
+as a busy AI does), the attacker search (the queries it got) and the library proposal (what was proposed).
+Also the remediation service and plan job built as the app builds them, with some parts swapped."""
 
 import threading
 from types import SimpleNamespace
 from typing import Any
 
+from app import container
 from app.core.constants import ControlMatch, ResolveOutcome
-from app.models.controls import ControlMapping, MappedControl
-from app.models.library import ProposedThreat, ThreatProposal
-from app.worker.plan_inputs import PlanInputs
+from app.models.library.library import ProposedThreat, ThreatProposal
+from app.models.scenario.controls import ControlMapping, MappedControl
+from app.realtime.publisher import publish_remediation_status
+from app.services.remediation.remediation_plan_service import RemediationPlanService
+from app.worker.celery_app import send_job
+from app.worker.remediation.plan_inputs import PlanInputs
+from app.worker.remediation.remediation_plan_job import RemediationPlanJob
 from tests.fakes import FakeRerankModel
 from tests.test_threat_identity import LIBRARY as THREATS
 
@@ -52,8 +58,8 @@ class FakeSearch:
 
 
 def fake_plan_inputs(controls: tuple[Any, ...] = ()) -> tuple[PlanInputs, dict[str, Any]]:
-    """PlanInputs on the fakes (its search snapshot holding `controls`), and {mapper, search, proposals} to
-    read what the plan job did."""
+    """PlanInputs on the fakes (its search snapshot holding `controls`) and the app's repositories, and
+    {mapper, search, proposals} to read what the plan job did."""
     proposals: list[ThreatProposal] = []
 
     def propose(operation_id: str, proposal: ThreatProposal) -> tuple[ProposedThreat, bool]:
@@ -62,6 +68,38 @@ def fake_plan_inputs(controls: tuple[Any, ...] = ()) -> tuple[PlanInputs, dict[s
         return ProposedThreat(type_id, 901, ResolveOutcome.CREATED_PENDING), True
 
     search, mapper = FakeSearch(controls), FakeMapper()
-    inputs = PlanInputs(search, FakeRerankModel(), SimpleNamespace(propose_threat=propose))  # type: ignore[arg-type]
+    inputs = PlanInputs(
+        search=search,  # type: ignore[arg-type]
+        rerank=FakeRerankModel(),
+        threats=SimpleNamespace(propose_threat=propose),  # type: ignore[arg-type]
+        scenarios=container.get_threat_scenario_repository(),
+        sessions=container.get_threat_scenario_session_repository(),
+        remediations=container.get_remediation_repository(),
+        audit=container.get_audit_repository(),
+    )
     inputs._mapper = mapper  # type: ignore[assignment]  # noqa: SLF001 — the fake in place of the reranker's
     return inputs, {"mapper": mapper, "search": search, "proposals": proposals}
+
+
+def remediation_plan_service(**changed: Any) -> RemediationPlanService:
+    """The remediation service on the app's own repositories and side effects, `changed` ones swapped in."""
+    dependencies: dict[str, Any] = {
+        "remediations": container.get_remediation_repository(),
+        "scenarios": container.get_threat_scenario_repository(),
+        "sessions": container.get_threat_scenario_session_repository(),
+        "assets": container.get_asset_repository(),
+        "library": container.get_library_cache(),
+        "audit": container.get_audit_repository(),
+        "send_job": send_job,
+        "publish_remediation_status": publish_remediation_status,
+    }
+    return RemediationPlanService(**(dependencies | changed))
+
+
+def remediation_plan_job(chat: Any, inputs: PlanInputs, **changed: Any) -> RemediationPlanJob:
+    """The plan job on `chat`, `inputs` and the app's own repositories, `changed` ones swapped in."""
+    dependencies: dict[str, Any] = {
+        "remediations": container.get_remediation_repository(),
+        "audit": container.get_audit_repository(),
+    }
+    return RemediationPlanJob(chat=chat, inputs=inputs, **(dependencies | changed))

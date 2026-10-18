@@ -12,21 +12,32 @@ from app.core.config import get_settings
 from app.core.constants import AssetType, Env, ErrorMessage, LogEvent, StrideCategory
 from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
-from app.data_access.library.repository import SqlServerRepository
-from app.models.library import LibraryActor, LibraryThreatType, LoadedLibraries, ThreatLibrary
-from app.search.library_cache import LibraryService
+from app.data_access.library.control_repository import ControlRepository
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.models.library.library import LibraryActor, LibraryThreatType, ThreatLibrary
+from app.search.library_cache import LibraryCache, load_libraries
 from tests.sql_fakes import load_library_from
 
 
-class CountingRepository(SqlServerRepository):
+def _sql_threats() -> ThreatRepository:
+    procedures = get_stored_procedure_client()
+    return ThreatRepository(procedures, SqlOperationRepository(procedures))
+
+
+def _sql_library_cache(threats: ThreatRepository | None = None) -> LibraryCache:
+    return LibraryCache(threats or _sql_threats(), ControlRepository(get_stored_procedure_client()))
+
+
+class CountingThreats(ThreatRepository):
     def __init__(self) -> None:
-        super().__init__(get_stored_procedure_client())
+        procedures = get_stored_procedure_client()
+        super().__init__(procedures, SqlOperationRepository(procedures))
         self.threat_library_loads = 0
 
-    def load_library(self, loaded_stamp=None):  # type: ignore[no-untyped-def]
-        loaded = super().load_library(loaded_stamp)
-        self.threat_library_loads += loaded is not None
-        return loaded
+    def get_threat_library(self) -> ThreatLibrary:
+        self.threat_library_loads += 1
+        return super().get_threat_library()
 
 
 class ScriptedRepository:
@@ -34,23 +45,33 @@ class ScriptedRepository:
 
     def __init__(self, *stamp_answers: object) -> None:
         self._stamp_answers = list(stamp_answers)
+        self.stamp: object = None
         self.loads = 0
 
-    def load_library(self, loaded_stamp: object = None) -> LoadedLibraries | None:
+    def get_library_stamp(self) -> object:
         answer = self._stamp_answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
-        if answer == loaded_stamp:
-            return None
+        self.stamp = answer
+        return answer
+
+    def get_threat_library(self) -> ThreatLibrary:
         self.loads += 1
-        return LoadedLibraries(answer, ThreatLibrary(threats=(), actors=()), (), ())  # type: ignore[arg-type]
+        return ThreatLibrary(threats=(), actors=())
+
+    def get_control_library(self) -> tuple[tuple[()], tuple[()]]:
+        return (), ()
+
+
+def _scripted_cache(repository: ScriptedRepository) -> LibraryCache:
+    return LibraryCache(repository, repository)  # type: ignore[arg-type]
 
 
 SQL_DOWN = Unavailable(ErrorMessage.SQL_UNREACHABLE)
 
 
 def test_library_loads_threats_with_stride_categories_and_controls_with_their_asset_type() -> None:
-    service = LibraryService(SqlServerRepository(get_stored_procedure_client()))
+    service = _sql_library_cache()
     threats = service.get_threat_library().threats
     controls = service.get_loaded_libraries().control_library
     assert threats and controls
@@ -65,7 +86,7 @@ def test_library_loads_threats_with_stride_categories_and_controls_with_their_as
 def test_the_library_stamp_covers_exactly_the_tables_the_app_reads() -> None:
     """Control_Standard and Control_Library_Standard_Map are not used (owner, 2026-10-09): an edit there must
     not reload the library, and a table the app reads must never be missing from the fingerprint."""
-    loaded = SqlServerRepository(get_stored_procedure_client()).load_library()
+    loaded = load_libraries(_sql_threats(), ControlRepository(get_stored_procedure_client()))
     stamp = dict(loaded.stamp if loaded else ())
     assert set(stamp) == {
         "Threat_Category",
@@ -79,8 +100,8 @@ def test_the_library_stamp_covers_exactly_the_tables_the_app_reads() -> None:
 
 
 def test_library_is_read_once_while_unchanged() -> None:
-    repository = CountingRepository()
-    service = LibraryService(repository)
+    repository = CountingThreats()
+    service = _sql_library_cache(repository)
     service.get_threat_library()
     service.get_loaded_libraries()
     service.reload_if_library_changed()
@@ -94,8 +115,7 @@ def test_an_edit_past_the_first_255_characters_changes_the_fingerprint() -> None
     and a 2 s lock wait so it cannot queue behind (or hold up) a running app's library check."""
     if get_settings().env is not Env.DEV:
         pytest.skip("edits, then rolls back, a library row: run against the laptop database only")
-    loaded = SqlServerRepository(get_stored_procedure_client()).load_library()
-    before = dict(loaded.stamp if loaded else ())
+    before = dict(_sql_threats().get_library_stamp())
     engine = create_engine(get_settings().db_dsn)
     connection = engine.raw_connection()
     try:
@@ -121,7 +141,7 @@ def test_an_edit_past_the_first_255_characters_changes_the_fingerprint() -> None
 
 def test_a_changed_fingerprint_swaps_in_both_libraries_together() -> None:
     repository = ScriptedRepository((("Control_Library", b"v1"),), (("Control_Library", b"v2"),))
-    service = LibraryService(repository)  # type: ignore[arg-type]
+    service = _scripted_cache(repository)
     first = service.get_threat_library()
     service.check_library_once()
     assert repository.loads == 2 and service.get_threat_library() is not first
@@ -129,7 +149,7 @@ def test_a_changed_fingerprint_swaps_in_both_libraries_together() -> None:
 
 def test_an_outage_during_a_check_keeps_serving_the_last_good_copy() -> None:
     repository = ScriptedRepository((("Control_Library", b"v1"),), SQL_DOWN, RuntimeError("bug"))
-    service = LibraryService(repository)  # type: ignore[arg-type]
+    service = _scripted_cache(repository)
     loaded = service.get_threat_library()
     failures_before = REGISTRY.get_sample_value("tsg_library_check_failures_total") or 0.0
     service.check_library_once()  # SQL unreachable: logged, not raised
@@ -141,7 +161,7 @@ def test_an_outage_during_a_check_keeps_serving_the_last_good_copy() -> None:
 
 def test_the_first_load_fails_with_503_then_succeeds_once_sql_is_back() -> None:
     repository = ScriptedRepository(SQL_DOWN, (("Control_Library", b"v1"),))
-    service = LibraryService(repository)  # type: ignore[arg-type]
+    service = _scripted_cache(repository)
     with pytest.raises(Unavailable):
         service.get_threat_library()
     assert service.get_threat_library() is not None and repository.loads == 1
@@ -163,12 +183,12 @@ def test_callers_during_the_first_load_share_its_failure_instead_of_repeating_it
     stamp_reads: list[int] = []
 
     class SqlDown(ScriptedRepository):
-        def load_library(self, loaded_stamp: object = None) -> LoadedLibraries | None:
+        def get_library_stamp(self) -> object:
             stamp_reads.append(1)
             release.wait(5)
             raise SQL_DOWN
 
-    service = LibraryService(SqlDown())  # type: ignore[arg-type]
+    service = _scripted_cache(SqlDown())
     failures: list[Exception] = []
 
     def call() -> None:
@@ -196,14 +216,14 @@ def test_concurrent_reloads_never_swap_an_older_copy_over_a_newer_one() -> None:
     loading, release = threading.Event(), threading.Event()
 
     class SlowAtV2(ScriptedRepository):
-        def load_library(self, loaded_stamp: object = None) -> LoadedLibraries | None:
-            loaded = super().load_library(loaded_stamp)
-            if loaded is not None and loaded.stamp == v2:
+        def get_threat_library(self) -> ThreatLibrary:
+            library = super().get_threat_library()
+            if self.stamp == v2:
                 loading.set()
                 release.wait(5)
-            return loaded
+            return library
 
-    service = LibraryService(SlowAtV2(v2, v3))  # type: ignore[arg-type]
+    service = _scripted_cache(SlowAtV2(v2, v3))
     slow = threading.Thread(target=service.reload_if_library_changed, daemon=True)
     slow.start()
     assert loading.wait(5)

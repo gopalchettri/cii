@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
@@ -41,7 +42,7 @@ from app.domain.scenario.plan import (
 )
 from app.models.scenario.plan import AttackPath, PlannedThreat, ThreatFindings
 from app.worker import jobs
-from app.worker.tasks import scenarios as scenario_tasks
+from app.worker.scenario.plan_job import PlanJob
 from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
 
 LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
@@ -210,12 +211,10 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     write stage's set and batch; the other waits for a next set."""
     monkeypatch.setattr(get_settings(), "initial_set_size", 1)
     chat = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
+    plan = PlanJob(finder(chat), container.get_intelligence_switch()).plan_threat_scenario_session
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(
-        _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
-    )
+    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
     run = _stored_run(record_id)
     assert (run["status"], run["step"], run["active"]) == (Status.QUEUED, Step.SCENARIOS, True)
     assert (run["job"]["task"], run["job"]["epoch"], run["job"]["attempts"]) == (
@@ -240,12 +239,10 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
 ) -> None:
     """Nothing applies: the run is done in the same write; no writer job is queued for nothing."""
     chat = planner_chat({})
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
+    plan = PlanJob(finder(chat), container.get_intelligence_switch()).plan_threat_scenario_session
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(
-        _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
-    )
+    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
     run = _stored_run(record_id)
     assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
         Status.DONE,
@@ -259,35 +256,29 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
 
 
 def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(
-    monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
+    sent: list[tuple[Any, ...]],
 ) -> None:
     """Not one gate reply usable on the job's last attempt: the run fails unavailable, never "none apply"."""
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = lambda _: {"verdicts": "?"}
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
+    plan = PlanJob(finder(chat), container.get_intelligence_switch()).plan_threat_scenario_session
     record_id = _queued_run(attempts=Lease.MAX_ATTEMPTS - 1)  # the claim makes it the last
     with pytest.raises(Unavailable):
-        jobs.run_leased_job(
-            _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
-        )
+        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
     run = _stored_run(record_id)
     assert (run["status"], run["active"]) == (Status.FAILED, False) and "plan" not in run
     assert run["job"]["error"] == {"code": ErrorCode.UNAVAILABLE, "message": PlanMessage.AI_COULD_NOT_ANSWER}
     assert chat.asked(AiTask.GAP_FILL) == [] and sent == []
 
 
-def test_a_refused_plan_fails_the_run_with_its_own_code(
-    monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
-) -> None:
+def test_a_refused_plan_fails_the_run_with_its_own_code(sent: list[tuple[Any, ...]]) -> None:
     """No type links a live actor: the run fails actor_library_empty, frees the asset, is never retried."""
     unlinked = tuple(replace(threat, linked_actors=()) for threat in THREATS)
     refusing = finder(planner_chat({}), threats=unlinked)
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: refusing)
+    plan = PlanJob(refusing, container.get_intelligence_switch()).plan_threat_scenario_session
     record_id = _queued_run()
     with pytest.raises(PlanRefused):
-        jobs.run_leased_job(
-            _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
-        )
+        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
     run = _stored_run(record_id)
     assert run["status"] == Status.FAILED and run["active"] is False and "plan" not in run
     assert run["job"]["error"] == {

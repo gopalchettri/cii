@@ -22,7 +22,7 @@ from app.core.constants import (
 from app.core.exceptions import TEMPORARY_ERRORS
 from app.domain.external_intelligence.facts import PlainFactWriter
 from app.domain.external_intelligence.product_link import ProductLinkChecker
-from app.domain.external_intelligence.rerank_gate import RerankGate, get_rerank_gate
+from app.domain.external_intelligence.rerank_gate import RerankGate
 from app.domain.shared.parallel import run_in_parallel
 from app.models.external_intelligence.evidence import (
     Considered,
@@ -53,11 +53,11 @@ class EvidenceFinder:
         search_provider: Callable[[], EvidenceIndex],
         threshold: float,
         *,
-        gate: RerankGate | None = None,
+        gate: RerankGate,
     ) -> None:
         self._provider = search_provider  # the index in use now: empty until the first build is done
         self._threshold = threshold  # the cut-off on the reranker's own 0-100 scale
-        self._gate = gate or get_rerank_gate()
+        self._gate = gate
         self._selector = EvidenceSelector(threshold, PlainFactWriter())
 
     def find_evidence(

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from app import container
 from app.core.constants import (
     AiTask,
     Applicability,
@@ -20,15 +21,12 @@ from app.core.constants import (
     ScenarioStatus,
     TaskName,
 )
-from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.jobs.repository import JobRepository
-from app.data_access.scenario.repository import scenario_sessions
+from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
+from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import evidence_problem
 from app.models.external_intelligence.evidence import Evidence
 from app.models.scenario.write import PathFailure
-from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
-from app.worker.tasks import writing
 from tests.external_intelligence.conftest import STORY_PLAIN, Intel
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.switch.test_switch import MemoryFlags
@@ -37,6 +35,7 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _queued_run,
     _scenarios_of,
     _sessions,
+    _write_batch,
     chat,
     sent,
 )
@@ -86,35 +85,39 @@ def test_a_story_left_citing_nothing_is_kept_hidden_and_its_path_tried_again(
     assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS
 
 
-def test_the_switch_is_read_once_per_batch(intel: Intel) -> None:
+def test_the_switch_is_read_once_per_batch(intel: Intel, monkeypatch: pytest.MonkeyPatch) -> None:
     """P6: turned off while a batch runs, the batch still writes as it began (evidence stories, searched),
     never a story with no search."""
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "one")
     assert lease is not None
-    db = get_mongodb()
-    run = scenario_sessions.get(fields="writing", _id=record_id)
-    library = writing.get_library_service().get_threat_library()
-    batch = writing.BatchWriter(lease, run, db, writing.get_chat_model(), library)
-    intel.switch.enabled = False
-    batch.write()
+    search = intel.finder.find_evidence
+
+    def turned_off_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        intel.switch.enabled = False  # an admin turns it off while the batch searches
+        return search(*args, **kwargs)
+
+    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", turned_off_meanwhile)
+    _write_batch(lease)
     (scenario,) = _scenarios_of(record_id)
     assert scenario["status"] == ScenarioStatus.DONE and len(intel.finder.calls) == 1
     assert scenario["content"]["evidence"][0]["n"] == 1
 
 
-def test_a_first_write_while_the_switch_cannot_be_read_waits_for_it(intel: Intel, story_chat: Any) -> None:
+def test_a_first_write_while_the_switch_cannot_be_read_waits_for_it(
+    intel: Intel, story_chat: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The real switch, its store unreadable and no value kept, is in doubt and reads off, so the delivery
     would write original scenarios with intelligence on. It waits instead (an outage: the job is tried again),
     with no search and no AI call."""
     flags = MemoryFlags()
     flags.down = True
-    switch = ExternalIntelligenceSwitch(flags)
-    intel.access.install(lambda: switch, lambda: intel.refresher)
+    unread = IntelligenceSwitch(flags, env_enabled=lambda: True)  # type: ignore[arg-type]
+    monkeypatch.setattr(container.get_intelligence_switch(), "state", unread.state)
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "one")
     with pytest.raises(Unavailable):
-        writing.write_batch(lease)
+        _write_batch(lease)
     assert _scenarios_of(record_id) == [] and intel.finder.calls == [] and story_chat.calls == []
 
 

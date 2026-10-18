@@ -6,7 +6,7 @@ at start-up (main.py builds every AI gateway there), never a silent default that
 from pathlib import PurePath
 
 from app.core.constants import ErrorMessage
-from app.models.ai import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
+from app.models.ai.profiles import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 
 
 class UnknownModelProfile(Exception):

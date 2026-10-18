@@ -10,10 +10,12 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pymongo.errors import ServerSelectionTimeoutError
 
+from app import container
 from app.core.constants import Audit, AuditAction, AuditTarget, Collection, Timeouts
 from app.core.database import get_mongodb
-from app.data_access.admin import repository as admin
-from app.services import audit
+from app.data_access.admin import audit_repository
+from app.data_access.admin.audit_repository import AuditRepository
+from app.domain.shared import audit
 from tests.conftest import ADMIN
 
 URL = "/v1/tsg/api-clients"
@@ -66,7 +68,7 @@ def test_an_audit_outage_never_fails_the_action_and_is_counted(
         def insert_one(self, _record: dict) -> None:
             raise ServerSelectionTimeoutError("audit store down")
 
-    monkeypatch.setattr(admin.audit_records, "_collection", MongoIsDown())
+    monkeypatch.setattr(container.get_audit_repository(), "_collection", MongoIsDown())
     failures_before = _failures()
     response = client.post(URL, json={"name": "audit-d"}, headers=ADMIN)
     assert response.status_code == 201, response.text
@@ -81,7 +83,7 @@ def test_audit_indexes_and_365_day_retention_are_made_at_start_up(client: TestCl
     assert keys[(("at", 1),)]["expireAfterSeconds"] == timedelta(days=Audit.KEEP_DAYS).total_seconds()
 
 
-def test_an_audit_record_is_one_insert_no_index_work(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_audit_record_is_one_insert_no_index_work() -> None:
     """Before: the first record of every process also ran three index commands inside its 5 s budget, and a
     failing one (e.g. a login without collMod) dropped every record, though the insert alone would work."""
     calls: list[str] = []
@@ -94,8 +96,7 @@ def test_an_audit_record_is_one_insert_no_index_work(monkeypatch: pytest.MonkeyP
             calls.append(name)
             return lambda *_a, **_k: None
 
-    monkeypatch.setattr(admin.audit_records, "_collection", Store())
-    admin.audit_records.create_audit_record(
+    AuditRepository(collection=Store()).create_audit_record(  # type: ignore[arg-type]
         AuditAction.KEY_MINTED, audit.admin_actor("t"), audit.audit_target(AuditTarget.API_CLIENT, "x")
     )
     assert calls == ["insert_one"]
@@ -121,9 +122,8 @@ def test_an_audit_write_is_bounded_so_a_slow_store_cannot_hold_the_answer(
             # Recorded, not asserted here: a failed write is only logged, so an assert would be lost.
             inserted_inside.append(bool(inside))
 
-    monkeypatch.setattr(admin.pymongo, "timeout", timeout)
-    monkeypatch.setattr(admin.audit_records, "_collection", Store())
-    admin.audit_records.create_audit_record(
+    monkeypatch.setattr(audit_repository.pymongo, "timeout", timeout)
+    AuditRepository(collection=Store()).create_audit_record(  # type: ignore[arg-type]
         AuditAction.KEY_MINTED, audit.admin_actor("t"), audit.audit_target(AuditTarget.API_CLIENT, "x")
     )
     assert deadlines == [Timeouts.RECORD_WRITE_SECONDS] and inserted_inside == [True]

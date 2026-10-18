@@ -2,13 +2,13 @@ import pytest
 from fastapi import Depends, Request
 from fastapi.testclient import TestClient
 
+from app import container
 from app.api.dependencies import get_authenticated_principal
 from app.core.constants import Collection, ErrorCode, Limits
 from app.core.database import get_mongodb
 from app.core.exceptions import Unauthorized
-from app.domain.api_keys import hash_api_key
-from app.models.api_clients import Principal
-from app.services.api_clients import get_api_client_service
+from app.domain.admin.api_keys import hash_api_key
+from app.models.admin.api_clients import Principal
 from tests.conftest import ADMIN
 
 URL = "/v1/tsg/api-clients"
@@ -52,13 +52,13 @@ def test_two_active_clients_cannot_share_a_name(client: TestClient) -> None:
 
 def test_revoke_stops_the_key_and_is_idempotent(client: TestClient) -> None:
     minted = _mint_api_client_via_api(client, "frontend-d")
-    service = get_api_client_service()
-    assert service.find_client_id_for_api_key(minted["api_key"]) == minted["client_id"]
+    service = container.get_admin_service()
+    assert service.get_api_client_id(minted["api_key"]) == minted["client_id"]
     first = client.post(f"{URL}/{minted['client_id']}/revoke", headers=ADMIN)
     second = client.post(f"{URL}/{minted['client_id']}/revoke", headers=ADMIN)
     assert first.status_code == second.status_code == 200
     assert first.json()["active"] is False
-    assert service.find_client_id_for_api_key(minted["api_key"]) is None
+    assert service.get_api_client_id(minted["api_key"]) is None
 
 
 def test_revoking_an_unknown_client_is_404(client: TestClient) -> None:
@@ -67,7 +67,7 @@ def test_revoking_an_unknown_client_is_404(client: TestClient) -> None:
 
 def test_principal_needs_a_valid_key_and_all_identity_headers(client: TestClient) -> None:
     minted = _mint_api_client_via_api(client, "frontend-e")
-    service, request = get_api_client_service(), Request({"type": "http", "headers": []})
+    service, request = container.get_admin_service(), Request({"type": "http", "headers": []})
     with pytest.raises(Unauthorized):
         get_authenticated_principal(
             request, service, api_key=minted["api_key"], user_id="u1", entity_id=86, tenant_id="   "
@@ -89,23 +89,23 @@ def test_a_name_of_only_spaces_is_refused(client: TestClient) -> None:
 
 def test_wrong_keys_are_never_cached() -> None:
     """The cause of unbounded growth: every distinct wrong key used to be remembered for a minute."""
-    service = get_api_client_service()
-    cached_before = len(service._verified)
+    service, repository = container.get_admin_service(), container.get_api_client_repository()
+    cached_before = len(repository._verified)
     for attempt in range(50):
-        assert service.find_client_id_for_api_key(f"tsg_guess_{attempt}") is None
-    assert len(service._verified) == cached_before
+        assert service.get_api_client_id(f"tsg_guess_{attempt}") is None
+    assert len(repository._verified) == cached_before
 
 
 def test_a_key_that_cannot_be_one_tsg_minted_costs_no_database_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: every request with any junk X-API-Key made a MongoDB read (and held a thread while MongoDB
     was slow). Only a key with TSG's prefix and length is looked up."""
-    service = get_api_client_service()
+    service = container.get_admin_service()
     reads: list[dict] = []
-    monkeypatch.setattr(service._repository, "get", lambda *_, **where: reads.append(where))
+    monkeypatch.setattr(container.get_api_client_repository(), "get", lambda *_, **where: reads.append(where))
     for junk in ("", "secret", "tsg_short", "x" * 47, "tsg_" + "a" * 44):
-        assert service.find_client_id_for_api_key(junk) is None
+        assert service.get_api_client_id(junk) is None
     assert reads == []
-    service.find_client_id_for_api_key("tsg_" + "a" * 43)  # a minted key's shape: looked up
+    service.get_api_client_id("tsg_" + "a" * 43)  # a minted key's shape: looked up
     assert len(reads) == 1
 
 

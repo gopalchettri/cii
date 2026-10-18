@@ -5,19 +5,16 @@ import re
 import time
 from typing import Any
 
-import pymongo
 import structlog
 from celery import Task, signals, states
 from celery.concurrency import get_implementation
 from prometheus_client import start_http_server
 
-from app.ai import get_chat_model, get_embedding_model, get_rerank_model
-from app.ai.slots import get_ai_slots, set_ai_slot_wait_seconds
 from app.core import metrics
-from app.core.constants import AiLimits, ErrorMessage, LogEvent, TaskName, Timeouts
+from app.core.constants import ErrorMessage, LogEvent, TaskName
 from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.logging import configure_logging
-from app.data_access.base import create_all_indexes
+from app.core.readiness import log_mongodb_topology
 from app.worker.celery_app import settings
 from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
@@ -69,40 +66,16 @@ def _prepare_stores_and_models() -> None:
     """As the API does at start-up: every MongoDB index (the reaper's scans included), and the AI gateways.
     A model name with no profile, or an unreachable store, stops the worker now instead of failing every
     job later with "Unexpected error"."""
-    set_ai_slot_wait_seconds(AiLimits.WORKER_SLOT_WAIT_SECONDS)  # before the gateways take their limiter
+    from app import container
+
     try:
-        create_all_indexes(JOB_COLLECTIONS)
-        get_chat_model()
-        get_embedding_model()
-        get_rerank_model()
+        container.set_up_worker(JOB_COLLECTIONS)
     except Exception as exc:  # noqa: BLE001 — any start-up failure must stop the worker (SystemExit below)
         raise SystemExit(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
     metrics.AI_SLOTS_IN_USE.set_function(
-        get_ai_slots().count_calls_in_progress
+        container.get_ai_slots().count_calls_in_progress
     )  # AiSlotsSaturated reads both
     metrics.AI_SLOTS_CAP.set(settings.max_concurrent_ai_calls)
-
-
-def describe_mongodb_topology() -> dict[str, Any]:
-    """The MongoDB server this process writes to: its replica set's name (or standalone), its version and its
-    default write concern (None when the server does not say, e.g. the user lacks the privilege)."""
-    with pymongo.timeout(Timeouts.READY_CHECK_SECONDS):
-        admin = get_mongodb().client.admin
-        replica_set = admin.command("hello").get("setName") or "standalone"
-        version = admin.command("buildInfo")["version"]
-        try:
-            write_concern = admin.command("getDefaultRWConcern").get("defaultWriteConcern")
-        except pymongo.errors.OperationFailure:
-            write_concern = None
-    return {"replica_set": replica_set, "version": version, "default_write_concern": write_concern}
-
-
-def log_mongodb_topology() -> None:
-    """One start-up line naming the MongoDB topology (API and each worker); never fails start-up."""
-    try:
-        log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology())
-    except Exception:  # noqa: BLE001 — a report only: a store that does not answer fails elsewhere
-        log.warning(LogEvent.MONGODB_TOPOLOGY, replica_set=None, exc_info=True)
 
 
 @signals.beat_init.connect
@@ -134,8 +107,11 @@ def warm_up_external_intelligence(**_: object) -> None:
     """Once the worker is consuming: ask for the intelligence search index in the background, only while the
     switch is on, then follow the active snapshot every minute (G242). Never waits for it and never stops the
     worker (both swallow their faults)."""
-    warm_up_intelligence()
-    start_following_active_snapshot()
+    from app import container
+
+    switch = container.get_intelligence_switch()
+    warm_up_intelligence(switch, container.get_evidence_index_keeper)
+    start_following_active_snapshot(settings, switch, container.get_evidence_index_keeper)
 
 
 @signals.task_prerun.connect

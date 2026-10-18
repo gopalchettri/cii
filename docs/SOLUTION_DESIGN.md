@@ -356,8 +356,8 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | 0 | Back up; save this document; update the code-rules test (X14) | done: backup tag, this document, shared page; code-rules test at step 3 |
 | 1 | Cuts and review fixes on today's layout; parallel agents, one owner per file; tests green | done: 14 developers, 14 commits, 1,793 tests pass |
 | 2 | Pin the API, stored enum values, Redis keys, task names, indexes and script imports | done: tests/test_outside_contract.py + tests/contract/ |
-| 3 | Parallel agents, one per module + one for the container: move files, one service class, one repository per collection, constructor injection | not started |
-| 4 | Join the pieces; full test suite; fix failures | not started |
+| 3 | Parallel agents, one per module + one for the container: move files, one service class, one repository per collection, constructor injection | done: 8 agents; 7 service classes, 1 per module; 0 hidden singletons outside app/container.py |
+| 4 | Join the pieces; full test suite; fix failures | done: 1,795 tests pass; pins unchanged; ruff clean |
 | 5 | Count files and lines before and after; commit locally | not started |
 | 6 | Last, after everything else: update the two console pages, app/ux/tsg_console.html and app/ux/sse_test.html (owner, 2026-10-19) | not started |
 

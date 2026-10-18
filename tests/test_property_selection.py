@@ -15,7 +15,7 @@ from app.core.exceptions import Invalid, SetupError
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.controls import control_query
 from app.domain.scenario.plan import check_required, describe_asset_for_ai, raw_system_facts
-from app.models.asset_context import AssetContextRows, FrozenContext
+from app.models.scenario.asset_context import AssetContextRows, FrozenContext
 from app.models.scenario.views import StartRunRequest
 
 LOCATION, TECHNOLOGY = "Marker location Site Alpha", "Marker technology Stack Omega"

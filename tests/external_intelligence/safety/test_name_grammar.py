@@ -10,9 +10,9 @@ from app.core.constants import IntelKind, IntelRejection, IntelSource
 from app.domain.external_intelligence.facts import PlainFactWriter
 from app.domain.external_intelligence.text_cleaner import as_name, is_plain_name, is_tactic
 from app.models.external_intelligence.evidence import IntelHit
-from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
-from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
-from app.services.external_intelligence.sources.text_guard import SourceTextGuard
+from app.worker.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
+from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
+from app.worker.external_intelligence.sources.text_guard import SourceTextGuard
 from tests.external_intelligence.sources import test_kev_and_epss_sources as kev_fixtures
 from tests.external_intelligence.sources import test_mitre_attack_source as attack_fixtures
 from tests.external_intelligence.sources.web import serving

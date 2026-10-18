@@ -13,7 +13,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from app.core.constants import Search
-from app.models.search import SearchHit
+from app.models.search.hits import SearchHit
 
 _NOT_A_WORD = re.compile(r"[^\w\s]")
 

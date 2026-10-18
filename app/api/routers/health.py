@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.core.constants import ApiTag, Dependency
-from app.services.readiness import check_readiness_without_a_thread, read_mongodb_topology
+from app.core.readiness import check_readiness_without_a_thread, read_mongodb_topology
 
 router = APIRouter(tags=[ApiTag.HEALTH])
 

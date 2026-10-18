@@ -1,6 +1,7 @@
 """The intelligence refresh job: beat's scheduled check of the due sources, skipped while the switch is off,
 or an admin's refresh recorded on its job. A failed source keeps its last good data."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,9 +10,9 @@ import structlog
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
 from app.core.exceptions import AppError
-from app.data_access.admin.repository import AdminJobRepository, admin_jobs
+from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.worker.celery_app import celery_app
-from app.worker.external_intelligence.intel_access import IntelAccess, get_intel_access
+from app.worker.external_intelligence.refresh_sources import SourceRefresher
 
 log = structlog.get_logger(__name__)
 
@@ -19,17 +20,18 @@ log = structlog.get_logger(__name__)
 @celery_app.task(name=TaskName.REFRESH_EXTERNAL_INTELLIGENCE)
 def refresh_external_intelligence(job_id: str | None = None) -> None:
     """Celery task: without `job_id` refresh the due sources (the scheduled check); with it, run that job."""
-    access = get_intel_access()
+    from app import container
+
     if job_id is None:
-        if access.is_on():
-            access.refresher().refresh_due_sources(datetime.now(UTC))
+        if container.get_intelligence_switch().is_on():
+            container.get_source_refresher().refresh_due_sources(datetime.now(UTC))
         else:
             log.info(IntelWorkEvent.REFRESH_SKIPPED)
         return
-    run_refresh_job(job_id, admin_jobs, access)
+    run_refresh_job(job_id, container.get_admin_job_repository(), container.get_source_refresher)
 
 
-def run_refresh_job(job_id: str, jobs: AdminJobRepository, access: IntelAccess) -> None:
+def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[], SourceRefresher]) -> None:
     """Run an admin's refresh of its one source, or of the due ones, and record how it went on the job.
     The run-time switch was checked when the job was queued, so only the env master switch is checked here
     (the worker's cached run-time switch can lag a change by a minute). A late or repeated message finds the
@@ -45,9 +47,9 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, access: IntelAccess) 
             jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
             return
         if source is None:
-            access.refresher().refresh_due_sources(now)
+            refresher().refresh_due_sources(now)
         else:
-            access.refresher().refresh_one_source(source, now)
+            refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
         jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=_job_error(exc))

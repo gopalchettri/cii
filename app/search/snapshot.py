@@ -13,7 +13,7 @@ import numpy as np
 from app.ai import EmbeddingModel
 from app.core.asset_types import asset_type_fits
 from app.core.constants import Controls, EmbeddingCorpus, StrideCategory
-from app.models.library import (
+from app.models.library.library import (
     LibraryActor,
     LibraryControl,
     LibraryThreat,

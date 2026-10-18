@@ -5,10 +5,10 @@ import dataclasses
 
 from app.core.constants import PlanCheckStatus, Route, StrideCategory
 from app.domain.scenario.plan import merge_two_threats, planned_threat_record, threat_reason_for
+from app.domain.scenario.results import _threat_block, build_scenario_view
 from app.domain.scenario.write import brief_entry_point_options, build_brief, written_record
 from app.models.scenario.plan import PlannedThreat
 from app.models.scenario.write import PlanCheck, WrittenScenario
-from app.services.scenario.results import _threat_block, build_scenario_view
 from tests.planner_samples import CONTEXT, planned
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
 

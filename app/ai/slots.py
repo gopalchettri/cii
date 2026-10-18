@@ -15,12 +15,9 @@ from contextlib import contextmanager
 import structlog
 from redis import Redis
 
-from app.core.config import get_settings
 from app.core.constants import AiLimits, ErrorMessage, LogEvent
-from app.core.database import get_redis_client
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
-from app.core.singletons import singleton
 
 log = structlog.get_logger(__name__)
 
@@ -44,16 +41,6 @@ local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 return redis.call('ZCARD', KEYS[1])
 """
-
-#: How long this process waits for a free slot: the API answers callers, so it waits briefly; a worker waits
-#: longer, because its job would otherwise only be retried later (set_ai_slot_wait_seconds).
-_wait_seconds: float = AiLimits.API_SLOT_WAIT_SECONDS
-
-
-def set_ai_slot_wait_seconds(seconds: float) -> None:
-    """Call once at process start, before the first AI call (a worker: AiLimits.WORKER_SLOT_WAIT_SECONDS)."""
-    global _wait_seconds
-    _wait_seconds = seconds
 
 
 def max_slot_hold_seconds(timeout_seconds: int) -> int:
@@ -124,9 +111,3 @@ class AiSlots:
 
 #: Tests and any caller that needs no limit.
 UNLIMITED_AI_SLOTS = AiSlots(None, 0, 0)
-
-
-@singleton
-def get_ai_slots() -> AiSlots:
-    cap = get_settings().max_concurrent_ai_calls
-    return AiSlots(get_redis_client() if cap else None, cap, _wait_seconds)

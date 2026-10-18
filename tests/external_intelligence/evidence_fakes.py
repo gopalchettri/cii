@@ -1,6 +1,8 @@
 """Stand-ins for the evidence search, refresh and switch tests: record documents, in-memory stores,
 models that count their concurrent callers. No MongoDB, no network, no AI model."""
 
+from __future__ import annotations
+
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -18,7 +20,11 @@ from app.models.external_intelligence.evidence_request import (
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord, SaveCounts
 from app.models.external_intelligence.sanitised_text import SanitisedText
-from app.models.external_intelligence.source_health import SourceHealth
+from app.models.external_intelligence.source_health import (
+    SourceHealth,
+    source_health_in_registry_order,
+    sources_in_registry_order,
+)
 from tests.fakes import FakeEmbeddings, FakeRerankModel
 
 NOW = datetime(2026, 10, 12, tzinfo=UTC)
@@ -254,6 +260,12 @@ class MemoryFeeds:
         if where.get("approved"):
             return [{"_id": source} for source in self.approved]
         return [self._doc(source) for source in self.health]
+
+    def list_approved_sources(self) -> list[IntelSource]:
+        return sources_in_registry_order(self.list(approved=True))
+
+    def list_source_health(self) -> list[SourceHealth]:
+        return source_health_in_registry_order(self.list())
 
     def count(self, **where: Any) -> int:
         source = where["_id"]

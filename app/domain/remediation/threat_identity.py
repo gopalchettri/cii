@@ -15,9 +15,9 @@ from app.core.constants import (
 )
 from app.core.exceptions import Invalid
 from app.domain.shared.names import name_match_key, threat_name_without_code
-from app.models.library import ThreatLibrary
-from app.models.remediation import ThreatIdentity
-from app.models.remediation_requests import LibraryRef, ManualScenario
+from app.models.library.library import ThreatLibrary
+from app.models.remediation.plan import ThreatIdentity
+from app.models.remediation.requests import LibraryRef, ManualScenario
 
 #: Where a refusal points: v1's flat fields, e.g. body.manual_scenario.threat_type_id.
 _FIELD = "body.manual_scenario.{part}"

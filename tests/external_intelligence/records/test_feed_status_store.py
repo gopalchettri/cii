@@ -6,12 +6,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app import container
 from app.core.constants import Collection, FeedStatus, IntelDocId, IntelLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import (
-    IntelFeedRepository,
-    intel_feeds,
-)
+from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.models.external_intelligence.source_health import (
     SourceHealth,
     refresh_failure_fields,
@@ -29,7 +27,7 @@ STALE = timedelta(seconds=IntelLimits.CLAIM_STALE_SECONDS)
 def feeds() -> IntelFeedRepository:
     db = get_mongodb()
     db[Collection.EXTERNAL_FEED_STATUS].delete_many({})
-    store = intel_feeds
+    store = container.get_intel_feed_repository()
     store.create_missing_intel_feeds()
     return store
 
@@ -60,7 +58,7 @@ def test_the_seed_never_undoes_an_operators_revocation_and_only_adds(feeds: Inte
 def test_a_revocation_before_the_seed_is_kept() -> None:
     db = get_mongodb()
     db[Collection.EXTERNAL_FEED_STATUS].delete_many({})
-    store = intel_feeds
+    store = container.get_intel_feed_repository()
     store.update_intel_feed_approval(SOURCE, False)
     store.create_missing_intel_feeds()
     assert not bool(store.count(_id=SOURCE, approved=True)) and len(
@@ -69,7 +67,7 @@ def test_a_revocation_before_the_seed_is_kept() -> None:
 
 
 def test_the_switch_document_in_the_same_collection_is_not_a_source(feeds: IntelFeedRepository) -> None:
-    intel_feeds.save({"_id": IntelDocId.SWITCH, "enabled": False, "changed_by": "admin", "changed_at": NOW})
+    feeds.save({"_id": IntelDocId.SWITCH, "enabled": False, "changed_by": "admin", "changed_at": NOW})
     assert len(source_health_in_registry_order(feeds.list(sources=True))) == len(IntelSource)
     assert get_mongodb()[Collection.EXTERNAL_FEED_STATUS].count_documents({"_id": IntelDocId.SWITCH}) == 1
 
@@ -162,7 +160,7 @@ def test_a_revoked_source_cannot_be_claimed(feeds: IntelFeedRepository) -> None:
 
 def test_many_workers_racing_for_one_source_give_exactly_one_token(feeds: IntelFeedRepository) -> None:
     def claim(_: int) -> str | None:
-        return intel_feeds.claim_intel_feed_refresh(SOURCE, NOW, NOW - STALE)
+        return container.get_intel_feed_repository().claim_intel_feed_refresh(SOURCE, NOW, NOW - STALE)
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         results = list(pool.map(claim, range(64)))

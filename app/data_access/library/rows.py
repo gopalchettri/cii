@@ -11,7 +11,7 @@ import structlog
 from app.core.asset_types import canonical_asset_type, unknown_asset_type
 from app.core.constants import LibraryRowKind, LogEvent, StrideCategory
 from app.core.database import Row
-from app.models.library import (
+from app.models.library.library import (
     LibraryActor,
     LibraryControl,
     LibraryThreat,

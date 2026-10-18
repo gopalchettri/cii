@@ -8,8 +8,8 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.core.constants import ControlMatch
 from app.domain.scenario.controls import select_controls
-from app.models.controls import ControlRule
-from app.models.library import LibraryControl
+from app.models.library.library import LibraryControl
+from app.models.scenario.controls import ControlRule
 
 RULE = ControlRule(cutoff=50, candidates=40, least=1, most=10)
 

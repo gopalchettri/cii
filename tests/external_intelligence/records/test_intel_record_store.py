@@ -5,14 +5,12 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app import container
 from app.core.constants import Collection, IntelKind, IntelRejection, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import (
-    IntelRecordRepository,
-    intel_records,
-)
+from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord
-from app.services.external_intelligence.record_batch_writer import list_current_external_ids
+from app.worker.external_intelligence.record_batch_writer import list_current_external_ids
 
 NOW = datetime(2026, 10, 12, tzinfo=UTC)
 SOURCE = IntelSource.CISA_KEV
@@ -22,7 +20,7 @@ SOURCE = IntelSource.CISA_KEV
 def store() -> IntelRecordRepository:
     db = get_mongodb()
     db[Collection.INTEL].delete_many({})
-    records = intel_records
+    records = container.get_intel_record_repository()
     records.create_indexes()
     return records
 

@@ -5,12 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app import container
 from app.core.constants import Collection, IntelKind, IntelOperationsLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import (
-    IntelRecordRepository,
-    intel_records,
-)
+from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.models.external_intelligence.intel_record import IntelRecord
 
 DAY1 = datetime(2026, 10, 1, tzinfo=UTC)
@@ -23,7 +21,7 @@ SECONDS = IntelOperationsLimits.RETIRED_VERSION_DAYS * 86_400
 def store() -> IntelRecordRepository:
     db = get_mongodb()
     db[Collection.INTEL].delete_many({})
-    records = intel_records
+    records = container.get_intel_record_repository()
     records.create_indexes()
     return records
 

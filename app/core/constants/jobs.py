@@ -21,6 +21,21 @@ class TaskName(StrEnum):
     REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # sources due, then a snapshot
 
 
+#: The queue each task's messages go to (the Celery app's task_routes).
+TASK_ROUTES: Final[dict[str, dict[str, str]]] = {
+    TaskName.FIND_THREATS: {"queue": Queue.THREATS},
+    TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
+    TaskName.MAP_CONTROLS: {"queue": Queue.SCENARIOS},
+    TaskName.WRITE_PLAN: {"queue": Queue.SCENARIOS},
+    TaskName.REAP: {"queue": Queue.MAINTENANCE},
+    TaskName.RETRY_CONTROLS: {"queue": Queue.MAINTENANCE},
+    TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
+    TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
+}
+#: The queues some task is routed to: /ready needs a live worker on each (an unrouted queue needs none).
+ROUTED_QUEUES: Final[tuple[str, ...]] = tuple(sorted({route["queue"] for route in TASK_ROUTES.values()}))
+
+
 class AdminJobKind(StrEnum):
     """What an admin job does (tsg_admin_jobs.kind); one of each kind at a time."""
 

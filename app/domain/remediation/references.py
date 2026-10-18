@@ -9,8 +9,8 @@ from collections.abc import Sequence
 
 from app.core.constants import Remediation, RemediationMessage, SnapshotWarning
 from app.core.exceptions import Invalid
-from app.models.library import LibraryControl, ResolvedControls
-from app.models.remediation_requests import ControlRef
+from app.models.library.library import LibraryControl, ResolvedControls
+from app.models.remediation.requests import ControlRef
 
 
 class _ControlIndex:

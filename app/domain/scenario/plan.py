@@ -22,9 +22,6 @@ from app.ai import (
     RerankModel,
     TruncatedAiAnswer,
     UnreadableAiAnswer,
-    get_chat_model,
-    get_embedding_model,
-    get_rerank_model,
 )
 from app.core.asset_types import asset_type_fits
 from app.core.config import get_settings
@@ -53,7 +50,6 @@ from app.core.constants import (
 )
 from app.core.exceptions import Conflict, Forbidden, Invalid, NotFound, PlanRefused, SetupError, Unavailable
 from app.core.redaction import redact
-from app.core.singletons import singleton
 from app.domain.scenario.library_rules import compatible_asset_types, place_asset_types
 from app.domain.shared.ask_ai import (
     ChatPrompt,
@@ -71,13 +67,13 @@ from app.domain.shared.names import (
 )
 from app.domain.shared.parallel import run_in_shared_pool
 from app.domain.shared.prompt_redaction import DATABASE_KEYS, facts_safe_for_prompt
-from app.models.asset_context import AssetContextRows, FrozenContext, Row
-from app.models.library import (
+from app.models.library.library import (
     LibraryActor,
     LibraryThreat,
     LibraryThreatType,
     ThreatLibrary,
 )
+from app.models.scenario.asset_context import AssetContextRows, FrozenContext, Row
 from app.models.scenario.plan import (
     ActorPick,
     AttackPath,
@@ -92,7 +88,7 @@ from app.models.scenario.plan import (
     Verdict,
 )
 from app.models.scenario.views import StartRunRequest
-from app.search.service import LibrarySearch, get_library_search
+from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot, linked_actors_by_type
 
 log = structlog.get_logger(__name__)
@@ -938,12 +934,6 @@ def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
         name=replace_codes_with_names(threat.name, names),
         type_name=replace_codes_with_names(threat.type_name, names),
     )
-
-
-@singleton
-def get_threat_finder() -> ThreatFinder:
-    """One per process: every run builds its own landscape and judge."""
-    return ThreatFinder(get_chat_model(), get_library_search(), get_rerank_model(), get_embedding_model())
 
 
 # --- the plan: one path per kind of attack per route, ranked

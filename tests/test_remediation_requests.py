@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
+from app import container
 from app.core.constants import (
     AiTask,
     AuditAction,
@@ -32,19 +33,14 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, NotFound
-from app.data_access.jobs.repository import DELETING_MARK
-from app.data_access.remediation.repository import remediation_plans
-from app.models.library import LibraryControl, LoadedLibraries
-from app.models.remediation_requests import PlanRequest
-from app.services.api_clients import get_api_client_service
-from app.services.remediation import requests as requests_module
-from app.services.remediation.requests import PlanRequestService, get_plan_request_service
-from app.services.remediation.snapshots import SnapshotMaker
+from app.data_access.scenario.threat_scenario_session_repository import DELETING_MARK
+from app.models.library.library import LibraryControl, LoadedLibraries
+from app.models.remediation.requests import PlanRequest
+from app.services.remediation.remediation_plan_service import RemediationPlanService
 from app.worker import jobs
-from app.worker.tasks import remediation as plan_job
 from tests.fakes import FakeChatModel
 from tests.plan_addresses import generated, plan_url
-from tests.plan_job_fakes import fake_plan_inputs
+from tests.plan_job_fakes import fake_plan_inputs, remediation_plan_job, remediation_plan_service
 from tests.planner_samples import CONTEXT
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_snapshot import LIBRARY, SCENARIO
@@ -61,30 +57,34 @@ FAKE_LIBRARY = SimpleNamespace(
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"plans-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"plans-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
-def _service() -> PlanRequestService:
-    snapshots = SnapshotMaker(FAKE_LIBRARY)  # type: ignore[arg-type]
-    return PlanRequestService(snapshots)
+def _service(**changed: Any) -> RemediationPlanService:
+    """The remediation service on the fake library, `changed` parts swapped in."""
+    return remediation_plan_service(**({"library": FAKE_LIBRARY} | changed))
 
 
 @pytest.fixture
 def world(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
-    """The service with a fake library; what it sends and publishes; the plan job's chat and its input
-    completion on fakes (mapper, search, proposals)."""
+    """The service (`service`) with a fake library; what it sends and publishes; the plan job (`job`, also
+    the container's) with its chat and its input completion (`inputs`) on fakes (mapper, search,
+    proposals)."""
     inputs, fakes = fake_plan_inputs(tuple(LIBRARY.values()))
     state: dict[str, Any] = {"chat": FakeChatModel(), "sent": [], "published": []} | fakes
-    built = _service()
-    client.app.dependency_overrides[get_plan_request_service] = lambda: built  # type: ignore[attr-defined]
-    monkeypatch.setattr(requests_module, "send_job", lambda *args: state["sent"].append(args))
-    monkeypatch.setattr(requests_module, "publish_remediation_status", state["published"].append)
+
+    def send_job(*args: Any) -> None:
+        state["sent"].append(args)
+
+    built = _service(send_job=send_job, publish_remediation_status=state["published"].append)
+    state |= {"service": built, "inputs": inputs, "job": remediation_plan_job(state["chat"], inputs)}
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[container.get_remediation_plan_service] = lambda: built
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.REMEDIATIONS, state["published"].append)
-    monkeypatch.setattr(plan_job, "get_chat_model", lambda: state["chat"])
-    monkeypatch.setattr(plan_job, "get_plan_inputs", lambda: inputs)
+    monkeypatch.setattr(container, "get_remediation_plan_job", lambda: state["job"])
     yield state
-    client.app.dependency_overrides.pop(get_plan_request_service, None)  # type: ignore[attr-defined]
+    overrides.pop(container.get_remediation_plan_service, None)
 
 
 def _identity(api_key: str, entity_id: int = ENTITY) -> dict[str, str]:
@@ -120,12 +120,13 @@ def _status(client: TestClient, api_key: str, remediation_id: str, entity_id: in
 
 
 def _deliver(remediation_id: str) -> None:
-    """One delivery of the plan job; a version it fails is asserted on the record."""
+    """One delivery of the plan job (the world's); a version it fails is asserted on the record."""
     task: Any = SimpleNamespace(
         name=TaskName.WRITE_PLAN, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None
     )
+    write = container.get_remediation_plan_job().write_remediation_plan_version
     with contextlib.suppress(Exception):  # run_leased_job re-raises what it settled
-        jobs.run_leased_job(task, Collection.REMEDIATIONS, remediation_id, 1, plan_job.write_version)
+        jobs.run_leased_job(task, Collection.REMEDIATIONS, remediation_id, 1, write)
 
 
 def _record(remediation_id: str) -> dict[str, Any]:
@@ -222,11 +223,13 @@ def test_a_request_made_at_the_same_moment_gets_409_with_the_winner(
     landed first."""
     scenario_id = _scenario()
     sightings = iter([None, SimpleNamespace(remediation_id="winner")])
-    monkeypatch.setattr(requests_module, "get_remediation_status_of_scenario", lambda _id: next(sightings))
+    remediations = world["service"]._remediations  # noqa: SLF001
+    monkeypatch.setattr(remediations, "get_remediation_plan_status_of_scenario", lambda _id: next(sightings))
     get_mongodb()[Collection.REMEDIATIONS].insert_one({"_id": "winner", "scenario_id": scenario_id})
     principal = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
+    body = PlanRequest.model_validate(generated(scenario_id))
     with pytest.raises(Conflict) as clash:
-        _service().request(principal, PlanRequest.model_validate(generated(scenario_id)))  # type: ignore[arg-type]
+        world["service"].create_remediation_plan(principal, body, None)  # type: ignore[arg-type]
     assert (clash.value.reason, clash.value.details) == (
         ConflictReason.PLAN_ALREADY_EXISTS,
         {"remediation_id": "winner"},
@@ -337,17 +340,18 @@ def test_a_plan_requested_as_its_run_is_deleted_never_outlives_its_scenario(
     insert."""
     scenario_id = _scenario()
     scenario = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})
-    service = _service()
-    real_create = remediation_plans.create
+    service = world["service"]
+    remediations = service._remediations  # noqa: SLF001
+    real_create = remediations.create
 
     def create_after_the_delete(record: dict[str, Any]) -> Any:
         get_mongodb()[Collection.SCENARIOS].delete_one({"_id": scenario_id})  # the delete lands first
         return real_create(record)
 
-    monkeypatch.setattr(remediation_plans, "create", create_after_the_delete)
+    monkeypatch.setattr(remediations, "create", create_after_the_delete)
     principal = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
     with pytest.raises(NotFound):
-        service.plan_scenario(
+        service._plan_scenario(  # noqa: SLF001
             principal, PlanRequest.model_validate(generated(scenario_id, **REGISTER)), scenario
         )  # type: ignore[arg-type]
     assert get_mongodb()[Collection.REMEDIATIONS].count_documents(generated(scenario_id)) == 0
@@ -365,7 +369,7 @@ def test_a_plan_requested_as_its_run_is_being_deleted_answers_409_and_is_removed
     get_mongodb()[Collection.SESSIONS].update_one({"_id": scenario["session_id"]}, marked)
     principal = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
     with pytest.raises(Conflict) as refused:
-        _service().plan_scenario(
+        world["service"]._plan_scenario(  # noqa: SLF001
             principal, PlanRequest.model_validate(generated(scenario_id, **REGISTER)), scenario
         )  # type: ignore[arg-type]
     assert refused.value.reason == ConflictReason.RUN_BEING_DELETED

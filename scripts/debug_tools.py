@@ -38,9 +38,9 @@ def set_debug_value(name: str, value: str) -> None:
 
 # ---------------------------------------------------------------- read-only checks
 def stores(_: str) -> int:
-    from app.core.database import get_stored_procedure_client
-    from app.data_access.library.repository import SqlServerRepository
-    from app.services.readiness import check_readiness
+    from app.container import get_control_repository, get_threat_repository
+    from app.core.readiness import check_readiness
+    from app.search.library_cache import load_libraries
 
     dependencies, workers = check_readiness()
     for name, up in dependencies.items():
@@ -48,7 +48,7 @@ def stores(_: str) -> int:
     counts = ", ".join(f"{queue}={count}" for queue, count in (workers or {}).items())
     print(f"  live workers per queue: {counts if workers is not None else 'unknown (check Redis)'}")
     if all(dependencies.values()):
-        loaded = SqlServerRepository(get_stored_procedure_client()).load_library()
+        loaded = load_libraries(get_threat_repository(), get_control_repository())
         tables = [table for table, _ in loaded.stamp] if loaded else []
         print(f"  library tables SQL Server reports: {len(tables)} ({', '.join(tables)})")
     return 0 if all(dependencies.values()) and workers and all(workers.values()) else 1
@@ -77,7 +77,8 @@ def workers(_: str) -> int:
 
 
 def queues(_: str) -> int:
-    from app.worker.celery_app import ROUTED_QUEUES, count_waiting_messages
+    from app.core.constants import ROUTED_QUEUES
+    from app.worker.celery_app import count_waiting_messages
 
     for queue in ROUTED_QUEUES:
         print(f"  {queue:16} {count_waiting_messages(queue)} waiting")

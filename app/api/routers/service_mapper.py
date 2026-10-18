@@ -14,8 +14,9 @@ from fastapi import Header as HeaderParam
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from app.api.dependencies import Caller
+from app.container import get_service_mapper_service
 from app.core.constants import ApiTag, Header, Limits, MapperEvent, Realtime, Review
-from app.models.service_map import (
+from app.models.service_mapper.service_map import (
     CreateMappingRequest,
     DecisionRequest,
     DecisionResult,
@@ -24,11 +25,11 @@ from app.models.service_map import (
     MappingView,
     StatusEvent,
 )
-from app.services.service_mapper.stub import ServiceMapperStub, get_service_mapper
+from app.services.service_mapper.service_mapper_service import ServiceMapperService
 
 router = APIRouter(tags=[ApiTag.SERVICE_MAPPER])
 
-Mapper = Annotated[ServiceMapperStub, Depends(get_service_mapper)]
+Mapper = Annotated[ServiceMapperService, Depends(get_service_mapper_service)]
 MappingId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 RecommendationId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 IdempotencyKey = Annotated[
@@ -44,13 +45,13 @@ def create_mapping(
 ) -> MappingAccepted:
     """A stub with fixed answers, for integration tests (real keys, checks and error shapes). 202 with
     `mapping_id`."""
-    return mapper.create(principal, body, idempotency_key)
+    return mapper.create_service_mapping(principal, body, idempotency_key)
 
 
 @router.get("/v1/service-mapper/{mapping_id}", response_model=MappingView, summary="2. Read a mapping")
 def get_mapping(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> MappingView:
     """The mapping and its recommendations."""
-    return mapper.get(principal, mapping_id)
+    return mapper.get_service_mapping(principal, mapping_id)
 
 
 @router.get(
@@ -61,7 +62,7 @@ def get_mapping(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> Map
 )
 def list_entity_services(listed_entity_id: int, principal: Caller, mapper: Mapper) -> EntityServices:
     """The entity's services; the entity must be the caller's, else 403."""
-    return mapper.entity_services(principal, listed_entity_id)
+    return mapper.list_entity_services(principal, listed_entity_id)
 
 
 @router.post(
@@ -74,7 +75,7 @@ def regenerate_mapping(
     mapping_id: MappingId, principal: Caller, mapper: Mapper, idempotency_key: IdempotencyKey = None
 ) -> MappingAccepted:
     """202. Mapping `...0001` answers 409 `generation_in_progress`, for testing."""
-    return mapper.regenerate(principal, mapping_id, idempotency_key)
+    return mapper.regenerate_service_mapping(principal, mapping_id, idempotency_key)
 
 
 @router.patch(
@@ -87,13 +88,13 @@ def decide_recommendation(
 ) -> DecisionResult:
     """Recommendation `...0002` answers 409 `decision_final` and `...0003` 409 `superseded`, for
     testing."""
-    return mapper.decide(principal, recommendation_id, body)
+    return mapper.decide_service_mapping_recommendation(principal, recommendation_id, body)
 
 
 def mapping_events(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> list[StatusEvent]:
     """Runs before the stream starts, so an unknown mapping (404) or another caller's is an ordinary problem
     response, not a broken stream."""
-    return mapper.events(principal, mapping_id)
+    return mapper.list_service_mapping_events(principal, mapping_id)
 
 
 @router.get(

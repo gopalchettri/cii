@@ -6,8 +6,8 @@ import pytest
 
 from app.core.constants import SourceDownload
 from app.core.exceptions import IntelFetchFailed
-from app.services.external_intelligence.sources.http_download import HttpDownloader
-from app.services.external_intelligence.sources.nist_nvd_details_source import NvdApiClient
+from app.worker.external_intelligence.sources.http_download import HttpDownloader
+from app.worker.external_intelligence.sources.nist_nvd_details_source import NvdApiClient
 
 
 def _web(handler, slept: list[float] | None = None) -> HttpDownloader:

@@ -1,8 +1,8 @@
-"""A plan job completing its version's pending input (app/worker/plan_inputs.py, G262: a plan request makes
-no AI call): a mapping the run's controls job makes now is waited for and used, never doubled; an outage frees
-the scenario's controls and retries the job; a cancel stops a mapping at its next AI call; a regenerate's lost
-controls are warned about; an empty control library is refused by the request itself. The test database; the
-plan job's AI faked."""
+"""A plan job completing its version's pending input (app/worker/remediation/plan_inputs.py, G262: a plan
+request makes no AI call): a mapping the run's controls job makes now is waited for and used, never doubled;
+an outage frees the scenario's controls and retries the job; a cancel stops a mapping at its next AI call; a
+regenerate's lost controls are warned about; an empty control library is refused by the request itself. The
+test database; the plan job's AI faked."""
 
 import contextlib
 import threading
@@ -16,27 +16,23 @@ import pytest
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
+from app import container
 from app.core.constants import AiTask, Collection, Controls, ErrorCode, SnapshotWarning, Status, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
-from app.models.library import LoadedLibraries
-from app.models.remediation_requests import PlanRequest
-from app.services.remediation import regenerate as regenerate_module
-from app.services.remediation.regenerate import PlanRegeneration, get_plan_regeneration
-from app.services.remediation.requests import PlanRequestService
-from app.services.remediation.snapshots import SnapshotMaker
+from app.models.library.library import LoadedLibraries
+from app.models.remediation.requests import PlanRequest
 from app.worker import jobs
-from app.worker.tasks import remediation as plan_job
 from tests.plan_addresses import generated, plan_url
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
     ENTITY,
-    FAKE_LIBRARY,
     _identity,
     _record,
     _request,
     _scenario,
+    _service,
     api_key,
     world,
 )
@@ -47,8 +43,9 @@ def _deliver(remediation_id: str, version: int = 1) -> None:
     task: Any = SimpleNamespace(
         name=TaskName.WRITE_PLAN, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None
     )
+    write = container.get_remediation_plan_job().write_remediation_plan_version
     with contextlib.suppress(Exception):  # run_leased_job re-raises what it settled
-        jobs.run_leased_job(task, Collection.REMEDIATIONS, remediation_id, version, plan_job.write_version)
+        jobs.run_leased_job(task, Collection.REMEDIATIONS, remediation_id, version, write)
 
 
 def _due_now(remediation_id: str) -> None:
@@ -174,17 +171,9 @@ def test_a_cancel_stops_the_plan_jobs_mapping_and_only_a_plan_cancel_ends_the_jo
 
 
 @pytest.fixture
-def regenerations(
-    client: TestClient,
-    world: dict[str, Any],  # noqa: F811
-    monkeypatch: pytest.MonkeyPatch,
-) -> Any:
-    snapshots = SnapshotMaker(FAKE_LIBRARY)  # type: ignore[arg-type]
-    built = PlanRegeneration(snapshots)
-    client.app.dependency_overrides[get_plan_regeneration] = lambda: built  # type: ignore[attr-defined]
-    monkeypatch.setattr(regenerate_module, "send_job", lambda *args: world["sent"].append(args))
-    yield built
-    client.app.dependency_overrides.pop(get_plan_regeneration, None)  # type: ignore[attr-defined]
+def regenerations(world: dict[str, Any]) -> Any:  # noqa: F811
+    """The world's service: it regenerates plans on the same fakes."""
+    return world["service"]
 
 
 def test_a_regenerate_that_waited_for_its_controls_still_warns_of_the_ones_it_lost(
@@ -214,9 +203,8 @@ def test_a_regenerate_that_waited_for_its_controls_still_warns_of_the_ones_it_lo
 def test_an_empty_control_library_is_refused_by_the_request_itself(world: dict[str, Any]) -> None:  # noqa: F811
     """No AI is needed to know that no control could ever be kept: 409 control_library_empty at once."""
     empty = SimpleNamespace(get_loaded_libraries=lambda: LoadedLibraries((), THREATS, ()))
-    snapshots = SnapshotMaker(empty)  # type: ignore[arg-type]
-    service = PlanRequestService(snapshots)
+    service = _service(library=empty, send_job=lambda *args: world["sent"].append(args))
     principal: Any = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
     with pytest.raises(Conflict) as refused:
-        service.request(principal, PlanRequest.model_validate(generated(_scenario())))
+        service.create_remediation_plan(principal, PlanRequest.model_validate(generated(_scenario())), None)
     assert refused.value.reason == ErrorCode.CONTROL_LIBRARY_EMPTY and world["sent"] == []

@@ -14,8 +14,11 @@ from sqlalchemy import Engine
 from app.core.constants import AssetType, ErrorMessage, LibraryRowKind, StoredProcedure
 from app.core.database import StoredProcedureClient
 from app.core.exceptions import Invalid, SetupError, Unavailable
-from app.data_access.library.repository import SqlServerRepository
-from app.models.library import PendingLibraryRow, RejectedLibraryThreat
+from app.data_access.library.control_repository import ControlRepository
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.models.library.library import LoadedLibraries, PendingLibraryRow, RejectedLibraryThreat
+from app.search.library_cache import load_libraries
 from tests.sql_test_database import REPO, procedure_files
 
 Rows = list[dict[str, Any]]
@@ -24,6 +27,11 @@ Rows = list[dict[str, Any]]
 @pytest.fixture(scope="module")
 def procedures(sql_test_engine: Engine) -> StoredProcedureClient:
     return StoredProcedureClient(sql_test_engine)
+
+
+def _load_libraries(procedures: StoredProcedureClient) -> LoadedLibraries | None:
+    threats = ThreatRepository(procedures, SqlOperationRepository(procedures))
+    return load_libraries(threats, ControlRepository(procedures))
 
 
 def _rows(engine: Engine, sql: str, *params: object) -> Rows:
@@ -106,7 +114,7 @@ def test_the_threat_library_lists_the_pending_and_the_rejected_too(procedures: S
 def test_the_control_library_lists_retired_controls_apart(procedures: StoredProcedureClient) -> None:
     """Owner, 2026-10-11: a register may name a retired control; it is loaded apart, by code, name and domain,
     and never among the controls mapped or searched."""
-    loaded = SqlServerRepository(procedures).load_library()
+    loaded = _load_libraries(procedures)
     assert loaded is not None
     active, retired = loaded.control_library, loaded.retired_controls
     assert "AC-99" not in {control.code for control in active}
@@ -122,7 +130,7 @@ def test_the_loaded_library_knows_the_pending_and_the_rejected_names(
     procedures: StoredProcedureClient,
 ) -> None:
     """For the name checks before a library write: reuse a pending name, never propose a rejected one."""
-    loaded = SqlServerRepository(procedures).load_library()
+    loaded = _load_libraries(procedures)
     assert loaded is not None
     library = loaded.threat_library
     assert set(library.pending) == {

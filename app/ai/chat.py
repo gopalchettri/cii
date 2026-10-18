@@ -18,14 +18,13 @@ from app.ai.chat_messages import (
 )
 from app.ai.common import (
     AI_REFUSED_REPLY_ERRORS,
-    apply_proxy_settings,
     build_api_key_header,
     call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
-from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
-from app.core.config import get_settings
+from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
+from app.core.config import Settings
 from app.core.constants import (
     CHAT_TEMPERATURES,
     AiLimits,
@@ -34,9 +33,8 @@ from app.core.constants import (
     ErrorMessage,
 )
 from app.core.exceptions import Unavailable
-from app.core.singletons import singleton
-from app.data_access.admin.repository import AiCallRepository, ai_calls
-from app.models.ai import ChatModelProfile
+from app.data_access.admin.ai_call_repository import AiCallRepository
+from app.models.ai.profiles import ChatModelProfile
 
 #: A task's own check of an answer: the problems found, an empty list when the answer is right.
 AnswerChecker = Callable[[dict[str, Any]], list[str]]
@@ -224,10 +222,8 @@ def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChe
     return [ErrorMessage.AI_REPLY_NOT_A_JSON_OBJECT] if answer is None else check_answer(answer)
 
 
-@singleton
-def get_chat_model() -> ChatModel:
-    settings = get_settings()
-    apply_proxy_settings(settings)
+def chat_model_from(settings: Settings, calls: AiCallRepository, slots: AiSlots) -> ChatModel:
+    """The chat model the settings name, with its fallback, its call records and its limiter."""
     model_names = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []
     )
@@ -235,7 +231,7 @@ def get_chat_model() -> ChatModel:
         [(name, find_model_profile(CHAT_MODEL_PROFILES, name)) for name in model_names],
         settings.chat_base_url,
         settings.chat_api_key.get_secret_value(),
-        ai_calls,
+        calls,
         settings.ai_key_header,
-        get_ai_slots(),
+        slots,
     )

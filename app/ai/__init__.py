@@ -34,16 +34,14 @@ from app.ai.chat import (  # noqa: E402
     ChatModel,
     TruncatedAiAnswer,
     UnreadableAiAnswer,
-    get_chat_model,
 )
 from app.ai.embeddings import (  # noqa: E402
     EmbeddingModel,
     EmbeddingNotFinite,
     EmbeddingSizeMismatch,
-    get_embedding_model,
 )
 from app.ai.local_turns import background_reranks, reranks_in_background  # noqa: E402
-from app.ai.rerank import RerankModel, get_rerank_model  # noqa: E402
+from app.ai.rerank import RerankModel  # noqa: E402
 
 __all__ = [
     "background_reranks",
@@ -56,7 +54,4 @@ __all__ = [
     "RerankModel",
     "TruncatedAiAnswer",
     "UnreadableAiAnswer",
-    "get_chat_model",
-    "get_embedding_model",
-    "get_rerank_model",
 ]

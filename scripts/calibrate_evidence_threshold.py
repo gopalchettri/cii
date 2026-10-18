@@ -96,7 +96,7 @@ def main(argv: Sequence[str], score: Scorer | None = None) -> int:
         return 2
     pairs = read_pairs(Path(argv[0]))
     if score is None:
-        from app.ai import get_rerank_model
+        from app.container import get_rerank_model
 
         score = get_rerank_model().score_relevance
     scores = score_pairs(pairs, score)

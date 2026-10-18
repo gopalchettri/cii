@@ -7,20 +7,21 @@ from typing import Annotated
 from fastapi import Depends, Path, Query, Request
 from fastapi import Header as HeaderParam
 
+from app.container import get_admin_service, get_remediation_plan_service, get_threat_scenario_service
 from app.core.config import Settings, get_settings
 from app.core.constants import Audit, ErrorMessage, Header, Limits, Review
 from app.core.exceptions import Forbidden, Unauthorized
-from app.models.api_clients import Principal
-from app.models.remediation import RemediationStatus
+from app.models.admin.api_clients import Principal
+from app.models.remediation.plan import RemediationStatus
 from app.models.scenario.views import SessionStatus
-from app.services.api_clients import ApiClientService, get_api_client_service
-from app.services.remediation.queries import find_plan_for_caller
-from app.services.scenario.runs import find_status_for_caller
+from app.services.admin.admin_service import AdminService
+from app.services.remediation.remediation_plan_service import RemediationPlanService
+from app.services.scenario.threat_scenario_service import ThreatScenarioService
 
 
 def get_authenticated_principal(
     request: Request,
-    clients: Annotated[ApiClientService, Depends(get_api_client_service)],
+    clients: Annotated[AdminService, Depends(get_admin_service)],
     api_key: Annotated[str | None, HeaderParam(alias=Header.API_KEY)] = None,
     user_id: Annotated[
         str | None, HeaderParam(alias=Header.USER_ID, max_length=Limits.MAX_IDENTITY_CHARS)
@@ -37,7 +38,7 @@ def get_authenticated_principal(
     user_id, tenant_id = (user_id or "").strip(), (tenant_id or "").strip()
     if not (api_key and user_id and entity_id and tenant_id):
         raise Unauthorized(ErrorMessage.IDENTITY_REQUIRED)
-    client_id = clients.find_client_id_for_api_key(api_key)
+    client_id = clients.get_api_client_id(api_key)
     if client_id is None:
         raise Unauthorized(ErrorMessage.API_KEY_INVALID)
     # Which system called, for the request's access line.
@@ -74,19 +75,22 @@ ScenarioId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 
 
 def valid_session(
-    session_id: SessionId, principal: Annotated[Principal, Depends(get_authenticated_principal)]
+    session_id: SessionId,
+    principal: Annotated[Principal, Depends(get_authenticated_principal)],
+    scenarios: Annotated[ThreatScenarioService, Depends(get_threat_scenario_service)],
 ) -> SessionStatus:
     """The caller's run: an unknown id → 404, another entity's run → 403."""
-    return find_status_for_caller(session_id, principal.entity_id)
+    return scenarios.get_threat_scenario_session_status(session_id, principal.entity_id)
 
 
 def valid_plan(
     session_id: SessionId,
     scenario_id: ScenarioId,
     principal: Annotated[Principal, Depends(get_authenticated_principal)],
+    plans: Annotated[RemediationPlanService, Depends(get_remediation_plan_service)],
 ) -> RemediationStatus:
     """The plan of the caller's scenario: none (or the scenario is in another run) → 404; another's → 403."""
-    return find_plan_for_caller(session_id, scenario_id, principal.entity_id)
+    return plans.get_remediation_plan_status(session_id, scenario_id, principal.entity_id)
 
 
 #: Who an admin call is recorded as (X-User-Id, else Audit.ADMIN_USER), as a route parameter.

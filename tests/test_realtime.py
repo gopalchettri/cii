@@ -21,14 +21,14 @@ import uvicorn
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 
-from app.api.routers import events
+from app import container
+from app.api.routers import scenario as events
 from app.core.constants import Collection, Event, Header, Realtime, SessionState, StageState, Status, Step
 from app.core.database import get_mongodb, get_redis_client
 from app.main import create_app
 from app.realtime import event_hub
 from app.realtime.event_hub import RESYNC, EventHub, _offer
 from app.realtime.publisher import publish_remediation_status, publish_session_status, session_channel
-from app.services.api_clients import get_api_client_service
 from tests.plan_addresses import plan_url
 
 
@@ -52,7 +52,7 @@ def server_url() -> Iterator[str]:
 
 @pytest.fixture(scope="module")
 def identity() -> dict[str, str]:
-    _, api_key = get_api_client_service().mint_api_client(f"sse-{uuid.uuid4().hex[:8]}", None, None)
+    _, api_key = container.get_admin_service().create_api_client(f"sse-{uuid.uuid4().hex[:8]}", None, None)
     return {Header.API_KEY: api_key, Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DESC"}
 
 

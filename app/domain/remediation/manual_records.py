@@ -26,11 +26,11 @@ from app.core.constants import (
     Step,
 )
 from app.core.exceptions import Conflict, Forbidden, Invalid, Unavailable
-from app.models.api_clients import Principal
-from app.models.asset_context import FrozenContext
-from app.models.library import LibraryActor, LibraryControl
-from app.models.remediation import ThreatIdentity
-from app.models.remediation_requests import ManualScenario, PlanRequest
+from app.models.admin.api_clients import Principal
+from app.models.library.library import LibraryActor, LibraryControl
+from app.models.remediation.plan import ThreatIdentity
+from app.models.remediation.requests import ManualScenario, PlanRequest
+from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.plan import PlannedActor
 
 #: A hand-written scenario's path: one per manual run.
@@ -143,7 +143,7 @@ def manual_scenario_record(  # noqa: PLR0913 — one record, whole
         "replaces": None,
         "superseded_by": None,
         "content": _content(scenario, identity, context),
-        # What its plan job finds first (app/worker/plan_inputs.py); removed once found.
+        # What its plan job finds first (app/worker/remediation/plan_inputs.py); removed once found.
         "pending": {"actors": True, "proposal": identity.status is None, "by": by},
         "findings": [],  # the code checks are for AI text only (W5)
         "plan_check": None,

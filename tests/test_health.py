@@ -12,10 +12,10 @@ from prometheus_client.parser import text_string_to_metric_families
 from redis.exceptions import ResponseError
 
 from app import worker
+from app.core import readiness
 from app.core.constants import Dependency, ErrorCode, Header, LogEvent, Timeouts
 from app.core.exceptions import Conflict, Invalid, NotFound
-from app.services import readiness
-from app.worker import heartbeat, lifecycle
+from app.worker import heartbeat
 
 
 @pytest.fixture(autouse=True)
@@ -362,9 +362,9 @@ def test_the_start_up_topology_line_never_fails_start_up(monkeypatch: pytest.Mon
 
         warning = info
 
-    monkeypatch.setattr(lifecycle, "log", RecordingLog())
-    lifecycle.log_mongodb_topology()
-    monkeypatch.setattr(lifecycle, "describe_mongodb_topology", mongodb_is_down)
-    lifecycle.log_mongodb_topology()
+    monkeypatch.setattr(readiness, "log", RecordingLog())
+    readiness.log_mongodb_topology()
+    monkeypatch.setattr(readiness, "describe_mongodb_topology", mongodb_is_down)
+    readiness.log_mongodb_topology()
     assert [line["event"] for line in logged] == [LogEvent.MONGODB_TOPOLOGY] * 2
     assert logged[0]["replica_set"] and logged[0]["version"] and logged[1]["replica_set"] is None

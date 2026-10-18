@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from app.core.constants import ActionPriority, ControlCoverage, PlanWarning
-from app.models.remediation import ActionSchedule
+from app.models.remediation.plan import ActionSchedule
 
 #: Critical = 0 … Low = 3: the enum's own order, the ranking the approved prompt states.
 _PRIORITY_RANK = {priority.value: rank for rank, priority in enumerate(ActionPriority)}

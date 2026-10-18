@@ -7,10 +7,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import Caller, CallersRun
+from app.container import get_job_service
 from app.core.constants import ApiTag
-from app.models.jobs import JobList, SessionDeleted
+from app.models.jobs.views import JobList, SessionDeleted
 from app.models.scenario.views import RunBoard
-from app.services.jobs import JobService, get_job_service
+from app.services.jobs.job_service import JobService
 
 router = APIRouter(tags=[ApiTag.JOBS])
 
@@ -27,11 +28,11 @@ def list_jobs(principal: Caller, jobs: Jobs) -> JobList:
 def cancel_run(run: CallersRun, principal: Caller, jobs: Jobs) -> RunBoard:
     """Stops the run's work; what is already written stays readable. 409 `nothing_to_cancel` when
     nothing runs."""
-    return jobs.cancel_run(principal, run)
+    return jobs.cancel_threat_scenario_session(principal, run)
 
 
 @router.delete("/v1/sessions/{session_id}", response_model=SessionDeleted, summary="Delete a run for good")
 def delete_run(run: CallersRun, principal: Caller, jobs: Jobs) -> SessionDeleted:
     """Deletes the run, its scenarios and their plans; it cannot be undone. 409 `cancel_first` while its
     work runs."""
-    return jobs.delete_run(principal, run)
+    return jobs.delete_threat_scenario_session(principal, run)

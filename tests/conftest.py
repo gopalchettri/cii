@@ -70,9 +70,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from redis import Redis  # noqa: E402
 from sqlalchemy import Engine  # noqa: E402
 
+from app.container import create_all_indexes  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_mongodb  # noqa: E402
-from app.data_access.base import create_all_indexes  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.worker.jobs import JOB_COLLECTIONS  # noqa: E402
 from tests.sql_test_database import build_sql_test_database  # noqa: E402

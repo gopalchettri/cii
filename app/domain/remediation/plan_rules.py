@@ -16,9 +16,9 @@ from app.core.constants import (
     Status,
 )
 from app.core.exceptions import Conflict, Forbidden, NotFound
-from app.models.api_clients import Principal
-from app.models.remediation import RemediationStatus
-from app.models.remediation_requests import RegisterData
+from app.models.admin.api_clients import Principal
+from app.models.remediation.plan import RemediationStatus
+from app.models.remediation.requests import RegisterData
 
 #: The latest version's statuses a new version may follow; one queued or running is resumed on purpose (G214).
 _REGENERABLE = (Status.DONE, Status.FAILED, Status.CANCELLED)

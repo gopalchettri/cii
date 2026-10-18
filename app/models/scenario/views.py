@@ -1,5 +1,5 @@
 """What the API takes and shows for a run: its requests, status board, scenarios in TSG v1's results format
-and review bodies (data shapes only; services/scenario/results.py builds them)."""
+and review bodies (data shapes only; domain/scenario/results.py builds them)."""
 
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal
@@ -30,8 +30,8 @@ from app.core.constants import (
     ThreatSource,
     ValidationStatus,
 )
-from app.models.controls import ControlView
 from app.models.external_intelligence.evidence_view import EvidenceView
+from app.models.scenario.controls import ControlView
 
 #: A SQL Server INT id: a number above 2,147,483,647 is refused here (422), not inside the procedure (500).
 SqlId = Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)]
@@ -92,6 +92,35 @@ class SessionStatus(BaseModel):
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
     epoch: int = 0  # its job's epoch: a next set or regenerate queues only while it is unchanged
+
+
+def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
+    """The status of a tsg_sessions record read with SESSION_STATUS_FIELDS."""
+    counts, job = record.get("counts") or {}, record.get("job") or {}
+    step = record.get("step")
+    # A done run still mapping its controls reads `controls` ("card first, controls later").
+    if record["status"] == Status.DONE and counts.get("controls_waiting", 0) > 0:
+        step = Step.CONTROLS
+    return SessionStatus(
+        session_id=record["_id"],
+        entity_id=record["entity_id"],
+        asset_id=record["asset_id"],
+        status=record["status"],
+        step=step,
+        counts=counts,
+        last_action=record.get("last_action"),
+        error=job.get("error"),
+        updated_at=record["updated_at"],
+        kind=record.get("kind") or RunKind.GENERATED,
+        user_id=record.get("user_id"),
+        asset_name=((record.get("context") or {}).get("asset") or {}).get("name"),
+        attempts=job.get("attempts") or 0,
+        timings=record.get("timings") or {},
+        last_next_set=record.get("last_next_set"),
+        last_regen=record.get("last_regen"),
+        cancelled=record.get("cancelled"),
+        epoch=job.get("epoch") or 0,
+    )
 
 
 # Review requests and responses.

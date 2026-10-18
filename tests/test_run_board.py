@@ -10,9 +10,9 @@ from app.core.constants import BoardMessage, ControlMatch, RunActionKind, RunKin
 from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
-from app.data_access.scenario.repository import SESSION_STATUS_FIELDS, session_status_from_record
-from app.models.scenario.views import ScenarioCount, SessionStatus, StageTimings
-from app.services.scenario.results import build_board, build_scenario_view
+from app.data_access.scenario.threat_scenario_session_repository import SESSION_STATUS_FIELDS
+from app.domain.scenario.results import build_board, build_scenario_view
+from app.models.scenario.views import ScenarioCount, SessionStatus, StageTimings, session_status_from_record
 
 _FAILED = {"error": {"code": "unavailable", "message": "The AI service is down."}, "attempts": 3}
 #: A run whose first set of 6 (of 10 planned) is written.

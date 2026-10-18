@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
+from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     Collection,
@@ -27,23 +28,22 @@ from app.core.constants import (
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.jobs.repository import JobRepository
-from app.data_access.library.repository import SqlServerRepository
-from app.data_access.scenario.repository import scenario_sessions, session_status_from_record
+from app.data_access.jobs.job_repository import JobRepository
+from app.data_access.scenario.asset_repository import AssetRepository
 from app.domain.scenario.plan import request_fingerprint
-from app.models.api_clients import Principal
-from app.models.asset_context import FrozenContext
-from app.models.scenario.views import StartRunRequest
-from app.services.api_clients import get_api_client_service
-from app.services.scenario import runs as runs_module
-from app.services.scenario.runs import RunService, get_run_service
+from app.models.admin.api_clients import Principal
+from app.models.scenario.asset_context import FrozenContext
+from app.models.scenario.views import StartRunRequest, session_status_from_record
+from app.services.scenario import threat_scenario_service as service_module
+from app.services.scenario.threat_scenario_service import ThreatScenarioService
+from tests.service_builders import threat_scenario_service
 
 START = {"asset_id": 103, "supporting_system_id": [321, 322], "subsector_id": 11}
 
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"runs-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"runs-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
@@ -58,12 +58,13 @@ def _identity(api_key: str, entity_id: int = 86) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def runs_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
-    """The run service reads asset facts from the SQL test database; asset 103 starts every test free."""
-    service = RunService(SqlServerRepository(StoredProcedureClient(sql_test_engine)), scenario_sessions)
-    client.app.dependency_overrides[get_run_service] = lambda: service  # type: ignore[attr-defined]
+    """The scenario service reads asset facts from the SQL test database; asset 103 starts every test free."""
+    service = threat_scenario_service(assets=AssetRepository(StoredProcedureClient(sql_test_engine)))
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[container.get_threat_scenario_service] = lambda: service
     get_mongodb()[Collection.SESSIONS].delete_many({"entity_id": 86, "asset_id": 103})
     yield
-    client.app.dependency_overrides.pop(get_run_service, None)  # type: ignore[attr-defined]
+    overrides.pop(container.get_threat_scenario_service, None)
 
 
 def _start(client: TestClient, api_key: str, body: dict[str, Any] = START, **headers: str) -> Any:
@@ -101,7 +102,7 @@ def test_a_start_queues_the_whole_job_with_the_frozen_context(client: TestClient
     assert set(context["asset"]) == {"id", "name", "category_code"}
     assert context["asset_context"]["critical_service"] == "Electricity transmission"
     assert "id" not in context["asset_context"]  # the prompts' view of the asset never carries an id
-    assert run["client_id"] == get_api_client_service().find_client_id_for_api_key(api_key)
+    assert run["client_id"] == container.get_admin_service().get_api_client_id(api_key)
     assert run["active"] is True and run["job"]["task"] == TaskName.FIND_THREATS
     lease = JobRepository(get_mongodb()[Collection.SESSIONS]).claim_job(
         run["_id"], 1, TaskName.FIND_THREATS, "w1"
@@ -308,15 +309,15 @@ def test_a_version_says_which_accepted_version_of_its_path_it_would_replace(
     """G267, v1's replaces_accepted_version: accepting it replaces the path's accepted version
     (replace_accepted); the accepted one, and a path with none, show None. One read per page, on every
     route."""
-    import app.services.scenario.runs as runs_service
-
     session_id = _start(client, api_key).json()["session_id"]
     newer = _scenario(session_id, "p1", 2)
     accepted = _scenario(session_id, "p1", 1, superseded_by=newer, decision=Decision.ACCEPTED)
     alone = _scenario(session_id, "p2", 1)
     reads: list[int] = []
-    original = runs_service._other_versions
-    monkeypatch.setattr(runs_service, "_other_versions", lambda *args: reads.append(1) or original(*args))
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    service = overrides[container.get_threat_scenario_service]()
+    original = service._other_versions
+    monkeypatch.setattr(service, "_other_versions", lambda *args: reads.append(1) or original(*args))
     headers = _identity(api_key)
     shown = client.get(f"/v1/sessions/{session_id}/results", headers=headers).json()["scenarios"]
     by_id = {item["scenario_id"]: item["replaces_accepted_version"] for item in shown}
@@ -370,15 +371,17 @@ def test_an_idempotency_key_too_long_is_refused(client: TestClient, api_key: str
     assert _start(client, api_key, START, **{Header.IDEMPOTENCY_KEY: "k" * 201}).status_code == 422
 
 
-def _run_service_over(monkeypatch: pytest.MonkeyPatch, sessions: Any) -> RunService:
-    """A run service on fake sessions, past its intelligence check and asset read."""
-    monkeypatch.setattr(runs_module, "refuse_without_intel_data", lambda: None)
+def _run_service_over(monkeypatch: pytest.MonkeyPatch, sessions: Any) -> ThreatScenarioService:
+    """A scenario service on fake sessions, past its intelligence check and asset read."""
     asset = {"id": 103, "name": "Grid", "category_code": None}
     context = FrozenContext.from_record(
         {"asset": asset, "asset_context": {}, "systems": [], "missing_facts": []}
     )
-    monkeypatch.setattr(runs_module, "freeze_context", lambda request, rows: context)
-    return RunService(SimpleNamespace(get_asset_context=lambda *args: None), sessions)  # type: ignore[arg-type]
+    monkeypatch.setattr(service_module, "freeze_context", lambda request, rows: context)
+    assets = SimpleNamespace(get_asset_context=lambda *args: None)
+    service = threat_scenario_service(sessions=sessions, assets=assets)
+    monkeypatch.setattr(service, "_refuse_without_intel_data", lambda: None)
+    return service
 
 
 def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -389,7 +392,9 @@ def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.
     )
     service = _run_service_over(monkeypatch, sessions)
     with pytest.raises(Conflict) as refused:
-        service.start(Principal("client", "u1", 86, "DESC"), StartRunRequest.model_validate(START), "key-1")
+        service.create_threat_scenario_session(
+            Principal("client", "u1", 86, "DESC"), StartRunRequest.model_validate(START), "key-1"
+        )
     assert refused.value.reason == ConflictReason.IDEMPOTENCY_KEY_CONFLICT
     assert refused.value.detail == SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
 
@@ -412,7 +417,7 @@ def test_a_same_key_start_refused_by_the_one_active_run_rule_replays_the_winner(
     sessions = SimpleNamespace(
         get=lambda *args, **where: next(reads), create_scenario_session=lambda record: RunClash.ACTIVE_RUN
     )
-    status, created = _run_service_over(monkeypatch, sessions).start(
+    board, created = _run_service_over(monkeypatch, sessions).create_threat_scenario_session(
         Principal("client", "u1", 86, "DESC"), request, "key-1"
     )
-    assert (status.session_id, created) == ("run-1", False)
+    assert (board.session_id, created) == ("run-1", False)

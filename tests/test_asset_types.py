@@ -15,7 +15,7 @@ from app.core.constants import (
     LogEvent,
     StrideCategory,
 )
-from app.models.library import LibraryThreat
+from app.models.library.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
     ADMIN_ABUSE,

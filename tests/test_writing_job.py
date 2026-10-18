@@ -13,6 +13,7 @@ from celery.exceptions import Ignore
 from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
+from app import container
 from app.core.constants import (
     ActorRole,
     AiTask,
@@ -29,12 +30,12 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import LeaseLost, Unavailable
-from app.data_access.jobs.repository import JobLease, JobRepository
-from app.data_access.scenario.repository import JobControlRepository, scenarios
+from app.data_access.jobs.job_repository import JobLease, JobRepository
 from app.domain.scenario.plan import next_paths_to_write, next_set_paths, planned_threat_record
 from app.models.scenario.plan import PlannedActor
-from app.worker import jobs, plan_progress
-from app.worker.tasks import writing
+from app.worker import jobs
+from app.worker.scenario import plan_progress, write_job
+from app.worker.scenario.write_job import ScenarioWriteJob
 from tests.fakes import FakeChatModel
 from tests.planner_samples import CONTEXT, planned
 
@@ -126,6 +127,20 @@ def _answer_for(user_prompt: str) -> dict[str, Any]:
     return {"scenario_title": "x"} if brief["threat"]["threat"].startswith("Unreadable") else answer
 
 
+def write_job_with(chat: FakeChatModel, library: Any) -> ScenarioWriteJob:
+    """The write job as the app builds it, writing with `chat` from `library`."""
+    return ScenarioWriteJob(
+        sessions=container.get_threat_scenario_session_repository(),
+        scenarios=container.get_threat_scenario_repository(),
+        chat=chat,
+        threat_library=lambda: library,
+        switch=container.get_intelligence_switch(),
+        evidence_finder=container.get_evidence_finder,
+        feeds=container.get_intel_feed_repository(),
+        audit=container.get_audit_repository(),
+    )
+
+
 @pytest.fixture
 def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
     fake = FakeChatModel()
@@ -135,10 +150,8 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
         actors=(SimpleNamespace(actor_id=7, name="Cybercriminal"),),
         threats=[SimpleNamespace(catalogue_id=number, type_id=1) for number in range(1, 30)],
     )
-    monkeypatch.setattr(writing, "get_chat_model", lambda: fake)
-    monkeypatch.setattr(
-        writing, "get_library_service", lambda: SimpleNamespace(get_threat_library=lambda: actors)
-    )
+    job = write_job_with(fake, actors)
+    monkeypatch.setattr(container, "get_scenario_write_job", lambda: job)
     monkeypatch.setattr(plan_progress, "publish_session_status", PUBLISHED.append)
     return fake
 
@@ -147,8 +160,13 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     sends: list[tuple[Any, ...]] = []
     monkeypatch.setattr(jobs, "send_job", lambda *args: sends.append(args))
-    monkeypatch.setattr(writing, "send_job", lambda *args: sends.append(args))  # the controls messages
+    monkeypatch.setattr(write_job, "send_job", lambda *args: sends.append(args))  # the controls messages
     return sends
+
+
+def _write_batch(lease: JobLease | None) -> None:
+    """One delivery of the write job, as its task runs it."""
+    container.get_scenario_write_job().write_scenario_batch(lease)  # type: ignore[arg-type]
 
 
 def _deliver_until_done(record_id: str) -> int:
@@ -160,7 +178,7 @@ def _deliver_until_done(record_id: str) -> int:
         )
     ) is not None:
         deliveries += 1
-        writing.write_batch(lease)
+        _write_batch(lease)
     return deliveries
 
 
@@ -177,7 +195,7 @@ def test_fourteen_paths_are_written_in_four_batches_by_themselves(
 ) -> None:
     """T-WRT-20 (S25-S26): 4 + 4 + 4 + 2, each batch handed on in a fenced write; one title per scenario; the
     run ends complete, its counts from the scenarios."""
-    scenarios.create_indexes()
+    container.get_threat_scenario_repository().create_indexes()
     record_id = _queued_run([f"Threat {number}" for number in range(1, 15)])
     written_before = _settled("written")
     assert _deliver_until_done(record_id) == 4
@@ -257,7 +275,11 @@ def test_a_set_is_partial_only_when_one_of_its_paths_was_given_up(older_plan: di
     plan = {"paths": [path], "frozen_at": datetime.now(UTC)} | older_plan
     lease = SimpleNamespace(update_job=changes.update)
     run = {"_id": "r", "plan": plan, "job": {"set": ["p1"]}}
-    plan_progress.PlanProgress(lease, run).continue_or_finish()  # type: ignore[arg-type]
+    sessions, scenarios = (
+        container.get_threat_scenario_session_repository(),
+        container.get_threat_scenario_repository(),
+    )
+    plan_progress.PlanProgress(lease, run, sessions, scenarios).continue_or_finish()  # type: ignore[arg-type]
     assert changes["last_action.outcome"] == RunActionOutcome.COMPLETE
 
 
@@ -297,9 +319,7 @@ def test_a_threat_retired_since_the_plan_is_abandoned_with_no_ai_call(
         actors=(SimpleNamespace(actor_id=7, name="Cybercriminal"),),
         threats=[SimpleNamespace(catalogue_id=2, type_id=1)],  # threat 1 retired after the plan
     )
-    monkeypatch.setattr(
-        writing, "get_library_service", lambda: SimpleNamespace(get_threat_library=lambda: library)
-    )
+    monkeypatch.setattr(container, "get_scenario_write_job", lambda: write_job_with(chat, library))
     record_id = _queued_run(["Retired threat", "Live threat"])
     assert _deliver_until_done(record_id) == 1
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
@@ -326,7 +346,7 @@ def test_an_outage_saves_the_others_and_the_retry_skips_what_was_saved(
     chat.responders[AiTask.WRITE_SCENARIO] = down_once
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable):
-        writing.write_batch(lease)
+        _write_batch(lease)
     lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
     assert len(_scenarios_of(record_id)) == 2
     asked_before = len(chat.asked(AiTask.WRITE_SCENARIO))
@@ -344,13 +364,13 @@ def test_a_retry_after_a_crash_still_sends_the_written_scenarios_controls_messag
     def dies(*_: Any) -> None:
         raise RuntimeError("the worker died")
 
-    monkeypatch.setattr(writing, "send_job", dies)
+    monkeypatch.setattr(write_job, "send_job", dies)
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(RuntimeError):
-        writing.write_batch(lease)
+        _write_batch(lease)
     lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
     assert len(_scenarios_of(record_id)) == 2
-    monkeypatch.setattr(writing, "send_job", lambda *args: sent.append(args))
+    monkeypatch.setattr(write_job, "send_job", lambda *args: sent.append(args))
     asked = len(chat.asked(AiTask.WRITE_SCENARIO))
     assert _deliver_until_done(record_id) == 1 and len(chat.asked(AiTask.WRITE_SCENARIO)) == asked
     assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 1
@@ -367,7 +387,7 @@ def test_a_blocked_scenario_is_kept_hidden_and_its_path_tried_again(
 
     chat.responders[AiTask.WRITE_SCENARIO] = cites_an_advisory
     record_id = _queued_run(["Threat 1"])
-    writing.write_batch(JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first"))
+    _write_batch(JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first"))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[0]["status"] == ScenarioStatus.BLOCKED and "controls" not in stored[0]
     assert run["plan"]["paths"][0]["attempts"] == 1 and run["counts"]["written"] == 0
@@ -396,7 +416,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
 
     chat.responders[AiTask.WRITE_SCENARIO] = threat_two_times_out
     record_id = _queued_run(["Threat 1", "Threat 2"])
-    writing.write_batch(_on_last_try(record_id))
+    _write_batch(_on_last_try(record_id))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[1]["failure"]["code"] == ErrorCode.UNAVAILABLE and run["plan"]["paths"][1]["attempts"] == 1
     assert run["status"] == Status.QUEUED and run["job"]["batch"] == [{"path_id": "p2", "replaces": None}]
@@ -413,7 +433,7 @@ def test_with_no_path_written_an_outage_on_the_last_try_still_fails_the_job(
     chat.responders[AiTask.WRITE_SCENARIO] = provider_down
     record_id = _queued_run(["Threat 1", "Threat 2"])
     with pytest.raises(Unavailable):
-        writing.write_batch(_on_last_try(record_id))
+        _write_batch(_on_last_try(record_id))
     assert _scenarios_of(record_id) == []
 
 
@@ -443,13 +463,13 @@ def test_an_answer_that_comes_back_after_its_run_was_cancelled_is_never_saved(
     record_id = _queued_run(["Threat 1"])
 
     def cancelled_meanwhile(user_prompt: str) -> dict[str, Any]:
-        JobControlRepository(get_mongodb()).cancel_scenario_session(record_id, 86, {"user_id": "u1"})
+        container.get_work_control_repository().cancel_scenario_session(record_id, 86, {"user_id": "u1"})
         return _answer_for(user_prompt)
 
     chat.responders[AiTask.WRITE_SCENARIO] = cancelled_meanwhile
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(LeaseLost):
-        writing.write_batch(lease)
+        _write_batch(lease)
     assert _scenarios_of(record_id) == []
 
 
@@ -473,6 +493,7 @@ def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_t
 ) -> None:
     """A scenario saved meanwhile is seen and two saves of one batch never race: each save reads the held
     scenarios itself, one after the other, on the job's thread."""
+    scenarios = container.get_threat_scenario_repository()
     read = scenarios.list_scenarios_for_duplicate_check
     threads: list[int] = []
 
@@ -486,6 +507,7 @@ def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_t
     assert threads == [threading.get_ident()] * 4
 
 
+@pytest.mark.usefixtures("chat")
 def test_a_run_deleted_after_its_claim_ends_as_stopped_by_its_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run deleted between the claim and the job's read is a normal stop, never logged as a failure."""
     record_id = _queued_run(["Threat 1"])
@@ -493,7 +515,7 @@ def test_a_run_deleted_after_its_claim_ends_as_stopped_by_its_owner(monkeypatch:
 
     def deleted_then_written(lease: JobLease) -> None:
         _sessions().delete_one({"_id": record_id})
-        writing.write_batch(lease)
+        _write_batch(lease)
 
     task = SimpleNamespace(name=TaskName.WRITE_SCENARIOS, request=SimpleNamespace(id="d1"))
     with capture_logs() as logs, pytest.raises(Ignore):

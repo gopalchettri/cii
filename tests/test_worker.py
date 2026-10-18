@@ -19,7 +19,8 @@ from pymongo.errors import AutoReconnect
 from redis.exceptions import ReadOnlyError
 from structlog.testing import capture_logs
 
-from app.core import metrics
+from app import container
+from app.core import metrics, readiness
 from app.core.constants import (
     AiTask,
     Collection,
@@ -36,8 +37,8 @@ from app.core.constants import (
 from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
-from app.data_access.jobs.repository import JobLease, JobRepository, ended_job_fields
-from app.data_access.library.repository import SqlServerRepository
+from app.data_access.jobs.job_repository import JobLease, JobRepository, ended_job_fields
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
 from app.domain.shared.parallel import raise_most_retryable
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
 from app.worker.celery_app import BrokerUnavailable, count_waiting_messages
@@ -173,7 +174,7 @@ def test_a_job_meeting_a_young_pending_sql_operation_is_retried_not_failed(publi
     record_id, operation_id = _insert_job(), f"propose:{uuid.uuid4().hex}"
     pending = {"status": SqlOperationStatus.PENDING, "started_at": datetime.now(UTC), "parameters": {}}
     get_mongodb()[Collection.SQL_OPERATIONS].insert_one({"_id": operation_id, **pending})
-    sql = SqlServerRepository(SimpleNamespace(execute_procedure=lambda *_args, **_kwargs: []))  # type: ignore[arg-type]
+    sql = SqlOperationRepository(SimpleNamespace(execute_procedure=lambda *_args, **_kwargs: []))  # type: ignore[arg-type]
 
     def propose(_lease: JobLease) -> None:
         sql.run_sql_operation(operation_id, StoredProcedure.RESOLVE_THREAT, {})
@@ -257,9 +258,9 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(published: list[str]
 def test_a_worker_makes_every_index_its_reaper_scans_at_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each of the reaper's two scans reads one index; without them it scans whole collections."""
     made: list[object] = []
-    monkeypatch.setattr(lifecycle, "create_all_indexes", made.append)
+    monkeypatch.setattr(container, "create_all_indexes", made.append)
     for gateway in ("get_chat_model", "get_embedding_model", "get_rerank_model"):
-        monkeypatch.setattr(lifecycle, gateway, lambda: None)
+        monkeypatch.setattr(container, gateway, lambda: None)
     lifecycle._prepare_stores_and_models()
     assert made == [jobs.JOB_COLLECTIONS]
 
@@ -280,7 +281,7 @@ def test_a_worker_whose_ai_model_has_no_profile_refuses_to_start(monkeypatch: py
         raise ValueError("No profile for AI model 'typo'")
 
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    monkeypatch.setattr(lifecycle, "get_chat_model", no_profile)
+    monkeypatch.setattr(container, "get_chat_model", no_profile)
     with pytest.raises(SystemExit, match="typo"):
         lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
 
@@ -303,7 +304,7 @@ def _worker_starting(pool: str, *queues: str) -> Any:
 
 
 def _online(queue: str) -> int:
-    return heartbeat.count_online_workers([queue])[queue]
+    return readiness.count_online_workers([queue])[queue]
 
 
 def _stamps(queue: str) -> dict[str, float]:

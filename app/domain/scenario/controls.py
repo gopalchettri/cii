@@ -22,9 +22,9 @@ from app.domain.scenario.library_rules import place_asset_types
 from app.domain.scenario.plan import raw_system_facts
 from app.domain.shared.names import name_match_key, shorten_text
 from app.domain.shared.prompt_redaction import facts_safe_for_prompt
-from app.models.asset_context import FrozenContext
-from app.models.controls import ControlMapping, ControlQuery, ControlRule, MappedControl
-from app.models.library import LibraryControl
+from app.models.library.library import LibraryControl
+from app.models.scenario.asset_context import FrozenContext
+from app.models.scenario.controls import ControlMapping, ControlQuery, ControlRule, MappedControl
 from app.search.snapshot import LibrarySnapshot
 from app.search.texts import describe_control
 

@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import structlog
-from pymongo import ReturnDocument
+from pymongo import ReplaceOne, ReturnDocument
 from pymongo.collection import Collection as MongoCollection
 from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
 
@@ -254,35 +254,27 @@ def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> No
         log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, error=str(error))
 
 
-def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
-    """Every MongoDB index and expiry TSG uses, made at start-up (the API's lifespan, each worker's start):
-    idempotent, never on a request or job path, and a failure stops start-up with its reason.
-    `job_collections`: the worker's leased-job collections, whose indexes serve the reaper's scans."""
-    # ponytail: lazy imports, every repository module imports this base
-    from app.core.config import get_settings
-    from app.data_access.admin import repository as admin
-    from app.data_access.external_intelligence import repository as intelligence
-    from app.data_access.jobs import repository as jobs
-    from app.data_access.library import repository as sql
-    from app.data_access.remediation import repository as remediation
-    from app.data_access.scenario import repository as scenario
+class VectorRepository(MongoRepository):
+    """A vector collection, each vector stored by its key as _id and expiring at its own expires_at (a query
+    vector always, a library vector once retired); `ids=keys` finds the vectors with those keys."""
 
-    for repository in (
-        admin.api_clients,
-        scenario.scenario_sessions,
-        scenario.scenarios,
-        remediation.remediation_plans,
-        admin.audit_records,
-        admin.ai_calls,
-        admin.library_vectors,
-    ):
-        repository.create_indexes()
-    admin.library_vectors.retire_unknown_vector_corpora()
-    for repository in (admin.query_vectors, admin.admin_jobs, sql.sql_operations):
-        repository.create_indexes()
-    for collection in job_collections:
-        jobs.JobRepository(get_mongodb()[collection]).create_indexes()
-    if get_settings().external_intelligence_enabled:  # off: no intelligence collection exists
-        intelligence.intel_records.create_indexes()
-        intelligence.intel_snapshots.create_indexes()
-        intelligence.intel_feeds.create_missing_intel_feeds()
+    def __init__(
+        self,
+        collection: str | MongoCollection,
+        conditions: Mapping[str, Condition] | None = None,
+        **options: Any,
+    ) -> None:
+        """The vector collection with its expiry, its `ids` condition and any other `conditions`."""
+        conditions = {"ids": _vector_ids, **(conditions or {})}
+        super().__init__(collection, ttl=[("expires_at", 0)], conditions=conditions, **options)
+
+    def save_vectors(self, vectors: list[Record]) -> None:
+        """Writes each vector whole (one of the wrong size is replaced). Another worker storing the same text
+        at the same moment is fine (an identical vector); any other write error is raised."""
+        upserts = [ReplaceOne({"_id": vector["_id"]}, vector, upsert=True) for vector in vectors]
+        self.bulk_write_skipping_duplicates(upserts, ordered=False)
+
+
+def _vector_ids(keys: Iterable[str]) -> Record:
+    """The vectors with these keys."""
+    return {"_id": {"$in": list(set(keys))}}

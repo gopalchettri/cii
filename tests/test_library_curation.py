@@ -10,10 +10,12 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
+from app import container
 from app.core.constants import Collection, StoredProcedure
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.library.repository import SqlServerRepository
-from app.services.library_curation import LibraryCuration, get_library_curation
+from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.library.threat_repository import ThreatRepository
+from app.services.library.threat_library_service import ThreatLibraryService
 from tests.conftest import ADMIN
 
 PENDING, DECISIONS = "/v1/tsg/library/pending", "/v1/tsg/library/decisions"
@@ -35,10 +37,13 @@ DELETE FROM dbo.Threat_Type WHERE ThreatTypeName LIKE N'Curation type %';
 
 @pytest.fixture(autouse=True)
 def curation_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
-    service = LibraryCuration(SqlServerRepository(StoredProcedureClient(sql_test_engine)))
-    client.app.dependency_overrides[get_library_curation] = lambda: service  # type: ignore[attr-defined]
+    procedures = StoredProcedureClient(sql_test_engine)
+    threats = ThreatRepository(procedures, SqlOperationRepository(procedures))
+    service = ThreatLibraryService(threats, container.get_audit_repository())
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    overrides[container.get_threat_library_service] = lambda: service
     yield
-    client.app.dependency_overrides.pop(get_library_curation, None)  # type: ignore[attr-defined]
+    overrides.pop(container.get_threat_library_service, None)
     with sql_test_engine.connect() as connection:
         connection.exec_driver_sql(_REMOVE_TEST_ROWS)
 

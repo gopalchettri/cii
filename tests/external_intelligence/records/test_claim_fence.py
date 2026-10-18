@@ -7,21 +7,18 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app import container
 from app.core.constants import Collection, FeedStatus, IntelKind, IntelLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import (
-    IntelFeedRepository,
-    IntelRecordRepository,
-    intel_feeds,
-    intel_records,
-)
+from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
+from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord
 from app.models.external_intelligence.source_health import (
     SourceHealth,
     refresh_success_fields,
 )
-from app.services.external_intelligence.record_batch_writer import (
+from app.worker.external_intelligence.record_batch_writer import (
     ClaimLost,
     write_fetch_result,
 )
@@ -36,7 +33,7 @@ def stores() -> tuple[IntelFeedRepository, IntelRecordRepository]:
     db = get_mongodb()
     for name in (Collection.EXTERNAL_FEED_STATUS, Collection.INTEL):
         db[name].delete_many({})
-    feeds, records = intel_feeds, intel_records
+    feeds, records = container.get_intel_feed_repository(), container.get_intel_record_repository()
     records.create_indexes()
     feeds.create_missing_intel_feeds()
     return feeds, records
@@ -107,7 +104,7 @@ def test_two_workers_racing_a_takeover_never_both_write(stores) -> None:
     later = datetime.now(UTC) + STALE  # the old claim is stale for both racers
 
     def take_over(_: int) -> str | None:
-        return intel_feeds.claim_intel_feed_refresh(SOURCE, later, later - STALE)
+        return container.get_intel_feed_repository().claim_intel_feed_refresh(SOURCE, later, later - STALE)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         tokens = [token for token in pool.map(take_over, range(16)) if token]
@@ -168,7 +165,7 @@ def test_a_revoked_source_starts_from_a_blank_health_when_it_is_approved_again(s
 def test_revoking_without_creating_changes_only_what_exists() -> None:
     db = get_mongodb()
     db[Collection.EXTERNAL_FEED_STATUS].drop()
-    feeds = intel_feeds
+    feeds = container.get_intel_feed_repository()
     feeds.update_intel_feed_approval(SOURCE, False, create=False)
     assert Collection.EXTERNAL_FEED_STATUS not in db.list_collection_names()
     feeds.create_missing_intel_feeds()

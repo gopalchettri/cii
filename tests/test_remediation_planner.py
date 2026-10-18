@@ -14,9 +14,9 @@ from app.domain.remediation.planner import RemediationPlanner
 from app.domain.remediation.prompts import PLAN_PROMPT_VERSION, PLAN_SYSTEM_PROMPT, plan_prompt
 from app.domain.remediation.register import register_half
 from app.domain.remediation.snapshot import build_snapshot
-from app.models.library import LibraryControl
-from app.models.remediation import FinishedPlan
-from app.models.remediation_requests import RegisterData
+from app.models.library.library import LibraryControl
+from app.models.remediation.plan import FinishedPlan
+from app.models.remediation.requests import RegisterData
 from tests.fakes import FakeChatModel, truncated
 from tests.planner_samples import CONTEXT
 from tests.test_remediation_snapshot import LIBRARY, SCENARIO, TODAY

@@ -8,7 +8,7 @@ from typing import Any
 
 from app.core.constants import ConflictReason, Decision, RemediationMessage, Status
 from app.core.exceptions import Conflict, NotFound
-from app.models.remediation_reviews import DecisionChange
+from app.models.remediation.reviews import DecisionChange
 
 
 def version_status(read: dict[str, Any], version: dict[str, Any]) -> Status:

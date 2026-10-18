@@ -10,13 +10,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import container
 from app.core.constants import Collection, Decision, Header, Status
 from app.core.database import get_mongodb
-from app.data_access.remediation.repository import remediation_plans
 from app.domain.remediation.planner import finish
-from app.models.remediation import PlanDraft
-from app.models.remediation_views import RemediationResult
-from app.services.api_clients import get_api_client_service
+from app.models.remediation.plan import PlanDraft
+from app.models.remediation.views import RemediationResult
 from tests.plan_addresses import plan_url
 from tests.test_remediation_planner import _answer, _control, _snapshot
 
@@ -26,7 +25,7 @@ NOW = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"reads-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"reads-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
@@ -123,7 +122,7 @@ def test_the_history_never_holds_a_snapshot(client: TestClient, api_key: str) ->
     shown = answer.json()
     assert "snapshot" not in answer.text and "requested_by_client" not in answer.text
     scenario_id = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": remediation_id})["scenario_id"]
-    stored = remediation_plans.get(fields="result", scenario_id=scenario_id)
+    stored = container.get_remediation_repository().get(fields="result", scenario_id=scenario_id)
     assert "snapshot" not in stored["versions"][0]  # IO
     assert [(v["version"], v["status"]) for v in shown["versions"]] == [(1, "done"), (2, "failed")]
     assert shown["versions"][1]["error"] == error and shown["versions"][1]["plan"] is None

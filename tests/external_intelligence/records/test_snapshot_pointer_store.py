@@ -5,12 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app import container
 from app.core.constants import Collection, IntelDocId, SnapshotState
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import (
-    IntelSnapshotRepository,
-    intel_snapshots,
-)
+from app.data_access.external_intelligence.intel_snapshot_repository import IntelSnapshotRepository
 
 T0 = datetime(2026, 10, 12, 8, tzinfo=UTC)
 
@@ -19,7 +17,7 @@ T0 = datetime(2026, 10, 12, 8, tzinfo=UTC)
 def snapshots() -> IntelSnapshotRepository:
     db = get_mongodb()
     db[Collection.EXTERNAL_INTELLIGENCE_SNAPSHOTS].delete_many({})
-    store = intel_snapshots
+    store = container.get_intel_snapshot_repository()
     store.create_indexes()
     return store
 
@@ -82,7 +80,7 @@ def test_builders_racing_leave_the_newest_active(snapshots: IntelSnapshotReposit
         _describe(snapshots, f"s{n}", T0 + timedelta(minutes=n))
 
     def activate(n: int) -> bool:
-        return intel_snapshots.activate_intel_snapshot(f"s{n}")
+        return container.get_intel_snapshot_repository().activate_intel_snapshot(f"s{n}")
 
     with ThreadPoolExecutor(max_workers=12) as pool:
         list(pool.map(activate, range(12)))

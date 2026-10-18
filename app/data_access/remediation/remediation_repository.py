@@ -1,0 +1,237 @@
+"""tsg_remediations: one remediation plan per scenario (a unique index, race-free) with its versions, and the
+plan's guarded writes: a new version, a decision, and the plan job's version writes under its job lease."""
+
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
+
+import structlog
+from pymongo.collection import Collection as MongoCollection
+
+from app.core.constants import Collection, Decision, LogEvent, Status
+from app.data_access.base import MongoRepository, Record
+from app.data_access.jobs.job_repository import JobLease, ended_job_fields
+from app.models.remediation.plan import RemediationStatus
+from app.models.remediation.reviews import DecisionChange
+from app.models.remediation.views import RemediationSummary
+
+#: What a regenerate or a decision reads first: never a snapshot or a plan.
+_CHANGE_FIELDS = {
+    "entity_id": 1,
+    "scenario_id": 1,
+    "session_id": 1,
+    "status": 1,
+    "job.epoch": 1,
+    "accepted_version": 1,
+    "decision": 1,
+    "decision_seq": 1,
+    "register": 1,
+    **{f"versions.{field}": 1 for field in ("version", "status", "decision")},
+}
+#: What a plan request and its plan job read of the scenario: owner, decision, content, controls, and what
+#: its plan job still has to find.
+PLANNED_SCENARIO_FIELDS = (
+    "entity_id",
+    "session_id",
+    "asset_id",
+    "source",
+    "status",
+    "decision",
+    "content",
+    "controls",
+    "pending",
+)
+#: The list's filters: each with the newest-first sort is one index scan.
+_LIST_FILTERS = ("status", "decision", "risk_level", "session_id")
+#: A new version waits for a decision unless one is accepted.
+_DECISION_WITH_A_NEW_VERSION = {
+    "$cond": [
+        {"$eq": [{"$ifNull": ["$accepted_version", None]}, None]},
+        Decision.PENDING,
+        Decision.ACCEPTED,
+    ]
+}
+#: The decision stamp's fields, cleared on a version put back to pending.
+_STAMP_FIELDS = ("decided_by", "decided_by_client", "decided_at", "review_comment")
+#: What an unknown stored value is read back as (logged): a status nothing is decided on, a decision waiting.
+_SAFE_DEFAULTS: dict[str, StrEnum] = {"status": Status.FAILED, "decision": Decision.PENDING}
+
+log = structlog.get_logger(__name__)
+
+
+class RemediationRepository(MongoRepository):
+    """tsg_remediations with its rules on top of the plain reads and writes."""
+
+    def __init__(self, collection: str | MongoCollection = Collection.REMEDIATIONS) -> None:
+        """Defines tsg_remediations: its indexes, field lists and record shape."""
+        super().__init__(
+            collection,
+            indexes=(
+                {"keys": "scenario_id", "unique": True},  # one plan per scenario
+                {"keys": [("entity_id", 1), ("created_at", -1)]},
+                *({"keys": [("entity_id", 1), (field, 1), ("created_at", -1)]} for field in _LIST_FILTERS),
+            ),
+            field_lists={
+                "status": RemediationStatus.RECORD_FIELDS,
+                "change": _CHANGE_FIELDS,
+                "summary": RemediationSummary.RECORD_FIELDS,
+                "result": {"versions.snapshot": 0},
+            },
+            required=("_id", "scenario_id"),
+            schema_version=1,
+        )
+
+    def get(self, fields: str | Iterable[str] | None = None, **where: Any) -> Record | None:
+        """The first plan matching `where`, its stored status and decision values read tolerantly."""
+        found = super().get(fields, **where)
+        return None if found is None else _readable(found)
+
+    def list(
+        self,
+        fields: str | Iterable[str] | None = None,
+        sort: str | Iterable[str] | None = None,
+        skip: int = 0,
+        limit: int = 0,
+        **where: Any,
+    ) -> list[Record]:
+        """Every plan matching `where`, its stored status and decision values read tolerantly."""
+        return [_readable(found) for found in super().list(fields, sort, skip, limit, **where)]
+
+    def create_remediation_plan_version(
+        self,
+        remediation_id: str,
+        latest_version: int,
+        new_version: dict[str, Any],
+        job: dict[str, Any],
+        now: datetime,
+    ) -> bool:
+        """Appends `new_version` (number `latest_version + 1`) with its job on tsg_remediations; False when
+        `latest_version` is no longer the newest or is still at work. The latest version's status and error
+        are frozen onto its item in the same write; `$literal` keeps any text starting with "$" as text."""
+        appended = self.collection.update_one(
+            {
+                "_id": remediation_id,
+                "job.epoch": latest_version,
+                "status": {"$in": [Status.DONE, Status.FAILED, Status.CANCELLED]},
+            },
+            [
+                {
+                    "$set": {
+                        "versions": {
+                            "$concatArrays": [_with_outcome(latest_version), [{"$literal": new_version}]]
+                        },
+                        "job": {"$literal": job},
+                        "status": Status.QUEUED,
+                        "active": True,
+                        "finished_at": "$$REMOVE",
+                        "cancelled": "$$REMOVE",
+                        "updated_at": now,
+                        "decision": _DECISION_WITH_A_NEW_VERSION,
+                        "decision_seq": {
+                            "$add": ["$decision_seq", 1]
+                        },  # a decision on the older read retries
+                    }
+                }
+            ],
+        )
+        return bool(appended.modified_count)
+
+    def update_remediation_plan_decision(
+        self, remediation_id: str, seen_decision_seq: int, change: DecisionChange
+    ) -> bool:
+        """Writes one decision on tsg_remediations only if no other decision was written since
+        `seen_decision_seq` was read; False otherwise (the caller reads again once)."""
+        stamp = change.stamp
+        changes: dict[str, Any] = {
+            "versions.$[v].decision": change.decision,
+            **{f"versions.$[v].{field}": stamp[field] for field in _STAMP_FIELDS},
+            "accepted_version": change.accepted_version,
+            "decision": change.record_decision,
+            "updated_at": stamp["decided_at"],
+        }
+        array_filters: list[dict[str, Any]] = [{"v.version": change.version}]
+        if change.back_to_pending is not None:
+            changes["versions.$[w].decision"] = Decision.PENDING
+            changes |= {f"versions.$[w].{field}": None for field in _STAMP_FIELDS}
+            array_filters.append({"w.version": change.back_to_pending})
+        decided = self.collection.update_one(
+            {"_id": remediation_id, "decision_seq": seen_decision_seq},
+            {"$set": changes, "$inc": {"decision_seq": 1}},
+            array_filters=array_filters,
+        )
+        return bool(decided.modified_count)
+
+    def get_remediation_plan_version_snapshot(
+        self, remediation_id: str, version: int
+    ) -> dict[str, Any] | None:
+        """Reads one version's frozen input alone from tsg_remediations; None when the plan or version is
+        gone."""
+        found = self.collection.find_one(
+            {"_id": remediation_id, "versions.version": version}, {"versions.$": 1}
+        )
+        return None if found is None else found["versions"][0]["snapshot"]
+
+    def update_remediation_plan_version_snapshot(self, lease: JobLease, snapshot: dict[str, Any]) -> None:
+        """Saves the completed snapshot on the leased version of tsg_remediations, fenced by the job lease."""
+        lease.update_job({"versions.$[v].snapshot": snapshot}, [{"v.version": lease.epoch}])
+
+    def update_remediation_plan_version_written(self, lease: JobLease, written_plan: dict[str, Any]) -> None:
+        """Saves the written plan's fields on the leased version of tsg_remediations and ends its job done in
+        the same write, fenced by the job lease."""
+        changes = {f"versions.$[v].{field}": value for field, value in written_plan.items()}
+        lease.update_job(changes | ended_job_fields(Status.DONE), [{"v.version": lease.epoch}])
+
+    def stop_remediation_plan_version(self, remediation_id: str, version: int) -> None:
+        """Ends `version`'s job cancelled on tsg_remediations while it still waits or runs (a regenerate that
+        lost the race with its run's delete)."""
+        now = datetime.now(UTC)
+        self.collection.update_one(
+            {"_id": remediation_id, "job.epoch": version, "status": {"$in": [Status.QUEUED, Status.RUNNING]}},
+            {"$set": ended_job_fields(Status.CANCELLED, now) | {"updated_at": now}},
+        )
+
+    def get_remediation_plan_status(self, remediation_id: str) -> RemediationStatus | None:
+        """Reads a remediation plan's status from tsg_remediations (never a snapshot or a plan), if it
+        exists."""
+        record = self.get(fields="status", _id=remediation_id)
+        return None if record is None else RemediationStatus.from_record(record)
+
+    def get_remediation_plan_status_of_scenario(self, scenario_id: str) -> RemediationStatus | None:
+        """Reads the scenario's remediation plan status from tsg_remediations (id-only gate read), if any."""
+        record = self.get(fields="status", scenario_id=scenario_id)
+        return None if record is None else RemediationStatus.from_record(record)
+
+
+def _readable(record: Record) -> Record:
+    """The plan with an unknown stored status or decision (its own or a version's) read back as a safe
+    default and logged, so one bad stored value never answers 500."""
+    for item in (record, *(record.get("versions") or ())):
+        for field, default in _SAFE_DEFAULTS.items():
+            if field in item and item[field] not in type(default):
+                log.warning(
+                    LogEvent.REMEDIATION_STORED_VALUE_UNKNOWN,
+                    remediation_id=record.get("_id"),
+                    field=field,
+                    value=str(item[field]),
+                    read_as=default,
+                )
+                item[field] = default
+    return record
+
+
+def _with_outcome(latest: int) -> dict[str, Any]:
+    """The versions, the latest one with the record's status and error copied onto its item."""
+    return {
+        "$map": {
+            "input": "$versions",
+            "as": "v",
+            "in": {
+                "$cond": [
+                    {"$eq": ["$$v.version", latest]},
+                    {"$mergeObjects": ["$$v", {"status": "$status", "error": "$job.error"}]},
+                    "$$v",
+                ]
+            },
+        }
+    }

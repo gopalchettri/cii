@@ -13,7 +13,7 @@ from app import ai
 from app.core.constants import AiLimits, AiOutcome, AiTask, EvidenceLimits
 from app.core.exceptions import LeaseLost
 from app.core.lease_signal import lease_lost_signal
-from app.models.ai import RerankModelProfile
+from app.models.ai.profiles import RerankModelProfile
 
 
 class _Model:

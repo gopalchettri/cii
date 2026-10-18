@@ -8,10 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.constants import Decision, RemediationProgress, Status
-from app.models.remediation import PlanDraft, RemediationStatus
-from app.models.remediation_examples import PLAN_REQUEST_EXAMPLES
-from app.models.remediation_requests import PlanRequest, RegisterData
-from app.models.remediation_reviews import DecisionRequest, RegenerateRequest, ReviewRequest
+from app.models.remediation.examples import PLAN_REQUEST_EXAMPLES
+from app.models.remediation.plan import PlanDraft, RemediationStatus
+from app.models.remediation.requests import PlanRequest, RegisterData
+from app.models.remediation.reviews import DecisionRequest, RegenerateRequest, ReviewRequest
 
 #: v1's manual_scenario: the entity and the threat's six flat fields (owner, 2026-10-15).
 MANUAL: dict[str, Any] = {

@@ -16,6 +16,7 @@ from kombu.exceptions import OperationalError as BrokerUnavailable
 
 from app.core.config import get_settings
 from app.core.constants import (
+    TASK_ROUTES,
     Cache,
     Controls,
     IntelLimits,
@@ -35,29 +36,15 @@ settings = get_settings()
 TASK_MODULES = [
     "app.worker.jobs",
     "app.worker.reaper",
-    "app.worker.tasks.library_indexes",
-    "app.worker.tasks.scenarios",
-    "app.worker.tasks.writing",
-    "app.worker.tasks.controls",
-    "app.worker.tasks.remediation",
+    "app.worker.admin.library_indexes",
+    "app.worker.scenario.tasks",
+    "app.worker.remediation.tasks",
     "app.worker.external_intelligence.refresh_task",
-    # Installs the run-time switch and the source refresher in the worker (the worker layer imports no
-    # service).
-    "app.services.external_intelligence.worker_runtime",
 ]
 
 celery_app = Celery("tsg", broker=settings.redis_celery_broker_url, include=TASK_MODULES)
 celery_app.conf.update(
-    task_routes={
-        TaskName.FIND_THREATS: {"queue": Queue.THREATS},
-        TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
-        TaskName.MAP_CONTROLS: {"queue": Queue.SCENARIOS},
-        TaskName.WRITE_PLAN: {"queue": Queue.SCENARIOS},
-        TaskName.REAP: {"queue": Queue.MAINTENANCE},
-        TaskName.RETRY_CONTROLS: {"queue": Queue.MAINTENANCE},
-        TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
-        TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
-    },
+    task_routes=TASK_ROUTES,
     task_default_queue=Queue.MAINTENANCE,
     task_serializer="json",
     accept_content=["json"],
@@ -118,11 +105,6 @@ celery_app.conf.update(
         ),
     },
     timezone="UTC",
-)
-
-#: The queues some task is routed to: /ready needs a live worker on each (an unrouted queue needs none).
-ROUTED_QUEUES: tuple[str, ...] = tuple(
-    sorted({route["queue"] for route in celery_app.conf.task_routes.values()})
 )
 
 

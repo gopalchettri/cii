@@ -2,16 +2,16 @@
 
 from datetime import UTC, datetime
 
+from app import container
 from app.core.constants import Collection, IntelDocId
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.repository import intel_feeds
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
 
 
 def test_the_flag_is_unset_until_an_admin_writes_it_then_follows_the_last_write() -> None:
     get_mongodb()[Collection.EXTERNAL_FEED_STATUS].delete_many({})
-    flags = intel_feeds
+    flags = container.get_intel_feed_repository()
     assert flags.get(_id=IntelDocId.SWITCH) is None
     flags.save({"_id": IntelDocId.SWITCH, "enabled": False, "changed_by": "admin-1", "changed_at": NOW})
     assert flags.get(["enabled", "changed_at", "changed_by"], _id=IntelDocId.SWITCH) == {

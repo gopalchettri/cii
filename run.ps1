@@ -199,7 +199,7 @@ function Assert-StoresAnswer {
     # The same MongoDB / SQL Server / Redis checks /ready runs, before any window opens: a stopped store is named
     # now, instead of three windows retrying it and /ready saying 503 after 90 s.
     Write-Host 'Checking MongoDB, SQL Server and Redis...' -ForegroundColor Cyan
-    $check = 'import json; from app.services.readiness import check_readiness; print(json.dumps(check_readiness()[0]))'
+    $check = 'import json; from app.core.readiness import check_readiness; print(json.dumps(check_readiness()[0]))'
     $answer = Invoke-Native { & $Python -c $check } | Select-Object -Last 1
     try { $stores = $answer | ConvertFrom-Json } catch { $stores = $null }
     if ($null -eq $stores) { throw "Could not check the stores. Run this to see why: $Python -c `"$check`"" }

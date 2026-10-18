@@ -10,7 +10,7 @@ from typing import Any
 
 from app.core.constants import PlanText, PlanWarning, Remediation
 from app.domain.remediation.schedule_checks import schedule_warnings
-from app.models.remediation import ActionSchedule
+from app.models.remediation.plan import ActionSchedule
 
 _ACTION_REF = re.compile(r"\bA\d+\b")
 

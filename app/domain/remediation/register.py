@@ -12,8 +12,8 @@ from typing import Any
 from app.core.constants import Remediation, SnapshotWarning
 from app.core.redaction import redact
 from app.domain.remediation.references import resolve_controls
-from app.models.library import LibraryControl
-from app.models.remediation_requests import RegisterData
+from app.models.library.library import LibraryControl
+from app.models.remediation.requests import RegisterData
 
 
 def clip(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | None:

@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
+from app import container
 from app.core.constants import (
     Collection,
     Decision,
@@ -21,23 +22,23 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.library.repository import SqlServerRepository
-from app.data_access.scenario.repository import scenario_sessions, scenarios
-from app.models.library import ThreatLibrary
-from app.services.api_clients import get_api_client_service
-from app.services.scenario import review as review_module
-from app.services.scenario import runs as runs_module
-from app.services.scenario.review import ReviewService, get_review_service
-from app.services.scenario.runs import RunService, get_run_service
+from app.data_access.scenario.asset_repository import AssetRepository
+from app.models.library.library import ThreatLibrary
 from app.worker import jobs
-from app.worker.tasks import controls as controls_job
-from app.worker.tasks import scenarios as scenario_tasks
-from app.worker.tasks import writing
+from app.worker.scenario import controls_job, write_job
+from app.worker.scenario import tasks as scenario_tasks
+from app.worker.scenario.controls_job import ControlsJob
+from app.worker.scenario.plan_job import PlanJob
 from tests.planner_samples import ACTORS, ADMIN_ABUSE, LOG_WIPE, THREATS, finder, planner_chat
+from tests.service_builders import threat_scenario_service
 from tests.test_control_mapping import _CONTROLS, _ScoresByText, _snapshot
 from tests.test_runs import START
 from tests.test_v1_scenario_format import V1_KEYS, V2_EXTRAS
-from tests.test_writing_job import _deliver_until_done, chat  # noqa: F401 - fixture used by name
+from tests.test_writing_job import (  # noqa: F401 - fixture used by name
+    _deliver_until_done,
+    chat,
+    write_job_with,
+)
 
 LIBRARY = ThreatLibrary(THREATS, ACTORS)  # the planner's threats and attackers, all live
 RESULTS_KEYS = [
@@ -47,7 +48,7 @@ RESULTS_KEYS = [
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = get_api_client_service().mint_api_client(f"e2e-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = container.get_admin_service().create_api_client(f"e2e-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
@@ -63,28 +64,36 @@ def jobs_faked(
     get_mongodb()[Collection.SESSIONS].delete_many({"entity_id": 86, "asset_id": 103})
     get_mongodb()[Collection.SCENARIOS].delete_many({"entity_id": 86, "asset_id": 103})
     sent: list[tuple[Any, ...]] = []
-    for module in (runs_module, jobs, writing, controls_job):
-        monkeypatch.setattr(module, "send_job", lambda *args: sent.append(args))
+    record = lambda *args: sent.append(args)  # noqa: E731 - every job message, in order
+    for module in (jobs, write_job, controls_job):
+        monkeypatch.setattr(module, "send_job", record)
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, lambda _session_id: None)
     monkeypatch.setattr(controls_job, "publish_session_status", lambda _session_id: None)
-    monkeypatch.setattr(review_module, "publish_session_status", lambda _session_id: None)
     planner = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(planner))
-    monkeypatch.setattr(
-        writing, "get_library_service", lambda: SimpleNamespace(get_threat_library=lambda: LIBRARY)
-    )
+    plan = PlanJob(finder(planner), container.get_intelligence_switch())
+    monkeypatch.setattr(container, "get_plan_job", lambda: plan)
+    writer = write_job_with(chat, LIBRARY)
+    monkeypatch.setattr(container, "get_scenario_write_job", lambda: writer)
     rerank = _ScoresByText({"Backup of controller logic": 87.0, "Backup policy": 70.0})
-    monkeypatch.setattr(
-        controls_job, "get_library_search", lambda: SimpleNamespace(snapshot=lambda: _snapshot(*_CONTROLS))
+    search = SimpleNamespace(snapshot=lambda: _snapshot(*_CONTROLS))
+    controls = ControlsJob(
+        container.get_threat_scenario_session_repository(),
+        container.get_threat_scenario_repository(),
+        container.get_work_control_repository(),
+        search,  # type: ignore[arg-type]
+        rerank,  # type: ignore[arg-type]
     )
-    monkeypatch.setattr(controls_job, "get_rerank_model", lambda: rerank)
+    monkeypatch.setattr(container, "get_controls_job", lambda: controls)
+    service = threat_scenario_service(
+        assets=AssetRepository(StoredProcedureClient(sql_test_engine)),
+        threat_library=lambda: LIBRARY,
+        send_job=record,
+        publish_session_status=lambda _session_id: None,
+    )
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    run_service = RunService(SqlServerRepository(StoredProcedureClient(sql_test_engine)), scenario_sessions)
-    review_service = ReviewService(lambda: LIBRARY)
-    overrides[get_run_service], overrides[get_review_service] = lambda: run_service, lambda: review_service
+    overrides[container.get_threat_scenario_service] = lambda: service
     yield sent
-    overrides.pop(get_run_service, None)
-    overrides.pop(get_review_service, None)
+    overrides.pop(container.get_threat_scenario_service, None)
 
 
 @pytest.fixture(params=["off", "on"])
@@ -93,11 +102,8 @@ def intelligence(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
     if request.param == "on":
         request.getfixturevalue("intel")
         request.getfixturevalue("story_chat")
-        monkeypatch.setattr(
-            runs_module, "get_external_intelligence_switch", lambda: SimpleNamespace(is_on=lambda: True)
-        )
         active = {"snapshot_id": "s1", "counts": {"indexed": 12}}
-        monkeypatch.setattr(runs_module, "intel_snapshots", SimpleNamespace(get=lambda *_, **__: active))
+        monkeypatch.setattr(container.get_intel_snapshot_repository(), "get", lambda *_, **__: active)
     return request.param
 
 
@@ -119,7 +125,7 @@ def test_a_run_is_started_planned_written_mapped_read_and_reviewed(
     assert _deliver_until_done(session_id) == 1
     task, *message = jobs_faked[-1]
     assert task == TaskName.MAP_CONTROLS and message[0] == session_id
-    assert controls_job.map_controls.apply(args=message, task_id="controls-1").successful()
+    assert scenario_tasks.map_controls.apply(args=message, task_id="controls-1").successful()
 
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": session_id})
     assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
@@ -153,4 +159,4 @@ def test_a_run_is_started_planned_written_mapped_read_and_reviewed(
     again = client.get(f"/v1/sessions/{session_id}/results", headers=headers).json()
     decisions = {item["scenario_id"]: item["accepted"] for item in again["scenarios"]}
     assert decisions == {first: True, shown[1]["scenario_id"]: False}
-    assert scenarios.get(_id=first)["decision"] == Decision.ACCEPTED
+    assert container.get_threat_scenario_repository().get(_id=first)["decision"] == Decision.ACCEPTED

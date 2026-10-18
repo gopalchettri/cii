@@ -9,18 +9,11 @@ from datetime import UTC, datetime
 
 import structlog
 
-from app.ai import EmbeddingModel, RerankModel, get_embedding_model, get_rerank_model
-from app.core.config import get_settings
+from app.ai import EmbeddingModel, RerankModel
 from app.core.constants import Dependency, IntelDocId, IntelLimits, IntelMessage, LogEvent
-from app.core.singletons import singleton
-from app.data_access.external_intelligence.repository import (
-    IntelFeedRepository,
-    IntelRecordRepository,
-    IntelSnapshotRepository,
-    intel_feeds,
-    intel_records,
-    intel_snapshots,
-)
+from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
+from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
+from app.data_access.external_intelligence.intel_snapshot_repository import IntelSnapshotRepository
 from app.models.external_intelligence.evidence_corpus import SnapshotDescription
 from app.models.external_intelligence.source_health import sources_in_registry_order
 from app.search.external_intelligence.corpus_builder import build_corpus
@@ -31,7 +24,6 @@ from app.search.external_intelligence.evidence_index import (
     build_index,
     empty_index,
 )
-from app.search.external_intelligence.intelligence_metrics import SNAPSHOT_AGE_SECONDS
 
 log = structlog.get_logger(__name__)
 RETRY_FIRST_SECONDS, RETRY_LONGEST_SECONDS = 30.0, 900.0  # the pause after a failed build, doubled each time
@@ -214,20 +206,3 @@ def publish_index(
         else LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_SUPERSEDED
     )
     log.info(event, snapshot_id=description.snapshot_id, indexed=len(index.corpus.hits))
-
-
-@singleton
-def get_evidence_index_keeper() -> EvidenceIndexKeeper:
-    """The process's evidence index keeper, its snapshot age exported as a gauge."""
-    settings = get_settings()
-    keeper = EvidenceIndexKeeper(
-        intel_records,
-        intel_snapshots,
-        intel_feeds,
-        get_embedding_model(),
-        get_rerank_model(),
-        settings.embedding_model,
-        settings.rerank_model,
-    )
-    SNAPSHOT_AGE_SECONDS.set_function(keeper.snapshot_age_seconds)
-    return keeper

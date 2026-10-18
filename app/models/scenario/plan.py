@@ -12,7 +12,7 @@ from app.core.constants import (
     AttackerCheck,
     StrideCategory,
 )
-from app.models.library import LibraryThreat
+from app.models.library.library import LibraryThreat
 
 
 @dataclass(frozen=True)

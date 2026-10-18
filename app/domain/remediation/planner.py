@@ -23,7 +23,7 @@ from app.domain.remediation.prompts import PLAN_PROMPT_VERSION, plan_prompt
 from app.domain.remediation.scheduler import schedule
 from app.domain.shared.ask_ai import answer_item_problems, ask_ai_and_check
 from app.domain.shared.names import shorten_text
-from app.models.remediation import FinishedPlan, PlanDraft
+from app.models.remediation.plan import FinishedPlan, PlanDraft
 
 _URGENT_LEVELS = frozenset(level.casefold() for level in (RiskLevel.CRITICAL, RiskLevel.HIGH))
 _URGENT_PRIORITIES = frozenset((ActionPriority.CRITICAL, ActionPriority.HIGH))

@@ -13,7 +13,7 @@ APP_SOURCES = sorted(APP.rglob("*.py"))
 #: The size rules also hold for the laptop scripts (no layers there).
 SIZE_CHECKED_SOURCES = APP_SOURCES + sorted((REPO / "scripts").glob("*.py"))
 #: The only modules outside a layer folder.
-TOP_LEVEL_FILES = {"__init__.py", "main.py"}
+TOP_LEVEL_FILES = {"__init__.py", "main.py", "container.py"}
 INLINE_LOG_EVENT = re.compile(r"\blog\.(debug|info|warning|error|exception)\(\s*[\"']")
 INLINE_RAISE_MESSAGE = re.compile(r"\braise\s+\w+\(\s*[\"']")
 
@@ -26,9 +26,9 @@ ALLOWED_IMPORTS: dict[str, set[str]] = {
     "search": {"core", "models", "data_access", "ai"},
     "domain": {"core", "models", "ai", "search"},
     "realtime": {"core", "models", "data_access"},
-    "services": {"core", "models", "data_access", "ai", "search", "domain", "realtime", "worker"},
-    "worker": {"core", "models", "data_access", "ai", "search", "domain", "realtime"},
-    "api": {"core", "models", "services", "realtime"},
+    "services": {"core", "models", "data_access", "ai", "search", "domain", "realtime"},
+    "worker": {"core", "models", "data_access", "ai", "search", "domain", "realtime", "container"},
+    "api": {"core", "models", "services", "realtime", "container"},
 }
 #: Calls that read or write MongoDB or SQL Server: only data_access/ (and the clients in core/database.py)
 #: make them.
@@ -58,13 +58,18 @@ DATABASE_CALLS = {
     "execute_procedure",
 }
 MAX_PUBLIC_METHODS, MAX_CLASS_LINES, MAX_FUNCTION_LINES, MAX_FILE_LINES = 7, 150, 40, 300
-#: Owner decision of 2026-10-18: the scenario folders keep few files, so only the file cap is lifted there.
+#: Owner decision of 2026-10-18: the scenario folders keep few files, and a module's one service file and its
+#: repositories may be long, as may the one file that builds every long-lived object; only the file cap is
+#: lifted there.
 LONG_FILE_FOLDERS = (
     "app/domain/scenario/",
-    "app/services/scenario/",
-    "app/data_access/scenario/",
     "app/models/scenario/",
+    "app/services/",
+    "app/data_access/",
+    "app/container.py",
 )
+#: X14: a module's one service class and each repository may be wide.
+WIDE_CLASS_FILES = ("_service.py", "_repository.py")
 
 
 def _layer(source: pathlib.Path) -> str:
@@ -215,7 +220,8 @@ def test_no_god_class_function_or_file() -> None:
                     and not item.name.startswith("_")
                 ]
                 wide = node.name == "MongoRepository"  # owner rule: the base holds every plain verb
-                if (len(public) > MAX_PUBLIC_METHODS and not wide) or size > MAX_CLASS_LINES:
+                owner = source.name.endswith(WIDE_CLASS_FILES)
+                if not owner and ((len(public) > MAX_PUBLIC_METHODS and not wide) or size > MAX_CLASS_LINES):
                     offenders.append(
                         f"{_name(source)}:{node.lineno} class {node.name}: {len(public)} public, {size} lines"
                     )
@@ -249,6 +255,46 @@ def test_process_singletons_are_built_once() -> None:
         if _uses_functools_cache(node)
     ]
     assert offenders == [], "use @singleton (app/core/singletons.py):\n" + "\n".join(offenders)
+
+
+def test_singletons_live_only_in_the_container_and_core() -> None:
+    """Only app/container.py (and core's clients and settings) builds long-lived objects."""
+    offenders = [
+        f"{_name(source)}:{node.lineno} {node.name}"
+        for source in APP_SOURCES
+        if _name(source) != "app/container.py" and _layer(source) != "core"
+        for node in ast.walk(_tree(source))
+        if isinstance(node, ast.FunctionDef)
+        and any(getattr(d, "id", getattr(d, "attr", None)) == "singleton" for d in node.decorator_list)
+    ]
+    assert offenders == [], "\n".join(offenders)
+
+
+def test_the_worker_imports_the_container_only_inside_a_function() -> None:
+    """A worker module imports app.container only inside a function, so importing it builds nothing and makes
+    no import cycle."""
+    offenders = [
+        f"{_name(source)}:{node.lineno}"
+        for source in APP_SOURCES
+        if _layer(source) == "worker"
+        for node in _tree(source).body
+        if "container" in _imported_layers(node, source)
+    ]
+    assert offenders == [], "\n".join(offenders)
+
+
+def test_one_service_class_per_module() -> None:
+    """app/services/ holds one folder per module, each with one service class, in its *_service.py."""
+    services = APP / "services"
+    assert [path.name for path in services.glob("*.py")] == ["__init__.py"]
+    for folder in sorted(path for path in services.iterdir() if path.is_dir() and path.name != "__pycache__"):
+        classes = [
+            node.name
+            for source in folder.glob("*.py")
+            for node in _tree(source).body
+            if isinstance(node, ast.ClassDef)
+        ]
+        assert len(classes) == 1 and next(folder.glob("*_service.py"), None), f"{folder.name}: {classes}"
 
 
 def test_every_constant_is_imported_from_one_place_and_defined_once() -> None:

@@ -13,11 +13,11 @@ import pytest
 
 from app.core.constants import IntelRejection
 from app.models.external_intelligence.fetch_result import FetchResult
-from app.services.external_intelligence.sources.cisa_ics_advisories_source import CisaIcsAdvisoriesSource
-from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
-from app.services.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
-from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
-from app.services.external_intelligence.sources.text_guard import flat_strings
+from app.worker.external_intelligence.sources.cisa_ics_advisories_source import CisaIcsAdvisoriesSource
+from app.worker.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
+from app.worker.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
+from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
+from app.worker.external_intelligence.sources.text_guard import flat_strings
 from tests.external_intelligence.sources import test_cisa_ics_advisories_source as ics_fixtures
 from tests.external_intelligence.sources import test_kev_and_epss_sources as kev_fixtures
 from tests.external_intelligence.sources import test_mitre_attack_source as attack_fixtures

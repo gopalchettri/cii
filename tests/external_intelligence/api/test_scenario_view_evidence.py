@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import Decision, RunKind, ScenarioStatus
-from app.services.scenario.results import build_scenario_view
+from app.domain.scenario.results import build_scenario_view
 from tests.external_intelligence.conftest import STORY_MARKED
 from tests.external_intelligence.fakes import TECHNIQUE
 

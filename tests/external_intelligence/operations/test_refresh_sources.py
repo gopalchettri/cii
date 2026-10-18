@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from app import container
 from app.core.constants import (
     REFRESH_AFTER_HOURS,
     IntelKind,
@@ -19,7 +20,7 @@ from app.models.external_intelligence.refresh_summary import RefreshResult
 from app.models.external_intelligence.source_health import (
     SourceHealth,
 )
-from app.services.external_intelligence.refresh_sources import SourceRefresher
+from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from tests.external_intelligence.evidence_fakes import NOW, MemoryCatalogue, MemoryKeeper, StubFetcher
 from tests.external_intelligence.operations.refresh_fakes import ClaimFeeds, CurrentRecords
 
@@ -36,7 +37,9 @@ def result(*ids: str, version: str = "v1", **flags: bool) -> FetchResult:
 def refresher(fetchers: dict, approved=None, keeper=None):
     feeds, records = ClaimFeeds(approved), CurrentRecords()
     keeper = keeper or MemoryKeeper()
-    return SourceRefresher(MemoryCatalogue(fetchers), records, feeds, keeper), feeds, records, keeper  # type: ignore[arg-type]
+    audit = container.get_audit_repository()
+    run = SourceRefresher(MemoryCatalogue(fetchers), records, feeds, keeper, audit)  # type: ignore[arg-type]
+    return run, feeds, records, keeper
 
 
 def test_a_first_refresh_stores_in_batches_moves_the_checkpoint_and_rebuilds_the_index() -> None:

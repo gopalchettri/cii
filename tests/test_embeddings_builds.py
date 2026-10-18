@@ -2,7 +2,7 @@
 a stale one replaced, an unreachable queue failing the build at once, and the job recording its counts. The
 job queue is faked; the job itself runs on fakes of the library and its search."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -10,19 +10,32 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import container
 from app.core.constants import Collection, EmbeddingCorpus, ErrorMessage, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.admin.repository import LibraryVectorRepository, admin_jobs
-from app.services import embeddings_builds
-from app.worker.tasks.library_indexes import run_embeddings_job
+from app.data_access.admin.embedding_repository import EmbeddingRepository
+from app.services.admin.admin_service import AdminService
+from app.worker.admin.library_indexes import run_embeddings_job
 from tests.conftest import ADMIN
 
 URL = "/v1/embeddings"
 
 
+def _sending_with(client: TestClient, send: Callable[[str, str], bool]) -> AdminService:
+    """The admin service on the app's own repositories, queueing through `send`, as the API's service."""
+    service = AdminService(
+        container.get_api_client_repository(),
+        container.get_admin_job_repository(),
+        container.get_audit_repository(),
+        send,
+    )
+    client.app.dependency_overrides[container.get_admin_service] = lambda: service  # type: ignore[attr-defined]
+    return service
+
+
 @pytest.fixture(autouse=True)
-def fresh_jobs(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, str]]]:
+def fresh_jobs(client: TestClient) -> Iterator[list[tuple[str, str]]]:
     """No admin job left by another test; every send recorded and accepted."""
     get_mongodb()[Collection.ADMIN_JOBS].delete_many({})
     sent: list[tuple[str, str]] = []
@@ -31,8 +44,9 @@ def fresh_jobs(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[
         sent.append((task, job_id))
         return True
 
-    monkeypatch.setattr(embeddings_builds, "send_admin_job", send)
+    _sending_with(client, send)
     yield sent
+    client.app.dependency_overrides.pop(container.get_admin_service, None)  # type: ignore[attr-defined]
 
 
 def _start(client: TestClient, **headers: str) -> Any:
@@ -44,7 +58,8 @@ def _job(client: TestClient, job_id: str) -> dict[str, Any]:
 
 
 def _run(job_id: str, library: Any, search: Any) -> None:
-    run_embeddings_job(job_id, admin_jobs, library, search, _Vectors())  # type: ignore[arg-type]
+    jobs, audit = container.get_admin_job_repository(), container.get_audit_repository()
+    run_embeddings_job(job_id, jobs, library, search, _Vectors(), audit)  # type: ignore[arg-type]
 
 
 def test_a_build_is_queued_once_at_a_time(client: TestClient, fresh_jobs: list[tuple[str, str]]) -> None:
@@ -64,7 +79,7 @@ def test_a_build_is_queued_once_at_a_time(client: TestClient, fresh_jobs: list[t
 def test_a_build_unfinished_for_an_hour_is_replaced(client: TestClient) -> None:
     """Its worker died or its message was lost: it must not block every later build."""
     old = datetime.now(UTC) - timedelta(hours=2)
-    admin_jobs.create(
+    container.get_admin_job_repository().create(
         {
             "active": True,
             "_id": "old-job",
@@ -80,15 +95,13 @@ def test_a_build_unfinished_for_an_hour_is_replaced(client: TestClient) -> None:
     assert (old_job["status"], old_job["error"]["code"]) == ("failed", "job_abandoned")
 
 
-def test_an_unreachable_queue_fails_the_build_at_once(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_unreachable_queue_fails_the_build_at_once(client: TestClient) -> None:
     """No reaper re-sends an admin job: it is failed, never left queued; the next request may start one."""
-    monkeypatch.setattr(embeddings_builds, "send_admin_job", lambda task, job_id: False)
+    _sending_with(client, lambda task, job_id: False)
     assert _start(client).status_code == 503
     failed = get_mongodb()[Collection.ADMIN_JOBS].find_one({})
     assert failed["status"] == "failed" and "active" not in failed
-    monkeypatch.setattr(embeddings_builds, "send_admin_job", lambda task, job_id: True)
+    _sending_with(client, lambda task, job_id: True)
     assert _start(client).status_code == 202
 
 
@@ -159,21 +172,18 @@ def test_an_unreadable_library_fails_the_build_never_done_on_the_old_one(client:
     assert (job["status"], job["error"]["code"]) == ("failed", "unavailable") and search.builds == 0
 
 
-def test_any_failure_to_queue_a_build_frees_the_slot(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_any_failure_to_queue_a_build_frees_the_slot(client: TestClient) -> None:
     """Review 2026-10-11: not only an unreachable broker (an encode error, a Redis refusal): the build no
     worker will run is failed, so it never blocks the next one for an hour."""
 
     def broken_send(task: str, job_id: str) -> bool:
         raise RuntimeError("encode error")
 
-    monkeypatch.setattr(embeddings_builds, "send_admin_job", broken_send)
     with pytest.raises(RuntimeError):
-        embeddings_builds.EmbeddingsBuilds(admin_jobs).start("operator-1")
+        _sending_with(client, broken_send).create_embeddings_build("operator-1")
     failed = get_mongodb()[Collection.ADMIN_JOBS].find_one({})
     assert failed["status"] == "failed" and "active" not in failed
-    monkeypatch.setattr(embeddings_builds, "send_admin_job", lambda task, job_id: True)
+    _sending_with(client, lambda task, job_id: True)
     assert _start(client).status_code == 202
 
 
@@ -185,7 +195,9 @@ def test_a_build_taken_over_while_running_keeps_its_abandoned_outcome(client: Te
     class _TakenOverWhileBuilding(_Search):
         def snapshot(self, *, wait: bool) -> Any:
             error = {"code": "job_abandoned", "message": "taken over"}
-            admin_jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
+            container.get_admin_job_repository().update_admin_job_finished(
+                job_id, datetime.now(UTC), error=error
+            )
             return super().snapshot(wait=wait)
 
     _run(job_id, _Library(), _TakenOverWhileBuilding())
@@ -203,7 +215,9 @@ def test_an_unknown_build_is_404_and_both_endpoints_need_the_admin_key(client: T
 
 def test_another_kinds_job_is_404_here(client: TestClient) -> None:
     """An intelligence refresh's job id is not a build."""
-    admin_jobs.create({"_id": "intel-job", "kind": "intel_refresh", "status": "done", "requested_by": "x"})
+    container.get_admin_job_repository().create(
+        {"_id": "intel-job", "kind": "intel_refresh", "status": "done", "requested_by": "x"}
+    )
     assert client.get(f"{URL}/intel-job", headers=ADMIN).status_code == 404
 
 
@@ -218,7 +232,7 @@ def test_new_vectors_are_counted_by_library_since_a_moment() -> None:
         ]
     )
     try:
-        assert LibraryVectorRepository(vectors).count_library_vectors_made_since(since) == {"threat": 2}
+        assert EmbeddingRepository(vectors).count_library_vectors_made_since(since) == {"threat": 2}
     finally:
         vectors.delete_many({"_id": {"$regex": "^count-test-"}})
 
@@ -226,6 +240,6 @@ def test_new_vectors_are_counted_by_library_since_a_moment() -> None:
 def test_a_redelivered_build_message_never_runs_a_second_build(client: TestClient) -> None:
     """Before: any active record was marked running, so a redelivered copy of a running build built again."""
     job_id = _start(client).json()["job_id"]
-    jobs = admin_jobs
+    jobs = container.get_admin_job_repository()
     assert jobs.update_admin_job_running(job_id, datetime.now(UTC)) is True
     assert jobs.update_admin_job_running(job_id, datetime.now(UTC)) is False  # the redelivered copy

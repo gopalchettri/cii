@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.constants import Cache, EmbeddingCorpus
 from app.core.database import get_mongodb
-from app.data_access.admin.repository import LibraryVectorRepository
+from app.data_access.admin.embedding_repository import EmbeddingRepository
 
 
 def test_a_vector_of_a_corpus_no_code_knows_is_retired_and_known_corpora_are_untouched() -> None:
@@ -19,7 +19,7 @@ def test_a_vector_of_a_corpus_no_code_knows_is_retired_and_known_corpora_are_unt
             {"_id": "intelligence", "corpus": EmbeddingCorpus.EXTERNAL_INTELLIGENCE.value, "vector": [0.3]},
         ]
     )
-    store = LibraryVectorRepository(vectors)
+    store = EmbeddingRepository(vectors)
     assert store.retire_unknown_vector_corpora() == 1
     old = vectors.find_one({"_id": "old"}) or {}
     keep = old["expires_at"].replace(tzinfo=UTC) - datetime.now(UTC)

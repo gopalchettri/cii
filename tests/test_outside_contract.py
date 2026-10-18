@@ -1,4 +1,4 @@
-﻿"""Pins what TSG shows to the outside: the OpenAPI document, stored enum values, Redis keys and other tsg
+"""Pins what TSG shows to the outside: the OpenAPI document, stored enum values, Redis keys and other tsg
 names, Celery task routes and schedule, and MongoDB indexes and validators. A restructure must leave every
 pin unchanged; an approved outside change rewrites them with TSG_WRITE_CONTRACT=1."""
 
@@ -20,7 +20,7 @@ CONTRACT = REPO / "tests" / "contract"
 WRITE = os.environ.get("TSG_WRITE_CONTRACT") == "1"
 #: Index set-up in a fresh process, so the pin covers the intelligence collections too (off in the suite).
 INDEX_SETUP = (
-    "from app.data_access.base import create_all_indexes\n"
+    "from app.container import create_all_indexes\n"
     "from app.worker.jobs import JOB_COLLECTIONS\n"
     "create_all_indexes(JOB_COLLECTIONS)\n"
 )

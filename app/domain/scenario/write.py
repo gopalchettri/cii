@@ -71,9 +71,9 @@ from app.domain.shared.names import (
     threat_name_without_code,
 )
 from app.domain.shared.prompt_redaction import facts_safe_for_prompt
-from app.models.asset_context import FrozenContext
 from app.models.external_intelligence.evidence_view import markers_of
-from app.models.library import ThreatLibrary
+from app.models.library.library import ThreatLibrary
+from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.write import (
     BriefSystem,
     Finding,

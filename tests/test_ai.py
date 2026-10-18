@@ -22,8 +22,10 @@ from app.core.constants import AiLimits, AiTask, EmbeddingCorpus, ErrorCode
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
-from app.data_access.admin.repository import AiCallRepository, LibraryVectorRepository, VectorRepository
-from app.models.ai import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
+from app.data_access.admin.ai_call_repository import AiCallRepository
+from app.data_access.admin.embedding_repository import EmbeddingRepository
+from app.data_access.base import MongoRepository, VectorRepository
+from app.models.ai.profiles import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 
 JSON_CHAT = ChatModelProfile(
     max_output_tokens=100, timeout_seconds=5, supports_json_mode=True, reasoning_effort="none"
@@ -169,7 +171,7 @@ def test_a_busy_provider_is_retried_by_us_alone_then_the_fallback_then_unavailab
     requested.clear()
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
     stores = (
-        LibraryVectorRepository(get_mongodb()["test_embeddings"]),
+        EmbeddingRepository(get_mongodb()["test_embeddings"]),
         VectorRepository(get_mongodb()["test_query_vectors"]),
     )
     embed_before = _ai_calls(AiTask.EMBED, "openai/embed", "unavailable")
@@ -219,7 +221,7 @@ def _embedding_model(
         EmbeddingModelProfile(dimensions=dimensions, **values),
         "http://ai.invalid",
         "key",
-        LibraryVectorRepository(get_mongodb()[library]),
+        EmbeddingRepository(get_mongodb()[library]),
         VectorRepository(get_mongodb()["test_query_vectors"]),
         key_header,
     )
@@ -274,8 +276,8 @@ def test_a_rerank_score_outside_0_to_1_is_refused(monkeypatch: pytest.MonkeyPatc
 
 def test_changing_the_retention_updates_the_index_instead_of_stopping_start_up() -> None:
     collection = get_mongodb()["test_retention"]
-    AiCallRepository(collection, ttl=[("created_at", 14 * 86_400)]).create_indexes()
-    AiCallRepository(collection, ttl=[("created_at", 30 * 86_400)]).create_indexes()  # IndexOptionsConflict
+    MongoRepository(collection, ttl=[("created_at", 14 * 86_400)]).create_indexes()
+    MongoRepository(collection, ttl=[("created_at", 30 * 86_400)]).create_indexes()  # IndexOptionsConflict
     ttl = next(index for index in collection.list_indexes() if index["key"] == {"created_at": 1})
     assert ttl["expireAfterSeconds"] == 30 * 86_400
 

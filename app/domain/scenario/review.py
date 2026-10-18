@@ -12,15 +12,25 @@ from app.core.constants import (
     ReviewMessage,
     RunKind,
     ScenarioStatus,
+    SessionMessage,
     Status,
     Step,
     TargetProblem,
 )
-from app.core.exceptions import Conflict
-from app.models.api_clients import Principal
+from app.core.exceptions import Conflict, Forbidden, NotFound
+from app.models.admin.api_clients import Principal
 from app.models.scenario.views import SessionStatus, TargetSkipped
 
 Targets = list[dict[str, Any]]
+
+
+def check_session_of_caller(record: dict[str, Any] | None, session_id: str, entity_id: int) -> dict[str, Any]:
+    """The scenario session record the caller's entity owns: 404 when there is none, 403 when another's."""
+    if record is None:
+        raise NotFound(SessionMessage.NOT_FOUND.format(session_id=session_id))
+    if record["entity_id"] != entity_id:
+        raise Forbidden(SessionMessage.OTHER_ENTITY.format(session_id=session_id))
+    return record
 
 
 def check_review_open(run: SessionStatus) -> None:

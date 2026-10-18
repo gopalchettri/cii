@@ -9,12 +9,17 @@ from typing import Any
 
 import structlog
 
-from app.ai import EmbeddingModel, get_embedding_model
+from app.ai import EmbeddingModel
 from app.core.constants import EMBEDDING_SOURCE_TABLE, Cache, EmbeddingCorpus, LogEvent
-from app.core.singletons import singleton
-from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, LoadedLibraries
+from app.models.library.library import (
+    LibraryActor,
+    LibraryControl,
+    LibraryThreat,
+    LibraryThreatType,
+    LoadedLibraries,
+)
 from app.search.indexes import HybridIndex
-from app.search.library_cache import LibraryService, get_library_service
+from app.search.library_cache import LibraryCache
 from app.search.snapshot import LibrarySnapshot, threat_types_of
 from app.search.texts import describe_actor, describe_control, describe_threat, describe_threat_type
 
@@ -24,7 +29,7 @@ log = structlog.get_logger(__name__)
 class LibrarySearch:
     """Hands out the current library's snapshot. A run takes one and does all its searches on it."""
 
-    def __init__(self, library: LibraryService, embeddings: EmbeddingModel) -> None:
+    def __init__(self, library: LibraryCache, embeddings: EmbeddingModel) -> None:
         self._snapshots = _SnapshotKeeper(library, _SnapshotBuilder(embeddings).build)
 
     def snapshot(self, *, wait: bool = False) -> LibrarySnapshot:
@@ -46,7 +51,7 @@ class _SnapshotKeeper:
     older snapshot keeps serving. Only when there is no snapshot yet do callers wait for the first build,
     sharing its outcome, the snapshot or its error."""
 
-    def __init__(self, library: LibraryService, build: Callable[[LoadedLibraries], LibrarySnapshot]) -> None:
+    def __init__(self, library: LibraryCache, build: Callable[[LoadedLibraries], LibrarySnapshot]) -> None:
         self._library = library
         self._build = build
         self._lock = threading.Lock()  # guards the three fields below; never held during a build
@@ -165,8 +170,3 @@ def _identify_actor(actor: LibraryActor) -> tuple[int, str]:
 
 def _identify_type(threat_type: LibraryThreatType) -> tuple[int, str]:
     return threat_type.type_id, threat_type.name
-
-
-@singleton
-def get_library_search() -> LibrarySearch:
-    return LibrarySearch(get_library_service(), get_embedding_model())

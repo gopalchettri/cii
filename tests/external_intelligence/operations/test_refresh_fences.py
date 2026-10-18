@@ -4,12 +4,13 @@ feed keeps the last good data."""
 
 import pytest
 
+from app import container
 from app.core.constants import IntelKind, IntelLimits, IntelOperationsLimits, IntelSource
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord
 from app.models.external_intelligence.refresh_summary import RefreshResult
-from app.services.external_intelligence.record_batch_writer import RefreshMessage
-from app.services.external_intelligence.refresh_sources import SourceRefresher
+from app.worker.external_intelligence.record_batch_writer import RefreshMessage
+from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from tests.external_intelligence.evidence_fakes import NOW, MemoryCatalogue, MemoryKeeper, StubFetcher
 from tests.external_intelligence.operations.refresh_fakes import ClaimFeeds, CurrentRecords
 
@@ -32,6 +33,7 @@ def build(fetched: FetchResult, current: int = 0):
         records,
         feeds,
         MemoryKeeper(),  # type: ignore[arg-type]
+        container.get_audit_repository(),
     )
     return run, feeds, records
 
@@ -97,7 +99,8 @@ def test_a_claim_taken_over_during_the_download_means_nothing_is_written() -> No
             feeds.claimed[KEV] = "the-new-owner"
             return super().download_changes(checkpoint)
 
-    run = SourceRefresher(MemoryCatalogue({KEV: TakenOver(KEV, result(3))}), records, feeds, MemoryKeeper())  # type: ignore[arg-type]
+    catalogue, audit = MemoryCatalogue({KEV: TakenOver(KEV, result(3))}), container.get_audit_repository()
+    run = SourceRefresher(catalogue, records, feeds, MemoryKeeper(), audit)  # type: ignore[arg-type]
     assert run.refresh_due_sources(NOW).sources[0].result == RefreshResult.CLAIM_LOST
     assert records.saved == []
 

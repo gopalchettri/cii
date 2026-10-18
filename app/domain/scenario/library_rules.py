@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 from app.core.asset_types import asset_type_label
 from app.core.constants import COMPATIBLE_ASSET_TYPES, LibraryRowKind
-from app.models.library import ThreatLibrary
+from app.models.library.library import ThreatLibrary
 
 
 def compatible_asset_types(

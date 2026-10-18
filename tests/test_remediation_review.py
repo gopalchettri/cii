@@ -6,7 +6,6 @@ the chat faked."""
 
 import contextlib
 import uuid
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
@@ -27,20 +27,13 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.jobs.repository import DELETING_MARK
-from app.data_access.remediation.repository import remediation_plans
+from app.data_access.scenario.threat_scenario_session_repository import DELETING_MARK
 from app.domain.remediation.plan_rules import check_regenerable
-from app.models.remediation_reviews import DecisionRequest
-from app.services.remediation import regenerate as regenerate_module
-from app.services.remediation.decisions import PlanDecisions
-from app.services.remediation.regenerate import PlanRegeneration, get_plan_regeneration
-from app.services.remediation.snapshots import SnapshotMaker
+from app.models.remediation.reviews import DecisionRequest
 from app.worker import jobs
-from app.worker.tasks import remediation as plan_job
 from tests.plan_addresses import generated, plan_url
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
-    FAKE_LIBRARY,
     _identity,
     _request,
     _scenario,
@@ -50,26 +43,18 @@ from tests.test_remediation_requests import (  # noqa: F401 — api_key and worl
 
 
 @pytest.fixture
-def plans(
-    client: TestClient,
-    world: dict[str, Any],  # noqa: F811
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[dict[str, Any]]:
-    """`world` and a regenerate service on the same fakes; what a regenerate sends."""
-    snapshots = SnapshotMaker(FAKE_LIBRARY)  # type: ignore[arg-type]
-    built = PlanRegeneration(snapshots)
-    client.app.dependency_overrides[get_plan_regeneration] = lambda: built  # type: ignore[attr-defined]
-    monkeypatch.setattr(regenerate_module, "send_job", lambda *args: world["sent"].append(args))
-    yield world
-    client.app.dependency_overrides.pop(get_plan_regeneration, None)  # type: ignore[attr-defined]
+def plans(world: dict[str, Any]) -> dict[str, Any]:  # noqa: F811
+    """`world`: its service regenerates and decides plans on the same fakes; what a regenerate sends."""
+    return world
 
 
 def _deliver(remediation_id: str, version: int) -> None:
     task: Any = SimpleNamespace(
         name=TaskName.WRITE_PLAN, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None
     )
+    write = container.get_remediation_plan_job().write_remediation_plan_version
     with contextlib.suppress(Exception):  # run_leased_job re-raises what it settled
-        jobs.run_leased_job(task, Collection.REMEDIATIONS, remediation_id, version, plan_job.write_version)
+        jobs.run_leased_job(task, Collection.REMEDIATIONS, remediation_id, version, write)
 
 
 def _done_plan(client: TestClient, key: str, state: dict[str, Any]) -> str:
@@ -207,7 +192,8 @@ def test_a_decision_raced_by_another_reads_again_once(
     new read; when one lands every time, 409 changed_concurrently."""
     remediation_id = _done_plan(client, api_key, plans)
     db = get_mongodb()
-    decide = remediation_plans.update_remediation_plan_decision
+    remediations = container.get_remediation_repository()
+    decide = remediations.update_remediation_plan_decision
     raced: list[bool] = []
 
     def another_decision_first(*args: Any) -> bool:
@@ -216,14 +202,15 @@ def test_a_decision_raced_by_another_reads_again_once(
             db[Collection.REMEDIATIONS].update_one({"_id": remediation_id}, {"$inc": {"decision_seq": 1}})
         return decide(*args)
 
-    monkeypatch.setattr(remediation_plans, "update_remediation_plan_decision", another_decision_first)
-    service = PlanDecisions()
+    monkeypatch.setattr(remediations, "update_remediation_plan_decision", another_decision_first)
+    service = plans["service"]
     owner = _record(remediation_id)["entity_id"]
     principal: Any = SimpleNamespace(entity_id=owner, user_id="u1", client_id="c1")
-    assert service.accept(principal, remediation_id, DecisionRequest(version=1)).accepted_version == 1
-    monkeypatch.setattr(remediation_plans, "update_remediation_plan_decision", lambda *args: False)
+    accepted = service.accept_remediation_plan(principal, remediation_id, DecisionRequest(version=1))
+    assert accepted.accepted_version == 1
+    monkeypatch.setattr(remediations, "update_remediation_plan_decision", lambda *args: False)
     with pytest.raises(Conflict) as clash:
-        service.reject(principal, remediation_id, DecisionRequest(version=1))
+        service.reject_remediation_plan(principal, remediation_id, DecisionRequest(version=1))
     assert clash.value.reason == ConflictReason.CHANGED_CONCURRENTLY
 
 
