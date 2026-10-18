@@ -10,7 +10,6 @@ from typing import Any
 
 import litellm
 
-from app.ai.answer_reuse import earlier_reply
 from app.ai.chat_messages import (
     build_conversation,
     count_prompt_chars,
@@ -176,8 +175,6 @@ class ChatModel:
                     task=task, chars=prompt_chars, limit=self._max_input_chars
                 )
             )
-        if (reused := earlier_reply(self._call_records, task, messages)) is not None:  # G244: a retry
-            return parse_json_object(reused), reused
         model, response, seconds = self._call_first_available_model(task, messages)
         choice = response.choices[0]
         reply = choice.message.content or ""

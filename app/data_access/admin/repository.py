@@ -133,17 +133,12 @@ class AuditRepository(MongoRepository):
 
 
 class AiCallRepository(MongoRepository):
-    """tsg_ai_calls: every read and write bounded by Timeouts.RECORD_WRITE_SECONDS (the answer is in hand)."""
+    """tsg_ai_calls: every write bounded by Timeouts.RECORD_WRITE_SECONDS (the answer is in hand)."""
 
     def create(self, record: Record) -> Any:
         """Inserts one tsg_ai_calls record within Timeouts.RECORD_WRITE_SECONDS."""
         with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
             return super().create(record)
-
-    def list(self, *args: Any, **kwargs: Any) -> list[Record]:  # type: ignore[override]
-        """The tsg_ai_calls records matching, read within Timeouts.RECORD_WRITE_SECONDS."""
-        with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
-            return super().list(*args, **kwargs)
 
 
 class VectorRepository(MongoRepository):
@@ -242,7 +237,7 @@ audit_records = AuditRepository(
 )
 ai_calls = AiCallRepository(
     Collection.AI_CALLS,
-    indexes=[{"keys": [("task_id", 1), ("prompt_hash", 1)]}],  # a retried job's earlier answer
+    indexes=[{"keys": [("task_id", 1), ("prompt_hash", 1)]}],  # find one job's AI calls
     ttl=[("created_at", AiLimits.CALL_RECORD_DAYS * _DAY_SECONDS)],
     schema_version=1,
 )

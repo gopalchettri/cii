@@ -52,7 +52,7 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
         "model": model,
         "outcome": outcome,
         "record_id": context.get("record_id"),
-        "task_id": context.get("task_id"),  # G244: a retry of this job reuses this answer
+        "task_id": context.get("task_id"),  # with prompt_hash: finds one job's AI calls
         "prompt_hash": prompt_hash(messages),
         "request_id": context.get("request_id"),
         "prompt": _without_system_prompt_text(messages),
@@ -80,7 +80,7 @@ def _short_hash(text: str) -> str:
 
 
 def prompt_hash(messages: list[dict]) -> str:
-    """The exact conversation's fingerprint (G244): equal only for the same messages in the same order."""
+    """The exact conversation's fingerprint: equal only for the same messages in the same order."""
     text = json.dumps(messages, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -114,7 +114,7 @@ def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is k
     outcome: AiOutcome,
 ) -> None:
     """One outcome per call: counted and logged, then copied to tsg_ai_calls (the system prompt as its
-    hash), so every user prompt and answer of a run can be found (and a retry reuses a usable one, G244)."""
+    hash), so every user prompt and answer of a run can be found."""
     record = build_call_record(task, model, messages, response, seconds, outcome)
     update_call_metrics(task, model, outcome, record["tokens_in"], record["tokens_out"], seconds)
     try:

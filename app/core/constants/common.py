@@ -198,8 +198,6 @@ class LogEvent(StrEnum):
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
-    AI_CALL_REUSED = "ai.call_reused"  # a retried job's earlier answer, no AI call made
-    AI_CALL_REUSE_FAILED = "ai.call_reuse_failed"  # the record store could not be read: asked
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
     AI_CALL_UNAVAILABLE = "ai.call_unavailable"
     AI_SLOTS_BUSY = "ai.slots_busy"

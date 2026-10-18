@@ -74,6 +74,24 @@ def test_fenced_json_answer_is_read_and_the_call_is_recorded(monkeypatch: pytest
     assert record["task"] == AiTask.RELEVANCE_GATE and record["tokens_in"] == 11
 
 
+def test_a_retried_job_asks_again_and_each_call_record_keeps_the_system_prompt_as_a_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id, system_prompt = uuid.uuid4().hex, "You are the relevance gate. " * 400
+    calls: list[int] = []
+    monkeypatch.setattr(litellm, "completion", lambda **_: calls.append(1) or _json_response('{"ok": 1}'))
+    for attempt in (1, 2):
+        with structlog.contextvars.bound_contextvars(task_id=task_id, attempt=attempt):
+            assert _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, system_prompt, "batch") == {"ok": 1}
+    assert calls == [1, 1]  # the retry asked the AI again
+    records = list(get_mongodb()["test_ai_calls"].find({"task_id": task_id}))
+    assert len(records) == 2 and all(len(record["prompt_hash"]) == 64 for record in records)
+    assert "relevance gate" not in str(records)
+    system, user = records[0]["prompt"]
+    assert system["role"] == "system" and len(system["content_sha256"]) == 16
+    assert user == {"role": "user", "content": "batch"}
+
+
 def test_unreadable_answer_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(litellm, "completion", lambda **_: _json_response("not json"))
     with pytest.raises(ai.UnreadableAiAnswer):
