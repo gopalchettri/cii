@@ -31,14 +31,14 @@ RANSOMWARE = LibraryThreat(
     (INSIDER, GANG, AFFILIATE),
 )
 PHISHING = LibraryThreat(
-    2, "Phishing steals operator credentials", 2, "Social engineering", (S.SPOOFING,), ()
+    2, "Phishing steals operator credentials", 2, "Social engineering", (S.SPOOFING,), (CREW,)
 )
 LOG_WIPE = LibraryThreat(3, "Insider deletes audit logs", 3, "Insider misuse", (S.REPUDIATION,), (INSIDER,))
 EXFILTRATION = LibraryThreat(
     4, "Ransomware exfiltrates data", 1, "Malware", (S.INFORMATION_DISCLOSURE,), (GANG,)
 )
 FLOOD = LibraryThreat(
-    5, "Flood of requests overwhelms the historian", 4, "Overload", (S.DENIAL_OF_SERVICE,), ()
+    5, "Flood of requests overwhelms the historian", 4, "Overload", (S.DENIAL_OF_SERVICE,), (GANG,)
 )
 ADMIN_ABUSE = LibraryThreat(
     6, "Insider abuses admin rights", 5, "Privilege misuse", (S.ELEVATION_OF_PRIVILEGE,), (INSIDER,)

@@ -15,7 +15,7 @@ class ErrorCode(StrEnum):
     JOB_ABANDONED = "job_abandoned"  # its worker stopped renewing the lease Lease.MAX_ATTEMPTS times
     # A job's own final errors (JobFailed): a retry cannot change them.
     PLAN_REFUSED = "plan_refused"  # the asset's facts cannot be planned
-    ACTOR_LIBRARY_EMPTY = "actor_library_empty"  # no live threat actor: no scenario can name an attacker
+    ACTOR_LIBRARY_EMPTY = "actor_library_empty"  # no type links a live threat actor: no attacker to name
     GENERATION_FAILED = "generation_failed"
     INVALID_PLAN = "invalid_plan"
     CONTROL_LIBRARY_EMPTY = "control_library_empty"

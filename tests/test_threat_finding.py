@@ -1,6 +1,7 @@
 """Threat finding on an in-memory library with fake AI models: the landscape, the relevance gate, gap fill,
 one threat per threat and who carries out each threat."""
 
+import dataclasses
 import threading
 import time
 from types import SimpleNamespace
@@ -33,9 +34,7 @@ from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
     ACTORS,
     ADMIN_ABUSE,
-    AFFILIATE,
     CONTEXT,
-    CREW,
     FLOOD,
     GANG,
     INSIDER,
@@ -199,7 +198,7 @@ def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_ga
     assert (ai_threat.type_id, ai_threat.type_name) == (5, "Privilege misuse")  # the library type
     assert listed[_PROPOSAL["threat"]] == [INSIDER.name]  # its type's linked actor, never the AI's text
     assert ai_threat.actors == (PlannedActor(INSIDER.actor_id, INSIDER.name, ActorRole.ACTING),)
-    assert ai_threat.attacker_check == AttackerCheck.CHOSEN and not ai_threat.closest_attacker
+    assert ai_threat.attacker_check == AttackerCheck.CHOSEN
     assert ai_threat.attacker_check_reason == "Holds the engineering login."
     assert "Nation-state group" not in str(chat.asked(AiTask.RELEVANCE_GATE))
     assert all(query != "Nation-state group" for query, _ in rerank.calls)
@@ -212,6 +211,17 @@ def test_a_proposal_whose_type_matches_no_library_type_is_never_planned() -> Non
     chat = planner_chat({_PROPOSAL["threat"]: ["SYS1"]})
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL | {"threat_type": "Quantum sabotage"})
     findings = finder(chat, FakeRerankModel()).find_threats(CONTEXT)  # no type scores at the bar
+    assert all(threat_from_library(threat) for threat in findings.threats)
+    assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
+
+
+def test_a_proposal_whose_type_links_no_attacker_is_never_judged() -> None:
+    chat = planner_chat({_PROPOSAL["threat"]: ["SYS1"]})
+    chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL)
+    unlinked = dataclasses.replace(ADMIN_ABUSE, linked_actors=())
+    threats = tuple(unlinked if threat is ADMIN_ABUSE else threat for threat in THREATS)
+    findings = finder(chat, FakeRerankModel(_TYPE_MATCHES), threats=threats).find_threats(CONTEXT)
+    assert any("category: Elevation" in user for user in chat.asked(AiTask.GAP_FILL))
     assert all(threat_from_library(threat) for threat in findings.threats)
     assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
 
@@ -285,9 +295,9 @@ def test_an_ai_rewording_of_the_same_type_is_folded_by_meaning() -> None:
 def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch: pytest.MonkeyPatch) -> None:
     assigned: list[list[str]] = []
 
-    def recording(snapshot: Any, threats: list[PlannedThreat], sector: str, gate_judged: bool = False) -> Any:
+    def recording(snapshot: Any, threats: list[PlannedThreat], sector: str) -> Any:
         assigned.append([threat.key for threat in threats])
-        return assign_attackers(snapshot, threats, sector, gate_judged)
+        return assign_attackers(snapshot, threats, sector)
 
     monkeypatch.setattr(plan_module, "assign_attackers", recording)
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
@@ -302,45 +312,41 @@ def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch
     assert assigned == [[threat.key for threat in findings.threats]] == [["lib:1"]]
 
 
-def test_a_linked_type_ranks_its_own_actors_and_an_unlinked_one_takes_the_vetted_pools_nearest() -> None:
-    search, _ = library_search()
+def test_a_linked_type_ranks_its_own_actors_and_an_unlinked_one_gets_no_attacker() -> None:
+    unlinked = dataclasses.replace(PHISHING, linked_actors=())
+    search, _ = library_search(threats=(RANSOMWARE, unlinked))
     verdict = Verdict(True, (321,), "It encrypts the backup.", 3, 80.0)
     ransomware, phishing = assign_attackers(
         search.snapshot(),
-        [_library_threat(S.TAMPERING, RANSOMWARE, verdict), _library_threat(S.SPOOFING, PHISHING, verdict)],
+        [_library_threat(S.TAMPERING, RANSOMWARE, verdict), _library_threat(S.SPOOFING, unlinked, verdict)],
         "Energy",
     )
-    assert ransomware.actors[0].actor_id == GANG.actor_id and not ransomware.closest_attacker
-    # Its type links no attacker: the nearest of the attackers the library links to some type; "Phishing
-    # crew" is linked to none and never offered.
-    assert phishing.closest_attacker and len(phishing.actors) == 1
-    assert phishing.actors[0].actor_id in {GANG.actor_id, AFFILIATE.actor_id, INSIDER.actor_id}
-    assert phishing.actors[0].actor_id != CREW.actor_id
+    assert ransomware.actors[0].actor_id == GANG.actor_id
+    assert phishing.actors == ()
 
 
-def test_the_gates_pick_acts_none_fits_is_flagged_and_no_pick_takes_the_first_candidate() -> None:
+def test_the_gates_pick_acts_none_fits_names_no_one_and_no_pick_takes_the_top_linked_actor() -> None:
     search, embeddings = library_search()
     snapshot = search.snapshot()
 
-    def chosen(verdict: Verdict, threat: Any = PHISHING) -> PlannedThreat:
-        category = S.SPOOFING if threat is PHISHING else S.TAMPERING
-        (decided,) = assign_attackers(snapshot, [_library_threat(category, threat, verdict)], "Energy", True)
+    def chosen(verdict: Verdict) -> PlannedThreat:
+        (decided,) = assign_attackers(snapshot, [_library_threat(S.TAMPERING, RANSOMWARE, verdict)], "Energy")
         return decided
 
-    pick = ActorPick(INSIDER.name, "Holds the backup admin account.", ((INSIDER.name, "HIGH"),))
-    picked = chosen(Verdict(True, (321,), "Phishing on SYS1.", 3, 80.0, actor_pick=pick))
+    pick = ActorPick(INSIDER.name, "Holds the backup admin account.")
+    picked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=pick))
     assert picked.actors[0].actor_id == INSIDER.actor_id and picked.attacker_check == AttackerCheck.CHOSEN
     assert picked.attacker_check_reason == "Holds the backup admin account."
-    nearest = chosen(Verdict(True, (321,), "Phishing on SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None.")))
-    assert nearest.attacker_check == AttackerCheck.NONE_FITS and nearest.closest_attacker
-    unchecked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0), RANSOMWARE)
+    nobody = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None.")))
+    assert nobody.attacker_check == AttackerCheck.NONE_FITS and nobody.actors == ()
+    unchecked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
     assert (
         unchecked.attacker_check == AttackerCheck.NOT_CHECKED
         and unchecked.actors[0].actor_id == GANG.actor_id
     )
     embeddings.queries_down = True
     with pytest.raises(Unavailable):  # no vectors, no ranking: the job retries
-        chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0), RANSOMWARE)
+        chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
 
 
 def test_one_run_reads_one_library_version_even_when_the_library_changes_meanwhile() -> None:
@@ -360,10 +366,11 @@ def test_one_run_reads_one_library_version_even_when_the_library_changes_meanwhi
     assert findings.category_ids == {"denial of service": 6, "tampering": 5}  # from the same version
 
 
-def test_no_live_actor_refuses_the_plan_before_any_ai_call() -> None:
+def test_a_library_linking_no_actor_refuses_the_plan_before_any_ai_call() -> None:
     chat = planner_chat({})
+    unlinked = tuple(dataclasses.replace(threat, linked_actors=()) for threat in THREATS)
     with pytest.raises(PlanRefused) as refused:
-        finder(chat, actors=()).find_threats(CONTEXT)
+        finder(chat, threats=unlinked).find_threats(CONTEXT)
     assert refused.value.code == ErrorCode.ACTOR_LIBRARY_EMPTY and chat.calls == []
 
 

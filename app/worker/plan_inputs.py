@@ -37,11 +37,10 @@ from app.data_access.jobs.repository import JobLease
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.remediation.repository import PLANNED_SCENARIO_FIELDS, remediation_plans
 from app.data_access.scenario.repository import scenario_controls, scenario_sessions, scenarios
-from app.domain.remediation.manual_actors import manual_planned_threat
+from app.domain.remediation.manual_actors import manual_attacker
 from app.domain.remediation.manual_records import actor_records
 from app.domain.remediation.snapshot import build_snapshot, inputs_ready, no_longer_mapped
 from app.domain.scenario.controls import ControlMapper, controls_record
-from app.domain.scenario.plan import assign_attackers
 from app.models.asset_context import FrozenContext
 from app.models.library import ThreatProposal
 from app.models.scenario.plan import PlannedActor
@@ -102,12 +101,10 @@ class PlanInputs:
     ) -> dict[str, Any]:
         """A hand-written scenario's attackers (and a new wording's library ids) saved; then re-read."""
         content, pending = scenario["content"], scenario["pending"]
-        (assigned,) = assign_attackers(snapshot, [manual_planned_threat(content)], sector="")
-        changes: dict[str, Any] = {
-            "content.actors": actor_records(assigned.actors, assigned.closest_attacker)
-        }
+        actors, closest = manual_attacker(snapshot, content)
+        changes: dict[str, Any] = {"content.actors": actor_records(actors, closest)}
         if pending.get("proposal"):
-            changes |= self._propose(scenario["_id"], content, assigned.actors, pending["by"])
+            changes |= self._propose(scenario["_id"], content, actors, pending["by"])
         scenarios.update_manual_scenario_findings(scenario["_id"], changes)
         return self._scenario(lease, scenario["_id"])
 

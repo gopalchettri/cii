@@ -6,7 +6,7 @@ import functools
 import hashlib
 import itertools
 import json
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import date
@@ -79,7 +79,6 @@ from app.models.library import (
     ThreatLibrary,
 )
 from app.models.scenario.plan import (
-    ActorCandidates,
     ActorPick,
     AttackPath,
     CategoryAudit,
@@ -153,7 +152,7 @@ def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
         "impact": threat.impact,
         "confidence": threat.confidence,
         "actors": [
-            {"id": actor.actor_id, "name": actor.name, "role": actor.role, "closest": threat.closest_attacker}
+            {"id": actor.actor_id, "name": actor.name, "role": actor.role, "closest": False}
             for actor in threat.actors
         ],
         "attacker_check": threat.attacker_check,
@@ -273,7 +272,7 @@ def _as_json(value: Any) -> str:
 # --- the planner's prompts (prompts/gate.txt, prompts/gap_fill.txt)
 
 #: Bumped by hand whenever a planner prompt changes; frozen on every plan.
-PLANNER_PROMPT_VERSION = "planner-2"
+PLANNER_PROMPT_VERSION = "planner-3"
 _PROMPTS = Path(__file__).with_name("prompts")
 _GATE_RULES = (_PROMPTS / "gate.txt").read_text(encoding="utf-8")
 _GAP_FILL_RULES = (_PROMPTS / "gap_fill.txt").read_text(encoding="utf-8")
@@ -370,20 +369,14 @@ def parse_verdict(
 
 def actor_pick(item: dict[str, Any], listed: Sequence[str]) -> ActorPick | None:
     """The gate's attacker pick, or None (the search ranking decides) when it named no listed attacker or gave
-    no reason; a rating only for a listed name, HIGH or MEDIUM."""
+    no reason."""
     by_key = {name_match_key(name): name for name in listed}
     reason = str(item.get("attacker_reason") or "").strip()[: ThreatFinding.REASON_MAX_CHARS]
     named = item.get("attacker")
     name = None if named is None else by_key.get(name_match_key(str(named)))
     if not by_key or not reason or (named is not None and name is None):
         return None
-    rated = item.get("suitability")
-    levels = {
-        by_key[key]: str(level).upper()
-        for given, level in (rated.items() if isinstance(rated, dict) else ())
-        if (key := name_match_key(str(given))) in by_key and str(level).upper() in ("HIGH", "MEDIUM")
-    }
-    return ActorPick(name, reason, tuple(sorted(levels.items())))
+    return ActorPick(name, reason)
 
 
 def _needs(names: list[str]) -> tuple[str, ...]:
@@ -455,7 +448,6 @@ class _CategoryJudge:
         self._landscape, self._by_category = landscape, by_category
         self._allowed_types, self._pool = allowed_types, pool
         self._last_attempt = last_attempt
-        self._vetted = sorted(actor.name for actor in _vetted_attackers(snapshot.library.threat_library))
 
     def judge_category(self, category: StrideCategory) -> CategoryFindings:
         """Every library threat of `category` judged; a skipped batch leaves only its threats unjudged."""
@@ -493,8 +485,8 @@ class _CategoryJudge:
         return dataclasses.replace(found, ai_threat=self._propose(audit))
 
     def _attackers_for(self, threat: LibraryThreat | LibraryThreatType) -> list[str]:
-        """What a candidate lists for the gate's pick: its type's linked actors, else the vetted pool."""
-        return [actor.name for actor in threat.linked_actors] or self._vetted
+        """What a candidate lists for the gate's pick: its type's linked actors."""
+        return [actor.name for actor in threat.linked_actors]
 
     def _judge(self, category: StrideCategory, items: list[dict[str, Any]]) -> dict[str, Verdict]:
         """Batches of GATE_BATCH_SIZE judged at once: the verdicts of every batch not skipped."""
@@ -523,7 +515,7 @@ class _CategoryJudge:
 
     def _propose(self, audit: CategoryAudit) -> PlannedThreat | None:
         """The AI's one proposal, kept when it is no library threat already judged, its type matches a library
-        type and the gate finds it applies, with the gate's pick among that type's attackers."""
+        type that links an attacker and the gate finds it applies, with the gate's pick among those."""
         names = list(
             dict.fromkeys(threat_name_without_code(rejected["threat"]) for rejected in audit.rejected)
         )
@@ -541,6 +533,9 @@ class _CategoryJudge:
         )
         matched = self._best_match(proposal["threat_type"], [(found, found.name) for found, _ in types])
         if matched is None:
+            return None
+        if not matched.linked_actors:
+            log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, category=audit.category, type_id=matched.type_id)
             return None
         item = _candidate_for_gate(
             f"{ThreatFinding.RECORD_SLOT}1",
@@ -801,22 +796,14 @@ def merge_reworded_threats(
 # --- who carries out each threat
 
 
-def _vetted_attackers(library: ThreatLibrary) -> tuple[LibraryActor, ...]:
-    """What a type that links no attacker chooses from: the attackers the library links to some type, by id;
-    every actor when it links none."""
-    vetted = {actor for threat in library.threats for actor in threat.linked_actors}
-    return tuple(sorted(vetted, key=lambda actor: actor.actor_id)) or library.actors
-
-
 def assign_attackers(
-    snapshot: LibrarySnapshot, threats: list[PlannedThreat], sector: str, gate_judged: bool = False
+    snapshot: LibrarySnapshot, threats: list[PlannedThreat], sector: str
 ) -> list[PlannedThreat]:
-    """Every threat with its acting attacker, its candidates ranked with one embedding call: its type's linked
-    actors, else the vetted pool's nearest (flagged closest). `gate_judged`: the gate named a pick."""
+    """Every threat with its acting attacker among its type's linked actors, ranked with one embedding call;
+    none when its type links none or the gate found none plausible."""
     if not threats:
         return []
     library = snapshot.library.threat_library
-    pool = _vetted_attackers(library)
     by_threat = {threat.catalogue_id: threat.linked_actors for threat in library.threats}
     by_type = linked_actors_by_type(library)
     linked = [
@@ -824,67 +811,33 @@ def assign_attackers(
         for t in threats
     ]
     queries = [f"{t.type_name}: {t.name}. {t.reason} {sector}".strip() for t in threats]
-    pool_ids = {actor.actor_id for actor in pool}
-    allowed = [{actor.actor_id for actor in actors} or pool_ids for actors in linked]
+    allowed = [{actor.actor_id for actor in actors} for actors in linked]
     hits = snapshot.find_actors(queries, top_k=len(library.actors), allowed_ids=allowed)
-    candidates = [
-        _candidates(actors, [actor for actor, _ in found], pool)
-        for actors, found in zip(linked, hits, strict=True)
-    ]
-    return choose_actors(threats, candidates, gate_judged)
-
-
-def _candidates(
-    linked: tuple[LibraryActor, ...], ranking: list[LibraryActor], pool: tuple[LibraryActor, ...]
-) -> ActorCandidates:
-    """The linked actors in search order (one the search missed still listed), else the pool's nearest."""
-    if linked:
-        return ActorCandidates((*ranking, *[actor for actor in linked if actor not in ranking]))
-    return ActorCandidates(tuple(ranking) or pool, closest=True)
-
-
-def choose_actors(
-    threats: list[PlannedThreat], candidates: list[ActorCandidates], gate_judged: bool
-) -> list[PlannedThreat]:
-    """Each threat with its acting attacker: the gate's pick, or among the attackers it rated as suitable
-    the one acting for fewest threats so far (highest impact first); no usable pick, the first candidate."""
-    used: Counter[int] = Counter()
-    decided = list(threats)
-    missing = AttackerCheck.NOT_CHECKED if gate_judged else AttackerCheck.RANKED
-    for index in sorted(
-        range(len(threats)), key=lambda i: (-threats[i].impact, -threats[i].confidence, threats[i].key)
-    ):
-        threat, options = threats[index], candidates[index]
-        acting, check, reason = _acting(threat.actor_pick, options.order, used, missing)
-        used[acting.actor_id] += 1
-        decided[index] = dataclasses.replace(
-            threat,
-            actors=(PlannedActor(acting.actor_id, acting.name, ActorRole.ACTING),),
-            closest_attacker=options.closest,
-            attacker_check=check,
-            attacker_check_reason=reason,
-            actor_pick=None,
-        )
+    decided = []
+    for threat, actors, found in zip(threats, linked, hits, strict=True):
+        ranked = [actor for actor, _ in found]
+        decided.append(choose_actor(threat, (*ranked, *[actor for actor in actors if actor not in ranked])))
     return decided
 
 
-def _acting(
-    pick: ActorPick | None, order: tuple[LibraryActor, ...], used: Counter[int], missing: AttackerCheck
-) -> tuple[LibraryActor, AttackerCheck, str]:
-    """(who acts, how it was decided, the reason the card shows)."""
-    by_name = {actor.name: actor for actor in order}
-    if pick is None or (pick.name is not None and pick.name not in by_name):
-        return order[0], missing, ""
-    if pick.name is None:
-        return order[0], AttackerCheck.NONE_FITS, pick.reason
-    rated = dict(pick.suitability)
-    level = rated.get(pick.name, "HIGH")  # its own pick, unrated: the gate judged it the most plausible
-    tier = [actor for actor in order if actor.name == pick.name or rated.get(actor.name) == level]
-    best = min(tier, key=lambda actor: (used[actor.actor_id], actor.name != pick.name, actor.name))
-    if best.name == pick.name:
-        return best, AttackerCheck.CHOSEN, pick.reason
-    balanced = PlanMessage.ATTACKER_BALANCED.format(chosen=best.name, picked=pick.name, level=level)
-    return best, AttackerCheck.BALANCED, balanced
+def choose_actor(threat: PlannedThreat, order: tuple[LibraryActor, ...]) -> PlannedThreat:
+    """The threat with its acting attacker from `order` (its linked actors, best search rank first): the
+    gate's pick, else the first; none when the gate found none plausible or nothing is linked."""
+    pick, by_name = threat.actor_pick, {actor.name: actor for actor in order}
+    acting: LibraryActor | None
+    if pick is not None and pick.name is None:
+        acting, check, reason = None, AttackerCheck.NONE_FITS, pick.reason
+    elif pick is not None and pick.name in by_name:
+        acting, check, reason = by_name[pick.name], AttackerCheck.CHOSEN, pick.reason
+    else:
+        acting, check, reason = (order[0] if order else None), AttackerCheck.NOT_CHECKED, ""
+    return dataclasses.replace(
+        threat,
+        actors=() if acting is None else (PlannedActor(acting.actor_id, acting.name, ActorRole.ACTING),),
+        attacker_check=check,
+        attacker_check_reason=reason,
+        actor_pick=None,
+    )
 
 
 # --- threat finding, whole
@@ -906,7 +859,7 @@ class ThreatFinder:
         try, when a broken reply is skipped instead of retried."""
         snapshot = self._search.snapshot()
         library = snapshot.library.threat_library
-        if not library.actors:  # refused before any AI call is bought
+        if not any(threat.linked_actors for threat in library.threats):  # refused before any AI call
             raise PlanRefused(ErrorCode.ACTOR_LIBRARY_EMPTY, PlanMessage.ACTOR_LIBRARY_EMPTY)
         landscape = describe_asset_for_ai(context, self._chat.max_prompt_chars // 2, country)
         found = self._judge_categories(snapshot, context, landscape, last_attempt)
@@ -919,9 +872,17 @@ class ThreatFinder:
         threats = merge_same_threats(accepted + ai_threats)
         threats = merge_reworded_threats(threats, self._embeddings, context.asset["name"])
         threats = _keep_on_matching_systems(threats, library.threats, context)
-        threats = assign_attackers(snapshot, threats, landscape.sector, gate_judged=True)
+        threats = assign_attackers(snapshot, threats, landscape.sector)
+        for threat in threats:
+            if not threat.actors:  # no linked attacker, or none the gate found plausible
+                log.info(
+                    LogEvent.PLANNER_THREAT_NOT_PLANNED,
+                    library_id=threat.catalogue_id,
+                    type_id=threat.type_id,
+                    attacker_check=threat.attacker_check,
+                )
         return ThreatFindings(
-            [_named_threat(threat, landscape) for threat in threats],
+            [_named_threat(threat, landscape) for threat in threats if threat.actors],
             [result.audit for result in found],
             landscape=landscape,
             library_stamp={
@@ -934,13 +895,17 @@ class ThreatFinder:
         self, snapshot: LibrarySnapshot, context: FrozenContext, landscape: Landscape, last_attempt: bool
     ) -> list[CategoryFindings]:
         """The six categories at once, their gate calls in one shared pool; the asset-type fit and the needs
-        refusal; then any gap fill. In STRIDE order. Gate batches asked and not one answered: Unavailable."""
+        refusal; then any gap fill. In STRIDE order. A threat whose type links no attacker is never judged;
+        gate batches asked and not one answered: Unavailable."""
         allowed = _run_asset_types(context)
         fitting = [
             threat
             for threat in snapshot.library.threat_library.threats
             if asset_type_fits(threat.asset_type, allowed)
         ]
+        if unlinked := [threat.catalogue_id for threat in fitting if not threat.linked_actors]:
+            log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, library_ids=unlinked)
+            fitting = [threat for threat in fitting if threat.linked_actors]
         by_category = {
             category: [t for t in fitting if category in t.categories] for category in StrideCategory
         }

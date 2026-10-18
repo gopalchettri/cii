@@ -42,7 +42,7 @@ from app.domain.scenario.plan import (
 from app.models.scenario.plan import AttackPath, PlannedThreat, ThreatFindings
 from app.worker import jobs
 from app.worker.tasks import scenarios as scenario_tasks
-from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, S, finder, planned, planner_chat
+from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
 
 LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
 
@@ -279,8 +279,10 @@ def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage
 def test_a_refused_plan_fails_the_run_with_its_own_code(
     monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
 ) -> None:
-    """No live actor: the run fails actor_library_empty, frees the asset, and is never retried."""
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(planner_chat({}), actors=()))
+    """No type links a live actor: the run fails actor_library_empty, frees the asset, is never retried."""
+    unlinked = tuple(replace(threat, linked_actors=()) for threat in THREATS)
+    refusing = finder(planner_chat({}), threats=unlinked)
+    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: refusing)
     record_id = _queued_run()
     with pytest.raises(PlanRefused):
         jobs.run_leased_job(

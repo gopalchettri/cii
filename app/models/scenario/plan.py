@@ -13,24 +13,15 @@ from app.core.constants import (
     StrideCategory,
 )
 from app.models.external_intelligence.evidence import Evidence, EvidenceSearchRecord
-from app.models.library import LibraryActor, LibraryThreat
+from app.models.library import LibraryThreat
 
 
 @dataclass(frozen=True)
 class ActorPick:
-    """The gate's pick for one threat: the most plausible listed attacker, why, and each one's suitability."""
+    """The gate's pick for one threat: the most plausible listed attacker, and why."""
 
     name: str | None  # as the library spells it; None: no listed attacker plausibly could
     reason: str  # one sentence: the access, skill and motive the threat needs
-    suitability: tuple[tuple[str, str], ...] = ()  # (listed name, HIGH | MEDIUM); one not rated is LOW
-
-
-@dataclass(frozen=True)
-class ActorCandidates:
-    """A threat's attackers, best search rank first: its type's linked actors, else the pool's nearest."""
-
-    order: tuple[LibraryActor, ...]
-    closest: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,7 +61,6 @@ class PlannedThreat:
     actors: tuple[PlannedActor, ...] = ()  # the acting actor
     # The gate's reason under each category it accepted the threat for; a category not here reads `reason`.
     kind_reasons: tuple[tuple[str, str], ...] = ()
-    closest_attacker: bool = False  # its type links no actor: the nearest library actor acts (flagged)
     attacker_check: AttackerCheck | None = None
     attacker_check_reason: str = ""
     actor_pick: ActorPick | None = None  # the gate's pick, until code decides
@@ -138,7 +128,6 @@ class RelevanceVerdict(BaseModel):
     # The attacker pick, read leniently in code: a bad one never costs a re-ask.
     attacker: Any = None
     attacker_reason: Any = None
-    suitability: Any = None
 
 
 class GapFillResponse(BaseModel):

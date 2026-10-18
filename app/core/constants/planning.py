@@ -163,10 +163,10 @@ class AttackerCheck(StrEnum):
     """How a threat's acting attacker was decided."""
 
     CHOSEN = "chosen"  # the gate's pick, from the threat's own list, with its reason
-    BALANCED = "balanced"  # rated as suitable as the pick and acting for fewer threats in the run
-    NONE_FITS = "none_fits"  # the gate found no listed attacker plausible: the nearest acts, flagged
-    NOT_CHECKED = "not_checked"  # the gate gave no usable pick: the search ranking decides
-    RANKED = "ranked"  # the gate never judged it (a hand-written one): the ranking decides
+    BALANCED = "balanced"  # older plans only: rated as suitable as the pick, acting for fewer threats
+    NONE_FITS = "none_fits"  # the gate found no listed attacker plausible: the threat is not planned
+    NOT_CHECKED = "not_checked"  # the gate gave no usable pick: the top-ranked linked actor acts
+    RANKED = "ranked"  # older plans only: never judged by the gate, the ranking decided
 
 
 class CandidateRejection(StrEnum):
@@ -181,12 +181,8 @@ class PlanMessage(StrEnum):
     """A plan's refusals and notes, written for a reviewer."""
 
     ACTOR_LIBRARY_EMPTY = (
-        "The threat actor library holds no active actor, so no scenario can name its attacker. Activate at "
-        "least one threat actor and start the run again."
-    )
-    ATTACKER_BALANCED = (
-        "{chosen} and {picked} were judged equally suitable ({level}) for this threat; {chosen} acts "
-        "because it carries fewer threats in this run."
+        "No threat type in the library links an active threat actor, so no scenario can name its attacker. "
+        "Link at least one active threat actor to a threat type and start the run again."
     )
     PLAN_NOTE = "{planned} attack paths selected; {written} written, {remaining} still to write, set by set."
     AI_COULD_NOT_ANSWER = "The AI could not answer. Start a new session later."
