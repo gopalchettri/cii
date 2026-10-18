@@ -117,8 +117,18 @@ def test_an_admin_refresh_of_one_source_is_recorded_on_its_job(intel: Intel) -> 
     assert len(intel.refresher.calls) == 1
 
 
-def test_an_admin_refresh_while_the_switch_is_off_fails_its_job_with_the_reason(intel: Intel) -> None:
+def test_an_admin_refresh_runs_while_the_workers_cached_switch_still_reads_off(intel: Intel) -> None:
+    """Turning the switch on queues a refresh the worker takes before its cached switch catches up."""
     intel.switch.enabled = False
+    job_id = _job()
+    refresh_external_intelligence(job_id)
+    assert intel.refresher.calls == [("due", None)] and admin_jobs.get(_id=job_id)["status"] == Status.DONE
+
+
+def test_an_admin_refresh_while_the_master_switch_is_off_fails_its_job_with_the_reason(
+    intel: Intel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
     job_id = _job()
     refresh_external_intelligence(job_id)
     stored = admin_jobs.get(_id=job_id)

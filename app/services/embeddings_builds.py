@@ -31,7 +31,8 @@ class EmbeddingsBuilds:
 
     def start(self, requested_by: str) -> dict[str, Any]:
         """The queued build's id. 409 job_in_progress (details.job_id: the active build) while one is queued
-        or running; 503 when the job queue is unreachable (the job is then failed, never left queued)."""
+        or running; 503 when the job queue is unreachable. Any failure to queue it fails the job, then is
+        raised, so a build no worker will run never blocks the next."""
         now = datetime.now(UTC)
         job_id = uuid.uuid4().hex
         job = {"_id": job_id, "kind": _KIND, "status": Status.QUEUED, "requested_by": requested_by}
@@ -44,7 +45,7 @@ class EmbeddingsBuilds:
         try:
             sent = send_admin_job(TaskName.BUILD_LIBRARY_INDEXES, job_id)
         except Exception:
-            self._not_sent(job_id)  # any failure to queue it: a build no worker will run must not block
+            self._not_sent(job_id)
             raise
         if not sent:
             self._not_sent(job_id)
@@ -56,7 +57,8 @@ class EmbeddingsBuilds:
         return {"job_id": job_id, "status": Status.QUEUED}
 
     def read(self, job_id: str) -> dict[str, Any]:
-        record = self._jobs.get("without_active_flag", _id=job_id)
+        """One build job as the API shows it; 404 for any other job."""
+        record = self._jobs.get_admin_job(job_id, _KIND)
         if record is None:
             raise NotFound(AdminJobMessage.NOT_FOUND.format(job_id=job_id))
         return {"job_id": record.pop("_id"), **record}

@@ -17,6 +17,7 @@ from app.core.constants import AiTask, Collection, Controls, ErrorCode, Snapshot
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, Unavailable
 from app.data_access.scenario.repository import scenario_sessions
+from app.models.library import LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.regenerate import PlanRegeneration, get_plan_regeneration
@@ -36,6 +37,7 @@ from tests.test_remediation_requests import (  # noqa: F401 — api_key and worl
     api_key,
     world,
 )
+from tests.test_threat_identity import LIBRARY as THREATS
 
 
 def _deliver(remediation_id: str, version: int = 1) -> None:
@@ -163,7 +165,7 @@ def test_a_regenerate_that_waited_for_its_controls_still_warns_of_the_ones_it_lo
 
 def test_an_empty_control_library_is_refused_by_the_request_itself(world: dict[str, Any]) -> None:  # noqa: F811
     """No AI is needed to know that no control could ever be kept: 409 control_library_empty at once."""
-    empty = SimpleNamespace(get_control_library=lambda: (), get_retired_controls=lambda: ())
+    empty = SimpleNamespace(get_loaded_libraries=lambda: LoadedLibraries((), THREATS, ()))
     snapshots = SnapshotMaker(scenario_sessions, empty)  # type: ignore[arg-type]
     service = PlanRequestService(snapshots)
     principal: Any = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")

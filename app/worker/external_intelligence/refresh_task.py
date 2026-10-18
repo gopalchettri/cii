@@ -1,11 +1,12 @@
-"""The intelligence refresh job: beat's scheduled check of the due sources, or an admin's refresh recorded on
-its job. Skipped while the switch is off; a failed source keeps its last good data."""
+"""The intelligence refresh job: beat's scheduled check of the due sources, skipped while the switch is off,
+or an admin's refresh recorded on its job. A failed source keeps its last good data."""
 
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
+from app.core.config import get_settings
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
 from app.core.exceptions import AppError
 from app.data_access.admin.repository import AdminJobRepository, admin_jobs
@@ -30,15 +31,16 @@ def refresh_external_intelligence(job_id: str | None = None) -> None:
 
 def run_refresh_job(job_id: str, jobs: AdminJobRepository, access: IntelAccess) -> None:
     """Run an admin's refresh of its one source, or of the due ones, and record how it went on the job.
-    A late or repeated message finds the job no longer active and does nothing; a failure is recorded, then
-    raised."""
+    The run-time switch was checked when the job was queued, so only the env master switch is checked here
+    (the worker's cached run-time switch can lag a change by a minute). A late or repeated message finds the
+    job no longer active and does nothing; a failure is recorded, then raised."""
     now = datetime.now(UTC)
     if not jobs.update_admin_job_running(job_id, now):
         return
     record = jobs.get(("source",), _id=job_id) or {}
     source = IntelSource(record["source"]) if record.get("source") else None
     try:
-        if not access.is_on():
+        if not get_settings().external_intelligence_enabled:
             error = {"code": ErrorCode.CONFLICT, "message": IntelRefreshMessage.SWITCH_OFF.value}
             jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
             return

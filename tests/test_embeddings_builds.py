@@ -201,6 +201,12 @@ def test_an_unknown_build_is_404_and_both_endpoints_need_the_admin_key(client: T
     assert client.post(URL).status_code == 401 and client.get(f"{URL}/x").status_code == 401
 
 
+def test_another_kinds_job_is_404_here(client: TestClient) -> None:
+    """An intelligence refresh's job id is not a build."""
+    admin_jobs.create({"_id": "intel-job", "kind": "intel_refresh", "status": "done", "requested_by": "x"})
+    assert client.get(f"{URL}/intel-job", headers=ADMIN).status_code == 404
+
+
 def test_new_vectors_are_counted_by_library_since_a_moment() -> None:
     vectors = get_mongodb()[Collection.EMBEDDINGS]
     since = datetime.now(UTC)

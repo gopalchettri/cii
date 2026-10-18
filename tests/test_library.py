@@ -1,5 +1,8 @@
 """The library loads from the real DevTest5 procedures, notices every edit, survives a SQL Server outage."""
 
+import threading
+import time
+
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import create_engine
@@ -49,7 +52,7 @@ SQL_DOWN = Unavailable(ErrorMessage.SQL_UNREACHABLE)
 def test_library_loads_threats_with_stride_categories_and_controls_with_their_asset_type() -> None:
     service = LibraryService(SqlServerRepository(get_stored_procedure_client()))
     threats = service.get_threat_library().threats
-    controls = service.get_control_library()
+    controls = service.get_loaded_libraries().control_library
     assert threats and controls
     assert all(threat.categories for threat in threats)
     assert all(isinstance(category, StrideCategory) for threat in threats for category in threat.categories)
@@ -79,7 +82,7 @@ def test_library_is_read_once_while_unchanged() -> None:
     repository = CountingRepository()
     service = LibraryService(repository)
     service.get_threat_library()
-    service.get_control_library()
+    service.get_loaded_libraries()
     service.reload_if_library_changed()
     assert repository.threat_library_loads == 1
 
@@ -156,9 +159,6 @@ def test_the_fingerprint_does_not_depend_on_the_order_sql_server_returns_rows() 
 def test_callers_during_the_first_load_share_its_failure_instead_of_repeating_it() -> None:
     """Before: callers queued on a lock and each repeated the failing first load, so with SQL Server down at
     start the fifth caller waited five connect timeouts."""
-    import threading
-    import time
-
     release = threading.Event()
     stamp_reads: list[int] = []
 
@@ -188,6 +188,32 @@ def test_callers_during_the_first_load_share_its_failure_instead_of_repeating_it
     with pytest.raises(Unavailable):
         service.get_threat_library()  # a later call is a new attempt
     assert len(stamp_reads) == 2
+
+
+def test_concurrent_reloads_never_swap_an_older_copy_over_a_newer_one() -> None:
+    """A slow load at v2, then a check that reads v3: the check waits for the load, so v3 stays."""
+    v2, v3 = (("Control_Library", b"v2"),), (("Control_Library", b"v3"),)
+    loading, release = threading.Event(), threading.Event()
+
+    class SlowAtV2(ScriptedRepository):
+        def load_library(self, loaded_stamp: object = None) -> LoadedLibraries | None:
+            loaded = super().load_library(loaded_stamp)
+            if loaded is not None and loaded.stamp == v2:
+                loading.set()
+                release.wait(5)
+            return loaded
+
+    service = LibraryService(SlowAtV2(v2, v3))  # type: ignore[arg-type]
+    slow = threading.Thread(target=service.reload_if_library_changed, daemon=True)
+    slow.start()
+    assert loading.wait(5)
+    later = threading.Thread(target=service.reload_if_library_changed, daemon=True)
+    later.start()
+    time.sleep(0.2)  # unserialised, the later check would swap v3 in now and the slow load v2 over it
+    release.set()
+    slow.join(5)
+    later.join(5)
+    assert service.get_loaded_libraries().stamp == v3
 
 
 class _Procedures:

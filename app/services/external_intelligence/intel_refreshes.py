@@ -72,13 +72,14 @@ class IntelRefreshes:
 
     def read(self, job_id: str) -> dict[str, Any]:
         """One refresh job as the API shows it; 404 for any other job."""
-        record = self._jobs.get("without_active_flag", _id=job_id)
-        if record is None or record.get("kind") != _KIND:
+        record = self._jobs.get_admin_job(job_id, _KIND)
+        if record is None:
             raise NotFound(AdminJobMessage.NOT_FOUND.format(job_id=job_id))
         return {"job_id": record.pop("_id"), **record}
 
     def _send(self, job_id: str) -> None:
-        """Queue the job's message; a job that could not be queued is failed, so it never blocks the next."""
+        """Queue the job's message. Any failure to queue it fails the job, then is raised, so it never blocks
+        the next."""
         try:
             sent = send_admin_job(TaskName.REFRESH_EXTERNAL_INTELLIGENCE, job_id)
         except Exception:

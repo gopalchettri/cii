@@ -11,6 +11,7 @@ from pymongo.collection import Collection as MongoCollection
 
 from app.core import metrics
 from app.core.constants import (
+    AdminJobKind,
     AdminJobMessage,
     AdminJobs,
     AiLimits,
@@ -57,6 +58,10 @@ class AdminJobRepository(MongoRepository):
         if active is None and self._create_active(job):  # the active job finished in between
             return job["_id"]
         return active["_id"] if active else None
+
+    def get_admin_job(self, job_id: str, kind: AdminJobKind) -> Record | None:
+        """The tsg_admin_jobs job with this id and kind, without its active flag; None for any other job."""
+        return self.get("without_active_flag", _id=job_id, kind=kind)
 
     def update_admin_job_running(self, job_id: str, now: datetime) -> bool:
         """Marks a queued tsg_admin_jobs job running; False when it is no longer queued (a late or repeated

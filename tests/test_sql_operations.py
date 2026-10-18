@@ -113,7 +113,7 @@ def test_the_plan_jobs_lost_proposal_is_replayed_once_and_audited_once(
     client: TestClient, sql_test_engine: Engine
 ) -> None:
     lost = AnswerLostClient(StoredProcedureClient(sql_test_engine))
-    inputs, _ = fake_plan_inputs(SimpleNamespace())
+    inputs, _ = fake_plan_inputs()
     inputs._proposals = SqlServerRepository(lost)  # noqa: SLF001 — the real repository on the lost-answer client
     scenario_id, threat_name = uuid.uuid4().hex, _name("threat")
     content = {

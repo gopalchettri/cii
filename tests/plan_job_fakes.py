@@ -34,10 +34,12 @@ class FakeMapper:
 
 
 class FakeSearch:
-    """LibrarySearch's surface: the actors a query may rank, in library order; every query kept."""
+    """LibrarySearch's surface: the actors a query may rank, in library order, and the active controls; every
+    query kept."""
 
-    def __init__(self) -> None:
+    def __init__(self, controls: tuple[Any, ...]) -> None:
         self.queries: list[str] = []
+        self.controls = controls
 
     def snapshot(self) -> Any:
         def find_actors(queries: list[str], top_k: int, allowed_ids: list[Any]) -> list[Any]:
@@ -45,12 +47,13 @@ class FakeSearch:
             actors = THREATS.actors
             return [[(a, 1.0) for a in actors if ids is None or a.actor_id in ids] for ids in allowed_ids]
 
-        library = SimpleNamespace(threat_library=THREATS, stamp=())
+        library = SimpleNamespace(threat_library=THREATS, control_library=self.controls, stamp=())
         return SimpleNamespace(library=library, find_actors=find_actors)
 
 
-def fake_plan_inputs(library: Any) -> tuple[PlanInputs, dict[str, Any]]:
-    """PlanInputs on the fakes, and {mapper, search, proposals} to read what the plan job did."""
+def fake_plan_inputs(controls: tuple[Any, ...] = ()) -> tuple[PlanInputs, dict[str, Any]]:
+    """PlanInputs on the fakes (its search snapshot holding `controls`), and {mapper, search, proposals} to
+    read what the plan job did."""
     proposals: list[ThreatProposal] = []
 
     def propose(operation_id: str, proposal: ThreatProposal) -> tuple[ProposedThreat, bool]:
@@ -58,7 +61,7 @@ def fake_plan_inputs(library: Any) -> tuple[PlanInputs, dict[str, Any]]:
         type_id = 1 if proposal.type_name == "Malware" else 900
         return ProposedThreat(type_id, 901, ResolveOutcome.CREATED_PENDING), True
 
-    search, mapper = FakeSearch(), FakeMapper()
-    inputs = PlanInputs(library, search, FakeRerankModel(), SimpleNamespace(propose_threat=propose))  # type: ignore[arg-type]
+    search, mapper = FakeSearch(controls), FakeMapper()
+    inputs = PlanInputs(search, FakeRerankModel(), SimpleNamespace(propose_threat=propose))  # type: ignore[arg-type]
     inputs._mapper = mapper  # type: ignore[assignment]  # noqa: SLF001 — the fake in place of the reranker's
     return inputs, {"mapper": mapper, "search": search, "proposals": proposals}

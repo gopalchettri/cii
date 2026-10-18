@@ -35,7 +35,7 @@ from app.core.exceptions import Conflict, NotFound
 from app.data_access.jobs.repository import DELETING_MARK
 from app.data_access.remediation.repository import remediation_plans
 from app.data_access.scenario.repository import scenario_sessions
-from app.models.library import LibraryControl
+from app.models.library import LibraryControl, LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.api_clients import get_api_client_service
 from app.services.remediation import requests as requests_module
@@ -49,13 +49,14 @@ from tests.plan_job_fakes import fake_plan_inputs
 from tests.planner_samples import CONTEXT
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_snapshot import LIBRARY, SCENARIO
+from tests.test_threat_identity import LIBRARY as THREATS
 
 ENTITY = 186  # its own entity: nothing here shows in another test's entity-wide list
 MAPPED = [{"control_id": 1, "code": "CII-CID-1", "score": 87.4, "match": "exact"}]
 REGISTER = {"risk_level": "High", "risk_owner": "Head of Grid Operations", "likelihood_rating": "4.47"}
 RETIRED = (LibraryControl(77, "CII-CID-077", None, "Integrity", "Firmware integrity review", None),)
 FAKE_LIBRARY = SimpleNamespace(
-    get_control_library=lambda: tuple(LIBRARY.values()), get_retired_controls=lambda: RETIRED
+    get_loaded_libraries=lambda: LoadedLibraries((), THREATS, tuple(LIBRARY.values()), RETIRED)
 )
 
 
@@ -74,7 +75,7 @@ def _service() -> PlanRequestService:
 def world(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     """The service with a fake library; what it sends and publishes; the plan job's chat and its input
     completion on fakes (mapper, search, proposals)."""
-    inputs, fakes = fake_plan_inputs(FAKE_LIBRARY)
+    inputs, fakes = fake_plan_inputs(tuple(LIBRARY.values()))
     state: dict[str, Any] = {"chat": FakeChatModel(), "sent": [], "published": []} | fakes
     built = _service()
     client.app.dependency_overrides[get_plan_request_service] = lambda: built  # type: ignore[attr-defined]

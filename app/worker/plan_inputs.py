@@ -46,7 +46,6 @@ from app.models.asset_context import FrozenContext
 from app.models.library import ThreatProposal
 from app.models.scenario.plan import PlannedActor
 from app.realtime.publisher import publish_session_status
-from app.search.library_cache import LibraryService, get_library_service
 from app.search.service import LibrarySearch, get_library_search
 from app.search.snapshot import LibrarySnapshot
 from app.worker.jobs import describe_outage, keep_lease_alive
@@ -63,12 +62,11 @@ _LIBRARY_STATUS = {
 class PlanInputs:
     def __init__(
         self,
-        library: LibraryService,
         search: LibrarySearch,
         rerank: RerankModel,
         proposals: SqlServerRepository,
     ) -> None:
-        self._library, self._search, self._rerank, self._proposals = library, search, rerank, proposals
+        self._search, self._rerank, self._proposals = search, rerank, proposals
         self._mapper = ControlMapper(rerank)
 
     def complete(self, lease: JobLease, pending: dict[str, Any]) -> dict[str, Any]:
@@ -80,7 +78,7 @@ class PlanInputs:
         snapshot = self._search.snapshot()
         if (scenario.get("pending") or {}).get("actors"):
             scenario = self._attackers(lease, scenario, snapshot)
-        by_id = {row.control_id: row for row in self._library.get_control_library()}
+        by_id = {row.control_id: row for row in snapshot.library.control_library}  # as the mapping sees it
         if not inputs_ready(scenario, by_id):
             items = self._controls(lease, scenario, context, snapshot, by_id)
             scenario = scenario | {"controls": {"status": Status.DONE, "items": items}}
@@ -226,7 +224,6 @@ class _ControlsLease:
 @singleton
 def get_plan_inputs() -> PlanInputs:
     return PlanInputs(
-        get_library_service(),
         get_library_search(),
         get_rerank_model(),
         SqlServerRepository(get_stored_procedure_client()),

@@ -17,7 +17,7 @@ from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
 from app.data_access.library.repository import SqlServerRepository
-from app.models.library import LibraryControl, LoadedLibraries, ThreatLibrary
+from app.models.library import LoadedLibraries, ThreatLibrary
 
 log = structlog.get_logger(__name__)
 
@@ -28,6 +28,7 @@ class LibraryService:
     def __init__(self, repository: SqlServerRepository) -> None:
         self._repository = repository
         self._lock = threading.Lock()
+        self._reload_lock = threading.Lock()  # one reload at a time: an older load never replaces a newer
         self._loaded: LoadedLibraries | None = None
         self._first_load: Future[None] | None = None
         self._checker_started = False
@@ -35,20 +36,15 @@ class LibraryService:
     def get_threat_library(self) -> ThreatLibrary:
         return self.get_loaded_libraries().threat_library
 
-    def get_control_library(self) -> tuple[LibraryControl, ...]:
-        return self.get_loaded_libraries().control_library
-
-    def get_retired_controls(self) -> tuple[LibraryControl, ...]:
-        return self.get_loaded_libraries().retired_controls
-
     def reload_if_library_changed(self) -> None:
-        """Load both libraries when any table's fingerprint changed. The fingerprint is read BEFORE
-        loading, so an edit made during a load is caught by the next check, never missed."""
-        previous = self._loaded
-        loaded = self._repository.load_library(previous.stamp if previous else None)
-        if loaded is None:
-            return
-        self._loaded = loaded
+        """Load both libraries when any table's fingerprint changed, one caller at a time; a caller that
+        waited compares the fingerprint with the copy just loaded (no load when unchanged)."""
+        with self._reload_lock:
+            previous = self._loaded
+            loaded = self._repository.load_library(previous.stamp if previous else None)
+            if loaded is None:
+                return
+            self._loaded = loaded
         changed = sorted(set(loaded.stamp) - set(previous.stamp if previous else ()))
         log.info(LogEvent.LIBRARY_RELOADED, changed_tables=[table for table, _ in changed])
 

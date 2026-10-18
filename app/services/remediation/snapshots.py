@@ -29,10 +29,11 @@ class SnapshotMaker:
     def make(self, register: RegisterData, scenario: dict[str, Any], stored: bool = False) -> dict[str, Any]:
         """`stored`: the register a regenerate rebuilds from (a library change since is a warning). The
         register is resolved first: one it refuses (422) saves nothing."""
-        library = self._library.get_control_library()
+        loaded = self._library.get_loaded_libraries()  # one library copy for every check below
+        library = loaded.control_library
         check_control_library(library)
-        retired = self._library.get_retired_controls()
-        register_part = register_half(register, library, datetime.now(UTC).date(), stored, retired)
+        today = datetime.now(UTC).date()
+        register_part = register_half(register, library, today, stored, loaded.retired_controls)
         by_id = {row.control_id: row for row in library}
         if not inputs_ready(scenario, by_id):
             return pending_snapshot(scenario["_id"], register_part)
