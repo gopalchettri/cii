@@ -166,10 +166,7 @@ class ReviewMessage(StrEnum):
         "Every selected attack path of run '{session_id}' is written; the others were left out by "
         "TOTAL_SCENARIO_COUNT."
     )
-    SCENARIOS_ABANDONED = (
-        "Every attack path of run '{session_id}' left to write was given up: GET "
-        "/v1/sessions/{session_id}/results lists each one's reason (coverage.given_up)."
-    )
+    SCENARIOS_ABANDONED = "Every attack path of run '{session_id}' left to write was given up."
     ASSET_BUSY = "Asset {asset_id} has another active run: try again once it is done."
     SCENARIO_NOT_ACCEPTED = "Scenario '{scenario_id}' is not accepted: accept it before promoting its threat."
     NOTHING_TO_PROMOTE = "Scenario '{scenario_id}' is built on a library threat: there is nothing to promote."

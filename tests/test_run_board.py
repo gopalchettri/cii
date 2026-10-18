@@ -10,7 +10,7 @@ from app.core.constants import BoardMessage, ControlMatch, RunActionKind, RunKin
 from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
-from app.data_access.scenario.repository import session_status_from_record
+from app.data_access.scenario.repository import SESSION_STATUS_FIELDS, session_status_from_record
 from app.models.scenario.views import ScenarioCount, SessionStatus, StageTimings
 from app.services.scenario.results import build_board, build_scenario_view
 
@@ -132,7 +132,7 @@ def test_times_reasons_and_numbers_say_what_happened() -> None:
         _run(
             **fields,
             timings={"threats_s": 126.1, "scenarios_s": 8.4, "controls_s": 1500.3599999999997},
-            plan={"not_assessed": ["Repudiation"]},
+            plan={"not_assessed": ["Repudiation"]},  # an older run's list: still stored, never shown
             last_next_set=last,
         )
     )
@@ -141,13 +141,15 @@ def test_times_reasons_and_numbers_say_what_happened() -> None:
     assert progress.timings == StageTimings(threats=126.1, scenarios=8.4, controls=None)  # controls still run
     done = build_board(_run(**_written(**_SET), timings={"controls_s": 1500.3599999999997})).progress
     assert done.timings.controls == 1500.4  # live run 2026-10-12: a sum of many parts, shown to 0.1 s
-    assert progress.error_message == {
-        "threats": BoardMessage.NOT_ASSESSED.format(categories="Repudiation"),
-        "scenarios": BoardMessage.ABANDONED.format(abandoned=2, session_id="run-1"),
-    }
+    assert progress.error_message == {"scenarios": "2 attack path(s) could not be written."}
     assert progress.scenario_count == ScenarioCount(
         total=170, served=6, remaining=162, complete=False, pending_review=6, accepted=0, rejected=0
     )
+
+
+def test_the_status_reads_nothing_of_the_plan_or_the_systems() -> None:
+    """The status is read on every run check and live update: never the plan nor the context's systems."""
+    assert not [key for key in SESSION_STATUS_FIELDS if key.startswith(("plan", "context.systems"))]
 
 
 def test_a_failed_run_says_why_and_a_failed_mapping_names_its_count() -> None:

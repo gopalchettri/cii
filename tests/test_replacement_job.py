@@ -21,7 +21,6 @@ from app.core.constants import (
     ScenarioStatus,
 )
 from app.core.database import get_mongodb
-from app.services.scenario.results import run_coverage
 from tests.fakes import FakeChatModel
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _answer_for,
@@ -67,11 +66,6 @@ def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: Fake
     done = [s for s in _scenarios_of(record_id) if s["status"] == ScenarioStatus.DONE]
     assert sorted(s["path_id"] for s in done) == ["p2", "p3"]
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
-    coverage = run_coverage(run)
-    assert coverage is not None and coverage["finished"] == 2 <= coverage["limit"]
-    assert coverage["given_up"] == [
-        {"path_id": "p1", "reason": FindingCode.SCENARIO_MISMATCH, "replaced_by": "p3"}
-    ]
 
 
 def test_with_no_limit_a_rejected_path_is_never_replaced_and_nothing_is_padded(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
@@ -167,25 +161,3 @@ def test_a_next_set_whose_path_a_reserve_replaced_still_reads_what_was_asked(cha
         "outcome": RunActionOutcome.COMPLETE, "requested": 2, "delivered": 2,
         "reason": ConflictReason.TARGET_REACHED, "remaining": 0, "epoch": 1,
     }  # fmt: skip
-
-
-def test_the_results_name_a_given_up_paths_threat_and_its_own_reason(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
-    """G268: the results' coverage.given_up reads each path's newest card (one query): the threat's name and
-    the blocked draft's own sentence for its reason, never just a code and an id."""
-    from app.data_access.scenario.repository import scenarios
-    from app.services.scenario.results import explain_given_up
-
-    _mismatched_for_threats_named(chat, "Wrong")
-    record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=2)
-    _deliver_until_done(record_id)
-    coverage = run_coverage(_plan(record_id)[0])
-    assert coverage is not None
-    found = scenarios.list(fields="given_up", sort="version", session_id=record_id, path_id_in=["p1"])
-    cards = {card["path_id"]: card for card in found}
-    [entry] = explain_given_up(coverage["given_up"], cards)
-    assert (entry["threat"], entry["reason"], entry["replaced_by"]) == (
-        "Wrong one",
-        FindingCode.SCENARIO_MISMATCH,
-        "p3",
-    )
-    assert entry["message"] == _MISMATCH

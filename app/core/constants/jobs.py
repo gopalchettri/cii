@@ -213,13 +213,7 @@ class SessionState(StrEnum):
 class BoardMessage(StrEnum):
     """progress.error_message texts the status writes itself (a failed job brings its own message)."""
 
-    ABANDONED = (
-        "{abandoned} attack path(s) could not be written: GET /v1/sessions/{session_id}/results lists each "
-        "one in coverage.given_up, with its threat and why."
-    )
-    NOT_ASSESSED = (
-        "These threat categories could not be fully assessed, so the threats found are partial: {categories}."
-    )
+    ABANDONED = "{abandoned} attack path(s) could not be written."
     CONTROLS_FAILED = (
         "Controls could not be matched for {failed} scenario(s) yet; they are tried again later."
     )
@@ -273,15 +267,6 @@ class RunClash(StrEnum):
     IDEMPOTENCY_KEY = "idempotency_key"  # one run per Idempotency-Key per entity
     CHANGED = "changed"  # the run moved on since it was read: its job was not replaced
     DELETING = "deleting"  # its owner is deleting it: nothing more starts on it
-
-
-class CoverageGap(StrEnum):
-    """Why a supporting system or a kind of attack has no selected scenario (the plan's coverage)."""
-
-    NO_RELEVANT_THREAT = "no_relevant_threat"  # no threat was judged relevant to it
-    LIMIT_REACHED = "scenario_limit_reached"  # it had paths, but TOTAL_SCENARIO_COUNT kept others
-    SCENARIOS_FAILED = "scenarios_failed"  # its selected paths all failed for good
-    AWAITING_NEXT_SET = "awaiting_next_set"  # its selected paths are not written yet
 
 
 class UnselectedReason(StrEnum):

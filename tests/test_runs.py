@@ -326,27 +326,6 @@ def test_a_version_says_which_accepted_version_of_its_path_it_would_replace(
     )
 
 
-def test_results_work_the_coverage_out_from_the_plan(client: TestClient, api_key: str) -> None:
-    """G228: the results read the plan's paths themselves (the status never does): none before a plan; then
-    each kind with its finished paths, an abandoned one not counted."""
-    session_id = _start(client, api_key).json()["session_id"]
-    url, headers = f"/v1/sessions/{session_id}/results", _identity(api_key)
-    assert client.get(url, headers=headers).json()["coverage"] is None  # no plan yet
-    paths = [
-        {"path_id": "p1", "systems": [321], "categories": ["Spoofing"], "selected": True, "abandoned": False},
-        {"path_id": "p2", "systems": [322], "categories": ["Tampering"], "selected": True, "abandoned": True},
-    ]
-    paths[0]["served"] = "s1"  # G229: only a finished scenario covers
-    plan = {"plan.paths": paths, "plan.target": 15}
-    get_mongodb()[Collection.SESSIONS].update_one({"_id": session_id}, {"$set": plan})
-    coverage = client.get(url, headers=headers).json()["coverage"]
-    assert (coverage["limit"], coverage["selected"], coverage["finished"]) == (15, 1, 1)
-    kinds = coverage["kinds"]
-    assert kinds["Spoofing"]["path_ids"] == ["p1"] and kinds["Tampering"]["finished"] == 0
-    assert {"kind": "Tampering", "reason": "scenarios_failed"} in coverage["not_covered"]
-    assert "coverage" not in client.get(f"/v1/sessions/{session_id}", headers=headers).json()
-
-
 def test_one_scenario_with_its_computed_fields(client: TestClient, api_key: str) -> None:
     """T-SCN-11: the statement shown with why it applies, and validation_status computed; an unknown id in
     the run → 404."""

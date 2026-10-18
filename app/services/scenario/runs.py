@@ -71,7 +71,7 @@ from app.models.scenario.views import (
 from app.realtime.publisher import publish_session_status
 from app.services.audit import audit_target, caller_actor
 from app.services.external_intelligence.switch import get_external_intelligence_switch
-from app.services.scenario.results import build_board, build_scenario_view, explain_given_up, run_coverage
+from app.services.scenario.results import build_board, build_scenario_view
 from app.services.scenario.review import list_review_targets
 from app.worker.celery_app import send_job
 
@@ -289,19 +289,13 @@ def _being_deleted(session_id: str) -> Conflict:
 
 
 def find_status_for_caller(session_id: str, entity_id: int) -> SessionStatus:
-    """The status of a run the caller's entity owns: 404 unknown, 403 another entity's."""
-    return session_status_from_record(read_session_for_caller(session_id, entity_id, "status"))
-
-
-def read_session_for_caller(session_id: str, entity_id: int, fields: str) -> dict[str, Any]:
-    """A tsg_sessions record the caller's entity owns, read by id only with a named field list: 404 unknown,
-    403 another entity's."""
-    record = scenario_sessions.get(fields=fields, _id=session_id)
+    """The status of a run the caller's entity owns, read by id only: 404 unknown, 403 another entity's."""
+    record = scenario_sessions.get(fields="status", _id=session_id)
     if record is None:
         raise NotFound(SessionMessage.NOT_FOUND.format(session_id=session_id))
     if record["entity_id"] != entity_id:
         raise Forbidden(SessionMessage.OTHER_ENTITY.format(session_id=session_id))
-    return record
+    return session_status_from_record(record)
 
 
 def read_current_status(session_id: str) -> dict[str, Any] | None:
@@ -321,12 +315,8 @@ ScenarioPage = tuple[list[dict[str, Any]], int]
 
 
 class ScenarioQueries:
-    def run_results(
-        self, record: dict[str, Any], include_replaced: bool, offset: int, limit: int
-    ) -> RunResults:
-        """The run, its progress and coverage (`record`: its tsg_sessions record read once with the
-        status_and_coverage field list), and a page of its current versions, oldest first."""
-        run = session_status_from_record(record)
+    def run_results(self, run: SessionStatus, include_replaced: bool, offset: int, limit: int) -> RunResults:
+        """The run, its progress and a page of its current versions, oldest first."""
         page = self._scenario_list(
             _scenario_page("created_at", offset, limit, session_id=run.session_id), include_replaced
         )
@@ -335,21 +325,9 @@ class ScenarioQueries:
         return RunResults(
             **header,
             progress=board.progress,
-            coverage=self._run_coverage(run.session_id, run_coverage(record)),
             scenarios=page.scenarios,
             total=page.total,
         )
-
-    def _run_coverage(self, session_id: str, coverage: dict[str, Any] | None) -> dict[str, Any] | None:
-        """The run's coverage, each given-up path named by its threat and its newest card's reason."""
-        if coverage and coverage["given_up"]:
-            path_ids = [entry["path_id"] for entry in coverage["given_up"]]
-            found = scenarios.list(
-                fields="given_up", sort="version", session_id=session_id, path_id_in=path_ids
-            )
-            cards = {card["path_id"]: card for card in found}
-            coverage["given_up"] = explain_given_up(coverage["given_up"], cards)
-        return coverage
 
     def one_scenario(self, session_id: str, scenario_id: str) -> ScenarioView:
         """One scenario of the run; 404 when it is not in the run."""

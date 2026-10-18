@@ -105,8 +105,6 @@ _SCENARIO_FIELD_LISTS = {
     "shown": {"controls.query": 0, "controls.made_with": 0, "plan_check": 0},
     #: A regenerate's versions of an attack path.
     "version": ("path_id", "version", "superseded_by", "content.statement"),
-    #: What explains a given-up attack path: its newest card's threat and reason.
-    "given_up": ("path_id", "version", "content.threat.name", "failure", "findings"),
     #: What finding an attack path's accepted version reads.
     "lookup": ("session_id", "path_id", "version", "decision", "superseded_by"),
     #: What a review call reads of a target: its state and threat, never its text.
@@ -273,7 +271,7 @@ _SESSION_INDEXES = (
         "partialFilterExpression": {"counts.controls_waiting": {"$gt": 0}},
     },
 )
-#: The session fields the status body reads: never the plan's threats and paths, nor the context's facts.
+#: The session fields the status body reads: never the plan, nor the context's facts.
 SESSION_STATUS_FIELDS: dict[str, int] = {
     "entity_id": 1,
     "asset_id": 1,
@@ -290,24 +288,11 @@ SESSION_STATUS_FIELDS: dict[str, int] = {
     "timings": 1,
     "last_next_set": 1,
     "last_regen": 1,
-    "plan.not_assessed": 1,
     "cancelled": 1,
     "job.epoch": 1,
 }
-_PATH_FIELDS = (
-    "path_id", "systems", "categories", "selected", "abandoned", "served", "abandoned_reason", "replaced_by",
-)  # fmt: skip
-#: What the results read of a run to work its coverage out: a few small fields per path.
-COVERAGE_FIELDS: dict[str, int] = {
-    "plan.target": 1,
-    **{f"plan.paths.{field}": 1 for field in _PATH_FIELDS},
-    "context.systems.id": 1,
-    "context.systems.name": 1,
-}
 _SESSION_FIELD_LISTS = {
     "status": SESSION_STATUS_FIELDS,
-    "status_and_coverage": SESSION_STATUS_FIELDS | COVERAGE_FIELDS,
-    "coverage": COVERAGE_FIELDS,
     "context": {"context": 1},
     "attack_paths": {"plan.paths": 1},
     "plan_threat": {"plan.threats.$": 1},
@@ -320,7 +305,7 @@ _SESSION_FIELD_LISTS = {
         "job.set": 1,
         "last_action.started_at": 1,
         "last_action.kind": 1,
-        **{f"plan.{part}": 1 for part in ("threats", "paths", "not_assessed", "frozen_at")},
+        **{f"plan.{part}": 1 for part in ("threats", "paths", "frozen_at")},
     },
 }
 #: What a new next set or regenerate clears: the last set's times and a cancel's mark.
@@ -356,7 +341,6 @@ def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
         timings=record.get("timings") or {},
         last_next_set=record.get("last_next_set"),
         last_regen=record.get("last_regen"),
-        not_assessed=(record.get("plan") or {}).get("not_assessed") or [],
         cancelled=record.get("cancelled"),
         epoch=job.get("epoch") or 0,
     )

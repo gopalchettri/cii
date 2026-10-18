@@ -83,7 +83,7 @@ class PlanProgress:
 
     def continue_or_finish(self) -> None:
         """Hand the set's next batch to this same task, or end the set: complete, or partial when a path of
-        this set was abandoned or a category not assessed."""
+        this set was abandoned."""
         in_set = [path for path_id, path in self.paths.items() if path_id in self._set]
         batch = next_paths_to_write(in_set)
         if batch:
@@ -108,8 +108,7 @@ class PlanProgress:
         rescued = {row["path_id"]: row["_id"] for row in written}
         if rescued:
             self.record({path_id: {"served": sid, "abandoned": False} for path_id, sid in rescued.items()})
-        # This set's own result; an unassessed category is a gap in the whole plan, so every set carries it.
-        partial = bool(self._plan["not_assessed"]) or plan_counts(in_set)["abandoned"] > 0
+        partial = plan_counts(in_set)["abandoned"] > 0
         # This action's own writing time: from the plan's freeze, or from a later set's start.
         started = max(self._plan["frozen_at"], self._last_action.get("started_at") or self._plan["frozen_at"])
         seconds = (datetime.now(UTC) - started).total_seconds()

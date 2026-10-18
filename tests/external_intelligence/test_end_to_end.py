@@ -41,8 +41,7 @@ from tests.test_writing_job import _deliver_until_done, chat  # noqa: F401 - fix
 
 LIBRARY = ThreatLibrary(THREATS, ACTORS)  # the planner's threats and attackers, all live
 RESULTS_KEYS = [
-    "session_id", "entity_id", "asset_id", "asset_name", "user_id", "progress", "coverage", "scenarios",
-    "total",
+    "session_id", "entity_id", "asset_id", "asset_name", "user_id", "progress", "scenarios", "total",
 ]  # fmt: skip
 
 

@@ -13,7 +13,6 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.constants import (
-    AiTask,
     Collection,
     ErrorCode,
     PlanMessage,
@@ -255,26 +254,6 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
         planned=0, written=0, remaining=0
     )
     assert sent == []
-
-
-def test_a_run_with_a_category_not_assessed_ends_partial(
-    monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
-) -> None:
-    """A category the AI could not judge is a gap, never a complete run."""
-    chat = planner_chat({})
-    gate = chat.responders[AiTask.RELEVANCE_GATE]
-    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
-        {"verdicts": "?"} if "category: Spoofing" in user else gate(user)
-    )
-    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
-    monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
-    record_id = _queued_run()
-    jobs.run_leased_job(
-        _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
-    )
-    run = _stored_run(record_id)
-    assert run["plan"]["not_assessed"] == [S.SPOOFING]
-    assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.PARTIAL)
 
 
 def test_a_refused_plan_fails_the_run_with_its_own_code(

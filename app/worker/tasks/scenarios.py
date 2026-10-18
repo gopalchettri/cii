@@ -49,19 +49,13 @@ def plan_run(lease: JobLease) -> None:
         asked, batch = set_and_first_batch(plan["paths"], get_settings().initial_set_size)
         hand_over(lease, TaskName.WRITE_SCENARIOS, changes | {"job.batch": batch, "job.set": asked})
     else:
-        ended = {"last_action.outcome": finished_outcome(plan)} | ended_job_fields(Status.DONE)
+        ended = {"last_action.outcome": RunActionOutcome.COMPLETE} | ended_job_fields(Status.DONE)
         lease.update_job(changes | ended)
     log.info(
         LogEvent.PLANNER_PLAN_MADE,
         threats=len(plan["threats"]),
         paths=len(plan["paths"]),
-        not_assessed=plan["not_assessed"],
     )
-
-
-def finished_outcome(plan: dict[str, Any]) -> RunActionOutcome:
-    """Complete, or partial when a category could not be assessed (a gap the reviewer must see)."""
-    return RunActionOutcome.PARTIAL if plan["not_assessed"] else RunActionOutcome.COMPLETE
 
 
 def plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:

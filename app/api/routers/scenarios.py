@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response
 from fastapi import Header as HeaderParam
 
-from app.api.dependencies import Caller, CallersRun, CallersRunWithCoverage, Limit, Offset, ScenarioId
+from app.api.dependencies import Caller, CallersRun, Limit, Offset, ScenarioId
 from app.core.constants import ApiTag, Decision, Header, Limits
 from app.models.scenario.views import RunBoard, RunResults, ScenarioList, ScenarioView, StartRunRequest
 from app.services.scenario.results import build_board
@@ -49,7 +49,7 @@ def get_run_status(run: CallersRun) -> RunBoard:
 
 @router.get("/v1/sessions/{session_id}/results", response_model=RunResults, summary="3. A run's scenarios")
 def list_run_scenarios(
-    run: CallersRunWithCoverage,
+    run: CallersRun,
     queries: Queries,
     include_replaced: bool = False,
     offset: Offset = 0,

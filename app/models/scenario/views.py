@@ -90,7 +90,6 @@ class SessionStatus(BaseModel):
     timings: dict[str, float] = Field(default_factory=dict)  # threats_s, scenarios_s, controls_s
     last_next_set: dict[str, Any] | None = None  # {outcome, requested, delivered}
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
-    not_assessed: list[str] = Field(default_factory=list)  # categories the plan could not assess
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
     epoch: int = 0  # its job's epoch: a next set or regenerate queues only while it is unchanged
 
@@ -354,6 +353,5 @@ class RunResults(BaseModel):
     asset_name: str | None
     user_id: str | None
     progress: Progress
-    coverage: dict[str, Any] | None = None  # each system and kind: its scenarios; why any has none
     scenarios: list[ScenarioView]
     total: int  # every match, for paging (offset + limit)

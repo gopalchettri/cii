@@ -1,7 +1,6 @@
-"""Builds the API answers for scenario sessions and scenarios: the status board, scenarios in TSG v1's results
-format and the coverage, from stored records alone (no database call here)."""
+"""Builds the API answers for scenario sessions and scenarios: the status board and scenarios in TSG v1's
+results format, from stored records alone (no database call here)."""
 
-from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Final
 
@@ -9,11 +8,9 @@ from app.core.constants import (
     CONTROLS_EXHAUSTED,
     ROUTE_WORDS,
     SCOPE_ASSET_KEY,
-    STRIDE_DEFINITIONS,
     BoardMessage,
     ControlMatch,
     ControlMatchStatus,
-    CoverageGap,
     Decision,
     FindingSeverity,
     GroundingStatus,
@@ -172,12 +169,8 @@ def _stage_errors(run: SessionStatus, controls: StageState) -> dict[str, str]:
     messages: dict[str, str] = {}
     if run.status == Status.FAILED and run.error:
         messages[str(run.step)] = run.error.get("message") or run.error.get("code") or ""
-    if run.not_assessed:
-        categories = ", ".join(run.not_assessed)
-        messages.setdefault(str(Step.THREATS), BoardMessage.NOT_ASSESSED.format(categories=categories))
     if abandoned := run.counts.get("abandoned", 0):
-        abandoned_text = BoardMessage.ABANDONED.format(abandoned=abandoned, session_id=run.session_id)
-        messages.setdefault(str(Step.SCENARIOS), abandoned_text)
+        messages.setdefault(str(Step.SCENARIOS), BoardMessage.ABANDONED.format(abandoned=abandoned))
     if controls == StageState.ERROR:
         failed = run.counts["controls_failed"]
         manual = run.kind == RunKind.MANUAL  # only its plan job maps it, never the background
@@ -522,113 +515,3 @@ def _library_view(threat: dict[str, Any]) -> LibraryView | None:
         threat_type=LibraryEntry(name=threat.get("type") or "", status=kind),
         message=message,
     )
-
-
-# A run's coverage: per supporting system and kind of attack, the finished paths and why any has none.
-# Worked out from the plan on each read, never stored; a path counts once its scenario is served.
-
-_PathTest = Callable[[dict[str, Any]], bool]
-
-
-def run_coverage(record: dict[str, Any]) -> dict[str, Any] | None:
-    """The run's coverage from its plan (`record` read with COVERAGE_FIELDS); None before a plan exists."""
-    plan = record.get("plan") or {}
-    if not plan.get("paths"):
-        return None
-    systems = {system["id"]: system["name"] for system in (record.get("context") or {}).get("systems") or []}
-    return coverage_record(plan["paths"], systems, plan.get("target") or 0)
-
-
-def coverage_record(paths: list[dict[str, Any]], systems: dict[int, str], limit: int) -> dict[str, Any]:
-    """Coverage of `paths` over `systems` (name by id) and every kind; `limit`: the plan's scenario limit."""
-    finished = sorted((path for path in paths if path.get("served")), key=lambda path: path["path_id"])
-    by_system = [
-        {"id": system_id, "name": name, **_finished_fitting(finished, _on_system(system_id))}
-        for system_id, name in sorted(systems.items())
-    ]
-    kinds = {str(kind): _finished_fitting(finished, _of_kind(kind)) for kind in STRIDE_DEFINITIONS}
-    gaps = [
-        {"system": system["name"], "reason": _gap_reason(paths, _on_system(system["id"]))}
-        for system in by_system
-        if not system["finished"]
-    ] + [
-        {"kind": kind, "reason": _gap_reason(paths, _of_kind(kind))}
-        for kind, covered in kinds.items()
-        if not covered["finished"]
-    ]
-    return {
-        "limit": limit,
-        "candidates": len(paths),
-        "selected": sum(bool(path.get("selected")) and not path.get("abandoned") for path in paths),
-        "finished": len(finished),
-        "asset_itself": sum(path.get("systems") == [] for path in finished),
-        "systems": by_system,
-        "kinds": kinds,
-        "not_covered": gaps,
-        "given_up": _given_up_paths(paths),
-    }
-
-
-def _on_system(system_id: int) -> _PathTest:
-    """Whether a path goes through `system_id`."""
-    return lambda path: system_id in (path.get("systems") or [])
-
-
-def _of_kind(kind: str) -> _PathTest:
-    """Whether a path's kind (its first category) is `kind`."""
-    return lambda path: (path.get("categories") or [None])[0] == kind
-
-
-def _finished_fitting(finished: list[dict[str, Any]], fits: _PathTest) -> dict[str, Any]:
-    """The finished paths that fit: how many and their ids, one each, in id order."""
-    ids = list(dict.fromkeys(path["path_id"] for path in finished if fits(path)))
-    return {"finished": len(ids), "path_ids": ids}
-
-
-def _gap_reason(paths: list[dict[str, Any]], fits: _PathTest) -> CoverageGap:
-    """Why nothing finished covers it: no relevant threat, still to write, failed, or over the limit."""
-    fitting = [path for path in paths if fits(path)]
-    if not fitting:
-        return CoverageGap.NO_RELEVANT_THREAT
-    if any(path.get("selected") and not path.get("abandoned") for path in fitting):
-        return CoverageGap.AWAITING_NEXT_SET
-    if any(path.get("abandoned") for path in fitting):
-        return CoverageGap.SCENARIOS_FAILED
-    return CoverageGap.LIMIT_REACHED
-
-
-def _given_up_paths(paths: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every path given up for good, its reason, and the reserve that took its place (None: none could)."""
-    return [
-        {
-            "path_id": path["path_id"],
-            "reason": path.get("abandoned_reason"),
-            "replaced_by": path.get("replaced_by"),
-        }
-        for path in sorted(paths, key=lambda path: path["path_id"])
-        if path.get("abandoned")
-    ]
-
-
-def explain_given_up(
-    given_up: list[dict[str, Any]], cards: dict[str, dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Each given-up path with its threat's name and reason sentence from its newest card in `cards`."""
-    return [_explain_given_up_path(entry, cards.get(entry["path_id"])) for entry in given_up]
-
-
-def _explain_given_up_path(entry: dict[str, Any], card: dict[str, Any] | None) -> dict[str, Any]:
-    """A failure card's message, else the blocked draft's finding of that code, else its first blocker."""
-    threat = message = None
-    if card is not None:
-        threat = ((card.get("content") or {}).get("threat") or {}).get("name")
-        blockers = [f for f in card.get("findings") or [] if f.get("severity") == FindingSeverity.BLOCKER]
-        same = [finding for finding in blockers if finding.get("code") == entry["reason"]]
-        message = (card.get("failure") or {}).get("message") or ((same or blockers or [{}])[0]).get("message")
-    return {
-        "path_id": entry["path_id"],
-        "threat": threat,
-        "reason": entry["reason"],
-        "message": message,
-        "replaced_by": entry["replaced_by"],
-    }

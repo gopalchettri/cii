@@ -646,8 +646,7 @@ def test_a_given_up_path_is_never_tried_again(
     )
     answer = client.post(f"/v1/sessions/{record_id}/scenarios/next-set", headers=_identity(api_key))
     assert (answer.status_code, answer.json()["reason"]) == (409, ConflictReason.SCENARIOS_ABANDONED)
-    assert f"/v1/sessions/{record_id}/results" in answer.json()["detail"]  # where each reason is listed
-    assert "repeated failures" not in answer.json()["detail"]  # a writing rule gives a path up at once
+    assert answer.json()["detail"] == f"Every attack path of run '{record_id}' left to write was given up."
     assert queued == []
 
 
