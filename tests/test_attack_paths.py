@@ -13,8 +13,10 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.constants import (
+    AiTask,
     Collection,
     ErrorCode,
+    Lease,
     PlanMessage,
     RunActionKind,
     RunActionOutcome,
@@ -24,7 +26,7 @@ from app.core.constants import (
     UnselectedReason,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import PlanRefused
+from app.core.exceptions import PlanRefused, Unavailable
 from app.domain.scenario.plan import (
     PLANNER_PROMPT_VERSION,
     attack_path_categories,
@@ -152,13 +154,13 @@ def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:
     assert len(build_plan(findings_of(*threats), 5)["paths"]) == 2
 
 
-def _queued_run() -> str:
+def _queued_run(attempts: int = 0) -> str:
     """A run waiting for its threats job, on an asset of its own (one active run per asset)."""
     record_id, now = uuid.uuid4().hex, datetime.now(UTC)
     job = {
         "task": TaskName.FIND_THREATS,
         "epoch": 1,
-        "attempts": 0,
+        "attempts": attempts,
         "due_at": now,
         "task_id": None,
         "error": None,
@@ -254,6 +256,24 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
         planned=0, written=0, remaining=0
     )
     assert sent == []
+
+
+def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(
+    monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
+) -> None:
+    """Not one gate reply usable on the job's last attempt: the run fails unavailable, never "none apply"."""
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda _: {"verdicts": "?"}
+    monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
+    record_id = _queued_run(attempts=Lease.MAX_ATTEMPTS - 1)  # the claim makes it the last
+    with pytest.raises(Unavailable):
+        jobs.run_leased_job(
+            _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
+        )
+    run = _stored_run(record_id)
+    assert (run["status"], run["active"]) == (Status.FAILED, False) and "plan" not in run
+    assert run["job"]["error"] == {"code": ErrorCode.UNAVAILABLE, "message": PlanMessage.AI_COULD_NOT_ANSWER}
+    assert chat.asked(AiTask.GAP_FILL) == [] and sent == []
 
 
 def test_a_refused_plan_fails_the_run_with_its_own_code(

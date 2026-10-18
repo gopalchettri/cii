@@ -10,7 +10,7 @@ import pytest
 
 from app.ai import UnreadableAiAnswer
 from app.core.config import get_settings
-from app.core.constants import ActorRole, AiTask, AttackerCheck, CandidateRejection, ErrorCode, GapFillOutcome
+from app.core.constants import ActorRole, AiTask, AttackerCheck, CandidateRejection, ErrorCode
 from app.core.exceptions import PlanRefused, Unavailable
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import (
@@ -20,7 +20,6 @@ from app.domain.scenario.plan import (
     describe_asset_for_ai,
     merge_reworded_threats,
     merge_same_threats,
-    not_judged_count,
     parse_verdict,
     threat_from_library,
 )
@@ -30,7 +29,7 @@ from app.models.asset_context import FrozenContext
 from app.models.library import LibraryActor, ThreatLibrary
 from app.models.scenario.plan import ActorPick, PlannedActor, PlannedThreat, Verdict
 from app.search.service import LibrarySearch
-from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in
+from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
     ACTORS,
     ADMIN_ABUSE,
@@ -122,23 +121,40 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
     assert problems == [] and verdict == Verdict(False, (), "No mail.", 0, 5.0)
 
 
-def test_a_category_whose_batch_stays_unusable_is_not_assessed_and_gets_no_gap_fill() -> None:
+def test_an_unreadable_gate_reply_retries_before_gap_fill_and_a_cut_off_one_is_skipped() -> None:
     chat = planner_chat({LOG_WIPE.name: ["SYS1"]})
     gate = chat.responders[AiTask.RELEVANCE_GATE]
     chat.responders[AiTask.RELEVANCE_GATE] = lambda u: (
         {"verdicts": "?"} if "category: Spoofing" in u else gate(u)
     )
-    findings = finder(chat).find_threats(CONTEXT)
+    with pytest.raises(Unavailable):
+        finder(chat).find_threats(CONTEXT)
+    assert chat.asked(AiTask.GAP_FILL) == []
+
+    def cut_off_spoofing(user_prompt: str) -> dict[str, Any]:
+        if "category: Spoofing" in user_prompt:
+            raise truncated()
+        return gate(user_prompt)
+
+    chat.responders[AiTask.RELEVANCE_GATE] = cut_off_spoofing
+    assert [threat.name for threat in finder(chat).find_threats(CONTEXT).threats] == [LOG_WIPE.name]
+
+
+def test_on_the_last_attempt_a_broken_batch_is_skipped_and_its_category_gets_no_gap_fill() -> None:
+    chat = planner_chat({LOG_WIPE.name: ["SYS1"]})
+    gate = chat.responders[AiTask.RELEVANCE_GATE]
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda u: (
+        {"verdicts": "?"} if "category: Spoofing" in u else gate(u)
+    )
+    findings = finder(chat).find_threats(CONTEXT, last_attempt=True)
     spoofing = audit_of(findings, S.SPOOFING)
-    assert spoofing.gap_fill == GapFillOutcome.NOT_ASSESSED
-    assert [r["code"] for r in spoofing.rejected] == [CandidateRejection.NOT_JUDGED]
+    assert spoofing.judged_ids == set() and spoofing.rejected == []
     assert len([user for user in chat.asked(AiTask.RELEVANCE_GATE) if "category: Spoofing" in user]) == 2
     assert not any("category: Spoofing" in user for user in chat.asked(AiTask.GAP_FILL))
     assert [threat.name for threat in findings.threats] == [LOG_WIPE.name]
-    assert build_plan(findings, 0)["not_assessed"] == [S.SPOOFING]
 
 
-def test_an_unusable_batch_costs_only_its_own_threats_and_the_run_is_partial(
+def test_an_unusable_batch_on_the_last_attempt_costs_only_its_own_threats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)  # one threat per batch
@@ -147,13 +163,18 @@ def test_an_unusable_batch_costs_only_its_own_threats_and_the_run_is_partial(
     chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
         {"verdicts": "?"} if "category: Denial of Service" in user and FLOOD.name in user else gate(user)
     )
-    findings = finder(chat).find_threats(CONTEXT)
+    findings = finder(chat).find_threats(CONTEXT, last_attempt=True)
     denial = audit_of(findings, S.DENIAL_OF_SERVICE)
     assert [threat.name for threat in findings.threats] == [RANSOMWARE.name]  # its good verdict is kept
-    assert denial.judged_ids == {RANSOMWARE.catalogue_id} and not_judged_count(denial) == 1
+    assert denial.judged_ids == {RANSOMWARE.catalogue_id}
     plan = build_plan(findings, 0)
     assert any(S.DENIAL_OF_SERVICE in path["categories"] for path in plan["paths"])  # it has a scenario
-    assert plan["not_assessed"] == [S.DENIAL_OF_SERVICE]  # and the gap is still shown
+
+
+def test_an_asset_no_library_threat_fits_asks_no_gate_and_plans_nothing() -> None:
+    chat = planner_chat({})
+    findings = finder(chat, threats=()).find_threats(CONTEXT, last_attempt=True)
+    assert findings.threats == [] and chat.asked(AiTask.RELEVANCE_GATE) == []
 
 
 def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_gates_attacker() -> None:
@@ -195,19 +216,19 @@ def test_a_proposal_whose_type_matches_no_library_type_is_never_planned() -> Non
     assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
 
 
-def test_a_proposal_the_gate_cannot_judge_leaves_only_the_gap_not_assessed() -> None:
+def test_a_proposal_the_gate_cannot_judge_retries_the_job_and_on_the_last_attempt_is_dropped() -> None:
     chat = planner_chat({LOG_WIPE.name: ["SYS1"]})
     gate = chat.responders[AiTask.RELEVANCE_GATE]
     chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
         {"verdicts": "?"} if _PROPOSAL["threat"] in user else gate(user)
     )
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL)
-    elevation = audit_of(
-        finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT), S.ELEVATION_OF_PRIVILEGE
-    )
-    assert elevation.gap_fill == GapFillOutcome.NOT_ASSESSED
+    with pytest.raises(Unavailable):
+        finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT)
+    findings = finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT, last_attempt=True)
+    assert all(threat_from_library(threat) for threat in findings.threats)
+    elevation = audit_of(findings, S.ELEVATION_OF_PRIVILEGE)
     assert [rejected["code"] for rejected in elevation.rejected] == [CandidateRejection.NOT_RELEVANT]
-    assert sum(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE)) == 2  # one re-ask
 
 
 def test_a_proposal_repeating_a_library_threat_is_dropped_at_the_threat_threshold(

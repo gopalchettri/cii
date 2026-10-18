@@ -40,6 +40,15 @@ AI_CONFIGURATION_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
+#: Chat replies that refuse the prompt or break the response contract: the chat gateway reads each as an
+#: unreadable reply, never as a fault of ours.
+AI_REFUSED_REPLY_ERRORS: tuple[type[Exception], ...] = (
+    litellm.ContentPolicyViolationError,
+    litellm.exceptions.RejectedRequestError,
+    litellm.APIResponseValidationError,
+)
+
+
 class IncompleteAiAnswer(Exception):
     """The answer has missing, extra or repeated positions: pairing it with the inputs would be wrong."""
 
@@ -139,10 +148,12 @@ def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
 
 
 @contextmanager
-def count_and_convert_ai_errors(task: str, model: str) -> Iterator[None]:
+def count_and_convert_ai_errors(
+    task: str, model: str, unreadable_errors: tuple[type[Exception], ...] = ()
+) -> Iterator[None]:
     """Counts a failed AI call in tsg_ai_calls_total by its outcome (each gateway counts its own "ok"), and
     turns the provider busy or down, or an answer still short after the retries, into Unavailable: the job
-    backs off and retries."""
+    backs off and retries. `unreadable_errors` are counted unreadable and raised as they are."""
     try:
         yield
     except LeaseLost:
@@ -170,7 +181,7 @@ def count_and_convert_ai_errors(task: str, model: str) -> Iterator[None]:
     except IncompleteAiAnswer as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.UNREADABLE).inc()
         raise Unavailable(str(exc)) from exc
-    except UnusableAiAnswer:
+    except (UnusableAiAnswer, *unreadable_errors):
         metrics.AI_CALLS.labels(task, model, AiOutcome.UNREADABLE).inc()
         raise
     except Exception:

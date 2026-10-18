@@ -169,15 +169,10 @@ class AttackerCheck(StrEnum):
     RANKED = "ranked"  # the gate never judged it (a hand-written one): the ranking decides
 
 
-class GapFillOutcome(StrEnum):
-    NOT_ASSESSED = "not_assessed"  # the check could not be made: a technical gap, never a verdict
-
-
 class CandidateRejection(StrEnum):
     """Why a candidate threat of a category was not used."""
 
     NOT_RELEVANT = "not_relevant"
-    NOT_JUDGED = "not_judged"  # the check could not be completed
     NEEDS_UNRECORDED = "needs_unrecorded"  # relevant only by assuming something nothing recorded mentions
     ASSET_TYPE_MISMATCH = "asset_type_mismatch"  # judged to apply only where its AssetType cannot be
 
@@ -194,6 +189,7 @@ class PlanMessage(StrEnum):
         "because it carries fewer threats in this run."
     )
     PLAN_NOTE = "{planned} attack paths selected; {written} written, {remaining} still to write, set by set."
+    AI_COULD_NOT_ANSWER = "The AI could not answer. Start a new session later."
 
 
 class AnswerProblem(StrEnum):

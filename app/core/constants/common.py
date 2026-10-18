@@ -211,8 +211,7 @@ class LogEvent(StrEnum):
     LIBRARY_CHECK_FAILED = "library.check_failed"
     LIBRARY_INDEXES_BUILT = "library.indexes_built"
     LIBRARY_INDEXES_BUILD_FAILED = "library.indexes_build_failed"
-    PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate batch unusable after its retries
-    PLANNER_CHECK_NOT_MADE = "planner.check_not_made"
+    PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
     PLANNER_PLAN_MADE = "planner.plan_made"
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
     WRITER_REWRITE_UNUSABLE = "writer.rewrite_unusable"  # the first draft is kept

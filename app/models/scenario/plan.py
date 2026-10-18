@@ -10,7 +10,6 @@ from app.core.constants import (
     ActorRole,
     AnswerProblem,
     AttackerCheck,
-    GapFillOutcome,
     StrideCategory,
 )
 from app.models.external_intelligence.evidence import Evidence, EvidenceSearchRecord
@@ -85,7 +84,6 @@ class CategoryAudit:
 
     category: StrideCategory
     judged_ids: set[int] = field(default_factory=set)  # library threats whose verdict came back
-    gap_fill: GapFillOutcome | None = None
     rejected: list[dict[str, Any]] = field(default_factory=list)  # {threat, library_id, code}
 
 

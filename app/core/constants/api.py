@@ -50,6 +50,7 @@ class ErrorMessage(StrEnum):
     REDIS_UNREACHABLE = "The queue and live-update service is unreachable."
     AI_UNREACHABLE = "The AI service is busy or unreachable. Try again shortly."
     AI_ANSWER_UNREADABLE = "The AI answer for '{task}' was not a JSON object."
+    AI_ANSWER_REFUSED = "The AI answer for '{task}' was refused or malformed ({error})."
     AI_REPLY_NOT_A_JSON_OBJECT = "The reply was not one JSON object."  # a re-ask problem line
     AI_ANSWER_REJECTED = "The AI answer for '{task}' was still wrong after one re-ask: {problems}"
     AI_ANSWER_TRUNCATED = "The AI answer for '{task}' from '{model}' was cut off at its length limit."

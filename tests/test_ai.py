@@ -305,6 +305,18 @@ def test_an_unreadable_answer_is_counted_once_as_unreadable(monkeypatch: pytest.
     assert (_calls("ok"), _calls("unreadable")) == (ok_before, unreadable_before + 1)
 
 
+def test_a_refusal_or_a_reply_with_no_choices_is_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(**_: object) -> None:
+        raise litellm.ContentPolicyViolationError(message="blocked", model="test-chat", llm_provider="openai")
+
+    for reply in (refused, lambda **_: SimpleNamespace(choices=[], usage=None)):
+        monkeypatch.setattr(litellm, "completion", reply)
+        error_before, unreadable_before = _calls("error"), _calls("unreadable")
+        with pytest.raises(ai.UnreadableAiAnswer, match="refused or malformed"):
+            _chat_model().ask_for_json(AiTask.WRITE_SCENARIO, "system", "user")
+        assert (_calls("error"), _calls("unreadable")) == (error_before, unreadable_before + 1)
+
+
 def _fake_vectors(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Every text answers [3, 4]; returns the batches sent, in order."""
     requested: list[list[str]] = []

@@ -15,8 +15,10 @@ from app.ai.chat_messages import (
     count_prompt_chars,
     parse_json_object,
     record_chat_call,
+    update_call_metrics,
 )
 from app.ai.common import (
+    AI_REFUSED_REPLY_ERRORS,
     apply_proxy_settings,
     build_api_key_header,
     call_with_retries,
@@ -176,6 +178,9 @@ class ChatModel:
                 )
             )
         model, response, seconds = self._call_first_available_model(task, messages)
+        if not response.choices:
+            update_call_metrics(task, model, AiOutcome.UNREADABLE, 0, 0, seconds)
+            raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error="no choices"))
         choice = response.choices[0]
         reply = choice.message.content or ""
         if getattr(choice, "finish_reason", None) == "length":
@@ -197,7 +202,7 @@ class ChatModel:
                 started = time.perf_counter()
                 options = self._key_header | _build_request_options(profile, task)
                 try:
-                    with count_and_convert_ai_errors(task, model):
+                    with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
                         # num_retries=0: call_with_retries is the only retry (litellm's own needs tenacity).
                         response = call_with_retries(
                             partial(
@@ -213,6 +218,9 @@ class ChatModel:
                 except Unavailable as exc:  # busy or down after its retries: the next model answers
                     outage = exc
                     continue
+                except AI_REFUSED_REPLY_ERRORS as exc:  # an answer, if a refusal: no other model is asked
+                    refused = ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error=type(exc).__name__)
+                    raise UnreadableAiAnswer(refused) from exc
                 return model, response, time.perf_counter() - started
         assert outage is not None  # at least one model is configured
         raise outage

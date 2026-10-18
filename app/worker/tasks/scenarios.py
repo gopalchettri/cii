@@ -11,6 +11,7 @@ from celery import Task
 from app.core.config import get_settings
 from app.core.constants import (
     Collection,
+    Lease,
     LogEvent,
     PlanMessage,
     RunActionOutcome,
@@ -40,7 +41,8 @@ def plan_run(lease: JobLease) -> None:
     started = time.perf_counter()
     context = FrozenContext.from_record(lease.record["context"])
     country = get_settings().context_country if get_intel_access().is_on() else ""  # a fact, ranks nothing
-    findings = get_threat_finder().find_threats(context, country)
+    last_attempt = lease.attempts >= Lease.MAX_ATTEMPTS
+    findings = get_threat_finder().find_threats(context, country, last_attempt=last_attempt)
     plan = build_plan(findings, get_settings().total_scenario_count)
     plan |= {"frozen_at": datetime.now(UTC), "made_with": made_with(findings.library_stamp)}
     selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
@@ -51,11 +53,7 @@ def plan_run(lease: JobLease) -> None:
     else:
         ended = {"last_action.outcome": RunActionOutcome.COMPLETE} | ended_job_fields(Status.DONE)
         lease.update_job(changes | ended)
-    log.info(
-        LogEvent.PLANNER_PLAN_MADE,
-        threats=len(plan["threats"]),
-        paths=len(plan["paths"]),
-    )
+    log.info(LogEvent.PLANNER_PLAN_MADE, threats=len(plan["threats"]), paths=len(plan["paths"]))
 
 
 def plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:
