@@ -58,6 +58,7 @@ from app.domain.shared.ask_ai import (
     ask_ai_and_check,
 )
 from app.domain.shared.names import (
+    as_json,
     name_match_key,
     quoted_for_prompt,
     remove_asset_name,
@@ -243,23 +244,18 @@ def describe_asset_for_ai(context: FrozenContext, budget: int, country: str = ""
         "asset_context": facts_safe_for_prompt({**lead, **own_facts}),
         "supporting_systems": [],
     }
-    lines = ["ASSET: " + _as_json(described)]
+    lines = ["ASSET: " + as_json(described)]
     if organisation := facts_safe_for_prompt(organisation_facts):
-        lines.append(ThreatFinding.ORGANISATION_LABEL + _as_json(organisation))
+        lines.append(ThreatFinding.ORGANISATION_LABEL + as_json(organisation))
     for system in context.systems:
         name = quoted_for_prompt(shorten_text(system["name"], ThreatFinding.SYSTEM_NAME_CHARS))
-        lines.append(f"{system['alias']} {name}: {_as_json(facts_safe_for_prompt(raw_system_facts(system)))}")
+        lines.append(f"{system['alias']} {name}: {as_json(facts_safe_for_prompt(raw_system_facts(system)))}")
     return Landscape(
         text=shorten_text("\n".join(lines), budget),
         system_ids={system["alias"]: system["id"] for system in context.systems},
         system_names={system["alias"]: system["name"] for system in context.systems},
         sector=_sector_text(context.asset_context),
     )
-
-
-def _as_json(value: Any) -> str:
-    """A value as JSON, non-ASCII kept."""
-    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 # --- the planner's prompts (prompts/gate.txt, prompts/gap_fill.txt)

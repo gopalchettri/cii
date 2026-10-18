@@ -110,7 +110,7 @@ class BatchWriter:
         self._evidence_waits: set[str] = set()  # paths held back by an evidence search outage
 
     def write(self) -> None:
-        """Write the batch's open paths, settle any outage, queue control mapping, then move the run on."""
+        """Write the batch's open paths, queue control mapping, settle any outage, then move the run on."""
         to_write = self._saver.to_write(self._batch, self._replaces)
         outages: dict[str, BaseException] = {}
         if self._evidence is not None:
@@ -119,12 +119,13 @@ class BatchWriter:
         paths = self._progress.paths
         path_jobs = {key: partial(self._paths.write, paths[key], others) for key, others in to_write.items()}
         outages |= write_at_once(path_jobs, self._saver.save)
-        if outages:
-            self._settle_outages(outages)
-        # Sent for every scenario of the batch, whichever delivery saved it: a delivery that died after
-        # saving must not leave its controls to the sweep. The controls job claims each scenario once.
+        # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
+        # delivery that died or failed after saving must not leave its controls to the sweep. The controls
+        # job claims each scenario once.
         if self._served_paths():
             send_job(TaskName.MAP_CONTROLS, self._run["_id"], self._lease.epoch)
+        if outages:
+            self._settle_outages(outages)
         if self._replaces:
             self._progress.finish_regenerate(len(self._served_paths()), len(self._replaces))
         else:

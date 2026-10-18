@@ -12,8 +12,7 @@
   body { font: 13.5px/1.5 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 16px; background: var(--bg); color: var(--text); }
   h1 { font-size: 18px; margin: 0 0 2px; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  a { color: var(--primary); }
-  code, .mono { font-family: var(--mono); font-size: 12px; }
+  code { font-family: var(--mono); font-size: 12px; }
   code { background: #eef0f3; padding: 1px 4px; border-radius: 3px; }
   .sub { color: var(--muted); margin-bottom: 12px; max-width: 1100px; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
@@ -29,8 +28,8 @@
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #c3c9d0; vertical-align: 0; margin-right: 5px; }
   .dot.on { background: var(--success); } .dot.warn { background: #f59e0b; } .dot.err { background: var(--danger); }
   .cov { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
-  .cov a { display: block; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; text-decoration: none; color: var(--text); background: #fafbfd; }
-  .cov a.hit { border-color: #bfe5cc; background: var(--success-soft); }
+  .cov div { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: #fafbfd; }
+  .cov div.hit { border-color: #bfe5cc; background: var(--success-soft); }
   .cov b { display: block; font-size: 12.5px; } .cov span { font-size: 11.5px; color: var(--muted); }
   table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eceff2; vertical-align: top; }
@@ -43,7 +42,7 @@
   .src.sse { background: var(--success-soft); color: var(--success); } .src.poll { background: var(--warn-soft); color: var(--warn); }
   .chg { font-family: var(--mono); font-size: 11.5px; }
   .chg i { font-style: normal; color: var(--muted); }
-  .pv { display: inline-block; margin: 1px 4px 1px 0; padding: 0 7px; border-radius: 6px; background: var(--primary-soft); color: var(--primary); font-size: 11.5px; text-decoration: none; }
+  .pv { display: inline-block; margin: 1px 4px 1px 0; padding: 0 7px; border-radius: 6px; background: var(--primary-soft); color: var(--primary); font-size: 11.5px; }
   .pv.amb { background: var(--warn-soft); color: var(--warn); }
   .why { display: block; font-size: 11.5px; color: var(--muted); }
   pre { background: #0f172a; color: #e2e8f0; padding: 10px 12px; border-radius: 8px; font-size: 11.5px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
@@ -56,9 +55,8 @@
 <body>
 
 <h1>TSG Live Tracer</h1>
-<div class="sub">Watches a session's live events and maps every change to the pipeline stage that caused it. Each <span class="pv">stage</span> link opens that
-  stage in the <a href="tsg_console.html#walk=X.3" target="_blank" rel="noopener">console's execution walkthrough</a>, which explains its input,
-  processing, decisions and output from the code. Everything in the timeline is <b>runtime data</b>; the stage it proves comes from the code's transition rules.</div>
+<div class="sub">Watches a session's live events and maps every change to the pipeline <span class="pv">stage</span> that caused it.
+  Everything in the timeline is <b>runtime data</b>; the stage it proves comes from the code's transition rules.</div>
 
 <div class="note"><b>How the stream works</b> (<code>app/api/routers/events.py</code>): <code>GET /v1/sessions/{id}/events</code> sends one event name,
   <code>session.updated</code>, carrying the same RunBoard JSON as <code>GET /v1/sessions/{id}</code> (<code>session_status</code> and
@@ -115,7 +113,7 @@
 (function () {
   "use strict";
   // ---------------------------------------------------------------------------------------------
-  // Stage titles from the console's execution catalogue (tsg_console.html, WALK). A link opens that stage there.
+  // The title of each stage a change can prove.
   // ---------------------------------------------------------------------------------------------
   var STAGE = {
     "1.6": "Queue the job, audit, answer 202", "2.1": "A worker claims the job (lease)", "2.11": "Rank scenarios and freeze the plan",
@@ -124,8 +122,8 @@
     "5.6": "Regenerate scenarios", "6.5": "Create the plan record and queue the job", "6.6": "A worker claims the plan job",
     "6.10": "Schedule checks and save", "7.2": "Accept or reject a version", "7.3": "Regenerate a plan", "X.1": "Job lease, retry and reaper"
   };
-  var STEPS = [["1", "Start assessment", "1.1"], ["2", "Identify threats & freeze plan", "2.1"], ["3", "Write scenarios", "3.1"], ["4", "Map controls", "4.1"],
-               ["5", "Review scenarios", "5.1"], ["6", "Generate remediation plan", "6.1"], ["7", "Decide remediation plan", "7.1"], ["X", "Shared mechanisms", "X.1"]];
+  var STEPS = [["1", "Start assessment"], ["2", "Identify threats & freeze plan"], ["3", "Write scenarios"], ["4", "Map controls"],
+               ["5", "Review scenarios"], ["6", "Generate remediation plan"], ["7", "Decide remediation plan"], ["X", "Shared mechanisms"]];
   var MAX_PLAN_STREAMS = 4;   // ponytail: browsers allow 6 HTTP/1.1 connections per origin; session + 4 plans leaves room for the polls
 
   var $ = function (id) { return document.getElementById(id); };
@@ -157,7 +155,7 @@
   }
 
   // ---------------------------------------------------------------------------------------------
-  // The transition rules: which stage a status change proves (code-derived; see each stage in the console).
+  // The transition rules: which stage a status change proves (code-derived).
   // ---------------------------------------------------------------------------------------------
   // The run's status body (RunBoard, app/models/run_board.py): session_status, and progress with one word per stage
   // (PENDING | RUNNING | COMPLETE | ERROR; a queued job counts as RUNNING), overall, error_message, last_next_set,
@@ -244,8 +242,8 @@
     $("export").disabled = false;
   }
   function stageLink(x) {
-    return '<a class="pv' + (x[2] ? " amb" : "") + '" target="_blank" rel="noopener" href="tsg_console.html#walk=' + encodeURIComponent(x[0]) + '">' + esc(x[0]) + " " +
-           esc(STAGE[x[0]] || "") + '</a><span class="why">' + esc(x[1]) + "</span>";
+    return '<span class="pv' + (x[2] ? " amb" : "") + '">' + esc(x[0]) + " " +
+           esc(STAGE[x[0]] || "") + '</span><span class="why">' + esc(x[1]) + "</span>";
   }
   function renderFrame(f, i) {
     var tb = document.querySelector("#timeline tbody");
@@ -263,7 +261,6 @@
     while (tb.rows.length > 500) tb.deleteRow(tb.rows.length - 1);
   }
   document.querySelector("#timeline tbody").addEventListener("click", function (e) {
-    if (e.target.closest("a")) return;
     var tr = e.target.closest("tr"); if (!tr || tr.dataset.i == null) return;
     document.querySelectorAll("#timeline tr.sel").forEach(function (r) { r.classList.remove("sel"); });
     tr.classList.add("sel");
@@ -273,8 +270,8 @@
   function renderCoverage() {
     $("coverage").innerHTML = STEPS.map(function (S) {
       var n = Object.keys(hits).filter(function (id) { return id.split(".")[0] === S[0]; }).reduce(function (a, id) { return a + hits[id]; }, 0);
-      return '<a class="' + (n ? "hit" : "") + '" target="_blank" rel="noopener" href="tsg_console.html#walk=' + S[2] + '"><b>' + (S[0] === "X" ? "" : S[0] + " · ") + esc(S[1]) +
-             "</b><span>" + (n ? n + " change(s) proved" : "no evidence yet") + "</span></a>";
+      return '<div class="' + (n ? "hit" : "") + '"><b>' + (S[0] === "X" ? "" : S[0] + " · ") + esc(S[1]) +
+             "</b><span>" + (n ? n + " change(s) proved" : "no evidence yet") + "</span></div>";
     }).join("");
   }
   function renderStreams() {
@@ -394,7 +391,7 @@
     document.querySelector("#timeline tbody").innerHTML = '<tr><td colspan="5" class="muted">Cleared.</td></tr>';
     $("raw").textContent = "Select a timeline row."; renderCoverage(); $("export").disabled = true;
   });
-  // The export is runtime evidence: import it in the console (How it runs → Import) to see these events on stage X.3.
+  // The timeline as a JSON file.
   $("export").addEventListener("click", function () {
     var blob = new Blob([JSON.stringify({ kind: "tsg-trace", exported_at: new Date().toISOString(), session_id: sid(),
       frames: frames.map(function (f) { return { at: f.at, source: f.source, event: f.event, stream: f.stream, payload: f.payload, proves: f.proves.map(function (x) { return x[0]; }) }; }) }, null, 2)],

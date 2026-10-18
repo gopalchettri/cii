@@ -39,7 +39,7 @@ def map_controls(self: Task, record_id: str, epoch: int) -> None:
     message after the back-off."""
     from app import container
 
-    structlog.contextvars.bind_contextvars(record_id=record_id)  # jobs.run_job binds it; this task skips it
+    structlog.contextvars.bind_contextvars(record_id=record_id)  # run_leased_job binds it; this task skips it
     try:
         container.get_controls_job().map_threat_scenario_controls(record_id, self.request.id)
     except TEMPORARY_ERRORS as exc:

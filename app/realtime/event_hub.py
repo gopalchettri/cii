@@ -1,9 +1,10 @@
 """The event hub: how a saved change reaches every client streaming that run.
 
-A worker saves the change in MongoDB, then publishes the new status body on the run's Redis channel
+A worker saves the change in MongoDB, then publishes the run's id on its Redis channel
 (app/realtime/publisher.py). Every API process holds ONE Redis subscription covering all channels (EventHub)
-and hands each message to the streams open on that run (app/api/routers/events.py). So any API pod can serve
-any client, and Redis carries one connection per API process, not one per open stream."""
+and hands each message to the streams open on that run (each stream is in app/api/routers/scenario.py). So
+any API pod can serve any client, and Redis carries one connection per API process, not one per open
+stream."""
 
 import asyncio
 from collections.abc import AsyncGenerator

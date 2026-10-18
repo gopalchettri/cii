@@ -71,8 +71,8 @@ class IntelligenceSwitch:
         return after
 
     def _read(self) -> SwitchState:
-        """Read the flag from the store (the env switch is on); an outage keeps the last value, or reads off
-        (in doubt) and looks again soon; a change an admin made meanwhile wins over the read."""
+        """Read the flag from the store (the env switch is on); an outage keeps the last known value, or
+        reads off (in doubt) and looks again soon; a change an admin made meanwhile wins over the read."""
         previous = self._cached
         if previous is not None and self._clock() < previous[1]:  # read by the thread that held the lock
             return previous[0]
@@ -81,7 +81,7 @@ class IntelligenceSwitch:
             stored = self._feeds.get(_id=IntelDocId.SWITCH)
         except MONGO_UNAVAILABLE_ERRORS:
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency="external_intelligence_switch")
-            if previous is not None:  # keep the last value for a full period
+            if previous is not None and previous[0].known:  # keep the last value for a full period
                 self._cached = (previous[0], self._clock() + IntelLimits.SWITCH_CACHE_SECONDS)
                 return previous[0]
             unknown = SwitchState(True, runtime_enabled=False, known=False)

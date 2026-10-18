@@ -239,6 +239,10 @@ class StoryFindingMessage(StrEnum):
         "Uses the marker(s) {markers}, but no external intelligence was used: there is no source to cite. "
         "Remove each marker and the real-world claim it marks; tell it as what could happen to this asset."
     )
+    MARKER_OUTSIDE_STATEMENT = (
+        "Uses the marker(s) {markers} outside the scenario statement and risk statement: markers belong in "
+        "the statement or risk only. Remove each one from the other texts."
+    )
     INJECTION_ECHO = "Repeats text that reads as an instruction to an AI system. Remove it."
 
 

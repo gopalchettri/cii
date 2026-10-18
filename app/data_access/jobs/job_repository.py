@@ -76,22 +76,26 @@ class JobLease:
         self.attempts = attempts
         self.record = record or {}
 
-    def update_job(self, changes: dict[str, Any], array_filters: list[dict[str, Any]] | None = None) -> None:
-        """Write `changes` to the job record while this delivery owns it, else raise LeaseLost;
-        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]."""
+    @property
+    def fence(self) -> dict[str, Any]:
+        """The filter that matches the job record only while this delivery owns it."""
         # Running too: once the reaper settles the record, a slow old owner can no longer finish it.
         # Attempts too: Celery reuses the task id on a retry or a redelivery, so a hung delivery and a copy
         # that claimed the job again after its lease ran out share task id and epoch; only the newer claim's
         # count matches.
-        fence = {
+        return {
             "_id": self.record_id,
             "status": Status.RUNNING,
             "job.task_id": self.task_id,
             "job.epoch": self.epoch,
             "job.attempts": self.attempts,
         }
+
+    def update_job(self, changes: dict[str, Any], array_filters: list[dict[str, Any]] | None = None) -> None:
+        """Write `changes` to the job record while this delivery owns it, else raise LeaseLost;
+        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]."""
         update = {"$set": {**changes, "updated_at": datetime.now(UTC)}}
-        if self._records.update_one(fence, update, array_filters=array_filters).matched_count != 1:
+        if self._records.update_one(self.fence, update, array_filters=array_filters).matched_count != 1:
             raise LeaseLost(self.record_id)
 
     def renew_job(self) -> bool:

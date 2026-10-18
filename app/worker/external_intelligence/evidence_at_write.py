@@ -17,11 +17,13 @@ from app.core.constants import (
     RecordedFields,
     TaskName,
 )
+from app.core.exceptions import TEMPORARY_ERRORS
 from app.core.redaction import clipped_text, redact
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.scenario.library_rules import compatible_asset_types
+from app.domain.shared.audit import audit_target
 from app.domain.shared.names import shorten_text
 from app.models.external_intelligence.evidence import EvidenceBatchSummary
 from app.models.external_intelligence.evidence_request import (
@@ -57,8 +59,8 @@ class EvidenceAtWrite:
 
     def attach(self, path_ids: Iterable[str]) -> None:
         """Search every distinct threat of these paths and set its evidence and search on it, in memory only
-        (the brief reads it there). A search that could not be made is held on each threat as its failure:
-        its paths wait and a later delivery searches again."""
+        (the brief reads it there). A search an outage stopped is held on each threat as its failure: its
+        paths wait and a later delivery searches again. Any other error is raised."""
         steps = {step for path_id in path_ids for step in self._progress.paths[path_id].get("steps") or ()}
         keys = [key for key in sorted(steps) if key in self._threats]
         if not keys:
@@ -68,7 +70,7 @@ class EvidenceAtWrite:
         try:
             requests = {key: evidence_request(context, self._threats[key]) for key in keys}
             found = self._search_batch(requests, approved, self._is_stale(approved))
-        except Exception as exc:  # a search fault never costs the batch: its paths wait as outages
+        except TEMPORARY_ERRORS as exc:  # an outage never costs the batch: its paths wait
             log.warning(
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, threats=len(keys), exc_info=True
             )
@@ -100,7 +102,7 @@ class EvidenceAtWrite:
         own search is audited on its scenario (content.intel_search)."""
         if summary.snapshot_id is None:
             return
-        target = {"type": AuditTarget.SESSION, "id": self._run["_id"]}
+        target = audit_target(AuditTarget.SESSION, self._run["_id"])
         actor = {"system": TaskName.WRITE_SCENARIOS}
         self._audit.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_EVIDENCE_USED, actor, target, after=summary.as_doc()

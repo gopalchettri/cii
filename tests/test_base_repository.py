@@ -10,7 +10,7 @@ from pymongo.errors import OperationFailure, WriteError
 from app.core.constants import Collection
 from app.core.database import get_mongodb
 from app.core.exceptions import DuplicateRecord
-from app.data_access.base import MongoRepository, schema_version_of
+from app.data_access.base import SCHEMA_VERSION_FIELD, MongoRepository
 
 SCRATCH = "tsg_test_base_repository"
 
@@ -157,10 +157,10 @@ def test_create_and_save_stamp_the_schema_version_and_a_record_without_one_reads
     records.create({"_id": "r1", "title": "first"})
     assert records.get(_id="r1")["schema_version"] == 1
     MongoRepository(records.collection, schema_version=2).save({"_id": "r1", "title": "again"})
-    assert schema_version_of(records.get(_id="r1")) == 2
+    assert records.get(_id="r1").get(SCHEMA_VERSION_FIELD, 1) == 2
     assert "schema_version" not in records.get({"title": 0}, _id="r1")  # an exclusion shows what it did
     records.collection.insert_one({"_id": "old", "title": "stored before versions"})
-    assert schema_version_of(records.get(_id="old")) == 1
+    assert records.get(_id="old").get(SCHEMA_VERSION_FIELD, 1) == 1
 
 
 def test_the_validator_refuses_a_record_missing_a_required_field() -> None:

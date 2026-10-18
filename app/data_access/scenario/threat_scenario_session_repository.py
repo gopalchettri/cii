@@ -29,9 +29,9 @@ from app.models.scenario.views import SessionStatus
 #: Set on a scenario session by the first step of its delete, in the update that checks no job of it is at
 #: work: from then on nothing new starts on it, so the delete's check for work is final.
 DELETING_MARK = "deleting_at"
-#: The unique indexes a new scenario session can clash on (MongoDB's default names, kept as built in UAT).
+#: The unique indexes a clash is told apart by (MongoDB's default names, kept as built in UAT); any other
+#: clash is the idempotency key's.
 ACTIVE_SESSION_INDEX = "entity_id_1_asset_id_1"
-IDEMPOTENCY_KEY_INDEX = "entity_id_1_idempotency_key_1"
 _ID_INDEX = "_id_"
 
 _SESSION_INDEXES = (
@@ -219,16 +219,11 @@ class ThreatScenarioSessionRepository(MongoRepository):
         counts = {f"counts.{key}": value for key, value in scenario_counts.items()} | {
             "counts_at": counted_at
         }
-        fence = {  # the job lease's fence: running under this delivery's task id, epoch and attempts
-            "_id": lease.record_id,
-            "status": Status.RUNNING,
-            "job.task_id": lease.task_id,
-            "job.epoch": lease.epoch,
-            "job.attempts": lease.attempts,
-        }
         older_counts = {"$or": [{"counts_at": {"$lt": counted_at}}, {"counts_at": None}]}
         for only_if, changes in ((older_counts, counts | plan), ({}, plan)):
-            written = self.collection.update_one({**fence, **only_if}, {"$set": changes}, array_filters=picks)
+            written = self.collection.update_one(
+                {**lease.fence, **only_if}, {"$set": changes}, array_filters=picks
+            )
             if written.matched_count:
                 return
         raise LeaseLost(lease.record_id)

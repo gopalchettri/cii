@@ -23,7 +23,7 @@ from app.api.dependencies import (
     SessionId,
     valid_session,
 )
-from app.container import get_remediation_plan_service, get_threat_scenario_service
+from app.container import get_admin_service, get_remediation_plan_service, get_threat_scenario_service
 from app.core.constants import (
     ApiTag,
     Decision,
@@ -31,9 +31,6 @@ from app.core.constants import (
     Header,
     Limits,
     Realtime,
-    SessionState,
-    StageState,
-    Status,
 )
 from app.core.exceptions import NotFound
 from app.models.scenario.views import (
@@ -51,6 +48,7 @@ from app.models.scenario.views import (
 )
 from app.realtime.event_hub import EventHub
 from app.realtime.publisher import remediation_channel, session_channel
+from app.services.admin.admin_service import AdminService
 from app.services.remediation.remediation_plan_service import RemediationPlanService
 from app.services.scenario.threat_scenario_service import ThreatScenarioService
 
@@ -60,9 +58,7 @@ events_router = APIRouter(tags=[ApiTag.LIVE_UPDATES])
 
 Scenarios = Annotated[ThreatScenarioService, Depends(get_threat_scenario_service)]
 Plans = Annotated[RemediationPlanService, Depends(get_remediation_plan_service)]
-
-#: A plan's queued or running version; a run's job still at work.
-_UNFINISHED = {Status.QUEUED, Status.RUNNING, SessionState.ACTIVE}
+Clients = Annotated[AdminService, Depends(get_admin_service)]
 
 
 # Runs.
@@ -202,8 +198,8 @@ def promote_to_library(
     return scenarios.promote_threat_scenario_to_library(principal, run, scenario_id)
 
 
-# Live updates: a run's or a plan's status now, then at every change, until the client closes or the record
-# is deleted (one `.deleted` event, then the stream ends).
+# Live updates: a run's or a plan's status now, then at every change, until the client closes, its API key is
+# revoked, or the record is deleted (one `.deleted` event, then the stream ends).
 
 
 @events_router.get(
@@ -213,7 +209,7 @@ def promote_to_library(
     summary="1. A run's live status",
 )
 async def stream_session_events(
-    session_id: SessionId, request: Request, scenarios: Scenarios
+    session_id: SessionId, request: Request, scenarios: Scenarios, clients: Clients
 ) -> AsyncIterator[ServerSentEvent]:
     """Server-Sent Events: `session.updated` (the body of `GET /v1/sessions/{session_id}`) now and at
     every change; `session.deleted` once when it is deleted. Swagger cannot show a stream: use
@@ -221,7 +217,8 @@ async def stream_session_events(
     reads = partial(scenarios.get_threat_scenario_session_live_status, session_id)
     gone = ServerSentEvent(event=Event.SESSION_DELETED, data={"session_id": session_id})
     channel = session_channel(session_id)
-    async for event in _status_stream(request, channel, reads, (Event.SESSION_UPDATED, gone)):
+    still_allowed = partial(_api_key_still_active, clients, request)
+    async for event in _status_stream(request, channel, reads, (Event.SESSION_UPDATED, gone), still_allowed):
         yield event
 
 
@@ -231,7 +228,7 @@ async def stream_session_events(
     summary="2. A plan's live status",
 )
 async def stream_remediation_events(
-    plan: CallersPlan, request: Request, plans: Plans
+    plan: CallersPlan, request: Request, plans: Plans, clients: Clients
 ) -> AsyncIterator[ServerSentEvent]:
     """The plan's status now (`remediation.updated`: the body of `.../treatment-plan/status`), then every
     change, until the client closes; `remediation.deleted` once, when its run is deleted."""
@@ -239,7 +236,10 @@ async def stream_remediation_events(
     reads = partial(plans.get_remediation_plan_live_status, remediation_id)
     channel = remediation_channel(remediation_id)
     gone = ServerSentEvent(event=Event.REMEDIATION_DELETED, data={"remediation_id": remediation_id})
-    async for event in _status_stream(request, channel, reads, (Event.REMEDIATION_UPDATED, gone)):
+    still_allowed = partial(_api_key_still_active, clients, request)
+    async for event in _status_stream(
+        request, channel, reads, (Event.REMEDIATION_UPDATED, gone), still_allowed
+    ):
         yield event
 
 
@@ -248,6 +248,7 @@ async def _status_stream(
     channel: str,
     read_status: Callable[[], dict[str, Any] | None],
     events: tuple[Event, ServerSentEvent],
+    still_allowed: Callable[[], bool],
 ) -> AsyncIterator[ServerSentEvent]:
     """Subscribed first, read second: a change saved between the two is never missed. A message only says
     "this record changed" (or RESYNC: "read again"): the status is always read from MongoDB, so a status
@@ -256,6 +257,8 @@ async def _status_stream(
     (event, gone), last_sent = events, None
     async with hub.listen(channel) as updates:
         while True:
+            if not await asyncio.to_thread(still_allowed):  # the key was revoked: the stream ends quietly
+                return
             try:  # None: MongoDB cannot say; the next change announced brings it
                 status = await asyncio.to_thread(read_status)
             except NotFound:  # deleted (G214): the watcher is told once, and nothing more can come
@@ -264,11 +267,10 @@ async def _status_stream(
             if status is not None and status != last_sent:
                 yield ServerSentEvent(event=event, data=status, retry=Realtime.RETRY_MS)
                 last_sent = status
-            # An unfinished record is read again every Realtime.RECHECK_SECONDS even with no message: its last
-            # change may never be announced (a failed publish, a failed read), and nothing comes after it.
-            unfinished = last_sent is None or _unfinished(last_sent)
+            # Read again every Realtime.RECHECK_SECONDS even with no message: a last change may never be
+            # announced (a failed publish, a failed read), and a revoked key must end an idle stream too.
             try:
-                await asyncio.wait_for(updates.get(), Realtime.RECHECK_SECONDS if unfinished else None)
+                await asyncio.wait_for(updates.get(), Realtime.RECHECK_SECONDS)
             except TimeoutError:
                 continue
             await asyncio.sleep(Realtime.COALESCE_SECONDS)  # a burst (a batch of saves) ends first: one read
@@ -276,9 +278,6 @@ async def _status_stream(
                 updates.get_nowait()  # one read covers every change announced meanwhile
 
 
-def _unfinished(body: dict[str, Any]) -> bool:
-    """A run whose job is at work or whose controls are still being matched (`session_status`, `progress`); a
-    plan whose latest version is queued or running (`latest_status`)."""
-    if (body.get("progress") or {}).get("controls") == StageState.RUNNING:
-        return True
-    return str(body.get("session_status") or body.get("latest_status")) in _UNFINISHED
+def _api_key_still_active(clients: AdminService, request: Request) -> bool:
+    """Whether the stream's API key (X-API-Key) still belongs to an active client."""
+    return clients.get_api_client_id(request.headers.get(Header.API_KEY, "")) is not None

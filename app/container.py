@@ -34,7 +34,7 @@ from app.data_access.scenario.asset_repository import AssetRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
-from app.domain.external_intelligence.rerank_gate import RerankGate, rerank_gate_for
+from app.domain.external_intelligence.rerank_gate import rerank_gate_for
 from app.domain.scenario.plan import ThreatFinder
 from app.realtime.publisher import publish_remediation_status, publish_session_status
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
@@ -110,11 +110,6 @@ def get_embedding_model() -> EmbeddingModel:
 def get_rerank_model() -> RerankModel:
     apply_proxy_once()
     return rerank_model_from(get_settings(), get_ai_slots())
-
-
-@singleton
-def get_rerank_gate() -> RerankGate:
-    return rerank_gate_for(get_settings().rerank_base_url)
 
 
 # --- library and admin
@@ -216,10 +211,11 @@ def get_evidence_index_keeper() -> EvidenceIndexKeeper:
 
 @singleton
 def get_evidence_finder() -> EvidenceFinder:
-    """The evidence finder: it holds no run's state and follows the active snapshot's index."""
-    keeper = get_evidence_index_keeper()
-    threshold = get_settings().evidence_similarity_threshold
-    return EvidenceFinder(lambda: keeper.current_index(), threshold, gate=get_rerank_gate())
+    """The evidence finder: it holds no run's state, follows the active snapshot's index and holds the
+    process's one rerank gate."""
+    keeper, settings = get_evidence_index_keeper(), get_settings()
+    gate = rerank_gate_for(settings.rerank_base_url)
+    return EvidenceFinder(lambda: keeper.current_index(), settings.evidence_similarity_threshold, gate=gate)
 
 
 @singleton
@@ -362,8 +358,8 @@ def get_controls_job() -> ControlsJob:
 
 
 @singleton
-def get_plan_inputs() -> PlanInputs:
-    return PlanInputs(
+def get_remediation_plan_job() -> RemediationPlanJob:
+    inputs = PlanInputs(
         search=get_library_search(),
         rerank=get_rerank_model(),
         threats=get_threat_repository(),
@@ -372,13 +368,7 @@ def get_plan_inputs() -> PlanInputs:
         remediations=get_remediation_repository(),
         audit=get_audit_repository(),
     )
-
-
-@singleton
-def get_remediation_plan_job() -> RemediationPlanJob:
-    return RemediationPlanJob(
-        get_remediation_repository(), get_chat_model(), get_plan_inputs(), get_audit_repository()
-    )
+    return RemediationPlanJob(get_remediation_repository(), get_chat_model(), inputs, get_audit_repository())
 
 
 # --- start-up

@@ -30,6 +30,7 @@ from app.data_access.remediation.remediation_repository import PLANNED_SCENARIO_
 from app.data_access.scenario.asset_repository import AssetRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.domain.jobs import run_being_deleted
 from app.domain.remediation.decisions import decidable_version, work_out_decision_change
 from app.domain.remediation.manual_records import (
     check_actor_library,
@@ -51,7 +52,6 @@ from app.domain.remediation.plan_rules import (
     new_plan_record,
     new_version,
     plan_exists,
-    run_being_deleted,
     version_in_progress,
 )
 from app.domain.remediation.references import resolve_controls

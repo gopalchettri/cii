@@ -69,8 +69,8 @@ _RETRYABLE_ERRORS: tuple[type[Exception], ...] = (*AI_UNAVAILABLE_ERRORS, Incomp
 
 def apply_proxy_settings(settings: Settings) -> None:
     """Which proxy the outside calls use. litellm takes no per-call proxy setting, hence the process
-    environment; each model factory calls this before its first call, so the API and every worker apply it at
-    start-up, before any download. Repeating it changes nothing.
+    environment. The container calls it once (app/container.py apply_proxy_once) before it builds any AI
+    gateway or the source refresher; a *_model_from factory called directly skips it.
     1. CII_PROXY_URL, when set, is the proxy (HTTP(S)_PROXY) of the whole process: the intel feeds, and the AI
        calls unless step 2 skips it. Empty: the HTTP(S)_PROXY variables already set, else, when step 2 runs,
        Windows' own proxy setting (_keep_windows_proxy).

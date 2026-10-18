@@ -3,16 +3,15 @@ or an admin's refresh recorded on its job. A failed source keeps its last good d
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
 
 import structlog
 
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
-from app.core.exceptions import AppError
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
+from app.worker.jobs import job_error_of
 
 log = structlog.get_logger(__name__)
 
@@ -52,14 +51,6 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
             refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
-        jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=_job_error(exc))
+        jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=job_error_of(exc))
         raise
     jobs.update_admin_job_finished(job_id, datetime.now(UTC), result={"source": source})
-
-
-def _job_error(exc: Exception) -> dict[str, Any]:
-    """The failure as the job record shows it: an app error's own code and message, else only the exception's
-    type (its text may carry a provider's or a driver's details)."""
-    if isinstance(exc, AppError):
-        return {"code": exc.code, "message": exc.detail}
-    return {"code": ErrorCode.INTERNAL_ERROR, "message": type(exc).__name__}

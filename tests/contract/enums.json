@@ -351,7 +351,6 @@
   "FOLLOW_FAILED": "external_intelligence.follow_failed",
   "REFRESH_JOB_FAILED": "external_intelligence.refresh_job_failed",
   "REFRESH_SKIPPED": "external_intelligence.refresh_skipped",
-  "RUNTIME_MISSING": "external_intelligence.runtime_missing",
   "WARM_UP_FAILED": "external_intelligence.warm_up_failed",
   "WARM_UP_SKIPPED": "external_intelligence.warm_up_skipped"
  },

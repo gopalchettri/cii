@@ -105,6 +105,19 @@ def test_with_no_value_yet_an_outage_reads_off_and_is_asked_again_soon() -> None
     assert switch.is_on() and switch.state().known is True
 
 
+def test_a_second_failed_read_with_no_value_yet_still_asks_again_soon() -> None:
+    """Review: the second outage kept the unknown state for a full period, as if it were a known value."""
+    clock, flags = Clock(), MemoryFlags()
+    flags.down = True
+    switch = _switch(flags, clock)
+    assert not switch.is_on()
+    clock.now += SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS + 1
+    assert not switch.is_on() and flags.reads == 2
+    flags.down = False
+    clock.now += SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS + 1
+    assert switch.is_on() and switch.state().known is True
+
+
 def test_a_change_that_cannot_be_stored_changes_nothing_and_audits_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

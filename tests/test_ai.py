@@ -44,6 +44,11 @@ def _chat_model(*models: tuple[str, ChatModelProfile]) -> ai.ChatModel:
     )
 
 
+def _ask(chat: ai.ChatModel, task: AiTask, system_prompt: str = "system", user_prompt: str = "user") -> dict:
+    """One answer, checked by a reader that accepts any JSON object."""
+    return chat.ask_for_checked_json(task, system_prompt, user_prompt, lambda _answer: [])
+
+
 def _json_response(content: str) -> SimpleNamespace:
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=None)
 
@@ -56,7 +61,7 @@ def test_provider_outage_becomes_unavailable(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(litellm, "completion", busy_provider)
     with capture_logs() as logs, pytest.raises(Unavailable):
-        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+        _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     # S29 review (G125): the outage's kind is logged (a rate limit told from a timeout), never its text.
     outage = next(entry for entry in logs if entry["event"] == "ai.call_unavailable")
     assert (outage["error"], outage["status"], outage["model"]) == ("RateLimitError", 429, "test-chat")
@@ -71,7 +76,7 @@ def test_fenced_json_answer_is_read_and_the_call_is_recorded(monkeypatch: pytest
         usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7),
     )
     monkeypatch.setattr(litellm, "completion", lambda **_: response)
-    assert _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")["relevant"] is True
+    assert _ask(_chat_model(), AiTask.RELEVANCE_GATE)["relevant"] is True
     record = get_mongodb()["test_ai_calls"].find_one({"response": answer.content})
     assert record["task"] == AiTask.RELEVANCE_GATE and record["tokens_in"] == 11
 
@@ -84,7 +89,7 @@ def test_a_retried_job_asks_again_and_each_call_record_keeps_the_system_prompt_a
     monkeypatch.setattr(litellm, "completion", lambda **_: calls.append(1) or _json_response('{"ok": 1}'))
     for attempt in (1, 2):
         with structlog.contextvars.bound_contextvars(task_id=task_id, attempt=attempt):
-            assert _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, system_prompt, "batch") == {"ok": 1}
+            assert _ask(_chat_model(), AiTask.RELEVANCE_GATE, system_prompt, "batch") == {"ok": 1}
     assert calls == [1, 1]  # the retry asked the AI again
     records = list(get_mongodb()["test_ai_calls"].find({"task_id": task_id}))
     assert len(records) == 2 and all(len(record["prompt_hash"]) == 64 for record in records)
@@ -97,7 +102,7 @@ def test_a_retried_job_asks_again_and_each_call_record_keeps_the_system_prompt_a
 def test_unreadable_answer_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(litellm, "completion", lambda **_: _json_response("not json"))
     with pytest.raises(ai.UnreadableAiAnswer):
-        _chat_model().ask_for_json(AiTask.WRITE_SCENARIO, "system", "user")
+        _ask(_chat_model(), AiTask.WRITE_SCENARIO)
 
 
 def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,9 +116,7 @@ def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pyte
 
     _no_waiting(monkeypatch)
     monkeypatch.setattr(litellm, "completion", first_model_busy)
-    answer = _chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT)).ask_for_json(
-        AiTask.RELEVANCE_GATE, "system", "user"
-    )
+    answer = _ask(_chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT)), AiTask.RELEVANCE_GATE)
     *firsts, fallback = sent
     first = firsts[0]
     assert answer == {"ok": True}
@@ -163,7 +166,7 @@ def test_a_busy_provider_is_retried_by_us_alone_then_the_fallback_then_unavailab
     models = ("openai/first", "openai/fallback")
     before = [_ai_calls(AiTask.RELEVANCE_GATE, model, "unavailable") for model in models]
     with pytest.raises(Unavailable):
-        chat.ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+        _ask(chat, AiTask.RELEVANCE_GATE)
     assert [_ai_calls(AiTask.RELEVANCE_GATE, model, "unavailable") for model in models] == [
         n + 1 for n in before
     ]
@@ -291,7 +294,7 @@ def test_a_bad_gateway_from_the_proxy_becomes_unavailable(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(litellm, "completion", gateway_restarting)
     with pytest.raises(Unavailable):
-        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+        _ask(_chat_model(), AiTask.RELEVANCE_GATE)
 
 
 def _calls(outcome: str) -> float:
@@ -303,8 +306,9 @@ def test_an_unreadable_answer_is_counted_once_as_unreadable(monkeypatch: pytest.
     monkeypatch.setattr(litellm, "completion", lambda **_: _json_response("not json"))
     ok_before, unreadable_before = _calls("ok"), _calls("unreadable")
     with pytest.raises(ai.UnreadableAiAnswer):
-        _chat_model().ask_for_json(AiTask.WRITE_SCENARIO, "system", "user")
-    assert (_calls("ok"), _calls("unreadable")) == (ok_before, unreadable_before + 1)
+        _ask(_chat_model(), AiTask.WRITE_SCENARIO)
+    # The answer and its one re-ask: each call counted once, as unreadable, never also "ok".
+    assert (_calls("ok"), _calls("unreadable")) == (ok_before, unreadable_before + 2)
 
 
 def test_a_refusal_or_a_reply_with_no_choices_is_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -315,7 +319,7 @@ def test_a_refusal_or_a_reply_with_no_choices_is_unreadable(monkeypatch: pytest.
         monkeypatch.setattr(litellm, "completion", reply)
         error_before, unreadable_before = _calls("error"), _calls("unreadable")
         with pytest.raises(ai.UnreadableAiAnswer, match="refused or malformed"):
-            _chat_model().ask_for_json(AiTask.WRITE_SCENARIO, "system", "user")
+            _ask(_chat_model(), AiTask.WRITE_SCENARIO)
         assert (_calls("error"), _calls("unreadable")) == (error_before, unreadable_before + 1)
 
 
@@ -438,13 +442,14 @@ def test_the_key_goes_in_the_gateways_own_header_on_every_call(
     monkeypatch.setattr(
         litellm, "rerank", capture("rerank", SimpleNamespace(results=[{"index": 0, "relevance_score": 1}]))
     )
-    ai.ChatModel(
+    chat = ai.ChatModel(
         [("test-chat", JSON_CHAT)],
         "http://ai.invalid",
         "key",
         AiCallRepository(get_mongodb()["test_ai_calls"]),
         key_header,
-    ).ask_for_json(AiTask.WRITE_SCENARIO, "s", "u")
+    )
+    _ask(chat, AiTask.WRITE_SCENARIO, "s", "u")
     _embedding_model(2, key_header).embed_search_queries([f"header {uuid.uuid4().hex}"])
     profile = RerankModelProfile(timeout_seconds=5)
     ai.RerankModel("test-rerank", profile, "http://ai.invalid", "key", key_header).score_relevance("q", ["a"])
@@ -558,7 +563,7 @@ def test_temperature_follows_the_task_as_v1_does(
         return _json_response("{}")
 
     monkeypatch.setattr(litellm, "completion", capture)
-    _chat_model().ask_for_json(task, "system", "user")
+    _ask(_chat_model(), task)
     assert sent[0].get("temperature", None) == expected
     assert ("temperature" in sent[0]) is (expected is not None)
 
@@ -573,7 +578,7 @@ def test_a_json_array_is_not_an_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     answer = f'["ab", "{uuid.uuid4().hex}"]'  # its own record: "the newest" can be another test's (same ms)
     monkeypatch.setattr(litellm, "completion", lambda **_: _json_response(answer))
     with pytest.raises(ai.UnreadableAiAnswer):
-        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+        _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     record = get_mongodb()["test_ai_calls"].find_one({"response": answer})
     assert record["outcome"] == "unreadable"
 
@@ -631,7 +636,7 @@ def test_a_refused_key_is_counted_as_an_error_on_every_ai_kind(monkeypatch: pyte
     ]
     rerank = ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key")
     calls = (
-        lambda: _chat_model().ask_for_json(AiTask.WRITE_SCENARIO, "system", "user"),
+        lambda: _ask(_chat_model(), AiTask.WRITE_SCENARIO),
         lambda: _embedding_model(2).embed_search_queries([f"refused {uuid.uuid4().hex}"]),
         lambda: rerank.score_relevance("q", ["a"]),
     )
@@ -727,7 +732,7 @@ def test_a_timed_out_call_goes_to_the_fallback_model_without_retries(monkeypatch
     records = AiCallRepository(get_mongodb()["test_ai_calls"])
     models = [("openai/first", JSON_CHAT), ("openai/fallback", PLAIN_CHAT)]
     chat = ai.ChatModel(models, "http://ai.invalid", "key", records)
-    assert chat.ask_for_json(AiTask.RELEVANCE_GATE, "system", "user") == {"relevant": True}
+    assert _ask(chat, AiTask.RELEVANCE_GATE) == {"relevant": True}
     assert requested == ["openai/first", "openai/fallback"]
 
 
@@ -803,10 +808,10 @@ def test_a_cut_off_answer_or_a_too_long_prompt_is_truncated(monkeypatch: pytest.
     """The caller sends less (e.g. halves the batch) instead of asking the same again."""
     sent = _replies(monkeypatch, '{"relevant": tr', finish_reason="length")
     with pytest.raises(ai.TruncatedAiAnswer, match="cut off"):
-        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+        _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     too_long = "x" * (JSON_CHAT.max_input_chars + 1)
     with pytest.raises(ai.TruncatedAiAnswer, match="takes at most"):
-        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", too_long)
+        _ask(_chat_model(), AiTask.RELEVANCE_GATE, "system", too_long)
     assert len(sent) == 1  # the too-long prompt was never sent
 
 
@@ -815,7 +820,7 @@ def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pyte
     _replies(monkeypatch, f'{{"marker": "{marker}"}}')
     structlog.contextvars.bind_contextvars(record_id="run-7", request_id="req-9")
     try:
-        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+        _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     finally:
         structlog.contextvars.unbind_contextvars("record_id", "request_id")
     record = get_mongodb()["test_ai_calls"].find_one({"response": f'{{"marker": "{marker}"}}'})
@@ -859,5 +864,5 @@ def test_a_job_that_lost_its_lease_never_calls_the_ai(monkeypatch: pytest.Monkey
     with lease_lost_signal("cancelled-run") as lost:
         lost.set()
         with pytest.raises(LeaseLost):
-            _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, "system", "user")
+            _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     assert called == []

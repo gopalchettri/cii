@@ -64,6 +64,7 @@ from app.domain.shared.ask_ai import (
     ask_ai_and_check,
 )
 from app.domain.shared.names import (
+    as_json,
     find_name_mentions,
     is_same_name,
     name_match_key,
@@ -209,10 +210,10 @@ def writer_prompt(brief: WriterBrief) -> ChatPrompt:
 def plan_check_prompt(brief: WriterBrief, draft: ScenarioDraft) -> ChatPrompt:
     """The reviewer's PLAN (the writer's BRIEF plus the critical service), the evidence and the scenario."""
     plan = _brief_record(brief) | {"critical_service": brief.critical_service}
-    scenario = f"SCENARIO:\n{_as_json(draft_answer(draft))}"
+    scenario = f"SCENARIO:\n{as_json(draft_answer(draft))}"
     if _is_story(brief):
-        return PLAN_CHECK_SYSTEM_PROMPT, f"PLAN:\n{_as_json(plan)}\n{evidence_block(brief)}\n{scenario}"
-    return PLAN_CHECK_SYSTEM_PROMPT + _NO_EVIDENCE_REVIEW, f"PLAN:\n{_as_json(plan)}\n{scenario}"
+        return PLAN_CHECK_SYSTEM_PROMPT, f"PLAN:\n{as_json(plan)}\n{evidence_block(brief)}\n{scenario}"
+    return PLAN_CHECK_SYSTEM_PROMPT + _NO_EVIDENCE_REVIEW, f"PLAN:\n{as_json(plan)}\n{scenario}"
 
 
 def _brief_record(brief: WriterBrief) -> dict[str, Any]:
@@ -240,7 +241,7 @@ def _brief_record(brief: WriterBrief) -> dict[str, Any]:
 
 def _brief_text(brief: WriterBrief) -> str:
     """The brief as JSON."""
-    return _as_json(_brief_record(brief))
+    return as_json(_brief_record(brief))
 
 
 def with_word_limits(template: str) -> str:
@@ -302,11 +303,6 @@ def _spoken(limits: tuple[int, int]) -> str:
 def _is_story(brief: WriterBrief) -> bool:
     """Whether the brief is written as an evidence story."""
     return brief.style is WriterStyle.EVIDENCE_STORY
-
-
-def _as_json(value: dict[str, Any]) -> str:
-    """A value as JSON, non-ASCII kept."""
-    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 # --- the brief, built by code: no AI call, no database id, every text redacted
@@ -543,11 +539,14 @@ _ECHO_SANITISER = UntrustedTextSanitiser(ECHO_PATTERNS, (), ())
 
 def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding, ...]:
     """Every exact finding in the texts the card serves: made-up labels, advisory ids the brief did not give
-    (any while intelligence is off), unknown markers and instructions echoed from untrusted evidence."""
-    reasons = (reason for _, reason in draft.system_reasons)
+    (any while intelligence is off), unknown or misplaced markers and instructions echoed from untrusted
+    evidence."""
+    reasons = tuple(reason for _, reason in draft.system_reasons)
+    claims = tuple(claim for _, claim in draft.evidence_links)
     text = "\n".join(
-        (draft.title, draft.statement, draft.risk, *draft.assumptions, draft.why_applies, *reasons)
+        (draft.title, draft.statement, draft.risk, *draft.assumptions, draft.why_applies, *reasons, *claims)
     )
+    elsewhere = "\n".join((draft.title, *draft.assumptions, draft.why_applies, *reasons, *claims))
     given = _brief_text(brief).casefold()  # a label or number the brief gives was supplied, not made up
     advisory_given = given if brief.style is WriterStyle.EVIDENCE_STORY else ""
     findings = []
@@ -557,7 +556,8 @@ def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding
         message = FindingMessage.UNCITED_ADVISORY_ID.format(ids=advisories)
         findings.append(Finding(FindingCode.UNCITED_ADVISORY_ID, message))
     count = len(brief.evidence) if brief.style is WriterStyle.EVIDENCE_STORY else 0
-    return (*findings, *_marker_findings(text, count), *echo_findings(text))
+    markers = _story_marker_findings(draft, elsewhere, count) if count else _marker_findings(text, 0)
+    return (*findings, *markers, *echo_findings(text))
 
 
 def echo_findings(text: str) -> list[Finding]:
@@ -569,7 +569,7 @@ def echo_findings(text: str) -> list[Finding]:
 
 def _marker_findings(text: str, count: int) -> list[Finding]:
     """Every marker must name an entry 1..count; with intelligence off (count 0) any marker cites nothing."""
-    unknown = ", ".join(dict.fromkeys(f"[{n}]" for n in markers_of(text) if not 1 <= n <= count))
+    unknown = _listed_markers(n for n in markers_of(text) if not 1 <= n <= count)
     if not unknown:
         return []
     if count:
@@ -577,6 +577,21 @@ def _marker_findings(text: str, count: int) -> list[Finding]:
     else:
         message = StoryFindingMessage.NO_INTELLIGENCE_MARKER.format(markers=unknown)
     return [Finding(StoryFindingCode.UNKNOWN_MARKER, message)]
+
+
+def _story_marker_findings(draft: ScenarioDraft, elsewhere: str, count: int) -> list[Finding]:
+    """An evidence story's markers name an entry 1..count, in the statement and risk only: the only texts
+    whose markers are renumbered and resolved."""
+    findings = _marker_findings(f"{draft.statement}\n{draft.risk}", count)
+    if misplaced := _listed_markers(markers_of(elsewhere)):
+        message = StoryFindingMessage.MARKER_OUTSIDE_STATEMENT.format(markers=misplaced)
+        findings.append(Finding(StoryFindingCode.UNKNOWN_MARKER, message))
+    return findings
+
+
+def _listed_markers(numbers: Iterable[int]) -> str:
+    """Each marker once, in order, joined for a message ('' when none)."""
+    return ", ".join(dict.fromkeys(f"[{n}]" for n in numbers))
 
 
 def _unsupplied(pattern: re.Pattern[str], text: str, given: str) -> str:

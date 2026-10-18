@@ -29,12 +29,7 @@ litellm.suppress_debug_info = True  # its coloured help lines would break the JS
 for _library_logger in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "openai"):
     logging.getLogger(_library_logger).setLevel(logging.WARNING)
 
-from app.ai.chat import (  # noqa: E402
-    CORRECTION_MESSAGE_MAX_CHARS,
-    ChatModel,
-    TruncatedAiAnswer,
-    UnreadableAiAnswer,
-)
+from app.ai.chat import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer  # noqa: E402
 from app.ai.embeddings import (  # noqa: E402
     EmbeddingModel,
     EmbeddingNotFinite,
@@ -46,7 +41,6 @@ from app.ai.rerank import RerankModel  # noqa: E402
 __all__ = [
     "background_reranks",
     "reranks_in_background",
-    "CORRECTION_MESSAGE_MAX_CHARS",
     "ChatModel",
     "EmbeddingModel",
     "EmbeddingNotFinite",

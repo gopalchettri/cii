@@ -605,3 +605,27 @@ def test_a_sweep_landing_during_a_resume_keeps_the_resume(
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["status"] == Status.DONE and "cancelled" not in stored
     assert _controls(stopped) == Status.QUEUED
+
+
+def test_a_resume_landing_after_the_sweep_read_the_run_keeps_its_requeued_controls(
+    entity: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review: the sweep stopped every waiting card of a run it read cancelled, so a card a resume queued
+    again after that read was stopped again. It stops only the cards it read waiting."""
+    earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
+    run_id = _run(entity, Status.CANCELLED, cancelled=earlier)
+    stopped = _scenario(run_id, Status.CANCELLED)
+    late = _scenario(
+        run_id, Status.QUEUED, controls={"status": Status.QUEUED, "queued_at": datetime.now(UTC)}
+    )
+    records = _work_control()
+    read_states = records._sessions.list
+
+    def resume_lands_meanwhile(**query: Any) -> list[dict[str, Any]]:
+        states = read_states(**query)
+        assert records.resume_scenario_controls(run_id, earlier["at"]) == 1
+        return states
+
+    monkeypatch.setattr(records._sessions, "list", resume_lands_meanwhile)
+    records.settle_stopped_scenario_sessions()
+    assert (_controls(stopped), _controls(late)) == (Status.QUEUED, Status.CANCELLED)

@@ -1,4 +1,5 @@
-"""Job-control rules: what a working run is shown as, and when a cancel found nothing to stop."""
+"""Job-control rules: what a working run is shown as, when a cancel found nothing to stop, and the answer to
+a click that lost the race with its run's delete."""
 
 from app.core.constants import ConflictReason, JobControlMessage, JobKind, Status, TaskName
 from app.core.exceptions import Conflict
@@ -19,3 +20,9 @@ def check_run_cancel_stopped_something(session_id: str, job_stopped: bool, contr
     if not job_stopped and not controls_cancelled:
         message = JobControlMessage.NOTHING_TO_CANCEL.format(session_id=session_id)
         raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
+
+
+def run_being_deleted(session_id: str) -> Conflict:
+    """409 run_being_deleted: the run is being deleted (a next set, a regenerate or a plan request)."""
+    message = JobControlMessage.BEING_DELETED.format(session_id=session_id)
+    return Conflict(message, reason=ConflictReason.RUN_BEING_DELETED)

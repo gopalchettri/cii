@@ -107,6 +107,16 @@ def describe_outage(error: Exception) -> str:
     return ErrorMessage.REDIS_UNREACHABLE
 
 
+def job_error_of(exc: Exception) -> dict[str, str]:
+    """The failure as an admin job record shows it: an app error's or a job failure's own code and message,
+    else only the exception's type (its text may carry a provider's or a driver's details)."""
+    if isinstance(exc, AppError):
+        return {"code": exc.code, "message": exc.detail}
+    if isinstance(exc, JobFailed):
+        return {"code": exc.code, "message": exc.message}
+    return {"code": ErrorCode.INTERNAL_ERROR, "message": type(exc).__name__}
+
+
 def _fail_if_still_owned(lease: JobLease, code: ErrorCode, message: str) -> bool:
     """False when the job is no longer this delivery's (nothing written). Best effort: if MongoDB is down too,
     the record stays running and the reaper settles it later (True: still this delivery's as far as known)."""

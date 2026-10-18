@@ -35,6 +35,32 @@ def _as_client(stored: dict[str, Any]) -> dict[str, Any]:
     return {"client_id": stored.pop("_id"), **stored}
 
 
+def queue_admin_job(
+    jobs: AdminJobRepository,
+    send: SendAdminJob,
+    task: TaskName,
+    job: dict[str, Any],
+    in_progress: str,
+    not_sent: str,
+) -> None:
+    """Create the queued job and send its message: 409 job_in_progress (details.job_id: the active one) while
+    one of its kind is queued or running; a send that raises or returns False (503) fails the job, so a job no
+    worker will run never blocks the next."""
+    job_id = job["_id"]
+    active_id = jobs.create_admin_job(job | {"created_at": datetime.now(UTC)})
+    if active_id != job_id:
+        raise Conflict(in_progress, reason=ConflictReason.JOB_IN_PROGRESS, details={"job_id": active_id})
+    sent = False
+    try:
+        sent = send(task, job_id)
+    finally:
+        if not sent:
+            error = {"code": ErrorCode.UNAVAILABLE, "message": not_sent}
+            jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
+    if not sent:
+        raise Unavailable(not_sent)
+
+
 class AdminService:
     def __init__(
         self,
@@ -107,26 +133,17 @@ class AdminService:
         return self._api_clients.get_active_client_id(hash_api_key(raw_key))
 
     def create_embeddings_build(self, requested_by: str) -> dict[str, Any]:
-        """The queued build's id. 409 job_in_progress (details.job_id: the active build) while one is queued
-        or running; 503 when the job queue is unreachable. Any failure to queue it fails the job, then is
-        raised, so a build no worker will run never blocks the next."""
-        now = datetime.now(UTC)
+        """The queued build's id (queue_admin_job: 409 while one is queued or running, 503 when not sent)."""
         job_id = uuid.uuid4().hex
         job = {"_id": job_id, "kind": _KIND, "status": Status.QUEUED, "requested_by": requested_by}
-        active_id = self._admin_jobs.create_admin_job(job | {"created_at": now})
-        if active_id != job_id:
-            details = {"job_id": active_id}
-            raise Conflict(
-                AdminJobMessage.IN_PROGRESS, reason=ConflictReason.JOB_IN_PROGRESS, details=details
-            )
-        try:
-            sent = self._send_admin_job(TaskName.BUILD_LIBRARY_INDEXES, job_id)
-        except Exception:
-            self._not_sent(job_id)
-            raise
-        if not sent:
-            self._not_sent(job_id)
-            raise Unavailable(AdminJobMessage.NOT_SENT)
+        queue_admin_job(
+            self._admin_jobs,
+            self._send_admin_job,
+            TaskName.BUILD_LIBRARY_INDEXES,
+            job,
+            AdminJobMessage.IN_PROGRESS,
+            AdminJobMessage.NOT_SENT,
+        )
         target = audit_target(AuditTarget.ADMIN_JOB, job_id)
         self._audit.create_audit_record(
             AuditAction.ADMIN_JOB_STARTED, admin_actor(requested_by), target, after={"kind": _KIND}
@@ -139,7 +156,3 @@ class AdminService:
         if record is None:
             raise NotFound(AdminJobMessage.NOT_FOUND.format(job_id=job_id))
         return {"job_id": record.pop("_id"), **record}
-
-    def _not_sent(self, job_id: str) -> None:
-        error = {"code": ErrorCode.UNAVAILABLE, "message": AdminJobMessage.NOT_SENT}
-        self._admin_jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)

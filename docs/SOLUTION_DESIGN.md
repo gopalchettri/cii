@@ -358,8 +358,19 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | 2 | Pin the API, stored enum values, Redis keys, task names, indexes and script imports | done: tests/test_outside_contract.py + tests/contract/ |
 | 3 | Parallel agents, one per module + one for the container: move files, one service class, one repository per collection, constructor injection | done: 8 agents; 7 service classes, 1 per module; 0 hidden singletons outside app/container.py |
 | 4 | Join the pieces; full test suite; fix failures | done: 1,795 tests pass; pins unchanged; ruff clean |
-| 5 | Count files and lines before and after; commit locally | not started |
-| 6 | Last, after everything else: update the two console pages, app/ux/tsg_console.html and app/ux/sse_test.html (owner, 2026-10-19) | not started |
+| 5 | Count files and lines before and after; commit locally | done: app/ 212 → 223 .py files (one file per repository and module folders), 22,906 → 22,403 lines; 36 hidden singletons → 0 outside app/container.py; services/ 43 files → 7 service classes |
+| 6 | Last, after everything else: update the two console pages, app/ux/tsg_console.html and app/ux/sse_test.html (owner, 2026-10-19) | done: removed features gone from both pages, Word export fixed, every call checked against the pinned API |
+
+**Final production check (2026-10-19).** Five reviewers covered the must-haves, start-up and DI, recovery,
+security and leftovers, and a skeptic re-checked each finding. All 16 confirmed findings are fixed:
+- evidence claims and markers are checked, and a real bug in the evidence search is no longer retried as
+  an outage;
+- the controls sweep no longer undoes a resume, and a last-try failure still maps saved scenarios;
+- the switch retries after 5 s;
+- a live stream ends within 30 s of its key being revoked;
+- dead code and duplicates are removed.
+
+1,806 tests pass, the outside pins are unchanged, and ruff is clean.
 
 The agents also get build notes that are kept out of this document:
 - the confirmed findings, with file:line and the exact fix (review runs wf_9fb2d4cf-f5f and

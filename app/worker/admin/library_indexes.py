@@ -4,22 +4,16 @@ when an admin asks for it now (#18, an embeddings build with its own job record)
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.constants import (
-    LIBRARY_OF_CORPUS,
-    AuditAction,
-    AuditTarget,
-    ErrorCode,
-    Status,
-    TaskName,
-)
-from app.core.exceptions import AppError, JobFailed
+from app.core.constants import LIBRARY_OF_CORPUS, AuditAction, AuditTarget, Status, TaskName
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.admin.embedding_repository import EmbeddingRepository
+from app.domain.shared.audit import audit_target
 from app.search.library_cache import LibraryCache
 from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
 from app.worker.celery_app import celery_app
+from app.worker.jobs import job_error_of
 
 
 @celery_app.task(name=TaskName.BUILD_LIBRARY_INDEXES)
@@ -64,7 +58,7 @@ def run_embeddings_job(
         snapshot = search.snapshot(wait=True)
         made = vectors.count_library_vectors_made_since(started_at)
     except Exception as exc:
-        error = _error_of(exc)
+        error = job_error_of(exc)
         if jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error):
             _audit_finished(audit, job_id, {"status": Status.FAILED, "error": error})
         raise
@@ -87,17 +81,7 @@ def library_counts(snapshot: LibrarySnapshot) -> dict[str, int]:
     }
 
 
-def _error_of(exc: Exception) -> dict[str, str]:
-    """The failure as the job record shows it: an app error's own code and message (written for people), else
-    only the exception's type (its text may carry a provider's details)."""
-    if isinstance(exc, AppError):
-        return {"code": exc.code, "message": exc.detail}
-    if isinstance(exc, JobFailed):
-        return {"code": exc.code, "message": exc.message}
-    return {"code": ErrorCode.INTERNAL_ERROR, "message": type(exc).__name__}
-
-
 def _audit_finished(audit: AuditRepository, job_id: str, after: dict[str, Any]) -> None:
-    target = {"type": AuditTarget.ADMIN_JOB, "id": job_id}
+    target = audit_target(AuditTarget.ADMIN_JOB, job_id)
     actor = {"system": TaskName.BUILD_LIBRARY_INDEXES}
     audit.create_audit_record(AuditAction.ADMIN_JOB_FINISHED, actor, target, after=after)

@@ -56,12 +56,6 @@ def _reask_build_correction_message(problems: list[str]) -> str:
     return AiLimits.REASK_MESSAGE.format(problems="\n".join(lines))
 
 
-#: The most characters a corrective re-ask adds: a batched prompt leaves this much room below the limit.
-CORRECTION_MESSAGE_MAX_CHARS = len(
-    _reask_build_correction_message(["x" * AiLimits.REASK_PROBLEM_CHARS] * AiLimits.REASK_MAX_PROBLEMS)
-)
-
-
 def _build_request_options(profile: ChatModelProfile, task: AiTask) -> dict[str, Any]:
     """The request options this model accepts (its profile) for this task (its temperature, R-2)."""
     # stream=False on the wire: a proxy entry pinning stream=true (UAT glm-5's) would otherwise
@@ -107,14 +101,6 @@ class ChatModel:
         # One slot covers the whole request, fallback included: the cap counts calls, not models.
         self._slot_hold = sum(max_slot_hold_seconds(profile.timeout_seconds) for _, profile in models)
         self._max_input_chars = min(profile.max_input_chars for _, profile in models)
-
-    def ask_for_json(self, task: AiTask, system_prompt: str, user_prompt: str) -> dict[str, Any]:
-        """One JSON answer, never asked again. Raises Unavailable (every model busy or down),
-        TruncatedAiAnswer or UnreadableAiAnswer."""
-        answer, _ = self._ask_and_read_answer(task, build_conversation(system_prompt, user_prompt))
-        if answer is None:
-            raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_UNREADABLE.format(task=task))
-        return answer
 
     def ask_for_checked_json(
         self, task: AiTask, system_prompt: str, user_prompt: str, check_answer: AnswerChecker

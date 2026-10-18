@@ -1,1 +1,1 @@
-"""Application services: the use cases. One file per use-case group, called by the API and the workers."""
+"""Application services: the use cases. One service class per module, called by the API."""

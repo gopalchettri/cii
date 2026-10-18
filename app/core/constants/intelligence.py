@@ -101,7 +101,6 @@ class IntelWorkEvent(StrEnum):
     FOLLOW_FAILED = "external_intelligence.follow_failed"  # asked again next interval
     REFRESH_SKIPPED = "external_intelligence.refresh_skipped"
     REFRESH_JOB_FAILED = "external_intelligence.refresh_job_failed"
-    RUNTIME_MISSING = "external_intelligence.runtime_missing"
 
 
 class IntelUrl:

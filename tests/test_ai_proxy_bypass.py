@@ -54,7 +54,7 @@ def _windows_proxy_setting(monkeypatch: pytest.MonkeyPatch, found: dict[str, str
 
 def test_the_gateway_goes_on_no_proxy_once_and_keeps_what_was_there() -> None:
     apply_proxy_settings(_settings(True))
-    apply_proxy_settings(_settings(True))  # every model factory calls it
+    apply_proxy_settings(_settings(True))  # a second call adds no host twice
     assert os.environ["NO_PROXY"] == "localhost,llmapi.example"
     assert os.environ["no_proxy"].split(",")[-1] == "llmapi.example"  # Linux tools read the lowercase one
 

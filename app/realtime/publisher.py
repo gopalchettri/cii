@@ -17,7 +17,7 @@ def session_channel(session_id: str) -> str:
 
 def publish_session_status(session_id: str) -> None:
     """Tell everyone streaming a session that it changed; each stream then reads the current status from
-    MongoDB (app/api/routers/events.py). The status itself is not sent: two workers changing one run moments
+    MongoDB (app/api/routers/scenario.py). The status itself is not sent: two workers changing one run moments
     apart could publish in the opposite order, and a client would keep the older status."""
     _publish(session_channel(session_id), session_id)
 

@@ -1,1 +1,1 @@
-"""Models: every data shape (Pydantic models and dataclasses), one file per domain. Imports only app/core."""
+"""Models: every data shape (Pydantic models, dataclasses), one folder per module. Imports only app/core."""

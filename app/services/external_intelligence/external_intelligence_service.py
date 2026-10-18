@@ -16,8 +16,6 @@ from app.core.constants import (
     AdminJobMessage,
     AuditAction,
     AuditTarget,
-    ConflictReason,
-    ErrorCode,
     IntelDocId,
     IntelRefreshMessage,
     IntelSource,
@@ -25,7 +23,7 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.exceptions import Conflict, Invalid, NotFound, Unavailable
+from app.core.exceptions import Conflict, Invalid, NotFound
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.admin.embedding_repository import EmbeddingRepository
@@ -43,6 +41,7 @@ from app.models.external_intelligence.source_health import (
 )
 from app.models.external_intelligence.switch_state import SwitchState
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
+from app.services.admin.admin_service import queue_admin_job
 
 log = structlog.get_logger(__name__)
 _KIND = AdminJobKind.INTEL_REFRESH
@@ -103,7 +102,7 @@ class ExternalIntelligenceService:
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         if source is not None and not self._feeds.count(_id=source, approved=True):
             raise Invalid(IntelRefreshMessage.SOURCE_NOT_APPROVED.format(source=source))
-        now, job_id = datetime.now(UTC), uuid.uuid4().hex
+        job_id = uuid.uuid4().hex
         job: dict[str, Any] = {
             "_id": job_id,
             "kind": _KIND,
@@ -111,14 +110,14 @@ class ExternalIntelligenceService:
             "requested_by": requested_by,
             "source": source,
         }
-        active_id = self._jobs.create_admin_job(job | {"created_at": now})
-        if active_id != job_id:
-            raise Conflict(
-                IntelRefreshMessage.IN_PROGRESS,
-                reason=ConflictReason.JOB_IN_PROGRESS,
-                details={"job_id": active_id},
-            )
-        self._send_refresh(job_id)
+        queue_admin_job(
+            self._jobs,
+            self._send_admin_job,
+            TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+            job,
+            IntelRefreshMessage.IN_PROGRESS,
+            IntelRefreshMessage.NOT_SENT,
+        )
         target = audit_target(AuditTarget.ADMIN_JOB, job_id)
         after = {"kind": _KIND, "source": source}
         self._audit.create_audit_record(
@@ -196,23 +195,6 @@ class ExternalIntelligenceService:
             return self.create_intelligence_refresh(requested_by, source)["job_id"]
         except Conflict:
             return None  # one is already queued or running and does the work, or the switch is off
-
-    def _send_refresh(self, job_id: str) -> None:
-        """Queue the job's message. Any failure to queue it fails the job, then is raised, so it never blocks
-        the next."""
-        try:
-            sent = self._send_admin_job(TaskName.REFRESH_EXTERNAL_INTELLIGENCE, job_id)
-        except Exception:
-            self._not_sent(job_id)
-            raise
-        if not sent:
-            self._not_sent(job_id)
-            raise Unavailable(IntelRefreshMessage.NOT_SENT)
-
-    def _not_sent(self, job_id: str) -> None:
-        """Fail a job whose message could not be queued."""
-        error = {"code": ErrorCode.UNAVAILABLE, "message": IntelRefreshMessage.NOT_SENT.value}
-        self._jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
 
     def _purge(self, source: IntelSource, existing_only: bool) -> int:
         """Unapprove the source (so no refresh writes it again), delete its records and cached vectors and

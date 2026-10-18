@@ -10,6 +10,7 @@ import pytest
 
 from app.core.constants import RunActionKind, RunClash, Status, Step
 from app.core.exceptions import LeaseLost
+from app.data_access.jobs.job_repository import JobLease
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.models.scenario.views import session_status_from_record
@@ -95,9 +96,9 @@ def test_the_plan_write_is_fenced_and_keeps_a_newer_count(monkeypatch: pytest.Mo
     scenario_sessions.create(record)
     counted = SimpleNamespace(count_scenarios_of_session=lambda _: {"written": 1})
     monkeypatch.setattr(scenario_sessions, "_scenarios", counted)
-    lease = SimpleNamespace(record_id=record["_id"], **job)
+    lease = JobLease(scenario_sessions.collection, record["_id"], 1, "t", 1)
     figures = {"planned": 1, "remaining": 0}
-    scenario_sessions.update_scenario_session_plan(lease, {"p1": {"served": "s1"}}, figures)  # type: ignore[arg-type]
+    scenario_sessions.update_scenario_session_plan(lease, {"p1": {"served": "s1"}}, figures)
     stored = scenario_sessions.get(_id=record["_id"])
     assert stored is not None
     assert (
@@ -105,6 +106,6 @@ def test_the_plan_write_is_fenced_and_keeps_a_newer_count(monkeypatch: pytest.Mo
         stored["counts"]["written"],
         stored["counts"]["planned"],
     ) == ("s1", 9, 1)
-    lost = SimpleNamespace(record_id=record["_id"], epoch=1, task_id="other", attempts=1)
+    lost = JobLease(scenario_sessions.collection, record["_id"], 1, "other", 1)
     with pytest.raises(LeaseLost):
-        scenario_sessions.update_scenario_session_plan(lost, {}, figures)  # type: ignore[arg-type]
+        scenario_sessions.update_scenario_session_plan(lost, {}, figures)

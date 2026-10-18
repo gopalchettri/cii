@@ -204,6 +204,22 @@ def test_a_stream_without_a_valid_key_is_refused(server_url: str, identity: dict
     assert response.status_code == 401
 
 
+def test_an_open_stream_ends_once_its_api_key_is_revoked(
+    server_url: str, identity: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A revoked key ends its open stream at the next recheck, with no message published."""
+    monkeypatch.setattr(Realtime, "RECHECK_SECONDS", 0.2)
+    clients = container.get_admin_service()
+    client, api_key = clients.create_api_client(f"sse-revoked-{uuid.uuid4().hex[:8]}", None, "test")
+    url = f"{server_url}/v1/sessions/{_insert_session(86)}/events"
+    headers = identity | {Header.API_KEY: api_key}
+    with httpx.Client(timeout=15) as http, http.stream("GET", url, headers=headers) as response:
+        events = _events(response, within_seconds=10)
+        assert next(events)[0] == Event.SESSION_UPDATED
+        clients.revoke_api_client(client["client_id"], "test")
+        assert next(events, None) is None  # the stream ended with no message published
+
+
 def test_a_slow_client_keeps_the_newest_updates() -> None:
     async def scenario() -> list[object]:
         updates: asyncio.Queue[object] = asyncio.Queue(maxsize=2)
@@ -457,7 +473,9 @@ def test_a_burst_of_changes_costs_one_status_read_made_after_the_burst() -> None
     async def scenario() -> tuple[object, object]:
         hub = CountingHub()
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(event_hub=hub)))
-        stream = events._status_stream(request, "channel", read_status, (Event.SESSION_UPDATED, None))
+        stream = events._status_stream(
+            request, "channel", read_status, (Event.SESSION_UPDATED, None), lambda: True
+        )
         first = await anext(stream)
 
         async def save_a_burst() -> None:

@@ -29,7 +29,7 @@ from app.core.constants import (
     UnselectedReason,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import LeaseLost, Unavailable
+from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.data_access.jobs.job_repository import JobLease, JobRepository
 from app.domain.scenario.plan import next_paths_to_write, next_set_paths, planned_threat_record
 from app.models.scenario.plan import PlannedActor
@@ -435,6 +435,25 @@ def test_with_no_path_written_an_outage_on_the_last_try_still_fails_the_job(
     with pytest.raises(Unavailable):
         _write_batch(_on_last_try(record_id))
     assert _scenarios_of(record_id) == []
+
+
+def test_a_last_try_that_fails_still_sends_the_saved_scenarios_controls_message(
+    chat: FakeChatModel, sent: list[tuple[Any, ...]]
+) -> None:
+    """Review: the failure was raised before the controls message, and no retry follows a last try, so the
+    saved scenario's controls waited for the sweep."""
+
+    def threat_two_refused(user_prompt: str) -> dict[str, Any]:
+        if '"Threat 2"' in user_prompt:
+            raise JobFailed(ErrorCode.AI_MISCONFIGURED, "key revoked")
+        return _answer_for(user_prompt)
+
+    chat.responders[AiTask.WRITE_SCENARIO] = threat_two_refused
+    record_id = _queued_run(["Threat 1", "Threat 2"])
+    with pytest.raises(JobFailed):
+        _write_batch(_on_last_try(record_id))
+    assert len(_scenarios_of(record_id)) == 1
+    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 1
 
 
 def test_a_written_path_another_delivery_gave_up_on_ends_served(

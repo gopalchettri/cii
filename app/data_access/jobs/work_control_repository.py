@@ -212,11 +212,13 @@ class WorkControlRepository:
     def settle_stopped_scenario_sessions(self) -> None:
         """tsg_scenarios: controls waiting on a cancelled session stop, with its counts, never one a live
         lease holds (a plan job maps a cancelled session's scenario on purpose); every scenario of a deleted
-        session goes, whatever its status (failure and blocked cards too). Session states are read first."""
+        session goes, whatever its status (failure and blocked cards too). The waiting cards are read before
+        the session states and only they are stopped: a card a resume queued again is never stopped again."""
         scenarios = self._scenarios.collection
         stoppable = {"$or": [*waiting_controls(datetime.now(UTC)), FAILED_WITH_ATTEMPTS_LEFT]}
         waiting = {**SWEPT, "$and": [MAPPED_VERSIONS, stoppable]}
-        waiting_ids = set(scenarios.distinct("session_id", waiting))
+        waiting_cards = list(scenarios.find(waiting, {"session_id": 1}))
+        waiting_ids = {card.get("session_id") for card in waiting_cards}
         recent = {"created_at": {"$gte": datetime.now(UTC) - _ORPHANS_WRITTEN_WITHIN}}
         session_ids = [
             found for found in waiting_ids | set(scenarios.distinct("session_id", recent)) if found
@@ -227,11 +229,12 @@ class WorkControlRepository:
             record["_id"]: record.get("status")
             for record in self._sessions.list(fields=["status"], _id={"$in": session_ids})
         }
-        if cancelled := [
+        if cancelled := {
             session_id for session_id in waiting_ids if states.get(session_id) == Status.CANCELLED
-        ]:
+        }:
+            stopped_cards = [card["_id"] for card in waiting_cards if card.get("session_id") in cancelled]
             scenarios.update_many(
-                {**waiting, "session_id": {"$in": cancelled}},
+                {**waiting, "_id": {"$in": stopped_cards}},
                 {"$set": {"controls.status": Status.CANCELLED, "controls.lease_until": None}},
             )
             for session_id in cancelled:

@@ -22,15 +22,10 @@ Condition = Mapping[str, Any] | Callable[[Any], Mapping[str, Any]]
 
 _DUPLICATE_KEY = 11000  # MongoDB's error code for a value a unique index already holds
 _INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
-#: The field create and save stamp with the repository's record shape version.
+#: The field create and save stamp with the record shape version; a record without it is version 1.
 SCHEMA_VERSION_FIELD = "schema_version"
 
 log = structlog.get_logger(__name__)
-
-
-def schema_version_of(record: Mapping[str, Any]) -> int:
-    """The version of a record's shape; a record stored before versions were stamped is version 1."""
-    return int(record.get(SCHEMA_VERSION_FIELD, 1))
 
 
 def duplicate_index_name(error: DuplicateKeyError) -> str:

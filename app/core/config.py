@@ -101,7 +101,7 @@ def _refuse_a_proxy_url_without_scheme(value: SecretStr) -> SecretStr:
     return value
 
 
-#: CII_PROXY_URL (owner 2026-10-16, G264), the company proxy of the outside calls. Not true/false:
+#: CII_PROXY_URL, the company proxy of the outside calls. Not true/false:
 #: an http(s):// address = every outside call goes through it (the intel feeds; the AI calls too when
 #: CII_AI_BYPASS_PROXY is false); blank = the machine's or pod's HTTP(S)_PROXY, else Windows' own setting
 #: Named _URL, never _PROXY: Python reads any *_PROXY variable as a proxy. Secret: it can carry

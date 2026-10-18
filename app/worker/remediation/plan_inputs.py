@@ -39,6 +39,7 @@ from app.domain.remediation.manual_actors import manual_attacker
 from app.domain.remediation.manual_records import actor_records
 from app.domain.remediation.snapshot import build_snapshot, inputs_ready, no_longer_mapped
 from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.shared.audit import audit_target
 from app.models.library.library import ThreatProposal
 from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.plan import PlannedActor
@@ -231,7 +232,7 @@ def _propose_manual_threat(
     )
     proposed, applied_now = threats.propose_threat(f"propose:{scenario_id}", proposal)
     if applied_now:
-        target = {"type": AuditTarget.LIBRARY_THREAT, "id": str(proposed.catalogue_id)}
+        target = audit_target(AuditTarget.LIBRARY_THREAT, str(proposed.catalogue_id))
         after = {"threat": threat["name"], "type": threat["type"], "outcome": proposed.outcome}
         audit.create_audit_record(AuditAction.LIBRARY_PROPOSED, by, target, after=after)
     return {

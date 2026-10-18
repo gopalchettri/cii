@@ -1,6 +1,6 @@
 """The asset context of a run: tsg_GetAssetContext's five result sets, and the context frozen from them on the
-run (BLUEPRINT R-3), which every later step reads and never changes. Which facts a run has is the procedure's
-choice (owner 2026-10-11): every column of its asset and supporting-system rows, nothing else."""
+run, which every later step reads and never changes. Which facts a run has is the procedure's
+choice: every column of its asset and supporting-system rows, nothing else."""
 
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any

@@ -20,7 +20,6 @@ from app.core.constants import (
     Decision,
     Dependency,
     IntelDocId,
-    JobControlMessage,
     LibrarySource,
     LogEvent,
     ReviewMessage,
@@ -46,6 +45,7 @@ from app.data_access.scenario.threat_scenario_session_repository import (
     ThreatScenarioSessionRepository,
     running_action,
 )
+from app.domain.jobs import run_being_deleted
 from app.domain.library.curation import (
     accepted_ai_threat_key,
     promotion_outcome,
@@ -461,7 +461,7 @@ class ThreatScenarioService:
             return _started(run, ActionStatus.GENERATING, epoch)
         resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run))
         if resumed is None:
-            raise _being_deleted(run.session_id)
+            raise run_being_deleted(run.session_id)
         if not resumed:
             raise nothing_left_to_write(run.session_id, paths)
         self._publish_session_status(run.session_id)
@@ -501,7 +501,7 @@ class ThreatScenarioService:
                 message, reason=ConflictReason.ASSET_BUSY, details={"active_session_id": active_id}
             )
         if clash is RunClash.DELETING:
-            raise _being_deleted(run.session_id)
+            raise run_being_deleted(run.session_id)
         if clash is RunClash.CHANGED:
             message = ReviewMessage.GENERATION_IN_PROGRESS.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.GENERATION_IN_PROGRESS)
@@ -620,12 +620,6 @@ def _new_run_record(
 def _started(run: SessionStatus, status: ActionStatus, epoch: int) -> RunActionStarted:
     """The 202 body: the run, its owner, what started and the job's epoch."""
     return RunActionStarted(session_id=run.session_id, user_id=run.user_id, status=status, epoch=epoch)
-
-
-def _being_deleted(session_id: str) -> Conflict:
-    """409 run_being_deleted, for a click that lost the race with its run's delete."""
-    message = JobControlMessage.BEING_DELETED.format(session_id=session_id)
-    return Conflict(message, reason=ConflictReason.RUN_BEING_DELETED)
 
 
 def _new_decided_stamp(principal: Principal) -> dict[str, Any]:

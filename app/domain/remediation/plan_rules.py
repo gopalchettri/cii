@@ -9,7 +9,6 @@ from typing import Any
 from app.core.constants import (
     ConflictReason,
     Decision,
-    JobControlMessage,
     RemediationMessage,
     ScenarioStatus,
     SessionMessage,
@@ -94,12 +93,6 @@ def plan_exists(scenario_id: str, remediation_id: str | None) -> Conflict:
     return Conflict(
         message, reason=ConflictReason.PLAN_ALREADY_EXISTS, details={"remediation_id": remediation_id}
     )
-
-
-def run_being_deleted(session_id: str) -> Conflict:
-    """409 run_being_deleted, as a next set answers: the plan's run is being deleted."""
-    message = JobControlMessage.BEING_DELETED.format(session_id=session_id)
-    return Conflict(message, reason=ConflictReason.RUN_BEING_DELETED)
 
 
 def check_own_entity(entity_id: int, caller_entity_id: int) -> None:

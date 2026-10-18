@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from app import container
 from app.core.constants import (
     AiTask,
     AuditAction,
@@ -25,7 +26,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import Unavailable
+from app.core.exceptions import LeaseLost, Unavailable
 from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import WRITER_PROMPT_VERSION, scenario_id
 from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
@@ -109,14 +110,13 @@ def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -
     assert len(_audit_rows(record_id)) == 2
 
 
-@pytest.mark.parametrize("fault", ["down", "raises"])
 def test_an_evidence_outage_holds_the_paths_back_and_a_later_try_writes_them_with_evidence(
-    intel: Intel, story_chat: Any, fault: str
+    intel: Intel, story_chat: Any
 ) -> None:
-    """G229 (owner 2026-10-13: "never a silent omission or fabricated evidence"): an outage, or a search that
-    breaks, writes nothing (no write call is made), keeps nothing on the plan, and gives the job back; the
-    next try searches again and writes each story on its evidence. Before, the stories were saved inferred."""
-    setattr(intel.finder, fault, True)
+    """G229 (owner 2026-10-13: "never a silent omission or fabricated evidence"): an outage writes nothing
+    (no write call is made), keeps nothing on the plan, and gives the job back; the next try searches again
+    and writes each story on its evidence."""
+    intel.finder.down = True
     record_id = _queued_run(["Threat 1", "Threat 2"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable):
@@ -124,7 +124,7 @@ def test_an_evidence_outage_holds_the_paths_back_and_a_later_try_writes_them_wit
     assert _scenarios_of(record_id) == [] and not story_chat.asked(AiTask.WRITE_SCENARIO)
     assert all(not t.get("intel_search") for t in _threat_docs(record_id).values())  # not kept: a later try
     lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
-    setattr(intel.finder, fault, False)
+    intel.finder.down = False
     assert _deliver_until_done(record_id) == 1
     stored = _scenarios_of(record_id)
     assert len(stored) == 2 and {s["status"] for s in stored} == {ScenarioStatus.DONE}
@@ -133,18 +133,41 @@ def test_an_evidence_outage_holds_the_paths_back_and_a_later_try_writes_them_wit
         assert scenario["content"]["evidence"][0]["supports"]  # the claim its marker supports
 
 
-def test_a_search_that_breaks_names_its_own_reason_never_a_missing_snapshot(intel: Intel) -> None:
+def test_a_search_that_breaks_names_its_own_reason_never_a_missing_snapshot(
+    intel: Intel, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """G265 (laptop E2E 2026-10-16): the local reranker could not load, and the job retried with "the evidence
-    search could not be made: no_intelligence_snapshot" while the snapshot was there. The reason given is now
-    the search's own."""
-    intel.finder.raises = True
+    search could not be made: no_intelligence_snapshot" while the snapshot was there. The reason given is the
+    search's own."""
+
+    def reranker_down(*args: Any, **kwargs: Any) -> Any:
+        raise Unavailable("the reranker could not load")
+
+    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", reranker_down)
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable) as error:
         _write_batch(lease)
-    assert "RuntimeError: a bug in the search" in str(error.value)
+    assert "Unavailable: the reranker could not load" in str(error.value)
     assert EvidenceSearchFailure.NO_SNAPSHOT not in str(error.value)
     assert all(not t.get("intel_search") for t in _threat_docs(record_id).values())  # still not kept
+
+
+@pytest.mark.parametrize("error", [RuntimeError("a bug in the search"), LeaseLost("run")])
+def test_a_search_error_that_is_no_outage_reaches_the_job_runner_and_writes_nothing(
+    intel: Intel, story_chat: Any, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """A bug or a lost lease in the search is raised as itself, never held back as an outage and retried."""
+
+    def search_raising(*args: Any, **kwargs: Any) -> Any:
+        raise error
+
+    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", search_raising)
+    record_id = _queued_run(["Threat 1"])
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
+    with pytest.raises(type(error)):
+        _write_batch(lease)
+    assert _scenarios_of(record_id) == [] and not story_chat.asked(AiTask.WRITE_SCENARIO)
 
 
 def _start_regenerate(record_id: str, first: str) -> None:

@@ -17,6 +17,7 @@ from app.data_access.jobs.job_repository import JobLease
 from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.domain.remediation.planner import RemediationPlanner
 from app.domain.remediation.snapshot import is_pending
+from app.domain.shared.audit import audit_target
 from app.worker.remediation.plan_inputs import PlanInputs
 
 
@@ -52,7 +53,7 @@ class RemediationPlanJob:
         }
         self._remediations.update_remediation_plan_version_written(lease, written)
         metrics.PLANS.labels(Status.DONE).inc()
-        target = {"type": AuditTarget.REMEDIATION, "id": lease.record_id}
+        target = audit_target(AuditTarget.REMEDIATION, lease.record_id)
         after = {"version": lease.epoch, "warnings": len(finished.warnings)}
         self._audit.create_audit_record(
             AuditAction.PLAN_COMPLETED, {"system": TaskName.WRITE_PLAN}, target, after=after

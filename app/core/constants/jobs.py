@@ -189,7 +189,7 @@ class RunActionKind(StrEnum):
 class RunActionOutcome(StrEnum):
     RUNNING = "running"
     COMPLETE = "complete"
-    PARTIAL = "partial"  # done, but a category could not be judged or a path failed: never shown complete
+    PARTIAL = "partial"  # done, but a path was abandoned or a regenerate kept an old version
     FAILED = "failed"  # the job failed (its error is job.error)
     CANCELLED = "cancelled"
 
