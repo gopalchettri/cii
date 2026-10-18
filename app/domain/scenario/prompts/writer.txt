@@ -12,18 +12,16 @@ RETURN ONLY THIS VALID JSON OBJECT
   "assumptions": ["string"],
   "entry_point": "string",
   "system_reasons": {"<exact supporting system name>": "string"},
-  "evidence_links": [{"n": 1, "claim": "exact supported claim text from scenario_statement"}],
   "why_applies": "string"
 }
 
 SCHEMA
-- Include exactly these eight top-level fields. Do NOT include `anatomy` or any other field. No prose, Markdown, comments, or code fences.
+- Include exactly these seven top-level fields. Do NOT include `anatomy` or any other field. No prose, Markdown, comments, or code fences.
 - Use valid JSON with double quotes and no trailing commas.
 - `scenario_statement`: <scenario words> words. `risk_statement`: <risk words> words.
 - `assumptions`: short, specific sentences; [] if none.
 - `entry_point`: exact match to one item in BRIEF.entry_point_options; use "" if the list is empty. Never invent an option.
 - `system_reasons`: exactly one key for every BRIEF.supporting_systems name, copied exactly; no missing or extra keys.
-- `evidence_links`: one object per distinct marker actually used in `scenario_statement`, none for unused evidence. `n` is the evidence number; `claim` is the exact adjacent claim without the marker.
 - `why_applies`: one sentence grounded in BRIEF.why_it_applies.
 
 GENERATION LOGIC
@@ -38,7 +36,7 @@ Carry out BRIEF.threat_type / BRIEF.threat in a way recognisable to a knowledgea
 
 2. EXPLICIT CAUSALITY AND GROUNDING
 Make clear who acts, what access/precondition they already have, what action constitutes the specified threat, what asset condition is affected, and what primary impact follows. Do not skip the threat action or describe an impact the action cannot reasonably cause.
-Use only BRIEF facts, directly reasonable consequences, and claims directly supported by EVIDENCE. Do not invent products/versions, vulnerabilities, users, integrations, interfaces, settings, controls, regulations, business processes, services, capabilities, incidents, dates, amounts, or technical details.
+Use only BRIEF facts and directly reasonable consequences; use EVIDENCE only as rule 11 allows. Do not invent products/versions, vulnerabilities, users, integrations, interfaces, settings, controls, regulations, business processes, services, capabilities, incidents, dates, amounts, or technical details.
 Unknown means unknown—not false or confirmed. Remove dependencies on unknown facts where possible. Otherwise list each required missing fact as: "assumes <specific condition> - not recorded in the platform". Specify the system, access/capability and action where known. Do not present assumptions as established facts or as evidence.
 
 3. ENTRY POINT AND ACCESS
@@ -55,7 +53,7 @@ The asset is always the target. Do not invent or name supporting systems outside
 - If applicability is missing, do not guess or describe direct activity on that system. Do not use `system_reasons` to add an action or impact.
 
 5. ATTACKER TYPE
-Use the attacker type in BRIEF or a faithful plain-language equivalent. Never present a named group, malware family, or campaign as attacking this asset. Such a name from EVIDENCE may appear only as a marked past precedent, and only for the action/technique, purpose, or target explicitly supported. Do not imply the current scenario uses that actor or campaign.
+Use the attacker type in BRIEF or a faithful plain-language equivalent. Never present a named group, malware family, or campaign as attacking this asset. Never name a group, malware family, or campaign from EVIDENCE: the platform adds the cited real-world precedent.
 
 6. SCENARIO STATEMENT: <scenario words> WORDS, FIVE BEATS
 Write one continuous narrative with no headings or numbered beats:
@@ -83,15 +81,12 @@ Describe possible attacker behaviour for risk analysis only; no commands, code, 
 10. OTHER SCENARIOS
 If BRIEF.other_scenarios exists, make this scenario meaningfully different through a supported entry point, focus, or consequence and use a different title. Do not invent a different threat or violate the category to force novelty. If the input cannot support a meaningful distinction, do not fabricate one.
 
-11. EVIDENCE AND MARKERS
-Use only evidence numbers supplied, starting at 1. Put [n] immediately after the exact claim it supports. Direct support must concern the same technique, behaviour, exploitation method, or campaign—not merely a shared category/topic.
-- The marked sentence may state only the entry's supported finding: the named technique/action, or a named group/software/campaign's past use of it. Purpose/target only if explicitly stated.
-- Do not cite generic claims that attackers have acted before. Do not change the requested threat to fit evidence (e.g., domain acquisition alone does not support DNS hijacking).
-- If no entry directly supports a claim, do not cite it.
-- If `evidence_mode` is "nearest", the entry failed relevance checking: cite only facts it explicitly states, never as support for the requested threat's technique.
-- Do not write technique labels/codes, attack-pattern codes, CVEs, URLs, or source names in the scenario; paraphrase facts in plain language.
-- Every real-world precedent claim needs a directly supporting marker. Unknown facts about this asset are assumptions, not evidence claims.
-- `evidence_links` must map each used marker to its exact adjacent claim. Include each used marker once and no unused entries.
+11. EVIDENCE
+Use EVIDENCE only to ground the specified threat action; the platform adds the one cited real-world precedent to `scenario_statement` itself.
+- Add no [n] marker anywhere and tell no real-world event or past use.
+- Do not change the requested threat to fit evidence (e.g., domain acquisition alone does not support DNS hijacking).
+- In your own text write no technique labels/codes, attack-pattern codes, CVEs, URLs, or source names; paraphrase facts in plain language (only the platform's cited sentence names them).
+- Unknown facts about this asset are assumptions, not evidence claims.
 
 12. CATEGORY SHAPES
 The primary impact and risk opening must follow BRIEF's category:
@@ -113,4 +108,4 @@ Use "could"/"may"; name no unlisted system. Keep each reason consistent with the
 Write one plain sentence based on BRIEF.why_it_applies explaining why the threat/category fits the asset. Name only listed systems; do not mention systems marked "no" or add facts.
 
 GENERATOR FINAL CHECK
-Before returning, verify: exact eight-field JSON schema and no `anatomy`; required word counts; five scenario beats; category-specific risk opening; one threat/impact and explicit causal chain; exact entry point; independent per-system access/actions; no cross-system link; assumptions for necessary unknowns; directly supported citations and matching `evidence_links`; consistent title, risk, system reasons and `why_applies`; hypothetical language; no extra prose.
+Before returning, verify: exact seven-field JSON schema and no `anatomy`; required word counts; five scenario beats; category-specific risk opening; one threat/impact and explicit causal chain; exact entry point; independent per-system access/actions; no cross-system link; assumptions for necessary unknowns; no evidence markers; consistent title, risk, system reasons and `why_applies`; hypothetical language; no extra prose.

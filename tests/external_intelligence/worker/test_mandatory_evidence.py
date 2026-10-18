@@ -1,10 +1,11 @@
 """G229 (owner 2026-10-13; 2026-10-18: "Each threat scenario will have relevant one or more evidence when
 EXTERNAL_INTELLIGENCE_ENABLED=true"): with external intelligence on, the write job holds back every story with
 no evidence, enforced in code with no AI call added: a threat whose search kept no source at or above the
-threshold fails its path for good before any write call; one whose search could not be made waits as an
-outage; a story left citing nothing is kept hidden and its path tried again. The style is decided once per
-delivery, and a switch in doubt makes the delivery wait. Each cited entry keeps its dates, role and claim."""
+threshold, or none it can cite, fails its path for good before any write call; one whose search could not
+be made waits as an outage. The style is decided once per delivery, and a switch in doubt makes the
+delivery wait. Each cited entry keeps its dates, role and claim."""
 
+import dataclasses
 from typing import Any
 
 import pytest
@@ -16,8 +17,6 @@ from app.core.constants import (
     ErrorCode,
     ErrorMessage,
     EvidenceRole,
-    FindingCode,
-    Generation,
     ScenarioStatus,
     TaskName,
 )
@@ -27,7 +26,7 @@ from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import evidence_problem
 from app.models.external_intelligence.evidence import Evidence
 from app.models.scenario.write import PathFailure
-from tests.external_intelligence.conftest import STORY_PLAIN, Intel
+from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.switch.test_switch import MemoryFlags
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
@@ -50,11 +49,16 @@ def test_the_gate_fails_a_threat_with_no_evidence_for_good_and_holds_back_an_out
     assert failure.message == ErrorMessage.EVIDENCE_NOT_FOUND
     assert isinstance(evidence_problem({"intel_search": settled | {"failure": "down"}}), Unavailable)
     assert isinstance(evidence_problem({"intel_search": None}), Unavailable)  # never searched: no snapshot
-    assert evidence_problem({"evidence": [{"ref": "T0839"}], "intel_search": settled}) is None
+    assert evidence_problem({"evidence": [TECHNIQUE.as_doc()], "intel_search": settled}) is None
 
 
-def test_nothing_found_fails_its_path_for_good_with_no_write_call(intel: Intel, story_chat: Any) -> None:
-    intel.finder.evidence = ()
+@pytest.mark.parametrize(
+    "found", [(), (dataclasses.replace(TECHNIQUE, facts=()),)], ids=["nothing", "nothing_citable"]
+)
+def test_nothing_citable_fails_its_path_for_good_with_no_write_call(
+    intel: Intel, story_chat: Any, found: tuple[Evidence, ...]
+) -> None:
+    intel.finder.evidence = found
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     (card,) = _scenarios_of(record_id)
@@ -62,27 +66,6 @@ def test_nothing_found_fails_its_path_for_good_with_no_write_call(intel: Intel, 
     assert not story_chat.asked(AiTask.WRITE_SCENARIO)  # no AI call spent on a scenario that cannot be proven
     plan = _sessions().find_one({"_id": record_id})["plan"]
     assert plan["paths"][0]["abandoned"] and plan["paths"][0]["attempts"] == 1
-
-
-def test_a_story_left_citing_nothing_is_kept_hidden_and_its_path_tried_again(
-    intel: Intel, story_chat: Any
-) -> None:
-    """A story citing none of its sources is never served: each draft counts an attempt and the path is
-    written again, until it is given up after MAX_PATH_ATTEMPTS."""
-    answer = story_chat.responders[AiTask.WRITE_SCENARIO]
-
-    def citing_nothing(prompt: str) -> dict[str, Any]:
-        return answer(prompt) | {"scenario_statement": STORY_PLAIN, "evidence_links": []}
-
-    story_chat.responders[AiTask.WRITE_SCENARIO] = citing_nothing
-    record_id = _queued_run(["Threat 1"])
-    assert _deliver_until_done(record_id) == Generation.MAX_PATH_ATTEMPTS
-    (card,) = _scenarios_of(record_id)
-    assert card["status"] == ScenarioStatus.BLOCKED and "controls" not in card
-    assert FindingCode.NO_EVIDENCE_CITED in {finding["code"] for finding in card["findings"]}
-    path = _sessions().find_one({"_id": record_id})["plan"]["paths"][0]
-    assert (path["abandoned"], path["attempts"], path["served"]) == (True, Generation.MAX_PATH_ATTEMPTS, None)
-    assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS
 
 
 def test_the_switch_is_read_once_per_batch(intel: Intel, monkeypatch: pytest.MonkeyPatch) -> None:

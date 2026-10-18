@@ -189,7 +189,7 @@ class WriterStyle(StrEnum):
     """How a scenario is written; a regenerate keeps the style of the scenario it replaces while on."""
 
     ORIGINAL = "original"  # without external intelligence
-    EVIDENCE_STORY = "evidence_story"  # the five-beat story with evidence markers
+    EVIDENCE_STORY = "evidence_story"  # the five-beat story ending in its cited precedent
 
 
 class EvidenceMode(StrEnum):
@@ -201,6 +201,12 @@ class EvidenceMode(StrEnum):
 
 class StoryLimits:
     PROMPT_VERSION: Final = "scenario writer-evidence-1"  # stored as content.prompt_version of a story
+
+
+class Precedent:
+    """The one sentence code adds to an evidence story, from its cited entry's own facts."""
+
+    USED_BY: Final = 'In real-world attacks, {names} {verb} used the technique "{technique}"'
 
 
 class EvidenceBlock:
@@ -224,7 +230,7 @@ class EvidenceBlock:
 class StoryFindingCode(StrEnum):
     """What the safety checks find in a scenario's markers and words."""
 
-    UNKNOWN_MARKER = "unknown_marker"  # a [n] marker with no evidence n in the brief
+    UNKNOWN_MARKER = "unknown_marker"  # a [n] marker the writer wrote: only code cites
     INJECTION_ECHO = "injection_echo"  # the draft repeats an instruction aimed at an AI
 
 
@@ -234,14 +240,10 @@ STORY_FINDING_SEVERITIES: Final[dict[StoryFindingCode, FindingSeverity]] = {
 
 
 class StoryFindingMessage(StrEnum):
-    UNKNOWN_MARKER = "Uses the marker(s) {markers}, but the evidence has only entries 1 to {count}."
-    NO_INTELLIGENCE_MARKER = (
-        "Uses the marker(s) {markers}, but no external intelligence was used: there is no source to cite. "
-        "Remove each marker and the real-world claim it marks; tell it as what could happen to this asset."
-    )
-    MARKER_OUTSIDE_STATEMENT = (
-        "Uses the marker(s) {markers} outside the scenario statement and risk statement: markers belong in "
-        "the statement or risk only. Remove each one from the other texts."
+    UNKNOWN_MARKER = (
+        "Uses the marker(s) {markers}, but the writer cites nothing: the platform adds any cited precedent "
+        "itself. Remove each marker and the real-world claim it marks; tell it as what could happen to this "
+        "asset."
     )
     INJECTION_ECHO = "Repeats text that reads as an instruction to an AI system. Remove it."
 

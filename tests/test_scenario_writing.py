@@ -128,19 +128,17 @@ def _calls(chat: FakeChatModel) -> list[AiTask]:
     return [task for task, _ in chat.calls]
 
 
-def test_only_a_safety_fault_a_mismatch_no_citation_or_a_copy_blocks_and_only_a_copy_is_final() -> None:
+def test_only_a_safety_fault_a_mismatch_or_a_copy_blocks_and_only_a_copy_is_final() -> None:
     """A reviewer's rule verdict is a note, never a blocker; a check not made, a warning."""
     blockers = {code for code, severity in FINDING_SEVERITIES.items() if severity == FindingSeverity.BLOCKER}
     assert {
         FindingCode.UNKNOWN_ID,
         FindingCode.UNCITED_ADVISORY_ID,
         FindingCode.SCENARIO_MISMATCH,
-        FindingCode.NO_EVIDENCE_CITED,
     } | FINAL_FINDINGS <= blockers
     assert {FindingCode.NEAR_DUPLICATE} == FINAL_FINDINGS
     assert FINDING_SEVERITIES[FindingCode.PLAN_CHECK] == FindingSeverity.NOTE
     assert FINDING_SEVERITIES[FindingCode.PLAN_CHECK_NOT_MADE] == FindingSeverity.WARNING
-    assert FINDING_SEVERITIES[FindingCode.CITATION_REMOVED] == FindingSeverity.WARNING
     written = WrittenScenario(
         _CLEAN,
         (Finding(FindingCode.PLAN_CHECK, "m"),),

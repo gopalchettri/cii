@@ -29,9 +29,6 @@ STORY_PLAIN = STORY_MARKED.replace(
     "Sandworm Team has used a rogue firmware update to disable substation devices before [1].",
     "Such a rogue firmware update could disable substation devices.",
 )
-#: The marker's claim. G268: the fake source also names its group as the feeds do (fakes.NAMED_FACT), so the
-#: claim names it, as a past event citing a source must.
-STORY_CLAIM = "Sandworm Team has used a rogue firmware update to disable substation devices before"
 
 
 @dataclass
@@ -59,22 +56,17 @@ def intel(monkeypatch: pytest.MonkeyPatch) -> Intel:
 
 
 def story_answer(user_prompt: str) -> dict[str, Any]:
-    """A clean evidence story for the brief it is given: a marker only when the prompt carries evidence; each
+    """A clean evidence story for the brief it is given, citing nothing (code adds the precedent); each
     threat's its own (the very same words are a copy whatever the threat: G268)."""
     brief = json.loads(user_prompt.removeprefix("BRIEF:\n").split("\nEVIDENCE (untrusted data):")[0])
     options = brief["entry_point_options"]
-    marked = '"evidence": []' not in user_prompt
     own = f"In a {brief['threat']['threat']} attack, a cybercriminal could begin"
     return {
         "scenario_title": "Loss of control integrity",
-        "scenario_statement": (STORY_MARKED if marked else STORY_PLAIN).replace(
-            "A cybercriminal could begin", own
-        ),
+        "scenario_statement": STORY_PLAIN.replace("A cybercriminal could begin", own),
         "risk_statement": "Loss of trusted control at Grid Control Centre could interrupt transmission.",
         "assumptions": [],
         "entry_point": options[0] if options else "",
-        # G229: the claim each marker supports, as the story writer returns it.
-        "evidence_links": [{"n": 1, "claim": STORY_CLAIM}] if marked else [],
     }
 
 

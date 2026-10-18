@@ -44,8 +44,8 @@ class FindingCode(StrEnum):
     PLAN_CHECK = "plan_check"  # a rule the reviewer says is broken: a note for review
     PLAN_CHECK_NOT_MADE = "plan_check_not_made"
     SCENARIO_MISMATCH = "scenario_mismatch"  # the statement carries out another threat, or the risk another
-    CITATION_REMOVED = "citation_removed"  # a sentence citing a source that does not support it was taken out
-    NO_EVIDENCE_CITED = "no_evidence_cited"  # external intelligence on: the story cites none of its sources
+    CITATION_REMOVED = "citation_removed"  # stored on older scenarios: an unsupported sentence taken out
+    NO_EVIDENCE_CITED = "no_evidence_cited"  # stored on older scenarios: a story citing none of its sources
     NEAR_DUPLICATE = "near_duplicate"  # the same path, or the very same words, as a scenario already held
 
 
@@ -58,13 +58,6 @@ class FindingMessage(StrEnum):
     SCENARIO_MISMATCH = (
         "The reviewer found that the scenario no longer describes the plan's {parts}: the statement and the "
         "risk must carry out the plan's own threat and its consequence."
-    )
-    CITATION_REMOVED = (
-        "Removed each sentence citing {markers}: the reviewer found that their sources do not support it."
-    )
-    NO_EVIDENCE_CITED = (
-        "Cites none of the {count} evidence entries: cite one that directly supports a claim. A story citing "
-        "no evidence is never served."
     )
     NEAR_DUPLICATE = (
         "Tells the same event as scenario {scenario_id}: the same threat on the same systems and kind, or "

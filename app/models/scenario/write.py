@@ -53,7 +53,7 @@ class WriterBrief:
     other_systems: tuple[str, ...]  # the run's other systems, by name: never part of this scenario
     other_scenarios: tuple[str, ...] = ()  # the statements of the path's other versions (regenerate only)
     style: WriterStyle = WriterStyle.ORIGINAL
-    # Evidence docs in the plan's order: marker [n] cites evidence[n - 1]. Read by an evidence story only.
+    # Evidence docs in the plan's order, best first: the writer's grounding; the first citable one is [1].
     evidence: tuple[dict[str, Any], ...] = ()
     # Every supporting system of the run, applicable or not: the writer gives each a reason.
     supporting_systems: tuple[BriefSystem, ...] = ()
@@ -67,7 +67,6 @@ class ScenarioDraft:
     assumptions: tuple[str, ...]
     entry_point: str  # one of the brief's entry_point_options; "" = the asset itself
     system_reasons: tuple[tuple[str, str], ...] = ()  # (system name, its one-sentence reason), brief order
-    evidence_links: tuple[tuple[int, str], ...] = ()  # (marker n, the claim entry n supports)
     why_applies: str = ""  # the writer's own sentence on why the threat applies ("" when it gave none)
 
 
@@ -84,7 +83,6 @@ class PlanCheck:
     # The reviewer's verdicts on meaning; True when the check could not be made (stored as None then).
     same_threat: bool = True  # the statement, and the cause its risk gives, carry the plan's threat
     same_impact: bool = True  # the risk is the consequence of that same scenario's impact
-    unsupported: tuple[int, ...] = ()  # markers whose entries do not support their sentences
 
 
 @dataclass(frozen=True)
@@ -116,7 +114,6 @@ class ScenarioAnswer(BaseModel):
     assumptions: list[str]
     entry_point: str
     system_reasons: dict[str, str] = {}  # one sentence per supporting system, by name
-    evidence_links: Any = None  # read leniently: a malformed link is left out, never a re-ask
     why_applies: str | None = ""  # one sentence; none given (null too) is never a re-ask
 
     @field_validator("scenario_title", "scenario_statement", "risk_statement")
@@ -134,7 +131,6 @@ class PlanCheckAnswer(BaseModel):
     rules: dict[str, str]
     same_threat: bool  # required, so a reviewer that leaves them out is re-asked, never assumed
     same_impact: bool
-    unsupported_citations: Any = None  # an evidence story's markers its entries do not support
 
     @model_validator(mode="after")
     def check_every_rule_has_a_verdict(self) -> "PlanCheckAnswer":

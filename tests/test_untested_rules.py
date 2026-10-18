@@ -60,9 +60,8 @@ def test_a_risk_of_another_impact_is_a_mismatch_that_names_the_impact() -> None:
         {"assumptions": (f"Assumes {_MADE_UP} applies.",)},
         {"why_applies": f"It applies through {_MADE_UP}."},
         {"system_reasons": (("SCADA server", f"It is reached through {_MADE_UP}."),)},
-        {"evidence_links": ((1, f"Attackers used {_MADE_UP}"),)},  # served as content.evidence[i].supports
     ],
-    ids=["title", "assumptions", "why_applies", "system_reasons", "evidence_claim"],
+    ids=["title", "assumptions", "why_applies", "system_reasons"],
 )
 def test_a_made_up_label_or_advisory_id_is_caught_in_every_served_text(where: dict[str, Any]) -> None:
     """THR<n> and GHSA, MS bulletin, CERT/CC VU# and ICS medical advisory ids the brief never gave."""
