@@ -1,14 +1,5 @@
-"""MITRE ATT&CK (Enterprise = IT, ICS = OT): the STIX bundle read as plain json, one TECHNIQUE record per live
-technique.
-
-Checkpoint: `<release>|<etag>|<format>`, e.g. `15.1|"abc123"|2`. `release` is the bundle's x_mitre_version;
-`etag` is the server's validator of the file (empty when the server sent none); `format` is what this reader
-keeps of a file (AttackReading.FORMAT). The next run sends the etag as If-None-Match, so an unchanged 40 MB
-file is not downloaded again: a 304 answer is "nothing new". When the server sends no etag, an unchanged
-release is skipped after the download instead. A checkpoint of another format (an older reader, G230) skips
-neither: the file is read again so its records carry what the reader keeps now. A run that downloaded a
-changed file always returns its records (the store writes an unchanged record again as nothing), so the
-new etag is saved."""
+"""MITRE ATT&CK (Enterprise = IT, ICS = OT): one TECHNIQUE record per live technique of the STIX bundle,
+checkpointed as `<release>|<etag>|<format>` so an unchanged file is not downloaded again."""
 
 import re
 from typing import Any
@@ -22,8 +13,7 @@ from app.services.external_intelligence.sources.attack_bundle_reader import (
     is_live,
     technique_record,
 )
-from app.services.external_intelligence.sources.bounded_parse import load_json
-from app.services.external_intelligence.sources.http_download import HttpDownloader
+from app.services.external_intelligence.sources.http_download import HttpDownloader, load_json
 from app.services.external_intelligence.sources.text_guard import (
     SourceTextGuard,
     limit_rejected,
@@ -38,13 +28,16 @@ _RELEASE = re.compile(r"\d[A-Za-z0-9.+:-]{0,39}")  # no space and no "|": a vers
 
 
 class MitreAttackSource:
+    """One ATT&CK bundle as a source."""
+
     def __init__(self, source_id: IntelSource, downloader: HttpDownloader | None = None) -> None:
         self.source_id = source_id
         self._url, self._asset_type = _FEEDS[source_id]
         self._downloader = downloader or HttpDownloader()
 
     def download_changes(self, checkpoint: str | None) -> FetchResult | None:
-        """The techniques of this bundle, or None when the server says the file is unchanged."""
+        """The techniques of this bundle, or None when the file is unchanged (a 304 to its etag, or with no
+        etag the same release); a checkpoint of another reader format reads the file again."""
         old_release, old_etag, old_format = [*(checkpoint or "").split("|", 2), "", ""][:3]
         if old_format != AttackReading.FORMAT:  # read by another reader: read again, whatever the server says
             old_release, old_etag = "", ""
@@ -54,14 +47,15 @@ class MitreAttackSource:
         if file is None:
             return None
         etag = file.etag or ""
-        objects = self._objects(file.body)
+        objects = self._bundle_objects(file.body)
         del file  # the raw bytes are released here; the parsed objects are the larger half of the memory
-        version = self._release(objects)
+        version = self._release_of(objects)
         if version == old_release and not etag:  # no validator to ask with: an unchanged release is skipped
             return None
-        return self._records(objects, version, etag)
+        return self._fetch_result(objects, version, etag)
 
-    def _objects(self, body: bytes) -> list[Any]:
+    def _bundle_objects(self, body: bytes) -> list[Any]:
+        """The bundle's objects; IntelFetchFailed when it is not a bundle."""
         try:
             objects = load_json(body, self.source_id.value).get("objects")
         except (ValueError, AttributeError):
@@ -70,7 +64,7 @@ class MitreAttackSource:
             raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=self.source_id.value)
         return objects
 
-    def _release(self, objects: list[Any]) -> str:
+    def _release_of(self, objects: list[Any]) -> str:
         """The collection's x_mitre_version; failing that, the newest `modified` of any live object."""
         live = [o for o in objects if isinstance(o, dict) and is_live(o)]
         versions = [str(o["x_mitre_version"]) for o in live if o.get("type") == "x-mitre-collection"]
@@ -81,7 +75,8 @@ class MitreAttackSource:
             raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=self.source_id.value)
         return version
 
-    def _records(self, objects: list[Any], version: str, etag: str) -> FetchResult:
+    def _fetch_result(self, objects: list[Any], version: str, etag: str) -> FetchResult:
+        """The bundle's technique records and rejections, with the new checkpoint."""
         index = AttackBundleIndex(SourceTextGuard(self.source_id))
         index.add_all(objects)
         records: list[IntelRecord] = []

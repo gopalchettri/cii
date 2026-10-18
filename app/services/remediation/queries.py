@@ -11,6 +11,7 @@ from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Forbidden, NotFound
 from app.core.singletons import singleton
 from app.data_access.remediation_reads import RemediationReads
+from app.data_access.remediations import RemediationRepository
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
 from app.models.remediation_views import RemediationList, RemediationResult, RemediationSummary
@@ -25,6 +26,7 @@ class RemediationQueries:
     def result(
         self, principal: Principal, session_id: str, scenario_id: str, include_history: bool
     ) -> RemediationResult:
+        """The scenario's plan as shown, with the scenario it treats; 404/403 as every plan route."""
         record = self._plans.find_result_of_scenario(scenario_id)
         status = None if record is None else RemediationStatus.from_record(record)
         _of_scenario(status, principal.entity_id, session_id, scenario_id)
@@ -70,16 +72,8 @@ class RemediationQueries:
 def find_plan_for_caller(session_id: str, scenario_id: str, entity_id: int) -> RemediationStatus:
     """The plan of a scenario in a run, as every `.../treatment-plan` route reads it first: 404 when the
     scenario has no plan or is not in this run, 403 another entity's."""
-    status = RemediationReads(get_mongodb()).find_status_of_scenario(scenario_id)
+    status = RemediationRepository(get_mongodb()).find_for_scenario(scenario_id)
     return _of_scenario(status, entity_id, session_id, scenario_id)
-
-
-def find_remediation_status_for_caller(remediation_id: str, entity_id: int) -> RemediationStatus:
-    """A plan by its id (a job control's check): 404 unknown, 403 another entity's."""
-    status = RemediationReads(get_mongodb()).find_status(remediation_id)
-    if status is None:
-        raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))
-    return _owned(status, entity_id)
 
 
 def read_current_remediation_status(remediation_id: str) -> dict[str, Any] | None:
@@ -98,13 +92,10 @@ def read_current_remediation_status(remediation_id: str) -> dict[str, Any] | Non
 def _of_scenario(
     status: RemediationStatus | None, entity_id: int, session_id: str, scenario_id: str
 ) -> RemediationStatus:
+    """The scenario's plan: 404 none or not in this run, 403 another entity's."""
     if status is None or status.session_id != session_id:
         message = RemediationMessage.PLAN_NOT_REQUESTED.format(scenario_id=scenario_id, session_id=session_id)
         raise NotFound(message)
-    return _owned(status, entity_id)
-
-
-def _owned(status: RemediationStatus, entity_id: int) -> RemediationStatus:
     if status.entity_id != entity_id:
         raise Forbidden(RemediationMessage.PLAN_OTHER_ENTITY.format(remediation_id=status.remediation_id))
     return status
@@ -112,4 +103,5 @@ def _owned(status: RemediationStatus, entity_id: int) -> RemediationStatus:
 
 @singleton
 def get_remediation_queries() -> RemediationQueries:
+    """The process's plan reads."""
     return RemediationQueries(RemediationReads(get_mongodb()))

@@ -12,7 +12,7 @@ from sqlalchemy import Engine
 
 from app.core.constants import Collection, StoredProcedure
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.pending_threats import PendingThreats
+from app.data_access.library import LibraryRepository
 from app.services.library_curation import LibraryCuration, get_library_curation
 from tests.conftest import ADMIN
 
@@ -35,7 +35,7 @@ DELETE FROM dbo.Threat_Type WHERE ThreatTypeName LIKE N'Curation type %';
 
 @pytest.fixture(autouse=True)
 def curation_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
-    service = LibraryCuration(PendingThreats(StoredProcedureClient(sql_test_engine)))
+    service = LibraryCuration(LibraryRepository(StoredProcedureClient(sql_test_engine)))
     client.app.dependency_overrides[get_library_curation] = lambda: service  # type: ignore[attr-defined]
     yield
     client.app.dependency_overrides.pop(get_library_curation, None)  # type: ignore[attr-defined]

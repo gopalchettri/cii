@@ -257,8 +257,8 @@ def test_a_rerank_score_outside_0_to_1_is_refused(monkeypatch: pytest.MonkeyPatc
 
 def test_changing_the_retention_updates_the_index_instead_of_stopping_start_up() -> None:
     collection = get_mongodb()["test_retention"]
-    AiCallRecords(collection).keep_for_days(14)
-    AiCallRecords(collection).keep_for_days(30)  # used to raise IndexOptionsConflict
+    AiCallRecords(collection).ensure_indexes(14)
+    AiCallRecords(collection).ensure_indexes(30)  # used to raise IndexOptionsConflict
     ttl = next(index for index in collection.list_indexes() if index["key"] == {"created_at": 1})
     assert ttl["expireAfterSeconds"] == 30 * 86_400
 

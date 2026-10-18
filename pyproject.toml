@@ -38,10 +38,6 @@ testpaths = ["tests"]
 line-length = 110
 target-version = "py312"
 
-[tool.ruff.format]
-# The owner's prompts, word for word (trailing space included): the formatter stripped it (G245).
-exclude = ["app/engine/scenarios/writing/writing_prompts.py"]
-
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM", "W605"]  # W605: a stray backslash ("IT\OT") is an error later
 ignore = ["S101"]

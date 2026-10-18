@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.core.constants import AiTask, StrideCategory
-from app.engine.scenarios.finding.threat_finder import ThreatFinder
+from app.domain.scenario.plan import ThreatFinder
 from app.models.asset_context import FrozenContext
 from app.models.library import LibraryActor, LibraryThreat, RejectedLibraryThreat, ThreatLibrary
-from app.models.threats import CategoryAudit, PlannedThreat, ThreatFindings
+from app.models.scenario.plan import CategoryAudit, PlannedThreat, ThreatFindings
 from app.search.service import LibrarySearch
 from tests.fakes import FakeChatModel, FakeEmbeddings, FakeRerankModel, items_in
 
@@ -49,7 +49,7 @@ GAP_FILL_NONE = {"applies": False, "reason": "The library covers it."}
 
 
 def system_row(system_id: int, alias: str, name: str, **facts: Any) -> dict[str, Any]:
-    """A frozen supporting system (services/scenarios/context.py), with only the facts a test sets."""
+    """A frozen supporting system (services/scenario/runs.py), with only the facts a test sets."""
     return {
         "id": system_id,
         "alias": alias,
@@ -109,13 +109,9 @@ def judged(relevant: dict[str, list[str]]) -> Callable[[str], dict[str, Any]]:
 
 
 def planner_chat(relevant: dict[str, list[str]]) -> FakeChatModel:
-    """A chat model answering every planner task: the gate by `relevant`, nothing else found or folded."""
+    """A chat model answering every planner task: the gate by `relevant`, no gap-fill threat."""
     chat = FakeChatModel()
-    chat.responders = {
-        AiTask.RELEVANCE_GATE: judged(relevant),
-        AiTask.GAP_FILL: lambda _: GAP_FILL_NONE,
-        AiTask.SAME_ATTACK: lambda _: {"same": []},
-    }
+    chat.responders = {AiTask.RELEVANCE_GATE: judged(relevant), AiTask.GAP_FILL: lambda _: GAP_FILL_NONE}
     return chat
 
 

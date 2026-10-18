@@ -1,32 +1,111 @@
-"""NIST NVD API 2.0: one VULNERABILITY_DETAIL record per CVE we care about (the KEV CVEs), joined to the KEV
-vulnerability by CVE id. Records are never retired here: a run holds only the CVEs it reached (`partial`).
-
-A run is bounded (IntelLimits.NVD_MAX_REQUESTS_PER_RUN) and paced under NVD's limit (nvd_api_client.py). Two
-phases; the first pass is resumable across runs without any cursor:
-1. CHANGED: when the checkpoint is a time, one lastModStartDate/lastModEndDate window since it (at most
-   NVD_MAX_WINDOW_DAYS), keeping only the wanted CVEs. One call per 2,000 changed CVEs of all NVD, not one per
-   CVE. The window is done, and the checkpoint moves to its end, only when every page was read.
-2. MISSING: `cveId=` lookups, in sorted order, for the wanted CVEs not yet stored (this is the first pass and
-   every CVE KEV gains later). Each run's records are committed before the next run starts, so "not yet
-   stored" (`stored_cves`) is the resume point; a CVE KEV adds in the middle of a pass is one more missing.
-Checkpoint: the ISO-8601 UTC time (`2026-10-12T01:39:00.000+00:00`) up to which every stored CVE is known to
-be current. Run one sets it to the time that run started; a later run advances it to the end of the window it
-finished. `more` is true only when the budget or a rate limit cut the run short."""
+"""NIST NVD API 2.0: one VULNERABILITY_DETAIL record per KEV CVE, always partial. A run reads the CVEs changed
+since its checkpoint (a time) in one window, then looks up the wanted CVEs not yet stored, in sorted order,
+through a paced and budgeted API client."""
 
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
 from app.core.config import get_settings
-from app.core.constants import IntelLimits, IntelSource
+from app.core.constants import IntelLimits, IntelMessage, IntelSource, IntelUrl, SourceDownload
+from app.core.exceptions import IntelFetchFailed
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord
-from app.services.external_intelligence.sources.nvd_api_client import NvdApiClient
+from app.services.external_intelligence.sources.http_download import load_json, network_reason, read_bounded
 from app.services.external_intelligence.sources.nvd_item_reader import NvdItemReader
 from app.services.external_intelligence.sources.text_guard import SourceTextGuard, limit_rejected
+
+_RETRYABLE: Final = frozenset(
+    {403, 429, 500, 502, 503, 504}
+)  # NVD answers 403 as well as 429 when a client is too fast
+
+
+class NvdApiClient:
+    """One run's NVD client."""
+
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._http = client or httpx.Client(timeout=IntelLimits.FETCH_TIMEOUT_SECONDS)
+        self._own = client is None
+        self._sleep = sleep
+        self._headers = {"apiKey": api_key} if api_key else {}
+        self._pause = (
+            IntelLimits.NVD_SLEEP_KEYED_SECONDS if api_key else IntelLimits.NVD_SLEEP_UNKEYED_SECONDS
+        )
+        self._made = 0
+        self._answered = 0
+        self._stopped = False
+        self._last_reason = ""  # why the last try got no usable answer
+
+    def close(self) -> None:
+        """Close the HTTP client this client made itself."""
+        if self._own:
+            self._http.close()
+
+    def get(self, params: dict[str, Any]) -> dict[str, Any] | None:
+        """The JSON answer, or None when the run must stop (budget spent, or NVD still limiting us after the
+        back-offs). Stopping with no answer at all this run is a failure; with progress it is not."""
+        for attempt in range(1, IntelLimits.FETCH_ATTEMPTS + 1):
+            if self._stopped or self._made >= IntelLimits.NVD_MAX_REQUESTS_PER_RUN:
+                self._stopped = True
+                return None
+            if self._made:
+                self._sleep(self._pause)
+            self._made += 1
+            response = self._send(params)
+            if response is not None and response[0] not in _RETRYABLE:
+                return self._body(*response)
+            if response is not None:
+                self._last_reason = f"HTTP {response[0]}"
+            if attempt < IntelLimits.FETCH_ATTEMPTS:
+                self._sleep(IntelLimits.NVD_BACKOFF_SECONDS)
+        self._stopped = True
+        if not self._answered:
+            raise IntelFetchFailed(
+                IntelMessage.NOT_ANSWERED, url=IntelUrl.NVD_API, attempts=self._made, reason=self._last_reason
+            )
+        return None
+
+    def _send(self, params: dict[str, Any]) -> tuple[int, bytes] | None:
+        """The status and the body, the body read in chunks and refused past MAX_NVD_PAGE_BYTES.
+        A redirect is never followed (the key travels in a header httpx would send to the new address): its
+        status is refused by `_body` like any other that is not a success."""
+        try:
+            with self._http.stream(
+                "GET", IntelUrl.NVD_API, params=params, headers=self._headers, follow_redirects=False
+            ) as response:
+                body = (
+                    b""
+                    if response.is_redirect
+                    else read_bounded(response, IntelUrl.NVD_API, SourceDownload.MAX_NVD_PAGE_BYTES)
+                )
+                return response.status_code, body
+        except httpx.TransportError as error:
+            self._last_reason = network_reason(error)
+            return None
+        except httpx.RequestError:  # undecodable body...: a retry cannot change it
+            raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=IntelSource.NIST_NVD) from None
+
+    def _body(self, status: int, raw: bytes) -> dict[str, Any]:
+        """The parsed answer of a success; IntelFetchFailed for a refusal or an unexpected shape."""
+        if not 200 <= status < 300:  # 400/404...: a retry cannot change it
+            raise IntelFetchFailed(IntelMessage.REFUSED, url=IntelUrl.NVD_API, status=status)
+        try:
+            body = load_json(raw, IntelSource.NIST_NVD)
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("vulnerabilities"), list):
+            raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=IntelSource.NIST_NVD)
+        self._answered += 1
+        return body
+
 
 _TIME = "%Y-%m-%dT%H:%M:%S.000+00:00"
 
@@ -40,6 +119,8 @@ class _Collected:
 
 
 class NistNvdDetailsSource:
+    """The NVD details source; a run is bounded and paced under NVD's limit (NvdApiClient)."""
+
     source_id = IntelSource.NIST_NVD
 
     def __init__(
@@ -61,7 +142,8 @@ class NistNvdDetailsSource:
         self._reader = NvdItemReader(SourceTextGuard(IntelSource.NIST_NVD))
 
     def download_changes(self, checkpoint: str | None) -> FetchResult | None:
-        """The records this run reached (always `partial`), or None when there is nothing to ask for."""
+        """The records this run reached, or None when there is nothing to ask for; `more` when the budget or
+        a rate limit cut the run short. The checkpoint moves only to the end of a window fully read."""
         wanted = {cve.upper() for cve in self._known_cves()}
         if not wanted:
             return None
@@ -110,6 +192,7 @@ class NistNvdDetailsSource:
                 return end
 
     def _collect(self, items: list[Any], wanted: set[str], found: _Collected) -> None:
+        """Read the wanted CVEs among `items` into `found`."""
         for item in items:
             cve = item.get("cve") if isinstance(item, dict) else None
             cve_id = cve.get("id") if isinstance(cve, dict) else None

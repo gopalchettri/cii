@@ -1,7 +1,5 @@
-"""An organisation's control over its own work (G214, owner 2026-10-12): review what is queued or running,
-cancel a run or a remediation plan (stop now, keep what is done), delete a run for good. The caller's normal
-API key and entity decide what it may touch: another organisation's run is 403, an unknown one 404 (the
-route's ownership check). Each change is announced to live watchers and audited."""
+"""An organisation's control over its own work: list what is queued or running, cancel a run or a plan (what
+is done stays), delete a run for good. Each change is announced to live watchers and audited."""
 
 from typing import Any
 
@@ -21,12 +19,10 @@ from app.core.tracing import traced
 from app.data_access.job_control import JobControlRecords
 from app.models.api_clients import Principal
 from app.models.jobs import JobList, JobProgress, JobView, PlanCancelled, SessionDeleted
-from app.models.run_board import RunBoard, build_board
-from app.models.scenarios import SessionStatus
+from app.models.scenario.views import RunBoard, SessionStatus, build_board
 from app.realtime.publisher import publish_remediation_status, publish_session_status
 from app.services.audit import audit_target, caller_actor, record_audit
-from app.services.remediation.queries import find_remediation_status_for_caller
-from app.services.session_status import find_status_for_caller
+from app.services.scenario.runs import find_status_for_caller
 
 _WORKING = (Status.QUEUED, Status.RUNNING)
 
@@ -79,9 +75,7 @@ class JobService:
 
     @traced("plan.cancel")
     def cancel_plan(self, principal: Principal, remediation_id: str) -> PlanCancelled:
-        """Stop a remediation plan being written; a regenerate writes it again on purpose. 404 unknown, 403
-        another entity's, 409 when it is not being written."""
-        find_remediation_status_for_caller(remediation_id, principal.entity_id)
+        """Stop a plan being written (409 when it is not); 404/403 come from the route's CallersPlan."""
         if not self._records.cancel_plan(remediation_id, principal.entity_id, _who(principal)):
             message = JobControlMessage.PLAN_NOTHING_TO_CANCEL.format(remediation_id=remediation_id)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
@@ -92,6 +86,7 @@ class JobService:
 
 
 def _who(principal: Principal) -> dict[str, Any]:
+    """Who cancelled: the user and the calling system."""
     return {"user_id": principal.user_id, "client_id": principal.client_id}
 
 
@@ -119,6 +114,7 @@ def _run_job(record: dict[str, Any]) -> JobView:
 
 
 def _plan_job(record: dict[str, Any]) -> JobView:
+    """A remediation plan as the list shows it."""
     job = record.get("job") or {}
     return JobView(
         kind=JobKind.REMEDIATION,
@@ -135,4 +131,5 @@ def _plan_job(record: dict[str, Any]) -> JobView:
 
 @singleton
 def get_job_service() -> JobService:
+    """The process's job-control service."""
     return JobService(JobControlRecords(get_mongodb()))

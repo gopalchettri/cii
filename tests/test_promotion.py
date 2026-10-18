@@ -25,12 +25,11 @@ from app.core.constants import (
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Unavailable
 from app.data_access.library import LibraryRepository
-from app.data_access.run_actions import RunActionRecords
-from app.data_access.scenario_review import ScenarioReview
-from app.data_access.scenarios import ScenarioRepository
+from app.data_access.scenario.runs import RunActionRecords
+from app.data_access.scenario.scenarios import ScenarioRepository, ScenarioReview
 from app.models.library import ThreatProposal
 from app.services.api_clients import get_api_client_service
-from app.services.scenarios.promotion import LibraryPromotion, get_library_promotion
+from app.services.library_curation import LibraryPromotion, get_library_promotion
 
 #: The person promoting in these tests: the library rows they create carry it (CreatedBy).
 REVIEWER = f"reviewer-{uuid.uuid4().hex[:6]}"

@@ -6,7 +6,7 @@ import unicodedata
 
 import pytest
 
-from app.engine.external_intelligence.untrusted_text import UntrustedTextSanitiser
+from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
 from app.models.external_intelligence.sanitised_text import SanitisedText
 
 SANITISER = UntrustedTextSanitiser()

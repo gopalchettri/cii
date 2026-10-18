@@ -28,7 +28,7 @@ from app.core.exceptions import Conflict
 from app.data_access.remediation_reads import RemediationReads
 from app.data_access.remediation_versions import RemediationVersions
 from app.data_access.remediations import RemediationRepository
-from app.data_access.sessions import SessionRepository
+from app.data_access.scenario.runs import SessionRepository
 from app.models.remediation_reviews import DecisionRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.decisions import PlanDecisions

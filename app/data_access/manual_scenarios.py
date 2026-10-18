@@ -1,8 +1,9 @@
-"""A hand-written scenario's run and scenario (BLUEPRINT M11 R2 step 6; BUILD_PLAN S55), each saved by an
-upsert on its key-derived id: a retry after a crash lands on the same documents and changes nothing."""
+"""A hand-written scenario's run and scenario, each saved by an upsert on its key-derived id: a retry after a
+crash lands on the same documents and changes nothing."""
 
 from typing import Any
 
+from pymongo import ReturnDocument
 from pymongo.collection import Collection as MongoCollection
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
@@ -17,20 +18,24 @@ class ManualRecords:
 
     def save(self, run: dict[str, Any], scenario: dict[str, Any]) -> RunClash | None:
         """None once both exist; IDEMPOTENCY_KEY when another run took the key meanwhile (its unique
-        index)."""
+        index) or a request with this key and another body saved its run first (nothing is saved)."""
         try:
-            _insert_once(self._sessions, run)
+            stored = _insert_once(self._sessions, run)
         except DuplicateKeyError:
+            return RunClash.IDEMPOTENCY_KEY
+        if stored.get("request_hash") != run["request_hash"]:
             return RunClash.IDEMPOTENCY_KEY
         _insert_once(self._scenarios, scenario)
         return None
 
     def complete(self, scenario_id: str, changes: dict[str, Any]) -> None:
-        """Its plan job found what was pending (its attackers, its library ids, G262): saved, and `pending`
-        removed, in one write (a retried job finds nothing pending and does not do it twice)."""
+        """What its plan job found (attackers, library ids) saved and `pending` removed, in one write."""
         self._scenarios.update_one({"_id": scenario_id}, {"$set": changes, "$unset": {"pending": ""}})
 
 
-def _insert_once(records: MongoCollection, record: dict[str, Any]) -> None:
+def _insert_once(records: MongoCollection, record: dict[str, Any]) -> dict[str, Any]:
+    """Insert `record` unless its id exists already; the record as stored."""
     fields = {key: value for key, value in record.items() if key != "_id"}
-    records.update_one({"_id": record["_id"]}, {"$setOnInsert": fields}, upsert=True)
+    return records.find_one_and_update(
+        {"_id": record["_id"]}, {"$setOnInsert": fields}, upsert=True, return_document=ReturnDocument.AFTER
+    )

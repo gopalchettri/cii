@@ -4,7 +4,7 @@ worker's start): idempotent, never on a request or job path, and a failure stops
 from collections.abc import Iterable
 
 from app.core.config import get_settings
-from app.core.constants import AiLimits, Collection
+from app.core.constants import Collection
 from app.core.database import get_mongodb
 from app.data_access.admin_jobs import AdminJobRecords
 from app.data_access.ai_calls import AiCallRecords
@@ -16,8 +16,8 @@ from app.data_access.external_intelligence.intel_record_store import IntelRecord
 from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
 from app.data_access.job_records import JobRecords
 from app.data_access.remediations import RemediationRepository
-from app.data_access.scenarios import ScenarioRepository
-from app.data_access.sessions import SessionRepository
+from app.data_access.scenario.runs import SessionRepository
+from app.data_access.scenario.scenarios import ScenarioRepository
 
 
 def ensure_indexes(job_collections: Iterable[str] = ()) -> None:
@@ -29,17 +29,13 @@ def ensure_indexes(job_collections: Iterable[str] = ()) -> None:
     ScenarioRepository(db).ensure_indexes()
     RemediationRepository(db).ensure_indexes()
     ensure_audit_indexes()
-    calls = AiCallRecords(db[Collection.AI_CALLS])
-    calls.keep_for_days(AiLimits.CALL_RECORD_DAYS)
-    calls.index_for_retries()
+    AiCallRecords(db[Collection.AI_CALLS]).ensure_indexes()
     LibraryVectors(db[Collection.EMBEDDINGS]).ensure_indexes()
     QueryVectors(db[Collection.QUERY_VECTORS]).ensure_indexes()
     AdminJobRecords(db).ensure_indexes()
     for collection in job_collections:
         JobRecords(db[collection]).ensure_indexes()
-    if (
-        get_settings().external_intelligence_enabled
-    ):  # the master switch off: no intelligence collection exists
+    if get_settings().external_intelligence_enabled:  # off: no intelligence collection exists
         IntelRecordStore(db).ensure_indexes()
         SnapshotPointerStore(db).ensure_indexes()
         FeedStatusStore(db).seed_sources()

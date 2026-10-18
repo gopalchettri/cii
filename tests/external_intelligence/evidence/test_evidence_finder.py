@@ -11,16 +11,18 @@ from app.core.constants import (
     EvidenceLimits,
     EvidenceRole,
     EvidenceSearchFailure,
+    IntelSource,
 )
 from app.core.exceptions import Unavailable
-from app.engine.external_intelligence.evidence_finder import EvidenceFinder
-from app.engine.external_intelligence.rerank_gate import RerankGate
-from app.search.external_intelligence.corpus_builder import CorpusBuilder
+from app.domain.external_intelligence.evidence_finder import EvidenceFinder
+from app.domain.external_intelligence.rerank_gate import RerankGate
+from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import build_index, empty_index
 from tests.external_intelligence.evidence_fakes import (
     ScoredBy,
     TextEmbeddings,
     advisory_doc,
+    epss_doc,
     request_of,
     technique_doc,
     vulnerability_doc,
@@ -34,7 +36,7 @@ WINCC = {"vendors": ["Siemens"], "products": ["Siemens WinCC"]}
 
 def finder_of(docs: list[dict], rerank: ScoredBy | None = None, threshold: float = 1.0, embeddings=None):
     embeddings = embeddings or TextEmbeddings()
-    index = build_index(CorpusBuilder().build_corpus(docs), embeddings, rerank or ScoredBy(), "rr-model")
+    index = build_index(build_corpus(docs), embeddings, rerank or ScoredBy(), "rr-model")
     return EvidenceFinder(lambda: index, threshold, gate=RerankGate(2)), embeddings
 
 
@@ -210,3 +212,43 @@ def test_facts_are_plain_sentences_without_any_id() -> None:
     )
     assert "It scored 43% likelihood of exploitation in the next 30 days." in vuln
     assert not any(IDS.search(fact) for item in result.evidence for fact in item.facts)
+
+
+def test_published_is_the_records_publication_date_and_modified_its_last_change() -> None:
+    """Owner 2026-10-17 ("Record source references, URLs, publication dates"): "published" held the record's
+    last change. A KEV entry's is its listing date (NVD's and an advisory's, their own). S11: an entry
+    searched before stores no `modified`, whatever card carries it (a plan keeps its evidence for later
+    cards): its `published` is that last change, served as `modified`."""
+    from app.models.external_intelligence.evidence_view import cited_evidence
+
+    doc = vulnerability_doc("CVE-2024-0002", "Siemens", "WinCC") | {"modified": "2025-02-01T00:00:00"}
+    result, _ = one(finder_of([doc, technique_doc("T1")])[0], request_of(**WINCC))
+    by_ref = {item.ref: item for item in result.evidence}
+    assert (by_ref["CVE-2024-0002"].published, by_ref["CVE-2024-0002"].modified) == (
+        "2024-03-01",
+        "2025-02-01T00:00:00",
+    )
+    assert by_ref["T1"].published is None  # ATT&CK gives no publication date
+    stored = {"n": 1, "ref": "T1", "kind": "technique", "source": "s", "title": "t", "url": "u"}
+    (shown,) = cited_evidence(
+        {"statement": "A step [1].", "evidence": [stored | {"published": "2024-01-02"}]}
+    )
+    assert (shown.published, shown.modified) == (None, "2024-01-02")  # before: ("2024-01-02", None)
+
+
+def test_no_source_at_the_threshold_means_no_evidence_and_nothing_near_offered() -> None:
+    """No candidate at or above EVIDENCE_SIMILARITY_THRESHOLD: no evidence at all (the G254 "nearest" and the
+    G250 "related" sources are gone); every candidate stays in the audit with its score."""
+    docs = [technique_doc("T1"), vulnerability_doc("CVE-1", "Siemens", "WinCC")]
+    finder, _ = finder_of(docs, ScoredBy({"Technique T1": 30.0, "CVE-1": 40.0}), threshold=50.0)
+    result, summary = one(finder, request_of(**WINCC))
+    assert result.evidence == () and summary.threats_with_evidence == 0
+    assert {c.decision for c in result.search.considered} == {EvidenceDecision.BELOW_THRESHOLD}
+
+
+def test_a_vulnerability_entry_names_the_sources_joined_into_it() -> None:
+    """Its EPSS fact rests on FIRST EPSS, not on its own source (CISA KEV): the entry says so, so a revoke of
+    EPSS reaches the evidence kept on a plan (evidence_at_write._from_approved)."""
+    docs = [vulnerability_doc("CVE-2024-0009", "Siemens", "WinCC"), epss_doc("CVE-2024-0009", 0.34)]
+    result, _ = one(finder_of(docs)[0], request_of(**WINCC))
+    assert result.evidence[0].as_doc()["joined"] == [IntelSource.FIRST_EPSS]

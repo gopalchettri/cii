@@ -1,5 +1,4 @@
-"""Prometheus metrics of external intelligence. They live here, not in app/core/metrics.py (not edited by this
-feature), where both the engine and the services can reach them: same naming and label conventions."""
+"""Prometheus metrics of external intelligence, where both the engine and the services can reach them."""
 
 from enum import StrEnum
 
@@ -7,6 +6,8 @@ from prometheus_client import Counter, Gauge, Histogram
 
 
 class MetricOutcome(StrEnum):
+    """The outcome label of a refresh or a search."""
+
     OK = "ok"
     FAILED = "failed"
 

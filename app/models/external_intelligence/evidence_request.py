@@ -4,7 +4,6 @@ the evidence engine never imports the code that finds threats."""
 from dataclasses import dataclass, field
 
 from app.models.external_intelligence.evidence import Evidence, EvidenceSearchRecord
-from app.models.external_intelligence.known_groups import KnownGroup, Nearness
 
 
 @dataclass(frozen=True)
@@ -32,13 +31,9 @@ class EvidenceRequest:
     text: str  # the threat's search text, already cut to EvidenceLimits.QUERY_MAX_CHARS
     asset_types: frozenset[str]  # the IT / OT filter: the asset's and the threat's systems' types
     recorded_products: RecordedProducts
-    actor: str = ""  # G230: the threat's acting actor, so the real groups shown are of its kind
-    near: Nearness = field(default_factory=Nearness)  # G232: the country and the asset's sectors
 
 
 @dataclass(frozen=True)
 class EvidenceResult:
     evidence: tuple[Evidence, ...]  # best first, at most EvidenceLimits.PER_THREAT
     search: EvidenceSearchRecord
-    groups: tuple[KnownGroup, ...] = ()  # G230: the real named groups behind it, at most KnownGroups.SHOWN
-    nearest: Evidence | None = None  # G254: none passed: the closest candidate, shown and never cited

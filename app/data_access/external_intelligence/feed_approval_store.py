@@ -1,7 +1,5 @@
 """tsg_external_feed_status, approval side: a source revoked (its health blanked) or approved again.
-
-Split from feed_status_store.py (the class-size limit); FeedStatusStore extends this class, which extends the
-reader."""
+FeedStatusStore extends this class, which extends the reader."""
 
 from typing import Any
 
@@ -52,6 +50,10 @@ class FeedApprovalStore(FeedStatusReader):
         self._set_approval(source, True, upsert=True)
 
     def _set_approval(self, source: IntelSource, approved: bool, *, upsert: bool) -> None:
-        setting = {"$set": {"approved": approved, **_blank_health(source)}}
-        setting["$setOnInsert"] = {"terms_url": _TERMS[source], "claimed_at": None}
+        """`approved` set on the source, with a blank health and no claim: a refresh in flight loses it, so a
+        revoke then a re-approve never lets that run write on."""
+        setting = {
+            "$set": {"approved": approved, **_blank_health(source), "claimed_at": None, "claim_token": None}
+        }
+        setting["$setOnInsert"] = {"terms_url": _TERMS[source]}
         self._feeds.update_one({"_id": source}, setting, upsert=upsert)

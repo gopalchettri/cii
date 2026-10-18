@@ -1,13 +1,12 @@
-"""G243 (owner 2026-10-14, run 45b8c63b): a control of the library's AI domain is mapped only to a card whose
-threat is about AI. Before, 30 of 120 cards had one for a non-AI threat: OT credential theft got only
-"Sensitive OT Data Protection in AI", as the reranker over-scores AI-for-OT controls on any OT card."""
+"""A control of the library's AI domain is mapped only to a card whose threat is about AI: the reranker
+over-scores AI-for-OT controls on any OT card."""
 
 import copy
 
 import pytest
 
 from app.core.constants import Controls
-from app.engine.scenarios.control_mapper import ControlMapper, controls_record, is_about_ai
+from app.domain.scenario.controls import ControlMapper, controls_record, is_about_ai
 from app.models.library import LibraryControl
 from tests.test_control_mapping import _OT_CONTEXT, _SCENARIO, _ScoresByText, _snapshot
 

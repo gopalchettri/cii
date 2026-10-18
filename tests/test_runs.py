@@ -5,6 +5,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,14 +13,28 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
 from app.core.config import get_settings
-from app.core.constants import Collection, Decision, Header, Status, Step, StoredProcedure, TaskName
+from app.core.constants import (
+    Collection,
+    ConflictReason,
+    Decision,
+    Header,
+    RunClash,
+    SessionMessage,
+    Status,
+    Step,
+    StoredProcedure,
+    TaskName,
+)
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.asset_context import AssetContextRepository
+from app.core.exceptions import Conflict
 from app.data_access.job_records import JobLease
-from app.data_access.sessions import SessionRepository
-from app.models.scenarios import SessionStatus
+from app.data_access.scenario.runs import AssetContextRepository, SessionRepository
+from app.models.api_clients import Principal
+from app.models.asset_context import FrozenContext
+from app.models.scenario.views import SessionStatus, StartRunRequest
 from app.services.api_clients import get_api_client_service
-from app.services.scenarios.runs import RunService, get_run_service
+from app.services.scenario import runs as runs_module
+from app.services.scenario.runs import RunService, get_run_service
 
 START = {"asset_id": 103, "supporting_system_id": [321, 322], "subsector_id": 11}
 
@@ -271,9 +286,47 @@ def test_results_show_current_versions_and_keep_a_decided_older_one(client: Test
     assert {key: shown[key] for key in status if key not in ("session_status", "updated_at")} == {
         key: status[key] for key in status if key not in ("session_status", "updated_at")
     }
-    assert client.get(url, params={"include_replaced": True}, headers=headers).json()["total"] == 3
+    # G267 (v1's shape): include_replaced nests a path's older versions, newest first and flat, in each listed
+    # version; they are never extra items.
+    nested = client.get(url, params={"include_replaced": True}, headers=headers).json()
+    assert nested["total"] == 2
+    listed = {item["scenario_id"]: item for item in nested["scenarios"]}
+    assert [old["scenario_number"] for old in listed[newer]["replaced_scenarios"]] == [1]
+    assert listed[newer]["replaced_scenarios"][0]["replaced_scenarios"] == []
+    assert all(item["replaced_scenarios"] == [] for item in shown["scenarios"])  # without it: none
     page = client.get(url, params={"limit": 1, "offset": 1}, headers=headers).json()
     assert len(page["scenarios"]) == 1 and page["total"] == 2
+
+
+def test_a_version_says_which_accepted_version_of_its_path_it_would_replace(
+    client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G267, v1's replaces_accepted_version: accepting it replaces the path's accepted version
+    (replace_accepted); the accepted one, and a path with none, show None. One read per page, on every
+    route."""
+    from app.data_access.scenario.scenarios import ScenarioVersions
+
+    session_id = _start(client, api_key).json()["session_id"]
+    newer = _scenario(session_id, "p1", 2)
+    accepted = _scenario(session_id, "p1", 1, superseded_by=newer, decision=Decision.ACCEPTED)
+    alone = _scenario(session_id, "p2", 1)
+    reads: list[int] = []
+    original = ScenarioVersions.find_other_versions
+    monkeypatch.setattr(
+        ScenarioVersions,
+        "find_other_versions",
+        lambda self, *args: reads.append(1) or original(self, *args),
+    )
+    headers = _identity(api_key)
+    shown = client.get(f"/v1/sessions/{session_id}/results", headers=headers).json()["scenarios"]
+    by_id = {item["scenario_id"]: item["replaces_accepted_version"] for item in shown}
+    assert by_id == {newer: accepted, accepted: None, alone: None} and reads == [1]
+    one = client.get(f"/v1/sessions/{session_id}/scenarios/{newer}", headers=headers).json()
+    assert one["replaces_accepted_version"] == accepted
+    listed = client.get("/v1/entities/86/scenarios", headers=headers).json()["scenarios"]
+    assert (
+        next(item for item in listed if item["scenario_id"] == newer)["replaces_accepted_version"] == accepted
+    )
 
 
 def test_results_work_the_coverage_out_from_the_plan(client: TestClient, api_key: str) -> None:
@@ -336,3 +389,22 @@ def test_another_entity_sees_nothing_of_this_entity(client: TestClient, api_key:
 
 def test_an_idempotency_key_too_long_is_refused(client: TestClient, api_key: str) -> None:
     assert _start(client, api_key, START, **{Header.IDEMPOTENCY_KEY: "k" * 201}).status_code == 422
+
+
+def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parallel start with the same Idempotency-Key won, then its run was deleted before this start read it:
+    409 naming the race. Before, an assert failed there (a 500)."""
+    monkeypatch.setattr(runs_module, "refuse_without_intel_data", lambda: None)
+    asset = {"id": 103, "name": "Grid", "category_code": None}
+    context = FrozenContext.from_record(
+        {"asset": asset, "asset_context": {}, "systems": [], "missing_facts": []}
+    )
+    monkeypatch.setattr(runs_module, "freeze_context", lambda request, rows: context)
+    sessions = SimpleNamespace(
+        find_by_idempotency_key=lambda *args: None, insert_run=lambda record: RunClash.IDEMPOTENCY_KEY
+    )
+    service = RunService(SimpleNamespace(read=lambda *args: None), sessions)  # type: ignore[arg-type]
+    with pytest.raises(Conflict) as refused:
+        service.start(Principal("client", "u1", 86, "DESC"), StartRunRequest.model_validate(START), "key-1")
+    assert refused.value.reason == ConflictReason.IDEMPOTENCY_KEY_CONFLICT
+    assert refused.value.detail == SessionMessage.IDEMPOTENCY_KEY_RUN_GONE

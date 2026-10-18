@@ -1,9 +1,5 @@
-"""tsg_admin_jobs: one record per admin job (#18 embeddings build), kept AdminJobs.KEEP_DAYS.
-
-A record is `active` while queued or running; a unique index over the active records allows one of each kind
-at a time, so two requests at the same moment can never start two builds. Done or failed: `active` is removed
-and the record stays as its history: {_id, kind, status, requested_by, created_at, started_at, finished_at,
-result, error}."""
+"""tsg_admin_jobs: one record per admin job, kept AdminJobs.KEEP_DAYS. A unique index over the `active`
+records allows one job of each kind at a time; an ended job loses `active` and stays as history."""
 
 from datetime import datetime, timedelta
 from typing import Any
@@ -23,6 +19,7 @@ class AdminJobRecords:
         self._jobs = db[Collection.ADMIN_JOBS]
 
     def ensure_indexes(self) -> None:
+        """One active job per kind; records expire after AdminJobs.KEEP_DAYS."""
         self._jobs.create_index(
             "kind", unique=True, partialFilterExpression={"active": True}, name="one_active_per_kind"
         )
@@ -38,9 +35,11 @@ class AdminJobRecords:
         return True
 
     def read(self, job_id: str) -> Doc | None:
+        """One job record."""
         return self._jobs.find_one({"_id": job_id}, {"active": 0})
 
     def find_active(self, kind: str) -> Doc | None:
+        """The active job of `kind`, if any."""
         return self._jobs.find_one({"kind": kind, "active": True}, {"_id": 1})
 
     def end_stale(self, kind: str, created_before: datetime, error: Doc, now: datetime) -> bool:
@@ -49,9 +48,11 @@ class AdminJobRecords:
         return self._end(stale, Status.FAILED, now, error=error) is not None
 
     def mark_running(self, job_id: str, now: datetime) -> bool:
-        """False when the job is no longer active (done, failed or taken over): a late or repeated message."""
+        """False when the job is no longer queued (running, done, failed or taken over): a late or repeated
+        message, so a redelivered copy never runs a second build."""
         changed = self._jobs.find_one_and_update(
-            {"_id": job_id, "active": True}, {"$set": {"status": Status.RUNNING, "started_at": now}}
+            {"_id": job_id, "active": True, "status": Status.QUEUED},
+            {"$set": {"status": Status.RUNNING, "started_at": now}},
         )
         return changed is not None
 

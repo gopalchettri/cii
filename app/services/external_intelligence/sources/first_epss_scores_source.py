@@ -1,11 +1,5 @@
-"""FIRST EPSS: one EXPLOIT_SCORE record per CVE the caller knows, read as a stream (about 250k rows, not held
-as a list). The scores are joined to the KEV vulnerabilities, so every other CVE is dropped before it is
-parsed.
-
-Checkpoint: `<score date>|<12 hex of the hash of the CVEs asked for>`. A CVE KEV gained since the last run
-changes the second part, so its score is fetched today instead of at the next score date. Every value the
-record says is a number or a validated date or CVE id: the file carries no free text, so nothing here needs
-the sanitiser (and nothing in it could carry a sentence)."""
+"""FIRST EPSS: one EXPLOIT_SCORE record per known (KEV) CVE, streamed; checkpoint `<score date>|<hash of the
+CVEs asked for>`. Every value is a number, a date or a CVE id, so no sanitiser is needed."""
 
 import csv
 import io
@@ -25,8 +19,7 @@ from app.core.constants import (
 from app.core.exceptions import IntelFetchFailed
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord, content_hash_of
-from app.services.external_intelligence.sources.bounded_parse import open_gzip_text
-from app.services.external_intelligence.sources.http_download import HttpDownloader
+from app.services.external_intelligence.sources.http_download import HttpDownloader, open_gzip_text
 
 _COLUMNS = ("cve", "epss", "percentile")
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
@@ -35,6 +28,8 @@ _NVD_PAGE = "https://nvd.nist.gov/vuln/detail/{cve}"
 
 
 class FirstEpssScoresSource:
+    """The FIRST EPSS scores source."""
+
     source_id = IntelSource.FIRST_EPSS
 
     def __init__(self, known_cves: Callable[[], set[str]], downloader: HttpDownloader | None = None) -> None:
@@ -57,7 +52,7 @@ class FirstEpssScoresSource:
                     return None
                 for row in _rows(lines):
                     if row and row[0].strip().upper() in wanted:
-                        _add(row, score_date, records, rejected)
+                        _add_score_row(row, score_date, records, rejected)
         except (OSError, EOFError, UnicodeError, csv.Error):  # corrupt gzip, truncated stream, bad bytes
             raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=IntelSource.FIRST_EPSS) from None
         return FetchResult(tuple(records), tuple(rejected), marker, score_date)
@@ -84,9 +79,12 @@ def _rows(lines: io.TextIOWrapper) -> Iterator[list[str]]:
         yield row
 
 
-def _add(row: list[str], score_date: str, records: list[IntelRecord], rejected: list[RejectedRecord]) -> None:
+def _add_score_row(
+    row: list[str], score_date: str, records: list[IntelRecord], rejected: list[RejectedRecord]
+) -> None:
+    """Add one CSV row as a score record, or a rejection (at most MAX_REJECTED_PER_RUN)."""
     cve = row[0].strip().upper()
-    scores = _scores(row) if len(row) == len(_COLUMNS) and _CVE.fullmatch(cve) else None
+    scores = _score_and_percentile(row) if len(row) == len(_COLUMNS) and _CVE.fullmatch(cve) else None
     if scores is None:
         reason = IntelRejection.EPSS_BAD_ROW if len(row) != len(_COLUMNS) else IntelRejection.EPSS_BAD_SCORE
         if len(rejected) < IntelLimits.MAX_REJECTED_PER_RUN:
@@ -111,7 +109,8 @@ def _add(row: list[str], score_date: str, records: list[IntelRecord], rejected: 
     )
 
 
-def _scores(row: list[str]) -> tuple[float, float] | None:
+def _score_and_percentile(row: list[str]) -> tuple[float, float] | None:
+    """The row's EPSS score and percentile, both between 0 and 1; None otherwise."""
     try:
         epss, percentile = float(row[1]), float(row[2])
     except ValueError:

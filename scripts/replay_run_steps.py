@@ -63,7 +63,7 @@ def load_run(run_id: str) -> tuple[Any, dict[str, Any]]:
     """The run's frozen context and its plan."""
     from app.core.constants import Collection
     from app.core.database import get_mongodb
-    from app.data_access.sessions import SessionRepository
+    from app.data_access.scenario.runs import SessionRepository
     from app.models.asset_context import FrozenContext
 
     db = get_mongodb()
@@ -151,31 +151,23 @@ def start_step_log(run_id: str) -> Path:
 
 
 def replay_search(snapshot: Any, context: Any, plan: dict[str, Any]) -> None:
-    """The run's landscape and its one library search, by the app's own traced functions (the console maps
-    threats.build_landscape, threats.search_shortlists, threats.search_queries, search.find_threats and
-    ai.embed_queries)."""
+    """The run's landscape, by the app's own function (planning judges every library threat of a category,
+    so there is no library search to replay)."""
     from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
-    from app.core.constants import StrideCategory
-    from app.engine.scenarios.finding.asset_landscape import describe_asset_for_ai
-    from app.engine.scenarios.finding.threat_finder import ThreatFinder
+    from app.domain.scenario.plan import describe_asset_for_ai
 
     # ChatModel.max_prompt_chars of the run's chat models (app/ai/chat.py), halved as find_threats does.
     chat_models = plan["made_with"]["chat_models"]
     budget = min(find_model_profile(CHAT_MODEL_PROFILES, m).max_input_chars for m in chat_models) // 2
     describe_asset_for_ai(context, budget)
-    threats = snapshot.library.threat_library.threats
-    by_category = {category: [t for t in threats if category in t.categories] for category in StrideCategory}
-    finder = ThreatFinder.__new__(ThreatFinder)  # no chat, rerank or search service: the search uses none
-    finder._search_library_per_category(snapshot, context, by_category)  # private: the run's search as is
 
 
 def replay_ranking(plan: dict[str, Any]) -> tuple[int, int]:
-    """rank_paths over the plan's own paths, each rebuilt from its stored threat and systems (the AI's picks,
-    G209, and merges, G213, are on the record: the replay re-asks no AI): (same place, paths)."""
+    """rank_paths over the plan's own paths, each rebuilt from its stored threat and systems (the merges,
+    G213, are on the record: the replay re-asks no AI): (same place, paths)."""
     from app.core.constants import StrideCategory
-    from app.engine.scenarios.attack_paths.path_grouping import path_on
-    from app.engine.scenarios.attack_paths.path_ranking import rank_paths
-    from app.models.threats import PlannedThreat
+    from app.domain.scenario.plan import path_on, rank_paths
+    from app.models.scenario.plan import PlannedThreat
 
     threats = [
         PlannedThreat(  # the fields ranking reads (no from_record: actors play no part in it)
@@ -194,10 +186,11 @@ def replay_ranking(plan: dict[str, Any]) -> tuple[int, int]:
     ]
     by_key = {threat.key: threat for threat in threats}
     ranking = rank_paths(
-        [path_on(by_key[path["steps"][0]], tuple(path["systems"])) for path in plan["paths"]]
+        path_on(by_key[path["steps"][0]], tuple(path["systems"]), StrideCategory(path["categories"][0]))
+        for path in plan["paths"]
     )
-    again = {path.path_id: (rank, str(choice)) for rank, (path, choice) in enumerate(ranking, start=1)}
-    stored = {path["path_id"]: (path["rank"], path["choice"]) for path in plan["paths"]}
+    again = {path.path_id: rank for rank, path in enumerate(ranking, start=1)}
+    stored = {path["path_id"]: path["rank"] for path in plan["paths"]}
     return sum(again.get(path_id) == place for path_id, place in stored.items()), len(stored)
 
 

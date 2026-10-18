@@ -1,8 +1,16 @@
-"""What one source's download produced."""
+"""A file downloaded from a source's address, and what one source's download produced."""
 
 from dataclasses import dataclass
 
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord
+
+
+@dataclass(frozen=True)
+class DownloadedFile:
+    """One downloaded body and its validator."""
+
+    body: bytes
+    etag: str | None  # the server's validator for this body, to send back as If-None-Match next time
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ from app.data_access.external_intelligence.feed_status_store import FeedStatusSt
 from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord
-from app.services.external_intelligence.record_batch_writer import ClaimLost, RecordBatchWriter
+from app.services.external_intelligence.record_batch_writer import ClaimLost, write_fetch_result
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
 SOURCE = IntelSource.CISA_KEV
@@ -68,7 +68,18 @@ def test_a_revoked_source_refuses_the_heartbeat_of_a_run_in_flight(stores) -> No
     token = feeds.claim_source_for_refresh(SOURCE, NOW, NOW - STALE)
     feeds.revoke_source(SOURCE)
     assert feeds.renew_claim(SOURCE, token, NOW) is False
-    assert feeds.read_source_health(SOURCE).claimed_at == NOW  # nothing was renewed
+    assert feeds.read_source_health(SOURCE).claimed_at is None  # the claim ended, nothing was renewed
+
+
+def test_a_revoke_then_a_re_approve_still_shuts_the_run_in_flight_out(stores) -> None:
+    """Before: the claim survived both, so the old run renewed it again and wrote on over the purge."""
+    feeds, _ = stores
+    token = feeds.claim_source_for_refresh(SOURCE, NOW, NOW - STALE)
+    feeds.revoke_source(SOURCE)
+    feeds.approve_source(SOURCE)
+    assert feeds.renew_claim(SOURCE, token, NOW) is False
+    assert not feeds.record_refresh_success(SOURCE, token, "cp", "v", NOW, more=False, records=1)
+    assert feeds.claim_source_for_refresh(SOURCE, NOW, NOW - STALE)  # a new run may start at once
 
 
 def test_two_workers_racing_a_takeover_never_both_write(stores) -> None:
@@ -82,11 +93,10 @@ def test_two_workers_racing_a_takeover_never_both_write(stores) -> None:
     with ThreadPoolExecutor(max_workers=8) as pool:
         tokens = [token for token in pool.map(take_over, range(16)) if token]
     assert len(tokens) == 1
-    writer = RecordBatchWriter(records)
     with pytest.raises(ClaimLost):  # the old worker wakes up: its first write is refused
-        writer.write_result(SOURCE, _result("old"), NOW, _owner(feeds, old))
+        write_fetch_result(records, SOURCE, _result("old"), NOW, _owner(feeds, old))
     assert records.count_current_records([SOURCE]) == 0
-    writer.write_result(SOURCE, _result("new"), NOW, _owner(feeds, tokens[0]))
+    write_fetch_result(records, SOURCE, _result("new"), NOW, _owner(feeds, tokens[0]))
     assert {doc["source_version"] for doc in records.stream_current_records([SOURCE])} == {"new"}
 
 
@@ -103,7 +113,7 @@ def test_a_worker_that_loses_the_claim_between_batches_stops_there(stores) -> No
         return feeds.renew_claim(SOURCE, token, datetime.now(UTC))
 
     with pytest.raises(ClaimLost):
-        RecordBatchWriter(records).write_result(SOURCE, many, NOW, still_ours)
+        write_fetch_result(records, SOURCE, many, NOW, still_ours)
     assert records.count_current_records([SOURCE]) == IntelLimits.BATCH_SIZE  # one batch, no more
 
 

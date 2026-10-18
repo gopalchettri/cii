@@ -216,3 +216,11 @@ def test_new_vectors_are_counted_by_library_since_a_moment() -> None:
         assert LibraryVectors(vectors).count_made_since(since) == {"threat": 2}
     finally:
         vectors.delete_many({"_id": {"$regex": "^count-test-"}})
+
+
+def test_a_redelivered_build_message_never_runs_a_second_build(client: TestClient) -> None:
+    """Before: any active record was marked running, so a redelivered copy of a running build built again."""
+    job_id = _start(client).json()["job_id"]
+    jobs = AdminJobRecords(get_mongodb())
+    assert jobs.mark_running(job_id, datetime.now(UTC)) is True
+    assert jobs.mark_running(job_id, datetime.now(UTC)) is False  # the redelivered copy

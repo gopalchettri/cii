@@ -8,9 +8,9 @@ import pytest
 
 from app.core.constants import ConflictReason
 from app.core.exceptions import Conflict
-from app.models.scenarios import StartRunRequest
-from app.services.external_intelligence import data_check
-from app.services.scenarios.runs import RunService
+from app.models.scenario.views import StartRunRequest
+from app.services.scenario import runs as runs_module
+from app.services.scenario.runs import RunService
 
 
 def _world(monkeypatch: pytest.MonkeyPatch, on: bool, active: dict[str, Any] | None) -> list[str]:
@@ -22,10 +22,10 @@ def _world(monkeypatch: pytest.MonkeyPatch, on: bool, active: dict[str, Any] | N
         return active
 
     monkeypatch.setattr(
-        data_check, "get_external_intelligence_switch", lambda: SimpleNamespace(is_enabled=lambda: on)
+        runs_module, "get_external_intelligence_switch", lambda: SimpleNamespace(is_enabled=lambda: on)
     )
     store = SimpleNamespace(read_active_snapshot=read_active_snapshot)
-    monkeypatch.setattr(data_check, "SnapshotPointerStore", lambda db: store)
+    monkeypatch.setattr(runs_module, "SnapshotPointerStore", lambda db: store)
     return reads
 
 
@@ -45,8 +45,8 @@ def test_on_with_nothing_imported_refuses_a_run_before_any_other_read(
 
 def test_off_reads_nothing_and_on_with_data_lets_the_run_start(monkeypatch: pytest.MonkeyPatch) -> None:
     reads = _world(monkeypatch, on=False, active=None)
-    data_check.refuse_without_intel_data()
+    runs_module.refuse_without_intel_data()
     assert reads == []
     reads = _world(monkeypatch, on=True, active={"snapshot_id": "s1", "counts": {"indexed": 12}})
-    data_check.refuse_without_intel_data()
+    runs_module.refuse_without_intel_data()
     assert reads == ["active"]

@@ -189,16 +189,27 @@ def test_required_property_lists_parse_and_refuse_always_used_names(monkeypatch:
         Settings()  # type: ignore[call-arg]
 
 
-@pytest.mark.parametrize(
-    "name", ["CONTROL_SIMILARITY_THRESHOLD", "THREAT_SIMILARITY_THRESHOLD", "ACTOR_SIMILARITY_THRESHOLD"]
-)
+@pytest.mark.parametrize("name", ["CONTROL_SIMILARITY_THRESHOLD", "THREAT_SIMILARITY_THRESHOLD"])
 def test_similarity_thresholds_read_the_owners_names_on_one_0_to_100_scale(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """G200 (owner 2026-10-11): one scale, the reranker's 0-100, for controls, threats and attackers."""
+    """One scale, the reranker's 0-100, for controls and threats."""
     monkeypatch.setenv(name, "42.5")
     assert getattr(Settings(), name.lower()) == 42.5  # type: ignore[call-arg]
     for value in ("-1", "100.5", "high"):
         monkeypatch.setenv(name, value)
         with pytest.raises(ValidationError, match=name):
             Settings()  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("proxy", ["10.61.192.2:8080", "socks5://10.61.192.2:1080", "ftp://proxy"])
+def test_a_proxy_url_without_http_or_https_stops_start_up(proxy: str) -> None:
+    with pytest.raises(ValidationError, match="CII_PROXY_URL"):
+        _settings(proxy_url=proxy)
+
+
+def test_no_proxy_url_is_the_default_and_an_http_one_is_kept_secret() -> None:
+    assert _settings().proxy_url.get_secret_value() == ""
+    configured = _settings(proxy_url="http://ops:pw@10.61.192.2:8080")
+    assert configured.proxy_url.get_secret_value() == "http://ops:pw@10.61.192.2:8080"
+    assert "pw@" not in repr(configured)  # a proxy address can carry a password: never in a log or repr

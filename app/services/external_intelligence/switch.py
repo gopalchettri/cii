@@ -1,11 +1,5 @@
-"""The on/off switch of external intelligence: the environment's master switch AND the admin's run-time flag.
-
-The run-time flag is read from the store at most every IntelLimits.SWITCH_CACHE_SECONDS per process, by ONE
-thread at a time (the others use the value they had). A store outage keeps the last value; with none yet the
-switch reads OFF (intelligence is only ever an addition, so doubt means off) and looks again soon. The
-environment OFF always wins and then the store is not read at all (state() included, and nothing is ever
-written). Every change is audited and logged HERE, once: this class is the one place a flag changes, so no
-caller adds a second row. The admin API answers 409 before calling it while the environment is OFF."""
+"""The on/off switch of external intelligence: the env master switch and the admin's run-time flag, read from
+the store at most every SWITCH_CACHE_SECONDS; with the env off the store is never read or written."""
 
 import threading
 import time
@@ -27,6 +21,8 @@ log = structlog.get_logger(__name__)
 
 
 class ExternalIntelligenceSwitch:
+    """The one place the flag is read and changed (each change audited and logged here, once)."""
+
     def __init__(
         self, flag_store: SwitchFlagStore, env_enabled: bool, clock: Callable[[], float] = time.monotonic
     ) -> None:
@@ -38,9 +34,12 @@ class ExternalIntelligenceSwitch:
         self._changes = 0  # counts admin changes: a read that began before one must not overwrite it
 
     def is_enabled(self) -> bool:
+        """True when both switches are on."""
         return self._env_enabled and self.state().effective
 
     def state(self) -> SwitchState:
+        """The switch state: from the cache while fresh, else read by one thread at a time (the others use the
+        last value, or off when there is none)."""
         if not self._env_enabled:  # OFF: no store is read, whatever it holds
             return SwitchState(env_enabled=False)
         cached = self._cached
@@ -54,8 +53,8 @@ class ExternalIntelligenceSwitch:
             self._reading.release()
 
     def change_runtime_flag(self, enabled: bool, changed_by: str) -> SwitchState:
-        """Raises when the store cannot be written: the switch is then unchanged and nothing is audited. One
-        audit row and one log line per change."""
+        """Write, audit and log the admin's change; raises when the store cannot be written (nothing changed,
+        nothing audited)."""
         before = self.state()
         now = datetime.now(UTC)
         self._flags.write_runtime_flag(enabled, changed_by, now)
@@ -74,6 +73,8 @@ class ExternalIntelligenceSwitch:
         return after
 
     def _read(self) -> SwitchState:
+        """Read the flag from the store; an outage keeps the last value, or reads off (in doubt) and looks
+        again soon; a change an admin made meanwhile wins over the read."""
         previous = self._cached
         if previous is not None and self._clock() < previous[1]:  # read by the thread that held the lock
             return previous[0]
@@ -85,7 +86,7 @@ class ExternalIntelligenceSwitch:
             if previous is not None:  # keep the last value for a full period
                 self._cached = (previous[0], self._clock() + IntelLimits.SWITCH_CACHE_SECONDS)
                 return previous[0]
-            unknown = SwitchState(self._env_enabled, runtime_enabled=False)
+            unknown = SwitchState(self._env_enabled, runtime_enabled=False, known=False)
             self._cached = (unknown, self._clock() + SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS)
             return unknown
         if self._changes != changes and self._cached is not None:  # an admin changed it meanwhile
@@ -96,11 +97,13 @@ class ExternalIntelligenceSwitch:
 
 
 def _flags(state: SwitchState) -> dict[str, bool]:
+    """The two switches, as the audit row records them."""
     return {"env_enabled": state.env_enabled, "runtime_enabled": state.runtime_enabled}
 
 
 @singleton
 def get_external_intelligence_switch() -> ExternalIntelligenceSwitch:
+    """The process's switch."""
     return ExternalIntelligenceSwitch(
         SwitchFlagStore(get_mongodb()), get_settings().external_intelligence_enabled
     )

@@ -1,23 +1,66 @@
-"""The one place a source downloads a file: a timeout, a size limit, bounded retries with back-off, a
-conditional request, and an error that names the address that failed (never a secret: keys travel in headers
-the sources own, not here).
+"""The one place a source downloads a file (a timeout, a size limit, bounded retries, a conditional request,
+redirects only over https to allowed hosts) and parses it within SourceDownload.MAX_PARSED_BYTES."""
 
-Redirects are followed by hand: only over https, and only to the host asked or one of SourceHosts.REDIRECTS,
-so a redirect cannot lead a source to a plain-http or a foreign host."""
-
+import gzip
+import io
+import json
 import re
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urljoin
 
 import httpx
 
 from app.core.constants import IntelLimits, IntelMessage, SourceDownload, SourceHosts
 from app.core.exceptions import IntelFetchFailed
-from app.models.external_intelligence.downloaded_file import DownloadedFile
+from app.core.redaction import clipped_text, redact
+from app.models.external_intelligence.fetch_result import DownloadedFile
 from app.services.external_intelligence.sources.text_guard import on_host
+
+
+def within_parse_limit(body: bytes, source: str) -> bytes:
+    """`body` itself; IntelFetchFailed when it is too large to parse."""
+    if len(body) > SourceDownload.MAX_PARSED_BYTES:
+        raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=source)
+    return body
+
+
+def load_json(body: bytes, source: str) -> Any:
+    """The parsed JSON of `body`; ValueError when it is not JSON, IntelFetchFailed when it is too large."""
+    return json.loads(within_parse_limit(body, source))
+
+
+class _CappedReader(io.RawIOBase):
+    """Reads an unpacking stream and stops it for good once it has produced the limit."""
+
+    def __init__(self, inner: io.BufferedIOBase, source: str) -> None:
+        super().__init__()
+        self._inner = inner
+        self._source = source
+        self._produced = 0
+
+    def readable(self) -> bool:
+        """Always readable."""
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        """Read into `buffer`; IntelFetchFailed once the stream has produced more than the limit."""
+        data = self._inner.read(len(buffer))
+        self._produced += len(data)
+        if self._produced > SourceDownload.MAX_PARSED_BYTES:
+            raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=self._source)
+        buffer[: len(data)] = data
+        return len(data)
+
+
+def open_gzip_text(body: bytes, source: str) -> io.TextIOWrapper:
+    """The UTF-8 text inside gzip `body`, read lazily; IntelFetchFailed once it unpacks past the limit
+    (also inside one endless line: the cap is on bytes, not on rows)."""
+    unpacked = _CappedReader(gzip.GzipFile(fileobj=io.BytesIO(body)), source)  # type: ignore[arg-type]
+    return io.TextIOWrapper(io.BufferedReader(unpacked), encoding="utf-8", newline="")
+
 
 _RETRY_STATUSES: Final = frozenset({429, 500, 502, 503, 504})
 _NOT_MODIFIED: Final = 304
@@ -25,10 +68,13 @@ _REDIRECT_STATUSES: Final = frozenset({301, 302, 303, 307, 308})
 _SECONDS = re.compile(r"[0-9]{1,3}")
 
 
-class _TryAgain(Exception):  # an internal signal between the methods below
-    def __init__(self, wait: float) -> None:
+class _TryAgain(Exception):
+    """A try that may succeed later: how long to wait and why it failed."""
+
+    def __init__(self, wait: float, reason: str) -> None:
         super().__init__()
         self.wait = wait
+        self.reason = reason
 
 
 class HttpDownloader:
@@ -66,17 +112,23 @@ class HttpDownloader:
             yield HttpDownloader(client, self._sleep)
 
     def _request(self, url: str, etag: str | None, max_bytes: int | None) -> DownloadedFile | None:
+        """Try up to FETCH_ATTEMPTS times with back-off; IntelFetchFailed naming the last reason."""
         headers = {"If-None-Match": etag} if etag else {}
         limit = SourceDownload.MAX_BYTES if max_bytes is None else max_bytes
+        reason = ""
         for attempt in range(1, IntelLimits.FETCH_ATTEMPTS + 1):
             try:
                 return self._attempt(url, headers, limit)
             except _TryAgain as retry:
+                reason = retry.reason
                 if attempt < IntelLimits.FETCH_ATTEMPTS:
                     self._sleep(retry.wait or 2**attempt)
-        raise IntelFetchFailed(IntelMessage.NOT_ANSWERED, url=url, attempts=IntelLimits.FETCH_ATTEMPTS)
+        raise IntelFetchFailed(
+            IntelMessage.NOT_ANSWERED, url=url, attempts=IntelLimits.FETCH_ATTEMPTS, reason=reason
+        )
 
     def _attempt(self, url: str, headers: dict[str, str], limit: int) -> DownloadedFile | None:
+        """One try, on the batch's client or a fresh one."""
         if self._client is None:
             with httpx.Client(timeout=IntelLimits.FETCH_TIMEOUT_SECONDS) as client:
                 return self._follow(client, url, headers, limit)
@@ -93,8 +145,8 @@ class HttpDownloader:
                     if response.status_code not in _REDIRECT_STATUSES:
                         return self._answer(response, asked, headers, limit)
                     url, status = _redirect_target(response, asked), response.status_code
-            except httpx.TransportError:
-                raise _TryAgain(0) from None
+            except httpx.TransportError as error:
+                raise _TryAgain(0, network_reason(error)) from None
             except httpx.RequestError:  # undecodable body, too many redirects...: no retry changes it
                 raise IntelFetchFailed(IntelMessage.BAD_FORMAT, source=asked) from None
         raise IntelFetchFailed(IntelMessage.REFUSED, url=asked, status=status)
@@ -103,13 +155,21 @@ class HttpDownloader:
     def _answer(
         response: httpx.Response, url: str, headers: dict[str, str], limit: int
     ) -> DownloadedFile | None:
+        """The file of a final answer: None for "not modified", _TryAgain for a busy server, else refused."""
         if response.status_code == _NOT_MODIFIED and headers:
             return None
         if response.status_code in _RETRY_STATUSES:
-            raise _TryAgain(_retry_after(response))
+            raise _TryAgain(_retry_after(response), f"HTTP {response.status_code}")
         if not response.is_success:
             raise IntelFetchFailed(IntelMessage.REFUSED, url=url, status=response.status_code)
         return DownloadedFile(read_bounded(response, url, limit), response.headers.get("etag"))
+
+
+def network_reason(error: Exception) -> str:
+    """Why a try got no answer, safe to store and show: the error's kind and text, with secrets and internal
+    host names masked (a proxy address can carry a password), clipped."""
+    text = redact(f"{type(error).__name__}: {error}".removesuffix(": "))
+    return clipped_text(text, IntelLimits.FAILURE_REASON_CHARS)
 
 
 def _redirect_target(response: httpx.Response, asked: str) -> str:

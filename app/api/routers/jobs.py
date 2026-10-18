@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from app.api.dependencies import Caller, CallersRun
 from app.core.constants import ApiTag
 from app.models.jobs import JobList, SessionDeleted
-from app.models.run_board import RunBoard
+from app.models.scenario.views import RunBoard
 from app.services.jobs import JobService, get_job_service
 
 router = APIRouter(tags=[ApiTag.JOBS])

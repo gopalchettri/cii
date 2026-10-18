@@ -13,7 +13,7 @@ from app.core.constants import (
     MapperRecommendationStatus,
     Status,
 )
-from app.models.scenarios import SqlId
+from app.models.scenario.views import SqlId
 
 
 class CreateMappingRequest(BaseModel):

@@ -30,6 +30,7 @@ MONITORING_HOST = "threatgen-grafana.apps.dda-desc-az1-01.desccii.local"
 QUOTA_CPU = 6.0  # v1's notes: ai-threatgen's budget, in CPU limits
 SECRET_NAMES = {
     "CII_DB_DSN",
+    "CII_PROXY_URL",  # an address can carry a password
     "CII_MONGO_URL",
     "CII_REDIS_URL",
     "CII_REDIS_CELERY_BROKER_URL",
@@ -93,7 +94,7 @@ def _uat_values() -> dict[str, str]:
         "CII_MONGO_URL": "mongodb://tsg:pw@10.228.146.3:27018/?authSource=admin&directConnection=true",
         "CII_REDIS_URL": "redis://:pw@10.228.146.4:6379/0",
         "CII_REDIS_CELERY_BROKER_URL": "redis://:pw@10.228.146.4:6379/1",
-        "CII_AI_BYPASS_PROXY": "false",  # the pods reach the AI gateway only through the proxy
+        "CII_AI_BYPASS_PROXY": "true",  # owner 2026-10-16: the pods call the AI gateway directly
     }
 
 
@@ -289,7 +290,8 @@ def test_the_gate_passes_a_good_file_and_names_each_problem_never_its_value(
     assert any(problem.startswith("CONTROL_CANDIDATES: Field required") for problem in problems)
     assert "short-secret" not in "".join(problems)
     assert generator.settings_problems(good | {"CII_CORS_ORIGINS": "*"})
-    bypass = generator.settings_problems(good | {"CII_AI_BYPASS_PROXY": "true"})
+    # Owner 2026-10-16 (G264): the AI direct, only the outside calls (the intel feeds) through the proxy.
+    bypass = generator.settings_problems(good | {"CII_AI_BYPASS_PROXY": "false"})
     assert [problem.split(":")[0] for problem in bypass] == ["CII_AI_BYPASS_PROXY"]
     assert os.environ["TSG_TEST_SENTINEL"] == "kept"  # this process's environment is put back
 
@@ -339,3 +341,16 @@ def test_the_image_gets_only_what_it_runs() -> None:
     copied = {source for line in re.findall(r"^COPY (.+) \S+$", dockerfile, re.M) for source in line.split()}
     assert rules[0] == "*" and copied == allowed == {"pyproject.toml", "requirements.txt", "app"}
     assert "local" not in re.findall(r"\[(\w+)\]", dockerfile) and "\nUSER 10001\n" in dockerfile
+
+
+def test_the_pods_may_reach_the_ai_gateway_directly_and_the_proxy_for_the_feeds() -> None:
+    """Owner 2026-10-16 (G264): on OpenShift the AI gateway is called directly (CII_AI_BYPASS_PROXY=true) and
+    only the outside calls, the intel feeds, go through the proxy: each project's egress rules allow both, so
+    the pinned gateway address (hostAliases) and the rules cannot drift apart."""
+    generator = _generator()
+    for namespace, app_file in APP_FILES.items():
+        allowed = generator.reachable(NETWORK_FILES[namespace])
+        assert ("10.61.192.2", "8080") in allowed, namespace  # the proxy: the intel feeds
+        for deployment in _objects(app_file, kind="Deployment"):
+            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]:
+                assert (alias["ip"], "443") in allowed, (namespace, deployment["metadata"]["name"])

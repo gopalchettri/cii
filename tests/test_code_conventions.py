@@ -24,10 +24,10 @@ ALLOWED_IMPORTS: dict[str, set[str]] = {
     "data_access": {"core", "models"},
     "ai": {"core", "models", "data_access"},
     "search": {"core", "models", "data_access", "ai"},
-    "engine": {"core", "models", "ai", "search"},
+    "domain": {"core", "models", "ai", "search"},
     "realtime": {"core", "models", "data_access"},
-    "services": {"core", "models", "data_access", "ai", "search", "engine", "realtime", "worker"},
-    "worker": {"core", "models", "data_access", "ai", "search", "engine", "realtime"},
+    "services": {"core", "models", "data_access", "ai", "search", "domain", "realtime", "worker"},
+    "worker": {"core", "models", "data_access", "ai", "search", "domain", "realtime"},
     "api": {"core", "models", "services", "realtime"},
 }
 #: Calls that read or write MongoDB or SQL Server: only data_access/ (and the clients in core/database.py)
@@ -57,8 +57,14 @@ DATABASE_CALLS = {
     "drop_database",
     "execute_procedure",
 }
-#: No file is exempt, constants included (owner, 2026-10-10): a long declarations file is split by topic.
 MAX_PUBLIC_METHODS, MAX_CLASS_LINES, MAX_FUNCTION_LINES, MAX_FILE_LINES = 7, 150, 40, 300
+#: Owner decision of 2026-10-18: the scenario folders keep few files, so only the file cap is lifted there.
+LONG_FILE_FOLDERS = (
+    "app/domain/scenario/",
+    "app/services/scenario/",
+    "app/data_access/scenario/",
+    "app/models/scenario/",
+)
 
 
 def _layer(source: pathlib.Path) -> str:
@@ -144,17 +150,17 @@ def _imported_modules(node: ast.AST) -> list[str]:
     return []
 
 
-def test_shared_engine_steps_import_no_feature() -> None:
-    """app/engine/shared/ serves scenarios and remediation alike, so it never imports either: a step one
+def test_shared_domain_steps_import_no_feature() -> None:
+    """app/domain/shared/ serves scenarios and remediation alike, so it never imports either: a step one
     feature needs alone belongs in that feature's folder."""
-    sources = sorted((APP / "engine" / "shared").glob("*.py"))
-    assert sources, "the guard sees app/engine/shared"
+    sources = sorted((APP / "domain" / "shared").glob("*.py"))
+    assert sources, "the guard sees app/domain/shared"
     offenders = [
         f"{_name(source)}:{node.lineno} {module}"
         for source in sources
         for node in ast.walk(_tree(source))
         for module in _imported_modules(node)
-        if module.startswith(("app.engine.scenarios", "app.engine.remediation"))
+        if module.startswith(("app.domain.scenario", "app.domain.remediation"))
     ]
     assert offenders == [], "\n".join(offenders)
 
@@ -197,7 +203,7 @@ def test_no_god_class_function_or_file() -> None:
     offenders = []
     for source in SIZE_CHECKED_SOURCES:
         lines = len(source.read_text(encoding="utf-8").splitlines())
-        if lines > MAX_FILE_LINES:
+        if lines > MAX_FILE_LINES and not _name(source).startswith(LONG_FILE_FOLDERS):
             offenders.append(f"{_name(source)}: {lines} lines (max {MAX_FILE_LINES})")
         for node in ast.walk(_tree(source)):
             size = (node.end_lineno or node.lineno) - node.lineno + 1 if hasattr(node, "end_lineno") else 0

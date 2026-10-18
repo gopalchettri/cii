@@ -1,28 +1,21 @@
-"""Live updates over Server-Sent Events (SSE).
-
-A client opens GET /v1/sessions/{session_id}/events (#8) or
-GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events (#28) with the usual identity
-headers. It receives the current status at once, then every change as a
-`session.updated` or `remediation.updated` event, until it closes the connection; or until the run or plan is
-deleted (G214): one `session.deleted` or `remediation.deleted` event, then the stream ends."""
+"""Live updates over Server-Sent Events: a run's or a plan's status now, then at every change, until the
+client closes or the record is deleted (one `.deleted` event, then the stream ends)."""
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from functools import partial
-from typing import Annotated, Any
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from app.api.dependencies import ScenarioId, SessionId, get_authenticated_principal
+from app.api.dependencies import CallersPlan, SessionId, valid_session
 from app.core.constants import ApiTag, Event, Realtime, SessionState, StageState, Status
 from app.core.exceptions import NotFound
-from app.models.api_clients import Principal
-from app.models.remediation import RemediationStatus
 from app.realtime.event_hub import EventHub
 from app.realtime.publisher import remediation_channel, session_channel
-from app.services.remediation.queries import find_plan_for_caller, read_current_remediation_status
-from app.services.session_status import find_status_for_caller, read_current_status
+from app.services.remediation.queries import read_current_remediation_status
+from app.services.scenario.runs import read_current_status
 
 router = APIRouter(tags=[ApiTag.LIVE_UPDATES])
 
@@ -30,21 +23,13 @@ router = APIRouter(tags=[ApiTag.LIVE_UPDATES])
 _UNFINISHED = {Status.QUEUED, Status.RUNNING, SessionState.ACTIVE}
 
 
-async def check_session_for_caller(
-    session_id: str, principal: Annotated[Principal, Depends(get_authenticated_principal)]
-) -> None:
-    """Runs before the stream starts, so an unknown run (404), another entity's run (403) or an outage (503)
-    is an ordinary problem response, not a broken stream."""
-    await asyncio.to_thread(find_status_for_caller, session_id, principal.entity_id)
-
-
 @router.get(
     "/v1/sessions/{session_id}/events",
     response_class=EventSourceResponse,
-    dependencies=[Depends(check_session_for_caller)],
+    dependencies=[Depends(valid_session)],  # before the stream: a 404, 403 or 503 is an ordinary response
     summary="1. A run's live status",
 )
-async def stream_session_events(session_id: str, request: Request) -> AsyncIterator[ServerSentEvent]:
+async def stream_session_events(session_id: SessionId, request: Request) -> AsyncIterator[ServerSentEvent]:
     """Server-Sent Events: `session.updated` (the body of `GET /v1/sessions/{session_id}`) now and at
     every change; `session.deleted` once when it is deleted. Swagger cannot show a stream: use
     `curl -N` or a browser EventSource."""
@@ -55,23 +40,12 @@ async def stream_session_events(session_id: str, request: Request) -> AsyncItera
         yield event
 
 
-async def check_plan_for_caller(
-    session_id: SessionId,
-    scenario_id: ScenarioId,
-    principal: Annotated[Principal, Depends(get_authenticated_principal)],
-) -> RemediationStatus:
-    """The scenario's plan (404 none, 403 another entity's), checked before the stream starts."""
-    return await asyncio.to_thread(find_plan_for_caller, session_id, scenario_id, principal.entity_id)
-
-
 @router.get(
     "/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events",
     response_class=EventSourceResponse,
     summary="2. A plan's live status",
 )
-async def stream_remediation_events(
-    plan: Annotated[RemediationStatus, Depends(check_plan_for_caller)], request: Request
-) -> AsyncIterator[ServerSentEvent]:
+async def stream_remediation_events(plan: CallersPlan, request: Request) -> AsyncIterator[ServerSentEvent]:
     """The plan's status now (`remediation.updated`: the body of `.../treatment-plan/status`), then every
     change, until the client closes; `remediation.deleted` once, when its run is deleted."""
     remediation_id = plan.remediation_id

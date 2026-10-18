@@ -46,7 +46,7 @@ class DraftControls(BaseModel):
 
 class DraftAction(BaseModel):
     """One action as the AI writes it: judgement only (what, who, how urgent, how long, what it waits for).
-    Dates and timelines are code's (app/engine/remediation/scheduler.py)."""
+    Dates and timelines are code's (app/domain/remediation/scheduler.py)."""
 
     action_id: str
     action: Given

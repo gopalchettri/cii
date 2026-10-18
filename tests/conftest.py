@@ -10,6 +10,9 @@ from tests.checkout import CHECKOUT  # standard library only
 
 TEST_DATABASE = f"cii_tsg_test_{CHECKOUT}"  # one per checkout: another checkout's run never drops it
 os.environ["CII_MONGO_DB"] = TEST_DATABASE
+# Tests never call a real reranker (each fakes it): a service address, so no test needs the local model's
+# package (G265: a local reranker without it stops start-up).
+os.environ["CII_RERANK_BASE_URL"] = "http://rerank.invalid"
 # Before any test imports litellm: its model table from the installed package, as the app does
 # (app/ai/__init__.py), so the tests make no call to GitHub (a CI runner may have no internet access).
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
@@ -29,9 +32,7 @@ os.environ["DEBUG_STEP_OUTPUT"] = os.environ["DEBUG_STEP_DETAIL"] = "false"
 # Scenario sets at their defaults, whatever the developer's .env says for a live test (G196).
 os.environ["INITIAL_SET_SIZE"] = os.environ["NEXT_SET_SIZE"] = "6"
 # The similarity thresholds at their defaults too (G200): a developer may set others for a live test.
-os.environ.update(
-    CONTROL_SIMILARITY_THRESHOLD="60", THREAT_SIMILARITY_THRESHOLD="75", ACTOR_SIMILARITY_THRESHOLD="0"
-)
+os.environ.update(CONTROL_SIMILARITY_THRESHOLD="60", THREAT_SIMILARITY_THRESHOLD="75")
 # Control selection at its defaults (G225); the word limits wide open (G226): a test's short sample draft is
 # about its own rule, never its length. The length rule's tests set their own limits (test_word_limits.py).
 os.environ.update(

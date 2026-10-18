@@ -8,7 +8,7 @@ import pytest
 
 from app.core.constants import ConflictReason, LibraryRowKind, LibraryStatus, StrideCategory
 from app.core.exceptions import Invalid
-from app.engine.remediation.threat_identity import resolve_threat
+from app.domain.remediation.threat_identity import resolve_threat
 from app.models.library import (
     LibraryActor,
     LibraryThreat,

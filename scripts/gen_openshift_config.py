@@ -130,10 +130,10 @@ def settings_problems(environment: dict[str, str]) -> list[str]:
     finally:
         os.environ.clear()
         os.environ.update(saved)
-    if settings.ai_bypass_proxy:  # set in the env file only; true suits the UAT Windows server, not the pods
+    if not settings.ai_bypass_proxy:  # owner 2026-10-16 (G264): as on the UAT Windows server
         return [
-            f"{env_name('ai_bypass_proxy')}: must be false here: the pods reach the AI gateway only "
-            "through the corporate proxy (their network rules allow nothing else)"
+            f"{env_name('ai_bypass_proxy')}: must be true here: the pods call the AI gateway directly "
+            "(hostAliases); only the outside calls, the intel feeds, go through the proxy (HTTPS_PROXY)"
         ]
     return []
 

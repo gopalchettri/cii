@@ -11,6 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.ai  # noqa: F401 — the cap is set where the AI library is imported
+from app.core.config import get_settings
+from app.core.logging import configure_logging
 from app.main import _ignore_client_gone
 
 
@@ -24,6 +26,21 @@ def test_the_ai_librarys_own_debug_lines_stay_out_of_our_debug_logs(caplog: pyte
     ] * 3
     logging.getLogger("app").debug("our own debug line")
     assert caplog.records[-1].getMessage() == "our own debug line"
+
+
+def test_debug_is_for_our_code_only_while_libraries_keep_info_and_above() -> None:
+    # G263 (UAT, 2026-10-16): CII_LOG_LEVEL=DEBUG on the root logger printed every MongoDB command and its
+    # reply ("Connection checkout started", "Command succeeded"), stored data among them.
+    saved = {name: logging.getLogger(name).level for name in ("", "app", "http")}
+    try:
+        configure_logging(get_settings().model_copy(update={"log_level": "DEBUG"}))
+        driver = logging.getLogger("pymongo.command")
+        assert not driver.isEnabledFor(logging.DEBUG) and driver.isEnabledFor(logging.INFO)
+        assert logging.getLogger("app.data_access.audit").isEnabledFor(logging.DEBUG)
+        assert logging.getLogger("http").isEnabledFor(logging.DEBUG)  # the request log
+    finally:
+        for name, level in saved.items():
+            logging.getLogger(name).setLevel(level)
 
 
 class _Loop:

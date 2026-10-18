@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from app.core.constants import EvidenceLimits, IntelKind, IntelSource
-from app.engine.external_intelligence.plain_facts import PlainFactWriter
+from app.domain.external_intelligence.facts import PlainFactWriter
 from app.models.external_intelligence.evidence import IntelHit
 from tests.external_intelligence.evidence_fakes import FlaggingSanitiser
 

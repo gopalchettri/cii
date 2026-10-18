@@ -19,5 +19,6 @@ class SwitchFlagStore:
         return bool(doc.get("enabled", True)), doc.get("changed_at"), doc.get("changed_by")
 
     def write_runtime_flag(self, enabled: bool, changed_by: str, now: datetime) -> None:
+        """The switch set, with who changed it and when."""
         change = {"enabled": enabled, "changed_by": changed_by, "changed_at": now}
         self._flags.update_one({"_id": IntelDocId.SWITCH}, {"$set": change}, upsert=True)

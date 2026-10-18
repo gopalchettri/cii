@@ -22,7 +22,7 @@ from pydantic import (
 
 from app.core.constants import Limits, Remediation, RemediationMessage, Review, YesNo
 from app.models.remediation_examples import PLAN_REQUEST_EXAMPLES
-from app.models.scenarios import SqlId, StartRunRequest
+from app.models.scenario.views import SqlId, StartRunRequest
 
 #: What a library control code looks like ("CII-CID-202"): groups joined by separators, with a digit. It only
 #: routes a plain string; nothing is refused for failing it.

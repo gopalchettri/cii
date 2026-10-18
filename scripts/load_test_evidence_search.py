@@ -17,9 +17,9 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from app.core.constants import RerankGateLimits  # noqa: E402
-from app.engine.external_intelligence.evidence_finder import EvidenceFinder  # noqa: E402
-from app.engine.external_intelligence.rerank_gate import RerankGate  # noqa: E402
-from app.search.external_intelligence.corpus_builder import CorpusBuilder  # noqa: E402
+from app.domain.external_intelligence.evidence_finder import EvidenceFinder  # noqa: E402
+from app.domain.external_intelligence.rerank_gate import RerankGate  # noqa: E402
+from app.search.external_intelligence.corpus_builder import build_corpus  # noqa: E402
 from app.search.external_intelligence.evidence_index import build_index  # noqa: E402
 from tests.external_intelligence.evidence_fakes import (  # noqa: E402
     CountingRerank,
@@ -36,7 +36,7 @@ BATCHES_PER_USER, REQUESTS_PER_BATCH = 5, 6
 def make_finder(rerank_seconds: float, gate_size: int) -> tuple[EvidenceFinder, CountingRerank]:
     docs = [technique_doc(f"T{n}", "IT", f"{WORDS[n % 5]} technique {n}") for n in range(1, 400)]
     rerank = CountingRerank(rerank_seconds)
-    corpus = CorpusBuilder().build_corpus(docs)
+    corpus = build_corpus(docs)
     index = build_index(corpus, TextEmbeddings(), rerank)  # type: ignore[arg-type]  # fakes stand in: no AI
     return EvidenceFinder(lambda: index, 1.0, gate=RerankGate(gate_size)), rerank
 

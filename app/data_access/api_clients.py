@@ -18,6 +18,7 @@ _PUBLIC = {"key_hash": 0}
 
 
 def _as_client(stored: Doc) -> Doc:
+    """A stored client with its id as `client_id`."""
     return {"client_id": stored.pop("_id"), **stored}
 
 
@@ -26,10 +27,12 @@ class ApiClientRepository:
         self._clients = db[Collection.API_CLIENTS]
 
     def ensure_indexes(self) -> None:
+        """Unique key hashes, and unique names among active clients."""
         self._clients.create_index("key_hash", unique=True)
         self._clients.create_index("name", unique=True, partialFilterExpression={"active": True})
 
     def insert_client(self, client: Doc) -> None:
+        """A new client; Conflict when an active client has its name."""
         stored = {"_id": client["client_id"]} | {k: v for k, v in client.items() if k != "client_id"}
         try:
             self._clients.insert_one(stored)
@@ -37,14 +40,17 @@ class ApiClientRepository:
             raise Conflict(ApiClientMessage.NAME_TAKEN.format(name=client["name"])) from exc
 
     def list_clients(self, active: bool | None) -> list[Doc]:
+        """Every client (or only active or revoked ones), newest first, never its key hash."""
         query = {} if active is None else {"active": active}
         return [_as_client(stored) for stored in self._clients.find(query, _PUBLIC).sort("created_at", -1)]
 
     def find_active_client_id_by_key_hash(self, key_hash: str) -> str | None:
+        """The id of the active client with this key hash."""
         found = self._clients.find_one({"key_hash": key_hash, "active": True}, {"_id": 1})
         return found["_id"] if found else None
 
     def find_client(self, client_id: str) -> Doc | None:
+        """One client, never its key hash."""
         stored = self._clients.find_one({"_id": client_id}, _PUBLIC)
         return _as_client(stored) if stored else None
 

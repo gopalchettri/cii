@@ -10,9 +10,7 @@ from app.core.constants import BoardMessage, ControlMatch, RunActionKind, RunKin
 from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
-from app.models.run_board import ScenarioCount, StageTimings, build_board
-from app.models.scenario_views import ScenarioView
-from app.models.scenarios import SessionStatus
+from app.models.scenario.views import ScenarioCount, ScenarioView, SessionStatus, StageTimings, build_board
 
 _FAILED = {"error": {"code": "unavailable", "message": "The AI service is down."}, "attempts": 3}
 #: A run whose first set of 6 (of 10 planned) is written.
@@ -143,7 +141,7 @@ def test_times_reasons_and_numbers_say_what_happened() -> None:
     assert done.timings.controls == 1500.4  # live run 2026-10-12: a sum of many parts, shown to 0.1 s
     assert progress.error_message == {
         "threats": BoardMessage.NOT_ASSESSED.format(categories="Repudiation"),
-        "scenarios": BoardMessage.ABANDONED.format(abandoned=2),
+        "scenarios": BoardMessage.ABANDONED.format(abandoned=2, session_id="run-1"),
     }
     assert progress.scenario_count == ScenarioCount(
         total=170, served=6, remaining=162, complete=False, pending_review=6, accepted=0, rejected=0
@@ -182,7 +180,7 @@ def test_a_summary_shows_its_own_action_running_or_failed_never_the_one_before()
 
 def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> None:
     """Review 2026-10-12: a person's new threat (and new type) is never shown as AI-proposed or as a library
-    name."""
+    name. G267: v1's words, "unverified", with v1's library block saying where it stands."""
     threat = {
         "type": "Drone intrusion",
         "type_id": None,
@@ -200,12 +198,15 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
         "content": {"category": "Tampering", "threat": threat},
         "created_at": datetime.now(UTC),
     }
-    block = ScenarioView.from_record(record).threat
+    view = ScenarioView.from_record(record)
+    block = view.threat
     assert (block.grounding_status, block.library_threat_type, block.library_threat_name) == (
-        "person_proposed",
+        "unverified",
         None,
         None,
     )
+    assert view.threat_source is None and "AI_PROPOSED_THREAT" not in view.review_flags  # never the AI's
+    assert view.library is not None and view.library.threat_type.status == "not_proposed"
     assert (block.threat_type, block.threat_name, block.is_threat_ai_generated) == (
         "Drone intrusion",
         "Rogue drone",
@@ -213,7 +214,9 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
     )
     # Reviewer 2026-10-12: proposed now, so it has a library id while a curator decides: still the person's.
     pending = record | {"content": {"threat": threat | {"library_id": 901, "library_status": "pending"}}}
-    assert ScenarioView.from_record(pending).threat.grounding_status == "person_proposed"
+    waiting = ScenarioView.from_record(pending)
+    assert waiting.threat.grounding_status == "unverified"
+    assert waiting.library is not None and waiting.library.threat.status == "inserted"
 
 
 def test_a_control_shows_its_description_and_why_it_was_kept() -> None:

@@ -62,7 +62,7 @@ def test_a_technique_describing_an_attack_on_ai_is_kept_without_the_flagged_sent
 
 def test_a_clean_description_takes_one_pass_as_it_always_did() -> None:
     """Review 2026-10-14: nearly every description is clean; only a flagged one is split into sentences."""
-    from app.engine.external_intelligence.untrusted_text import UntrustedTextSanitiser
+    from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
 
     class Counting(UntrustedTextSanitiser):
         calls = 0

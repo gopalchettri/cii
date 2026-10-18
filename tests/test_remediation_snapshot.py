@@ -7,8 +7,8 @@ from datetime import date
 from typing import Any
 
 from app.core.constants import Remediation, SnapshotWarning
-from app.engine.remediation.register import register_half
-from app.engine.remediation.snapshot import build_snapshot
+from app.domain.remediation.register import register_half
+from app.domain.remediation.snapshot import build_snapshot
 from app.models.library import LibraryControl
 from app.models.remediation_requests import RegisterData
 from tests.planner_samples import CONTEXT

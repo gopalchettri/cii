@@ -7,11 +7,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pyodbc
 import pytest
 from sqlalchemy import Engine
 
-from app.core.constants import AssetType, LibraryRowKind, StoredProcedure
+from app.core.constants import AssetType, ErrorMessage, LibraryRowKind, StoredProcedure
 from app.core.database import StoredProcedureClient
+from app.core.exceptions import Invalid, SetupError, Unavailable
 from app.data_access.library import LibraryRepository
 from app.models.library import PendingLibraryRow, RejectedLibraryThreat
 from tests.sql_test_database import REPO, procedure_files
@@ -173,8 +175,10 @@ def test_a_live_threat_is_answered_as_it_is_and_never_changed(
 
 
 def test_a_proposal_from_an_unknown_source_is_refused(procedures: StoredProcedureClient) -> None:
-    with pytest.raises(Exception, match="manual or ai"):
+    """The procedure's THROW (SQLSTATE 42000, a ProgrammingError) is a setup error, never a bare 500."""
+    with pytest.raises(SetupError, match=ErrorMessage.SQL_PROCEDURE_BROKEN) as refused:
         _propose(procedures, Source="import", TypeName="X", ThreatName="Y")
+    assert "manual or ai" in str(refused.value.__cause__)
 
 
 def test_pending_threats_are_listed_oldest_first_with_a_total(procedures: StoredProcedureClient) -> None:
@@ -297,8 +301,8 @@ def test_grants_name_every_tsg_procedure_and_nothing_else() -> None:
 
 
 def test_a_backup_copy_beside_a_procedure_is_never_installed_or_granted(tmp_path: Path) -> None:
-    """G217 (owner 2026-10-13 keeps "tsg_GetAssetContext copy.sql" in scripts/sql): every tsg_*.sql file was
-    installed and checked as a procedure, so the stale copy was installed too and the grants check failed."""
+    """G217: every tsg_*.sql file was installed and checked as a procedure, so a stale copy saved beside one
+    (e.g. "tsg_GetAssetContext copy.sql") was installed too and the grants check failed."""
     for name in (
         "tsg_GetAssetContext.sql",
         "tsg_GetAssetContext copy.sql",
@@ -308,3 +312,54 @@ def test_a_backup_copy_beside_a_procedure_is_never_installed_or_granted(tmp_path
     ):
         (tmp_path / name).write_text("-- a file", encoding="utf-8")
     assert [path.name for path in procedure_files(tmp_path)] == ["tsg_GetAssetContext.sql"]
+
+
+class _EngineRaising:
+    """An engine whose procedure call raises `error`, as pyodbc raises it from SQL Server."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.executed: list[str] = []
+
+    def raw_connection(self) -> "_EngineRaising":
+        return self
+
+    def cursor(self) -> "_EngineRaising":
+        return self
+
+    def execute(self, sql: str, *_params: object) -> None:
+        self.executed.append(sql)
+        raise self.error
+
+    def close(self) -> None:
+        """Nothing to return to a pool."""
+
+
+def test_only_a_stored_procedure_member_is_ever_executed() -> None:
+    """Before: any string was put into the EXEC text."""
+    engine = _EngineRaising(AssertionError("never executed"))
+    client = StoredProcedureClient(engine)  # type: ignore[arg-type]
+    with pytest.raises(SetupError, match="is not a TSG stored procedure"):
+        client.execute_procedure("tsg_GetThreatLibrary; DROP TABLE dbo.Threat")  # type: ignore[arg-type]
+    assert engine.executed == []
+
+
+@pytest.mark.parametrize(
+    ("driver_error", "expected"),
+    [
+        (pyodbc.DataError("22003", "Arithmetic overflow"), Invalid),
+        (pyodbc.IntegrityError("23000", "Cannot insert duplicate key"), Invalid),
+        (pyodbc.ProgrammingError("42000", "Could not find stored procedure"), SetupError),
+        (pyodbc.OperationalError("HYT00", "Query timeout expired"), Unavailable),
+        (pyodbc.InterfaceError("28000", "Login failed"), Unavailable),
+    ],
+)
+def test_a_driver_error_from_a_procedure_becomes_its_app_error(
+    driver_error: Exception, expected: type[Exception]
+) -> None:
+    """Before: a value SQL Server refused (DataError, IntegrityError) or a missing procedure reached the API
+    as a bare 500."""
+    client = StoredProcedureClient(_EngineRaising(driver_error))  # type: ignore[arg-type]
+    with pytest.raises(expected) as raised:
+        client.execute_procedure(StoredProcedure.GET_LIBRARY_STAMP)
+    assert raised.value.__cause__ is driver_error

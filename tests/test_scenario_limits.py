@@ -1,4 +1,4 @@
-"""The owner's two limits: TOTAL_SCENARIO_COUNT (0 = every valid path; a setting since 2026-10-10, G106) and
+"""The owner's two limits: TOTAL_SCENARIO_COUNT (0 = every valid path) and
 MAX_SUPPORTING_SYSTEMS (0 = no upper limit)."""
 
 import pytest
@@ -6,8 +6,8 @@ from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.core.constants import Generation, Limits, SessionMessage, UnselectedReason
-from app.engine.scenarios.attack_paths.path_selector import select_up_to_target
-from app.models.scenarios import StartRunRequest
+from app.domain.scenario.plan import select_up_to_target
+from app.models.scenario.views import StartRunRequest
 
 
 def _paths(count: int) -> list[dict]:

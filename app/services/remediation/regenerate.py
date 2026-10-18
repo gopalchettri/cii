@@ -19,9 +19,10 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, Forbidden, NotFound
 from app.core.singletons import singleton
 from app.core.tracing import traced
+from app.data_access.job_records import new_job
 from app.data_access.remediation_versions import RemediationVersions
 from app.data_access.remediations import RemediationRepository
-from app.engine.remediation.snapshot import is_pending, no_longer_mapped
+from app.domain.remediation.snapshot import is_pending, no_longer_mapped
 from app.models.api_clients import Principal
 from app.models.remediation import PlanRequested
 from app.models.remediation_requests import RegisterData
@@ -53,9 +54,9 @@ class PlanRegeneration:
             previous = self._plans.find_snapshot(remediation_id, latest) or {}
             snapshot["warnings"] += no_longer_mapped(previous, snapshot, latest)
         now, version = datetime.now(UTC), latest + 1
-        job = {"task": TaskName.WRITE_PLAN, "epoch": version, "task_id": None, "attempts": 0, "due_at": now}
+        job = new_job(TaskName.WRITE_PLAN, version, now)
         item = new_version(version, principal, snapshot, now)
-        if not self._versions.append_version(remediation_id, latest, item, job | {"error": None}, now):
+        if not self._versions.append_version(remediation_id, latest, item, job, now):
             raise _in_progress(remediation_id, latest)  # another regenerate made it first
         send_job(TaskName.WRITE_PLAN, remediation_id, version)
         target = audit_target(AuditTarget.REMEDIATION, remediation_id)

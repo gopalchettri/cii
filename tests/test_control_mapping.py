@@ -26,10 +26,15 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, Unavailable
-from app.data_access.run_counts import RunCounts
-from app.data_access.scenario_controls import ControlDeliveries, ControlLeases, ControlSweep
-from app.data_access.scenarios import ScenarioRepository, TitleTaken
-from app.engine.scenarios.control_mapper import ControlMapper
+from app.data_access.scenario.scenarios import (
+    ControlDeliveries,
+    ControlLeases,
+    ControlSweep,
+    RunCounts,
+    ScenarioRepository,
+    TitleTaken,
+)
+from app.domain.scenario.controls import ControlMapper
 from app.models.library import (
     LibraryControl,
     ThreatLibrary,
@@ -38,7 +43,7 @@ from app.models.library import (
     place_asset_types,
     unknown_asset_type,
 )
-from app.models.scenarios import SessionStatus
+from app.models.scenario.views import SessionStatus
 from app.search.service import LibrarySearch
 from app.worker.tasks import controls as controls_job
 from tests.fakes import FakeEmbeddings
@@ -55,7 +60,7 @@ _BOTH = {"IT", "OT", r"IT\OT"}
         (" ot ", [], {"OT", r"IT\OT"}),  # labels as stored: any case, any spacing
         (None, ["IT"], {"IT", r"IT\OT"}),
         ("Physical", [None, ""], set()),  # nothing recognised: only untyped controls fit, never every control
-        ("IT-OT", [], set()),  # not a value (owner 2026-10-12, G211): never read as both
+        ("IT-OT", [], set()),  # not a value: never read as both
     ],
 )
 def test_the_pool_follows_the_asset_and_the_scenarios_own_systems(
@@ -87,7 +92,7 @@ def test_the_control_search_ranks_only_compatible_controls_before_the_cut() -> N
 
 @pytest.mark.parametrize("both", [r"IT\OT", r"it\ot", r" IT \ OT "])
 def test_an_asset_recorded_as_both_gets_both_kinds_of_control(both: str) -> None:
-    r"""Owner 2026-10-12 (G211): IT\OT means both, any case or spacing ("IT-OT" is not a value)."""
+    r"""IT\OT means both, any case or spacing ("IT-OT" is not a value)."""
     assert compatible_asset_types(both, []) == _BOTH
 
 
@@ -95,7 +100,7 @@ def test_an_asset_recorded_as_both_gets_both_kinds_of_control(both: str) -> None
     ("asset_type", "fits"), [("OT", False), ("IT", True), (r"IT\OT", True), (None, True), ("IT-OT", True)]
 )
 def test_a_control_or_threat_fits_by_its_own_asset_type(asset_type: str | None, fits: bool) -> None:
-    """G211: on an IT system, an OT row never fits; an IT or both row does; an empty one, or one whose value
+    """On an IT system, an OT row never fits; an IT or both row does; an empty one, or one whose value
     is not a type ("IT-OT", noted for a curator), fits everywhere rather than being silently dropped."""
     assert asset_type_fits(asset_type, compatible_asset_types("IT", [])) is fits
     assert unknown_asset_type(asset_type) is (asset_type == "IT-OT")
@@ -125,7 +130,7 @@ def test_an_unnamed_duplicate_key_is_checked_never_taken_as_written(written: int
         assert scenarios.save({"_id": "s1"}) is False
 
 
-#: As the run freezes it (services/scenarios/context.py): the asset's IT/OT code is `asset.category_code`;
+#: As the run freezes it (services/scenario/runs.py): the asset's IT/OT code is `asset.category_code`;
 #: `asset_context.asset_type` is the platform's free-text type.
 _OT_CONTEXT = dataclasses.replace(
     CONTEXT,
@@ -185,7 +190,7 @@ def test_controls_come_from_the_scenario_and_risk_and_only_compatible_ones_are_k
         ("C-OT", 1, ControlMatch.EXACT),
         ("C-ANY", 2, ControlMatch.EXACT),
     ]
-    # Kept with the mapping (G207): the results show it without reading the library.
+    # Kept with the mapping: the results show it without reading the library.
     assert mapping.items[0].to_record()["description"] == "Back up PLC and SCADA logic"
     query = rerank.asked[0][0]
     content = _SCENARIO["content"]
@@ -194,9 +199,9 @@ def test_controls_come_from_the_scenario_and_risk_and_only_compatible_ones_are_k
 
 
 def test_a_scenarios_controls_follow_its_own_place_not_the_whole_asset() -> None:
-    """Owner 2026-10-12 (G211), as for its threat: a scenario on the IT system of an OT asset gets IT controls
-    only, however well an OT one scores; a scenario on the asset itself gets the asset's type (its code, never
-    its free-text type "Control system", review 2026-10-11)."""
+    """As for its threat: a scenario on the IT system of an OT asset gets IT controls only, however well an
+    OT one scores; a scenario on the asset itself gets the asset's type (its code, never its free-text type
+    "Control system")."""
     rerank = _ScoresByText({"Backup of controller logic": 90.0, "Offline backup": 80.0})
     on_historian = {"content": _SCENARIO["content"] | {"systems": [{"id": 322, "name": "Historian"}]}}
     mapping = ControlMapper(rerank).map_controls(on_historian, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
@@ -207,8 +212,8 @@ def test_a_scenarios_controls_follow_its_own_place_not_the_whole_asset() -> None
 
 
 def test_each_system_whose_type_is_not_recorded_takes_the_assets_among_recorded_ones() -> None:
-    """G211 review: one unrecorded system among recorded ones took nothing, so an OT asset's scenario on an
-    unrecorded and an IT system lost the OT controls the unrecorded one should bring."""
+    """An unrecorded system among recorded ones takes the asset's type, so an OT asset's scenario on an
+    unrecorded and an IT system keeps the OT controls."""
     assert place_asset_types("OT", [None, "IT"]) == _BOTH
     assert place_asset_types("OT", []) == {"OT", r"IT\OT"}  # the asset itself
 
@@ -233,7 +238,7 @@ def test_none_at_the_cut_off_keeps_the_single_nearest_with_a_warning() -> None:
 
 
 def test_the_control_threshold_is_the_owners_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """G200: CONTROL_SIMILARITY_THRESHOLD decides "exact"; 87 and 70 both pass the default 60, neither passes
+    """CONTROL_SIMILARITY_THRESHOLD decides "exact"; 87 and 70 both pass the default 60, neither passes
     88 (the nearest alone is kept, the warning naming 88)."""
     rerank = _ScoresByText({"Backup of controller logic": 87.0, "Backup policy": 70.0})
     mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
@@ -259,7 +264,7 @@ def test_an_it_and_an_ot_twin_are_one_control_and_the_higher_score_stays() -> No
 
 
 def test_an_empty_library_fails_and_no_control_of_the_type_keeps_the_nearest_of_another() -> None:
-    """T-CTL-08/09, owner 2026-10-15 ("provide the near possible control"): control_library_empty only when
+    """control_library_empty only when
     the library is empty; with no control of the scenario's type, the nearest of another type is kept
     (MIN_CONTROLS at most, never a strong set of another type), and the warning says so."""
     with pytest.raises(ControlsNotMapped) as empty:
@@ -325,9 +330,26 @@ def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish(
     expired = {"controls.lease_until": datetime.now(UTC) - timedelta(seconds=1)}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": expired})
     assert leases.claim(session_id, "worker-b") is not None  # worker-a died: its lease ran out
-    assert not leases.finish(scenario_id, "worker-a", {"items": []})
-    assert leases.finish(scenario_id, "worker-b", {"items": [{"control_id": 1}], "warning": None})
+    assert not leases.finish(scenario_id, "worker-a", 1, {"items": []})
+    assert leases.finish(scenario_id, "worker-b", 2, {"items": [{"control_id": 1}], "warning": None})
     assert (_controls_of(scenario_id)["status"], _controls_of(scenario_id)["attempts"]) == (Status.DONE, 2)
+
+
+def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> None:
+    """Celery reuses the task id on a redelivery: a hung copy and the copy that claimed again after its lease
+    ran out share it, so only the attempts the newer claim counted let a write through."""
+    leases = ControlLeases(get_mongodb())
+    session_id, scenario_id = _waiting_scenario()
+    hung = leases.claim(session_id, "task-1")
+    expired = {"controls.lease_until": datetime.now(UTC) - timedelta(seconds=1)}
+    get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": expired})
+    again = leases.claim(session_id, "task-1")
+    assert hung is not None and again is not None
+    stale, fresh = hung["controls"]["attempts"], again["controls"]["attempts"]
+    assert not leases.renew(scenario_id, "task-1", stale)
+    assert not leases.fail(scenario_id, "task-1", stale, {"code": "x", "message": "late"})
+    assert leases.finish(scenario_id, "task-1", fresh, {"items": [{"control_id": 1}], "warning": None})
+    assert _controls_of(scenario_id)["status"] == Status.DONE
 
 
 def test_an_outage_queues_the_mapping_again_until_its_last_attempt_fails_it() -> None:
@@ -339,6 +361,8 @@ def test_an_outage_queues_the_mapping_again_until_its_last_attempt_fails_it() ->
     assert (
         leases.give_back(scenario_id, "w", 1, error) and _controls_of(scenario_id)["status"] == Status.QUEUED
     )
+    last = {"controls.attempts": Controls.MAX_ATTEMPTS - 1}
+    get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": last})
     leases.claim(session_id, "w")
     assert leases.give_back(scenario_id, "w", Controls.MAX_ATTEMPTS, error)
     assert (
@@ -361,19 +385,30 @@ def test_the_sweep_requeues_lost_dead_and_long_failed_mappings_only() -> None:
     sweep, now = ControlSweep(get_mongodb()), datetime.now(UTC)
     lost = _waiting_scenario(queued_at=now - timedelta(seconds=Controls.RESEND_QUEUED_AFTER_SECONDS + 5))
     dead = _waiting_scenario(status=Status.RUNNING, lease_until=now - timedelta(seconds=1))
+    attempts_left = Controls.MAX_ATTEMPTS - 1
     old_failure = _waiting_scenario(
-        status=Status.FAILED, last_attempt_at=now - timedelta(hours=1), attempts=5
+        status=Status.FAILED, last_attempt_at=now - timedelta(hours=1), attempts=attempts_left
     )
-    recent_failure = _waiting_scenario(status=Status.FAILED, last_attempt_at=now, attempts=5)
+    recent_failure = _waiting_scenario(status=Status.FAILED, last_attempt_at=now, attempts=1)
     fresh = _waiting_scenario()
     touched = sweep.requeue_stalled()
     assert {lost[0], dead[0], old_failure[0]} <= set(touched)
     assert not {recent_failure[0], fresh[0]} & set(touched)
     assert (
         _controls_of(old_failure[1])["status"] == Status.QUEUED
-        and _controls_of(old_failure[1])["attempts"] == 5
+        and _controls_of(old_failure[1])["attempts"] == attempts_left
     )
     assert _controls_of(recent_failure[1])["status"] == Status.FAILED
+
+
+def test_the_sweep_never_requeues_a_failure_that_used_its_last_attempt() -> None:
+    """A mapping failed Controls.MAX_ATTEMPTS times stays failed: the sweep never retries it forever."""
+    long_ago = datetime.now(UTC) - timedelta(hours=1)
+    run_id, scenario_id = _waiting_scenario(
+        status=Status.FAILED, last_attempt_at=long_ago, attempts=Controls.MAX_ATTEMPTS
+    )
+    assert run_id not in ControlSweep(get_mongodb()).requeue_stalled()
+    assert _controls_of(scenario_id)["status"] == Status.FAILED
 
 
 def test_an_older_count_never_overwrites_a_newer_one() -> None:

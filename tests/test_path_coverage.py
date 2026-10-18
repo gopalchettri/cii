@@ -1,77 +1,16 @@
-"""G223 (owner 2026-10-13): TOTAL_SCENARIO_COUNT is a hard limit, and within it scenarios are picked one at
-a time for the most coverage (critical risk, then supporting systems, kinds of attack, threats), recomputed
-after every pick; the plan records what is covered and why anything is not."""
+"""Coverage: what the finished scenarios cover, worked out from the plan on every read, and why anything is
+not covered."""
 
-import random
 from datetime import UTC, datetime
 
 from app.core.constants import CoverageGap
-from app.engine.scenarios.attack_paths.path_grouping import path_on
-from app.engine.scenarios.attack_paths.path_ranking import rank_paths
-from app.engine.scenarios.attack_paths.path_selector import AttackPathSelector
-from app.models.coverage import COVERAGE_FIELDS, coverage_record, run_coverage
-from app.models.scenarios import SessionStatus
-from app.models.threats import AttackPath, ThreatFindings
+from app.domain.scenario.plan import build_plan
+from app.models.scenario.plan import ThreatFindings
+from app.models.scenario.views import COVERAGE_FIELDS, SessionStatus, coverage_record, run_coverage
 from tests.planner_samples import S, planned
 from tests.test_attack_paths import LANDSCAPE
 
 CC, ITS, TSC, IDR = 1448, 1449, 1450, 1451  # asset 1166's systems (run 82f22cc3)
-
-
-def _path(key: str, kind: S, systems: tuple[int, ...], *also: S, impact: int = 3) -> AttackPath:
-    threat = planned(key, key, systems, categories=(kind, *also), impact=impact, confidence=80.0)
-    return path_on(threat, systems, kind)
-
-
-#: Run 82f22cc3's 17 paths: every threat HIGH; the Spoofing and Tampering threats also fit Repudiation.
-RUN_82F22CC3 = [
-    _path("lib:1", S.SPOOFING, (ITS, TSC), S.REPUDIATION),
-    _path("lib:2", S.DENIAL_OF_SERVICE, (CC, IDR)),
-    _path("lib:3", S.ELEVATION_OF_PRIVILEGE, (CC, IDR)),
-    _path("lib:4", S.TAMPERING, ()),
-    _path("lib:5", S.INFORMATION_DISCLOSURE, (CC, IDR)),
-    _path("lib:6", S.TAMPERING, (CC, IDR), S.REPUDIATION),
-    _path("lib:7", S.DENIAL_OF_SERVICE, (TSC,)),
-    _path("lib:8", S.TAMPERING, (ITS, TSC)),
-    _path("lib:9", S.DENIAL_OF_SERVICE, (ITS, TSC)),
-    _path("lib:10", S.SPOOFING, (CC, IDR), S.REPUDIATION),
-    _path("lib:11", S.ELEVATION_OF_PRIVILEGE, (TSC,)),
-    _path("lib:12", S.TAMPERING, (TSC,)),
-    _path("lib:13", S.ELEVATION_OF_PRIVILEGE, (ITS, TSC)),
-    _path("lib:14", S.INFORMATION_DISCLOSURE, (ITS, TSC)),
-    _path("lib:15", S.DENIAL_OF_SERVICE, (ITS,)),
-    _path("lib:16", S.REPUDIATION, (ITS, TSC), S.TAMPERING),
-    _path("lib:17", S.REPUDIATION, (CC, IDR), S.TAMPERING),
-]
-
-
-def _kinds(paths: list[AttackPath]) -> set[str]:
-    return {path.categories[0] for path in paths}
-
-
-def test_the_first_set_and_the_limit_cover_every_kind_and_every_system() -> None:
-    """The first set (6) had 4 scenarios on Command Centre + Incident Response, and the limit of 15 cut both
-    Repudiation paths: a Spoofing path counted as covering Repudiation."""
-    ranked = [path for path, _ in rank_paths(RUN_82F22CC3)]
-    first_set, within_limit = ranked[:6], ranked[:15]
-    assert _kinds(first_set) == set(S) and {s for p in first_set for s in p.systems} == {CC, ITS, TSC, IDR}
-    assert sum(path.categories[0] == S.REPUDIATION for path in within_limit) == 2
-    assert {s for p in within_limit for s in p.systems} == {CC, ITS, TSC, IDR}
-
-
-def test_a_high_impact_threat_is_never_given_up_for_more_systems() -> None:
-    first = _path("lib:1", S.SPOOFING, (CC,))
-    another_high = _path("lib:2", S.SPOOFING, (CC,))
-    medium_on_a_new_system = _path("lib:3", S.TAMPERING, (ITS,), impact=2)
-    ranked = [path for path, _ in rank_paths([medium_on_a_new_system, another_high, first])]
-    assert ranked == [first, another_high, medium_on_a_new_system]
-
-
-def test_the_order_is_the_same_whatever_the_input_order() -> None:
-    expected = [path.path_id for path, _ in rank_paths(RUN_82F22CC3)]
-    for seed in range(5):
-        shuffled = random.Random(seed).sample(RUN_82F22CC3, len(RUN_82F22CC3))  # noqa: S311 — test data
-        assert [path.path_id for path, _ in rank_paths(shuffled)] == expected
 
 
 def _record(
@@ -217,5 +156,47 @@ def test_a_path_stored_without_systems_or_categories_never_fails_the_read() -> N
 
 def test_the_plan_stores_no_copy_of_its_coverage() -> None:
     threat = planned("lib:7", "Phishing", (321,), categories=(S.SPOOFING,), impact=3)
-    findings = ThreatFindings(threats=[threat], audits=[], folded=[], notes=[], landscape=LANDSCAPE)
-    assert "coverage" not in AttackPathSelector(target=0).build_plan(findings)
+    findings = ThreatFindings(threats=[threat], audits=[], landscape=LANDSCAPE)
+    assert "coverage" not in build_plan(findings, 0)
+
+
+def test_each_given_up_path_names_its_threat_and_its_own_reason() -> None:
+    """G268 (run 89b47690: "the results give each one's reason" showed two identical codes and two ids):
+    each entry carries its threat's name and its newest card's sentence for that reason: a blocked draft's
+    finding of that code (else its first blocker), a failure card's message; nothing kept, None."""
+    from app.models.scenario.views import explain_given_up
+
+    given_up = [
+        {"path_id": "p1", "reason": "target_not_named", "replaced_by": None},
+        {"path_id": "p2", "reason": "target_not_named", "replaced_by": None},
+        {"path_id": "p3", "reason": "unavailable", "replaced_by": "p9"},
+        {"path_id": "p4", "reason": "vague_phrase", "replaced_by": None},
+    ]
+    blocked = [{"code": "asset_not_in_statement", "severity": "warning", "message": "warn"},
+               {"code": "target_not_named", "severity": "blocker", "message": "Its target ..."}]  # fmt: skip
+    cards = {
+        "p1": {
+            "content": {"threat": {"name": "Shared, default or stale OT account abuse"}},
+            "findings": blocked,
+        },
+        "p2": {"content": {"threat": {"name": "OT data and telemetry tampering"}}, "findings": blocked},
+        "p3": {
+            "content": {"threat": {"name": "DDoS"}},
+            "failure": {"code": "unavailable", "message": "down"},
+        },
+    }
+    explained = explain_given_up(given_up, cards)
+    assert [list(entry) for entry in explained][0] == [
+        "path_id",
+        "threat",
+        "reason",
+        "message",
+        "replaced_by",
+    ]
+    assert [(e["threat"], e["message"]) for e in explained] == [
+        ("Shared, default or stale OT account abuse", "Its target ..."),
+        ("OT data and telemetry tampering", "Its target ..."),
+        ("DDoS", "down"),
+        (None, None),
+    ]
+    assert len({(e["threat"], e["message"]) for e in explained[:2]}) == 2  # one line per threat

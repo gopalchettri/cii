@@ -7,7 +7,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.constants import Curation, CurationMessage, DecisionOutcome
-from app.models.scenarios import SqlId
+from app.models.scenario.views import SqlId
 
 
 class PendingThreat(BaseModel):

@@ -86,9 +86,10 @@ def test_the_worker_search_flag_follows_the_same_rule(monkeypatch: pytest.Monkey
     monkeypatch.setattr(intel_access, "FeedStatusStore", lambda _db: feeds)
     monkeypatch.setattr(intel_access, "get_mongodb", lambda: None)
     monkeypatch.setattr(intel_access, "datetime", _FixedClock)
-    assert IntelAccess()._feeds_are_stale() is False  # noqa: SLF001
+    access = IntelAccess()
+    assert access.is_stale(access.approved_sources()) is False
     feeds.health[KEV] = _fresh(KEV, IntelLimits.STALE_AFTER_HOURS + 1)
-    assert IntelAccess()._feeds_are_stale() is True  # noqa: SLF001
+    assert access.is_stale(access.approved_sources()) is True
 
 
 class _FixedClock:

@@ -5,8 +5,8 @@ free-text value keeps TEXT_MAX_CHARS, a cut is always marked, and a second clip 
 import pytest
 
 from app.core.constants import Remediation
-from app.engine.remediation.register import clip
-from app.engine.remediation.snapshot import _scenario
+from app.domain.remediation.register import clip
+from app.domain.remediation.snapshot import _scenario
 
 MARK = Remediation.TRUNCATED_MARK
 

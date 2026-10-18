@@ -7,7 +7,7 @@ from structlog.testing import capture_logs
 
 from app.core.constants import PlanWarning
 from app.core.tracing import set_step_detail, set_step_tracing, traced_step
-from app.engine.remediation.scheduler import schedule
+from app.domain.remediation.scheduler import schedule
 
 WINDOW = {"timeline_start_date": "2026-10-01", "timeline_end_date": "2026-12-31", "total_days": 92}
 

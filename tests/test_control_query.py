@@ -1,5 +1,5 @@
-"""G227 (owner 2026-10-13): the control query keeps every system and the asset's facts in view however long
-the scenario and the risk are; one long system description never pushes the others out; what was shortened is
+"""The control query keeps every system and the asset's facts in view however long the scenario and the
+risk are; one long system description never pushes the others out; what was shortened is
 recorded (labels only); the mapper searches exactly CONTROL_CANDIDATES candidates."""
 
 from types import SimpleNamespace
@@ -9,10 +9,9 @@ import pytest
 
 from app.core.config import Settings
 from app.core.constants import Controls, IntelKind, IntelSource
-from app.engine.external_intelligence.plain_facts import PlainFactWriter
-from app.engine.scenarios import control_selection
-from app.engine.scenarios.control_mapper import ControlMapper
-from app.engine.scenarios.control_query import control_query
+from app.domain.external_intelligence.facts import PlainFactWriter
+from app.domain.scenario import controls
+from app.domain.scenario.controls import ControlMapper, control_query
 from app.models.external_intelligence.evidence import IntelHit
 from app.models.external_intelligence.evidence_view import cited_evidence
 from tests.planner_samples import CONTEXT
@@ -85,7 +84,7 @@ def test_the_mapper_searches_the_configured_candidates_and_records_what_was_shor
             return [[(control, 0.0) for control in _CONTROLS]]
 
     settings = Settings(CONTROL_CANDIDATES=25)  # type: ignore[call-arg]
-    monkeypatch.setattr(control_selection, "get_settings", lambda: settings)
+    monkeypatch.setattr(controls, "get_settings", lambda: settings)
     rerank = _ScoresByText({"Backup of controller logic": 87.0})
     scenario = {**_SCENARIO, "content": {**_SCENARIO["content"], "statement": "story " * 900}}
     mapping = ControlMapper(rerank).map_controls(scenario, _OT_CONTEXT, Snapshot())  # type: ignore[arg-type]
@@ -93,9 +92,8 @@ def test_the_mapper_searches_the_configured_candidates_and_records_what_was_shor
 
 
 def test_the_cited_evidences_mitigations_guide_the_search_from_the_head() -> None:
-    """G234 (owner 2026-10-14: the feeds guide the controls; scenario 1 of run 57bc320b, a stolen password,
-    got "AI Security Awareness for OT Users"): what the cited evidence says reduces the attack is in the
-    query's head, each once, at most QUERY_MITIGATIONS, never cut however long the story."""
+    """What the cited evidence says reduces the attack is in the query's head, each once, at most
+    QUERY_MITIGATIONS, never cut however long the story."""
     first = ["Access Management", "Filter Network Traffic", "Multi-factor Authentication"]
     second = ["Access Management", "Password Policies", "Audit", "Data Backup", "Code Signing"]
     evidence = [{"n": 1, "mitigations": first}, {"n": 2, "mitigations": second}]
@@ -127,7 +125,7 @@ def test_the_mitigations_travel_from_the_source_to_the_card() -> None:
 
 
 def test_only_an_attack_technique_gives_mitigations() -> None:
-    """Review 2026-10-14: the query labels them "MITRE ATT&CK", so never an advisory's remediation."""
+    """The query labels them "MITRE ATT&CK", so never an advisory's remediation."""
     advisory = IntelHit(
         "ICSA-24-001-01", IntelKind.ADVISORY, "Advisory", "", "https://x/1",
         IntelSource.CISA_ICS, "OT", 90.0, {"mitigations": ["Network Segmentation"]},

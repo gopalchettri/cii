@@ -12,10 +12,10 @@ from app.core.constants import Audit, ErrorMessage, Header, Limits, Review
 from app.core.exceptions import Forbidden, Unauthorized
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
-from app.models.scenarios import SessionStatus
+from app.models.scenario.views import SessionStatus
 from app.services.api_clients import ApiClientService, get_api_client_service
 from app.services.remediation.queries import find_plan_for_caller
-from app.services.session_status import find_status_for_caller
+from app.services.scenario.runs import find_status_for_caller
 
 
 def get_authenticated_principal(
@@ -32,6 +32,7 @@ def get_authenticated_principal(
         str | None, HeaderParam(alias=Header.TENANT_ID, max_length=Limits.MAX_IDENTITY_CHARS)
     ] = None,
 ) -> Principal:
+    """The caller: a known API key and all four identity headers, else 401."""
     # Stripped BEFORE the check, so a header of spaces counts as missing.
     user_id, tenant_id = (user_id or "").strip(), (tenant_id or "").strip()
     if not (api_key and user_id and entity_id and tenant_id):
@@ -59,6 +60,7 @@ def require_admin_api_key(
     settings: Annotated[Settings, Depends(get_settings)],
     admin_key: Annotated[str | None, HeaderParam(alias=Header.ADMIN_KEY)] = None,
 ) -> None:
+    """403 while no admin key is set, 401 for a wrong one."""
     expected = settings.admin_api_key.get_secret_value()
     if not expected:
         raise Forbidden(ErrorMessage.ADMIN_DISABLED)
@@ -66,16 +68,16 @@ def require_admin_api_key(
         raise Unauthorized(ErrorMessage.ADMIN_KEY_INVALID)
 
 
-def valid_session(
-    session_id: str, principal: Annotated[Principal, Depends(get_authenticated_principal)]
-) -> SessionStatus:
-    """The caller's run: an unknown id → 404, another entity's run → 403 (as the live-update stream)."""
-    return find_status_for_caller(session_id, principal.entity_id)
-
-
-#: A run's and a scenario's id in a path: v1's addresses, /v1/sessions/{session_id}/scenarios/{scenario_id}.
+#: A run's and a scenario's id in a path: /v1/sessions/{session_id}/scenarios/{scenario_id}.
 SessionId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 ScenarioId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
+
+
+def valid_session(
+    session_id: SessionId, principal: Annotated[Principal, Depends(get_authenticated_principal)]
+) -> SessionStatus:
+    """The caller's run: an unknown id → 404, another entity's run → 403."""
+    return find_status_for_caller(session_id, principal.entity_id)
 
 
 def valid_plan(

@@ -35,7 +35,7 @@ from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
 from app.data_access import job_records
-from app.engine.shared.parallel import raise_most_retryable
+from app.domain.shared.parallel import raise_most_retryable
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
 from app.worker.celery_app import BrokerUnavailable, count_waiting_messages
 
@@ -132,6 +132,22 @@ def test_after_the_lease_expires_a_new_owner_takes_over_and_the_old_one_cannot_w
     with pytest.raises(job_records.LeaseLost):
         first.write({"plan": "stale work"})
     assert "plan" not in _records().find_one({"_id": record_id})
+
+
+def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> None:
+    """Celery reuses the task id on a retry or a redelivery: a hung copy and the copy that claimed the job
+    again after its lease ran out share task id and epoch, so only the newer claim's attempts let it write."""
+    record_id = _insert_job()
+    hung = _claim(record_id, "task-1")
+    _records().update_one({"_id": record_id}, {"$set": {"job.lease_until": datetime.now(UTC) - timedelta(1)}})
+    again = _claim(record_id, "task-1")
+    assert hung is not None and again is not None and again.attempts == hung.attempts + 1
+    assert not hung.renew()
+    with pytest.raises(job_records.LeaseLost):
+        hung.finish({"plan": "stale work"})
+    again.finish({"plan": "fresh work"})
+    stored = _records().find_one({"_id": record_id})
+    assert (stored["status"], stored["plan"]) == (Status.DONE, "fresh work")
 
 
 def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(published: list[str]) -> None:
@@ -516,7 +532,32 @@ def test_a_job_queued_too_long_is_sent_again_whatever_its_queue_holds(
     monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 3)
     reaper.reap_jobs()
     assert [record_id for _, record_id, _ in sent] == [lost]
-    assert _records().find_one({"_id": lost})["job"]["resends"] == 1
+    assert _records().find_one({"_id": lost})["job"]["resends"] == 0  # its queue was busy: not counted
+
+
+def test_a_job_waiting_in_a_long_backlog_is_sent_again_never_failed_as_never_started(
+    published: list[str], sent: list[tuple], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before: each re-send into a busy queue counted toward the sends that fail a job as never started, so
+    a job only waiting in a long backlog was failed after ~75 minutes."""
+    _records().delete_many({})
+    waiting = _insert_job(
+        Status.QUEUED,
+        due_at=datetime.now(UTC) - timedelta(seconds=Lease.RESEND_ANYWAY_AFTER_SECONDS + 60),
+        resends=Lease.MAX_ATTEMPTS - 1,
+    )
+    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 3)
+    for _ in range(3):
+        reaper.reap_jobs()
+        _records().update_one(
+            {"_id": waiting}, {"$set": {"job.due_at": datetime.now(UTC) - timedelta(hours=1)}}
+        )
+    record = _records().find_one({"_id": waiting})
+    assert record["status"] == Status.QUEUED and record["job"]["resends"] == Lease.MAX_ATTEMPTS - 1
+    assert [record_id for _, record_id, _ in sent] == [waiting] * 3
+    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    reaper.reap_jobs()  # its queue is empty and it is still queued: this send counts
+    assert _records().find_one({"_id": waiting})["job"]["resends"] == Lease.MAX_ATTEMPTS
 
 
 def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(

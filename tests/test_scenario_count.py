@@ -1,19 +1,13 @@
-"""G208 (owner 2026-10-12, "logically it should not be more than 20-25"; "the identifying the threats are also
-weak"): the organisation's own facts reach the AI as background, never as this asset's; a threat that needs a
+"""The organisation's own facts reach the AI as background, never as this asset's; a threat that needs a
 technology nobody recorded is not relevant; and a scenario is written on its own path's system only."""
 
 import dataclasses
 
 from app.core.constants import ContextProperties, PlanCheckStatus, Route, StrideCategory, ThreatFinding
-from app.engine.scenarios.control_query import control_query
-from app.engine.scenarios.finding.asset_landscape import describe_asset_for_ai, library_search_queries
-from app.engine.scenarios.finding.threat_prompts import (
-    gap_fill_prompt,
-    relevance_gate_prompt,
-)
-from app.engine.scenarios.writing.brief_builder import build_brief
-from app.engine.scenarios.writing.scenario_record import written_record
-from app.models.writing import PlanCheck, WrittenScenario
+from app.domain.scenario.controls import control_query
+from app.domain.scenario.plan import describe_asset_for_ai, gap_fill_prompt, relevance_gate_prompt
+from app.domain.scenario.write import build_brief, written_record
+from app.models.scenario.write import PlanCheck, WrittenScenario
 from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
 
@@ -24,13 +18,7 @@ _WITH_ORGANISATION = dataclasses.replace(
 
 
 def test_no_other_step_reads_the_organisations_facts_as_the_assets() -> None:
-    """Review 2026-10-12: the library search, the writer's brief and the control search still took them as
-    the asset's: the shortlists were seeded with AI, ERP and billing threats, and a SCADA story could drift
-    there."""
-    assert all(
-        "billing" not in query
-        for query in library_search_queries(_WITH_ORGANISATION, StrideCategory.TAMPERING)
-    )
+    """Neither the writer's brief nor the control search takes them as the asset's."""
     threat = _plan_threat()
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321]}
     brief = build_brief({threat["key"]: threat}, path, _WITH_ORGANISATION, 30_000, _LIVE)
@@ -41,21 +29,19 @@ def test_no_other_step_reads_the_organisations_facts_as_the_assets() -> None:
 
 
 def test_why_it_applies_never_names_a_system_this_scenario_is_not_on() -> None:
-    """Review 2026-10-12: the reason named every system its threat involves, so a SCADA card told the
-    Historian's story and the writer's out-of-scope check forced a rewrite."""
+    """The reason never tells another system's story: a name in a list of systems goes with its joiner;
+    one alone becomes the placeholder."""
     threat = _plan_threat(systems=(321, 322), reason="It reaches the SCADA server and the Historian.")
     on_scada = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321]}
     on_asset = on_scada | {"path_id": "p2", "systems": []}
     reason = build_brief({threat["key"]: threat}, on_scada, CONTEXT, 30_000, _LIVE).why_it_applies
-    assert reason == "It reaches the SCADA server and another supporting system."
+    assert reason == "It reaches the SCADA server."
     reason = build_brief({threat["key"]: threat}, on_asset, CONTEXT, 30_000, _LIVE).why_it_applies
-    assert reason == "It reaches other supporting systems."
+    assert reason == "It reaches another supporting system."
 
 
 def test_the_organisations_facts_are_a_background_line_never_the_assets() -> None:
-    """Live run 2026-10-12: DEWA's whole-estate text sat among the asset's facts, so 32 AI/LLM threats were
-    accepted for a SCADA asset. A column named entity_... is the organisation's (the procedure's
-    @EntityID)."""
+    """A column named entity_... is the organisation's (the procedure's @EntityID), never this asset's."""
     context = dataclasses.replace(
         CONTEXT, asset_context=CONTEXT.asset_context | {"entity_technology_context": _ORGANISATION_TEXT}
     )
@@ -70,12 +56,10 @@ def test_the_organisations_facts_are_a_background_line_never_the_assets() -> Non
 
 
 def test_the_relevance_and_gap_fill_rules_never_assume_a_technology_or_borrow_the_organisations() -> None:
-    """The two sentences the owner approved (Solution A), in both prompts that decide what applies; and
-    the 2026-10-04 unknown-facts rule narrowed to details (owner: "fix this also"), in every prompt that
-    carries it: its old "do not reject … because a deciding fact is unrecorded" let the AI assume
-    engineering workstations, jump servers and radio links into existence (live run e4e70ea7)."""
+    """Both prompts that decide what applies say a technology nobody recorded is never assumed and the
+    organisation's facts are background; an unknown fact may only be a missing detail."""
     gate = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
-    gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3)[1]
+    gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3, ())[1]
     for prompt in (gate, gap):
         assert "it may never assume that a technology, component or device exists" in prompt
         assert "an engineering workstation, a jump server, a wireless or radio link" in prompt
@@ -86,8 +70,8 @@ def test_the_relevance_and_gap_fill_rules_never_assume_a_technology_or_borrow_th
 
 
 def test_a_scenario_is_written_on_its_paths_system_only() -> None:
-    """A threat on two systems has a path per system (G208): the brief of the path on SYS1 shows that system,
-    and lists the other as never part of this scenario."""
+    """A threat on two systems has a path per system: the brief of the path on SYS1 shows that system, and
+    lists the other as never part of this scenario."""
     threat = _plan_threat(systems=(321, 322))
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321]}
     brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
@@ -98,3 +82,31 @@ def test_a_scenario_is_written_on_its_paths_system_only() -> None:
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     card = written_record(run, path, threat, brief, written)["content"]["systems"]
     assert card == [{"id": 321, "name": "SCADA server", "entry_point": True}]  # never the Historian
+
+
+def test_a_system_listed_beside_others_leaves_with_its_joiner() -> None:
+    """No placeholder in a list; one standing alone keeps it."""
+    from types import SimpleNamespace
+
+    from app.domain.scenario.write import _reason_on_path
+
+    systems = [
+        {"id": n, "name": name} for n, name in ((1, "Alpha Platform"), (2, "Beta System"), (3, "Gamma Hub"))
+    ]
+    context = SimpleNamespace(systems=systems)
+    cases = {
+        "Spray against the Alpha Platform, Beta System, or Gamma Hub could work.": (
+            "Spray against the Alpha Platform, or Gamma Hub could work.",
+            [1, 3],
+        ),
+        "Tampering across Alpha Platform, Beta System, and Gamma Hub is possible.": (
+            "Tampering across Beta System is possible.",
+            [2],
+        ),
+        "Movement from Alpha Platform to Beta System is a threat.": (
+            "Movement from another supporting system to Beta System is a threat.",
+            [2],
+        ),
+    }
+    for reason, (expected, route) in cases.items():
+        assert _reason_on_path(reason, {"systems": route}, context) == expected  # type: ignore[arg-type]

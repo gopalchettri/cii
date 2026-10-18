@@ -4,9 +4,9 @@ per environment (request size, AI calls at once; 2026-10-09). Business values: c
 Every field here has a line in .env, .env.uat and .env.example (tests/test_config.py checks the names)."""
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AfterValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.constants import (
@@ -46,19 +46,8 @@ class ScenarioOutputSettings(BaseSettings):
     # External intelligence on (G229): a threat whose search found no usable evidence is searched again with
     # other words this many times (0-2; no AI call); still none, its scenario is not written.
     evidence_search_retries: int = Field(default=1, ge=0, le=2, validation_alias="EVIDENCE_SEARCH_RETRIES")
-    # G229: a scenario is a near copy of one already finished in its run when at least this share (0-100) of
-    # its three-word phrases are shared, AND it is about the same thing: the same threat, or the same target,
-    # systems and kind with at least NEAR_COPY_PART_SIMILARITY of its mechanism and consequence words shared.
-    # Measured 2026-10-13: distinct scenarios of runs 03276384 and 82f22cc3 shared at most 3.5; a copy with
-    # two sentences reworded about 72.
-    near_copy_text_similarity: float = Field(
-        default=30.0, gt=0, le=100, validation_alias="NEAR_COPY_TEXT_SIMILARITY"
-    )
-    near_copy_part_similarity: float = Field(
-        default=50.0, gt=0, le=100, validation_alias="NEAR_COPY_PART_SIMILARITY"
-    )
-    # G232 (owner 2026-10-14): the country the assets are in ("UAE" or "United Arab Emirates"): planning and
-    # the writers read it as a fact, and the real groups and the evidence are ranked and labelled by it.
+    # the country the assets are in ("UAE" or "United Arab Emirates"): with external intelligence on,
+    # planning and the writer read it as a fact; it ranks nothing.
     threat_context_country: str = Field(
         default="United Arab Emirates", validation_alias="THREAT_CONTEXT_COUNTRY"
     )
@@ -107,6 +96,23 @@ def _word_range(setting: str, text: str) -> tuple[int, int]:
     return least, most
 
 
+def _refuse_a_proxy_url_without_scheme(value: SecretStr) -> SecretStr:
+    """A proxy address without http:// or https:// is read as a host name: every outside call would fail later
+    with no word of why, so start-up stops with the reason instead (every environment)."""
+    proxy = value.get_secret_value()
+    if proxy and not proxy.startswith(("http://", "https://")):
+        raise ValueError(ErrorMessage.PROXY_URL_WITHOUT_SCHEME)
+    return value
+
+
+#: CII_PROXY_URL (owner 2026-10-16, G264), the company proxy of the outside calls. Not true/false:
+#: an http(s):// address = every outside call goes through it (the intel feeds; the AI calls too when
+#: CII_AI_BYPASS_PROXY is false); blank = the machine's or pod's HTTP(S)_PROXY, else Windows' own setting
+#: Named _URL, never _PROXY: Python reads any *_PROXY variable as a proxy. Secret: it can carry
+#: a password.
+ProxyUrl = Annotated[SecretStr, AfterValidator(_refuse_a_proxy_url_without_scheme)]
+
+
 class Settings(ScenarioOutputSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
@@ -116,7 +122,7 @@ class Settings(ScenarioOutputSettings):
     # dev).
     env: Env = Env.PROD
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"  # a typo stops start-up, not logging
-    # Laptop only: also write the JSON log lines to <log_dir>/api.log and worker-<name>.log, where the
+    # also write the JSON log lines to <log_dir>/api.log and worker-<name>.log, where the
     # local Loki reads them (pods log to stdout only and leave this empty).
     log_dir: str = ""
     # Comma-separated browser origins; empty = none (the API is called server to server).
@@ -144,9 +150,9 @@ class Settings(ScenarioOutputSettings):
     # A gateway that reads the AI key from its own header (UAT's LiteLLM: x-litellm-api-key) gets it there
     # too, on every chat, embedding and rerank call; the standard Authorization header is still sent.
     ai_key_header: str = ""
-    # v1's TSG_LITELLM_BYPASS_PROXY: true = litellm_proxy/ models skip HTTP(S)_PROXY (the UAT Windows server's
-    # proxy cannot reach the gateway); false for OpenShift, where only the proxy reaches it (the gate checks).
+    # CII_AI_BYPASS_PROXY (v1's LITELLM_BYPASS_PROXY): true/blank = litellm_proxy/ models skip the proxy
     ai_bypass_proxy: bool = True
+    proxy_url: ProxyUrl = SecretStr("")  # CII_PROXY_URL: see ProxyUrl
 
     admin_api_key: SecretStr = SecretStr("")
 
@@ -161,7 +167,7 @@ class Settings(ScenarioOutputSettings):
     # Enforced by the AI slot limiter (app/ai/slots.py): a call waits for a free slot.
     max_concurrent_ai_calls: int = Field(default=16, ge=0)
 
-    # Owner, 2026-10-10: when true, every workflow step logs its redacted inputs, results, output, time
+    # when true, every workflow step logs its redacted inputs, results, output, time
     # taken and errors (app/core/tracing.py); when false, only the operational, security and audit logs. The
     # env name is the owner's own, without the CII_ prefix. Step lines are INFO: CII_LOG_LEVEL must be INFO or
     # DEBUG.
@@ -174,7 +180,7 @@ class Settings(ScenarioOutputSettings):
         default=Tracing.DETAIL_TOP, ge=1, le=Tracing.PREVIEW_KEYS, validation_alias="DEBUG_STEP_TOP"
     )
 
-    # How many scenarios a run writes (spec v4.0 §1; the owner's exact name, without the CII_ prefix):
+    # How many scenarios a run writes
     # 0 = every valid path found; N = the N most relevant, the rest kept in the plan as target_reached.
     # Applied only after every path is found and ranked; never padded. A negative, decimal or text value
     # stops start-up.
@@ -185,16 +191,11 @@ class Settings(ScenarioOutputSettings):
     initial_set_size: int = Field(default=6, ge=1, validation_alias="INITIAL_SET_SIZE")
     next_set_size: int = Field(default=6, ge=1, validation_alias="NEXT_SET_SIZE")
 
-    # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for all three (owner
-    # 2026-10-11): a control kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, ScenarioOutputSettings); an
-    # AI-proposed threat that IS a library threat or takes a library type; an attacker offered when a threat's
-    # type links none (0 = no filter; none reaches it: the closest still acts, with a warning). Linked
-    # attackers are never filtered: a curator chose them.
+    # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for both: a control
+    # kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, ScenarioOutputSettings); an AI-proposed threat that
+    # IS a library threat or takes a library type.
     threat_similarity_threshold: float = Field(
         default=75.0, ge=0, le=100, validation_alias="THREAT_SIMILARITY_THRESHOLD"
-    )
-    actor_similarity_threshold: float = Field(
-        default=0.0, ge=0, le=100, validation_alias="ACTOR_SIMILARITY_THRESHOLD"
     )
 
     # External intelligence (CISA KEV, EPSS, MITRE ATT&CK, CISA ICS, NVD). ENABLED is the MASTER switch: false
@@ -213,8 +214,8 @@ class Settings(ScenarioOutputSettings):
     # Optional NVD key (a secret): raises NVD's rate limit from 5 to 50 requests per 30 s. Empty = unkeyed.
     nvd_api_key: SecretStr = SecretStr("")
 
-    # Which asset and supporting-system facts a run requires (a start without one is refused 422; owner
-    # 2026-10-11): comma-separated column names of dbo.tsg_GetAssetContext; empty = none. Which facts a run
+    # Which asset and supporting-system facts a run requires (a start without one is refused 422;
+    # comma-separated column names of dbo.tsg_GetAssetContext; empty = none. Which facts a run
     # USES is the procedure's choice: every column it returns.
     asset_properties_required: str = Field(default="", validation_alias="ASSET_PROPERTIES_REQUIRED")
     system_properties_required: str = Field(default="", validation_alias="SYSTEM_PROPERTIES_REQUIRED")

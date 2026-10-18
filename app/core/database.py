@@ -13,7 +13,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.core.config import get_settings
 from app.core.constants import ErrorMessage, StoredProcedure, Timeouts
-from app.core.exceptions import Unavailable
+from app.core.exceptions import Invalid, SetupError, Unavailable
 from app.core.singletons import singleton
 
 Row = dict[str, Any]
@@ -74,6 +74,10 @@ class StoredProcedureClient:
         self._engine = engine
 
     def execute_procedure(self, procedure: StoredProcedure, **params: Any) -> list[list[Row]]:
+        """Run one TSG procedure with bound parameters and return its result sets; the driver's errors become
+        Unavailable (outage), Invalid (a value refused) or SetupError (the procedure itself)."""
+        if not isinstance(procedure, StoredProcedure):  # the name goes into the SQL text: members only
+            raise SetupError(ErrorMessage.PROCEDURE_NOT_ALLOWED.format(procedure=procedure))
         args = ", ".join(f"@{name}=?" for name in params)
         sql = f"EXEC dbo.{procedure} {args}"  # noqa: S608 — procedure is an enum, params are bound
         try:
@@ -87,6 +91,10 @@ class StoredProcedureClient:
                 connection.close()
         except SQL_UNAVAILABLE_ERRORS as exc:
             raise Unavailable(ErrorMessage.SQL_UNREACHABLE) from exc
+        except (pyodbc.DataError, pyodbc.IntegrityError) as exc:
+            raise Invalid(ErrorMessage.SQL_VALUE_REFUSED) from exc
+        except pyodbc.ProgrammingError as exc:
+            raise SetupError(ErrorMessage.SQL_PROCEDURE_BROKEN) from exc
 
     def close(self) -> None:
         """Close every pooled connection (worker shutdown)."""

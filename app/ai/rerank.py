@@ -3,6 +3,7 @@
 
 import math
 import time
+from importlib.util import find_spec
 from typing import Any
 
 import litellm
@@ -10,8 +11,8 @@ import litellm
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
+    apply_proxy_settings,
     build_api_key_header,
-    bypass_proxy_for_ai,
     call_with_retries,
     count_and_convert_ai_errors,
 )
@@ -25,6 +26,13 @@ from app.core.lease_signal import raise_if_lease_lost
 from app.core.singletons import singleton
 from app.core.tracing import traced
 from app.models.ai import RerankModelProfile
+
+#: What the local reranker loads its model with (pyproject's "local" extra; requirements.txt).
+_LOCAL_PACKAGE = "sentence_transformers"
+
+
+class LocalRerankerMissing(Exception):
+    """CII_RERANK_BASE_URL is empty, so the reranker runs on this machine; its package is not installed."""
 
 
 class RerankModel:
@@ -127,8 +135,13 @@ class RerankModel:
 
 @singleton
 def get_rerank_model() -> RerankModel:
+    """G265 (laptop E2E 2026-10-16): a local reranker whose package is missing stops start-up here (API and
+    worker build it at start), as a model with no profile does. Before, every rerank failed at call time and
+    each write job retried for minutes as if the AI were busy."""
     settings = get_settings()
-    bypass_proxy_for_ai(settings)
+    if not settings.rerank_base_url and find_spec(_LOCAL_PACKAGE) is None:
+        raise LocalRerankerMissing(ErrorMessage.LOCAL_RERANKER_MISSING.format(model=settings.rerank_model))
+    apply_proxy_settings(settings)
     return RerankModel(
         settings.rerank_model,
         find_model_profile(RERANK_MODEL_PROFILES, settings.rerank_model),

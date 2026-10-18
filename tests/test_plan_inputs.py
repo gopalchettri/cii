@@ -18,7 +18,7 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, Unavailable
 from app.data_access.remediation_versions import RemediationVersions
 from app.data_access.remediations import RemediationRepository
-from app.data_access.sessions import SessionRepository
+from app.data_access.scenario.runs import SessionRepository
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.regenerate import PlanRegeneration, get_plan_regeneration

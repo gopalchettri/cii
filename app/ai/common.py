@@ -3,9 +3,10 @@ header, the retries and how each call's outcome is counted."""
 
 import os
 import time
+import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Final
 from urllib.parse import urlsplit
 
 import litellm
@@ -57,13 +58,24 @@ class UnusableAiAnswer(JobFailed):
 _RETRYABLE_ERRORS: tuple[type[Exception], ...] = (*AI_UNAVAILABLE_ERRORS, IncompleteAiAnswer)
 
 
-def bypass_proxy_for_ai(settings: Settings) -> None:
-    """CII_AI_BYPASS_PROXY=true (v1's TSG_LITELLM_BYPASS_PROXY): the host of every LiteLLM gateway model
-    (litellm_proxy/...) goes on NO_PROXY, so those calls go direct; every other host (another provider, the
-    intel feeds) still uses HTTP(S)_PROXY. litellm takes no per-call proxy setting, hence the process
-    environment. Each model factory calls it before its first call; repeating it changes nothing."""
-    if not settings.ai_bypass_proxy:
-        return
+def apply_proxy_settings(settings: Settings) -> None:
+    """Which proxy the outside calls use. litellm takes no per-call proxy setting, hence the process
+    environment; each model factory calls this before its first call, so the API and every worker apply it at
+    start-up, before any download. Repeating it changes nothing.
+    1. CII_PROXY_URL, when set, is the proxy (HTTP(S)_PROXY) of the whole process: the intel feeds, and the AI
+       calls unless step 2 skips it. Empty: the HTTP(S)_PROXY variables already set, else, when step 2 runs,
+       Windows' own proxy setting (_keep_windows_proxy).
+    2. CII_AI_BYPASS_PROXY=true (v1's TSG_LITELLM_BYPASS_PROXY): the host of every LiteLLM gateway model
+       (litellm_proxy/...) goes on NO_PROXY, so those calls go direct; every other host keeps the proxy."""
+    if proxy := settings.proxy_url.get_secret_value():
+        _set_proxy_variables({"http": proxy, "https": proxy})
+    elif settings.ai_bypass_proxy:
+        _keep_windows_proxy()
+    if settings.ai_bypass_proxy:
+        _put_the_gateway_on_no_proxy(settings)
+
+
+def _put_the_gateway_on_no_proxy(settings: Settings) -> None:
     models = (
         (settings.chat_model, settings.chat_base_url),
         (settings.chat_fallback_model, settings.chat_base_url),
@@ -75,6 +87,30 @@ def bypass_proxy_for_ai(settings: Settings) -> None:
     for name in ("NO_PROXY", "no_proxy"):
         listed = [entry for entry in os.environ.get(name, "").split(",") if entry]
         os.environ[name] = ",".join(listed + sorted(host for host in hosts - set(listed) if host))
+
+
+_PROXY_VARIABLES: Final = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+
+
+def _keep_windows_proxy() -> None:
+    """G263 (UAT, 2026-10-16): Python reads Windows' own proxy setting (Internet Options) only while no
+    *_PROXY variable is set, so the NO_PROXY written for the gateway switched it off for every other host:
+    the intel feeds went straight to the firewall ("did not answer"). It is copied into HTTP(S)_PROXY first,
+    read from Windows directly (a NO_PROXY set before cannot hide it); a proxy variable already set wins.
+    Windows only: nowhere else does Python read a system setting."""
+    read_windows_setting = getattr(urllib.request, "getproxies_registry", None)
+    if read_windows_setting is None or any(os.environ.get(name) for name in _PROXY_VARIABLES):
+        return
+    # ponytail: Windows' bypass list (ProxyOverride) is not copied: the gateway, on NO_PROXY, is the only
+    # internal HTTP host the app calls. Copy it when another internal HTTP host appears.
+    _set_proxy_variables(read_windows_setting())
+
+
+def _set_proxy_variables(proxies: dict[str, str]) -> None:
+    """Both spellings: Windows has one variable per name, Linux two (and some tools read only one)."""
+    for scheme, url in proxies.items():
+        if scheme in ("http", "https"):
+            os.environ[f"{scheme.upper()}_PROXY"] = os.environ[f"{scheme}_proxy"] = url
 
 
 def build_api_key_header(header: str, api_key: str, option: str = "extra_headers") -> dict[str, Any]:

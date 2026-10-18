@@ -14,7 +14,7 @@ from app.core.tracing import traced
 from app.data_access.remediation_reads import RemediationReads
 from app.data_access.remediation_versions import RemediationVersions
 from app.data_access.remediations import RemediationRepository
-from app.engine.remediation.decisions import decision_update, newest_done_version, version_status
+from app.domain.remediation.decisions import decision_update, newest_done_version, version_status
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
 from app.models.remediation_reviews import DecisionRequest

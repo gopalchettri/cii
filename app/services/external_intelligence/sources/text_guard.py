@@ -1,9 +1,5 @@
-"""The one door through which source text reaches a stored record: every title, description, name, note and
-link is sanitised here (engine/external_intelligence/untrusted_text.py), and a record with unsafe text is
-quarantined whole, never stored and never indexed. A description is screened sentence by sentence: only its
-flagged sentences are removed (G237), unless none is clean or what is left reads as orders as a whole.
-
-Stateless apart from the source it speaks for, so a source may build one per run or share one."""
+"""The one door through which source text reaches a stored record: every text and link sanitised, a record
+with unsafe text quarantined whole, never stored and never indexed."""
 
 import re
 from collections.abc import Iterable, Sequence
@@ -13,8 +9,8 @@ from urllib.parse import unquote_plus, urlparse
 import structlog
 
 from app.core.constants import IntelLimits, IntelRejection, IntelSource, LogEvent, TextCleaning, TextSafety
-from app.engine.external_intelligence.name_grammar import as_name
-from app.engine.external_intelligence.untrusted_text import UntrustedTextSanitiser
+from app.domain.external_intelligence.text_cleaner import as_name
+from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord, content_hash_of
 
 log = structlog.get_logger(__name__)
@@ -35,6 +31,8 @@ class UnsafeSourceText(Exception):
 
 
 class SourceTextGuard:
+    """Sanitises one source's texts; stateless apart from the source, so it may be shared."""
+
     def __init__(self, source: IntelSource, sanitiser: UntrustedTextSanitiser | None = None) -> None:
         self._source = source
         self._sanitiser = sanitiser or UntrustedTextSanitiser()
@@ -47,12 +45,9 @@ class SourceTextGuard:
         return result.text
 
     def clean_sentences(self, text: Any, max_chars: int) -> str:
-        """A DESCRIPTION as safe plain text: each sentence is screened alone and a flagged one is removed, so
-        one sentence describing an attack on AI ("instructing the LLM to ignore previous instructions") no
-        longer throws the whole record away (G237: T1699, T1608.007 and T1700 were lost so). What is left is
-        screened once more as a whole (a split instruction is still caught) and raises like `clean`; so does a
-        description with no clean sentence. A removed sentence never reaches a store or a prompt. A clean
-        description (nearly all) takes the one whole pass it always did: only a flagged one is split."""
+        """A description as safe plain text: a flagged one is screened sentence by sentence and its flagged
+        sentences removed (one sentence about attacks on AI must not lose the record); what is left is
+        screened once more as a whole and raises like `clean`, as does a description with no clean one."""
         if not isinstance(text, str) or max_chars <= 0:
             return ""
         whole = self._sanitiser.sanitise(text, max_chars)

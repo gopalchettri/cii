@@ -1,9 +1,5 @@
-"""The evidence a scenario rests on, and the audit of how it was found.
-
-`Evidence` is what the writer may use and what the reader can open: plain-language `facts` for the story, the
-source link for the proof. `EvidenceSearchRecord` is the audit of one threat's search: the query, the filter,
-the snapshot, every candidate considered with its score and the decision, so a reviewer can see why a record
-was used or left out. All are frozen and JSON-able (`as_doc`), so they are stored as they are."""
+"""The evidence a scenario rests on (plain facts for the story, the source link for the proof) and the audit
+of each search (every candidate with its score and decision), stored as they are (`as_doc`)."""
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -12,7 +8,6 @@ from app.core.constants import (
     Applicability,
     EvidenceDecision,
     EvidenceRole,
-    EvidenceScope,
     EvidenceSearchFailure,
     IntelKind,
     IntelSource,
@@ -33,12 +28,17 @@ class IntelHit:
     score: float = 0.0
     # kind-specific facts; a vulnerability's has epss and detail
     data: dict[str, Any] = field(default_factory=dict)
-    modified: str | None = None  # the source's own date for the record, when it gives one (G229)
+    modified: str | None = None  # the source's own date for the record, when it gives one
     fetched_at: str | None = None  # when the refresh fetched it (ISO)
+    # the other sources whose records were joined into `data` (a KEV entry's EPSS score, NVD detail): a revoke
+    # of either reaches the evidence it fed
+    joined: tuple[IntelSource, ...] = ()
 
 
 @dataclass(frozen=True)
 class Evidence:
+    """What the writer may use and the reader can open."""
+
     ref: str  # the source's own id (T0821, CVE-2024-0001): shown in the evidence panel, never in the story
     kind: IntelKind
     source: IntelSource
@@ -47,19 +47,22 @@ class Evidence:
     score: float  # the reranker's 0-100
     facts: tuple[str, ...]  # plain sentences the writer may use: who did it before, what it causes, ...
     applicability: Applicability | None = None  # only for a vulnerability; None for a technique
-    # G229 (owner 2026-10-13): the source's own date for the record, when it was fetched, and what it proves.
-    published: str | None = None
+    published: str | None = None  # when the source published the record
     fetched_at: str | None = None
-    role: EvidenceRole = EvidenceRole.CONTEXT
-    # G232: groups behind it attacked the deployment's country, its region, or neither (global); never proof
-    # that this asset or its organisation was attacked.
-    scope: EvidenceScope = EvidenceScope.GLOBAL
-    # G234 (owner 2026-10-14: the feeds guide the controls): the source's own names for what reduces it, the
-    # ones its facts say (an ATT&CK technique's mitigations); the control search reads them.
+    role: EvidenceRole = EvidenceRole.CONTEXT  # what it proves: direct (the asset's own product) or context
+    # the source's own names for what reduces it (an ATT&CK technique's mitigations); the control search
+    # reads them
     mitigations: tuple[str, ...] = ()
+    modified: str | None = None  # the source's last change to the record (`published` is when it came out)
+    joined: tuple[IntelSource, ...] = ()  # the sources its facts also rest on (IntelHit.joined)
 
     def as_doc(self) -> dict[str, Any]:
-        return asdict(self) | {"facts": list(self.facts), "mitigations": list(self.mitigations)}
+        """The entry as stored, its tuples as lists."""
+        return asdict(self) | {
+            "facts": list(self.facts),
+            "mitigations": list(self.mitigations),
+            "joined": list(self.joined),
+        }
 
 
 @dataclass(frozen=True)
@@ -72,11 +75,14 @@ class Considered:
     reason: str = ""  # an EvidenceReason, filled in: a short rule-based reason for an exclusion
 
     def as_doc(self) -> dict[str, Any]:
+        """The row as stored."""
         return asdict(self)
 
 
 @dataclass(frozen=True)
 class EvidenceSearchRecord:
+    """The audit of one threat's search."""
+
     query: str  # what was searched, so the search can be repeated
     asset_types: tuple[str, ...]  # the IT / OT filter applied before ranking
     snapshot_id: str | None  # None: no snapshot yet, so nothing was searched
@@ -84,8 +90,12 @@ class EvidenceSearchRecord:
     considered: tuple[Considered, ...] = field(default_factory=tuple)
     stale: bool = False  # the snapshot's sources have not refreshed within the age limit; still used
     failure: EvidenceSearchFailure | None = None  # the search could not be made: no evidence, run goes on
+    # Rerank scores are 0-100 ranking scores whose scale differs per model and the threshold is cut on them:
+    # the audit row is only readable next to the model that gave the scores.
+    rerank_model: str = ""
 
     def as_doc(self) -> dict[str, Any]:
+        """The audit as stored, its tuples as lists."""
         return asdict(self) | {
             "asset_types": list(self.asset_types),
             "considered": [c.as_doc() for c in self.considered],
@@ -104,4 +114,5 @@ class EvidenceBatchSummary:
     stale: bool
 
     def as_doc(self) -> dict[str, Any]:
+        """The summary as its audit row stores it."""
         return asdict(self)

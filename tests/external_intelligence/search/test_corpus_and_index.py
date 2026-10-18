@@ -6,12 +6,22 @@ import dataclasses
 import pytest
 
 from app.ai.profiles import EMBEDDING_MODEL_PROFILES
-from app.core.constants import COMPATIBLE_ASSET_TYPES, AssetType, IntelKind, IntelLimits, TextSafety
+from app.core.constants import (
+    COMPATIBLE_ASSET_TYPES,
+    AssetType,
+    IntelKind,
+    IntelLimits,
+    IntelSource,
+    TextSafety,
+)
 from app.models.external_intelligence.intel_record import IntelRecord
-from app.search.external_intelligence.corpus_builder import CorpusBuilder
-from app.search.external_intelligence.evidence_index import build_index, empty_index
-from app.search.external_intelligence.index_refused import EvidenceIndexRefused
-from app.search.external_intelligence.ioc_text import remove_indicators
+from app.search.external_intelligence.corpus_builder import build_corpus
+from app.search.external_intelligence.evidence_index import (
+    EvidenceIndexRefused,
+    build_index,
+    empty_index,
+    remove_indicators,
+)
 from tests.external_intelligence.evidence_fakes import (
     NOW,
     ScoredBy,
@@ -28,7 +38,7 @@ QUERY = "Threat: ransomware"
 
 def _index(docs, rerank=None, embeddings=None):
     embeddings = embeddings or TextEmbeddings()
-    return build_index(CorpusBuilder().build_corpus(docs), embeddings, rerank or ScoredBy()), embeddings
+    return build_index(build_corpus(docs), embeddings, rerank or ScoredBy()), embeddings
 
 
 def _ids(found: list) -> list[str]:
@@ -42,9 +52,10 @@ def test_epss_and_nvd_detail_are_joined_into_their_vulnerability_and_not_indexed
         epss_doc("CVE-2024-9999"),
     ]
     docs += [detail_doc("cve-2024-0001"), detail_doc("CVE-2024-9998")]
-    corpus = CorpusBuilder().build_corpus(docs)
+    corpus = build_corpus(docs)
     (hit,) = corpus.hits
     assert (hit.data["epss"], hit.data["cvss"], hit.data["severity"]) == (0.5, 9.8, "CRITICAL")
+    assert hit.joined == (IntelSource.FIRST_EPSS, IntelSource.NIST_NVD)  # a revoke of either reaches it
     assert (corpus.scores_joined, corpus.scores_unmatched) == (1, 1)
     assert (corpus.details_joined, corpus.details_unmatched) == (1, 1)
     assert corpus.source_versions["first_epss"] == "d"
@@ -55,24 +66,24 @@ def test_advisories_are_indexed_and_listed_on_the_vulnerabilities_they_name() ->
         vulnerability_doc("CVE-2024-0001", "V", "P"),
         advisory_doc("ICSA-24-001-01", cves=["cve-2024-0001"]),
     ]
-    by_id = {hit.external_id: hit for hit in CorpusBuilder().build_corpus(docs).hits}
+    by_id = {hit.external_id: hit for hit in build_corpus(docs).hits}
     assert by_id["CVE-2024-0001"].data["advisories"] == ["ICSA-24-001-01"] and "ICSA-24-001-01" in by_id
 
 
 def test_the_checksum_ignores_read_order_and_follows_content_and_model() -> None:
     docs = [technique_doc("T1"), technique_doc("T2"), vulnerability_doc("CVE-1", "V", "P")]
-    one = CorpusBuilder().build_corpus(docs)
-    assert CorpusBuilder().build_corpus(list(reversed(docs))).checksum == one.checksum
-    assert CorpusBuilder().build_corpus(docs[:2]).checksum != one.checksum
-    assert CorpusBuilder("other-model").build_corpus(docs).checksum != one.checksum  # a model change rebuilds
+    one = build_corpus(docs)
+    assert build_corpus(list(reversed(docs))).checksum == one.checksum
+    assert build_corpus(docs[:2]).checksum != one.checksum
+    assert build_corpus(docs, "other-model").checksum != one.checksum  # a model change rebuilds
     assert [hit.external_id for hit in one.hits] == sorted(h.external_id for h in one.hits)[:0] or True
 
 
 def test_no_current_record_is_refused() -> None:
     with pytest.raises(EvidenceIndexRefused):
-        CorpusBuilder().build_corpus([])
+        build_corpus([])
     with pytest.raises(EvidenceIndexRefused):
-        CorpusBuilder().build_corpus([epss_doc("CVE-1")])  # a score alone is not searchable
+        build_corpus([epss_doc("CVE-1")])  # a score alone is not searchable
 
 
 def test_indicators_are_never_embedded_or_sent_to_the_reranker() -> None:
@@ -84,7 +95,7 @@ def test_indicators_are_never_embedded_or_sent_to_the_reranker() -> None:
     record = IntelRecord(
         "cisa_kev", "CVE-9", IntelKind.VULNERABILITY, "IT", "t", text, "https://x", "v", data={}
     )
-    corpus = CorpusBuilder().build_corpus([dataclasses.replace(record, source="cisa_kev").as_doc(NOW)])
+    corpus = build_corpus([dataclasses.replace(record, source="cisa_kev").as_doc(NOW)])
     rerank = ScoredBy()
     index = build_index(corpus, embeddings := TextEmbeddings(), rerank)
     assert all(word not in embeddings.library_texts[0] for word in ("evil", "10.1.2.3", "a" * 40))
@@ -130,11 +141,11 @@ def test_scores_are_the_rerankers_0_to_100_best_first_and_keep_every_hit() -> No
 
 def test_an_index_over_the_same_texts_shares_its_vectors_and_a_changed_text_does_not() -> None:
     first, embeddings = _index([vulnerability_doc("CVE-1", "V", "P"), epss_doc("CVE-1", 0.5)])
-    moved = CorpusBuilder().build_corpus([vulnerability_doc("CVE-1", "V", "P"), epss_doc("CVE-1", 0.7)])
+    moved = build_corpus([vulnerability_doc("CVE-1", "V", "P"), epss_doc("CVE-1", 0.7)])
     again = first.reuse_for(moved)
     assert again is not None and again.corpus.hits[0].data["epss"] == 0.7
     assert embeddings.calls.count("external_intelligence") == 1
-    assert first.reuse_for(CorpusBuilder().build_corpus([technique_doc("T9")])) is None
+    assert first.reuse_for(build_corpus([technique_doc("T9")])) is None
     assert empty_index(embeddings, ScoredBy()).reuse_for(moved) is None
 
 

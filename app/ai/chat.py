@@ -18,8 +18,8 @@ from app.ai.chat_messages import (
     record_chat_call,
 )
 from app.ai.common import (
+    apply_proxy_settings,
     build_api_key_header,
-    bypass_proxy_for_ai,
     call_with_retries,
     count_and_convert_ai_errors,
 )
@@ -247,7 +247,7 @@ def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChe
 @singleton
 def get_chat_model() -> ChatModel:
     settings = get_settings()
-    bypass_proxy_for_ai(settings)
+    apply_proxy_settings(settings)
     call_records = AiCallRecords(get_mongodb()[Collection.AI_CALLS])
     model_names = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []

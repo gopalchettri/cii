@@ -27,16 +27,16 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
 from app.data_access.job_control import JobControlRecords
 from app.data_access.job_records import JobLease, LeaseLost
-from app.data_access.scenarios import ScenarioRepository
-from app.engine.scenarios.attack_paths.path_progress import next_paths_to_write, next_set_paths
-from app.models.threats import PlannedActor
-from app.worker import jobs, plan_progress, regenerator
+from app.data_access.scenario.scenarios import ScenarioRepository
+from app.domain.scenario.plan import next_paths_to_write, next_set_paths
+from app.models.scenario.plan import PlannedActor
+from app.worker import jobs, plan_progress
 from app.worker.tasks import writing
 from tests.fakes import FakeChatModel
 from tests.planner_samples import CONTEXT, planned
 
 _ACTORS = (PlannedActor(7, "Cybercriminal", ActorRole.ACTING),)
-_CONSISTENT = {"consistent": True, "problems": []}
+_CONSISTENT = {"rules": {"1": "holds"}, "same_threat": True, "same_impact": True}
 #: Every live update the job sends (the runs it names).
 PUBLISHED: list[str] = []
 
@@ -106,13 +106,14 @@ def _queued_run(
 
 def _answer_for(user_prompt: str) -> dict[str, Any]:
     """A clean scenario for the brief it is given; every one gets the same title, so titles must be made
-    unique. A threat named "Unreadable ..." always gets an answer missing its texts."""
+    unique, and its own statement (the very same words are a copy whatever the threat: G268). A threat named
+    "Unreadable ..." always gets an answer missing its texts."""
     brief = json.loads(user_prompt.removeprefix("BRIEF:\n"))
     options = brief["entry_point_options"]
     answer = {
         "scenario_title": "Loss of control integrity",
         "scenario_statement": f"A cybercriminal could tamper with {options[0] if options else 'it'} at Grid "
-        "Control Centre.",
+        f"Control Centre in a {brief['threat']['threat']} attack.",
         "risk_statement": "Loss of trusted control at Grid Control Centre could interrupt transmission.",
         "assumptions": [],
         "entry_point": options[0] if options else "",
@@ -142,7 +143,6 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     sends: list[tuple[Any, ...]] = []
     monkeypatch.setattr(jobs, "send_job", lambda *args: sends.append(args))
     monkeypatch.setattr(writing, "send_job", lambda *args: sends.append(args))  # the controls messages
-    monkeypatch.setattr(regenerator, "send_job", lambda *args: sends.append(args))  # and a regenerate's
     return sends
 
 
@@ -351,6 +351,8 @@ def test_a_blocked_scenario_is_kept_hidden_and_its_path_tried_again(
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[0]["status"] == ScenarioStatus.BLOCKED and "controls" not in stored[0]
     assert run["plan"]["paths"][0]["attempts"] == 1 and run["counts"]["written"] == 0
+    # the next attempt's card replaces this one (the same id): why it was rejected stays on the path
+    assert run["plan"]["paths"][0]["last_blocker"] == "uncited_advisory_id"
     assert run["status"] == Status.QUEUED and run["job"]["batch"] == [{"path_id": "p1", "replaces": None}]
 
 
@@ -429,3 +431,18 @@ def test_an_answer_that_comes_back_after_its_run_was_cancelled_is_never_saved(
     with pytest.raises(LeaseLost):
         writing.write_batch(lease)
     assert _scenarios_of(record_id) == []
+
+
+def test_each_saved_scenario_says_which_write_made_it_and_when(
+    chat: FakeChatModel, sent: list[tuple[Any, ...]]
+) -> None:
+    """G267, v1's generation_epoch and gen_started_at / gen_finished_at: the write job's epoch, when the
+    path's writing began and when its record was made; a failure card too."""
+    written_id = _queued_run(["Threat 1", "Threat 2"])
+    assert _deliver_until_done(written_id) == 1
+    unsupported = _queued_run(["Threat on a removed system"], systems=(999,))
+    _deliver_until_done(unsupported)
+    for scenario in _scenarios_of(written_id) + _scenarios_of(unsupported):
+        stamp = scenario["generation"]
+        assert stamp["epoch"] == 1 and stamp["finished_at"] == scenario["created_at"]
+        assert stamp["started_at"] is not None and stamp["started_at"] <= stamp["finished_at"]

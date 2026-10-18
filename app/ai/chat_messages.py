@@ -55,12 +55,28 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
         "task_id": context.get("task_id"),  # G244: a retry of this job reuses this answer
         "prompt_hash": prompt_hash(messages),
         "request_id": context.get("request_id"),
-        "prompt": messages,
+        "prompt": _without_system_prompt_text(messages),
         "response": response.choices[0].message.content or "",
         "tokens_in": getattr(response.usage, "prompt_tokens", 0) or 0,
         "tokens_out": getattr(response.usage, "completion_tokens", 0) or 0,
         "seconds": seconds,
     }
+
+
+def _without_system_prompt_text(messages: list[dict]) -> list[dict]:
+    """The conversation as stored: a system prompt (6-30 KB, the same on every call of a task) is kept as a
+    short hash of its text; the user, assistant and correction turns are kept whole."""
+    return [
+        {"role": "system", "content_sha256": _short_hash(message["content"])}
+        if message["role"] == "system"
+        else message
+        for message in messages
+    ]
+
+
+def _short_hash(text: str) -> str:
+    """The first 16 hex characters of the text's SHA-256: enough to tell two prompt texts apart."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def prompt_hash(messages: list[dict]) -> str:
@@ -97,8 +113,8 @@ def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is k
     seconds: float,
     outcome: AiOutcome,
 ) -> None:
-    """One outcome per call: counted and logged, then copied to tsg_ai_calls, so every prompt and answer of a
-    run can be found (and a retry of its job reuses a usable one, G244)."""
+    """One outcome per call: counted and logged, then copied to tsg_ai_calls (the system prompt as its
+    hash), so every user prompt and answer of a run can be found (and a retry reuses a usable one, G244)."""
     record = build_call_record(task, model, messages, response, seconds, outcome)
     update_call_metrics(task, model, outcome, record["tokens_in"], record["tokens_out"], seconds)
     try:

@@ -1,7 +1,5 @@
-"""The admin's view and control of external intelligence: the run-time switch (turning it ON also queues a
-refresh), and the health report with the evidence settings (which reranker, which threshold, and whether an
-operator calibrated that threshold on that reranker). The env master switch decides first: with it off nothing
-is read from the intelligence stores here."""
+"""The admin's view and control of external intelligence: the run-time switch, the sources' approval and the
+health report with the evidence settings. With the env master switch off no intelligence store is read."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +35,8 @@ log = structlog.get_logger(__name__)
 
 
 class IntelAdmin:
+    """The admin API's external intelligence actions."""
+
     def __init__(
         self,
         switch: ExternalIntelligenceSwitch,
@@ -50,13 +50,12 @@ class IntelAdmin:
         self._purger, self._feeds = purger, feeds
 
     def read_switch(self) -> dict[str, Any]:
-        """With the env master OFF the switch answers from the environment alone (no store is read)."""
+        """The switch state; with the env master off it answers from the environment alone."""
         return self._switch.state().as_doc()
 
     def change_switch(self, enabled: bool, changed_by: str) -> dict[str, Any]:
-        """The run-time switch set and audited (409 while the env master switch is off); turned ON it also
-        queues a refresh, so the first data does not wait for the next hourly check. A refresh already running
-        is fine."""
+        """Set and audit the run-time switch (409 while the env master switch is off); turning it on also
+        queues a refresh, so the first data does not wait for the hourly check."""
         if not self._settings.external_intelligence_enabled:  # nothing of the feature is written while off
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         after = self._switch.change_runtime_flag(enabled, changed_by)  # audits and logs the change, once
@@ -81,11 +80,9 @@ class IntelAdmin:
         return self._reporter.describe_health(datetime.now(UTC)).as_doc() | {"evidence": evidence}
 
     def revoke_source(self, source: IntelSource, requested_by: str) -> dict[str, Any]:
-        """Legal withdrew a source: it is audited FIRST (a purge that fails half-way still leaves the decision
-        on record), then marked unapproved, its records and vectors are purged and the next snapshot no longer
-        holds it. Works whatever the switch says (a purge is never refused); with the env master OFF it only
-        deletes what exists and creates nothing. Evidence already copied onto written scenarios and plans is
-        NOT removed (docs/EXTERNAL_INTELLIGENCE.md says how an operator handles that)."""
+        """Revoke a source Legal withdrew: audited first (a purge that fails half-way still leaves the
+        decision on record), then unapproved and its records and vectors purged, whatever the switch says.
+        Evidence already copied onto scenarios and plans stays (docs/EXTERNAL_INTELLIGENCE.md)."""
         target = audit_target(AuditTarget.EXTERNAL_INTELLIGENCE_SOURCE, str(source))
         record_audit(
             AuditAction.EXTERNAL_INTELLIGENCE_SOURCE_REVOKED,
@@ -100,11 +97,9 @@ class IntelAdmin:
         return {"source": source, "records_purged": purged}
 
     def approve_source(self, source: IntelSource, requested_by: str) -> dict[str, Any]:
-        """A revoked source approved again (409 while the env master is OFF): its health starts blank, the
-        approval is audited and a refresh of that source is queued, so its data comes back from the start.
-        `refresh_job_id` is None when a refresh was already queued or running (it, or the next hourly check,
-        picks the source up), or while the run-time switch is off (turning it on queues a refresh of every
-        source due, this one included)."""
+        """Approve a revoked source again (409 while the env master is off): its health starts blank, the
+        approval is audited and its refresh queued; `refresh_job_id` is None when a refresh was already queued
+        or the run-time switch is off (either picks the source up later)."""
         if not self._settings.external_intelligence_enabled:
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         self._feeds.approve_source(source)
@@ -118,12 +113,14 @@ class IntelAdmin:
         return {"source": source, "refresh_job_id": self._queue_refresh(requested_by, source)}
 
     def _queue_refresh(self, requested_by: str, source: IntelSource | None = None) -> str | None:
+        """Queue a refresh and return its job id; None when one is already queued or the switch is off."""
         try:
             return self._refreshes.start(requested_by, source)["job_id"]
         except Conflict:
             return None  # one is already queued or running and does the work, or the switch is off
 
     def _evidence_settings(self) -> dict[str, Any]:
+        """The reranker's name (never its path), the threshold and whether an operator calibrated it there."""
         model = self._settings.rerank_model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         calibrated_on = EVIDENCE_THRESHOLD_CALIBRATED_ON.get(model)
         return {
@@ -136,6 +133,7 @@ class IntelAdmin:
 
 @singleton
 def get_intel_admin() -> IntelAdmin:
+    """The process's IntelAdmin over the process's stores, switch and index keeper."""
     db = get_mongodb()
     switch = get_external_intelligence_switch()
     feeds, keeper = FeedStatusStore(db), get_evidence_index_keeper()

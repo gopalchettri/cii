@@ -8,11 +8,11 @@ import pytest
 from structlog.testing import capture_logs
 
 from app.core.constants import IntelLimits, IntelSource, LogEvent
+from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
 from app.search.external_intelligence.index_keeper import (
     RETRY_FIRST_SECONDS,
     EvidenceIndexKeeper,
 )
-from app.search.external_intelligence.index_refused import EvidenceIndexRefused
 from tests.external_intelligence.evidence_fakes import (
     NOW,
     MemoryFeeds,

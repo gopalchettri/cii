@@ -37,17 +37,16 @@ from app.data_access.job_records import JobLease
 from app.data_access.library import LibraryRepository
 from app.data_access.manual_scenarios import ManualRecords
 from app.data_access.remediations import RemediationRepository
-from app.data_access.run_counts import RunCounts
-from app.data_access.scenario_controls import ControlLeases
-from app.data_access.sessions import SessionRepository
-from app.engine.remediation.manual_actors import manual_planned_threat
-from app.engine.remediation.manual_records import actor_records
-from app.engine.remediation.snapshot import build_snapshot, inputs_ready, no_longer_mapped
-from app.engine.scenarios.control_mapper import ControlMapper, controls_record
-from app.engine.scenarios.threat_list.attacker_assignment import AttackerAssigner
+from app.data_access.scenario.runs import SessionRepository
+from app.data_access.scenario.scenarios import ControlLeases, RunCounts
+from app.domain.remediation.manual_actors import manual_planned_threat
+from app.domain.remediation.manual_records import actor_records
+from app.domain.remediation.snapshot import build_snapshot, inputs_ready, no_longer_mapped
+from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.scenario.plan import assign_attackers
 from app.models.asset_context import FrozenContext
 from app.models.library import ThreatProposal
-from app.models.threats import PlannedActor
+from app.models.scenario.plan import PlannedActor
 from app.realtime.publisher import publish_session_status
 from app.search.library_cache import LibraryService, get_library_service
 from app.search.service import LibrarySearch, get_library_search
@@ -104,9 +103,7 @@ class PlanInputs:
     ) -> dict[str, Any]:
         """A hand-written scenario's attackers (and a new wording's library ids) saved; then re-read."""
         content, pending = scenario["content"], scenario["pending"]
-        (assigned,) = AttackerAssigner(snapshot, self._rerank).assign_attackers(
-            [manual_planned_threat(content)], sector=""
-        )
+        (assigned,) = assign_attackers(snapshot, [manual_planned_threat(content)], sector="")
         changes: dict[str, Any] = {
             "content.actors": actor_records(assigned.actors, assigned.closest_attacker)
         }
@@ -173,19 +170,21 @@ class PlanInputs:
     def _map(
         self, claimed: dict[str, Any], task_id: str, context: FrozenContext, snapshot: LibrarySnapshot
     ) -> list[dict[str, Any]]:
-        scenario_id, started = claimed["_id"], time.perf_counter()
+        scenario_id, attempts, started = claimed["_id"], claimed["controls"]["attempts"], time.perf_counter()
         try:
-            with keep_lease_alive(_ControlsLease(self._leases, scenario_id, task_id)):
+            with keep_lease_alive(_ControlsLease(self._leases, scenario_id, task_id, attempts)):
                 mapping = self._mapper.map_controls(claimed, context, snapshot)
         except ControlsNotMapped as exc:  # an empty library: no retry changes it
-            self._leases.fail(scenario_id, task_id, {"code": exc.code, "message": exc.message})
+            self._leases.fail(scenario_id, task_id, attempts, {"code": exc.code, "message": exc.message})
             self._settle(claimed)
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
             self._give_back(claimed, task_id, describe_outage(exc))
             raise
         record = controls_record(mapping, snapshot)
-        if not self._leases.finish(scenario_id, task_id, record):  # its claim was taken over meanwhile
+        if not self._leases.finish(
+            scenario_id, task_id, attempts, record
+        ):  # its claim was taken over meanwhile
             raise Unavailable(RemediationMessage.CONTROLS_BEING_MAPPED.format(seconds=Controls.LEASE_SECONDS))
         self._settle(claimed, time.perf_counter() - started)
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=True)
@@ -196,7 +195,7 @@ class PlanInputs:
         hand-written one's failed, as nothing in the background maps it: this job's retry claims it again."""
         error = {"code": ErrorCode.UNAVAILABLE, "message": reason}
         if claimed.get("source") == RunKind.MANUAL:
-            self._leases.fail(claimed["_id"], task_id, error)
+            self._leases.fail(claimed["_id"], task_id, claimed["controls"]["attempts"], error)
         else:
             self._leases.give_back(claimed["_id"], task_id, claimed["controls"]["attempts"], error)
         self._settle(claimed)
@@ -210,11 +209,11 @@ class PlanInputs:
 class _ControlsLease:
     """One scenario's control lease as keep_lease_alive renews it."""
 
-    def __init__(self, leases: ControlLeases, scenario_id: str, task_id: str) -> None:
-        self._leases, self.record_id, self._task_id = leases, scenario_id, task_id
+    def __init__(self, leases: ControlLeases, scenario_id: str, task_id: str, attempts: int) -> None:
+        self._leases, self.record_id, self._task_id, self._attempts = leases, scenario_id, task_id, attempts
 
     def renew(self) -> bool:
-        return self._leases.renew(self.record_id, self._task_id)
+        return self._leases.renew(self.record_id, self._task_id, self._attempts)
 
 
 @singleton

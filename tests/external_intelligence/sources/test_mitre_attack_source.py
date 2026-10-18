@@ -81,14 +81,11 @@ def test_technique_record_carries_plain_text_and_the_facts() -> None:
         "tactics": ["execution"],
         "platforms": ["Windows"],
         "mitigations": ["Restrict Scripts"],
-        "real_world_use": [{"name": "APT Foo", "kind": "group", "note": "Used it."}],
-        # G230: the group behind it (this one has no id, page or description in the bundle)
-        "groups": [{"name": "APT Foo", "group_id": "", "url": "", "kind": "unknown", "who": "", "places": [],
-                    "sectors": [], "through": "", "how": "Used it."}],
-    }  # fmt: skip
-    # What the reader keeps is pinned with its format: change what it keeps (or how it reads a group's kind),
-    # move both, or an unchanged ATT&CK file is never read again with the new reader (G230).
-    assert AttackReading.FORMAT == "7"  # G248: how it works no longer kept
+        "real_world_use": [{"name": "APT Foo", "kind": "group"}],  # who used it: the facts say it
+    }
+    # What the reader keeps is pinned with its format: change what it keeps, move both, or an unchanged
+    # ATT&CK file is never read again with the new reader.
+    assert AttackReading.FORMAT == "8"  # the named groups and how each actor used it no longer kept
 
 
 def test_it_and_ot_tags() -> None:
@@ -101,9 +98,9 @@ def test_unchanged_checkpoint_returns_none() -> None:
 
 
 def test_a_checkpoint_of_an_older_reader_reads_the_file_again() -> None:
-    """G230: what the reader keeps changed (the groups), so an unchanged file must still be read once more."""
-    result = _run(_bundle(), checkpoint="15.1")
-    assert result is not None and result.records[0].data["groups"]
+    """What the reader keeps changed (no groups), so an unchanged file must still be read once more."""
+    result = _run(_bundle(), checkpoint="15.1||7")
+    assert result is not None and "groups" not in result.records[0].data
     seen: list[httpx.Request] = []
     again = _served(_bundle(), '"abc"', seen).download_changes('15.1|"abc"')
     assert again is not None and "if-none-match" not in seen[0].headers

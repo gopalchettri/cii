@@ -113,7 +113,7 @@ class _SnapshotBuilder:
     @traced("search.build_snapshot")
     def build(self, library: LoadedLibraries) -> LibrarySnapshot:
         threats, actors = library.threat_library.threats, library.threat_library.actors
-        controls, threat_types = library.control_library, threat_types_of(threats)
+        controls, threat_types = library.control_library, threat_types_of(library.threat_library)
         indexes = {
             EmbeddingCorpus.THREAT: self._index(
                 EmbeddingCorpus.THREAT, threats, describe_threat, _identify_threat

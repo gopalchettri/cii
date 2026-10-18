@@ -1,18 +1,33 @@
-"""The six approved sources, built in the order they must run: KEV before EPSS and NVD (both read the KEV CVE
-ids from the record store), NVD last (it is the slowest, paced to the API limit)."""
+"""The six approved sources, built in the order they must run (KEV before EPSS and NVD, which read its CVE
+ids; NVD last, the slowest), and the one method every source offers the refresh."""
+
+from typing import Protocol
 
 from app.core.constants import IntelSource
 from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.models.external_intelligence.fetch_result import FetchResult
 from app.services.external_intelligence.sources.cisa_ics_advisories_source import CisaIcsAdvisoriesSource
 from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
 from app.services.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
 from app.services.external_intelligence.sources.http_download import HttpDownloader
 from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
 from app.services.external_intelligence.sources.nist_nvd_details_source import NistNvdDetailsSource
-from app.services.external_intelligence.sources.source_fetcher import IntelSourceFetcher
+
+
+class IntelSourceFetcher(Protocol):
+    """What every source class offers the refresh."""
+
+    source_id: IntelSource
+
+    def download_changes(self, checkpoint: str | None) -> FetchResult | None:
+        """The source's records since `checkpoint` (None: the first run, everything); None when the source
+        has nothing new. Raises IntelFetchFailed when it cannot be read."""
+        ...
 
 
 class SourceCatalogue:
+    """Builds the sources' fetchers over one record store."""
+
     def __init__(self, record_store: IntelRecordStore, downloader: HttpDownloader | None = None) -> None:
         self._store = record_store
         self._downloader = downloader

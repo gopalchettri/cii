@@ -11,10 +11,10 @@ import pytest
 
 from app.core.constants import CHAT_TEMPERATURES, AiTask, ErrorCode, PlanWarning
 from app.core.exceptions import JobFailed, Unavailable
-from app.engine.remediation.planner import RemediationPlanner
-from app.engine.remediation.prompts import PLAN_PROMPT_VERSION, PLAN_SYSTEM_PROMPT, plan_prompt
-from app.engine.remediation.register import register_half
-from app.engine.remediation.snapshot import build_snapshot
+from app.domain.remediation.planner import RemediationPlanner
+from app.domain.remediation.prompts import PLAN_PROMPT_VERSION, PLAN_SYSTEM_PROMPT, plan_prompt
+from app.domain.remediation.register import register_half
+from app.domain.remediation.snapshot import build_snapshot
 from app.models.library import LibraryControl
 from app.models.remediation import FinishedPlan
 from app.models.remediation_requests import RegisterData

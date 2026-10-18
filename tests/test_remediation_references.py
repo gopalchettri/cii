@@ -7,7 +7,7 @@ import pytest
 
 from app.core.constants import SnapshotWarning
 from app.core.exceptions import Invalid
-from app.engine.remediation.references import resolve_controls
+from app.domain.remediation.references import resolve_controls
 from app.models.library import LibraryControl
 from app.models.remediation_requests import ControlRef
 

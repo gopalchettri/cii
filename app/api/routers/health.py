@@ -1,11 +1,11 @@
-"""Probes for OpenShift and Prometheus: /health (alive), /ready (every store and a worker on every queue),
-/metrics. All three are public: no key, served on the API port."""
+"""Probes for OpenShift and Prometheus: /health (alive), /ready (MongoDB, Redis and a worker on every queue;
+SQL Server reported), /metrics. All three are public: no key, served on the API port."""
 
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from app.core.constants import ApiTag
+from app.core.constants import ApiTag, Dependency
 from app.services.readiness import check_readiness_without_a_thread
 
 router = APIRouter(tags=[ApiTag.HEALTH])
@@ -21,11 +21,13 @@ async def report_liveness() -> dict[str, str]:
 
 @router.get("/ready", summary="2. Are its stores and workers ready?")
 async def report_readiness() -> JSONResponse:
-    """200 `ready` when MongoDB, SQL Server and Redis answer and every queue has a live worker; else 503
-    `not_ready`, naming what is down. No key."""
+    """200 `ready` when MongoDB and Redis answer and every queue has a live worker; else 503 `not_ready`,
+    naming what is down. SQL Server is reported but never fails readiness: only the library routes need it,
+    and a 503 here would take every route out of service. No key."""
     # async: public, so it must not hold one of the request threads while a slow store keeps it waiting.
     dependencies, workers = await check_readiness_without_a_thread()
-    ready = all(dependencies.values()) and workers is not None and all(workers.values())
+    stores_up = all(up for name, up in dependencies.items() if name != Dependency.SQL)
+    ready = stores_up and workers is not None and all(workers.values())
     return JSONResponse(
         {"status": "ready" if ready else "not_ready", "dependencies": dependencies, "workers": workers},
         status_code=200 if ready else 503,

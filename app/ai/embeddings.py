@@ -17,8 +17,8 @@ import structlog
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
+    apply_proxy_settings,
     build_api_key_header,
-    bypass_proxy_for_ai,
     call_with_retries,
     count_and_convert_ai_errors,
 )
@@ -269,7 +269,7 @@ def _embed_batches_in_parallel(
 @singleton
 def get_embedding_model() -> EmbeddingModel:
     settings = get_settings()
-    bypass_proxy_for_ai(settings)
+    apply_proxy_settings(settings)
     library = LibraryVectors(get_mongodb()[Collection.EMBEDDINGS])
     queries = QueryVectors(get_mongodb()[Collection.QUERY_VECTORS])
     return EmbeddingModel(

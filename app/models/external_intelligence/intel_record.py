@@ -18,6 +18,8 @@ def content_hash_of(*parts: Any) -> str:
 
 @dataclass(frozen=True)
 class IntelRecord:
+    """One source record as stored."""
+
     source: IntelSource
     external_id: str  # the source's own id: T1059, CVE-2024-0001
     kind: IntelKind
@@ -35,6 +37,7 @@ class IntelRecord:
         return content_hash_of(self.title, self.text, self.data, self.asset_type, self.modified)
 
     def as_doc(self, fetched_at: datetime) -> dict[str, Any]:
+        """The record as the store writes it: valid, with its hash and parser version."""
         return {
             "source": self.source,
             "external_id": self.external_id,
@@ -63,6 +66,7 @@ class RejectedRecord:
     raw_hash: str  # of the raw payload, so the same bad record is stored once
 
     def as_doc(self, fetched_at: datetime) -> dict[str, Any]:
+        """The rejection as the store writes it: quarantined and never current."""
         return {
             "source": self.source,
             "external_id": self.external_id,
@@ -84,6 +88,7 @@ class SaveCounts:
     quarantined: int
 
     def __add__(self, other: "SaveCounts") -> "SaveCounts":
+        """The counts of both batches together."""
         return SaveCounts(
             self.new_versions + other.new_versions,
             self.unchanged + other.unchanged,

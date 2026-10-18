@@ -13,9 +13,9 @@ import pytest
 from app.core.constants import EvidenceSearchFailure, RerankGateLimits
 from app.core.exceptions import LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
-from app.engine.external_intelligence.evidence_finder import EvidenceFinder
-from app.engine.external_intelligence.rerank_gate import RerankGate, get_rerank_gate, rerank_gate_for
-from app.search.external_intelligence.corpus_builder import CorpusBuilder
+from app.domain.external_intelligence.evidence_finder import EvidenceFinder
+from app.domain.external_intelligence.rerank_gate import RerankGate, get_rerank_gate, rerank_gate_for
+from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import build_index
 from tests.external_intelligence.evidence_fakes import (
     CountingRerank,
@@ -38,7 +38,7 @@ class RemoteLikeRerank(CountingRerank):
 
 
 def _finder(rerank, gate: RerankGate) -> EvidenceFinder:
-    index = build_index(CorpusBuilder().build_corpus([technique_doc("T1")]), TextEmbeddings(), rerank)
+    index = build_index(build_corpus([technique_doc("T1")]), TextEmbeddings(), rerank)
     return EvidenceFinder(lambda: index, 1.0, gate=gate)
 
 

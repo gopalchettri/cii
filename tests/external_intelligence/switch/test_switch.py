@@ -82,9 +82,10 @@ def test_with_no_value_yet_an_outage_reads_off_and_is_asked_again_soon() -> None
     flags.down = True
     switch = ExternalIntelligenceSwitch(flags, True, clock)
     assert not switch.is_enabled()
+    assert switch.state().known is False  # G268: in doubt, so a story's regenerate waits (is_on(sure=True))
     flags.down = False
     clock.now += SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS + 1
-    assert switch.is_enabled()
+    assert switch.is_enabled() and switch.state().known is True
 
 
 def test_a_change_that_cannot_be_stored_changes_nothing_and_audits_nothing() -> None:

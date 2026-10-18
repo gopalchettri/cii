@@ -11,22 +11,22 @@ from typing import Any
 from app.core.constants import ConflictReason, ErrorCode, PlanMessage, SessionMessage
 from app.core.exceptions import Conflict, Unavailable
 from app.core.tracing import traced
-from app.data_access.asset_context import AssetContextRepository
 from app.data_access.manual_scenarios import ManualRecords
-from app.data_access.run_counts import RunCounts
-from app.engine.remediation.manual_records import (
+from app.data_access.scenario.runs import AssetContextRepository
+from app.data_access.scenario.scenarios import RunCounts
+from app.domain.remediation.manual_records import (
     given_controls,
     manual_ids,
     manual_run_record,
     manual_scenario_record,
 )
-from app.engine.remediation.references import resolve_controls
-from app.engine.remediation.threat_identity import resolve_threat
+from app.domain.remediation.references import resolve_controls
+from app.domain.remediation.threat_identity import resolve_threat
 from app.models.api_clients import Principal
 from app.models.remediation_requests import PlanRequest
 from app.search.library_cache import LibraryService
 from app.services.audit import caller_actor
-from app.services.scenarios.context import freeze_context
+from app.services.scenario.runs import freeze_context
 
 
 class ManualScenarios:
@@ -46,14 +46,7 @@ class ManualScenarios:
         checked before the first write; no AI is called."""
         manual = body.manual_scenario
         assert manual is not None
-        rows = self._asset_contexts.read(
-            principal.entity_id,
-            manual.asset_id,
-            manual.supporting_system_ids,
-            manual.service_id,
-            manual.sector_id,
-            manual.subsector_id,
-        )
+        rows = self._asset_contexts.read(principal.entity_id, manual)
         context = freeze_context(manual, rows)
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()

@@ -7,7 +7,7 @@ from typing import Any
 import pymongo
 from pymongo.collection import Collection as MongoCollection
 
-from app.core.constants import AiOutcome, Timeouts
+from app.core.constants import AiLimits, AiOutcome, Timeouts
 from app.core.database import expire_documents_after
 
 
@@ -15,12 +15,10 @@ class AiCallRecords:
     def __init__(self, collection: MongoCollection) -> None:
         self._records = collection
 
-    def keep_for_days(self, days: int) -> None:
-        """Records are deleted `days` after their created_at (a TTL index; a changed retention updates it)."""
+    def ensure_indexes(self, days: int = AiLimits.CALL_RECORD_DAYS) -> None:
+        """Records deleted `days` after their created_at (a changed retention updates the TTL index); a
+        retried job finds the answer it already got by its task id and exact prompt."""
         expire_documents_after(self._records, "created_at", int(timedelta(days=days).total_seconds()))
-
-    def index_for_retries(self) -> None:
-        """G244: a retried job finds the answer it already got by its task id and exact prompt."""
         self._records.create_index([("task_id", 1), ("prompt_hash", 1)])
 
     def find_usable_reply(self, task_id: str, prompt_hash: str) -> str | None:
@@ -35,7 +33,6 @@ class AiCallRecords:
         return found["response"] if found else None
 
     def insert(self, record: dict[str, Any]) -> None:
-        # Bounded like the audit write: the answer is already in hand, so a slow MongoDB must not hold it for
-        # the 30 s socket timeout (the caller logs a failed record and carries on).
+        """One record, bounded like the audit write: the answer is already in hand (a failure is logged)."""
         with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
             self._records.insert_one(record)

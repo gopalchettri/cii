@@ -1,60 +1,59 @@
-"""G229 (owner 2026-10-13): a near copy needs BOTH much the same text AND the same thing (the same threat, or
-the same target, systems and kind told with much the same mechanism and consequence); scenarios that share
-words but describe a different attack are kept."""
+"""A duplicate is caught before a save: the same threat as the same kind on the same systems, or the very
+same words.
+Another kind, other systems or another threat told in other words is kept."""
 
 from typing import Any
 
 from app.core.constants import FindingCode
-from app.engine.scenarios.writing.near_copies import near_copy
+from app.domain.scenario.write import duplicate_of
 
-_STATEMENT = (
-    "A cybercriminal could use a stolen vendor VPN account to reach the SCADA server of Grid Control Centre "
-    "and push modified firmware to the feeder RTUs, so operators see normal readings while breakers open."
-)
+_STATEMENT = "A cybercriminal could push modified firmware to the SCADA server, so breakers open unseen [1]."
 
 
-def _content(
-    statement: str = _STATEMENT, threat: str = "lib:1", target: str = "SCADA server", **anatomy: str
-) -> dict[str, Any]:
-    parts = {"target": target, "mechanism": "pushes modified firmware to the feeder RTUs"}
-    parts |= {"consequence": "operators see normal readings while breakers open"} | anatomy
-    return {
+def _content(statement: str = _STATEMENT, threat: str = "lib:1", **changes: Any) -> dict[str, Any]:
+    content = {
         "statement": statement,
         "threat": {"key": threat},
         "category": "Tampering",
         "systems": [{"id": 1}],
-        "anatomy": parts,
     }
+    return content | changes
 
 
-def _finished(content: dict[str, Any]) -> list[dict[str, Any]]:
-    return [{"_id": "s-first", "content": content}]
+def _held(content: dict[str, Any], path_id: str = "p2") -> list[dict[str, Any]]:
+    return [{"_id": "s-first", "path_id": path_id, "content": content}]
 
 
-def test_a_planted_copy_of_another_threat_is_rejected_naming_the_scenario_it_copies() -> None:
-    reworded = _STATEMENT.replace("stolen", "borrowed").replace("normal", "ordinary")
-    finding = near_copy(_content(reworded, threat="lib:2"), _finished(_content()))
-    assert finding is not None and finding.code == FindingCode.NEAR_DUPLICATE
-    assert "s-first" in finding.message
+def test_the_same_threat_kind_and_systems_is_a_copy_naming_the_scenario_it_copies() -> None:
+    finding = duplicate_of(_content("Told in other words."), "p1", [], _held(_content()))
+    assert finding is not None and finding.code == FindingCode.NEAR_DUPLICATE and "s-first" in finding.message
+    assert duplicate_of(_content("Told again."), "p1", _held(_content()), []) is not None  # this run's too
 
 
-def test_the_same_words_about_another_attack_are_kept() -> None:
-    """Another target and mechanism, though the story is told with much the same sentence."""
-    other = _content(
-        _STATEMENT.replace("SCADA server", "historian"), threat="lib:2", target="historian",
-        mechanism="deletes the historian archive", consequence="investigators lose the event record",
-    )  # fmt: skip
-    assert near_copy(other, _finished(_content())) is None
+def test_another_kind_other_systems_or_another_threat_in_other_words_is_kept() -> None:
+    held = _held(_content())
+    assert duplicate_of(_content("Other words.", category="Denial of Service"), "p1", [], held) is None
+    assert duplicate_of(_content("Other words.", systems=[{"id": 1}, {"id": 2}]), "p1", [], held) is None
+    assert duplicate_of(_content("Other words.", threat="lib:2"), "p1", [], held) is None
 
 
-def test_the_same_threat_told_again_is_a_copy_and_a_different_story_of_it_is_not() -> None:
-    assert near_copy(_content(_STATEMENT + " Again."), _finished(_content())) is not None
-    different = "An insider with an engineering laptop disables alarms on the protection relays overnight."
-    assert near_copy(_content(different), _finished(_content())) is None
+def test_the_very_same_words_are_a_copy_whatever_the_threat_case_spaces_or_markers() -> None:
+    held = _held(_content(threat="lib:2", category="Spoofing"))
+    reworded = _STATEMENT.upper().replace(" ", "   ").replace(" [1]", " [2, 3]")
+    assert duplicate_of(_content(reworded, threat="lib:9"), "p1", [], held) is not None
+    assert duplicate_of(_content(_STATEMENT.replace(" [1]", ""), threat="lib:9"), "p1", [], held) is not None
 
 
-def test_citation_markers_never_make_two_stories_differ() -> None:
-    """A heavily cited copy (a marker every third word) is still the same story: markers are not words."""
-    words = _STATEMENT.split()
-    marked = " ".join(f"{word} [{n // 3 + 1}]" if n % 3 == 2 else word for n, word in enumerate(words))
-    assert near_copy(_content(marked, threat="lib:2"), _finished(_content())) is not None
+def test_the_paths_own_versions_are_never_its_copies() -> None:
+    assert duplicate_of(_content(), "p1", _held(_content(), path_id="p1"), []) is None
+
+
+def test_a_hand_written_scenario_of_the_same_live_threat_is_its_threat_and_a_pending_one_is_not() -> None:
+    """A hand-written record names its threat by library id alone, "lib:<id>" as the planner keys it; a
+    pending row's id is another id space, so it never stands in."""
+    hand_written = _content("Hand written.", threat="") | {
+        "threat": {"library_id": 1, "library_status": "active"}
+    }
+    assert duplicate_of(_content(), "p1", [], _held(hand_written)) is not None
+    pending = hand_written | {"threat": {"library_id": 1, "library_status": "pending"}}
+    assert duplicate_of(_content(), "p1", [], _held(pending)) is None

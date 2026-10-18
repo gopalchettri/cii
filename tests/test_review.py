@@ -24,16 +24,14 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.run_counts import RunCounts
-from app.data_access.scenario_review import ScenarioReview
-from app.engine.scenarios.attack_paths.path_progress import why_no_path_left
+from app.data_access.scenario.scenarios import RunCounts, ScenarioReview
+from app.domain.scenario.plan import why_no_path_left
 from app.models.api_clients import Principal
 from app.models.library import LibraryThreat, ThreatLibrary
-from app.models.review import AcceptRequest, ScenarioIdsRequest
-from app.models.scenarios import SessionStatus
+from app.models.scenario.views import AcceptRequest, ScenarioIdsRequest, SessionStatus
 from app.services.api_clients import get_api_client_service
-from app.services.scenarios import review as review_module
-from app.services.scenarios.review import ReviewService, get_review_service
+from app.services.scenario import review as review_module
+from app.services.scenario.review import ReviewService, get_review_service
 
 #: Library threat 1 is live; 99 was retired after its scenario was written.
 LIBRARY = ThreatLibrary(

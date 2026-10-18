@@ -58,15 +58,26 @@ def test_ready_is_503_when_a_queue_has_no_worker(client: TestClient, monkeypatch
     assert response.json()["workers"] == online
 
 
+def _is_down() -> None:
+    raise ConnectionError("refused")
+
+
 def test_ready_is_503_naming_the_store_that_is_down(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, every_queue_has_a_worker: None
 ) -> None:
-    def sql_is_down() -> None:
-        raise ConnectionError("refused")
-
-    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.SQL, sql_is_down)
+    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.MONGO, _is_down)
     response = client.get("/ready")
     assert response.status_code == 503
+    assert response.json()["dependencies"] == {"mongo": False, "sql": True, "redis": True}
+
+
+def test_ready_reports_sql_server_down_without_failing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, every_queue_has_a_worker: None
+) -> None:
+    """Before: an SQL Server outage made /ready 503, so OpenShift took every route out, MongoDB-only too."""
+    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.SQL, _is_down)
+    response = client.get("/ready")
+    assert response.status_code == 200 and response.json()["status"] == "ready"
     assert response.json()["dependencies"] == {"mongo": True, "sql": False, "redis": True}
 
 
@@ -119,17 +130,17 @@ def test_a_hanging_check_answers_in_time_and_is_never_started_twice(
     release = threading.Event()
     started: list[int] = []
 
-    def sql_hangs() -> None:
+    def mongo_hangs() -> None:
         started.append(1)
         release.wait(10)
 
     monkeypatch.setattr(Timeouts, "READY_CHECK_SECONDS", 0.2)
-    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.SQL, sql_hangs)
+    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.MONGO, mongo_hangs)
     try:
         for _ in range(2):
             began = time.monotonic()
             response = client.get("/ready")
-            assert response.status_code == 503 and response.json()["dependencies"]["sql"] is False
+            assert response.status_code == 503 and response.json()["dependencies"]["mongo"] is False
             assert time.monotonic() - began < 2
         assert started == [1]
     finally:
@@ -200,7 +211,7 @@ def test_while_a_store_hangs_only_the_first_call_waits(
     thread and the liveness probe (/health) queued behind them until OpenShift restarted the pod."""
     release = threading.Event()
     monkeypatch.setattr(Timeouts, "READY_CHECK_SECONDS", 1)
-    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.SQL, lambda: release.wait(10))
+    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.MONGO, lambda: release.wait(10))
     try:
         client.get("/ready")  # the first caller waits the bound
         began = time.monotonic()
@@ -219,7 +230,7 @@ def test_a_refreshed_check_does_not_wait_again_for_a_store_still_hanging(
     release = threading.Event()
     monkeypatch.setattr(Timeouts, "READY_CHECK_SECONDS", 1)
     monkeypatch.setattr(Timeouts, "READY_CHECK_REUSE_SECONDS", 0)  # every call refreshes the other checks
-    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.SQL, lambda: release.wait(10))
+    monkeypatch.setitem(readiness._DEPENDENCY_CHECKS, Dependency.MONGO, lambda: release.wait(10))
     try:
         client.get("/ready")  # the first caller waits the bound
         began = time.monotonic()

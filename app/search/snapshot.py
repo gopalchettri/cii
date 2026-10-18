@@ -13,13 +13,24 @@ import numpy as np
 from app.ai import EmbeddingModel
 from app.core.constants import Controls, EmbeddingCorpus, StrideCategory
 from app.core.tracing import traced
-from app.models.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, LoadedLibraries
+from app.models.library import (
+    LibraryActor,
+    LibraryControl,
+    LibraryThreat,
+    LibraryThreatType,
+    LoadedLibraries,
+    ThreatLibrary,
+)
 from app.search.indexes import HybridIndex
 
 
-def threat_types_of(threats: Sequence[LibraryThreat]) -> tuple[LibraryThreatType, ...]:
-    """The types the live threats use, by id."""
-    return tuple(LibraryThreatType(*pair) for pair in sorted({(t.type_id, t.type_name) for t in threats}))
+def threat_types_of(library: ThreatLibrary) -> tuple[LibraryThreatType, ...]:
+    """The types the live threats use, by id, each with the actors the library links to it: an AI proposal's
+    matched type lists them to the relevance gate, so its attacker is judged (owner 2026-10-17: "a
+    defensible relationship"), never only the nearest by similarity."""
+    linked = library.linked_actors_by_type()
+    pairs = sorted({(threat.type_id, threat.type_name) for threat in library.threats})
+    return tuple(LibraryThreatType(*pair, linked_actors=linked.get(pair[0], ())) for pair in pairs)
 
 
 class LibrarySnapshot:

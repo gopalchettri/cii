@@ -1,10 +1,5 @@
-"""tsg_external_feed_status, write side: the source registry, its claims and its checkpoints.
-
-One document per source, `_id` the source id: the `SourceHealth` fields plus `approved` and `more_pending`. A
-source that is not approved is never fetched and never feeds an index. The seed only ADDS a missing source: an
-operator's later approval change is never overwritten. The same collection holds the run-time switch document
-(switch_flag_store.py), so every read of the sources asks for the source ids only. The approval writes are in
-feed_approval_store.py (FeedStatusStore extends that class)."""
+"""tsg_external_feed_status, write side: the source registry, its claims and its checkpoints. A source that
+is not approved is never fetched; the seed only adds a missing source."""
 
 from datetime import datetime
 from uuid import uuid4

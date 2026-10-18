@@ -77,9 +77,17 @@ class Unavailable(AppError):
     default_retry_after = Limits.RETRY_AFTER_SECONDS
 
 
+#: A store or AI service busy or down for now: the job is given back and retried later.
+TEMPORARY_ERRORS: tuple[type[Exception], ...] = (
+    Unavailable,
+    *MONGO_UNAVAILABLE_ERRORS,
+    *REDIS_UNAVAILABLE_ERRORS,
+)
+
+
 class LeaseLost(Exception):
-    """This job no longer owns its record (its owner cancelled or deleted the run, G214; or its lease ran out
-    and another delivery took it over): stop without writing anything, and make no more AI calls."""
+    """This job no longer owns its record (its owner cancelled or deleted the run, or its lease ran out and
+    another delivery took it over): stop without writing anything, and make no more AI calls."""
 
 
 class JobFailed(Exception):
@@ -93,15 +101,13 @@ class JobFailed(Exception):
 
 
 class PlanRefused(JobFailed):
-    """The planner cannot plan this asset at all (its systems' facts do not fit the model input, or no threat
-    actor is live): the run fails with this code and a message written for the user, never a smaller plan in
-    silence."""
+    """The planner cannot plan this asset at all (no threat actor is live): the run fails with this code and
+    a message written for the user."""
 
 
 class PathNotWritable(Exception):
     """One planned path lacks what its scenario needs (its one threat, a type and name, an acting attacker, a
-    system of the run): its failure card says why, and no AI is asked to invent the missing fact (spec v4.0
-    §7.4.1). A retry cannot change a frozen plan, so the card is final for this attempt."""
+    system of the run): its final failure card says why, and no AI is asked to invent the missing fact."""
 
     def __init__(self, path_id: str, problem: str, code: ErrorCode = ErrorCode.INVALID_PLAN) -> None:
         self.code = code
@@ -111,8 +117,7 @@ class PathNotWritable(Exception):
 
 class ControlsNotMapped(Exception):
     """One scenario's controls cannot be mapped for a reason a retry cannot change now (the control library is
-    empty, or no control fits its asset and systems): its controls fail with this code and message, and the
-    sweep tries again later, after a curator may have changed the library (spec v4.0 §7.5.2, §7.5.9)."""
+    empty, or no control fits): its controls fail with this code and message, and the sweep tries later."""
 
     def __init__(self, code: ErrorCode, message: str) -> None:
         super().__init__(message)

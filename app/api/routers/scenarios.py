@@ -6,13 +6,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response
 from fastapi import Header as HeaderParam
 
-from app.api.dependencies import Caller, CallersRun, Limit, Offset
+from app.api.dependencies import Caller, CallersRun, Limit, Offset, ScenarioId
 from app.core.constants import ApiTag, Decision, Header, Limits
-from app.models.run_board import RunBoard, build_board
-from app.models.scenario_views import RunResults, ScenarioList, ScenarioView
-from app.models.scenarios import StartRunRequest
-from app.services.scenarios.queries import ScenarioQueries, get_scenario_queries
-from app.services.scenarios.runs import RunService, get_run_service
+from app.models.scenario.views import (
+    RunBoard,
+    RunResults,
+    ScenarioList,
+    ScenarioView,
+    StartRunRequest,
+    build_board,
+)
+from app.services.scenario.runs import RunService, ScenarioQueries, get_run_service, get_scenario_queries
 
 router = APIRouter(tags=[ApiTag.RUNS])
 
@@ -67,7 +71,7 @@ def list_run_scenarios(
     response_model=ScenarioView,
     summary="4. One scenario",
 )
-def get_scenario(run: CallersRun, scenario_id: str, queries: Queries) -> ScenarioView:
+def get_scenario(run: CallersRun, scenario_id: ScenarioId, queries: Queries) -> ScenarioView:
     """One scenario of the run, in full."""
     return queries.one_scenario(run.session_id, scenario_id)
 

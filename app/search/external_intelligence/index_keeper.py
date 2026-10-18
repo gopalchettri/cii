@@ -1,12 +1,5 @@
-"""The evidence index in use: built in the background, swapped in whole, never lost to a failed build.
-
-A request never waits for a build: until the first one is done the index is empty and finds nothing. A rebuild
-reads the approved sources' current records, refuses an empty corpus, skips a corpus whose checksum is the one
-in use, builds the new index off to the side, stores and activates its description and only then swaps it in
-with one assignment. One rebuild runs at a time; a request made while one runs makes it read the records once
-more when it ends, so a refresh that finished mid-build is never missed. A failed build keeps the old index
-and is tried again after a growing pause. Every process holds its own index and follows the active snapshot
-pointer (at most every IntelLimits.SWITCH_CACHE_SECONDS, in the background)."""
+"""The evidence index in use: built in the background, swapped in whole, never lost to a failed build, and
+published as the active snapshot that every process follows."""
 
 import threading
 import time
@@ -24,19 +17,24 @@ from app.core.singletons import singleton
 from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
 from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
 from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
-from app.models.external_intelligence.evidence_corpus import EvidenceCorpus
-from app.search.external_intelligence.corpus_builder import CorpusBuilder
-from app.search.external_intelligence.evidence_index import EvidenceIndex, build_index, empty_index
-from app.search.external_intelligence.index_refused import EvidenceIndexRefused
+from app.models.external_intelligence.evidence_corpus import EvidenceCorpus, SnapshotDescription
+from app.search.external_intelligence.corpus_builder import build_corpus
+from app.search.external_intelligence.evidence_index import (
+    EvidenceIndex,
+    EvidenceIndexRefused,
+    build_index,
+    empty_index,
+)
 from app.search.external_intelligence.intelligence_metrics import SNAPSHOT_AGE_SECONDS
-from app.search.external_intelligence.snapshot_publisher import SnapshotPublisher
 
 log = structlog.get_logger(__name__)
 RETRY_FIRST_SECONDS, RETRY_LONGEST_SECONDS = 30.0, 900.0  # the pause after a failed build, doubled each time
 
 
 class EvidenceIndexKeeper:
-    def __init__(  # noqa: PLR0913 - the three stores, the two models, their names and a clock
+    """One process's evidence index; a request never waits for a build, and one build runs at a time."""
+
+    def __init__(
         self,
         record_store: IntelRecordStore,
         snapshot_store: SnapshotPointerStore,
@@ -50,17 +48,14 @@ class EvidenceIndexKeeper:
         self._records, self._snapshots, self._feeds = record_store, snapshot_store, feed_store
         self._embeddings, self._rerank = embeddings, rerank
         self._embedding_model, self._rerank_model = embedding_model, rerank_model
-        self._builder = CorpusBuilder(embedding_model)
-        self._publisher = SnapshotPublisher(snapshot_store, embedding_model, rerank_model)
         self._clock = clock
         self._index = empty_index(embeddings, rerank, rerank_model)
         self._lock = threading.Lock()  # guards the fields below; never held during a build or a read
         self._running: Future[EvidenceIndex] | None = None
-        self._again = False
-        self._wanted = True  # a build is wanted: the first one, or a failed one to try again
+        self._read_again = False  # a rebuild was asked for while one ran
+        self._build_wanted = True  # the first build, or a failed one to try again
         self._failures = 0
-        self._retry_at = 0.0
-        self._check_at = 0.0
+        self._retry_at = self._check_at = 0.0  # when a failed build may retry; when to look at the pointer
         self._told_no_data = False  # "no data yet: run the import" is logged once per process, not per retry
 
     def peek_index(self) -> EvidenceIndex:
@@ -68,28 +63,28 @@ class EvidenceIndexKeeper:
         return self._index
 
     def current_index(self) -> EvidenceIndex:
-        """The index in use now; never waits. Empty until the first build is done."""
+        """The index in use now, never waiting; starts a wanted build, or a look at the active snapshot."""
         index, now = self._index, self._clock()
-        if self._wanted and now >= self._retry_at:
-            self._launch(again=False)
-        elif not self._wanted:
+        if self._build_wanted and now >= self._retry_at:
+            self._launch(read_again=False)
+        elif not self._build_wanted:
             self._follow_active_snapshot(now)
         return index
 
     def rebuild_index(self) -> Future[EvidenceIndex]:
-        """Starts a rebuild in the background (or joins the one running, which then reads the records once
-        more); the future gives the index in use afterwards, or the error that kept the old one."""
-        return self._launch(again=True)
+        """Start a rebuild in the background; its future gives the index in use, or the error that kept it."""
+        return self._launch(read_again=True)
 
     def snapshot_age_seconds(self) -> float:
-        """NaN while there is no index: the gauge shows nothing rather than a made-up age."""
+        """Seconds since the index in use was built; NaN while there is none (the gauge shows nothing)."""
         index = self._index
         return (datetime.now(UTC) - index.built_at).total_seconds() if index.has_records else float("nan")
 
-    def _launch(self, *, again: bool) -> Future[EvidenceIndex]:
+    def _launch(self, *, read_again: bool) -> Future[EvidenceIndex]:
+        """Start the build thread, or join the build running (asking it to read again when `read_again`)."""
         with self._lock:
             if self._running is not None:
-                self._again = self._again or again
+                self._read_again = self._read_again or read_again
                 return self._running
             future: Future[EvidenceIndex] = Future()
             self._running = future
@@ -101,9 +96,10 @@ class EvidenceIndexKeeper:
         return future
 
     def _run(self, future: Future[EvidenceIndex]) -> None:
+        """The build thread: build until settled and hand the index, or the error, to whoever waits."""
         try:
             index = self._build_until_settled()
-        except Exception as exc:  # noqa: BLE001 - handed to whoever waits; the index in use keeps serving
+        except Exception as exc:  # handed to whoever waits; the index in use keeps serving
             self._settle_failure()
             self._log_failure(exc)
             future.set_exception(exc)
@@ -111,18 +107,18 @@ class EvidenceIndexKeeper:
             future.set_result(index)
 
     def _build_until_settled(self) -> EvidenceIndex:
+        """Build and swap, again while a rebuild was asked for meanwhile (a refresh that ended mid-build)."""
         while True:
             index = self._build_and_swap()
             with self._lock:
-                if not self._again:
-                    self._running, self._wanted, self._failures = None, False, 0
+                if not self._read_again:
+                    self._running, self._build_wanted, self._failures = None, False, 0
                     self._told_no_data = False  # data came: should it all go, say so again
                     return index
-                self._again = False
+                self._read_again = False
 
     def _log_failure(self, exc: Exception) -> None:
-        """Nothing imported yet (owner, 2026-10-15): ONE line per process naming the import to run, then the
-        retries stay quiet until data comes; any other failure is logged each time."""
+        """Log a failed build; with nothing imported yet, one line per process names the import to run."""
         if isinstance(exc, EvidenceIndexRefused) and exc.no_data:
             if not self._told_no_data:
                 self._told_no_data = True
@@ -131,16 +127,18 @@ class EvidenceIndexKeeper:
         log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error=type(exc).__name__)
 
     def _settle_failure(self) -> None:
+        """End a failed build: the build is wanted again after a pause that doubles per failure."""
         with self._lock:
-            self._running, self._again, self._wanted = None, False, True
+            self._running, self._read_again, self._build_wanted = None, False, True
             self._failures += 1
             pause = min(RETRY_FIRST_SECONDS * 2 ** (self._failures - 1), RETRY_LONGEST_SECONDS)
             self._retry_at = self._clock() + pause
 
     def _build_and_swap(self) -> EvidenceIndex:
+        """Build the approved records' index aside (unless in use already), publish it and swap it in."""
         approved = self._feeds.list_approved_sources()
         try:
-            corpus = self._builder.build_corpus(self._records.stream_current_records(approved))
+            corpus = build_corpus(self._records.stream_current_records(approved), self._embedding_model)
         except EvidenceIndexRefused:
             if approved:  # sources are approved but hold nothing: a broken refresh, not an order to empty
                 raise
@@ -148,17 +146,18 @@ class EvidenceIndexKeeper:
         current = self._index
         if corpus.checksum == current.corpus.checksum:
             return current
-        index = current.reuse_for(corpus) or self._build(corpus)
-        self._publisher.publish_index(index)
+        if not corpus.hits:
+            index = empty_index(self._embeddings, self._rerank, self._rerank_model)
+        else:
+            index = current.reuse_for(corpus) or build_index(
+                corpus, self._embeddings, self._rerank, self._rerank_model
+            )
+        publish_index(self._snapshots, index, self._embedding_model, self._rerank_model)
         self._index = index  # the swap: readers see the old index or the new one, never a mix
         return index
 
-    def _build(self, corpus: EvidenceCorpus) -> EvidenceIndex:
-        if not corpus.hits:
-            return empty_index(self._embeddings, self._rerank, self._rerank_model)
-        return build_index(corpus, self._embeddings, self._rerank, self._rerank_model)
-
     def _follow_active_snapshot(self, now: float) -> None:
+        """At most every SWITCH_CACHE_SECONDS, look at the active snapshot from a background thread."""
         with self._lock:
             if now < self._check_at:
                 return
@@ -171,21 +170,50 @@ class EvidenceIndexKeeper:
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO)
 
     def _rebuild_if_pointer_is_newer(self) -> None:
-        """One small read; a store outage leaves the index in use serving."""
+        """Start a build when the active snapshot is a newer corpus; an outage keeps the index serving."""
         try:
             active = self._snapshots.read_active_snapshot()
-        except Exception:  # noqa: BLE001 - any failure of this read: keep serving, look again later
+        except Exception:  # any failure of this read: keep serving, look again later
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO)
             return
         index = self._index
         built_at = active.get("built_at") if active else None
         newer = not isinstance(built_at, datetime) or built_at > index.built_at
         if active is not None and active.get("checksum") != index.corpus.checksum and newer:
-            self._launch(again=False)
+            self._launch(read_again=False)
+
+
+def publish_index(
+    snapshots: SnapshotPointerStore, index: EvidenceIndex, embedding_model: str, rerank_model: str
+) -> None:
+    """Store and activate the index's description, unless another process already published this corpus. An
+    empty index is published too, so other processes drop what was revoked; the store never moves the pointer
+    to an older build."""
+    active = snapshots.read_active_snapshot()
+    if active is not None and active.get("checksum") == index.corpus.checksum:
+        return
+    description = SnapshotDescription(
+        index.snapshot_id or "empty",
+        index.built_at,
+        index.source_versions,
+        index.corpus.counts(),
+        index.corpus.checksum,
+        embedding_model,
+        rerank_model,
+    )
+    snapshots.save_snapshot_description(description.as_doc())
+    activated = snapshots.activate_snapshot(description.snapshot_id)
+    event = (
+        LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_ACTIVATED
+        if activated
+        else LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_SUPERSEDED
+    )
+    log.info(event, snapshot_id=description.snapshot_id, indexed=len(index.corpus.hits))
 
 
 @singleton
 def get_evidence_index_keeper() -> EvidenceIndexKeeper:
+    """The process's evidence index keeper, its snapshot age exported as a gauge."""
     settings, db = get_settings(), get_mongodb()
     keeper = EvidenceIndexKeeper(
         IntelRecordStore(db),

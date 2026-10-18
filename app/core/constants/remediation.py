@@ -1,16 +1,15 @@
-"""Remediation plans (Step 16, BUILD_PLAN S44-S56; BLUEPRINT M11): limits, the plan's vocabularies (v1's, word
-for word: the approved prompt names them) and request messages."""
+"""Remediation plans: limits, the vocabularies the approved prompt names, warnings and messages."""
 
 from enum import StrEnum
 from typing import Final
 
 
 class Remediation:
-    TEXT_MAX_CHARS: Final = 2_000  # one free-text value in a plan's snapshot (BR-REM-01)
+    TEXT_MAX_CHARS: Final = 2_000  # one free-text value in a plan's snapshot
     TRUNCATED_MARK: Final = " [truncated]"  # what follows a cut value, so a cut is never silent
-    MAX_CONTROL_REFS: Final = 50  # register controls, or a hand-written scenario's controls (BR-REM-02)
-    MAX_ACTION_DAYS: Final = 3_650  # one action's duration; above it is capped with a warning (BR-REM-03)
-    STATEMENT_MAX_CHARS: Final = 4_000  # a hand-written scenario or risk statement (BR-REM-07)
+    MAX_CONTROL_REFS: Final = 50  # register controls, or a hand-written scenario's controls
+    MAX_ACTION_DAYS: Final = 3_650  # one action's duration; above it is capped with a warning
+    STATEMENT_MAX_CHARS: Final = 4_000  # a hand-written scenario or risk statement
     NAME_MAX_CHARS: Final = 200  # risk owner, business division, a category name
     TYPE_NAME_MAX_CHARS: Final = 300  # Threat_Type.ThreatTypeName
     THREAT_NAME_MAX_CHARS: Final = 500  # Threat_Catalogue.ThreatName
@@ -18,25 +17,18 @@ class Remediation:
     COMMENT_MAX_CHARS: Final = 2_000  # a decision's review comment
     CONTROL_CODE_MAX_CHARS: Final = 100  # Control_Library.ControlCode
     CONTROL_TEXT_MAX_CHARS: Final = 500  # a register control named in free text
-    # A rating is exact up to 15 significant digits (what a JSON number holds without rounding), 4 of them
-    # after the point: 99,999,999,999.9999 at most (BR-REM-04).
-    RATING_MAX_DIGITS: Final = 15
-    RATING_DECIMALS: Final = 4
-    STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code (BR-REM-05)
-    # A register control the library retired, as the AI reads it: "CII-CID-077 — Firmware review (Integrity)"
-    # then this (owner, 2026-10-11: its name and domain, never a bare number).
-    RETIRED_MARK: Final = ", retired in the library"
+    RATING_MAX_DIGITS: Final = 15  # a rating is exact up to 15 significant digits (a JSON number) ...
+    RATING_DECIMALS: Final = 4  # ... 4 of them after the point
+    STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code
+    RETIRED_MARK: Final = ", retired in the library"  # after a retired register control's name and domain
     REASON_MAX_CHARS: Final = 300  # the AI's problems quoted in a failed version's error message
 
 
 class RiskLevel(StrEnum):
-    """The register's own four levels, most urgent first (the urgency ladder of the approved prompt). The
-    API accepts any other label too and echoes it; code's urgency checks apply to these four only."""
+    """The register's urgent risk levels; the API accepts and echoes any other label too."""
 
     CRITICAL = "Critical"
     HIGH = "High"
-    MEDIUM = "Medium"
-    LOW = "Low"
 
 
 class YesNo(StrEnum):
@@ -66,8 +58,7 @@ class ActionPriority(StrEnum):
 
 
 class LibraryStatus(StrEnum):
-    """Where a hand-written scenario's threat stands in the library (Rule L2): its ids are kept unless a
-    curator rejected the wording."""
+    """Where a hand-written scenario's threat stands in the library."""
 
     ACTIVE = "active"
     PENDING = "pending"  # proposed (now or before), waiting for a curator
@@ -75,10 +66,10 @@ class LibraryStatus(StrEnum):
 
 
 class RemediationProgress(StrEnum):
-    """A plan's overall progress (#15 `progress.overall`): the first that applies, in this order."""
+    """A plan's overall progress: the first that applies, in this order."""
 
     FAILED = "failed"  # the latest version failed
-    CANCELLED = "cancelled"  # its owner stopped the latest version being written (G214)
+    CANCELLED = "cancelled"  # its owner stopped the latest version being written
     GENERATING = "generating"  # the latest version is queued or running
     AWAITING_REVIEW = "awaiting_review"  # no version decided yet
     REJECTED = "rejected"
@@ -88,7 +79,6 @@ class RemediationProgress(StrEnum):
 class RemediationMessage(StrEnum):
     WINDOW_PAIR = "mitigation_start_date and mitigation_end_date must be sent together."
     WINDOW_ORDER = "mitigation_end_date must be on or after mitigation_start_date."
-    # v1's four `_one_kind` refusals (owner, 2026-10-15: one plan request for both kinds of scenario).
     MANUAL_NEEDS_SCENARIO = "is_manual=true requires manual_scenario."
     MANUAL_SENDS_NO_IDS = "is_manual=true must not send session_id or scenario_id: TSG creates them."
     GENERATED_NEEDS_IDS = "is_manual=false requires session_id and scenario_id."
@@ -145,16 +135,13 @@ class RemediationMessage(StrEnum):
     TYPE_MISMATCH = "The library files '{threat}' under the type '{library_type}'."
     CATEGORY_UNKNOWN = "'{name}' is not a STRIDE category."
     CATEGORY_NOT_OF_THREAT = "The library files '{threat}' under {categories}, not '{category}'."
-    # A plan version's own failures (the job's error message).
-    PLAN_UNUSABLE = "The AI could not write a usable remediation plan: {reason}"
+    PLAN_UNUSABLE = "The AI could not write a usable remediation plan: {reason}"  # a version's own failure
     PLAN_WITHOUT_ACTION = "The AI's remediation plan has no action, so there is nothing to schedule or do."
 
 
 class PlanWarning(StrEnum):
-    """Every warning the planner's checks and the scheduler add to a plan version (v1's words): where the plan
-    and its rules part ways. Warnings never block a plan; the reviewer reads them beside it."""
+    """What the planner's checks and the scheduler warn about on a plan version; never a block."""
 
-    # The planner's checks (app/engine/remediation/planner.py, BLUEPRINT M11 R6).
     CONTROL_NOT_IN_LIBRARY = (
         "recommended control {code!r} matched no library control and was removed from the plan"
     )
@@ -178,8 +165,6 @@ class PlanWarning(StrEnum):
         "risk_level is {level} but no recommended control or action carries Critical/High priority — the "
         "plan's urgency does not reflect the register's scored verdict"
     )
-    # The scheduler (app/engine/remediation/scheduler.py, schedule_checks.py; R7).
-
     DURATION_REPAIRED = (
         "{action}.duration_days {value} is not a whole number of days of at least 1 — scheduled as 1 day"
     )
@@ -214,8 +199,7 @@ class PlanWarning(StrEnum):
 
 
 class SnapshotWarning(StrEnum):
-    """What a plan version's frozen input itself warns about (v1's three register advisories, and a mapped
-    control the library no longer holds): flags for the reviewer, never a block."""
+    """What a plan version's frozen input warns about: flags for the reviewer, never a block."""
 
     RATING_MISMATCH = (
         "final_risk_rating {final} does not equal likelihood x impact ({likelihood}x{impact}={product}); "

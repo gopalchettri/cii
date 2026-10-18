@@ -5,8 +5,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from app.core.constants import AssetType
-from app.engine.external_intelligence.evidence_finder import EvidenceFinder
-from app.engine.external_intelligence.rerank_gate import RerankGate
+from app.domain.external_intelligence.evidence_finder import EvidenceFinder
+from app.domain.external_intelligence.rerank_gate import RerankGate
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
 from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 from tests.external_intelligence.evidence_fakes import (

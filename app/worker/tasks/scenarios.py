@@ -1,9 +1,7 @@
-"""The scenario run's jobs (guide §7.2-7.4). tsg_find_threats plans the run and hands its first set
-(INITIAL_SET_SIZE paths), in ONE fenced write, to tsg_write_scenarios (Step 12) on the same epoch: the claim
-filters on job.task, so a late copy of this message can never plan the run again."""
+"""The plan job: plans a run and hands its first set to the write job in one fenced write, on the same epoch
+(the claim filters on job.task, so a late copy of the message never plans the run again)."""
 
 import time
-from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,12 +18,9 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.tracing import traced
 from app.data_access.job_records import JobLease
-from app.data_access.sessions import SessionRepository
-from app.engine.scenarios.attack_paths.path_progress import set_and_first_batch
-from app.engine.scenarios.attack_paths.path_selector import get_attack_path_selector
-from app.engine.scenarios.finding.threat_finder import get_threat_finder
+from app.data_access.scenario.runs import SessionRepository
+from app.domain.scenario.plan import build_plan, get_threat_finder, set_and_first_batch
 from app.models.asset_context import FrozenContext
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence.intel_access import get_intel_access
@@ -36,27 +31,19 @@ log = structlog.get_logger(__name__)
 
 @celery_app.task(name=TaskName.FIND_THREATS, bind=True)
 def find_threats(self: Task, record_id: str, epoch: int) -> None:
-    """A plan refusal (PlanRefused, a JobFailed) fails the run with plan_refused or actor_library_empty and is
-    never retried; an outage gives the job back and retries (run_leased_job)."""
+    """Celery task: plan the run; a plan refusal fails it for good, an outage retries the job."""
     run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan_run)
 
 
-@traced("worker.plan_run")
 def plan_run(lease: JobLease) -> None:
-    """Plan the run, then hand its first set to scenario writing in ONE fenced write. A plan with no path ends
-    the run in that same write: nothing is left to write, so no writer job is queued."""
+    """Plan the run and hand its first set to the write job in one fenced write; a plan with no path ends the
+    run in that write instead."""
     started = time.perf_counter()
     context = FrozenContext.from_record(SessionRepository(get_mongodb()).find_context(lease.record_id))
-    access = get_intel_access()
-    country = get_settings().context_country if access.is_on() else ""  # G232: intelligence on only
+    country = get_settings().context_country if get_intel_access().is_on() else ""  # a fact, ranks nothing
     findings = get_threat_finder().find_threats(context, country)
-    near, intel_stamp = access.plan_intel(findings.threats, context)  # G238: one read, never waits
-    threats = [replace(threat, country_relevance=near.get(threat.key)) for threat in findings.threats]
-    plan = get_attack_path_selector().build_plan(replace(findings, threats=threats))
-    plan |= {
-        "frozen_at": datetime.now(UTC),
-        "made_with": made_with(findings.library_stamp) | intel_stamp,
-    }
+    plan = build_plan(findings, get_settings().total_scenario_count)
+    plan |= {"frozen_at": datetime.now(UTC), "made_with": made_with(findings.library_stamp)}
     selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
     changes = plan_changes(plan, len(selected), time.perf_counter() - started)
     if selected:
@@ -73,7 +60,7 @@ def plan_run(lease: JobLease) -> None:
 
 
 def finished_outcome(plan: dict[str, Any]) -> RunActionOutcome:
-    """complete, or partial when a category could not be assessed: a gap the reviewer must see (G113)."""
+    """Complete, or partial when a category could not be assessed (a gap the reviewer must see)."""
     return RunActionOutcome.PARTIAL if plan["not_assessed"] else RunActionOutcome.COMPLETE
 
 
@@ -90,8 +77,7 @@ def plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[st
 
 
 def made_with(library_stamp: dict[str, str | None]) -> dict[str, Any]:
-    """What the plan was made with, so a reviewer can tell why this plan and not another (v1 froze the same):
-    the models and the library version."""
+    """The models and library version the plan was made with, frozen on the plan for the reviewer."""
     settings = get_settings()
     chat_models = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []

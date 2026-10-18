@@ -24,6 +24,7 @@ from app.core.exceptions import Conflict, Forbidden, NotFound
 from app.core.redaction import REDACTED
 from app.core.singletons import singleton
 from app.core.tracing import traced
+from app.data_access.job_records import new_job
 from app.data_access.remediations import RemediationRepository
 from app.models.api_clients import Principal
 from app.models.remediation import PlanStarted
@@ -121,14 +122,7 @@ def new_plan_record(
         "risk_level": register.risk_level,
         "status": Status.QUEUED,
         "active": True,
-        "job": {
-            "task": TaskName.WRITE_PLAN,
-            "epoch": 1,
-            "task_id": None,
-            "attempts": 0,
-            "due_at": now,
-            "error": None,
-        },
+        "job": new_job(TaskName.WRITE_PLAN, 1, now),
         "created_at": now,
         "updated_at": now,
     }

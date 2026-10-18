@@ -1,25 +1,26 @@
-"""A run's plan paths as the scenario write job settles them (Step 12, BUILD_PLAN S25-S26): every change in
-ONE fenced write with the run's counts and plan note, then a live update; then the set's next batch, handed to
-the same task, or the end of the set (job.set: the paths the plan job or a next-set call asked for)."""
+"""A run's plan paths as the write job settles them, each change in one fenced write with the run's counts and
+plan note, then the set's next batch handed over, or the set or the regenerate ended."""
 
 from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import PlanMessage, RunActionKind, RunActionOutcome, TaskName, UnselectedReason
 from app.data_access.job_records import JobLease, LeaseLost
-from app.data_access.run_counts import RunCounts
-from app.data_access.scenarios import ScenarioRepository
-from app.engine.scenarios.attack_paths.path_progress import (
-    is_still_to_write,
+from app.data_access.scenario.scenarios import RunCounts, ScenarioRepository
+from app.domain.scenario.plan import (
+    best_reserve,
+    budget_left,
     next_paths_to_write,
     plan_counts,
+    set_summary,
 )
-from app.engine.scenarios.attack_paths.path_replacement import best_reserve, budget_left
 from app.realtime.publisher import publish_session_status
 from app.worker.jobs import hand_over
 
 
 class PlanProgress:
+    """The plan of the run one write job holds, and the fenced writes that move it on."""
+
     def __init__(
         self, lease: JobLease, run: dict[str, Any], scenarios: ScenarioRepository, counts: RunCounts
     ) -> None:
@@ -30,14 +31,10 @@ class PlanProgress:
         self._set = set(run["job"].get("set") or ())
 
     def hold(self) -> None:
-        """Right before a scenario is saved: the job still owns the run (its lease renewed), else LeaseLost.
-        Its AI answers come back seconds after the call, so a run its owner cancelled or deleted meanwhile
-        never gets a scenario saved after the cancel (G214), nor one a later delivery already owns."""
+        """Renew the job's lease right before a scenario is saved, else raise LeaseLost: a run cancelled or
+        deleted during the AI call, or taken over by a later delivery, never gets the scenario."""
         if not self._lease.renew():
             raise LeaseLost(self._run_id)
-
-    def is_still_to_write(self, path_id: str) -> bool:
-        return is_still_to_write(self.paths[path_id])
 
     def abandon(
         self,
@@ -47,10 +44,8 @@ class PlanProgress:
         threats: dict[str, dict[str, Any]],
         evidence: bool,
     ) -> str | None:
-        """A path given up for good (G229): when the set's budget allows and a reserve exists, the reserve
-        takes its place in the same fenced write (the failed path unselected with its reason, the reserve
-        selected and added to this set, so this set writes it); the reserve's id, or None. `evidence`:
-        intelligence on."""
+        """Give a path up for good; when the set's budget allows and a reserve exists, the reserve takes its
+        place in the same fenced write. Return the reserve's id, or None. `evidence`: intelligence on."""
         states = {path_id: state | {"abandoned_reason": reason}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
@@ -67,9 +62,9 @@ class PlanProgress:
         return str(reserve["path_id"])
 
     def record(self, states: dict[str, dict[str, Any]], also: dict[str, Any] | None = None) -> None:
-        """Paths' new states, the plan's figures and its note in ONE fenced write, after the run's scenario
-        counts (their own guarded write: the controls job refreshes them too); then a live update. `also`:
-        other fields the same write sets (a replacement's job.set)."""
+        """Save paths' new states, the plan's figures and its note in one fenced write (after the run's
+        scenario counts, which have their own guarded write), then send a live update. `also`: more fields
+        for the same write."""
         changes: dict[str, Any] = dict(also or {})
         for number, (path_id, state) in enumerate(states.items()):
             self.paths[path_id].update(state)
@@ -84,18 +79,16 @@ class PlanProgress:
         publish_session_status(self._run_id)
 
     def keep_evidence(self, found: dict[str, dict[str, Any]]) -> None:
-        """The evidence searched for threats (key -> {evidence, intel_search}), saved on the plan in ONE
-        fenced write: a retry, a later batch or a regenerate of the path reuses it and never searches
-        again, so a scenario's evidence numbering is the same in every version."""
+        """Save the evidence searched for threats (key -> {evidence, intel_search}) on the plan in one fenced
+        write, so every later write of the path reuses it and its evidence numbering never changes."""
         changes: dict[str, Any] = {}
         for number, fields in enumerate(found.values()):
             changes |= {f"plan.threats.$[t{number}].{name}": value for name, value in fields.items()}
         self._lease.write(changes, [{f"t{number}.key": key} for number, key in enumerate(found)])
 
     def continue_or_finish(self) -> None:
-        """The set's next batch, handed to this same task (never-tried paths first, best rank first), or the
-        end of the set, which ends this action: complete, or partial when a path of this set was abandoned or
-        a category not assessed. The paths no one asked for yet wait for the next set."""
+        """Hand the set's next batch to this same task, or end the set: complete, or partial when a path of
+        this set was abandoned or a category not assessed."""
         in_set = [path for path_id, path in self.paths.items() if path_id in self._set]
         batch = next_paths_to_write(in_set)
         if batch:
@@ -109,16 +102,28 @@ class PlanProgress:
         rescued = self._scenarios.find_written(self._run_id, given_up) if given_up else {}
         if rescued:
             self.record({path_id: {"served": sid, "abandoned": False} for path_id, sid in rescued.items()})
-        # This set's own result: a path set 1 abandoned does not make set 2 partial; an unassessed category
-        # is a gap in the whole plan, so every set carries it (G113).
+        # This set's own result; an unassessed category is a gap in the whole plan, so every set carries it.
         partial = bool(self._plan["not_assessed"]) or plan_counts(in_set)["abandoned"] > 0
-        # This action's own writing time: from the plan's freeze for a run's first writing, from the next
-        # set's start for a later one (never the days a reviewer took in between).
+        # This action's own writing time: from the plan's freeze, or from a later set's start.
         started = max(self._plan["frozen_at"], self._last_action.get("started_at") or self._plan["frozen_at"])
         seconds = (datetime.now(UTC) - started).total_seconds()
         outcome = RunActionOutcome.PARTIAL if partial else RunActionOutcome.COMPLETE
         changes: dict[str, Any] = {"last_action.outcome": outcome, "timings.scenarios_s": round(seconds, 1)}
-        if self._last_action.get("kind") == RunActionKind.NEXT_SET:  # what the status shows of it
-            delivered = sum(bool(path["served"]) for path in in_set)
-            changes["last_next_set"] = {"outcome": outcome, "requested": len(in_set), "delivered": delivered}
+        if self._last_action.get("kind") == RunActionKind.NEXT_SET:  # requested and epoch stay as queued
+            summary = set_summary(in_set, list(self.paths.values()), outcome)
+            changes |= {f"last_next_set.{key}": value for key, value in summary.items()}
         self._lease.finish(changes)
+
+    def finish_regenerate(self, replaced: int, requested: int) -> None:
+        """End a regenerate: complete when every target got its new version, partial when any kept its old
+        one, timed from the click."""
+        outcome = RunActionOutcome.COMPLETE if replaced == requested else RunActionOutcome.PARTIAL
+        started = self._last_action.get("started_at") or datetime.now(UTC)
+        self._lease.finish(
+            {
+                "last_action.outcome": outcome,
+                "last_regen.outcome": outcome,  # requested and epoch stay as queued
+                "last_regen.replaced": replaced,
+                "timings.scenarios_s": round((datetime.now(UTC) - started).total_seconds(), 1),
+            }
+        )

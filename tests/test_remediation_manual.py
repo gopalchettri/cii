@@ -27,11 +27,10 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.asset_context import AssetContextRepository
 from app.data_access.manual_scenarios import ManualRecords
 from app.data_access.remediations import RemediationRepository
-from app.data_access.run_counts import RunCounts
-from app.data_access.sessions import SessionRepository
+from app.data_access.scenario.runs import AssetContextRepository, SessionRepository
+from app.data_access.scenario.scenarios import RunCounts
 from app.models.library import LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation.manual import ManualPlans, _fingerprint, get_manual_plans
@@ -216,6 +215,21 @@ def test_the_key_is_required_and_names_one_request(
     taken = _post(client, api_key, new_wording, generated)
     assert (taken.status_code, taken.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
     assert manual["proposals"] == []
+
+
+def test_a_parallel_request_with_the_key_and_another_body_is_refused(
+    client: TestClient,
+    api_key: str,  # noqa: F811
+    manual: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both looked for the key before either saved: the second's upsert keeps the first's run, so it is 409,
+    never planned from (or replayed as) the first's scenario."""
+    key = uuid.uuid4().hex
+    assert _post(client, api_key, BODY, key).status_code == 202
+    monkeypatch.setattr(SessionRepository, "find_by_idempotency_key", lambda *_: None)
+    other = _post(client, api_key, _with(threat_scenario="Another attack, written differently."), key)
+    assert (other.status_code, other.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
 
 
 def test_new_wordings_are_proposed_pending_by_the_plan_job_and_a_rejected_one_is_not(

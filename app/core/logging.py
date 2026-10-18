@@ -5,13 +5,16 @@ import os
 import sys
 from collections.abc import MutableMapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import structlog
 
 from app.core.config import Settings
 from app.core.redaction import MASKED, SECRET_FIELD_NAME
 from app.core.tracing import set_step_detail, set_step_tracing
+
+#: Our loggers: every module's structlog.get_logger(__name__) ("app.…") and the request log ("http").
+_OUR_LOGGERS: Final = ("app", "http")
 
 
 def mask_secret_values(_logger: Any, _name: str, event: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
@@ -27,7 +30,12 @@ def configure_logging(settings: Settings, role: str | None = None) -> None:
     set_step_tracing(settings.debug_step_output)
     set_step_detail(settings.debug_step_detail, settings.debug_step_top)
     level = settings.log_level
-    logging.basicConfig(stream=sys.stdout, level=level, format="%(message)s")
+    logging.basicConfig(stream=sys.stdout, format="%(message)s")  # does nothing once a handler exists
+    # G263: DEBUG is for our code only. On the root it also printed every library's debug lines (each MongoDB
+    # command and its reply in UAT, stored data among them); libraries keep INFO and above.
+    logging.getLogger().setLevel(logging.INFO if level == "DEBUG" else level)
+    for name in _OUR_LOGGERS:
+        logging.getLogger(name).setLevel(level)
     if settings.log_dir and role:
         _also_write_to(Path(settings.log_dir) / f"{role}.log", level)
     structlog.configure(

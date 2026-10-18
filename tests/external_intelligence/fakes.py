@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.constants import (
     EvidenceDecision,
+    EvidenceFact,
     EvidenceSearchFailure,
     IntelKind,
     IntelSource,
@@ -19,9 +20,11 @@ from app.models.external_intelligence.evidence import (
     EvidenceSearchRecord,
 )
 from app.models.external_intelligence.evidence_request import EvidenceRequest, EvidenceResult
-from app.models.external_intelligence.known_groups import KnownGroup
+from app.models.external_intelligence.switch_state import SwitchState
 
 SNAPSHOT = "snap-1"
+#: A fact as the real feeds build it (EvidenceFact.USED_BY): it names a group, so a story may cite it (G268).
+NAMED_FACT = EvidenceFact.USED_BY.format(name="Sandworm Team", what="a threat group")
 FACT = "Sandworm used a rogue firmware update to disable substation devices in a real attack."
 TECHNIQUE = Evidence(
     ref="T0839",
@@ -30,7 +33,7 @@ TECHNIQUE = Evidence(
     title="Module Firmware",
     url="https://attack.mitre.org/techniques/T0839/",
     score=91.0,
-    facts=(FACT, "Defenders limit vendor remote access and monitor firmware changes."),
+    facts=(FACT, "Defenders limit vendor remote access and monitor firmware changes.", NAMED_FACT),
 )
 
 
@@ -42,8 +45,6 @@ class FakeFinder:
         self.down = False
         self.raises = False
         self.evidence: tuple[Evidence, ...] = (TECHNIQUE,)
-        self.groups: tuple[KnownGroup, ...] = ()  # G230: the real groups it answers with
-        self.nearest: Evidence | None = None  # G254: the closest candidate when no evidence passed
 
     def find_evidence(
         self, requests: Sequence[EvidenceRequest], *, stale: bool
@@ -69,18 +70,18 @@ class FakeFinder:
         search = EvidenceSearchRecord(
             request.text, tuple(sorted(request.asset_types)), SNAPSHOT, 1.0, considered, stale, failure
         )
-        evidence, groups = (() if self.down else self.evidence), (() if self.down else self.groups)
-        return EvidenceResult(evidence, search, groups, None if self.down else self.nearest)
+        return EvidenceResult(() if self.down else self.evidence, search)
 
 
 class FakeSwitch:
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
+        self.known = True  # False: its store could not be read and no value was kept (it reads off)
         self.reads = 0
 
-    def is_enabled(self) -> bool:
+    def state(self) -> SwitchState:
         self.reads += 1
-        return self.enabled
+        return SwitchState(True, self.enabled and self.known, known=self.known)
 
 
 class FakeRefresher:

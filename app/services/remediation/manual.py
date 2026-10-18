@@ -12,12 +12,11 @@ from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.exceptions import Conflict, Forbidden, Invalid
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.asset_context import AssetContextRepository
 from app.data_access.manual_scenarios import ManualRecords
 from app.data_access.remediations import RemediationRepository
-from app.data_access.run_counts import RunCounts
-from app.data_access.sessions import SessionRepository
-from app.engine.remediation.manual_records import manual_ids
+from app.data_access.scenario.runs import AssetContextRepository, SessionRepository
+from app.data_access.scenario.scenarios import RunCounts
+from app.domain.remediation.manual_records import manual_ids
 from app.models.api_clients import Principal
 from app.models.remediation import PlanStarted
 from app.models.remediation_requests import ManualScenario, PlanRequest
@@ -51,8 +50,9 @@ class ManualPlans:
         if scenario is not None and (replayed := self._replayed(scenario["_id"])) is not None:
             return replayed, False
         saved_before = scenario is not None  # an earlier call saved it, then stopped (v1: replayed)
-        if scenario is None:
-            scenario = self._scenarios.save(principal, body, key, fingerprint)
+        if scenario is None:  # the stored one: a parallel request with this key and body may have saved first
+            saved = self._scenarios.save(principal, body, key, fingerprint)
+            scenario = self._plans.find_scenario(saved["_id"]) or saved
         try:
             started = self._requests.plan_scenario(principal, body, scenario)
             return started.model_copy(update={"replayed": saved_before}), True

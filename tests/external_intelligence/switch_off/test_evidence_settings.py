@@ -14,7 +14,7 @@ from app.ai.profiles import (
     RERANK_MODEL_PROFILES,
     find_model_profile,
 )
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.constants import Env, EvidenceSettingMessage
 
 REPO = Path(__file__).resolve().parents[3]
@@ -156,3 +156,12 @@ def test_the_feature_code_names_no_model() -> None:
         named += [f"{source.name}: {name}" for name in names if re.search(re.escape(name.lower()), text)]
     # the one place that records which reranker was calibrated is a table of model names by design
     assert [item for item in named if not item.startswith("evidence_story.py")] == []
+
+
+def test_the_country_setting_takes_its_short_name_and_refuses_one_it_does_not_know() -> None:
+    """THREAT_CONTEXT_COUNTRY (a fact of the landscape and the brief: it ranks nothing) is checked."""
+    values = get_settings().model_dump()
+    country = Settings(_env_file=None, **(values | {"threat_context_country": "UAE"})).context_country
+    assert country == "United Arab Emirates"
+    with pytest.raises(ValidationError, match="THREAT_CONTEXT_COUNTRY"):
+        Settings(_env_file=None, **(values | {"threat_context_country": "Atlantis"}))

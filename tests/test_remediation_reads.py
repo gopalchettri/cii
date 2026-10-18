@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.core.constants import Collection, Decision, Header, Status
 from app.core.database import get_mongodb
 from app.data_access.remediation_reads import RemediationReads
-from app.engine.remediation.planner import finish
+from app.domain.remediation.planner import finish
 from app.models.remediation import PlanDraft
 from app.models.remediation_views import RemediationResult
 from app.services.api_clients import get_api_client_service

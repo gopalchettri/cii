@@ -1,19 +1,21 @@
 """Applicability from the asset's recorded products (a version is only read beside its own product) and the
-evidence limit keeping every kind that passed. Never CONFIRMED from partial data."""
+evidence limit keeping every kind that passed. Never CONFIRMED from partial data. Versions are compared by the
+packaging library: one it cannot read is "not known", never guessed."""
 
 from typing import Any
 
 import pytest
 
 from app.core.constants import Applicability, AssetType, EvidenceDecision
-from app.engine.external_intelligence.evidence_finder import EvidenceFinder
-from app.engine.external_intelligence.rerank_gate import RerankGate
+from app.domain.external_intelligence.evidence_finder import EvidenceFinder
+from app.domain.external_intelligence.product_link import affected_state
+from app.domain.external_intelligence.rerank_gate import RerankGate
 from app.models.external_intelligence.evidence_request import (
     EvidenceRequest,
     RecordedProduct,
     RecordedProducts,
 )
-from app.search.external_intelligence.corpus_builder import CorpusBuilder
+from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import build_index
 from tests.external_intelligence.evidence_fakes import (
     ScoredBy,
@@ -42,7 +44,7 @@ def kev(cve: str, *entries: Any) -> dict[str, Any]:
 
 
 def verdict(docs: list[dict], *rows: RecordedProduct, scores: dict[str, float] | None = None):
-    index = build_index(CorpusBuilder().build_corpus(docs), TextEmbeddings(), ScoredBy(scores or {}))
+    index = build_index(build_corpus(docs), TextEmbeddings(), ScoredBy(scores or {}))
     finder = EvidenceFinder(lambda: index, 1.0, gate=RerankGate(1))
     request = EvidenceRequest("Threat: ransomware", ALL_TYPES, RecordedProducts(tuple(rows)))
     (result,), _ = finder.find_evidence([request], stale=False)
@@ -116,3 +118,45 @@ def test_the_limit_keeps_a_record_of_every_kind_that_passed(limit_case: str) -> 
     result = verdict(docs, product(), scores=scores)
     expected = ["T1", "T2", "ICSA-24-009-01"] if limit_case == "places" else ["T1", "T2", "T3"]
     assert [item.ref for item in result.evidence] == expected
+
+
+def test_versions_compare_as_pep_440_versions() -> None:
+    upto = entry([rng(end="2.10", ei=False)])
+    assert affected_state("2.9", upto) is True and affected_state("2.10.0", upto) is False
+    assert affected_state("v1.0", entry([rng("1", "1", ei=True)])) is True
+    release = entry([rng(end="2.3", ei=False)])
+    assert affected_state("2.3rc1", release) is True and affected_state("1.0-beta2", release) is True
+
+
+@pytest.mark.parametrize("bad", ["", "latest", "2.3 and earlier", "1.x", "2.3 sp1", None, 7, "9" * 70])
+def test_a_version_packaging_cannot_read_is_not_known(bad: Any) -> None:
+    assert affected_state(bad, entry([rng(end="9")])) is None
+    assert affected_state("2.3", entry([rng(end=bad if isinstance(bad, str) and bad else "n/a")])) is None
+
+
+def test_range_ends_can_be_inclusive_or_exclusive_and_a_fix_ends_the_range() -> None:
+    upto, before = entry([rng(end="2.3", ei=True)]), entry([rng(end="2.3", ei=False)])
+    assert (affected_state("2.3", upto), affected_state("2.3", before)) == (True, False)
+    between = entry([rng("1.0", "2.0", si=False)])
+    assert (affected_state("1.0", between), affected_state("1.5", between)) == (False, True)
+    fixed = entry([rng(end="2.4")], ["2.4"])
+    assert (affected_state("2.3", fixed), affected_state("2.5", fixed)) == (True, False)
+
+
+def test_a_record_that_contradicts_itself_or_cannot_be_read_is_never_guessed() -> None:
+    assert affected_state("3.0", entry([rng("3.0", "3.9"), rng("2.0", "2.4")], ["2.4"])) is None
+    assert affected_state("2.3", entry([rng(end="2.4")], ["soon"])) is None
+    for bad in (entry([]), entry([{}]), {"versions": "all"}, {}):
+        assert affected_state("2.3", bad) is None
+    assert affected_state("2.3", entry(["junk", rng(end="9")])) is True
+    assert affected_state("2.3", entry([{"start": "1", "end": "9", "end_inclusive": "yes"}])) is None
+
+
+def test_a_missing_start_flag_is_inclusive_and_no_bounds_means_every_version() -> None:
+    from_two = entry([{"start": "2.0", "end": "3.0", "end_inclusive": False}])
+    assert (affected_state("2.0", from_two), affected_state("3.0", from_two)) == (True, False)
+    every = [{"start": None, "end": None, "end_inclusive": False}]
+    assert (
+        affected_state("9.9", entry(every)) is True and affected_state("9.9", entry(every, ["9.0"])) is None
+    )
+    assert affected_state("9.9", entry(every, ["10.0"])) is True

@@ -166,6 +166,12 @@ class ThreatLibrary:
             (*(threat.catalogue_id for threat in self.threats), *self.threats_without_category, *pending)
         )
 
+    def linked_actors_by_type(self) -> dict[int, tuple[LibraryActor, ...]]:
+        """The actors the library links to each type (ThreatType_ThreatActor_Map): a type's own record, else
+        what its live threats carry (G108: an AI threat takes those of the library type it matched)."""
+        by_threat = {threat.type_id: threat.linked_actors for threat in self.threats}
+        return by_threat | {threat_type.type_id: threat_type.linked_actors for threat_type in self.types}
+
 
 @dataclass(frozen=True)
 class LibraryControl:

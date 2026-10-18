@@ -11,18 +11,13 @@ from typing import Any
 import pytest
 
 from app.core.config import get_settings
-from app.core.constants import StrideCategory
 from app.core.exceptions import Invalid, SetupError
-from app.engine.scenarios.control_query import control_query
-from app.engine.scenarios.finding.asset_landscape import (
-    describe_asset_for_ai,
-    library_search_queries,
-    raw_system_facts,
-)
+from app.domain.scenario.controls import control_query
+from app.domain.scenario.plan import describe_asset_for_ai, raw_system_facts
 from app.models.asset_context import AssetContextRows, FrozenContext
-from app.models.scenarios import StartRunRequest
-from app.services.scenarios import context as context_module
-from app.services.scenarios.property_selection import check_required
+from app.models.scenario.views import StartRunRequest
+from app.services.scenario import runs as runs_module
+from app.services.scenario.runs import check_required
 
 LOCATION, TECHNOLOGY = "Marker location Site Alpha", "Marker technology Stack Omega"
 NEW_FACT = "Marker recovery notes Gamma"
@@ -52,7 +47,7 @@ def _system_row(system_id: int, **changes: Any) -> dict[str, Any]:
         "id": system_id, "name": f"System {system_id}", "category_code": "IT", "category_name": "IT",
         "past_incidents": None, "technology_used": "[21]", "dr_location": None,
         "last_dr_test_date": datetime(1900, 1, 1), "rto_target_mins": Decimal(0),
-        **dict.fromkeys(context_module.SINGLE_SELECT_CODES),
+        **dict.fromkeys(runs_module.SINGLE_SELECT_CODES),
         **dict.fromkeys(("backup_tested", "backup_multi_site", "document_drp_exists")),
     }  # fmt: skip
     return row | changes
@@ -73,13 +68,12 @@ def _without(row: dict[str, Any], column: str) -> dict[str, Any]:
 
 
 def _texts(context: FrozenContext) -> str:
-    """Everything the steps send on: the stored record, the landscape, the library search queries, the
-    control query, and each system's facts as the brief and the remediation snapshot read them."""
+    """Everything the steps send on: the stored record, the landscape, the control query, and each system's
+    facts as the brief and the remediation snapshot read them."""
     return "\n".join(
         [
             json.dumps(context.to_record(), default=str),
             describe_asset_for_ai(context, 30_000).text,
-            *library_search_queries(context, StrideCategory.TAMPERING),
             control_query(CONTENT, context, context.systems).text,
             *(json.dumps(raw_system_facts(system), default=str) for system in context.systems),
         ]
@@ -87,7 +81,7 @@ def _texts(context: FrozenContext) -> str:
 
 
 def _freeze(rows: AssetContextRows) -> FrozenContext:
-    return context_module.freeze_context(REQUEST, rows)
+    return runs_module.freeze_context(REQUEST, rows)
 
 
 def test_a_column_removed_from_the_procedure_reaches_no_step() -> None:
@@ -102,7 +96,7 @@ def test_a_column_removed_from_the_procedure_reaches_no_step() -> None:
 
 def test_a_column_added_to_the_procedure_reaches_every_step() -> None:
     """No app change: a new system column and a new asset column are facts of the run, in the landscape, the
-    search queries, the control query, the brief and the snapshot."""
+    control query, the brief and the snapshot."""
     systems = [_system_row(1567, recovery_notes=NEW_FACT), _system_row(1568, recovery_notes=None)]
     context = _freeze(_rows(_asset_row(site_notes="Marker site notes Delta"), *systems))
     assert context.systems[0]["recovery_notes"] == NEW_FACT
@@ -111,19 +105,18 @@ def test_a_column_added_to_the_procedure_reaches_every_step() -> None:
         json.dumps(raw_system_facts(context.systems[0])),
     ):
         assert NEW_FACT in text
-    assert any(NEW_FACT in query for query in library_search_queries(context, StrideCategory.TAMPERING))
     controls_text = control_query(CONTENT, context, context.systems).text  # owner 2026-10-11: controls too
     assert NEW_FACT in controls_text and "site_notes: Marker site notes Delta" in controls_text
 
 
-def test_the_head_columns_are_not_facts_and_the_asset_name_is_searched() -> None:
-    """id, name and category_code stay out of the facts the prompts get; the asset's search query carries its
-    name (owner 2026-10-11) with its spaces collapsed."""
+def test_the_head_columns_are_not_facts_and_the_asset_is_named() -> None:
+    """id, name and category_code stay out of the facts the prompts get; the landscape names the asset
+    (owner 2026-10-11) with its spaces collapsed."""
     context = _freeze(_rows())
     assert context.asset == {"id": 1206, "name": "Grid Centre", "category_code": "OT"}
     assert not {"id", "name", "category_code"} & set(context.asset_context)
     assert list(context.systems[0])[:4] == ["id", "alias", "name", "category_code"]
-    assert "Grid Centre" in library_search_queries(context, StrideCategory.TAMPERING)[-1]
+    assert describe_asset_for_ai(context, 30_000).text.startswith('ASSET: {"asset": "Grid Centre"')
 
 
 @pytest.mark.parametrize("missing", ["id", "name", "category_code"])
@@ -213,15 +206,6 @@ def test_an_asset_or_system_without_a_name_is_refused_before_any_run(name: Any) 
     with pytest.raises(Invalid) as system_refused:
         _freeze(_rows(None, _system_row(1567), _system_row(1568, name=name)))
     assert system_refused.value.errors[0]["field"] == "body.supporting_system_id.1"
-
-
-def test_a_date_column_is_no_search_text() -> None:
-    """Review 2026-10-11: any date column the procedure returns, not only the DR test date."""
-    context = _freeze(_rows(_asset_row(commissioned_on=date(2019, 5, 2))))
-    assert context.asset_context["commissioned_on"] == "2019-05-02"
-    assert not any(
-        "2019-05-02" in query for query in library_search_queries(context, StrideCategory.TAMPERING)
-    )
 
 
 def test_missing_facts_name_only_columns_the_procedure_returns() -> None:
@@ -325,8 +309,15 @@ def test_dropdown_names_the_procedure_already_gave_are_kept() -> None:
     """G217: the owner's procedure names dropdowns itself (by option id): "Historian, Windows" and "In-house"
     reached the app as text and were dropped as unknown saved values."""
     options = {"technology-used": {1: "SCADA"}, "managed-by": {1: "In-house"}}
-    assert context_module._multi("Historian, Windows", "technology-used", options) == ["Historian", "Windows"]
-    assert context_module._multi("[1]", "technology-used", options) == ["SCADA"]  # saved values, as before
-    assert context_module._multi("[1, x", "technology-used", options) is None  # a broken array: none
-    assert context_module._single("In-house", "managed-by", options) == "In-house"
-    assert context_module._single(1, "managed-by", options) == "In-house"
+    assert runs_module._multi_select_names("Historian, Windows", "technology-used", options) == [
+        "Historian",
+        "Windows",
+    ]
+    assert runs_module._multi_select_names("[1]", "technology-used", options) == [
+        "SCADA"
+    ]  # saved values, as before
+    assert (
+        runs_module._multi_select_names("[1, x", "technology-used", options) is None
+    )  # a broken array: none
+    assert runs_module._single_select_name("In-house", "managed-by", options) == "In-house"
+    assert runs_module._single_select_name(1, "managed-by", options) == "In-house"

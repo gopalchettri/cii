@@ -18,13 +18,16 @@ class RefreshResult(StrEnum):
 
 @dataclass(frozen=True)
 class SourceRefresh:
+    """What the refresh did to one source."""
+
     source: IntelSource
     result: RefreshResult
-    counts: SaveCounts = SaveCounts(0, 0, 0)  # noqa: RUF009 - frozen, shared safely
+    counts: SaveCounts = SaveCounts(0, 0, 0)  # frozen, so one default is shared safely
     retired: int = 0
     error: str | None = None  # people-readable: a message text or an exception type
 
     def as_doc(self) -> dict[str, Any]:
+        """The source's outcome as the job record shows it."""
         return {
             "source": self.source,
             "result": self.result,
@@ -38,16 +41,21 @@ class SourceRefresh:
 
 @dataclass(frozen=True)
 class RefreshSummary:
+    """What one refresh did to every source it looked at."""
+
     sources: tuple[SourceRefresh, ...]
     index_rebuilt: bool  # the evidence index was rebuilt after the refresh
 
     @property
     def failed(self) -> tuple[IntelSource, ...]:
+        """The sources whose refresh failed."""
         return tuple(item.source for item in self.sources if item.result == RefreshResult.FAILED)
 
     @property
     def new_versions(self) -> int:
+        """How many new record versions every source stored together."""
         return sum(item.counts.new_versions for item in self.sources)
 
     def as_doc(self) -> dict[str, Any]:
+        """The refresh as the job record shows it."""
         return {"sources": [item.as_doc() for item in self.sources], "index_rebuilt": self.index_rebuilt}

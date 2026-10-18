@@ -1,6 +1,5 @@
-"""tsg_audit: append-only. This module only inserts; no code path updates or deletes an audit record (the
-TTL index deletes it after Audit.KEEP_DAYS). `record_audit` lives here, below the services, so a worker can
-audit what a job does (a remediation plan version written, BLUEPRINT M11 R3) as a service audits a call."""
+"""tsg_audit: append-only; only inserts here, and the TTL index deletes a record after Audit.KEEP_DAYS.
+Below the services, so a worker can audit what a job does as a service audits a call."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -39,17 +38,12 @@ def record_audit(
         "request_id": structlog.contextvars.get_contextvars().get("request_id"),
     }
     try:
-        insert_audit_record(record)
+        # The action has already happened and its answer is waiting: bounded, unlike the 30 s socket timeout.
+        with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
+            _audit_records().insert_one(record)
     except Exception:  # noqa: BLE001 — the action already happened: an audit outage must not undo or fail it
         metrics.AUDIT_FAILURES.inc()
         log.warning(LogEvent.AUDIT_WRITE_FAILED, action=action, target=target, exc_info=True)
-
-
-def insert_audit_record(record: dict[str, Any]) -> None:
-    """One insert. The action has already happened and its answer is waiting: bounded, unlike the 30 s socket
-    timeout."""
-    with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
-        _audit_records().insert_one(record)
 
 
 def ensure_audit_indexes() -> None:
@@ -62,4 +56,5 @@ def ensure_audit_indexes() -> None:
 
 
 def _audit_records() -> MongoCollection:
+    """The tsg_audit collection."""
     return get_mongodb()[Collection.AUDIT]

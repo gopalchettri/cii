@@ -12,9 +12,9 @@ from app.core.constants import ErrorCode, ErrorMessage
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
-from app.data_access.sessions import SessionRepository
-from app.engine.remediation.register import register_half
-from app.engine.remediation.snapshot import build_snapshot, inputs_ready, pending_snapshot
+from app.data_access.scenario.runs import SessionRepository
+from app.domain.remediation.register import register_half
+from app.domain.remediation.snapshot import build_snapshot, inputs_ready, pending_snapshot
 from app.models.asset_context import FrozenContext
 from app.models.remediation_requests import RegisterData
 from app.search.library_cache import LibraryService, get_library_service

@@ -1,12 +1,11 @@
-"""G229 (owner 2026-10-13): a path given up for good is replaced, within TOTAL_SCENARIO_COUNT, by the reserve
-that adds the most (a HIGH-impact threat not yet covered, new systems, a new kind, a new threat), with
-intelligence on never one whose search already found nothing; no reserve with TOTAL_SCENARIO_COUNT 0; at most
-the set's own paths x MAX_PATH_ATTEMPTS write calls. The write job's side: tests/test_replacement_job.py."""
+"""A path given up for good is replaced, within TOTAL_SCENARIO_COUNT, by the best-ranked path the count left
+out; with intelligence on never one whose search already found nothing; none with TOTAL_SCENARIO_COUNT 0; at
+most the set's own paths x MAX_PATH_ATTEMPTS write calls. The write job's side: test_replacement_job.py."""
 
 from typing import Any
 
 from app.core.constants import Generation, UnselectedReason
-from app.engine.scenarios.attack_paths.path_replacement import best_reserve, budget_left
+from app.domain.scenario.plan import best_reserve, budget_left
 
 _REACHED = UnselectedReason.TARGET_REACHED
 
@@ -33,31 +32,12 @@ def _reserve(path_id: str, rank: int, systems: list[int], kind: str = "Tampering
     return _path(path_id, rank, systems, kind, selected=False, **more)
 
 
-def test_the_reserve_that_covers_what_the_failed_path_left_uncovered_wins_over_a_better_ranked_one() -> None:
+def test_the_reserve_is_the_best_ranked_path_the_scenario_count_left_out() -> None:
     kept = _path("p1", 1, [1])
     failed = _path("p2", 2, [2], abandoned=True)
-    same_system = _reserve("p3", 3, [1])
-    new_system = _reserve("p4", 4, [2])
-    assert best_reserve([kept, failed, same_system, new_system], {}, False) == new_system
-
-
-def test_a_high_impact_threat_not_yet_covered_comes_before_new_systems() -> None:
-    kept = _path("p1", 1, [1])
-    new_systems = _reserve("p2", 2, [2, 3])
-    critical = _reserve("p3", 3, [1], impact=3)
-    assert best_reserve([kept, new_systems, critical], {}, False) == critical
-
-
-def test_then_a_new_kind_then_a_new_threat_then_rank() -> None:
-    kept = _path("p1", 1, [1], steps=["lib:a"])
-    same_threat = _reserve("p2", 2, [1], steps=["lib:a"])
-    new_threat = _reserve("p3", 3, [1])
-    new_kind = _reserve("p4", 4, [1], "Spoofing")
-    assert best_reserve([kept, same_threat, new_threat, new_kind], {}, False) == new_kind
-    assert best_reserve([kept, same_threat, new_threat], {}, False) == new_threat
-    assert (
-        best_reserve([kept, same_threat, _reserve("p5", 5, [1], steps=["lib:a"])], {}, False) == same_threat
-    )
+    next_in_rank = _reserve("p3", 3, [1])
+    later = _reserve("p4", 4, [2])
+    assert best_reserve([kept, failed, later, next_in_rank], {}, False) == next_in_rank
 
 
 def test_with_intelligence_on_a_reserve_whose_search_found_nothing_is_never_promoted() -> None:
@@ -70,10 +50,18 @@ def test_with_intelligence_on_a_reserve_whose_search_found_nothing_is_never_prom
         "lib:p4": {"intel_search": {"snapshot_id": "s", "failure": None}, "evidence": [{"n": 1}]},
     }
     paths = [kept, found_nothing, unsearched, in_hand]
-    assert best_reserve(paths, threats, True) == in_hand  # evidence in hand before a search still to make
-    assert best_reserve(paths[:3], threats, True) == unsearched
+    assert best_reserve(paths, threats, True) == unsearched  # by rank, once the empty search is left out
+    assert best_reserve([kept, found_nothing, in_hand], threats, True) == in_hand
     assert best_reserve(paths[:2], threats, True) is None
     assert best_reserve(paths[:2], threats, False) == found_nothing  # off: evidence plays no part
+
+
+def test_a_reserve_whose_attacker_no_check_supports_is_never_promoted() -> None:
+    """Its brief would be refused (ATTACKER_UNSUPPORTED): promoting it only spends the write budget."""
+    kept, unsupported, writable = _path("p1", 1, [1]), _reserve("p2", 2, [2]), _reserve("p3", 3, [1])
+    threats = {"lib:p2": {"attacker_check": "none_fits", "actors": [{"role": "acting", "closest": True}]}}
+    assert best_reserve([kept, unsupported, writable], threats, False) == writable
+    assert best_reserve([kept, unsupported], threats, False) is None
 
 
 def test_no_reserve_with_no_limit_and_none_promoted_twice_or_brought_back() -> None:

@@ -8,7 +8,7 @@ from app.core.constants import IntelKind, IntelLimits, IntelOperationsLimits, In
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord
 from app.models.external_intelligence.refresh_summary import RefreshResult
-from app.services.external_intelligence.refresh_messages import RefreshMessage
+from app.services.external_intelligence.record_batch_writer import RefreshMessage
 from app.services.external_intelligence.refresh_sources import SourceRefresher
 from tests.external_intelligence.evidence_fakes import NOW, MemoryCatalogue, MemoryKeeper, StubFetcher
 from tests.external_intelligence.operations.refresh_fakes import ClaimFeeds, CurrentRecords

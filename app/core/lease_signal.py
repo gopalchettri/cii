@@ -3,7 +3,7 @@ longer the job's (its owner cancelled or deleted the run, or another delivery to
 call reads it first, so a stopped job makes no more AI calls: within one renewal (Lease.RENEW_EVERY_SECONDS)
 of the cancel, not at its next save minutes later, and with no extra database read.
 
-A ContextVar: the job's pool threads run in a copy of its context (engine/shared/parallel.py), so they read
+A ContextVar: the job's pool threads run in a copy of its context (domain/shared/parallel.py), so they read
 the same signal; outside a job (the API, a plan request's top-up) there is none and nothing is checked."""
 
 import threading

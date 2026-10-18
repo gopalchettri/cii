@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.constants import (
+    ActionStatus,
     AuditAction,
     Collection,
     ConflictReason,
@@ -28,16 +29,16 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, NotFound
+from app.data_access import job_control as job_control_module
 from app.data_access.job_control import JobControlRecords
 from app.data_access.job_records import JobLease, JobRecords, LeaseLost
-from app.data_access.scenario_controls import ControlDeliveries, ControlSweep
-from app.data_access.sessions import SessionRepository
+from app.data_access.scenario.runs import SessionRepository
+from app.data_access.scenario.scenarios import ControlDeliveries, ControlSweep
 from app.models.api_clients import Principal
 from app.services import jobs as jobs_module
 from app.services.api_clients import get_api_client_service
-from app.services.scenarios import run_actions as run_actions_module
-from app.services.scenarios.run_actions import get_run_actions
-from app.services.session_status import find_status_for_caller
+from app.services.scenario import runs as runs_module
+from app.services.scenario.runs import find_status_for_caller, get_run_actions
 from tests.plan_addresses import plan_url
 
 NOW = datetime.now(UTC)
@@ -226,8 +227,8 @@ def test_a_cancelled_run_resumes_whole_with_the_next_set(
 ) -> None:
     """Restarting is deliberate: a next set takes it up again, its stopped controls with it."""
     sent: list[Any] = []
-    monkeypatch.setattr(run_actions_module, "send_job", lambda *args: sent.append(args))
-    monkeypatch.setattr(run_actions_module, "publish_session_status", lambda _: None)
+    monkeypatch.setattr(runs_module, "send_job", lambda *args: sent.append(args))
+    monkeypatch.setattr(runs_module, "publish_session_status", lambda _: None)
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": None, "attempts": 0, "abandoned": False}
     run_id = _run(entity, Status.RUNNING, plan={"paths": [path]})
     stopped = _scenario(run_id, Status.QUEUED)
@@ -410,14 +411,18 @@ def test_a_finished_runs_stopped_controls_resume_with_a_next_set(
     """Nothing left to write: a next set resumes only its stopped controls, sent at once (review: they could
     never be resumed but by rewriting scenarios)."""
     sent: list[Any] = []
-    monkeypatch.setattr(run_actions_module, "send_job", lambda *args: sent.append(args))
-    monkeypatch.setattr(run_actions_module, "publish_session_status", lambda _: None)
+    monkeypatch.setattr(runs_module, "send_job", lambda *args: sent.append(args))
+    monkeypatch.setattr(runs_module, "publish_session_status", lambda _: None)
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": "s1", "attempts": 1, "abandoned": False}
     run_id = _run(entity, Status.DONE, plan={"paths": [path]})
     stopped = _scenario(run_id, Status.QUEUED)
     client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity))
     resumed = client.post(f"/v1/sessions/{run_id}/scenarios/next-set", headers=_who(api_key, entity))
-    assert (resumed.status_code, resumed.json()) == (202, {"epoch": 1})
+    # G268: v1's 202 shape; only stopped controls resumed, so the current epoch and mapping_controls.
+    assert resumed.status_code == 202, resumed.text
+    assert {key: resumed.json()[key] for key in ("session_id", "status", "epoch")} == {
+        "session_id": run_id, "status": ActionStatus.MAPPING_CONTROLS, "epoch": 1,
+    }  # fmt: skip
     assert sent == [(TaskName.MAP_CONTROLS, run_id, 0)] and _controls(stopped) == Status.QUEUED
     board = client.get(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).json()
     assert board["progress"]["controls"] == "RUNNING" and board["progress"]["error_message"] == {}
@@ -447,7 +452,7 @@ def test_a_next_set_racing_a_delete_is_told_the_run_is_being_deleted(
     marks the run first; a next set landing between that mark and the end gets 409 run_being_deleted, and
     nothing is queued or sent."""
     sent: list[Any] = []
-    monkeypatch.setattr(run_actions_module, "send_job", lambda *args: sent.append(args))
+    monkeypatch.setattr(runs_module, "send_job", lambda *args: sent.append(args))
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": None, "attempts": 0, "abandoned": False}
     run_id = _run(entity, Status.DONE, plan={"paths": [path]})
     principal = Principal(client_id="c1", user_id="u2", entity_id=entity, tenant_id="T")
@@ -472,7 +477,7 @@ def test_a_run_whose_delete_was_cut_short_starts_nothing_more(
 ) -> None:
     """Not even its stopped controls (nothing left to write): they stay stopped until the delete ends."""
     sent: list[Any] = []
-    monkeypatch.setattr(run_actions_module, "send_job", lambda *args: sent.append(args))
+    monkeypatch.setattr(runs_module, "send_job", lambda *args: sent.append(args))
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": "s1", "attempts": 1, "abandoned": False}
     run_id = _run(entity, Status.DONE, plan={"paths": [path]}, deleting_at=NOW)
     stopped = _scenario(run_id, Status.CANCELLED)
@@ -480,3 +485,22 @@ def test_a_run_whose_delete_was_cut_short_starts_nothing_more(
     assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
     assert _controls(stopped) == Status.CANCELLED and sent == []
     assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200
+
+
+def test_a_cancel_landing_during_a_resume_stands(entity: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before: the resume re-queued the controls, then cleared the run's cancel stamp whatever happened in
+    between, so a cancel clicked meanwhile was undone."""
+    earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
+    run_id = _run(entity, Status.DONE, cancelled=earlier)
+    stopped = _scenario(run_id, Status.CANCELLED)
+    records = JobControlRecords(get_mongodb())
+    being_deleted = job_control_module.is_being_deleted
+
+    def cancel_lands_meanwhile(sessions: Any, session_id: str) -> bool:
+        records.cancel_run(run_id, entity, {"user_id": "u9"})
+        return being_deleted(sessions, session_id)
+
+    monkeypatch.setattr(job_control_module, "is_being_deleted", cancel_lands_meanwhile)
+    assert records.resume_controls(run_id) == 0
+    stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
+    assert stored["cancelled"]["user_id"] == "u9" and _controls(stopped) == Status.CANCELLED

@@ -4,11 +4,11 @@ the run check (404/403) is the valid_session dependency."""
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends
 
-from app.api.dependencies import Caller, CallersRun
-from app.core.constants import ApiTag, Review
-from app.models.review import (
+from app.api.dependencies import Caller, CallersRun, ScenarioId
+from app.core.constants import ApiTag
+from app.models.scenario.views import (
     AcceptRequest,
     AcceptResult,
     PromotionResult,
@@ -16,16 +16,15 @@ from app.models.review import (
     RunActionStarted,
     ScenarioIdsRequest,
 )
-from app.services.scenarios.promotion import LibraryPromotion, get_library_promotion
-from app.services.scenarios.review import ReviewService, get_review_service
-from app.services.scenarios.run_actions import RunActions, get_run_actions
+from app.services.library_curation import LibraryPromotion, get_library_promotion
+from app.services.scenario.review import ReviewService, get_review_service
+from app.services.scenario.runs import RunActions, get_run_actions
 
 router = APIRouter(tags=[ApiTag.REVIEW])
 
 Reviews = Annotated[ReviewService, Depends(get_review_service)]
 Actions = Annotated[RunActions, Depends(get_run_actions)]
 Promotions = Annotated[LibraryPromotion, Depends(get_library_promotion)]
-ScenarioId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 
 
 @router.post("/v1/sessions/{session_id}/accept", response_model=AcceptResult, summary="1. Accept scenarios")

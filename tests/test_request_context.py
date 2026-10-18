@@ -136,3 +136,16 @@ def test_an_unexpected_error_reaches_a_browser_with_cors_and_the_request_id(
     assert response.status_code == 500
     assert response.headers["access-control-allow-origin"] == "http://ui.test"
     assert response.headers[Header.REQUEST_ID] == response.json()["request_id"]
+
+
+def test_cors_allows_exactly_the_methods_the_routes_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before: only GET and POST, so a browser's preflight refused PUT, PATCH and DELETE routes."""
+    monkeypatch.setattr(get_settings(), "cors_origins", "http://ui.test")
+    app = create_app()
+    routed = {method.upper() for operations in app.openapi()["paths"].values() for method in operations}
+    preflight = TestClient(app).options(
+        "/v1/jobs/any",
+        headers={"Origin": "http://ui.test", "Access-Control-Request-Method": "DELETE"},
+    )
+    assert preflight.status_code == 200
+    assert set(preflight.headers["access-control-allow-methods"].split(", ")) == routed

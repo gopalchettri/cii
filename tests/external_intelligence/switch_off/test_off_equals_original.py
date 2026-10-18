@@ -12,11 +12,10 @@ from app.core.constants import (
     AuditAction,
     Collection,
     TaskName,
-    WriterStyle,
 )
 from app.core.database import get_mongodb
 from app.data_access import indexes
-from app.engine.scenarios.writing.writing_prompts import WRITER_PROMPT_VERSION
+from app.domain.scenario.write import WRITER_PROMPT_VERSION
 from app.worker import lifecycle
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence import intel_access as access_module
@@ -92,9 +91,8 @@ def test_the_master_switch_off_decides_the_original_style_before_any_read(
     """G229: the batch decides its style ONCE, from the switch; with it off the batch is written in the
     original style and never searches (EvidenceAtWrite is only ever called for an evidence-story batch)."""
     monkeypatch.setattr(access_module, "get_mongodb", lambda: Untouched())
-    access = IntelAccess(finder=Untouched, is_stale=Untouched, relevance=Untouched)  # type: ignore[arg-type]
-    assert access.writer_style() is WriterStyle.ORIGINAL
-    assert access.plan_intel([], None) == ({}, {})  # type: ignore[arg-type]  # nothing read when off
+    access = IntelAccess(finder=Untouched, is_stale=Untouched)  # type: ignore[arg-type]
+    assert access.is_on() is False
 
 
 def test_the_runtime_switch_off_writes_the_original_style_and_searches_nothing(
@@ -102,7 +100,7 @@ def test_the_runtime_switch_off_writes_the_original_style_and_searches_nothing(
 ) -> None:
     """With the runtime switch off, a whole write job reads and searches no intelligence."""
     intel.switch.enabled = False
-    assert intel.access.writer_style() is WriterStyle.ORIGINAL
+    assert intel.access.is_on() is False
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     (scenario,) = _scenarios_of(record_id)
@@ -182,7 +180,7 @@ def test_no_refresh_is_scheduled_and_a_stray_one_does_nothing_while_off() -> Non
 def test_the_worker_warm_up_does_nothing_while_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.worker.external_intelligence.warm_up.get_evidence_index_keeper", Untouched)
     lifecycle.warm_up_external_intelligence()
-    assert get_intel_access().writer_style() is WriterStyle.ORIGINAL
+    assert get_intel_access().is_on() is False
 
 
 def test_a_planned_threat_carries_no_evidence_key_until_it_was_searched() -> None:
@@ -191,8 +189,8 @@ def test_a_planned_threat_carries_no_evidence_key_until_it_was_searched() -> Non
 
 
 def test_a_switch_that_cannot_be_read_counts_as_off(intel: Intel) -> None:
-    def broken() -> bool:
+    def broken() -> Any:
         raise OSError("the store is down")
 
-    intel.switch.is_enabled = broken  # type: ignore[method-assign]
-    assert intel.access.is_on() is False and intel.access.writer_style() is WriterStyle.ORIGINAL
+    intel.switch.state = broken  # type: ignore[method-assign]
+    assert intel.access.is_on() is False

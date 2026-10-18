@@ -4,13 +4,14 @@ from datetime import datetime
 
 from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
 from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
-from app.models.external_intelligence.feed_freshness import FeedFreshness
-from app.models.external_intelligence.source_health import HealthReport
+from app.models.external_intelligence.source_health import FeedFreshness, HealthReport
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
 from app.services.external_intelligence.switch import ExternalIntelligenceSwitch
 
 
 class HealthReporter:
+    """Builds the health report from the stores, the switch and the index in use."""
+
     def __init__(
         self,
         feed_store: FeedStatusStore,
@@ -24,10 +25,8 @@ class HealthReporter:
         self._keeper = index_keeper
 
     def describe_health(self, now: datetime) -> HealthReport:
-        """`stale`: an approved source that HAS succeeded is older than IntelLimits.STALE_AFTER_HOURS. An
-        approved source that never succeeded is `pending_sources` (and `no_data` when all are): waiting for
-        first data, not stale. The snapshot is the active one of the fleet; before any, the one this process
-        serves. Reading starts no build."""
+        """The report at `now`: an approved source that never succeeded is pending, not stale; the snapshot is
+        the fleet's active one, else the one this process serves. Reading starts no build."""
         sources = tuple(self._feeds.read_all_source_health())
         freshness = FeedFreshness.of(sources, self._feeds.list_approved_sources(), now)
         active = self._snapshots.read_active_snapshot()

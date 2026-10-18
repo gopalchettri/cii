@@ -1,4 +1,5 @@
-"""The downloader: retries, refusals, conditional requests, size limit, shared connection."""
+"""The downloader: retries, refusals, conditional requests, size limit, shared connection, and the reason a
+source that never answered gives."""
 
 import httpx
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from app.core.constants import SourceDownload
 from app.core.exceptions import IntelFetchFailed
 from app.services.external_intelligence.sources.http_download import HttpDownloader
+from app.services.external_intelligence.sources.nist_nvd_details_source import NvdApiClient
 
 
 def _web(handler, slept: list[float] | None = None) -> HttpDownloader:
@@ -20,13 +22,49 @@ def test_a_busy_source_is_retried_with_back_off_then_answers() -> None:
     assert slept == [2, 4]
 
 
-def test_a_source_that_never_answers_fails_with_the_enum_message() -> None:
+def _never_answers(error: httpx.TransportError):
     def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("down")
+        raise error
 
+    return handler
+
+
+def test_a_source_that_never_answers_fails_with_the_enum_message_and_its_reason() -> None:
     with pytest.raises(IntelFetchFailed) as error:
-        _web(handler).download("https://x.test/f")
-    assert "did not answer after 3 attempts" in error.value.message
+        _web(_never_answers(httpx.ConnectError("down"))).download("https://x.test/f")
+    # G263: "did not answer" alone hid that the proxy was switched off (UAT, 2026-10-16)
+    expected = "https://x.test/f did not answer after 3 attempts (last: ConnectError: down)."
+    assert error.value.message == expected
+
+
+def test_a_source_busy_on_every_try_names_its_last_status() -> None:
+    with pytest.raises(IntelFetchFailed) as error:
+        _web(lambda r: httpx.Response(503)).download("https://x.test/f")
+    assert error.value.message.endswith("(last: HTTP 503).")
+
+
+def test_the_reason_never_shows_a_proxy_password_or_an_internal_host() -> None:
+    refused = httpx.ProxyError("407 from http://ops:S3cret-pw@proxy.corp.local:8080")
+    with pytest.raises(IntelFetchFailed) as error:
+        _web(_never_answers(refused)).download("https://x.test/f")
+    assert "ProxyError: 407" in error.value.message
+    assert "S3cret-pw" not in error.value.message and "corp.local" not in error.value.message
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [(httpx.ConnectTimeout("timed out"), "ConnectTimeout: timed out"), (503, "HTTP 503")],
+)
+def test_nvd_names_the_reason_too(answer: httpx.TransportError | int, reason: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if isinstance(answer, int):
+            return httpx.Response(answer)
+        raise answer
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(IntelFetchFailed) as error:
+        NvdApiClient("", client, sleep=lambda _seconds: None).get({})
+    assert error.value.message.endswith(f"(last: {reason}).")
 
 
 def test_a_refusal_fails_at_once_without_a_retry() -> None:

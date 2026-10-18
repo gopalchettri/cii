@@ -1,11 +1,5 @@
-"""tsg_intel: the normalised intelligence records, the only code that reads or writes them.
-
-One document per version of a source record, keyed by (source, external_id, content_hash); `current` marks
-the version the source says today. A record the source did not change is not written again; a changed one
-becomes a new version and the older one stays (traceable) but stops being current, stamped `retired_at`: a TTL
-index deletes it IntelOperationsLimits.RETIRED_VERSION_DAYS later, so a score that changes daily cannot grow
-the collection for ever. A rejected record is stored with `state=quarantined` and its reason, never current,
-so it cannot reach an index."""
+"""tsg_intel: one document per version of a source record; `current` marks today's, a retired one expires
+after IntelOperationsLimits.RETIRED_VERSION_DAYS. A rejected record is stored quarantined, never current."""
 
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
@@ -16,7 +10,6 @@ from pymongo.database import Database
 
 from app.core.constants import (
     Collection,
-    IntelKind,
     IntelLimits,
     IntelOperationsLimits,
     IntelSource,
@@ -35,6 +28,7 @@ class IntelRecordStore:
         self._records = db[Collection.INTEL]
 
     def ensure_indexes(self) -> None:
+        """One document per version, the current-records read, and the retired versions' expiry."""
         self._records.create_index([(key, ASCENDING) for key in _KEY], unique=True, name="one_per_version")
         # Every read of the current records (snapshot build, KEV ids, retire, purge) filters on these three.
         self._records.create_index(
@@ -89,19 +83,18 @@ class IntelRecordStore:
             query, {"$set": {"current": False, "retired_at": retired_at}}
         ).modified_count
 
-    def stream_current_records(
-        self, sources: Sequence[IntelSource], kind: IntelKind | None = None
-    ) -> Iterator[Doc]:
-        """Every valid current record of `sources` (only those of `kind` when given: planning reads just the
-        techniques, G238), streamed in batches: a snapshot build never holds the collection twice."""
-        query = self._current(sources) | ({"kind": kind} if kind else {})
-        cursor = self._records.find(query, _STORED_ONLY)
+    def stream_current_records(self, sources: Sequence[IntelSource]) -> Iterator[Doc]:
+        """Every valid current record of `sources`, streamed in batches: a snapshot build never holds the
+        collection twice."""
+        cursor = self._records.find(self._current(sources), _STORED_ONLY)
         yield from cursor.batch_size(IntelLimits.BATCH_SIZE)
 
     def count_current_records(self, sources: Sequence[IntelSource]) -> int:
+        """How many valid current records `sources` have."""
         return self._records.count_documents(self._current(sources))
 
     def list_current_external_ids(self, source: IntelSource) -> set[str]:
+        """The external ids of the source's valid current records."""
         cursor = self._records.find(self._current([source]), {"_id": 0, "external_id": 1})
         return {doc["external_id"] for doc in cursor.batch_size(IntelLimits.BATCH_SIZE)}
 
@@ -111,4 +104,5 @@ class IntelRecordStore:
 
     @staticmethod
     def _current(sources: Sequence[IntelSource]) -> Doc:
+        """The filter for the valid current records of `sources`."""
         return {"source": {"$in": list(sources)}, "state": IntelState.VALID, "current": True}

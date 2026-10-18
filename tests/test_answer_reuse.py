@@ -44,6 +44,24 @@ def test_a_retry_reuses_the_usable_answer_its_first_attempt_got_and_asks_only_wh
     assert get_mongodb()["test_ai_calls"].count_documents({"task_id": task_id}) == 2  # no copy of the reuse
 
 
+def test_the_call_record_keeps_the_system_prompt_as_a_hash_and_a_retry_still_reuses_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before: every record carried the whole system prompt (6-30 KB, the same on every call of a task)."""
+    task_id, system_prompt = uuid.uuid4().hex, "You are the relevance gate. " * 400
+    _count_calls(monkeypatch, '{"first": true}')
+    with structlog.contextvars.bound_contextvars(task_id=task_id, attempt=1):
+        _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, system_prompt, "batch 1")
+    record = get_mongodb()["test_ai_calls"].find_one({"task_id": task_id})
+    assert record is not None and "relevance gate" not in str(record)
+    assert record["prompt"][0]["role"] == "system" and len(record["prompt"][0]["content_sha256"]) == 16
+    assert record["prompt"][1] == {"role": "user", "content": "batch 1"}
+    calls = _count_calls(monkeypatch, '{"first": false}')
+    with structlog.contextvars.bound_contextvars(task_id=task_id, attempt=2):
+        assert _chat_model().ask_for_json(AiTask.RELEVANCE_GATE, system_prompt, "batch 1") == {"first": True}
+    assert calls == []
+
+
 def test_a_first_attempt_another_job_or_an_unusable_answer_is_never_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

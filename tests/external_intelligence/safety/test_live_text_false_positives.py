@@ -7,8 +7,8 @@ import hashlib
 
 import pytest
 
-from app.engine.external_intelligence.name_grammar import as_name
-from app.engine.external_intelligence.untrusted_text import UntrustedTextSanitiser
+from app.domain.external_intelligence.text_cleaner import as_name
+from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
 
 SANITISER = UntrustedTextSanitiser()
 _SHA256 = hashlib.sha256(b"sample").hexdigest()

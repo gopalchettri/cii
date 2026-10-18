@@ -1,9 +1,10 @@
-"""Reads the threat and control libraries from SQL Server, and proposes a threat to it (stored procedures
-only)."""
+"""The threat and control libraries in SQL Server (stored procedures only): read them, propose a threat, and
+the curator's queue of pending threats."""
 
 import json
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import UTC
 
 import structlog
 
@@ -37,6 +38,7 @@ def _stride_sorted(category_names: set[str]) -> tuple[StrideCategory, ...]:
 
 
 def _categories_by_threat(links: Sequence[Row], category_name: dict[int, str]) -> defaultdict[int, set[str]]:
+    """Each threat's category names, from the threat-category links."""
     by_threat: defaultdict[int, set[str]] = defaultdict(set)
     for link in links:
         if link["ThreatCategoryID"] in category_name:
@@ -47,6 +49,7 @@ def _categories_by_threat(links: Sequence[Row], category_name: dict[int, str]) -
 def _actors_by_type(
     links: Sequence[Row], actor_by_id: dict[int, LibraryActor]
 ) -> defaultdict[int, list[LibraryActor]]:
+    """Each threat type's linked actors, from the type-actor links."""
     by_type: defaultdict[int, list[LibraryActor]] = defaultdict(list)
     for link in links:
         if link["ThreatActorID"] in actor_by_id:
@@ -72,6 +75,7 @@ def _library_types(
 def _to_library_threat(
     row: Row, threat_type: Row, categories: set[str], actors: list[LibraryActor]
 ) -> LibraryThreat:
+    """One library threat row as the app uses it."""
     return LibraryThreat(
         catalogue_id=row["ThreatCatalogueID"],
         name=row["ThreatName"],
@@ -79,8 +83,7 @@ def _to_library_threat(
         type_name=threat_type["ThreatTypeName"],
         categories=_stride_sorted(categories),
         linked_actors=tuple(sorted(actors, key=lambda actor: actor.name)),
-        # None until the procedure returns it: fits everywhere (G211); "IT/OT" kept as IT\OT (G217)
-        asset_type=canonical_asset_type(row.get("AssetType")),
+        asset_type=canonical_asset_type(row.get("AssetType")),  # None fits everywhere
     )
 
 
@@ -90,9 +93,8 @@ def _library_threats(
     categories_by_threat: defaultdict[int, set[str]],
     actors_by_type: defaultdict[int, list[LibraryActor]],
 ) -> tuple[tuple[LibraryThreat, ...], tuple[int, ...]]:
-    """(the live threats in id order, the ids left out). Strict (owner, 2026-10-10, G119): a threat with no
-    category link of its own is left out and counted (library_data_invalid), never given its type's
-    category."""
+    """(the live threats in id order, the ids left out): a threat with no category link of its own is left
+    out, never given its type's category."""
     ordered = sorted(rows, key=lambda row: row["ThreatCatalogueID"])
     threats = tuple(
         _to_library_threat(
@@ -115,9 +117,8 @@ class LibraryRepository:
         self._procedures = procedures
 
     def propose_threat(self, proposal: ThreatProposal) -> ProposedThreat:
-        """One threat proposed (tsg_ResolveThreat): inserted pending (inactive) unless its name is live or
-        pending already, answered as it is. The procedure re-checks under UPDLOCK, HOLDLOCK, so two callers
-        proposing one name write it once."""
+        """One threat proposed (tsg_ResolveThreat): inserted pending unless its name is live or pending
+        already; the procedure re-checks under lock, so two callers proposing one name write it once."""
         (row,) = self._procedures.execute_procedure(
             StoredProcedure.RESOLVE_THREAT,
             CategoryName=proposal.category,
@@ -132,34 +133,32 @@ class LibraryRepository:
         )
 
     def read_library_stamp(self) -> LibraryStamp:
+        """The library's per-table fingerprints, sorted (the procedure's UNION ALL has no row order)."""
         rows = self._procedures.execute_procedure(StoredProcedure.GET_LIBRARY_STAMP)[0]
-        # Sorted here: the procedure's UNION ALL has no guaranteed row order, and a reordered answer would
-        # look like a library change and rebuild every search index.
         return tuple(sorted((row["table_name"], row["fingerprint"]) for row in rows))
 
     def load_threat_library(self) -> ThreatLibrary:
-        # The procedure's eight result sets, in its order (scripts/sql: tsg_GetThreatLibrary).
+        """The whole threat library from tsg_GetThreatLibrary's eight result sets."""
         categories, types, threats, actors, type_actor_links, threat_category_links, pending, rejected = (
             self._procedures.execute_procedure(StoredProcedure.GET_THREAT_LIBRARY)
         )
         category_name = {row["ThreatCategoryID"]: row["ThreatCategoryName"] for row in categories}
-        type_by_id = {row["ThreatTypeID"]: row for row in types}
         actor_by_id = {
             row["ThreatActorID"]: LibraryActor(row["ThreatActorID"], row["ThreatActorName"]) for row in actors
         }
-        if threats and "AssetType" not in threats[0]:  # the old procedure: runs on, every threat untyped
+        actors_by_type = _actors_by_type(type_actor_links, actor_by_id)
+        if threats and "AssetType" not in threats[0]:  # an older procedure: runs on, every threat untyped
             log.warning(LogEvent.LIBRARY_THREAT_ASSET_TYPE_MISSING)
         library_threats, without_category = _library_threats(
             threats,
-            type_by_id,
+            {row["ThreatTypeID"]: row for row in types},
             _categories_by_threat(threat_category_links, category_name),
-            _actors_by_type(type_actor_links, actor_by_id),
+            actors_by_type,
         )
-        actors_in_order = tuple(sorted(actor_by_id.values(), key=lambda actor: actor.actor_id))
         return ThreatLibrary(
             threats=library_threats,
-            actors=actors_in_order,
-            types=_library_types(types, category_name, _actors_by_type(type_actor_links, actor_by_id)),
+            actors=tuple(sorted(actor_by_id.values(), key=lambda actor: actor.actor_id)),
+            types=_library_types(types, category_name, actors_by_type),
             category_ids=tuple(sorted(category_name.items())),
             other_categories=tuple(sorted(set(category_name.values()) - _STRIDE_ORDER.keys())),
             pending=tuple(
@@ -177,19 +176,34 @@ class LibraryRepository:
         )
 
     def load_control_library(self) -> tuple[tuple[LibraryControl, ...], tuple[LibraryControl, ...]]:
-        """(the active controls, every other one by code, name and domain): Control_Library only (owner,
-        2026-10-09: standards are not used). A retired control is never mapped; a register may still name one
-        (owner, 2026-10-11)."""
+        """(the active controls, every retired one by code, name and domain). A retired control is never
+        mapped; a register may still name one."""
         active, *later = self._procedures.execute_procedure(StoredProcedure.GET_CONTROL_LIBRARY)
-        if (
-            not later
-        ):  # the procedure from before 2026-10-11: the app still runs while the DBA installs the new one
+        if not later:  # an older procedure without the retired set: runs on
             log.warning(LogEvent.LIBRARY_RETIRED_CONTROLS_MISSING)
         controls = _controls(active)
         if unknown := [control.code for control in controls if unknown_asset_type(control.asset_type)]:
-            # Used for every scenario meanwhile (an unknown type is never a reason to drop a control).
+            # Used for every scenario meanwhile: an unknown type is never a reason to drop a control.
             log.warning(LogEvent.LIBRARY_ASSET_TYPE_UNKNOWN, controls=len(unknown), codes=unknown[:10])
         return controls, _controls(later[0] if later else [])
+
+    def list_pending(self, offset: int, limit: int) -> tuple[list[Row], int]:
+        """One page of pending threats, oldest first, and how many wait in all: one procedure call."""
+        page, total = self._procedures.execute_procedure(
+            StoredProcedure.LIST_PENDING_THREATS, Offset=offset, Limit=limit
+        )
+        return [_listed(row) for row in page], total[0]["total"]
+
+    def decide_pending(self, approve: list[int], reject: list[int], decided_by: str) -> list[Row]:
+        """`{catalogue_id, outcome}` per id, all decided in one transaction (a pending type goes live with its
+        first approved threat)."""
+        (outcomes,) = self._procedures.execute_procedure(
+            StoredProcedure.DECIDE_PENDING_THREATS,
+            ApproveIDs=json.dumps(approve),
+            RejectIDs=json.dumps(reject),
+            DecidedBy=decided_by,
+        )
+        return outcomes
 
 
 def _controls(rows: Sequence[Row]) -> tuple[LibraryControl, ...]:
@@ -205,3 +219,18 @@ def _controls(rows: Sequence[Row]) -> tuple[LibraryControl, ...]:
         )
         for row in sorted(rows, key=lambda control: control["ControlLibraryID"])
     )
+
+
+def _listed(row: Row) -> Row:
+    """A pending row as the API names it: its type as `type`, its categories as a list of names."""
+    return {
+        "catalogue_id": row["catalogue_id"],
+        "threat": row["threat"],
+        "type": row["threat_type"],
+        "type_pending": bool(row["type_pending"]),
+        "categories": [category["name"] for category in json.loads(row["categories"] or "[]")],
+        "source": row["source"],
+        "created_by": row["created_by"],
+        # DATETIME2 holds UTC without saying so: said here, as every API time says it.
+        "created_at": row["created_at"].replace(tzinfo=UTC) if row["created_at"] else None,
+    }

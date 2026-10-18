@@ -20,10 +20,9 @@ from app.core.constants import Collection, ErrorCode, ErrorMessage, Lease, LogEv
 from app.core.database import get_mongodb
 from app.core.exceptions import (
     MONGO_UNAVAILABLE_ERRORS,
-    REDIS_UNAVAILABLE_ERRORS,
+    TEMPORARY_ERRORS,
     AppError,
     JobFailed,
-    Unavailable,
 )
 from app.core.lease_signal import lease_lost_signal
 from app.data_access.job_records import JobLease, LeaseLost, find_job_status
@@ -38,14 +37,6 @@ JOB_COLLECTIONS: dict[Collection, Callable[[str], None]] = {
     Collection.SESSIONS: publish_session_status,
     Collection.REMEDIATIONS: publish_remediation_status,
 }
-
-
-#: A store or AI service busy or down for now: the job is given back and retried later.
-TEMPORARY_ERRORS: tuple[type[Exception], ...] = (
-    Unavailable,
-    *MONGO_UNAVAILABLE_ERRORS,
-    *REDIS_UNAVAILABLE_ERRORS,
-)
 
 
 def hand_over(lease: JobLease, next_task: TaskName, changes: dict[str, Any] | None = None) -> None:

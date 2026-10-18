@@ -1,16 +1,5 @@
-"""NVD API 2.0 CVE item -> one VULNERABILITY_DETAIL record, joined to the KEV vulnerability by CVE id.
-
-`data.affected` is a contract shared with the advisory reader: one entry per (vendor, product), taken from the
-`vulnerable: true` cpeMatch entries of `configurations`:
-    {vendor, product, versions: [{start, start_inclusive, end, end_inclusive}], fixed: [version, ...]}
-- `versions` entries are uniform. A bound that is None is open, and its `*_inclusive` is then True.
-- NVD's versionStartIncluding/Excluding and versionEndIncluding/Excluding map to the bound and its flag.
-- A cpe naming one version and no range is {start: v, end: v} with both flags True. The cpe's update field
-  (beta9, sp1) is not part of the bound: the version is the NVD's text before it.
-- A cpe with version `*` or `-` and no range means "every version": `versions` is then [] (not stated).
-- `fixed` holds each versionEndExcluding: the first version outside the range, i.e. a fixed release.
-The description is the one free text; it and every cpe field are sanitised, and an item with unsafe text is
-quarantined whole."""
+"""One NVD API 2.0 CVE item as one VULNERABILITY_DETAIL record, joined to its KEV vulnerability by CVE id;
+its description and every cpe field are sanitised, and an item with unsafe text is quarantined whole."""
 
 import re
 from typing import Any, Final
@@ -42,6 +31,8 @@ _RANGE_KEYS: Final = (
 
 
 class NvdItemReader:
+    """Reads NVD items with one source's text guard."""
+
     def __init__(self, guard: SourceTextGuard) -> None:
         self._guard = guard
 
@@ -62,11 +53,12 @@ class NvdItemReader:
                 IntelSource.NIST_NVD, plain, IntelRejection.NVD_BAD_ITEM, content_hash_of(item)
             )
         try:
-            return self._build(cve, cve_id, modified)
+            return self._detail_record(cve, cve_id, modified)
         except UnsafeSourceText as unsafe:
             return self._guard.quarantine(cve_id, item, unsafe.reason)
 
-    def _build(self, cve: dict[str, Any], cve_id: str, modified: str) -> IntelRecord:
+    def _detail_record(self, cve: dict[str, Any], cve_id: str, modified: str) -> IntelRecord:
+        """The record of one valid item, all its texts screened together."""
         score, vector, severity = _cvss(cve.get("metrics"))
         published = cve.get("published")
         data = {
@@ -95,17 +87,19 @@ class NvdItemReader:
         )
 
     def _summary(self, cve: str, score: float | None, severity: str | None, descriptions: Any) -> str:
+        """The search text: the id, the rating and the English description."""
         rating = f" CVSS {score} {severity}." if score is not None else ""
         english = [
             d.get("value") for d in descriptions or [] if isinstance(d, dict) and d.get("lang") == "en"
         ]
-        # G237: the description alone is screened by sentence (its own id and rating are never "a clean
-        # sentence" that keeps a poisoned description alive), then the whole once more.
+        # The description alone is screened by sentence (its id and rating are never "a clean sentence"
+        # that keeps a poisoned description alive), then the whole once more.
         limit = IntelLimits.NVD_SUMMARY_MAX_CHARS
         description = self._guard.clean_sentences(english[0], limit) if english else ""
         return self._guard.clean(f"{cve}.{rating} {description}", IntelLimits.NVD_SUMMARY_MAX_CHARS)
 
     def _patch_urls(self, references: Any) -> list[str]:
+        """The distinct, safe links tagged "Patch", at most NVD_MAX_PATCH_URLS."""
         urls = [
             r["url"]
             for r in references or []
@@ -115,13 +109,14 @@ class NvdItemReader:
         return [url for url in clean if url][: IntelLimits.NVD_MAX_PATCH_URLS]
 
     def _affected(self, configurations: Any) -> list[dict[str, Any]]:
-        """One entry per (vendor, product) from the vulnerable cpeMatch entries; see the module docstring."""
+        """One {vendor, product, versions, fixed} entry per (vendor, product) of the vulnerable cpeMatch
+        entries, the contract the advisory reader shares; a cpe for every version states no versions."""
         groups: dict[tuple[str, str], dict[str, Any]] = {}
         for config in configurations or []:
             for node in config.get("nodes") or [] if isinstance(config, dict) else []:
                 for match in node.get("cpeMatch") or [] if isinstance(node, dict) else []:
                     if isinstance(match, dict) and match.get("vulnerable") is True:
-                        self._add(groups, match)
+                        self._add_cpe_match(groups, match)
         return [
             {
                 "vendor": vendor,
@@ -132,7 +127,8 @@ class NvdItemReader:
             for (vendor, product), group in list(groups.items())[: TextSafety.MAX_DATA_ITEMS]
         ]
 
-    def _add(self, groups: dict[tuple[str, str], dict[str, Any]], match: dict[str, Any]) -> None:
+    def _add_cpe_match(self, groups: dict[tuple[str, str], dict[str, Any]], match: dict[str, Any]) -> None:
+        """Add one cpeMatch to its (vendor, product) group: its range or exact version, and its fix."""
         parts = [p.replace("\\", "") for p in _SPLIT.split(str(match.get("criteria") or ""))]
         if len(parts) < 6 or not parts[3] or not parts[4]:
             return
@@ -142,14 +138,17 @@ class NvdItemReader:
         if not bounded and parts[5] in _UNSPECIFIED:
             group["any"] = True
             return
-        version = self._bounds(match) if bounded else self._exact(self._guard.clean_token(parts[5]))
+        version = (
+            self._version_bounds(match) if bounded else self._exact_version(self._guard.clean_token(parts[5]))
+        )
         if version not in group["versions"]:
             group["versions"].append(version)
         fixed = match.get("versionEndExcluding")
         if isinstance(fixed, str) and (clean := self._guard.clean_token(fixed)) not in group["fixed"]:
             group["fixed"].append(clean)
 
-    def _bounds(self, match: dict[str, Any]) -> dict[str, Any]:
+    def _version_bounds(self, match: dict[str, Any]) -> dict[str, Any]:
+        """A cpeMatch's version range; an open bound is None with its flag True."""
         start = match.get("versionStartIncluding") or match.get("versionStartExcluding")
         end = match.get("versionEndIncluding") or match.get("versionEndExcluding")
         return {
@@ -160,7 +159,8 @@ class NvdItemReader:
         }
 
     @staticmethod
-    def _exact(version: str) -> dict[str, Any]:
+    def _exact_version(version: str) -> dict[str, Any]:
+        """The range of one exact version."""
         return {"start": version, "start_inclusive": True, "end": version, "end_inclusive": True}
 
 
@@ -185,6 +185,7 @@ def _cvss(metrics: Any) -> tuple[float | None, str | None, str | None]:
 
 
 def _cwes(weaknesses: Any) -> list[str]:
+    """The distinct CWE ids the item's weaknesses name."""
     found = [
         d.get("value")
         for w in weaknesses or []

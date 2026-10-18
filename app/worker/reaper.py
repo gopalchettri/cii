@@ -53,12 +53,15 @@ def _resend_if_lost(
     queue_is_empty: Callable[[str], bool],
     publish: Callable[[str], None],
 ) -> None:
-    # Still queued 2 min on: lost, or only waiting behind other jobs. A message waiting in its queue would
-    # make a re-send a duplicate (a bigger backlog, an empty extra delivery), so it is sent again only when
-    # its queue is empty, or after Lease.RESEND_ANYWAY_AFTER_SECONDS whatever the queue holds.
+    """Re-send a job still queued 2 min on: lost, or only waiting behind other jobs."""
+    # A message waiting in its queue would make a re-send a duplicate (a bigger backlog, an empty extra
+    # delivery), so it is sent again only when its queue is empty, or after Lease.RESEND_ANYWAY_AFTER_SECONDS
+    # whatever the queue holds. Only a send into an empty queue counts toward "never started": a job merely
+    # waiting in a long backlog is never failed for it.
+    queue_empty = queue_is_empty(queue_of(record["job"]["task"]))
     waited_long = record["job"]["due_at"] < now - timedelta(seconds=Lease.RESEND_ANYWAY_AFTER_SECONDS)
-    if waited_long or queue_is_empty(queue_of(record["job"]["task"])):
-        _resend_queued_job(records, record, now, publish)
+    if waited_long or queue_empty:
+        _resend_queued_job(records, record, now, publish, counted=queue_empty)
 
 
 def _queue_sizes_read_once() -> Callable[[str], bool]:
@@ -103,8 +106,15 @@ def _settle_expired_job(
 
 
 def _resend_queued_job(
-    records: JobRecords, record: dict[str, Any], now: datetime, publish: Callable[[str], None]
+    records: JobRecords,
+    record: dict[str, Any],
+    now: datetime,
+    publish: Callable[[str], None],
+    *,
+    counted: bool,
 ) -> None:
+    """Send a queued job again (`counted`: one more send toward Lease.MAX_ATTEMPTS), or fail it once it was
+    sent that often and never started."""
     job = record["job"]
     sends = job.get("resends", 0)
     if sends >= Lease.MAX_ATTEMPTS:
@@ -120,6 +130,8 @@ def _resend_queued_job(
             publish(record["_id"])
         return
     # Moving due_at forward first means one re-send per REQUEUE_QUEUED_AFTER_SECONDS, never one per minute.
-    if records.push_due_forward(record, now):
-        log.info(LogEvent.JOB_REQUEUED, record_id=record["_id"], reason="never_picked_up", sends=sends + 1)
+    if records.push_due_forward(record, now, counted=counted):
+        log.info(
+            LogEvent.JOB_REQUEUED, record_id=record["_id"], reason="never_picked_up", sends=sends + counted
+        )
         send_job(job["task"], record["_id"], job["epoch"])

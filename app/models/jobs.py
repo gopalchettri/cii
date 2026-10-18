@@ -1,5 +1,5 @@
 """The bodies of the job controls (G214): the list of an organisation's work in progress, and what a delete
-removed or a plan cancel stopped. A run's cancel answers with its status body (models/run_board.py)."""
+removed or a plan cancel stopped. A run's cancel answers with its status body (models/scenario/views.py)."""
 
 from datetime import datetime
 

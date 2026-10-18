@@ -1,11 +1,8 @@
-"""One immutable evidence index: the corpus, its keyword + vector index, and the two searches the evidence
-engine needs. Built once (EvidenceIndex.build), never changed afterwards, so every thread shares it.
+"""One immutable evidence index (the corpus and its keyword + vector index) shared by every thread, and its
+two searches: candidates of the asset's IT / OT types, then the reranker's 0-100 scores. Indicators of
+compromise never reach a model."""
 
-A search ranks only the records that fit the asset's IT / OT type, chosen BEFORE the top-k cut. The embedding
-of the record texts goes through the app's EmbeddingModel and its vector cache (a text is embedded once per
-model, stored per batch as it arrives, so a build that stops half way resumes from what was stored). All
-scores handed on are 0-100 ranking scores of the reranker, not probabilities."""
-
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -14,18 +11,45 @@ import numpy as np
 
 from app.ai import EmbeddingModel, RerankModel
 from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, IntelMessage
-from app.core.tracing import traced
 from app.models.external_intelligence.evidence import IntelHit
 from app.models.external_intelligence.evidence_corpus import EvidenceCorpus
-from app.search.external_intelligence.index_refused import EvidenceIndexRefused
-from app.search.external_intelligence.ioc_text import remove_indicators
 from app.search.indexes import HybridIndex
+
+_INDICATOR = re.compile(
+    "|".join(
+        [
+            r"\b(?:https?|hxxps?|ftp)://\S+",
+            r"\bwww\.\S+",
+            r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b",
+            r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b",
+            r"\b[a-f0-9]{32,128}\b",
+        ]
+    ),
+    re.IGNORECASE,
+)
+_SPACES = re.compile(r"\s+")
+
+
+def remove_indicators(text: str) -> str:
+    """The text without indicators, spaces collapsed."""
+    return _SPACES.sub(" ", _INDICATOR.sub(" ", text)).strip()
+
+
+class EvidenceIndexRefused(Exception):
+    """No current record, or rows and vectors out of step."""
+
+    def __init__(self, message: IntelMessage, **facts: object) -> None:
+        super().__init__(message.format(**facts))
+        self.no_data = message is IntelMessage.SNAPSHOT_EMPTY  # nothing imported yet (or all of it gone)
+
 
 _EMPTY = EvidenceCorpus((), (), "")
 
 
 class EvidenceIndex:
-    def __init__(  # noqa: PLR0913 - the corpus, its index, the two models and the name of the reranker
+    """Built once, never changed afterwards."""
+
+    def __init__(
         self,
         corpus: EvidenceCorpus,
         hybrid: HybridIndex | None,
@@ -55,22 +79,24 @@ class EvidenceIndex:
 
     @property
     def has_records(self) -> bool:
+        """False when the corpus holds nothing to search."""
         return bool(self._corpus.hits)
 
     @property
     def source_versions(self) -> dict[str, str]:
+        """Each source's newest version in the corpus."""
         return dict(self._corpus.source_versions)
 
     @property
     def corpus(self) -> EvidenceCorpus:
+        """The corpus the index was built from."""
         return self._corpus
 
-    @traced("search.evidence_candidates")
     def find_candidates(
         self, searches: Sequence[tuple[str, frozenset[str]]], limit: int
     ) -> list[list[IntelHit]]:
-        """Per (search text, asset types): the `limit` nearest records of those types, not yet scored. ONE
-        embedding call for all searches; a search no record can answer is not embedded."""
+        """Per (search text, asset types): the `limit` nearest records of those types (filtered before the
+        top-k cut), not yet scored; one embedding call for all, none for a search nothing can answer."""
         found: list[list[IntelHit]] = [[] for _ in searches]
         if self._hybrid is None or limit < 1:
             return found
@@ -102,12 +128,11 @@ def empty_index(embeddings: EmbeddingModel, rerank: RerankModel, rerank_model: s
     return EvidenceIndex(_EMPTY, None, embeddings, rerank, rerank_model)
 
 
-@traced("search.build_evidence_index")
 def build_index(
     corpus: EvidenceCorpus, embeddings: EmbeddingModel, rerank: RerankModel, rerank_model: str = ""
 ) -> EvidenceIndex:
-    """Embeds the record texts (the vector cache answers every text already embedded; each batch is stored as
-    it arrives, so a build that stops half way resumes from what was stored)."""
+    """The index of `corpus`, its texts embedded through the vector cache (each batch stored as it arrives,
+    so a build that stops half way resumes from what was stored)."""
     table = EMBEDDING_SOURCE_TABLE[EmbeddingCorpus.EXTERNAL_INTELLIGENCE]
     sources = [
         {"table": table, "id": f"{hit.source}/{hit.external_id}", "label": hit.title} for hit in corpus.hits

@@ -9,9 +9,9 @@ import pytest
 
 from app.core.constants import IntelMessage, IntelSource, SourceDownload
 from app.core.exceptions import IntelFetchFailed
-from app.services.external_intelligence.sources.bounded_parse import load_json, open_gzip_text
 from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
 from app.services.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
+from app.services.external_intelligence.sources.http_download import load_json, open_gzip_text
 from app.services.external_intelligence.sources.mitre_attack_source import MitreAttackSource
 from app.services.external_intelligence.sources.nist_nvd_details_source import NistNvdDetailsSource
 from tests.external_intelligence.sources.web import serving

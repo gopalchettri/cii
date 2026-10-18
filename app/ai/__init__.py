@@ -10,6 +10,10 @@ import os
 # package. Otherwise every process start fetches it from GitHub: an outside call that waits up to 15 s when
 # egress is closed, and a table that changes which options litellm sends without any release.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+# G263: in its default "DEV" mode litellm copies ./.env into the process environment on import. Our settings
+# read the file themselves; copied, every key went into the environment, and CII_AI_BYPASS_PROXY (a name
+# ending in _PROXY) made Windows' Python ignore the system proxy from start-up (UAT: no feed answered).
+os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
 
 import litellm  # noqa: E402
 
