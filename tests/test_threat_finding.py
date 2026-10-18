@@ -172,7 +172,8 @@ def test_an_unusable_batch_on_the_last_attempt_costs_only_its_own_threats(
 
 def test_an_asset_no_library_threat_fits_asks_no_gate_and_plans_nothing() -> None:
     chat = planner_chat({})
-    findings = finder(chat, threats=()).find_threats(CONTEXT, last_attempt=True)
+    it_only = dataclasses.replace(LOG_WIPE, asset_type="IT")  # linked to an actor; the asset is OT
+    findings = finder(chat, threats=(it_only,)).find_threats(CONTEXT, last_attempt=True)
     assert findings.threats == [] and chat.asked(AiTask.RELEVANCE_GATE) == []
 
 

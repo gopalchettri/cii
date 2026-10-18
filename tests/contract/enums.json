@@ -1,0 +1,666 @@
+{
+ "ActionPriority": {
+  "CRITICAL": "Critical",
+  "HIGH": "High",
+  "LOW": "Low",
+  "MEDIUM": "Medium"
+ },
+ "ActionStatus": {
+  "GENERATING": "generating",
+  "MAPPING_CONTROLS": "mapping_controls",
+  "REGENERATING": "regenerating"
+ },
+ "ActorRole": {
+  "ACTING": "acting"
+ },
+ "AdminJobKind": {
+  "EMBEDDINGS_BUILD": "embeddings_build",
+  "INTEL_REFRESH": "intel_refresh"
+ },
+ "AiOutcome": {
+  "ERROR": "error",
+  "OK": "ok",
+  "UNAVAILABLE": "unavailable",
+  "UNREADABLE": "unreadable"
+ },
+ "AiTask": {
+  "EMBED": "embed",
+  "GAP_FILL": "gap_fill",
+  "PLAN_CHECK": "plan_check",
+  "RELEVANCE_GATE": "relevance_gate",
+  "REMEDIATION_PLAN": "remediation_plan",
+  "RERANK": "rerank",
+  "WRITE_SCENARIO": "write_scenario"
+ },
+ "AnswerProblem": {
+  "ENTRY_POINT_NOT_OFFERED": "entry_point must be one of entry_point_options, copied exactly: {options}",
+  "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
+  "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
+  "SYSTEM_REASONS_MISSING": "system_reasons must give one short sentence for each of: {names}",
+  "TEXT_REQUIRED": "must not be empty"
+ },
+ "ApiTag": {
+  "API_KEYS": "2. Set-up: API keys",
+  "CURATION": "10. Library curation",
+  "EMBEDDINGS": "3. Set-up: library embeddings",
+  "HEALTH": "1. Health",
+  "INTELLIGENCE": "4. Set-up: external intelligence",
+  "JOBS": "8. My jobs",
+  "LIVE_UPDATES": "9. Live updates",
+  "REMEDIATION": "7. Remediation plans",
+  "REVIEW": "6. Threat scenarios: review",
+  "RUNS": "5. Threat scenarios: runs",
+  "SERVICE_MAPPER": "11. Service mapper"
+ },
+ "Applicability": {
+  "CONFIRMED": "confirmed",
+  "NOT_APPLICABLE": "not_applicable",
+  "UNKNOWN": "unknown"
+ },
+ "AssetType": {
+  "IT": "IT",
+  "IT_OT": "IT\\OT",
+  "OT": "OT"
+ },
+ "AttackerCheck": {
+  "BALANCED": "balanced",
+  "CHOSEN": "chosen",
+  "NONE_FITS": "none_fits",
+  "NOT_CHECKED": "not_checked",
+  "RANKED": "ranked"
+ },
+ "AuditAction": {
+  "ADMIN_JOB_FINISHED": "admin.job_finished",
+  "ADMIN_JOB_STARTED": "admin.job_started",
+  "EXTERNAL_INTELLIGENCE_EVIDENCE_USED": "external_intelligence.evidence_used",
+  "EXTERNAL_INTELLIGENCE_REFRESHED": "external_intelligence.refreshed",
+  "EXTERNAL_INTELLIGENCE_REFRESH_FAILED": "external_intelligence.refresh_failed",
+  "EXTERNAL_INTELLIGENCE_SOURCE_APPROVED": "external_intelligence.source_approved",
+  "EXTERNAL_INTELLIGENCE_SOURCE_REVOKED": "external_intelligence.source_revoked",
+  "EXTERNAL_INTELLIGENCE_SWITCHED": "external_intelligence.switched",
+  "KEY_MINTED": "key.minted",
+  "KEY_REVOKED": "key.revoked",
+  "LIBRARY_DECIDED": "library.decided",
+  "LIBRARY_PROMOTED": "library.promoted",
+  "LIBRARY_PROPOSED": "library.proposed",
+  "PLAN_ACCEPTED": "plan.accepted",
+  "PLAN_CANCELLED": "plan.cancelled",
+  "PLAN_COMPLETED": "plan.completed",
+  "PLAN_REGENERATED": "plan.regenerated",
+  "PLAN_REJECTED": "plan.rejected",
+  "PLAN_REQUESTED": "plan.requested",
+  "RUN_CANCELLED": "run.cancelled",
+  "RUN_NEXT_SET": "run.next_set",
+  "RUN_REGENERATED": "run.regenerated",
+  "RUN_STARTED": "run.started",
+  "SCENARIOS_ACCEPTED": "scenario.accepted",
+  "SCENARIOS_REJECTED": "scenario.rejected",
+  "SESSION_DELETED": "session.deleted"
+ },
+ "AuditTarget": {
+  "ADMIN_JOB": "admin_job",
+  "API_CLIENT": "api_client",
+  "EXTERNAL_INTELLIGENCE_SOURCE": "external_intelligence_source",
+  "LIBRARY_THREAT": "library_threat",
+  "REMEDIATION": "remediation",
+  "SCENARIO": "scenario",
+  "SESSION": "session"
+ },
+ "CandidateRejection": {
+  "ASSET_TYPE_MISMATCH": "asset_type_mismatch",
+  "NEEDS_UNRECORDED": "needs_unrecorded",
+  "NOT_RELEVANT": "not_relevant"
+ },
+ "Collection": {
+  "ADMIN_JOBS": "tsg_admin_jobs",
+  "AI_CALLS": "tsg_ai_calls",
+  "API_CLIENTS": "tsg_api_clients",
+  "AUDIT": "tsg_audit",
+  "EMBEDDINGS": "tsg_embeddings",
+  "EXTERNAL_FEED_STATUS": "tsg_external_feed_status",
+  "EXTERNAL_INTELLIGENCE_SNAPSHOTS": "tsg_external_intelligence_snapshots",
+  "INTEL": "tsg_intel",
+  "QUERY_VECTORS": "tsg_query_vectors",
+  "REMEDIATIONS": "tsg_remediations",
+  "SCENARIOS": "tsg_scenarios",
+  "SESSIONS": "tsg_sessions",
+  "SQL_OPERATIONS": "tsg_sql_operations"
+ },
+ "ConflictReason": {
+  "ACTIVE_SESSION_EXISTS": "active_session_exists",
+  "ASSET_BUSY": "asset_busy",
+  "ASSET_NOT_OWNED": "asset_not_owned",
+  "CANCEL_FIRST": "cancel_first",
+  "CHANGED_CONCURRENTLY": "changed_concurrently",
+  "DUPLICATE_VERSION": "duplicate_version",
+  "GENERATION_IN_PROGRESS": "generation_in_progress",
+  "IDEMPOTENCY_KEY_CONFLICT": "idempotency_key_conflict",
+  "INTEL_NO_DATA": "intel_no_data",
+  "JOB_IN_PROGRESS": "job_in_progress",
+  "NOTHING_LEFT": "nothing_left",
+  "NOTHING_TO_ACCEPT": "nothing_to_accept",
+  "NOTHING_TO_CANCEL": "nothing_to_cancel",
+  "NOTHING_TO_PROMOTE": "nothing_to_promote",
+  "NOT_COMPLETE": "not_complete",
+  "OPERATION_IN_PROGRESS": "operation_in_progress",
+  "PLAN_ALREADY_EXISTS": "plan_already_exists",
+  "REQUIRED_FACTS_MISSING": "required_facts_missing",
+  "RUN_BEING_DELETED": "run_being_deleted",
+  "RUN_CANCELLED": "run_cancelled",
+  "RUN_FAILED": "run_failed",
+  "SCENARIOS_ABANDONED": "scenarios_abandoned",
+  "SCENARIOS_NOT_DECIDABLE": "scenarios_not_decidable",
+  "SCENARIOS_NOT_REGENERABLE": "scenarios_not_regenerable",
+  "SCENARIO_NOT_ACCEPTED": "scenario_not_accepted",
+  "SYSTEM_NOT_LINKED": "system_not_linked",
+  "TARGET_REACHED": "target_reached",
+  "TYPE_MISMATCH": "type_mismatch",
+  "VERSION_LIMIT_REACHED": "version_limit_reached",
+  "VERSION_NOT_FOUND": "version_not_found"
+ },
+ "ControlCoverage": {
+  "COVERED": "covered",
+  "GAPS": "gaps"
+ },
+ "ControlMatch": {
+  "EXACT": "exact",
+  "GIVEN": "given",
+  "NEAREST": "nearest"
+ },
+ "ControlMatchStatus": {
+  "CONTROL_LIBRARY_GAP": "CONTROL_LIBRARY_GAP",
+  "EXACT": "EXACT",
+  "NEAREST_ONLY": "NEAREST_ONLY",
+  "PENDING": "PENDING"
+ },
+ "ControlType": {
+  "COMPENSATING": "compensating",
+  "CORRECTIVE": "corrective",
+  "DETECTIVE": "detective",
+  "PREVENTIVE": "preventive"
+ },
+ "Decision": {
+  "ACCEPTED": "accepted",
+  "PENDING": "pending",
+  "REJECTED": "rejected"
+ },
+ "DecisionOutcome": {
+  "ALREADY_APPROVED": "already_approved",
+  "ALREADY_REJECTED": "already_rejected",
+  "APPROVED": "approved",
+  "IS_APPROVED": "is_approved",
+  "NOT_FOUND": "not_found",
+  "REJECTED": "rejected"
+ },
+ "Dependency": {
+  "MONGO": "mongo",
+  "REDIS": "redis",
+  "SQL": "sql"
+ },
+ "EmbeddingCorpus": {
+  "CONTROL": "control",
+  "EXTERNAL_INTELLIGENCE": "external_intelligence",
+  "THREAT": "threat",
+  "THREAT_ACTOR": "threat_actor",
+  "THREAT_TYPE": "threat_type"
+ },
+ "Env": {
+  "DEV": "dev",
+  "PROD": "prod",
+  "UAT": "uat"
+ },
+ "ErrorCode": {
+  "ACTOR_LIBRARY_EMPTY": "actor_library_empty",
+  "AI_ANSWER_UNUSABLE": "ai_answer_unusable",
+  "AI_MISCONFIGURED": "ai_misconfigured",
+  "CONFLICT": "conflict",
+  "CONTROL_LIBRARY_EMPTY": "control_library_empty",
+  "EVIDENCE_NOT_FOUND": "evidence_not_found",
+  "FORBIDDEN": "forbidden",
+  "GENERATION_FAILED": "generation_failed",
+  "INTERNAL_ERROR": "internal_error",
+  "INVALID_PLAN": "invalid_plan",
+  "JOB_ABANDONED": "job_abandoned",
+  "LIBRARY_RECORD_RETIRED": "library_record_retired",
+  "NOT_FOUND": "not_found",
+  "PLAN_REFUSED": "plan_refused",
+  "SCENARIO_BLOCKED": "scenario_blocked",
+  "SETUP_ERROR": "setup_error",
+  "UNAUTHORIZED": "unauthorized",
+  "UNAVAILABLE": "unavailable",
+  "VALIDATION_ERROR": "validation_error"
+ },
+ "Event": {
+  "REMEDIATION_DELETED": "remediation.deleted",
+  "REMEDIATION_UPDATED": "remediation.updated",
+  "SESSION_DELETED": "session.deleted",
+  "SESSION_UPDATED": "session.updated"
+ },
+ "EvidenceDecision": {
+  "BELOW_THRESHOLD": "below_threshold",
+  "DUPLICATE": "duplicate",
+  "NOT_APPLICABLE": "not_applicable",
+  "NO_PRODUCT_LINK": "no_product_link",
+  "OVER_LIMIT": "over_limit",
+  "USED": "used"
+ },
+ "EvidenceFact": {
+  "ADVISORY": "A CISA advisory for {product} describes {impact}.",
+  "ADVISORY_IMPACT": "security weaknesses that could be exploited",
+  "ADVISORY_UNNAMED": "A CISA advisory describes {impact}.",
+  "CAMPAIGN_USED": "The {name} used this technique.",
+  "FIXED_ONLY": "It is fixed in {fixed}.",
+  "KEV_LISTED": "CISA lists weaknesses in {vendor} {product} as exploited in real attacks (added {date}).",
+  "KEV_LISTED_UNNAMED": "CISA lists a weakness as exploited in real attacks (added {date}).",
+  "LIKELIHOOD": "It scored {percent}% likelihood of exploitation in the next 30 days.",
+  "MITIGATED_BY": "It can be reduced by: {mitigations}.",
+  "RANSOMWARE": "Ransomware groups are known to have used it.",
+  "SEVERITY": "Its seriousness is rated {severity} ({score} of 10).",
+  "SEVERITY_WORD": "Its seriousness is rated {severity}.",
+  "TACTICS": "It is used for these attacker goals: {tactics}.",
+  "USED_BY": "{name}, {what}, has used this technique.",
+  "VERSIONS_AND_FIXED": "It affects versions {ranges}; fixed in {fixed}.",
+  "VERSIONS_ONLY": "It affects versions {ranges}."
+ },
+ "EvidenceMode": {
+  "INFERRED": "inferred",
+  "SOURCE_DOCUMENTED": "source-documented"
+ },
+ "EvidenceReason": {
+  "BELOW_THRESHOLD": "Scored {score:.0f} of 100, under the {threshold:.0f} needed.",
+  "DIFFERENT_PRODUCT": "Concerns {vendor} {product}; the asset records none of that vendor or product.",
+  "DUPLICATE": "The same record is already used for this threat.",
+  "NO_PRODUCT_LINK": "Concerns a specific product; nothing the asset records ties the asset to it.",
+  "OTHER_PRODUCT_OF_VENDOR": "Concerns {vendor} {product}; the asset records only other products.",
+  "OVER_LIMIT": "More relevant records already fill the {limit} places for this threat.",
+  "VERSION_NOT_AFFECTED": "Concerns {vendor} {product}; the asset's recorded version is not an affected one."
+ },
+ "EvidenceRole": {
+  "CONTEXT": "context",
+  "DIRECT": "direct"
+ },
+ "EvidenceSearchFailure": {
+  "NO_SNAPSHOT": "no_intelligence_snapshot",
+  "UNAVAILABLE": "evidence_search_unavailable"
+ },
+ "FeedStatus": {
+  "FAILED": "failed",
+  "NEVER_RUN": "never_run",
+  "OK": "ok"
+ },
+ "FindingCode": {
+  "CITATION_REMOVED": "citation_removed",
+  "NEAR_DUPLICATE": "near_duplicate",
+  "NO_EVIDENCE_CITED": "no_evidence_cited",
+  "PLAN_CHECK": "plan_check",
+  "PLAN_CHECK_NOT_MADE": "plan_check_not_made",
+  "SCENARIO_MISMATCH": "scenario_mismatch",
+  "UNCITED_ADVISORY_ID": "uncited_advisory_id",
+  "UNKNOWN_ID": "unknown_id"
+ },
+ "FindingSeverity": {
+  "BLOCKER": "blocker",
+  "NOTE": "note",
+  "WARNING": "warning"
+ },
+ "GroundingStatus": {
+  "UNVERIFIED": "unverified",
+  "VERIFIED": "verified"
+ },
+ "Header": {
+  "ADMIN_KEY": "X-Admin-Key",
+  "API_KEY": "X-API-Key",
+  "ENTITY_ID": "X-Entity-Id",
+  "IDEMPOTENCY_KEY": "Idempotency-Key",
+  "REQUEST_ID": "X-Request-Id",
+  "TENANT_ID": "X-Tenant-Id",
+  "USER_ID": "X-User-Id"
+ },
+ "IntelKind": {
+  "ADVISORY": "advisory",
+  "EXPLOIT_SCORE": "exploit_score",
+  "TECHNIQUE": "technique",
+  "VULNERABILITY": "vulnerability",
+  "VULNERABILITY_DETAIL": "vulnerability_detail"
+ },
+ "IntelRejection": {
+  "EPSS_BAD_ROW": "The EPSS row has no CVE id or the wrong number of columns.",
+  "EPSS_BAD_SCORE": "The EPSS score or percentile is not a number between 0 and 1.",
+  "ICS_BAD_ADVISORY": "The ICS advisory is not CSAF JSON or has no id, title or release date.",
+  "ICS_DOWNLOAD_FAILED": "The ICS advisory file could not be downloaded.",
+  "KEV_MISSING_FIELD": "The KEV record has no cveID or dateAdded.",
+  "NOT_AN_OBJECT": "The record is not a JSON object.",
+  "NO_NAME": "The technique has no name.",
+  "NO_TECHNIQUE_ID": "The technique has no mitre-attack external id.",
+  "NVD_BAD_ITEM": "The NVD item has no valid CVE id or last-modified time.",
+  "UNSAFE_TEXT": "The text reads as instructions to an AI system, not as a description."
+ },
+ "IntelSource": {
+  "ATTACK_ENTERPRISE": "mitre_attack_enterprise",
+  "ATTACK_ICS": "mitre_attack_ics",
+  "CISA_ICS": "cisa_ics_advisories",
+  "CISA_KEV": "cisa_kev",
+  "FIRST_EPSS": "first_epss",
+  "NIST_NVD": "nist_nvd"
+ },
+ "IntelState": {
+  "QUARANTINED": "quarantined",
+  "VALID": "valid"
+ },
+ "IntelWorkEvent": {
+  "FOLLOW_FAILED": "external_intelligence.follow_failed",
+  "REFRESH_JOB_FAILED": "external_intelligence.refresh_job_failed",
+  "REFRESH_SKIPPED": "external_intelligence.refresh_skipped",
+  "RUNTIME_MISSING": "external_intelligence.runtime_missing",
+  "WARM_UP_FAILED": "external_intelligence.warm_up_failed",
+  "WARM_UP_SKIPPED": "external_intelligence.warm_up_skipped"
+ },
+ "JobKind": {
+  "CONTROLS": "controls",
+  "REMEDIATION": "remediation",
+  "SCENARIOS": "scenarios",
+  "THREATS": "threats"
+ },
+ "LibraryBanner": {
+  "PROPOSED": "Proposed to the threat library and awaiting a curator's review. The scenario is saved either way; it becomes verified only if the curator approves.",
+  "REJECTED": "A curator reviewed '{name}' and declined it, so this scenario keeps your wording but is not linked to the threat library. Sending it again will not re-propose it: choose a different name if you want a library entry."
+ },
+ "LibraryOutcome": {
+  "EXISTING": "existing",
+  "INSERTED": "inserted",
+  "NOT_PROPOSED": "not_proposed",
+  "REJECTED_BY_CURATOR": "rejected_by_curator"
+ },
+ "LibraryRowKind": {
+  "THREAT": "threat",
+  "TYPE": "type"
+ },
+ "LibrarySource": {
+  "AI": "ai",
+  "MANUAL": "manual"
+ },
+ "LibraryStatus": {
+  "ACTIVE": "active",
+  "CURATOR_REJECTED": "curator_rejected",
+  "PENDING": "pending"
+ },
+ "MapperAction": {
+  "ACCEPT": "accept",
+  "REJECT": "reject"
+ },
+ "MapperConfidence": {
+  "HIGH": "high",
+  "LOW": "low",
+  "MEDIUM": "medium"
+ },
+ "MapperConflict": {
+  "DECISION_FINAL": "decision_final",
+  "GENERATION_IN_PROGRESS": "generation_in_progress",
+  "SUPERSEDED": "superseded"
+ },
+ "MapperDirection": {
+  "DOWNSTREAM": "downstream",
+  "UPSTREAM": "upstream"
+ },
+ "MapperEvent": {
+  "STATUS": "status"
+ },
+ "MapperRecommendationStatus": {
+  "ACCEPTED": "accepted",
+  "PROPOSED": "proposed",
+  "REJECTED": "rejected",
+  "SUPERSEDED": "superseded"
+ },
+ "PathProblem": {
+  "ATTACKER_RETIRED": "its acting attacker is no longer active in the library",
+  "ATTACKER_UNSUPPORTED": "no attacker fits its threat: the relevance check found none plausible, none reached the relevance threshold, or no check judged the nearest one, so none is attributed",
+  "CATEGORY_UNKNOWN": "its category is not a STRIDE category",
+  "NOT_ONE_THREAT": "it is not exactly one threat of the plan",
+  "NO_ACTING_ATTACKER": "its threat has no acting attacker",
+  "SYSTEM_NOT_IN_RUN": "one of its systems is not a system of the run",
+  "THREAT_RETIRED": "its threat is no longer active in the library",
+  "THREAT_UNNAMED": "its threat has no type or no name"
+ },
+ "PlanCheckStatus": {
+  "CONSISTENT": "consistent",
+  "INCONSISTENT": "inconsistent",
+  "UNCHECKED": "unchecked"
+ },
+ "PlanText": {
+  "AFTER": ", after {ids} complete",
+  "DATED": "{start} \u2192 {end} ({span}{after})",
+  "DAYS": "{days} day",
+  "PLAN_DATED": "{start} \u2192 {end} ({total} days, critical path {chain})",
+  "PLAN_UNDATED": "{total} days in total (critical path {chain})",
+  "UNDATED": "{span}{after}"
+ },
+ "PlanWarning": {
+  "ACTION_ID_REPEATED": "{action}.action_id {action_id!r} is already used by remediation_action_plan[{position}] \u2014 this action cannot be named as a prerequisite",
+  "ALL_COVERED_BUT_GAPS": "every library-mapped control is already in the register (matched by library id) but control_coverage says 'gaps' \u2014 only the free-text register entries could justify that verdict",
+  "CONTROL_IN_REGISTER": "recommended control {code!r} is already in the register (matched by library id) and was removed from the plan",
+  "CONTROL_LISTED_TWICE": "recommended control {code!r} is listed more than once \u2014 the repeat was removed",
+  "CONTROL_NOT_IMPLEMENTED": "recommended control {code} is not implemented by any action",
+  "CONTROL_NOT_IN_LIBRARY": "recommended control {code!r} matched no library control and was removed from the plan",
+  "COVERED_WITHOUT_LIBRARY": "control_coverage says 'covered' but the scenario has no library-mapped controls \u2014 there was nothing to cover; the verdict is unverifiable",
+  "COVERED_WITH_CONTROLS": "controls_to_be_implemented.control_coverage says 'covered' but controls is non-empty",
+  "DEPENDENCY_NOT_EARLIER": "{action}.depends_on {reference!r} is not an earlier action \u2014 ignored",
+  "DEPENDENCY_PROSE_EXTRA": "{action}.dependencies mentions {named} but depends_on does not include it",
+  "DEPENDENCY_PROSE_NONE": "{action}.dependencies says None but it waits for {ids}",
+  "DURATION_CAPPED": "{action}.duration_days {days} exceeds {limit} \u2014 capped",
+  "DURATION_REPAIRED": "{action}.duration_days {value} is not a whole number of days of at least 1 \u2014 scheduled as 1 day",
+  "IDS_OUT_OF_SEQUENCE": "action ids are not A1..A{count} in order: {ids}",
+  "IMPLEMENTS_UNKNOWN": "{action}.implements_controls names {code!r}, which is not a control of this plan",
+  "LESS_URGENT_PREREQUISITE": "{prerequisite} ({prerequisite_priority}) is a prerequisite of {action} ({priority}) but is less urgent than the work it blocks",
+  "NO_WINDOW": "no mitigation window supplied \u2014 the {total}-day schedule is not bounded by a register deadline",
+  "OUT_OF_ORDER": "{action} is listed after work that starts later (day {latest}) although it can start on day {start} \u2014 the sequence is out of order",
+  "PAST_CALENDAR": "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} days fit, so the dates at and beyond {last} are clamped and no longer reflect the durations",
+  "PAST_WINDOW": "the plan finishes {end}, {days} days after the mitigation window closes ({deadline})",
+  "STATED_DAYS": "action_plan states {stated} days but the computed critical path is {total} days",
+  "URGENCY_NOT_REFLECTED": "risk_level is {level} but no recommended control or action carries Critical/High priority \u2014 the plan's urgency does not reflect the register's scored verdict"
+ },
+ "PromotionOutcome": {
+  "CURATOR_REJECTED": "curator_rejected",
+  "EXISTING": "existing",
+  "INSERTED": "inserted"
+ },
+ "Queue": {
+  "MAINTENANCE": "tsg_maintenance",
+  "SCENARIOS": "tsg_scenarios",
+  "THREATS": "tsg_threats"
+ },
+ "RemediationProgress": {
+  "ACCEPTED": "accepted",
+  "AWAITING_REVIEW": "awaiting_review",
+  "CANCELLED": "cancelled",
+  "FAILED": "failed",
+  "GENERATING": "generating",
+  "REJECTED": "rejected"
+ },
+ "ResolveOutcome": {
+  "CREATED_PENDING": "created_pending",
+  "CURATOR_REJECTED": "curator_rejected",
+  "EXISTING_ACTIVE": "existing_active",
+  "EXISTING_PENDING": "existing_pending"
+ },
+ "ReviewFlag": {
+  "AI_PROPOSED_THREAT": "AI_PROPOSED_THREAT",
+  "AI_PROPOSED_TYPE": "AI_PROPOSED_TYPE",
+  "ASSUMED_ROUTE": "ASSUMED_ROUTE",
+  "CONTROL_LIBRARY_GAP": "CONTROL_LIBRARY_GAP",
+  "NEAREST_CONTROL": "NEAREST_CONTROL",
+  "PLAN_CHECK": "PLAN_CHECK",
+  "VALIDATION_EXCEPTION": "VALIDATION_EXCEPTION"
+ },
+ "RiskLevel": {
+  "CRITICAL": "Critical",
+  "HIGH": "High"
+ },
+ "Route": {
+  "STANDALONE": "standalone",
+  "UNKNOWN": "unknown"
+ },
+ "RunActionKind": {
+  "NEXT_SET": "next_set",
+  "REGENERATE": "regenerate",
+  "START": "start"
+ },
+ "RunActionOutcome": {
+  "CANCELLED": "cancelled",
+  "COMPLETE": "complete",
+  "FAILED": "failed",
+  "PARTIAL": "partial",
+  "RUNNING": "running"
+ },
+ "RunClash": {
+  "ACTIVE_RUN": "active_run",
+  "CHANGED": "changed",
+  "DELETING": "deleting",
+  "IDEMPOTENCY_KEY": "idempotency_key"
+ },
+ "RunKind": {
+  "GENERATED": "generated",
+  "MANUAL": "manual"
+ },
+ "RunOverall": {
+  "AWAITING_NEXT_SET": "awaiting_next_set",
+  "AWAITING_REVIEW": "awaiting_review",
+  "CANCELLED": "cancelled",
+  "COMPLETE": "complete",
+  "ERROR": "error",
+  "IN_PROGRESS": "in_progress",
+  "PENDING": "pending"
+ },
+ "ScenarioOutcome": {
+  "ABANDONED": "abandoned",
+  "BLOCKED": "blocked",
+  "FAILED": "failed",
+  "WRITTEN": "written"
+ },
+ "ScenarioStatus": {
+  "BLOCKED": "blocked",
+  "DONE": "done",
+  "FAILED": "failed"
+ },
+ "ScopeType": {
+  "ASSET": "ASSET",
+  "COMBINATION": "COMBINATION",
+  "SYSTEM": "SYSTEM"
+ },
+ "SessionState": {
+  "ACTIVE": "active",
+  "CANCELLED": "cancelled",
+  "COMPLETED": "completed",
+  "FAILED": "failed"
+ },
+ "SnapshotState": {
+  "ACTIVE": "active",
+  "BUILDING": "building",
+  "SUPERSEDED": "superseded"
+ },
+ "SnapshotWarning": {
+  "CONTROL_NO_LONGER_MAPPED": "control {code} was mapped to the scenario for version {version} but is not mapped any more",
+  "CONTROL_RETIRED": "mapped control {code} is no longer active in the library \u2014 left out of the plan's input",
+  "NOT_CALIBRATED": "risk_assessment carries no risk level and no final risk rating \u2014 the plan is NOT risk-calibrated",
+  "RATING_MISMATCH": "final_risk_rating {final} does not equal likelihood x impact ({likelihood}x{impact}={product}); register values taken as-is",
+  "REGISTER_CONTROL_RETIRED": "register control {code} is retired in the library \u2014 sent to the AI by its name and domain",
+  "REGISTER_ID_UNKNOWN": "register control id {control_id} matches no active library control \u2014 left out of the plan's input",
+  "REGISTER_REF_CHANGED": "register control {reference} no longer names one library control (its id and code now name two rows) \u2014 kept as text",
+  "WINDOW_OVER": "mitigation window ended {end} \u2014 already in the past at plan creation"
+ },
+ "SqlOperationStatus": {
+  "DONE": "done",
+  "NOT_APPLIED": "not_applied",
+  "PENDING": "pending",
+  "REQUIRES_RECONCILIATION": "requires_reconciliation"
+ },
+ "StageState": {
+  "CANCELLED": "CANCELLED",
+  "COMPLETE": "COMPLETE",
+  "ERROR": "ERROR",
+  "PENDING": "PENDING",
+  "RUNNING": "RUNNING"
+ },
+ "Status": {
+  "CANCELLED": "cancelled",
+  "DONE": "done",
+  "FAILED": "failed",
+  "QUEUED": "queued",
+  "RUNNING": "running"
+ },
+ "Step": {
+  "CONTROLS": "controls",
+  "SCENARIOS": "scenarios",
+  "THREATS": "threats"
+ },
+ "StoredProcedure": {
+  "DECIDE_PENDING_THREATS": "tsg_DecidePendingThreats",
+  "GET_ASSET_CONTEXT": "tsg_GetAssetContext",
+  "GET_CONTROL_LIBRARY": "tsg_GetControlLibrary",
+  "GET_LIBRARY_STAMP": "tsg_GetLibraryStamp",
+  "GET_THREAT_LIBRARY": "tsg_GetThreatLibrary",
+  "IMPORT_THREAT_LIBRARY": "tsg_ImportThreatLibrary",
+  "LIST_PENDING_THREATS": "tsg_ListPendingThreats",
+  "RESOLVE_THREAT": "tsg_ResolveThreat"
+ },
+ "StoryFindingCode": {
+  "INJECTION_ECHO": "injection_echo",
+  "UNKNOWN_MARKER": "unknown_marker"
+ },
+ "StrEnum": {},
+ "StrideCategory": {
+  "DENIAL_OF_SERVICE": "Denial of Service",
+  "ELEVATION_OF_PRIVILEGE": "Elevation of Privilege",
+  "INFORMATION_DISCLOSURE": "Information Disclosure",
+  "REPUDIATION": "Repudiation",
+  "SPOOFING": "Spoofing",
+  "TAMPERING": "Tampering"
+ },
+ "TargetProblem": {
+  "ALREADY_ACCEPTED": "already_accepted",
+  "ALREADY_REJECTED": "already_rejected",
+  "CHANGED_CONCURRENTLY": "changed_concurrently",
+  "DUPLICATE_VERSION": "duplicate_version",
+  "FAILURE_SCENARIO": "failure_scenario",
+  "HAND_WRITTEN": "hand_written",
+  "LIBRARY_INACTIVE": "library_inactive",
+  "UNKNOWN": "unknown",
+  "VERSION_NOT_CURRENT": "version_not_current"
+ },
+ "TaskName": {
+  "BUILD_LIBRARY_INDEXES": "tsg_build_library_indexes",
+  "FIND_THREATS": "tsg_find_threats",
+  "MAP_CONTROLS": "tsg_map_controls",
+  "REAP": "tsg_reap",
+  "REFRESH_EXTERNAL_INTELLIGENCE": "tsg_refresh_external_intelligence",
+  "RETRY_CONTROLS": "tsg_retry_controls",
+  "WRITE_PLAN": "tsg_write_plan",
+  "WRITE_SCENARIOS": "tsg_write_scenarios"
+ },
+ "ThreatSource": {
+  "AI_PROPOSED": "AI_PROPOSED",
+  "LIBRARY": "LIBRARY"
+ },
+ "UnselectedReason": {
+  "REPLACED_AFTER_FAILURE": "replaced_after_failure",
+  "TARGET_REACHED": "target_reached"
+ },
+ "ValidationStatus": {
+  "OK": "ok",
+  "WARNING": "warning"
+ },
+ "VersionWords": {
+  "AFTER": "after {version}",
+  "AND_LATER": "{version} and later",
+  "BEFORE": "before {version}",
+  "FROM": "from {version}",
+  "UP_TO": "up to {version}"
+ },
+ "WriterStyle": {
+  "EVIDENCE_STORY": "evidence_story",
+  "ORIGINAL": "original"
+ },
+ "YesNo": {
+  "NO": "No",
+  "YES": "Yes"
+ }
+}

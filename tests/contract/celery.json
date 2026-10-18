@@ -1,0 +1,26 @@
+{
+ "routes": {
+  "tsg_build_library_indexes": "tsg_maintenance",
+  "tsg_find_threats": "tsg_threats",
+  "tsg_map_controls": "tsg_scenarios",
+  "tsg_reap": "tsg_maintenance",
+  "tsg_refresh_external_intelligence": "tsg_maintenance",
+  "tsg_retry_controls": "tsg_maintenance",
+  "tsg_write_plan": "tsg_scenarios",
+  "tsg_write_scenarios": "tsg_scenarios"
+ },
+ "schedule": {
+  "tsg_build_library_indexes": [
+   "tsg_build_library_indexes",
+   1800
+  ],
+  "tsg_reap": [
+   "tsg_reap",
+   60
+  ],
+  "tsg_retry_controls": [
+   "tsg_retry_controls",
+   300
+  ]
+ }
+}
