@@ -1,6 +1,6 @@
 """The remediation plan's prompt (BUILD_PLAN S49; BLUEPRINT M11 R5), word for word as the owner approved it on
-2026-10-11 (docs/REMEDIATION_PROMPT_DRAFT.md §2: v1's treatment_prompt with four fixes;
-tests/test_remediation_planner.py holds the two texts equal). The snapshot reaches the model as data, never as
+2026-10-11 (v1's treatment_prompt with four fixes;
+tests/test_remediation_planner.py pins its fingerprint). The snapshot reaches the model as data, never as
 instructions, and without what it must never see: the register's echo-only block (the risk owner is a person),
 the warnings and every database key."""
 

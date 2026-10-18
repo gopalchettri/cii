@@ -60,7 +60,7 @@ class DraftAction(BaseModel):
 
 
 class PlanDraft(BaseModel):
-    """The plan AI's answer (approved prompt, docs/REMEDIATION_PROMPT_DRAFT.md §3); a broken one is asked
+    """The plan AI's answer (approved prompt); a broken one is asked
     again once, then the version fails `generation_failed`."""
 
     title: Given
