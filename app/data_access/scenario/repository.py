@@ -393,14 +393,15 @@ class ScenarioSessionRepository(MongoRepository):
         asked: list[str] | None = None,
     ) -> RunClash | None:
         """Queue a new write job (epoch + 1) on a tsg_sessions record only while it is as read: finished in
-        step scenarios at the same epoch and not being deleted. None when queued; CHANGED or DELETING when it
-        moved on; ACTIVE_RUN when another session of the asset is active."""
+        step scenarios at the same epoch, with the same cancel stamp, and not being deleted. None when queued;
+        CHANGED or DELETING when it moved on; ACTIVE_RUN when another session of the asset is active."""
         still_as_read = {
             "_id": session.session_id,
             "entity_id": session.entity_id,
             "job.epoch": session.epoch,
             "status": {"$in": [Status.DONE, Status.FAILED, Status.CANCELLED]},
             "step": Step.SCENARIOS,
+            "cancelled.at": (session.cancelled or {}).get("at"),  # None also matches no stamp
             DELETING_MARK: {"$exists": False},
         }
         epoch, now = session.epoch + 1, datetime.now(UTC)
@@ -420,11 +421,8 @@ class ScenarioSessionRepository(MongoRepository):
             return RunClash.ACTIVE_RUN
         if matched:
             return None
-        return (
-            RunClash.DELETING
-            if is_scenario_session_being_deleted(self.collection, session.session_id)
-            else RunClash.CHANGED
-        )
+        being_deleted = is_scenario_session_being_deleted(self.collection, session.session_id)
+        return RunClash.DELETING if being_deleted else RunClash.CHANGED
 
     def update_scenario_session_threat_evidence(
         self, lease: JobLease, found: dict[str, dict[str, Any]]

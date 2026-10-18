@@ -65,6 +65,24 @@ def test_of_two_clicks_on_one_epoch_one_queues_and_a_deleting_session_is_told_so
     assert clash is RunClash.DELETING
 
 
+def test_a_click_read_before_a_cancel_never_queues_over_it() -> None:
+    """A cancel stamped after the click's read changes the session: CHANGED; read again, it queues."""
+    record = _session()
+    scenario_sessions.create(record)
+    before_the_cancel = session_status_from_record(record)
+    cancelled = {"user_id": "u1", "at": datetime.now(UTC)}
+    scenario_sessions.collection.update_one({"_id": record["_id"]}, {"$set": {"cancelled": cancelled}})
+    batch = [{"path_id": "p1"}]
+    assert (
+        scenario_sessions.update_scenario_session_job(before_the_cancel, RunActionKind.NEXT_SET, batch)
+        is RunClash.CHANGED
+    )
+    read_again = scenario_sessions.get(_id=record["_id"])
+    assert read_again is not None
+    status = session_status_from_record(read_again)
+    assert scenario_sessions.update_scenario_session_job(status, RunActionKind.NEXT_SET, batch) is None
+
+
 def test_the_plan_write_is_fenced_and_keeps_a_newer_count(monkeypatch: pytest.MonkeyPatch) -> None:
     job = {"epoch": 1, "task_id": "t", "attempts": 1}
     later = datetime.now(UTC) + timedelta(hours=1)

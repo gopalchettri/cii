@@ -1,16 +1,19 @@
-"""Owner, 2026-10-15: with external intelligence on and nothing imported yet, a run is refused at once (409
-intel_no_data, naming the import API), never started to retry its evidence searches until it fails."""
+"""With external intelligence on and nothing imported yet, a start, a next set or a regenerate is refused at
+once (409 intel_no_data, naming the import API), never queued to retry its evidence searches and fail."""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app.core.constants import ConflictReason
+from app.core.constants import ConflictReason, ScenarioStatus, Status, Step
 from app.core.exceptions import Conflict
-from app.models.scenario.views import StartRunRequest
+from app.models.scenario.views import ScenarioIdsRequest, SessionStatus, StartRunRequest
 from app.services.scenario import runs as runs_module
-from app.services.scenario.runs import RunService
+from app.services.scenario.runs import RunActions, RunService
+
+NOW = datetime(2026, 10, 18, tzinfo=UTC)
 
 
 def _world(monkeypatch: pytest.MonkeyPatch, on: bool, active: dict[str, Any] | None) -> list[str]:
@@ -41,6 +44,23 @@ def test_on_with_nothing_imported_refuses_a_run_before_any_other_read(
         runs.start(principal, StartRunRequest(asset_id=1, supporting_system_ids=[2]), None)
     assert refused.value.reason == ConflictReason.INTEL_NO_DATA
     assert "POST /v1/tsg/intel/refresh" in refused.value.detail
+
+
+def test_on_with_nothing_imported_refuses_a_regenerate_before_it_is_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A next set and a regenerate queue their write job in one place, refused there like a start."""
+    _world(monkeypatch, on=True, active=None)
+    targets = {"s1": {"path_id": "p1", "status": ScenarioStatus.DONE}}
+    monkeypatch.setattr(runs_module, "list_review_targets", lambda *args: targets)
+    never = SimpleNamespace(update_scenario_session_job=lambda *args: pytest.fail("a refused job was queued"))
+    actions = RunActions(never, SimpleNamespace())  # type: ignore[arg-type]
+    run = SessionStatus(
+        session_id="run", entity_id=1, asset_id=1, status=Status.DONE, step=Step.SCENARIOS, updated_at=NOW
+    )
+    with pytest.raises(Conflict) as refused:
+        actions.regenerate(SimpleNamespace(), run, ScenarioIdsRequest(scenario_ids=["s1"]))  # type: ignore[arg-type]
+    assert refused.value.reason == ConflictReason.INTEL_NO_DATA
 
 
 def test_off_reads_nothing_and_on_with_data_lets_the_run_start(monkeypatch: pytest.MonkeyPatch) -> None:

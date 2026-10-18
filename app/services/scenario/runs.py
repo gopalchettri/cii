@@ -113,19 +113,18 @@ class RunService:
         context = freeze_context(request, asset_context)
         record = _new_run_record(principal, request, idempotency_key, context)
         clash = self._sessions.create_scenario_session(record)
+        # A parallel start with the same key won, whichever unique rule refused this insert: its replay.
+        if clash and idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
+            return replayed, False
         if clash is RunClash.ACTIVE_RUN:
             active_id = _active_session_id(self._sessions, principal.entity_id, request.asset_id)
             message = SessionMessage.ACTIVE_SESSION_EXISTS.format(asset_id=request.asset_id)
             raise Conflict(
                 message, reason=ConflictReason.ACTIVE_SESSION_EXISTS, details={"active_session_id": active_id}
             )
-        if clash is RunClash.IDEMPOTENCY_KEY:  # a parallel start with the same key won: this is its replay
-            assert idempotency_key is not None
-            replayed = self._replay(principal, request, idempotency_key)
-            if replayed is None:  # the run that took the key was deleted since
-                message = SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
-                raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
-            return replayed, False
+        if clash is RunClash.IDEMPOTENCY_KEY:  # the run that took the key was deleted since
+            message = SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
+            raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
         _announce_start(principal, record, context)
         return session_status_from_record(record), True
 
@@ -245,6 +244,7 @@ class RunActions:
     ) -> int:
         """The scenario session's new write job in one guarded update, then sent, announced and audited; its
         epoch."""
+        refuse_without_intel_data()  # never a write job that can only fail its evidence searches
         clash = self._sessions.update_scenario_session_job(run, kind, batch, asked)
         if clash is RunClash.ACTIVE_RUN:
             active_id = _active_session_id(self._sessions, run.entity_id, run.asset_id)

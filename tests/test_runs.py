@@ -30,6 +30,7 @@ from app.core.exceptions import Conflict
 from app.data_access.jobs.repository import JobRepository
 from app.data_access.library.repository import SqlServerRepository
 from app.data_access.scenario.repository import scenario_sessions, session_status_from_record
+from app.domain.scenario.plan import request_fingerprint
 from app.models.api_clients import Principal
 from app.models.asset_context import FrozenContext
 from app.models.scenario.views import StartRunRequest
@@ -215,6 +216,7 @@ def test_an_unknown_body_field_is_refused(client: TestClient, api_key: str) -> N
 
 
 def test_parallel_starts_with_one_key_make_one_run(client: TestClient, api_key: str) -> None:
+    """Two starts with one key and one body at once: 202 and 200 with the same run."""
     key = {Header.IDEMPOTENCY_KEY: uuid.uuid4().hex}
     answers: list[Any] = []
     starts = [
@@ -225,7 +227,8 @@ def test_parallel_starts_with_one_key_make_one_run(client: TestClient, api_key: 
         start.start()
     for start in starts:
         start.join()
-    assert sorted(answer.status_code for answer in answers) in ([200, 202], [202, 409])
+    assert sorted(answer.status_code for answer in answers) == [200, 202]
+    assert len({answer.json()["session_id"] for answer in answers}) == 1
     assert get_mongodb()[Collection.SESSIONS].count_documents({"entity_id": 86, "asset_id": 103}) == 1
 
 
@@ -367,20 +370,49 @@ def test_an_idempotency_key_too_long_is_refused(client: TestClient, api_key: str
     assert _start(client, api_key, START, **{Header.IDEMPOTENCY_KEY: "k" * 201}).status_code == 422
 
 
-def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A parallel start with the same Idempotency-Key won, then its run was deleted before this start read it:
-    409 naming the race. Before, an assert failed there (a 500)."""
+def _run_service_over(monkeypatch: pytest.MonkeyPatch, sessions: Any) -> RunService:
+    """A run service on fake sessions, past its intelligence check and asset read."""
     monkeypatch.setattr(runs_module, "refuse_without_intel_data", lambda: None)
     asset = {"id": 103, "name": "Grid", "category_code": None}
     context = FrozenContext.from_record(
         {"asset": asset, "asset_context": {}, "systems": [], "missing_facts": []}
     )
     monkeypatch.setattr(runs_module, "freeze_context", lambda request, rows: context)
+    return RunService(SimpleNamespace(get_asset_context=lambda *args: None), sessions)  # type: ignore[arg-type]
+
+
+def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parallel start with the same Idempotency-Key won, then its run was deleted before this start read it:
+    409 naming the race."""
     sessions = SimpleNamespace(
         get=lambda *args, **where: None, create_scenario_session=lambda record: RunClash.IDEMPOTENCY_KEY
     )
-    service = RunService(SimpleNamespace(get_asset_context=lambda *args: None), sessions)  # type: ignore[arg-type]
+    service = _run_service_over(monkeypatch, sessions)
     with pytest.raises(Conflict) as refused:
         service.start(Principal("client", "u1", 86, "DESC"), StartRunRequest.model_validate(START), "key-1")
     assert refused.value.reason == ConflictReason.IDEMPOTENCY_KEY_CONFLICT
     assert refused.value.detail == SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
+
+
+def test_a_same_key_start_refused_by_the_one_active_run_rule_replays_the_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same key and body sent while the first start is still running: its insert is refused by the
+    one-active-run rule, and it answers the first start's run, never 409 active_session_exists."""
+    request = StartRunRequest.model_validate(START)
+    winner = {
+        "_id": "run-1",
+        "entity_id": 86,
+        "asset_id": 103,
+        "status": Status.QUEUED,
+        "updated_at": datetime.now(UTC),
+        "request_hash": request_fingerprint(request),
+    }
+    reads = iter([None, winner])  # nothing holds the key before the insert; the winner does after it
+    sessions = SimpleNamespace(
+        get=lambda *args, **where: next(reads), create_scenario_session=lambda record: RunClash.ACTIVE_RUN
+    )
+    status, created = _run_service_over(monkeypatch, sessions).start(
+        Principal("client", "u1", 86, "DESC"), request, "key-1"
+    )
+    assert (status.session_id, created) == ("run-1", False)
