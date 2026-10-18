@@ -1,9 +1,8 @@
-"""A new version of a remediation plan: only while its scenario is still accepted, its latest version is done,
-failed or cancelled, and the plan has fewer than REGENERATIONS_MAX_VERSION_COUNT versions. The new version's
-snapshot is made now with no AI call (the register from the record, read against the current library; the
-scenario and its controls as they are now), with a warning for each control the previous version had that
-is no longer mapped; or pending, completed by its plan job (G262). One conditional append; a run being
-deleted meanwhile stops the new version (409 run_being_deleted), else the plan job is sent."""
+"""A new version of a remediation plan: only while its scenario is still accepted, its run is not being
+deleted (409 run_being_deleted, nothing written), its latest version is done, failed or cancelled, and the
+plan has fewer than REGENERATIONS_MAX_VERSION_COUNT versions. The new version's register is read against the
+current library with no AI call, and its plan job completes the snapshot. One conditional append; a delete
+landing meanwhile stops the new version (409 run_being_deleted), else the plan job is sent."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -28,7 +27,6 @@ from app.domain.remediation.plan_rules import (
     run_being_deleted,
     version_in_progress,
 )
-from app.domain.remediation.snapshot import is_pending, no_longer_mapped
 from app.models.api_clients import Principal
 from app.models.remediation import PlanRequested
 from app.models.remediation_requests import RegisterData
@@ -51,17 +49,17 @@ class PlanRegeneration:
             check_regenerable(read, remediation_id, get_settings().regenerations_max_version_count),
         )
         assert scenario is not None  # check_plan_changeable refused a missing one
+        if is_plan_run_being_deleted(read["session_id"]):
+            raise run_being_deleted(read["session_id"])
         register = RegisterData.model_validate(read["register"])
         snapshot = self._snapshots.make(register, scenario, stored=True)
-        if not is_pending(snapshot):  # a pending one gets its warnings from its plan job
-            previous = remediation_plans.get_remediation_plan_version_snapshot(remediation_id, latest) or {}
-            snapshot["warnings"] += no_longer_mapped(previous, snapshot, latest)
         now = datetime.now(UTC)
         job = new_job(TaskName.WRITE_PLAN, version, now)
         item = new_version(version, principal, snapshot, now)
         if not remediation_plans.create_remediation_plan_version(remediation_id, latest, item, job, now):
             raise version_in_progress(remediation_id, latest)  # another regenerate made it first
-        # Checked after the append: either this sees the delete's mark or the delete's check for work sees it.
+        # Checked again after the append: either this sees the delete's mark or the delete's check for work
+        # sees the new version.
         if is_plan_run_being_deleted(read["session_id"]):
             stop_remediation_plan_version(remediation_id, version)
             publish_remediation_status(remediation_id)

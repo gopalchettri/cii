@@ -57,8 +57,8 @@ class JobService:
         return build_board(find_status_for_caller(run.session_id, principal.entity_id))
 
     def delete_run(self, principal: Principal, run: SessionStatus) -> SessionDeleted:
-        """Remove the run for good, with its scenarios and remediation plans. 409 cancel_first while anything
-        of it is queued or running: nothing is ever deleted under a worker."""
+        """Remove the run for good, with its scenarios, their SQL operation records and its remediation plans.
+        409 cancel_first while anything of it is queued or running: nothing is ever deleted under a worker."""
         deleted = self._records.delete_scenario_session(run.session_id, principal.entity_id)
         if deleted is None:  # still working, or a next set started first
             message = JobControlMessage.CANCEL_FIRST.format(session_id=run.session_id)

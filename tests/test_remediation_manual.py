@@ -20,8 +20,10 @@ from app.core.constants import (
     AuditAction,
     Collection,
     ConflictReason,
+    ErrorCode,
     Header,
     LibraryStatus,
+    ResolveOutcome,
     RunKind,
     StrideCategory,
     TaskName,
@@ -34,6 +36,7 @@ from app.models.library import LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation.manual import ManualPlans, get_manual_plans
 from app.services.remediation.manual_scenarios import ManualScenarios
+from app.worker.tasks import remediation as plan_job
 from tests.test_remediation_planner import _answer, _control
 from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
     _deliver,
@@ -303,3 +306,54 @@ def test_a_refused_register_saves_nothing_and_the_persons_words_are_redacted(
     manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
     _deliver(answer.json()["remediation_id"])
     assert manual["search"].queries[-1] == "Malware: Logic bomb. Mail [REDACTED] a bad image."
+
+
+def test_a_deleted_runs_key_reused_with_another_wording_proposes_the_new_one(
+    client: TestClient,
+    api_key: str,  # noqa: F811
+    manual: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scenario id comes from the key, so it is the same again after its run's delete: the delete removes
+    its operation records too, and the new wording reaches the library, never the old answer replayed."""
+    asked: list[str] = []
+
+    def resolve_threat(procedure: Any, **parameters: Any) -> list[list[dict[str, Any]]]:
+        asked.append(parameters["ThreatName"])
+        row = {"threat_type_id": 1, "threat_catalogue_id": 900 + len(asked)}
+        return [[row | {"outcome": ResolveOutcome.CREATED_PENDING}]]
+
+    procedures = SimpleNamespace(execute_procedure=resolve_threat)
+    monkeypatch.setattr(plan_job.get_plan_inputs(), "_proposals", SqlServerRepository(procedures))  # type: ignore[arg-type]
+    key, headers = uuid.uuid4().hex, IDENTITY | {Header.API_KEY: api_key}
+    first = _post(client, api_key, _with(threat_name="Logic bomb"), key).json()
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
+    _deliver(first["remediation_id"])
+    assert client.delete(f"/v1/sessions/{first['session_id']}", headers=headers).status_code == 200
+    again = _post(client, api_key, _with(threat_name="Time bomb"), key)
+    assert again.status_code == 202 and again.json()["scenario_id"] == first["scenario_id"]
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
+    _deliver(again.json()["remediation_id"])
+    assert asked == ["Logic bomb", "Time bomb"]
+    assert _scenario(first["scenario_id"])["content"]["threat"]["library_id"] == 902
+
+
+def test_an_empty_control_library_refuses_a_hand_written_request_before_anything_is_saved(
+    client: TestClient,
+    api_key: str,  # noqa: F811
+    manual: dict[str, Any],
+    sql_test_engine: Engine,
+) -> None:
+    """409 control_library_empty before the first write, so a retry under the same key once the library is
+    back is a first request, never a 409 against an orphaned scenario."""
+    library = SimpleNamespace(
+        check_library_once=lambda: None,
+        get_loaded_libraries=lambda: LoadedLibraries((), THREATS, ()),
+    )
+    scenarios = ManualScenarios(SqlServerRepository(StoredProcedureClient(sql_test_engine)), library)  # type: ignore[arg-type]
+    built = ManualPlans(scenario_sessions, scenarios, _service())
+    client.app.dependency_overrides[get_manual_plans] = lambda: built  # type: ignore[attr-defined]
+    key = uuid.uuid4().hex
+    refused = _post(client, api_key, _with(mapped_controls=None), key)
+    assert (refused.status_code, refused.json()["reason"]) == (409, ErrorCode.CONTROL_LIBRARY_EMPTY)
+    assert get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key}) == 0

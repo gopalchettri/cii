@@ -16,6 +16,7 @@ from app.core.constants import (
     AuditAction,
     Collection,
     ConflictReason,
+    Controls,
     Header,
     JobControl,
     JobKind,
@@ -155,7 +156,11 @@ def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops
     never take it again, its controls stop and are never swept again, the asset is free, the board says
     who."""
     run_id = _run(entity, Status.RUNNING)
-    waiting, failed = _scenario(run_id, Status.QUEUED), _scenario(run_id, Status.FAILED)
+    waiting = _scenario(run_id, Status.QUEUED)
+    failed = _scenario(run_id, Status.FAILED, controls={"status": Status.FAILED, "attempts": 1})
+    spent = _scenario(
+        run_id, Status.FAILED, controls={"status": Status.FAILED, "attempts": Controls.MAX_ATTEMPTS}
+    )
     sessions = get_mongodb()[Collection.SESSIONS]
     lease = JobLease(sessions, run_id, 1, "t1", 1)
     response = client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity))
@@ -174,7 +179,11 @@ def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops
     reaper = JobRepository(sessions)
     assert run_id not in {r["_id"] for r in reaper.list_expired_jobs(datetime.now(UTC))}
     assert run_id not in {r["_id"] for r in reaper.list_unsent_jobs(datetime.now(UTC))}
-    assert (_controls(waiting), _controls(failed)) == (Status.CANCELLED, Status.CANCELLED)
+    assert (_controls(waiting), _controls(failed), _controls(spent)) == (
+        Status.CANCELLED,
+        Status.CANCELLED,
+        Status.FAILED,  # every attempt used: nothing left to stop
+    )
     assert run_id not in scenario_controls.requeue_stalled_controls()
     assert controls_deliveries.claim_controls_delivery(run_id, "t3") is None
     stored = sessions.find_one({"_id": run_id})
@@ -541,3 +550,41 @@ def test_a_cancel_landing_after_the_caller_read_the_run_stands(entity: int) -> N
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["cancelled"]["user_id"] == "u9"
     assert _controls(stopped) == _controls(waiting) == Status.CANCELLED
+
+
+def test_a_plan_jobs_live_claim_on_a_cancelled_run_survives_the_sweep(entity: int) -> None:
+    """A plan for an accepted scenario of a cancelled run maps its controls on purpose: the sweep never stops
+    a live lease, so the plan job's save still lands."""
+    run_id = _run(entity, Status.CANCELLED)
+    scenario_id = _scenario(run_id, Status.CANCELLED, controls={"status": Status.CANCELLED, "attempts": 1})
+    claimed = scenario_controls.claim_scenario_controls_by_id(scenario_id, "plan-job:plan")
+    assert claimed is not None
+    scenario_controls.requeue_stalled_controls()
+    assert _controls(scenario_id) == Status.RUNNING
+    attempts = claimed["controls"]["attempts"]
+    mapping = {"items": [{"control_id": 1}]}
+    assert scenario_controls.update_scenario_controls(
+        scenario_id, "plan-job:plan", attempts, Status.DONE, mapping=mapping
+    )
+
+
+def test_a_sweep_landing_during_a_resume_keeps_the_resume(
+    entity: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resume takes the run out of cancelled before it queues the controls again, so a sweep landing in
+    between never stops them as a cancelled run's."""
+    earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
+    run_id = _run(entity, Status.CANCELLED, cancelled=earlier)
+    stopped = _scenario(run_id, Status.CANCELLED)
+    records = JobControlRepository(get_mongodb())
+    being_deleted = job_repository_module.is_scenario_session_being_deleted
+
+    def sweep_lands_meanwhile(sessions: Any, session_id: str) -> bool:
+        scenario_controls.requeue_stalled_controls()
+        return being_deleted(sessions, session_id)
+
+    monkeypatch.setattr(job_repository_module, "is_scenario_session_being_deleted", sweep_lands_meanwhile)
+    assert records.resume_scenario_controls(run_id, earlier["at"]) == 1
+    stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
+    assert stored["status"] == Status.DONE and "cancelled" not in stored
+    assert _controls(stopped) == Status.QUEUED

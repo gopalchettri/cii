@@ -410,6 +410,21 @@ def test_the_sweep_never_requeues_a_failure_that_used_its_last_attempt() -> None
     assert _controls_of(scenario_id)["status"] == Status.FAILED
 
 
+def test_a_mapping_that_keeps_stopping_its_worker_is_given_up_after_its_last_attempt() -> None:
+    """Its lease expired on its last attempt: never claimed again, and the sweep fails it (job_abandoned)
+    instead of queueing it for ever."""
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+    run_id, scenario_id = _waiting_scenario(
+        status=Status.RUNNING, lease_until=expired, attempts=Controls.MAX_ATTEMPTS
+    )
+    assert scenario_controls.claim_scenario_controls(run_id, "w") is None
+    assert scenario_controls.claim_scenario_controls_by_id(scenario_id, "w:plan") is None
+    assert run_id not in scenario_controls.requeue_stalled_controls()
+    controls = _controls_of(scenario_id)
+    assert (controls["status"], controls["error"]["code"]) == (Status.FAILED, ErrorCode.JOB_ABANDONED)
+    assert get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})["counts"]["controls_failed"] == 1
+
+
 def test_an_older_count_never_overwrites_a_newer_one() -> None:
     """T-CTL-07 (S33, BLUEPRINT Rule S12): two jobs refresh one run's counts; the later computation wins."""
     sessions = get_mongodb()[Collection.SESSIONS]

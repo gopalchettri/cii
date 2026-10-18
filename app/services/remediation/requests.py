@@ -1,8 +1,7 @@
 """Requesting a plan for an accepted generated scenario: the scenario checked (404, 403, 409 not accepted),
-one plan per scenario (409 plan_already_exists, checked before any control is mapped), its controls topped
-up when missing, the register resolved against the library, version 1's snapshot frozen, one insert, its
-run checked for a delete after the insert (409 run_being_deleted), the plan job sent. A hand-written
-scenario comes with S55."""
+one plan per scenario (409 plan_already_exists), the register resolved against the library and stored as
+version 1's pending snapshot (its plan job maps missing controls and completes it), one insert, its run
+checked for a delete after the insert (409 run_being_deleted), the plan job sent."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -49,8 +48,8 @@ class PlanRequestService:
     def plan_scenario(
         self, principal: Principal, register: RegisterData, scenario: dict[str, Any]
     ) -> PlanStarted:
-        """R1 steps 3-8 for an accepted scenario, generated or hand-written: one plan per scenario (checked
-        before any control is mapped), the snapshot, one insert, the job sent."""
+        """R1 steps 3-8 for an accepted scenario, generated or hand-written: one plan per scenario, the
+        pending snapshot, one insert, the job sent."""
         if (existing := get_remediation_status_of_scenario(scenario["_id"])) is not None:
             raise plan_exists(scenario["_id"], existing.remediation_id)
         snapshot, now = self._snapshots.make(register, scenario), datetime.now(UTC)

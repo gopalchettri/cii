@@ -20,6 +20,7 @@ from app.domain.remediation.manual_records import (
     manual_scenario_record,
 )
 from app.domain.remediation.references import resolve_controls
+from app.domain.remediation.snapshot import check_control_library
 from app.domain.remediation.threat_identity import resolve_threat
 from app.domain.scenario.plan import freeze_context
 from app.models.api_clients import Principal
@@ -46,6 +47,7 @@ class ManualScenarios:
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()
         check_actor_library(loaded.threat_library.actors)  # in memory
+        check_control_library(loaded.control_library)
         identity = resolve_threat(loaded.threat_library, manual)
         # The register too: a refused one (an id and a code naming two rows) must save nothing, or a corrected
         # retry under the same key would meet its orphaned scenario (409).

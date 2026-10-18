@@ -34,7 +34,6 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, NotFound
 from app.data_access.jobs.repository import DELETING_MARK
 from app.data_access.remediation.repository import remediation_plans
-from app.data_access.scenario.repository import scenario_sessions
 from app.models.library import LibraryControl, LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.api_clients import get_api_client_service
@@ -67,7 +66,7 @@ def api_key() -> str:
 
 
 def _service() -> PlanRequestService:
-    snapshots = SnapshotMaker(scenario_sessions, FAKE_LIBRARY)  # type: ignore[arg-type]
+    snapshots = SnapshotMaker(FAKE_LIBRARY)  # type: ignore[arg-type]
     return PlanRequestService(snapshots)
 
 
@@ -324,10 +323,10 @@ def test_a_register_control_the_library_retired_reaches_the_plan_by_name(
     input by its code, name and domain, with a note for the reviewer."""
     body = generated(_scenario(), existing_controls=[{"control_id": 77}])
     remediation_id = _request(client, api_key, body).json()["remediation_id"]
-    snapshot = _record(remediation_id)["versions"][0]["snapshot"]
+    register = _record(remediation_id)["versions"][0]["snapshot"]["register_part"]
     shown = "CII-CID-077 — Firmware integrity review (Integrity), retired in the library"
-    assert snapshot["existing_controls"]["register_controls"] == [shown]
-    assert SnapshotWarning.REGISTER_CONTROL_RETIRED.format(code="CII-CID-077") in snapshot["warnings"]
+    assert register["register_controls"] == [shown]
+    assert SnapshotWarning.REGISTER_CONTROL_RETIRED.format(code="CII-CID-077") in register["warnings"]
 
 
 def test_a_plan_requested_as_its_run_is_deleted_never_outlives_its_scenario(

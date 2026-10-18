@@ -29,7 +29,6 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.data_access.jobs.repository import DELETING_MARK
 from app.data_access.remediation.repository import remediation_plans
-from app.data_access.scenario.repository import scenario_sessions
 from app.domain.remediation.plan_rules import check_regenerable
 from app.models.remediation_reviews import DecisionRequest
 from app.services.remediation import regenerate as regenerate_module
@@ -57,7 +56,7 @@ def plans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[dict[str, Any]]:
     """`world` and a regenerate service on the same fakes; what a regenerate sends."""
-    snapshots = SnapshotMaker(scenario_sessions, FAKE_LIBRARY)  # type: ignore[arg-type]
+    snapshots = SnapshotMaker(FAKE_LIBRARY)  # type: ignore[arg-type]
     built = PlanRegeneration(snapshots)
     client.app.dependency_overrides[get_plan_regeneration] = lambda: built  # type: ignore[attr-defined]
     monkeypatch.setattr(regenerate_module, "send_job", lambda *args: world["sent"].append(args))
@@ -120,13 +119,13 @@ def test_a_new_version_is_written_from_the_scenario_as_it_is_now(
     assert (TaskName.WRITE_PLAN, remediation_id, 2) in plans["sent"]
     record = _record(remediation_id)
     assert [(v["version"], v["status"]) for v in record["versions"]] == [(1, Status.DONE), (2, Status.QUEUED)]
-    lost = SnapshotWarning.CONTROL_NO_LONGER_MAPPED.format(code="CII-CID-1", version=1)
-    assert lost in record["versions"][1]["snapshot"]["warnings"]
     again = _post(client, api_key, remediation_id, "regenerate", {})
     assert (again.status_code, again.json()["reason"]) == (409, ConflictReason.GENERATION_IN_PROGRESS)
     assert _post(client, api_key, remediation_id, "regenerate", {"note": "x"}).status_code == 422
     plans["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-2")))
     _deliver(remediation_id, 2)
+    lost = SnapshotWarning.CONTROL_NO_LONGER_MAPPED.format(code="CII-CID-1", version=1)
+    assert lost in _record(remediation_id)["versions"][1]["snapshot"]["warnings"]
     status = client.get(plan_url(remediation_id, "status"), headers=_identity(api_key)).json()
     assert (status["latest_version"], status["latest_status"], status["decision"]) == (2, "done", "pending")
     assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 1
@@ -242,24 +241,24 @@ def test_a_regenerate_is_never_refused_for_a_library_change_since(
     )
     answer = _post(client, api_key, remediation_id, "regenerate", {})
     assert answer.status_code == 202, answer.text
-    warnings = _record(remediation_id)["versions"][1]["snapshot"]["warnings"]
+    warnings = _record(remediation_id)["versions"][1]["snapshot"]["register_part"]["warnings"]
     assert SnapshotWarning.REGISTER_REF_CHANGED.format(reference="CII-CID-2") in warnings
 
 
-def test_a_regenerate_as_its_run_is_being_deleted_answers_409_and_stops_the_new_version(
+def test_a_regenerate_as_its_run_is_being_deleted_answers_409_and_writes_nothing(
     client: TestClient,
     api_key: str,  # noqa: F811
     plans: dict[str, Any],
 ) -> None:
-    """D4: the run's delete marked it before the append: 409 run_being_deleted, as a next set answers; the
-    new version stopped (never sent), so the delete's check for work finds nothing queued."""
+    """The run's delete marked it before the click: 409 run_being_deleted, as a next set answers, and no new
+    version is appended, sent or audited."""
     remediation_id = _done_plan(client, api_key, plans)
     marked = {"$set": {DELETING_MARK: datetime.now(UTC)}}
     get_mongodb()[Collection.SESSIONS].update_one({"_id": _record(remediation_id)["session_id"]}, marked)
     answer = _post(client, api_key, remediation_id, "regenerate", {})
     assert (answer.status_code, answer.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
     record = _record(remediation_id)
-    assert (record["job"]["epoch"], record["status"], record["active"]) == (2, Status.CANCELLED, False)
+    assert (record["job"]["epoch"], record["status"], len(record["versions"])) == (1, Status.DONE, 1)
     assert (TaskName.WRITE_PLAN, remediation_id, 2) not in plans["sent"]
     assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 0
 

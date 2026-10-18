@@ -14,6 +14,8 @@ from app.core.constants import (
     Collection,
     Controls,
     Decision,
+    ErrorCode,
+    ErrorMessage,
     JobControl,
     Lease,
     PlanMessage,
@@ -42,8 +44,15 @@ from app.models.scenario.views import SessionStatus
 CURRENT_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": {"$ne": Decision.PENDING}}]}
 #: The versions whose controls are mapped: the newest, or an older one a reviewer accepted.
 MAPPED_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": Decision.ACCEPTED}]}
-#: Controls not mapped yet that a cancel stops: waiting, being mapped, or failed (the sweep would retry it).
-STOPPABLE_CONTROLS = [Status.QUEUED, Status.RUNNING, Status.FAILED]
+#: Failed controls the sweep still retries: attempts left.
+_FAILED_WITH_ATTEMPTS_LEFT = {
+    "controls.status": Status.FAILED,
+    "controls.attempts": {"$lt": Controls.MAX_ATTEMPTS},
+}
+#: Controls not mapped yet that a cancel stops: waiting, being mapped, or failed with attempts left.
+STOPPABLE_CONTROLS = {
+    "$or": [{"controls.status": {"$in": [Status.QUEUED, Status.RUNNING]}}, _FAILED_WITH_ATTEMPTS_LEFT]
+}
 #: Titles unique within a scenario session across every written version.
 TITLE_INDEX = "one_title_per_run_all_versions"
 #: What count_scenarios_of_session reads of a scenario, all in the run_counts index after session_id.
@@ -521,13 +530,22 @@ _SWEPT = {"status": ScenarioStatus.DONE, "source": {"$ne": RunKind.MANUAL}}
 _ORPHANS_WRITTEN_WITHIN = timedelta(seconds=Lease.MAX_JOB_SECONDS)
 
 
-def _controls_waiting(_: Any = True) -> Record:
-    """Mapped written scenarios whose controls wait: queued, or running with an expired lease."""
-    waiting = [
+def _waiting(now: datetime) -> list[Record]:
+    """Controls that wait: queued, or running with a lease expired before `now` and attempts left."""
+    return [
         {"controls.status": Status.QUEUED},
-        {"controls.status": Status.RUNNING, "controls.lease_until": {"$lt": datetime.now(UTC)}},
+        {
+            "controls.status": Status.RUNNING,
+            "controls.lease_until": {"$lt": now},
+            "controls.attempts": {"$lt": Controls.MAX_ATTEMPTS},
+        },
     ]
-    return {"status": ScenarioStatus.DONE, "$and": [MAPPED_VERSIONS, {"$or": waiting}]}
+
+
+def _controls_waiting(_: Any = True) -> Record:
+    """Mapped written scenarios whose controls wait: queued, or running with an expired lease and attempts
+    left."""
+    return {"status": ScenarioStatus.DONE, "$and": [MAPPED_VERSIONS, {"$or": _waiting(datetime.now(UTC))}]}
 
 
 def _running(task_id: str, now: datetime) -> Record:
@@ -561,11 +579,16 @@ class ScenarioControlsRepository(MongoRepository):
         self, scenario_id: str, task_id: str, remap: bool = False
     ) -> Record | None:
         """tsg_scenarios: one scenario's controls claimed by a plan job when not mapped (or, `remap`,
-        mapped to retired controls only); None when mapped, or a live lease holds them."""
+        mapped to retired controls only); None when mapped, a live lease holds them, or an expired one used
+        every attempt."""
         now = datetime.now(UTC)
         not_mapped = [
             {"controls.status": {"$in": [Status.QUEUED, Status.FAILED, Status.CANCELLED]}},
-            {"controls.status": Status.RUNNING, "controls.lease_until": {"$lt": now}},
+            {
+                "controls.status": Status.RUNNING,
+                "controls.lease_until": {"$lt": now},
+                "controls.attempts": {"$lt": Controls.MAX_ATTEMPTS},
+            },
             {"controls.status": Status.DONE, "controls.items": {"$size": 0}},
             {"controls": {"$exists": False}},
         ]
@@ -615,19 +638,17 @@ class ScenarioControlsRepository(MongoRepository):
     def requeue_stalled_controls(self) -> list[str]:
         """tsg_scenarios: mappings queued too long, running with an expired lease, or failed long ago with
         attempts left, queued again (attempts kept); the session ids touched. Cancelled and deleted sessions
-        are settled first, so never one of theirs."""
+        are settled first, so never one of theirs; a mapping whose lease expired on its last attempt (it keeps
+        stopping its worker) fails for good before the requeue."""
         self._settle_stopped_scenario_sessions()
         now = datetime.now(UTC)
+        self._fail_abandoned_controls(now)
         lost = now - timedelta(seconds=Controls.RESEND_QUEUED_AFTER_SECONDS)
         failed_long_ago = now - timedelta(seconds=Controls.RETRY_FAILED_AFTER_SECONDS)
         stalled = [
             {"controls.status": Status.QUEUED, "controls.queued_at": {"$lt": lost}},
             {"controls.status": Status.RUNNING, "controls.lease_until": {"$lt": now}},
-            {
-                "controls.status": Status.FAILED,
-                "controls.last_attempt_at": {"$lt": failed_long_ago},
-                "controls.attempts": {"$lt": Controls.MAX_ATTEMPTS},
-            },
+            _FAILED_WITH_ATTEMPTS_LEFT | {"controls.last_attempt_at": {"$lt": failed_long_ago}},
         ]
         query = {**_SWEPT, "$and": [MAPPED_VERSIONS, {"$or": stalled}]}
         session_ids: list[str] = self.collection.distinct("session_id", query)
@@ -635,10 +656,31 @@ class ScenarioControlsRepository(MongoRepository):
         self.collection.update_many(query, {"$set": requeued})
         return sorted(session_ids)
 
+    def _fail_abandoned_controls(self, now: datetime) -> None:
+        """tsg_scenarios: written scenarios' controls running with a lease expired before `now` after every
+        attempt, failed for good (job_abandoned), with their sessions' counts."""
+        abandoned = {
+            "status": ScenarioStatus.DONE,
+            "controls.status": Status.RUNNING,
+            "controls.lease_until": {"$lt": now},
+            "controls.attempts": {"$gte": Controls.MAX_ATTEMPTS},
+        }
+        session_ids = [found for found in self.collection.distinct("session_id", abandoned) if found]
+        if not session_ids:
+            return
+        message = ErrorMessage.JOB_ABANDONED.format(attempts=Controls.MAX_ATTEMPTS)
+        error = {"code": ErrorCode.JOB_ABANDONED, "message": message}
+        failed = {"controls.status": Status.FAILED, "controls.error": error, "controls.lease_until": None}
+        self.collection.update_many(abandoned, {"$set": failed})
+        for session_id in session_ids:
+            scenarios.update_scenario_session_counts(session_id)
+
     def _settle_stopped_scenario_sessions(self) -> None:
-        """tsg_scenarios: controls waiting on a cancelled session stop, with its counts; every scenario of a
-        deleted session goes, whatever its status (failure and blocked cards too)."""
-        waiting = {**_SWEPT, "controls.status": {"$in": STOPPABLE_CONTROLS}} | MAPPED_VERSIONS
+        """tsg_scenarios: controls waiting on a cancelled session stop, with its counts, never one a live
+        lease holds (a plan job maps a cancelled session's scenario on purpose); every scenario of a deleted
+        session goes, whatever its status (failure and blocked cards too)."""
+        stoppable = {"$or": [*_waiting(datetime.now(UTC)), _FAILED_WITH_ATTEMPTS_LEFT]}
+        waiting = {**_SWEPT, "$and": [MAPPED_VERSIONS, stoppable]}
         waiting_ids = set(self.collection.distinct("session_id", waiting))
         recent = {"created_at": {"$gte": datetime.now(UTC) - _ORPHANS_WRITTEN_WITHIN}}
         session_ids = [
@@ -739,16 +781,15 @@ _SUMMARY_OF: dict[str, str] = {
     RunActionKind.NEXT_SET: "last_next_set",
     RunActionKind.REGENERATE: "last_regen",
 }
-#: A resume's update of its scenario session: done again unless at work, and its cancel stamp gone.
-_RESUMED = [
+#: A resume's first update of its scenario session: done again unless at work (its cancel stamp kept).
+_DONE_AGAIN = [
     {
         "$set": {
             "status": {
                 "$cond": [{"$in": ["$status", [Status.DONE, Status.CANCELLED]]}, Status.DONE, "$status"]
             }
         }
-    },
-    {"$unset": "cancelled"},
+    }
 ]
 #: The records found, oldest first (at most JobControl.LIST_MAX per kind), and how many match in all.
 Found = tuple[list[dict[str, Any]], int]
@@ -763,6 +804,7 @@ class JobControlRepository:
         self._sessions = db[Collection.SESSIONS]
         self._scenarios = db[Collection.SCENARIOS]
         self._plans = db[Collection.REMEDIATIONS]
+        self._operations = db[Collection.SQL_OPERATIONS]
         self._counts = scenarios
 
     def list_working_scenario_sessions(self, entity_id: int) -> Found:
@@ -782,8 +824,8 @@ class JobControlRepository:
         self, session_id: str, entity_id: int, who: dict[str, Any]
     ) -> tuple[bool, int]:
         """(whether the scenario session's job was stopped, how many scenarios' controls were): the job while
-        queued or running, the controls while waiting, being mapped or failed; its controls delivery lease
-        ended."""
+        queued or running, the controls while waiting, being mapped or failed with attempts left; its controls
+        delivery lease ended."""
         now = datetime.now(UTC)
         session, cancelled = {"_id": session_id, "entity_id": entity_id}, {**who, "at": now}
         stop_session = {
@@ -801,8 +843,7 @@ class JobControlRepository:
                 {"$set": {f"{summary}.outcome": RunActionOutcome.CANCELLED}},
             )
         controls = self._scenarios.update_many(
-            {"session_id": session_id, "entity_id": entity_id, "controls.status": {"$in": STOPPABLE_CONTROLS}}
-            | MAPPED_VERSIONS,
+            {"session_id": session_id, "entity_id": entity_id, "$and": [STOPPABLE_CONTROLS, MAPPED_VERSIONS]},
             {"$set": {"controls.status": Status.CANCELLED, "controls.lease_until": None}},
         ).modified_count
         if controls:
@@ -825,32 +866,37 @@ class JobControlRepository:
 
     def resume_scenario_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
         """A scenario session resumed on purpose: the controls a cancel stopped wait again (how many), and a
-        session not at work reads done again. None when it is being deleted (nothing resumed). Checked after
-        the re-queue, so either this sees the delete's mark or the delete's check for work sees these
-        controls. A cancel landing since the caller read the session wins: the session is updated only while
-        its cancel stamp is still `cancelled_at` (the one the caller saw, None for none), else the re-queue is
-        undone and nothing is resumed (0)."""
-        stamp_read = {"_id": session_id, "cancelled.at": cancelled_at}
+        session not at work reads done again. None when it is being deleted (nothing resumed). The session
+        changes first, so the sweep never stops the re-queued controls as a cancelled session's; the delete's
+        mark is checked again after the re-queue, so either this sees it or the delete's check for work sees
+        these controls. A cancel landing since the caller read the session wins: the session changes only
+        while its cancel stamp is still `cancelled_at` (the one the caller saw, None for none), else this
+        re-queue is undone and nothing is resumed (0)."""
+        stopped = {"session_id": session_id, "controls.status": Status.CANCELLED}
+        if self._scenarios.find_one(stopped, {"_id": 1}) is None:
+            return 0
+        stamp_seen = {"_id": session_id, "cancelled.at": cancelled_at}
+        if not self._sessions.update_one(
+            {**stamp_seen, DELETING_MARK: {"$exists": False}}, _DONE_AGAIN
+        ).matched_count:
+            return None if is_scenario_session_being_deleted(self._sessions, session_id) else 0
+        requeued_at = datetime.now(UTC)
         requeued = self._scenarios.update_many(
-            {"session_id": session_id, "controls.status": Status.CANCELLED},
-            {"$set": {"controls.status": Status.QUEUED, "controls.queued_at": datetime.now(UTC)}},
+            stopped, {"$set": {"controls.status": Status.QUEUED, "controls.queued_at": requeued_at}}
         ).modified_count
         if is_scenario_session_being_deleted(self._sessions, session_id):
-            if requeued:  # undone: as before the click
-                self._stop_requeued_controls(session_id)
+            self._stop_requeued_controls(session_id, requeued_at)  # undone: as before the click
             return None
-        if not requeued:
-            return 0
-        if not self._sessions.update_one(stamp_read, _RESUMED).matched_count:
-            self._stop_requeued_controls(session_id)  # cancelled meanwhile: the cancel stands
+        if not self._sessions.update_one(stamp_seen, {"$unset": {"cancelled": ""}}).matched_count:
+            self._stop_requeued_controls(session_id, requeued_at)  # cancelled meanwhile: the cancel stands
             return 0
         self._counts.update_scenario_session_counts(session_id)
         return requeued
 
-    def _stop_requeued_controls(self, session_id: str) -> None:
-        """The scenario session's waiting controls stopped again, as a resume found them."""
+    def _stop_requeued_controls(self, session_id: str, requeued_at: datetime) -> None:
+        """The controls a resume queued again at `requeued_at`, stopped again while they still wait."""
         self._scenarios.update_many(
-            {"session_id": session_id, "controls.status": Status.QUEUED},
+            {"session_id": session_id, "controls.status": Status.QUEUED, "controls.queued_at": requeued_at},
             {"$set": {"controls.status": Status.CANCELLED}},
         )
 
@@ -870,9 +916,10 @@ class JobControlRepository:
     def delete_scenario_session(
         self, session_id: str, entity_id: int
     ) -> tuple[dict[str, int], list[str]] | None:
-        """The scenario session removed for good: marked, checked for work, then its scenarios, its plans and
-        the session last, so a delete cut short is finished by calling it again. (how many of each were
-        removed, the plans' ids); None when it is not this entity's or something of it is still at work."""
+        """The scenario session removed for good: marked, checked for work, then its scenarios' SQL operation
+        records (a reused key must never replay a deleted scenario's answer), its scenarios, its plans and the
+        session last, so a delete cut short is finished by calling it again. (how many of each were removed,
+        the plans' ids); None when it is not this entity's or something of it is still at work."""
         session = {"_id": session_id, "entity_id": entity_id}
         marked = self._sessions.update_one(
             {**session, "status": {"$nin": _WORKING}}, {"$set": {DELETING_MARK: datetime.now(UTC)}}
@@ -883,6 +930,13 @@ class JobControlRepository:
             self._sessions.update_one(session, {"$unset": {DELETING_MARK: ""}})
             return None
         children = {"session_id": session_id, "entity_id": entity_id}
+        operation_ids = [  # tsg_sql_operations ids: promote:{scenario_id}, propose:{scenario_id}
+            f"{write}:{scenario_id}"
+            for scenario_id in self._scenarios.distinct("_id", children)
+            for write in ("promote", "propose")
+        ]
+        if operation_ids:
+            self._operations.delete_many({"_id": {"$in": operation_ids}})
         plan_ids: list[str] = self._plans.distinct("_id", children)
         removed = {
             "scenarios": self._scenarios.delete_many(children).deleted_count,

@@ -2,9 +2,9 @@
 half (the asset, its systems, the threat, the scenario, its mapped controls with their library details)
 joined to the register half (app/domain/remediation/register.py) in one fixed key order. Whether the
 register already covers a mapped control is decided here, in code; the AI only judges the register's free
-text. Every free text passes the one door (`clip`). A plan request makes no AI call (G262): when the
-scenario's controls or attackers are not known yet, the version gets a pending snapshot (the register half
-only) that its plan job completes. Pure, no IO: the library is in memory."""
+text. Every free text passes the one door (`clip`). A plan request makes no AI call (G262): the version gets
+a pending snapshot (the register half only) that its plan job completes. Pure, no IO: the library is in
+memory."""
 
 from collections.abc import Mapping, Sequence
 from typing import Any
