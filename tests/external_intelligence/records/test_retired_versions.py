@@ -7,7 +7,10 @@ import pytest
 
 from app.core.constants import Collection, IntelKind, IntelOperationsLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.data_access.external_intelligence.repository import (
+    IntelRecordRepository,
+    intel_records,
+)
 from app.models.external_intelligence.intel_record import IntelRecord
 
 DAY1 = datetime(2026, 10, 1, tzinfo=UTC)
@@ -17,11 +20,11 @@ SECONDS = IntelOperationsLimits.RETIRED_VERSION_DAYS * 86_400
 
 
 @pytest.fixture
-def store() -> IntelRecordStore:
+def store() -> IntelRecordRepository:
     db = get_mongodb()
     db[Collection.INTEL].delete_many({})
-    records = IntelRecordStore(db)
-    records.ensure_indexes()
+    records = intel_records
+    records.create_indexes()
     return records
 
 
@@ -33,34 +36,36 @@ def _docs() -> dict[str, dict]:
     return {doc["text"]: doc for doc in get_mongodb()[Collection.INTEL].find({})}
 
 
-def test_a_superseded_version_is_stamped_and_the_current_one_is_not(store: IntelRecordStore) -> None:
-    store.save_batch([_record("0.1")], [], DAY1)
-    store.save_batch([_record("0.2")], [], DAY2)
+def test_a_superseded_version_is_stamped_and_the_current_one_is_not(store: IntelRecordRepository) -> None:
+    store.save_intel_records([_record("0.1")], [], DAY1)
+    store.save_intel_records([_record("0.2")], [], DAY2)
     docs = _docs()
     assert docs["0.1"]["current"] is False and docs["0.1"]["retired_at"] == DAY2
     assert docs["0.2"]["current"] is True and "retired_at" not in docs["0.2"]
 
 
 def test_a_retired_record_is_stamped_and_a_version_that_returns_loses_the_stamp(
-    store: IntelRecordStore,
+    store: IntelRecordRepository,
 ) -> None:
-    store.save_batch([_record("a"), _record("b", "CVE-2")], [], DAY1)
-    assert store.retire_records_missing_from(SOURCE, {"CVE-1"}, DAY2) == 1
+    store.save_intel_records([_record("a"), _record("b", "CVE-2")], [], DAY1)
+    assert store.retire_intel_records_missing_from(SOURCE, {"CVE-1"}, DAY2) == 1
     assert _docs()["b"]["retired_at"] == DAY2 and "retired_at" not in _docs()["a"]
-    store.save_batch([_record("b", "CVE-2")], [], DAY2)
+    store.save_intel_records([_record("b", "CVE-2")], [], DAY2)
     assert "retired_at" not in _docs()["b"] and _docs()["b"]["current"] is True
 
 
-def test_the_stamp_has_a_ttl_index_of_the_retention(store: IntelRecordStore) -> None:
+def test_the_stamp_has_a_ttl_index_of_the_retention(store: IntelRecordRepository) -> None:
     index = get_mongodb()[Collection.INTEL].index_information()["retired_at_1"]
     assert index["expireAfterSeconds"] == SECONDS == 90 * 86_400
 
 
-def test_a_changed_retention_updates_the_index_instead_of_failing_start_up(store: IntelRecordStore) -> None:
+def test_a_changed_retention_updates_the_index_instead_of_failing_start_up(
+    store: IntelRecordRepository,
+) -> None:
     collection = get_mongodb()[Collection.INTEL]
     collection.database.command(
         "collMod", collection.name, index={"keyPattern": {"retired_at": 1}, "expireAfterSeconds": 5}
     )
     assert collection.index_information()["retired_at_1"]["expireAfterSeconds"] == 5
-    store.ensure_indexes()  # a different retention than the stored one must not raise
+    store.create_indexes()  # a different retention than the stored one must not raise
     assert collection.index_information()["retired_at_1"]["expireAfterSeconds"] == SECONDS

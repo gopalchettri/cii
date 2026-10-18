@@ -61,12 +61,13 @@ class Realtime:
     RECONNECT_SECONDS: Final = 2  # wait before re-subscribing after Redis dropped the connection
     RECHECK_SECONDS: Final = 30  # an unfinished run's stream reads its status again this often
     SILENT_LIMIT_SECONDS: Final = 15  # no message and no PONG this long: the connection counts as lost
+    COALESCE_SECONDS: Final = 0.25  # a stream waits this long after a change, so a burst costs one read
 
 
 class Worker:
-    THREADS: Final = 10  # tasks run at once per worker pod; each mostly waits on an AI answer
+    THREADS: Final = 4  # tasks at once per AI worker pod: x calls per job x replicas stays near the AI cap
     BROKER_KEY_PREFIX: Final = "tsg:"  # every Celery key in Redis: v1 must not share the Redis database
-    BROKER_VISIBILITY_SECONDS: Final = 3_600  # an unacknowledged message goes to another worker after this
+    BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS: never redelivered
     HEARTBEAT_SECONDS: Final = 20  # each worker pod tells /ready "alive" this often
     ONLINE_WITHIN_SECONDS: Final = 60  # /ready counts a worker only if its last beat is this recent
     HEARTBEAT_KEY: Final = "tsg:workers:{queue}"  # sorted set: member = worker hostname, score = last beat
@@ -111,7 +112,7 @@ class JobControlMessage(StrEnum):
 
 
 class Generation:
-    WRITER_BATCH: Final = 6  # paths one write job writes at once: a concurrency bound, not a scenario limit
+    WRITER_BATCH: Final = 4  # paths one write job writes at once: a concurrency bound, not a scenario limit
     MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 
@@ -260,6 +261,7 @@ class ConflictReason(StrEnum):
     NOTHING_TO_CANCEL = "nothing_to_cancel"
     CANCEL_FIRST = "cancel_first"  # a delete refused while a job of it is queued or running
     RUN_BEING_DELETED = "run_being_deleted"
+    OPERATION_IN_PROGRESS = "operation_in_progress"  # the same SQL Server write is running now
     INTEL_NO_DATA = "intel_no_data"  # a run refused: external intelligence is on but nothing is imported yet
 
 

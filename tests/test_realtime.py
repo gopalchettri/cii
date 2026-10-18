@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from functools import partial
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ import uvicorn
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 
+from app.api.routers import events
 from app.core.constants import Collection, Event, Header, Realtime, SessionState, StageState, Status, Step
 from app.core.database import get_mongodb, get_redis_client
 from app.main import create_app
@@ -432,3 +434,44 @@ def test_a_watcher_of_a_deleted_run_is_told_once_and_the_stream_ends(
         gone = _next_after_publishing(events, partial(publish_session_status, session_id))
         assert gone == (Event.SESSION_DELETED, {"session_id": session_id})
         assert next(events, None) is None  # the stream ended
+
+
+def test_a_burst_of_changes_costs_one_status_read_made_after_the_burst() -> None:
+    """Five changes announced within Realtime.COALESCE_SECONDS: one read after the first status, and it shows
+    the last change saved, never an earlier one."""
+    saved = {"change": 0}
+    reads: list[int] = []
+
+    def read_status() -> dict[str, Any]:
+        reads.append(saved["change"])
+        return {"session_status": SessionState.ACTIVE, "change": saved["change"]}
+
+    class CountingHub:
+        def __init__(self) -> None:
+            self.updates: asyncio.Queue[object] = asyncio.Queue()
+
+        @contextlib.asynccontextmanager
+        async def listen(self, _channel: str) -> Any:
+            yield self.updates
+
+    async def scenario() -> tuple[object, object]:
+        hub = CountingHub()
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(event_hub=hub)))
+        stream = events._status_stream(request, "channel", read_status, (Event.SESSION_UPDATED, None))
+        first = await anext(stream)
+
+        async def save_a_burst() -> None:
+            for change in range(1, 6):
+                saved["change"] = change
+                hub.updates.put_nowait("record-id")
+                await asyncio.sleep(0.02)
+
+        burst = asyncio.create_task(save_a_burst())
+        second = await anext(stream)
+        await burst
+        await stream.aclose()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first.data["change"] == 0 and second.data["change"] == 5  # type: ignore[attr-defined]
+    assert reads == [0, 5]

@@ -36,7 +36,7 @@ def test_debug_is_for_our_code_only_while_libraries_keep_info_and_above() -> Non
         configure_logging(get_settings().model_copy(update={"log_level": "DEBUG"}))
         driver = logging.getLogger("pymongo.command")
         assert not driver.isEnabledFor(logging.DEBUG) and driver.isEnabledFor(logging.INFO)
-        assert logging.getLogger("app.data_access.audit").isEnabledFor(logging.DEBUG)
+        assert logging.getLogger("app.data_access.admin.repository").isEnabledFor(logging.DEBUG)
         assert logging.getLogger("http").isEnabledFor(logging.DEBUG)  # the request log
     finally:
         for name, level in saved.items():

@@ -17,7 +17,7 @@ from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.library import LibraryRepository
+from app.data_access.library.repository import SqlServerRepository
 from app.models.library import LibraryControl, LoadedLibraries, ThreatLibrary
 
 log = structlog.get_logger(__name__)
@@ -26,7 +26,7 @@ log = structlog.get_logger(__name__)
 class LibraryService:
     # Every process checks on its own (~100 ms SQL CPU a minute each); share one check through Redis
     # if the process count ever reaches the hundreds.
-    def __init__(self, repository: LibraryRepository) -> None:
+    def __init__(self, repository: SqlServerRepository) -> None:
         self._repository = repository
         self._lock = threading.Lock()
         self._loaded: LoadedLibraries | None = None
@@ -46,13 +46,12 @@ class LibraryService:
     def reload_if_library_changed(self) -> None:
         """Load both libraries when any table's fingerprint changed. The fingerprint is read BEFORE
         loading, so an edit made during a load is caught by the next check, never missed."""
-        stamp = self._repository.read_library_stamp()
         previous = self._loaded
-        if previous is not None and stamp == previous.stamp:
+        loaded = self._repository.load_library(previous.stamp if previous else None)
+        if loaded is None:
             return
-        active, retired = self._repository.load_control_library()
-        self._loaded = LoadedLibraries(stamp, self._repository.load_threat_library(), active, retired)
-        changed = sorted(set(stamp) - set(previous.stamp if previous else ()))
+        self._loaded = loaded
+        changed = sorted(set(loaded.stamp) - set(previous.stamp if previous else ()))
         log.info(LogEvent.LIBRARY_RELOADED, changed_tables=[table for table, _ in changed])
 
     def check_library_once(self) -> None:
@@ -120,4 +119,4 @@ class LibraryService:
 
 @singleton
 def get_library_service() -> LibraryService:
-    return LibraryService(LibraryRepository(get_stored_procedure_client()))
+    return LibraryService(SqlServerRepository(get_stored_procedure_client()))

@@ -1,0 +1,253 @@
+"""MongoRepository: every plain read and write of one MongoDB collection, done once. Callers pass field
+equality as keywords and the repository's named conditions (name=True, or name=value for a condition that
+takes one); a repository adds a named method only for a real rule (a lease, a guarded state change, an
+aggregate). No timeout or write concern here: the records that need one keep their own."""
+
+import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any
+
+from pymongo import ReturnDocument
+from pymongo.collection import Collection as MongoCollection
+from pymongo.errors import BulkWriteError, DuplicateKeyError
+
+from app.core.constants import ErrorMessage
+from app.core.database import expire_documents_after, get_mongodb
+from app.core.exceptions import DuplicateRecord
+
+Record = dict[str, Any]
+#: A named condition: a filter applied when the caller passes name=True, or built from the value passed.
+Condition = Mapping[str, Any] | Callable[[Any], Mapping[str, Any]]
+
+_DUPLICATE_KEY = 11000  # MongoDB's error code for a value a unique index already holds
+_INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
+
+
+def duplicate_index_name(error: DuplicateKeyError) -> str:
+    """The name of the unique index that refused a write, read from MongoDB's error."""
+    details = error.details or {}
+    found = _INDEX_NAME_IN_ERROR.search(details.get("errmsg", "") or str(error))
+    return found.group(1) if found else "_".join(details.get("keyPattern", {})) or "unknown"
+
+
+def _sort_spec(sort: str | Iterable[str] | None) -> list[tuple[str, int]] | None:
+    """'-created_at' or ['-score', 'title'] as pymongo's sort: a leading '-' sorts newest or largest first."""
+    if sort is None:
+        return None
+    names = [sort] if isinstance(sort, str) else list(sort)
+    return [(name[1:], -1) if name.startswith("-") else (name, 1) for name in names]
+
+
+def _merged(parts: Iterable[Mapping[str, Any]]) -> Record:
+    """Filter parts as one filter; a field two parts both name goes in $and, so neither part is dropped."""
+    merged: Record = {}
+    clashing: list[Record] = []
+    for part in parts:
+        for key, value in part.items():
+            if key in merged:
+                clashing.append({key: value})
+            else:
+                merged[key] = value
+    if clashing:
+        merged["$and"] = [*merged.get("$and", []), *clashing]
+    return merged
+
+
+class MongoRepository:
+    """One MongoDB collection: its indexes, expiries, named conditions, field lists, reads and writes."""
+
+    def __init__(
+        self,
+        collection: str | MongoCollection,
+        indexes: Iterable[Mapping[str, Any]] = (),
+        ttl: Iterable[tuple[str, int | Callable[[], int]]] = (),
+        conditions: Mapping[str, Condition] | None = None,
+        field_lists: Mapping[str, Iterable[str] | Mapping[str, int]] | None = None,
+    ) -> None:
+        """`collection`: its name (resolved on first use, never at import) or a pymongo Collection (tests, the
+        job lease). `indexes`: create_index keywords ({"keys", "name", "unique"}). `ttl`: (field, seconds or a
+        function giving them from the settings) per expiry."""
+        self._collection = collection
+        self._indexes = tuple(indexes)
+        self._ttl = tuple(ttl)
+        self._conditions = dict(conditions or {})
+        self._field_lists = dict(field_lists or {})
+
+    @property
+    def collection(self) -> MongoCollection:
+        """The pymongo collection, for this repository's own rule methods inside app/data_access."""
+        if isinstance(self._collection, str):
+            return get_mongodb()[self._collection]
+        return self._collection
+
+    def create_indexes(self) -> None:
+        """Every index and TTL expiry of the collection; idempotent, run at start-up."""
+        for index in self._indexes:
+            self.collection.create_index(**index)
+        for field, seconds in self._ttl:
+            expire_documents_after(self.collection, field, seconds() if callable(seconds) else seconds)
+
+    def create(self, record: Record) -> Any:
+        """Inserts a new record, returns its _id; DuplicateRecord names the unique index that refused it."""
+        try:
+            return self.collection.insert_one(record).inserted_id
+        except DuplicateKeyError as error:
+            raise DuplicateRecord(duplicate_index_name(error)) from error
+
+    def save(self, record: Record, only_if: Mapping[str, Any] | None = None) -> bool:
+        """Inserts the record, or replaces the one with its _id while `only_if` matches it. False when a
+        record with that _id exists that may not be replaced; DuplicateRecord for any other unique index."""
+        query = self.filter({"_id": record["_id"], **(only_if or {})})
+        try:
+            self.collection.replace_one(query, record, upsert=True)
+        except DuplicateKeyError as error:
+            index_name = duplicate_index_name(error)
+            if index_name == "_id_":
+                return False
+            raise DuplicateRecord(index_name) from error
+        return True
+
+    def get(self, fields: str | Iterable[str] | None = None, **where: Any) -> Record | None:
+        """The first record matching `where` (only `fields`, a field list's name or the fields), or None."""
+        return self.collection.find_one(self.filter(where), _projection(self._field_lists, fields))
+
+    def list(
+        self,
+        fields: str | Iterable[str] | None = None,
+        sort: str | Iterable[str] | None = None,
+        skip: int = 0,
+        limit: int = 0,
+        **where: Any,
+    ) -> list[Record]:
+        """Every record matching `where`, sorted ('-field' for descending), after `skip`, at most `limit`."""
+        cursor = self.collection.find(
+            self.filter(where), _projection(self._field_lists, fields), skip=skip, limit=limit
+        )
+        spec = _sort_spec(sort)
+        return list(cursor.sort(spec) if spec else cursor)
+
+    def count(self, **where: Any) -> int:
+        """How many records match `where`."""
+        return self.collection.count_documents(self.filter(where))
+
+    def update(
+        self,
+        changes: Mapping[str, Any],
+        *,
+        only_if: Mapping[str, Any] | None = None,
+        many: bool = False,
+        **where: Any,
+    ) -> int:
+        """Sets `changes` on the record (or every record, `many`) matching `where` and `only_if`; how many
+        matched. An update document with $ operators is passed only from inside app/data_access."""
+        query = self._required_filter({**where, **(only_if or {})})
+        write = self.collection.update_many if many else self.collection.update_one
+        return write(query, _update_document(changes)).matched_count
+
+    def update_and_get(
+        self,
+        changes: Mapping[str, Any],
+        *,
+        sort: str | Iterable[str] | None = None,
+        fields: str | Iterable[str] | None = None,
+        **where: Any,
+    ) -> Record | None:
+        """Sets `changes` on the first record matching `where` (in `sort` order) and returns it as changed."""
+        return self.collection.find_one_and_update(
+            self._required_filter(where),
+            _update_document(changes),
+            projection=_projection(self._field_lists, fields),
+            sort=_sort_spec(sort),
+            return_document=ReturnDocument.AFTER,
+        )
+
+    def delete(self, **where: Any) -> int:
+        """Deletes every record matching `where`; how many went. An empty `where` is refused."""
+        return self.collection.delete_many(self._required_filter(where)).deleted_count
+
+    def bulk_write_skipping_duplicates(self, operations: Sequence[Any], *, ordered: bool = True) -> Record:
+        """Runs pymongo write operations in one bulk write; a duplicate key is skipped (an ordered write stops
+        there), any other write error or a write-concern error is raised. MongoDB's counts (nInserted ...)."""
+        if not operations:
+            return {}
+        try:
+            return self.collection.bulk_write(operations, ordered=ordered).bulk_api_result
+        except BulkWriteError as error:
+            details = error.details
+            refused = [
+                found for found in details.get("writeErrors", []) if found.get("code") != _DUPLICATE_KEY
+            ]
+            if refused or details.get("writeConcernErrors"):
+                raise
+            return details
+
+    def filter(self, where: Mapping[str, Any]) -> Record:
+        """`where` as a MongoDB filter: field equality and each named condition (name=True or a value)."""
+        return _merged(self._condition(name, value) for name, value in where.items())
+
+    def _condition(self, name: str, value: Any) -> Mapping[str, Any]:
+        """One `where` entry as a filter part: a named condition, or plain field equality."""
+        if name not in self._conditions:
+            return {name: value}
+        condition = self._conditions[name]
+        if callable(condition):
+            return condition(value)
+        if value is not True:  # a fixed condition is a guard: never silently dropped by name=False
+            raise ValueError(ErrorMessage.NAMED_CONDITION_TAKES_TRUE.format(name=name))
+        return condition
+
+    def _required_filter(self, where: Mapping[str, Any]) -> Record:
+        """`where` as a filter for a write; an empty one is refused."""
+        if not where:  # a write with no condition would change or delete the whole collection
+            raise ValueError(ErrorMessage.WRITE_NEEDS_A_CONDITION)
+        return self.filter(where)
+
+
+def _projection(
+    field_lists: Mapping[str, Any], fields: str | Iterable[str] | Mapping[str, int] | None
+) -> Mapping[str, int] | None:
+    """A field list's name, the fields themselves or a projection, as pymongo's projection (None: all)."""
+    if fields is None:
+        return None
+    if isinstance(fields, str):
+        fields = field_lists[fields]
+    return fields if isinstance(fields, Mapping) else dict.fromkeys(fields, 1)
+
+
+def _update_document(changes: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Plain fields go in $set; a document of $ operators is used as it is."""
+    return changes if any(key.startswith("$") for key in changes) else {"$set": dict(changes)}
+
+
+def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
+    """Every MongoDB index and expiry TSG uses, made at start-up (the API's lifespan, each worker's start):
+    idempotent, never on a request or job path, and a failure stops start-up with its reason.
+    `job_collections`: the worker's leased-job collections, whose indexes serve the reaper's scans."""
+    # ponytail: lazy imports, every repository module imports this base
+    from app.core.config import get_settings
+    from app.data_access.admin import repository as admin
+    from app.data_access.external_intelligence import repository as intelligence
+    from app.data_access.jobs import repository as jobs
+    from app.data_access.library import repository as sql
+    from app.data_access.remediation import repository as remediation
+    from app.data_access.scenario import repository as scenario
+
+    for repository in (
+        admin.api_clients,
+        scenario.scenario_sessions,
+        scenario.scenarios,
+        remediation.remediation_plans,
+        admin.audit_records,
+        admin.ai_calls,
+        admin.library_vectors,
+    ):
+        repository.create_indexes()
+    admin.library_vectors.retire_unknown_vector_corpora()
+    for repository in (admin.query_vectors, admin.admin_jobs, sql.sql_operations):
+        repository.create_indexes()
+    for collection in job_collections:
+        jobs.JobRepository(get_mongodb()[collection]).create_indexes()
+    if get_settings().external_intelligence_enabled:  # off: no intelligence collection exists
+        intelligence.intel_records.create_indexes()
+        intelligence.intel_snapshots.create_indexes()
+        intelligence.intel_feeds.create_missing_intel_feeds()

@@ -988,7 +988,7 @@ $(function () {
   }
   // progress.error_message as one line: {} when all is well, else {stage: why} (also a partial result's reason).
   function runErrors(s) { var m = prog(s).error_message || {}; return Object.keys(m).map(function (k) { return k + ": " + m[k]; }).join(" · "); }
-  // last_next_set {outcome, requested, delivered} / last_regen {outcome, requested, replaced}, or "".
+  // last_next_set {outcome, requested, delivered, reason, remaining, epoch} / last_regen {outcome, requested, replaced, epoch}, or "".
   function lastText(x, key) { return x ? x.outcome + " · " + (x[key] != null ? x[key] : "?") + " of " + (x.requested != null ? x.requested : "?") + " " + key : ""; }
 
   function setSession(sid) {
@@ -1020,7 +1020,7 @@ $(function () {
   function refreshResults(loud) {
     if (!state.sid) return NONE;
     var sid = state.sid;
-    return api("GET", "/v1/sessions/" + sid + "/results?limit=500", undefined, { quiet: !loud }).done(function (r) {
+    return api("GET", "/v1/sessions/" + sid + "/results?limit=500&include_replaced=true", undefined, { quiet: !loud }).done(function (r) {
       if (sid !== state.sid) return;
       state.results = r; renderScenarios(); renderRail(); renderMeter(); renderPlans(); refreshWalk();
     });
@@ -1256,9 +1256,14 @@ $(function () {
     return '<div class="empty"><div class="big">' + icon + "</div>" + text +
            (extra ? '<div style="margin-top:12px">' + extra + "</div>" : "") + "</div>";
   }
-  // The accepted version this card would replace: `replaced_scenarios[0]` is the version it was regenerated from.
-  function scnReplaces(s) { return (s.replaced_scenarios || [])[0] || null; }
-  function scnReplacesAccepted(s) { var p = scnReplaces(s) ? scnFind(scnReplaces(s)) : null; return p && p.accepted ? p : null; }
+  // G267 (v1's results format): `replaced_scenarios` holds the path's older versions, newest first (the results are
+  // read with include_replaced=true); `replaces_accepted_version` names the accepted one this card would replace.
+  function scnPrev(s) { return (s.replaced_scenarios || [])[0] || null; }
+  function scnReplaces(s) { var p = scnPrev(s); return p ? p.scenario_id : null; }
+  function scnReplacesAccepted(s) {
+    var id = s.replaces_accepted_version; if (!id) return null;
+    return scnFind(id) || (s.replaced_scenarios || []).filter(function (o) { return o.scenario_id === id; })[0] || { scenario_id: id, accepted: true };
+  }
 
   // Why "Generate next set" would be refused right now ("" = allowed); the server's own reason (why_no_path_left)
   // comes back in a 409 when this guess is wrong.
@@ -1282,6 +1287,10 @@ $(function () {
     if (!scnRunning() && s.session_status !== "failed" && why) out.push(["warn", "Notes from the run: " + why]);
     if (!scnRunning() && p.last_next_set && p.last_next_set.outcome !== "complete") out.push(["warn", "The last next set: " + lastText(p.last_next_set, "delivered") + "."]);
     if (!scnRunning() && p.last_regen && p.last_regen.outcome !== "complete") out.push(["warn", "The last regenerate: " + lastText(p.last_regen, "replaced") + "."]);
+    // G268: each path given up, by its threat and its card's own reason (results.coverage.given_up).
+    (((state.results || {}).coverage || {}).given_up || []).forEach(function (g) {
+      out.push(["warn", "Not written: " + (g.threat || g.path_id) + " — " + (g.message || g.reason) + (g.replaced_by ? " (a reserve was written instead)" : "")]);
+    });
     return out.map(function (c) { return '<div class="callout ' + c[0] + '">' + esc(c[1]) + "</div>"; }).join("");
   }
 
@@ -1409,7 +1418,7 @@ $(function () {
       body = '<p class="muted">The writer could not produce this scenario' + (s.threat && s.threat.threat_name ? " for <b>" + esc(s.threat.threat_name) + "</b>" : "") +
              '.</p><div class="callout warn"><code>' + esc(f.code || "failed") + "</code> " + esc(f.message || "") + "</div>";
     } else {
-      var rep = scnReplacesAccepted(s), prev = scnReplaces(s) ? scnFind(scnReplaces(s)) : null;
+      var rep = scnReplacesAccepted(s), prev = scnPrev(s);
       body = (scnReplaces(s) ? '<div class="callout info">Version ' + esc(s.version) + " of this scenario" +
                (rep ? ": the accepted version " + esc(rep.version) + " stays until you accept this one as its replacement." :
                 prev ? " (replaces version " + esc(prev.version) + ")." : ".") + "</div>" : "") +
@@ -1442,7 +1451,7 @@ $(function () {
       (st === "failed" ? '<div class="callout warn"><code>' + esc((s.failure || {}).code) + "</code> " + esc((s.failure || {}).message) + "</div>" : "") +
       (st !== "failed"
         ? sec("Scenario", '<p style="white-space:pre-line">' + (x.scenario_statement ? evText(s, x.scenario_statement) : "—") + "</p>") +
-          ((s.evidence || []).length ? sec("Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
+          ((s.evidence || []).length ? sec(s.evidence_mode === "nearest" ? "Closest match cited (below the relevance check)" : "Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
           ((s.related_evidence || []).length ? sec(s.evidence_mode === "nearest" ? "Closest match found (below the relevance check, not cited)" : "Related intelligence (closest match, not cited by any sentence)", s.related_evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, false) + "</div>"; }).join("")) : "") +
           sec("Risk", "<p>" + (x.risk_statement ? evText(s, x.risk_statement) : val(null)) + "</p>") +
           ((x.assumptions || []).length ? sec("Assumptions", ul(x.assumptions)) : "") +
@@ -2272,7 +2281,7 @@ $(function () {
       dec: [["SQL Server unreachable", "503 `unavailable` with `Retry-After: 5` — the request ends", null],
             ["Rows read", "freeze them", "1.4"]],
       nx: ["1.4"], out: "The raw rows, handed to `freeze_context`.",
-      c: ["app/data_access/asset_context.py:AssetContextRepository", "scripts/sql/tsg_GetAssetContext.sql"] },
+      c: ["app/data_access/scenario/runs.py:AssetContextRepository", "scripts/sql/tsg_GetAssetContext.sql"] },
 
     { id: "1.4", s: "1", t: "Check ownership and freeze the context", run: "API · `freeze_context`",
       from: ["1.3"], in: "The 5 result sets and the request ids.",
@@ -2302,7 +2311,7 @@ $(function () {
             ["Inserted", "announce it", "1.6"]],
       m: "The inserted run record.",
       nx: ["1.6"], out: "A queued run in `tsg_sessions`.", st: "tsg_sessions",
-      c: ["app/services/scenarios/runs.py:new_run_record", "app/data_access/sessions.py:SessionRepository"] },
+      c: ["app/services/scenarios/runs.py:new_run_record", "app/data_access/scenario/runs.py:SessionRepository"] },
 
     { id: "1.6", s: "1", t: "Queue the job, audit, answer 202", run: "API · `_announce`",
       from: ["1.5"], in: "The new run's `_id` and `job.epoch` (1).",
@@ -2559,7 +2568,6 @@ $(function () {
       from: ["3.5"], in: "The cleaned title, statement, risk and assumptions; the brief.",
       p: ["`unknown_id` — BLOCKER: an internal label `SYS\\d+` / `THR\\d+` the brief does not contain.",
           "`uncited_advisory_id` — BLOCKER: a CVE, ICSA, GHSA, MS or VU# number the brief does not contain.",
-          "`asset_not_in_statement`, `asset_not_in_risk` — WARNING.",
           "`attacker_not_named` — WARNING: the acting attacker (or half of its name) is not in the statement.",
           "`other_attacker_named` — WARNING: another library attacker is named.",
           "`system_out_of_scope` — WARNING: one of `brief.other_systems` is named.",
@@ -2633,7 +2641,7 @@ $(function () {
       m: "One claimed scenario at a time.",
       dec: [["A scenario claimed", "build its query", "4.2"], ["Nothing waits", "release the delivery", null]],
       nx: ["4.2"], out: "A scenario to map. While any wait, the RunBoard shows `progress.controls: RUNNING`.",
-      c: ["app/worker/tasks/controls.py:RunControls", "app/data_access/scenario_controls.py"] },
+      c: ["app/worker/tasks/controls.py:RunControls", "app/data_access/scenario/scenarios.py"] },
 
     { id: "4.2", s: "4", t: "Allowed control types and the query", run: "worker · `ControlMapper.map_controls`",
       from: ["4.1"], in: "The scenario content, the asset and its systems' `category_code`.",
@@ -2683,18 +2691,18 @@ $(function () {
             ["A final job error", "the scenario fails; not retried", "X.1"],
             ["Mapped", "the card is complete for review and planning", "5.1"]],
       nx: ["5.1"], out: "API `controls_status` and `controls[control_id, control_code, itot, domain, control_name, control_description, map_rank, score, match_type, match_reason]` on each ScenarioView.", st: "tsg_scenarios.controls",
-      c: ["app/engine/scenarios/control_mapper.py:controls_record", "app/data_access/scenario_controls.py:ControlSweep", "app/worker/tasks/controls.py"] },
+      c: ["app/engine/scenarios/control_mapper.py:controls_record", "app/data_access/scenario/scenarios.py:ControlSweep", "app/worker/tasks/controls.py"] },
 
     // ------------------------------------------------------------------ STEP 5
     { id: "5.1", s: "5", t: "Read the results", run: "API · GET routes",
       from: ["3.10", "4.5"], in: "The session id.",
       p: ["`GET /v1/sessions/{id}/results?include_replaced&offset&limit` (limit 50 by default, max 500): current versions (the newest, or one already decided), never blocked, oldest first.",
-          "`ScenarioView` (v1's layout): `scenario{threat_category, contributing_categories, threat_type, threat_name, supporting_systems_involved[supporting_system_id, supporting_system, is_entry_point], scenario_title, scenario_statement (statement + \"Why this threat applies: \" + why_applies), risk_statement, assumptions, route_status}`, `threat{threat_id, threat_type, threat_name, threat_catalogue_id, is_threat_ai_generated, grounding_score, scope_rank, …}`, `actors[actor_id, actor_name, role, closest_match, below_threshold, selection, selection_reason]`, `known_groups[name, attack_id, url, kind, who, match, fits_actor, technique, technique_title, through, how, cited]` (G230, intelligence on), `controls_status`, `controls[]`, `accepted`, `accepted_by/at`, `rejected_by/at`, `validation_status: ok | warning`, `validation_errors` (warnings), `validation_notes` (plan check), `scenario_source`, `replaced_scenarios`, `replaced_by`, version, failure, regenerate_error.",
+          "`ScenarioView` (v1's results format, G267: v1's fields in v1's order, then v2's own; a failure card has `scenario: null`, its reason in `validation_errors`; `include_replaced=true` nests the path's older versions in `replaced_scenarios`; v1's `replaces_accepted_version`, `generation_epoch`, `scenario_number`, `gen_*`, `library`, `controls_mapped`/`controls_mapping_exhausted`, `scope`, `actor`, `threat_source`, `review_flags`, `control_match_status`): `scenario{threat_category, contributing_categories, threat_type, threat_name, supporting_systems_involved[supporting_system_id, supporting_system, is_entry_point, justification, is_applicable], scenario_title, scenario_statement (statement + \"Why this threat applies: \" + why_applies), risk_statement, assumptions, route_status}`, `threat{threat_id, threat_type, threat_name, threat_catalogue_id, is_threat_ai_generated, grounding_score, scope_rank, …}`, `actors[actor_id, actor_name, role, closest_match, below_threshold, selection, selection_reason]`, `known_groups[name, attack_id, url, kind, who, match, fits_actor, technique, technique_title, through, how, cited]` (G230, intelligence on), `controls_status`, `controls[]`, `accepted`, `accepted_by/at`, `rejected_by/at`, `validation_status: ok | warning`, `validation_errors` (warnings), `validation_notes` (plan check), `scenario_source`, `replaced_scenarios`, `replaced_by`, version, failure, regenerate_error.",
           "`GET /v1/sessions/{id}` → RunBoard (`session_status`, `progress`); its numbers come from the counts `RunCounts.refresh` recomputes (current versions, never blocked)."],
       m: "`RunResults {session_id, entity_id, asset_id, asset_name, user_id, progress, scenarios, total}`.",
       dec: [["Decide cards", "accept or reject", "5.2"], ["Want more scenarios", "next set", "5.5"], ["A card is weak", "regenerate", "5.6"]],
       nx: ["5.2", "5.5", "5.6"], out: "What the reviewer sees.",
-      c: ["app/api/routers/scenarios.py", "app/models/scenario_views.py:ScenarioView", "app/models/run_board.py", "app/data_access/run_counts.py"] },
+      c: ["app/api/routers/scenarios.py", "app/models/scenario_views.py:ScenarioView", "app/models/run_board.py", "app/data_access/scenario/scenarios.py:RunCounts"] },
 
     { id: "5.2", s: "5", t: "The review gate", run: "API · `check_review_open`",
       from: ["5.1"], in: "The run's status and step; the request body.",
@@ -2732,16 +2740,16 @@ $(function () {
 
     { id: "5.5", s: "5", t: "Generate the next set", run: "API · `POST /v1/sessions/{id}/scenarios/next-set`, then the worker",
       from: ["5.1"], in: "No body; the plan's scenarios.",
-      p: ["`next_set` → `set_and_first_batch(paths, NEXT_SET_SIZE 6)`.",
+      p: ["`next_set(paths, NEXT_SET_SIZE 6)` (path_progress, G268): the next open paths; none open, the ones given up for an outside cause, tried again (G265). One rule with `counts.remaining`.",
           "`queue_again`: one conditional update (status done or failed, step scenarios, the epoch unchanged) → `status: queued`, `active: true`, epoch + 1, `last_action {kind: next_set, outcome: running}`.",
-          "202 `{epoch}`."],
+          "202 `{session_id, user_id, status: generating | mapping_controls, epoch}` (v1's shape, G268)."],
       m: "A queued writing job.",
       dec: [["No scenario left", "409 with `why_no_path_left`: `scenarios_abandoned`, else `target_reached`, else `nothing_left`", null],
             ["Another run of the asset is active", "409 `asset_busy` + `active_session_id`", null],
             ["The run changed meanwhile", "409 `generation_in_progress`", null],
             ["Queued", "the writer runs again", "3.1"]],
-      nx: ["3.1"], out: "`{epoch}`; RunBoard `session_status: active`, `progress.scenarios: RUNNING`; when the set ends, `progress.last_next_set {outcome, requested, delivered}`.",
-      c: ["app/services/scenarios/run_actions.py:next_set", "app/data_access/run_actions.py:RunActionRecords", "app/engine/scenarios/attack_paths/path_progress.py:why_no_path_left"] },
+      nx: ["3.1"], out: "`{session_id, user_id, status, epoch}`; RunBoard `session_status: active`, `progress.scenarios: RUNNING`, `progress.last_next_set {outcome: running, requested, epoch}`; when the set ends `{outcome, requested, delivered, reason, remaining, epoch}` (G268: `reason` is the 409 the next click gets when nothing is left).",
+      c: ["app/services/scenarios/run_actions.py:next_set", "app/data_access/scenario/runs.py:RunActionRecords", "app/engine/scenarios/attack_paths/path_progress.py:why_no_path_left"] },
 
     { id: "5.6", s: "5", t: "Regenerate scenarios", run: "API · `POST /v1/sessions/{id}/regenerate/scenarios`, then `Regenerator`",
       from: ["5.1", "5.4", "3.1"], in: "`{scenario_ids}`",

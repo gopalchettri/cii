@@ -24,9 +24,8 @@ from app.core.constants import (
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.library import LibraryRepository
-from app.data_access.scenario.runs import RunActionRecords
-from app.data_access.scenario.scenarios import ScenarioRepository, ScenarioReview
+from app.data_access.library.repository import SqlServerRepository
+from app.data_access.scenario.repository import scenario_sessions
 from app.models.library import ThreatProposal
 from app.services.api_clients import get_api_client_service
 from app.services.library_curation import LibraryPromotion, get_library_promotion
@@ -44,20 +43,19 @@ def api_key() -> str:
 @pytest.fixture
 def proposals(client: TestClient, sql_test_engine: Engine) -> Iterator[list[ThreatProposal]]:
     """The promote service on the SQL test database; every proposal that reaches SQL Server, recorded."""
-    repository = LibraryRepository(StoredProcedureClient(sql_test_engine))
-    library = repository.load_threat_library()
+    repository = SqlServerRepository(StoredProcedureClient(sql_test_engine))
+    loaded = repository.load_library()
+    assert loaded is not None
+    library = loaded.threat_library
     sent: list[ThreatProposal] = []
     propose = repository.propose_threat
 
-    def recorded(proposal: ThreatProposal) -> Any:
+    def recorded(operation_id: str, proposal: ThreatProposal) -> Any:
         sent.append(proposal)
-        return propose(proposal)
+        return propose(operation_id, proposal)
 
     repository.propose_threat = recorded  # type: ignore[method-assign]
-    db = get_mongodb()
-    service = LibraryPromotion(
-        ScenarioRepository(db), ScenarioReview(db), RunActionRecords(db), repository, lambda: library
-    )
+    service = LibraryPromotion(scenario_sessions, repository, lambda: library)
     client.app.dependency_overrides[get_library_promotion] = lambda: service  # type: ignore[attr-defined]
     yield sent
     client.app.dependency_overrides.pop(get_library_promotion, None)  # type: ignore[attr-defined]
@@ -121,7 +119,7 @@ def test_promoting_twice_inserts_one_pending_threat_and_audits_once(
     client: TestClient, api_key: str, proposals: list[ThreatProposal], sql_test_engine: Engine
 ) -> None:
     """T-SCN-28 / T-LIB-07: inserted, pending (IsActive 0) under the existing type, by the person; a repeat
-    answers existing and records nothing more."""
+    answers the first answer (from its operation record, no SQL call) and records nothing more."""
     name = f"Rogue firmware pushed through the vendor portal {uuid.uuid4().hex[:6]}"
     record_id, scenario_id = _accepted(name)
     first = _promote(client, api_key, record_id, scenario_id)
@@ -138,7 +136,7 @@ def test_promoting_twice_inserts_one_pending_threat_and_audits_once(
         ).one()
     assert tuple(row) == (False, False, "ai")
     again = _promote(client, api_key, record_id, scenario_id).json()["results"][0]
-    assert again == result | {"outcome": PromotionOutcome.EXISTING}
+    assert again == result
     stored = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})["library_promotion"]
     assert stored["results"][0]["outcome"] == PromotionOutcome.INSERTED and stored["by"] == REVIEWER
     audits = {"target.id": scenario_id, "action": AuditAction.LIBRARY_PROMOTED}
@@ -185,7 +183,7 @@ def test_sql_server_down_records_nothing(
     """Rule S13 step 3: 503 with Retry-After; the scenario keeps no promotion, so the person tries again."""
     record_id, scenario_id = _accepted(f"A threat while SQL is down {uuid.uuid4().hex[:6]}")
 
-    def down(proposal: ThreatProposal) -> Any:
+    def down(operation_id: str, proposal: ThreatProposal) -> Any:
         raise Unavailable("SQL down")
 
     service = client.app.dependency_overrides[get_library_promotion]()  # type: ignore[attr-defined]

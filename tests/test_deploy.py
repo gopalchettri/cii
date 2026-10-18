@@ -13,8 +13,8 @@ import pytest
 import yaml
 
 from app.core.config import Settings
-from app.core.constants import Queue
-from app.worker import ROUTED_QUEUES
+from app.core.constants import Generation, Lease, Queue, ThreatFinding, Worker
+from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
 DEPLOY = REPO / "deploy"
@@ -354,3 +354,27 @@ def test_the_pods_may_reach_the_ai_gateway_directly_and_the_proxy_for_the_feeds(
         for deployment in _objects(app_file, kind="Deployment"):
             for alias in deployment["spec"]["template"]["spec"]["hostAliases"]:
                 assert (alias["ip"], "443") in allowed, (namespace, deployment["metadata"]["name"])
+
+
+def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
+    """Threads x AI calls per job x replicas near CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and
+    times out the job), far fewer leaves the cap unused."""
+    cap = Settings.model_fields["max_concurrent_ai_calls"].default
+    calls_per_job = {
+        Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,
+        Queue.SCENARIOS: Generation.WRITER_BATCH,
+    }
+    for deployment in _objects(APP_FILES["ai-threatgen"], kind="Deployment"):
+        command = _container(deployment)["command"]
+        queue = command[command.index("-Q") + 1] if "-Q" in command else None
+        if queue in calls_per_job:
+            threads = int(command[command.index("-c") + 1])
+            asked = threads * calls_per_job[queue] * deployment["spec"]["replicas"]
+            assert threads == Worker.THREADS and cap / 2 < asked <= cap, (queue, asked, cap)
+
+
+def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:
+    """The broker hands an unacknowledged message to another worker after its visibility timeout: it outlasts
+    the longest job plus the lease the reaper waits out."""
+    timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
+    assert timeout > Lease.MAX_JOB_SECONDS + Lease.SECONDS

@@ -1,6 +1,7 @@
 """Scenario writing (Step 12): the brief, the owner's prompts, the exact safety checks, the reviewer, the one
 rewrite, and what is stored and shown. Fake AI models, no network."""
 
+import copy
 import dataclasses
 import json
 import uuid
@@ -32,7 +33,7 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
-from app.data_access.scenario.scenarios import ScenarioRepository, TitleTaken, find_held_elsewhere
+from app.data_access.scenario.repository import ScenarioRepository, TitleTaken, scenarios
 from app.domain.scenario.write import (
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
@@ -384,9 +385,8 @@ def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again()
 
 
 def _scenarios() -> ScenarioRepository:
-    repository = ScenarioRepository(get_mongodb())
-    repository.ensure_indexes()
-    return repository
+    scenarios.create_indexes()
+    return scenarios
 
 
 def _stored(
@@ -413,47 +413,56 @@ def _stored(
 
 def test_a_repeated_save_keeps_one_scenario_and_a_success_replaces_a_failure_card() -> None:
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
-    assert scenarios.save(
+    assert scenarios.save_scenario(
         _stored(session_id, "p1", None, status=ScenarioStatus.FAILED, failure={"code": "x"})
     )
-    assert scenarios.save(_stored(session_id, "p1"))
-    assert not scenarios.save(_stored(session_id, "p1", "Another title"))
-    assert scenarios.find_written(session_id, ["p1", "p2"]) == {"p1": f"{session_id}:p1"}
+    assert scenarios.save_scenario(_stored(session_id, "p1"))
+    assert not scenarios.save_scenario(_stored(session_id, "p1", "Another title"))
+    written = scenarios.list(
+        fields="path_id",
+        session_id=session_id,
+        path_id_in=["p1", "p2"],
+        status=ScenarioStatus.DONE,
+        newest=True,
+    )
+    assert {row["path_id"]: row["_id"] for row in written} == {"p1": f"{session_id}:p1"}
 
 
 def test_no_two_written_versions_of_a_run_share_a_title() -> None:
     """G142: the database refuses the clash, even under a race; other runs and blocked cards do not count."""
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
-    assert scenarios.save(_stored(session_id, "p3"))
+    assert scenarios.save_scenario(_stored(session_id, "p3"))
     with pytest.raises(TitleTaken):
-        scenarios.save(_stored(session_id, "p4"))
-    assert scenarios.save(_stored(f"other-{session_id}", "p4"))
-    assert scenarios.save(_stored(session_id, "p5", status=ScenarioStatus.BLOCKED))
+        scenarios.save_scenario(_stored(session_id, "p4"))
+    assert scenarios.save_scenario(_stored(f"other-{session_id}", "p4"))
+    assert scenarios.save_scenario(_stored(session_id, "p5", status=ScenarioStatus.BLOCKED))
 
 
 def test_counts_come_from_one_aggregation_and_a_blocked_scenario_is_never_served() -> None:
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
-    scenarios.save(_stored(session_id, "p1", "A", controls={"status": "queued", "attempts": 0}))
-    scenarios.save(_stored(session_id, "p2", "B", decision=Decision.ACCEPTED, controls={"status": "done"}))
-    scenarios.save(_stored(session_id, "p3", None, status=ScenarioStatus.FAILED))
-    scenarios.save(_stored(session_id, "p4", "C", status=ScenarioStatus.BLOCKED))
-    counts = scenarios.count_for_run(session_id)
+    scenarios.save_scenario(_stored(session_id, "p1", "A", controls={"status": "queued", "attempts": 0}))
+    scenarios.save_scenario(
+        _stored(session_id, "p2", "B", decision=Decision.ACCEPTED, controls={"status": "done"})
+    )
+    scenarios.save_scenario(_stored(session_id, "p3", None, status=ScenarioStatus.FAILED))
+    scenarios.save_scenario(_stored(session_id, "p4", "C", status=ScenarioStatus.BLOCKED))
+    counts = scenarios.count_scenarios_of_session(session_id)
     assert (counts["written"], counts["failed"], counts["accepted"], counts["pending"]) == (2, 1, 1, 1)
-    assert scenarios.find_in_run(session_id, f"{session_id}:p4") is None
+    assert scenarios.get(fields="shown", _id=f"{session_id}:p4", session_id=session_id, served=True) is None
 
 
 def test_the_counts_read_the_run_counts_index_only_and_skip_a_replaced_pending_version() -> None:
     """Every save, mapped control and review recounts the run: the aggregation never fetches a scenario."""
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
     replaced = {"_id": f"{session_id}:p1:v1", "superseded_by": f"{session_id}:p1"}
-    scenarios.save(_stored(session_id, "p1", "Old", controls={"status": "queued"}) | replaced)
-    scenarios.save(_stored(session_id, "p1", "New", controls={"status": "queued"}))
-    counts = scenarios.count_for_run(session_id)
+    scenarios.save_scenario(_stored(session_id, "p1", "Old", controls={"status": "queued"}) | replaced)
+    scenarios.save_scenario(_stored(session_id, "p1", "New", controls={"status": "queued"}))
+    counts = scenarios.count_scenarios_of_session(session_id)
     assert (counts["written"], counts["pending"], counts["controls_waiting"]) == (1, 1, 1)
     asked: list[list[dict[str, Any]]] = []
-    spy = ScenarioRepository.__new__(ScenarioRepository)
-    spy._scenarios = SimpleNamespace(aggregate=lambda pipeline: asked.append(pipeline) or iter([]))
-    spy.count_for_run(session_id)
+    spy = copy.copy(scenarios)  # the instance's named conditions, on a collection that records the pipeline
+    spy._collection = SimpleNamespace(aggregate=lambda pipeline: asked.append(pipeline) or iter([]))
+    spy.count_scenarios_of_session(session_id)
     command = {"aggregate": Collection.SCENARIOS, "pipeline": asked[0], "cursor": {}}
     explained = get_mongodb().command("explain", command, verbosity="queryPlanner")
     planner = explained.get("queryPlanner") or explained["stages"][0]["$cursor"]["queryPlanner"]
@@ -466,13 +475,13 @@ def test_the_duplicate_read_of_an_assets_other_runs_examines_that_asset_only() -
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
     asset = int(uuid.uuid4().hex[:12], 16)
     for number in range(20):
-        scenarios.save(
+        scenarios.save_scenario(
             _stored(f"other-{session_id}", f"p{number}", f"T{number}", asset_id=asset + 1 + number)
         )
-    scenarios.save(_stored(f"earlier-{session_id}", "p1", asset_id=asset))
+    scenarios.save_scenario(_stored(f"earlier-{session_id}", "p1", asset_id=asset))
     asked: list[dict[str, Any]] = []
-    db = {Collection.SCENARIOS: SimpleNamespace(find=lambda query, fields: asked.append(query) or [])}
-    find_held_elsewhere(db, 86, asset, session_id)  # type: ignore[arg-type]
+    spy = ScenarioRepository(SimpleNamespace(find=lambda query, fields, **_: asked.append(query) or []))  # type: ignore[arg-type]
+    spy.list_scenarios_for_duplicate_check(86, asset, session_id)
     explained = get_mongodb()[Collection.SCENARIOS].find(asked[0]).explain()
     assert explained["executionStats"]["totalDocsExamined"] == 1
 

@@ -23,6 +23,7 @@ from app.core.constants import (
     Decision,
     ErrorCode,
     FindingCode,
+    Generation,
     Header,
     LogEvent,
     RunActionKind,
@@ -34,17 +35,19 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import NotFound
-from app.data_access.job_control import JobControlRecords
-from app.data_access.job_records import JobLease, LeaseLost
-from app.data_access.scenario.runs import RunActionRecords
-from app.data_access.scenario.scenarios import ScenarioVersions
+from app.core.exceptions import LeaseLost, NotFound
+from app.data_access.jobs.repository import (
+    JobRepository,
+    failed_job_fields,
+)
+from app.data_access.scenario.repository import JobControlRepository, scenario_sessions
 from app.domain.scenario.write import _newest_within, scenario_id
 from app.models.api_clients import Principal
 from app.models.scenario.views import ScenarioIdsRequest, SessionStatus
 from app.services.api_clients import get_api_client_service
 from app.services.scenario import runs as runs_module
 from app.services.scenario.runs import get_run_actions, why_ids_cannot_be_regenerated
+from app.worker import path_writing
 from app.worker.tasks import writing
 from tests.test_writing_job import _answer_for, _queued_run, chat, sent  # noqa: F401 — fixtures by name
 
@@ -89,8 +92,8 @@ def _deliver(record_id: str, epoch: int) -> int:
     """Each message the write job sends itself, delivered in turn until the run ends: how many deliveries."""
     deliveries = 0
     while (
-        lease := JobLease.claim(
-            _sessions(), record_id, epoch, TaskName.WRITE_SCENARIOS, f"{epoch}-{deliveries}"
+        lease := JobRepository(_sessions()).claim_job(
+            record_id, epoch, TaskName.WRITE_SCENARIOS, f"{epoch}-{deliveries}"
         )
     ) is not None:
         deliveries += 1
@@ -98,10 +101,17 @@ def _deliver(record_id: str, epoch: int) -> int:
     return deliveries
 
 
+@pytest.fixture
+def writer_batch_of_six(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These waves were counted with a write batch of 6 (Generation.WRITER_BATCH is 4 since the AI fan-out
+    was matched to the slot cap); the rule they check does not depend on the size."""
+    monkeypatch.setattr(Generation, "WRITER_BATCH", 6)
+
+
 def _interrupted_run() -> str:
     """A run whose first batch was written, then its job failed (an outage on its last try): 2 paths open."""
     record_id = _queued_run(THREATS)
-    lease = JobLease.claim(_sessions(), record_id, 1, TaskName.WRITE_SCENARIOS, "first")
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     assert lease is not None
     writing.write_batch(lease)  # writes 6 and hands the last 2 to itself
     _sessions().update_one(
@@ -112,7 +122,7 @@ def _interrupted_run() -> str:
     return record_id
 
 
-@pytest.mark.usefixtures("chat", "sent")
+@pytest.mark.usefixtures("chat", "sent", "writer_batch_of_six")
 def test_next_set_resumes_an_interrupted_run_and_the_job_writes_the_rest(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]]
 ) -> None:
@@ -171,14 +181,15 @@ def test_next_set_twice_or_at_once_queues_one_job(
 
     record_id = _interrupted_run()
     run = SessionStatus.from_record(_sessions().find_one({"_id": record_id}))
-    barrier, read = threading.Barrier(2), RunActionRecords.find_for_action
+    barrier, read = threading.Barrier(2), scenario_sessions.get
 
-    def read_then_wait(self: RunActionRecords, session_id: str, with_paths: bool) -> dict[str, Any]:
-        found = read(self, session_id, with_paths)
-        barrier.wait(timeout=10)
+    def read_then_wait(fields: Any = None, **where: Any) -> dict[str, Any] | None:
+        found = read(fields, **where)
+        if fields == "attack_paths":  # both clicks hold the same epoch before either queues
+            barrier.wait(timeout=10)
         return found
 
-    monkeypatch.setattr(RunActionRecords, "find_for_action", read_then_wait)
+    monkeypatch.setattr(scenario_sessions, "get", read_then_wait)
     actions, principal, outcomes = get_run_actions(), Principal("client", "u1", 86, "DESC"), []
 
     def click() -> None:
@@ -195,7 +206,7 @@ def test_next_set_twice_or_at_once_queues_one_job(
     assert sorted(map(str, outcomes)) == sorted(["2", ConflictReason.GENERATION_IN_PROGRESS])
 
 
-@pytest.mark.usefixtures("chat", "sent")
+@pytest.mark.usefixtures("chat", "sent", "writer_batch_of_six")
 def test_each_next_set_writes_its_size_in_waves_then_stops_until_asked_again(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -224,7 +235,7 @@ def test_each_next_set_writes_its_size_in_waves_then_stops_until_asked_again(
     assert asked == ["p11", "p3"]  # each next set audited with the paths it asked for
 
 
-@pytest.mark.usefixtures("chat", "sent")
+@pytest.mark.usefixtures("chat", "sent", "writer_batch_of_six")
 def test_a_path_an_interruption_left_is_written_within_the_next_set_never_on_top(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -366,7 +377,7 @@ def test_a_failed_regenerate_keeps_the_version_current_with_its_reason(
     fake_chat.responders[AiTask.WRITE_SCENARIO] = writes
     assert _regenerate(client, api_key, record_id, [first]).json()["epoch"] == 3
     _deliver(record_id, 3)
-    assert "regenerate_error" not in _scenarios().find_one({"_id": first})
+    assert _scenarios().find_one({"_id": first}).get("regenerate_error") is None  # cleared
 
 
 @pytest.mark.usefixtures("sent")
@@ -433,10 +444,10 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
     record_id = _written_run(["Threat 1", "Threat 2"])
     first, other = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
     replaced = _scenarios().find_one({"_id": first})["content"]["statement"]
-    superseded, supersede = threading.Event(), ScenarioVersions.supersede
+    superseded, supersede = threading.Event(), path_writing.supersede_scenario_version
 
-    def supersede_and_tell(versions: ScenarioVersions, old_id: str, new_id: str) -> None:
-        supersede(versions, old_id, new_id)
+    def supersede_and_tell(old_id: str, new_id: str) -> None:
+        supersede(old_id, new_id)
         superseded.set()
 
     def answer(prompt: str) -> dict[str, Any]:
@@ -445,7 +456,7 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
         assert superseded.wait(10)  # p2 is checked once p1's version 1 is replaced
         return _answer_for(prompt) | {"scenario_statement": replaced}
 
-    monkeypatch.setattr(ScenarioVersions, "supersede", supersede_and_tell)
+    monkeypatch.setattr(path_writing, "supersede_scenario_version", supersede_and_tell)
     fake_chat.responders[AiTask.WRITE_SCENARIO] = answer
     assert _regenerate(client, api_key, record_id, [first, other]).status_code == 202
     _deliver(record_id, 2)
@@ -521,7 +532,6 @@ def test_a_failed_job_never_leaves_the_run_reading_running() -> None:
     from datetime import timedelta
 
     from app.core.constants import ErrorCode
-    from app.data_access.job_records import JobRecords
 
     def queued_run() -> str:
         record_id = uuid.uuid4().hex
@@ -534,14 +544,21 @@ def test_a_failed_job_never_leaves_the_run_reading_running() -> None:
 
     error = {"code": ErrorCode.UNAVAILABLE, "message": "down"}
     own = queued_run()
-    lease = JobLease.claim(_sessions(), own, 2, TaskName.WRITE_SCENARIOS, "t1")
-    assert lease is not None and lease.fail(ErrorCode.UNAVAILABLE, "down")
-    records, later = JobRecords(_sessions()), datetime.now(UTC) + timedelta(hours=1)
+    lease = JobRepository(_sessions()).claim_job(own, 2, TaskName.WRITE_SCENARIOS, "t1")
+    assert lease is not None
+    lease.update_job(
+        failed_job_fields(Collection.SESSIONS, {"code": ErrorCode.UNAVAILABLE, "message": "down"})
+    )
+    records, later = JobRepository(_sessions()), datetime.now(UTC) + timedelta(hours=1)
     expired = queued_run()
-    assert JobLease.claim(_sessions(), expired, 2, TaskName.WRITE_SCENARIOS, "t2") is not None
-    assert records.fail_expired(_sessions().find_one({"_id": expired}, {"job": 1}), error, later)
+    assert JobRepository(_sessions()).claim_job(expired, 2, TaskName.WRITE_SCENARIOS, "t2") is not None
+    assert records.requeue_or_fail_expired_job(
+        _sessions().find_one({"_id": expired}, {"job": 1}), later, error
+    )
     unsent = queued_run()
-    assert records.fail_unsent(_sessions().find_one({"_id": unsent}, {"job": 1}), error, later)
+    assert records.resend_or_fail_unsent_job(
+        _sessions().find_one({"_id": unsent}, {"job": 1}), later, counted=False, error=error
+    )
     for record_id in (own, expired, unsent):
         run = _sessions().find_one({"_id": record_id})
         assert (run["status"], run["last_action"]["outcome"]) == (Status.FAILED, RunActionOutcome.FAILED)
@@ -585,7 +602,7 @@ def test_a_new_version_that_comes_back_after_its_run_was_cancelled_is_never_save
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
 
     def cancelled_meanwhile(user_prompt: str) -> dict[str, Any]:
-        JobControlRecords(get_mongodb()).cancel_run(record_id, 86, {"user_id": "u1"})
+        JobControlRepository(get_mongodb()).cancel_scenario_session(record_id, 86, {"user_id": "u1"})
         return _answer_for(user_prompt)
 
     fake_chat.responders[AiTask.WRITE_SCENARIO] = cancelled_meanwhile
@@ -632,7 +649,9 @@ def test_a_given_up_path_is_never_tried_again(
 def test_an_action_on_a_run_deleted_after_its_checks_is_not_found() -> None:
     """A run deleted between the status read and the action's own read: NotFound (a 404), never a KeyError."""
     with pytest.raises(NotFound):
-        RunActionRecords(get_mongodb()).find_for_action(f"run-{uuid.uuid4().hex}", with_paths=True)
+        gone = {"session_id": f"run-{uuid.uuid4().hex}", "entity_id": 86, "asset_id": 103}
+        run = SessionStatus(**gone, status=Status.DONE, step=Step.SCENARIOS, updated_at=datetime.now(UTC))
+        get_run_actions().next_set(Principal("client", "u1", 86, "DESC"), run)
 
 
 @pytest.mark.parametrize("cancel", [None, "status", "stamp", "controls"])
@@ -641,14 +660,14 @@ def test_a_regenerate_resumes_the_controls_only_after_a_cancel(
 ) -> None:
     """The controls are resumed only when the run shows a cancel (its status, its stamp or cancelled
     controls). Before, every regenerate spent an update and a read resuming nothing."""
-    for name in ("send_job", "publish_session_status", "record_audit"):
+    for name in ("send_job", "publish_session_status"):
         monkeypatch.setattr(runs_module, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(runs_module.audit_records, "create_audit_record", lambda *args, **kwargs: None)
     resumed: list[str] = []
-    controls = SimpleNamespace(resume_controls=lambda session_id: resumed.append(session_id) or 0)
-    record = {"_id": "run", "entity_id": 86, "asset_id": 103, "job": {"epoch": 1}}
-    records = SimpleNamespace(find_for_action=lambda *args, **kwargs: record, queue_again=lambda *args: None)
+    controls = SimpleNamespace(resume_scenario_controls=lambda session_id: resumed.append(session_id) or 0)
+    sessions = SimpleNamespace(update_scenario_session_job=lambda *args: None)
     targets = {"s1": {"path_id": "p1", "status": ScenarioStatus.DONE}}
-    review = SimpleNamespace(find_targets=lambda *args: targets)
+    monkeypatch.setattr(runs_module, "list_review_targets", lambda *args: targets)
     shown: dict[str, Any] = {
         "status": {"status": Status.CANCELLED},
         "stamp": {"cancelled": {"user_id": "u1"}},
@@ -656,6 +675,6 @@ def test_a_regenerate_resumes_the_controls_only_after_a_cancel(
     }.get(cancel or "", {})
     finished = {"status": Status.DONE, "step": Step.SCENARIOS, "updated_at": datetime.now(UTC)}
     run = SessionStatus(**{"session_id": "run", "entity_id": 86, "asset_id": 103} | finished | shown)
-    actions = runs_module.RunActions(records, review, None, controls)  # type: ignore[arg-type]
+    actions = runs_module.RunActions(sessions, controls)  # type: ignore[arg-type]
     actions.regenerate(Principal("client", "u1", 86, "DESC"), run, ScenarioIdsRequest(scenario_ids=["s1"]))
     assert resumed == ([] if cancel is None else ["run"])

@@ -9,10 +9,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import ErrorCode, ErrorMessage
-from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
-from app.data_access.scenario.runs import SessionRepository
+from app.data_access.scenario.repository import ScenarioSessionRepository, scenario_sessions
 from app.domain.remediation.register import register_half
 from app.domain.remediation.snapshot import build_snapshot, inputs_ready, pending_snapshot
 from app.models.asset_context import FrozenContext
@@ -21,7 +20,7 @@ from app.search.library_cache import LibraryService, get_library_service
 
 
 class SnapshotMaker:
-    def __init__(self, sessions: SessionRepository, library: LibraryService) -> None:
+    def __init__(self, sessions: ScenarioSessionRepository, library: LibraryService) -> None:
         self._sessions, self._library = sessions, library
 
     def make(self, register: RegisterData, scenario: dict[str, Any], stored: bool = False) -> dict[str, Any]:
@@ -35,10 +34,12 @@ class SnapshotMaker:
         by_id = {row.control_id: row for row in library}
         if not inputs_ready(scenario, by_id):
             return pending_snapshot(scenario["_id"], register_part)
-        context = FrozenContext.from_record(self._sessions.find_context(scenario["session_id"]))
+        context = FrozenContext.from_record(
+            self._sessions.get_scenario_session_context(scenario["session_id"])
+        )
         return build_snapshot(scenario, context, register_part, by_id)
 
 
 @singleton
 def get_snapshot_maker() -> SnapshotMaker:
-    return SnapshotMaker(SessionRepository(get_mongodb()), get_library_service())
+    return SnapshotMaker(scenario_sessions, get_library_service())

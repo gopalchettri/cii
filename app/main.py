@@ -27,8 +27,9 @@ from app.api.routers.service_mapper import router as service_mapper_router
 from app.core.config import get_settings
 from app.core.constants import Header
 from app.core.logging import configure_logging
-from app.data_access.indexes import ensure_indexes
+from app.data_access.base import create_all_indexes
 from app.realtime.event_hub import EventHub
+from app.worker.lifecycle import log_mongodb_topology
 
 
 def _ignore_client_gone(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
@@ -46,7 +47,8 @@ def _ignore_client_gone(loop: asyncio.AbstractEventLoop, context: dict[str, Any]
 async def application_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging(get_settings(), "api")
     asyncio.get_running_loop().set_exception_handler(_ignore_client_gone)
-    ensure_indexes()
+    create_all_indexes()
+    log_mongodb_topology()
     # Building the AI gateways looks up each model's profile: a model with no profile stops start-up here.
     get_chat_model()
     get_embedding_model()

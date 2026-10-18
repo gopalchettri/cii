@@ -159,8 +159,8 @@ def test_the_pointer_is_looked_at_once_per_period_however_many_requests() -> Non
     keeper, *_ = _keeper([technique_doc("T1")], pointer=pointer, clock=clock)
     keeper.rebuild_index().result(10)
     reads = []
-    original = pointer.read_active_snapshot
-    pointer.read_active_snapshot = lambda: (reads.append(1), original())[1]  # type: ignore[method-assign]
+    original = pointer.get
+    pointer.get = lambda *fields, **where: (reads.append(1), original(*fields, **where))[1]  # type: ignore[method-assign]
     clock.now += IntelLimits.SWITCH_CACHE_SECONDS + 1
     for _ in range(50):
         keeper.current_index()

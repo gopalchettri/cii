@@ -1,7 +1,5 @@
 """The library loads from the real DevTest5 procedures, notices every edit, survives a SQL Server outage."""
 
-from types import SimpleNamespace
-
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import create_engine
@@ -11,19 +9,21 @@ from app.core.config import get_settings
 from app.core.constants import AssetType, Env, ErrorMessage, LogEvent, StrideCategory
 from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
-from app.data_access.library import LibraryRepository
-from app.models.library import LibraryActor, LibraryThreatType, ThreatLibrary
+from app.data_access.library.repository import SqlServerRepository
+from app.models.library import LibraryActor, LibraryThreatType, LoadedLibraries, ThreatLibrary
 from app.search.library_cache import LibraryService
+from tests.sql_fakes import load_library_from
 
 
-class CountingRepository(LibraryRepository):
+class CountingRepository(SqlServerRepository):
     def __init__(self) -> None:
         super().__init__(get_stored_procedure_client())
         self.threat_library_loads = 0
 
-    def load_threat_library(self):  # type: ignore[no-untyped-def]
-        self.threat_library_loads += 1
-        return super().load_threat_library()
+    def load_library(self, loaded_stamp=None):  # type: ignore[no-untyped-def]
+        loaded = super().load_library(loaded_stamp)
+        self.threat_library_loads += loaded is not None
+        return loaded
 
 
 class ScriptedRepository:
@@ -33,25 +33,21 @@ class ScriptedRepository:
         self._stamp_answers = list(stamp_answers)
         self.loads = 0
 
-    def read_library_stamp(self) -> object:
+    def load_library(self, loaded_stamp: object = None) -> LoadedLibraries | None:
         answer = self._stamp_answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
-        return answer
-
-    def load_threat_library(self) -> ThreatLibrary:
+        if answer == loaded_stamp:
+            return None
         self.loads += 1
-        return ThreatLibrary(threats=(), actors=())
-
-    def load_control_library(self) -> tuple:
-        return (), ()
+        return LoadedLibraries(answer, ThreatLibrary(threats=(), actors=()), (), ())  # type: ignore[arg-type]
 
 
 SQL_DOWN = Unavailable(ErrorMessage.SQL_UNREACHABLE)
 
 
 def test_library_loads_threats_with_stride_categories_and_controls_with_their_asset_type() -> None:
-    service = LibraryService(LibraryRepository(get_stored_procedure_client()))
+    service = LibraryService(SqlServerRepository(get_stored_procedure_client()))
     threats = service.get_threat_library().threats
     controls = service.get_control_library()
     assert threats and controls
@@ -66,7 +62,8 @@ def test_library_loads_threats_with_stride_categories_and_controls_with_their_as
 def test_the_library_stamp_covers_exactly_the_tables_the_app_reads() -> None:
     """Control_Standard and Control_Library_Standard_Map are not used (owner, 2026-10-09): an edit there must
     not reload the library, and a table the app reads must never be missing from the fingerprint."""
-    stamp = dict(LibraryRepository(get_stored_procedure_client()).read_library_stamp())
+    loaded = SqlServerRepository(get_stored_procedure_client()).load_library()
+    stamp = dict(loaded.stamp if loaded else ())
     assert set(stamp) == {
         "Threat_Category",
         "Threat_Type",
@@ -94,8 +91,8 @@ def test_an_edit_past_the_first_255_characters_changes_the_fingerprint() -> None
     and a 2 s lock wait so it cannot queue behind (or hold up) a running app's library check."""
     if get_settings().env is not Env.DEV:
         pytest.skip("edits, then rolls back, a library row: run against the laptop database only")
-    repository = LibraryRepository(get_stored_procedure_client())
-    before = dict(repository.read_library_stamp())
+    loaded = SqlServerRepository(get_stored_procedure_client()).load_library()
+    before = dict(loaded.stamp if loaded else ())
     engine = create_engine(get_settings().db_dsn)
     connection = engine.raw_connection()
     try:
@@ -151,12 +148,8 @@ def test_the_fingerprint_does_not_depend_on_the_order_sql_server_returns_rows() 
     """The procedure's UNION ALL has no guaranteed order; a reordered answer is not a library change."""
     rows = [{"table_name": f"table_{n}", "fingerprint": bytes([n])} for n in range(5)]
 
-    def stamp_rows(reverse: bool) -> object:
-        ordered = list(reversed(rows)) if reverse else rows
-        return SimpleNamespace(execute_procedure=lambda _procedure: [ordered])
-
-    forward = LibraryRepository(stamp_rows(reverse=False)).read_library_stamp()  # type: ignore[arg-type]
-    backward = LibraryRepository(stamp_rows(reverse=True)).read_library_stamp()  # type: ignore[arg-type]
+    forward = load_library_from(stamp_rows=rows).stamp
+    backward = load_library_from(stamp_rows=list(reversed(rows))).stamp
     assert forward == backward
 
 
@@ -170,7 +163,7 @@ def test_callers_during_the_first_load_share_its_failure_instead_of_repeating_it
     stamp_reads: list[int] = []
 
     class SqlDown(ScriptedRepository):
-        def read_library_stamp(self) -> object:
+        def load_library(self, loaded_stamp: object = None) -> LoadedLibraries | None:
             stamp_reads.append(1)
             release.wait(5)
             raise SQL_DOWN
@@ -218,7 +211,7 @@ class _Procedures:
 
 def test_a_threat_without_its_own_category_is_left_out_and_counted() -> None:
     """G119 (owner, 2026-10-10; spec v4.0 §7.2.2 step 3): never given its type's category in silence."""
-    library = LibraryRepository(_Procedures()).load_threat_library()  # type: ignore[arg-type]
+    library = load_library_from(_Procedures().execute_procedure(None)).threat_library
     assert [threat.catalogue_id for threat in library.threats] == [1]
     assert library.threats_without_category == (2,)
     crew = LibraryActor(1, "Crew")
@@ -236,6 +229,7 @@ def test_the_old_control_procedure_still_loads_without_retired_controls() -> Non
             return [[row]]
 
     with capture_logs() as logs:
-        active, retired = LibraryRepository(_OldProcedure()).load_control_library()  # type: ignore[arg-type]
+        loaded = load_library_from(control_sets=_OldProcedure().execute_procedure(None))
+    active, retired = loaded.control_library, loaded.retired_controls
     assert ([control.code for control in active], retired) == (["AC-01"], ())
     assert [entry["event"] for entry in logs] == [LogEvent.LIBRARY_RETIRED_CONTROLS_MISSING]

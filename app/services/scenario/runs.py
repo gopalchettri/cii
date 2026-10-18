@@ -21,6 +21,7 @@ from app.core.constants import (
     ContextProperties,
     Decision,
     Dependency,
+    IntelDocId,
     IntelMessage,
     JobControlMessage,
     LogEvent,
@@ -40,17 +41,16 @@ from app.core.constants import (
 from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Conflict, Forbidden, Invalid, NotFound, SetupError
 from app.core.singletons import singleton
-from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
-from app.data_access.job_control import JobControlRecords
-from app.data_access.job_records import new_job
-from app.data_access.scenario.runs import (
-    AssetContextRepository,
-    RunActionRecords,
-    SessionRepository,
-    find_run_coverage,
-    find_session_status,
+from app.data_access.admin.repository import audit_records
+from app.data_access.external_intelligence.repository import intel_snapshots
+from app.data_access.jobs.repository import new_job
+from app.data_access.library.repository import SqlServerRepository
+from app.data_access.scenario.repository import (
+    JobControlRepository,
+    ScenarioSessionRepository,
+    scenario_sessions,
+    scenarios,
 )
-from app.data_access.scenario.scenarios import Page, ScenarioRepository, ScenarioReview, ScenarioVersions
 from app.domain.scenario.plan import set_and_first_batch, why_no_path_left
 from app.domain.shared.prompt_redaction import DATABASE_KEYS, facts_safe_for_prompt
 from app.models.api_clients import Principal
@@ -65,12 +65,13 @@ from app.models.scenario.views import (
     StartRunRequest,
     build_board,
     explain_given_up,
+    run_coverage,
     running_action,
 )
 from app.realtime.publisher import publish_session_status
-from app.services.audit import audit_target, caller_actor, record_audit
+from app.services.audit import audit_target, caller_actor
 from app.services.external_intelligence.switch import get_external_intelligence_switch
-from app.services.scenario.review import check_review_open
+from app.services.scenario.review import check_review_open, list_review_targets
 from app.worker.celery_app import send_job
 
 log = structlog.get_logger(__name__)
@@ -364,13 +365,13 @@ def refuse_without_intel_data() -> None:
     """409 intel_no_data while external intelligence is on and its active snapshot indexes nothing."""
     if not get_external_intelligence_switch().is_enabled():
         return
-    active = SnapshotPointerStore(get_mongodb()).read_active_snapshot() or {}
+    active = intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {}
     if not (active.get("counts") or {}).get("indexed"):
         raise Conflict(IntelMessage.NO_DATA_YET, reason=ConflictReason.INTEL_NO_DATA)
 
 
 class RunService:
-    def __init__(self, asset_contexts: AssetContextRepository, sessions: SessionRepository) -> None:
+    def __init__(self, asset_contexts: SqlServerRepository, sessions: ScenarioSessionRepository) -> None:
         self._asset_contexts, self._sessions = asset_contexts, sessions
 
     def start(
@@ -380,11 +381,12 @@ class RunService:
         if idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
             return replayed, False
         refuse_without_intel_data()  # never a run that can only fail its evidence searches
-        context = freeze_context(request, self._asset_contexts.read(principal.entity_id, request))
+        asset_context = self._asset_contexts.get_asset_context(principal.entity_id, request)
+        context = freeze_context(request, asset_context)
         record = _new_run_record(principal, request, idempotency_key, context)
-        clash = self._sessions.insert_run(record)
+        clash = self._sessions.create_scenario_session(record)
         if clash is RunClash.ACTIVE_RUN:
-            active_id = self._sessions.find_active_run_id(principal.entity_id, request.asset_id)
+            active_id = _active_session_id(self._sessions, principal.entity_id, request.asset_id)
             message = SessionMessage.ACTIVE_SESSION_EXISTS.format(asset_id=request.asset_id)
             raise Conflict(
                 message, reason=ConflictReason.ACTIVE_SESSION_EXISTS, details={"active_session_id": active_id}
@@ -402,7 +404,7 @@ class RunService:
     def _replay(self, principal: Principal, request: StartRunRequest, key: str) -> SessionStatus | None:
         """The run that took this key, when it is the same request; 409 when the key named another request or
         a hand-written run."""
-        earlier = self._sessions.find_by_idempotency_key(principal.entity_id, key)
+        earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
         fingerprint = _request_fingerprint(request)
@@ -417,11 +419,17 @@ class RunService:
         return SessionStatus.from_record(earlier)
 
 
+def _active_session_id(sessions: ScenarioSessionRepository, entity_id: int, asset_id: int) -> str | None:
+    """The id of the asset's active scenario session in tsg_sessions, if any."""
+    found = sessions.get(fields=["_id"], entity_id=entity_id, asset_id=asset_id, active=True)
+    return None if found is None else found["_id"]
+
+
 def _announce_start(principal: Principal, record: dict[str, Any], context: FrozenContext) -> None:
     """Sends the new run's job (a failed send is re-sent by the reaper), counts and audits it."""
     send_job(TaskName.FIND_THREATS, record["_id"], record["job"]["epoch"])
     metrics.RUNS.labels(RunKind.GENERATED).inc()
-    record_audit(
+    audit_records.create_audit_record(
         AuditAction.RUN_STARTED,
         caller_actor(principal),
         audit_target(AuditTarget.SESSION, record["_id"]),
@@ -475,88 +483,87 @@ def _new_run_record(
 class RunActions:
     def __init__(
         self,
-        records: RunActionRecords,
-        review: ScenarioReview,
-        sessions: SessionRepository,
-        controls: JobControlRecords,
+        sessions: ScenarioSessionRepository,
+        controls: JobControlRepository,
     ) -> None:
-        self._records, self._review, self._sessions, self._controls = records, review, sessions, controls
+        self._sessions, self._controls = sessions, controls
 
     def next_set(self, principal: Principal, run: SessionStatus) -> RunActionStarted:
         """Queues the next NEXT_SET_SIZE open paths, best rank first; none left, resumes the controls a cancel
         stopped, else 409 naming why."""
         check_review_open(run)
-        record = self._records.find_for_action(run.session_id, with_paths=True)
+        record = self._sessions.get(fields="attack_paths", _id=run.session_id)
+        if record is None:  # deleted since the status read
+            raise NotFound(SessionMessage.NOT_FOUND.format(session_id=run.session_id))
         paths = (record.get("plan") or {}).get("paths") or []
         asked, batch = set_and_first_batch(paths, get_settings().next_set_size)
         if asked:
-            epoch = self._queue_again(principal, run, record, RunActionKind.NEXT_SET, batch, asked)
+            epoch = self._queue_write_job(principal, run, RunActionKind.NEXT_SET, batch, asked)
             return _started(run, ActionStatus.GENERATING, epoch)
-        resumed = self._resume_controls(record["_id"])
+        resumed = self._resume_controls(run.session_id)
         if resumed is None:
-            raise _being_deleted(record["_id"])
+            raise _being_deleted(run.session_id)
         if not resumed:
             reason = why_no_path_left(paths)
             raise Conflict(_NONE_LEFT[reason].format(session_id=run.session_id), reason=reason)
-        publish_session_status(record["_id"])
-        target = audit_target(AuditTarget.SESSION, record["_id"])
+        publish_session_status(run.session_id)
+        target = audit_target(AuditTarget.SESSION, run.session_id)
         after = {"controls_resumed": resumed}
-        record_audit(AuditAction.RUN_NEXT_SET, caller_actor(principal), target, after=after)
-        return _started(run, ActionStatus.MAPPING_CONTROLS, record["job"]["epoch"])
+        audit_records.create_audit_record(
+            AuditAction.RUN_NEXT_SET, caller_actor(principal), target, after=after
+        )
+        return _started(run, ActionStatus.MAPPING_CONTROLS, run.epoch)
 
     def regenerate(
         self, principal: Principal, run: SessionStatus, request: ScenarioIdsRequest
     ) -> RunActionStarted:
         """Queues a new version of each chosen scenario; 409 scenarios_not_regenerable names each bad id."""
         check_review_open(run)
-        targets = self._review.find_targets(run.session_id, request.scenario_ids)
+        targets = list_review_targets(run.session_id, request.scenario_ids)
         errors = why_ids_cannot_be_regenerated(request.scenario_ids, targets)
         if errors:
             message = ReviewMessage.NOT_REGENERABLE
             raise Conflict(message, reason=ConflictReason.SCENARIOS_NOT_REGENERABLE, errors=errors)
         batch = [{"path_id": targets[sid]["path_id"], "replaces": sid} for sid in request.scenario_ids]
-        # ponytail: a second read for job.epoch, which the guarded update keys on and the status read
-        # (SessionStatus.RECORD_FIELDS) lacks; adding it there would let this read go.
-        record = self._records.find_for_action(run.session_id, with_paths=False)
-        epoch = self._queue_again(principal, run, record, RunActionKind.REGENERATE, batch)
+        epoch = self._queue_write_job(principal, run, RunActionKind.REGENERATE, batch)
         return _started(run, ActionStatus.REGENERATING, epoch)
 
-    def _queue_again(
+    def _queue_write_job(
         self,
         principal: Principal,
         run: SessionStatus,
-        record: dict[str, Any],
         kind: RunActionKind,
         batch: list[dict[str, Any]],
         asked: list[str] | None = None,
     ) -> int:
-        """The run's new write job in one conditional update, then sent, announced and audited; its epoch."""
-        clash = self._records.queue_again(record, kind, batch, asked)
+        """The scenario session's new write job in one guarded update, then sent, announced and audited; its
+        epoch."""
+        clash = self._sessions.update_scenario_session_job(run, kind, batch, asked)
         if clash is RunClash.ACTIVE_RUN:
-            active_id = self._sessions.find_active_run_id(record["entity_id"], record["asset_id"])
-            message = ReviewMessage.ASSET_BUSY.format(asset_id=record["asset_id"])
+            active_id = _active_session_id(self._sessions, run.entity_id, run.asset_id)
+            message = ReviewMessage.ASSET_BUSY.format(asset_id=run.asset_id)
             raise Conflict(
                 message, reason=ConflictReason.ASSET_BUSY, details={"active_session_id": active_id}
             )
         if clash is RunClash.DELETING:
-            raise _being_deleted(record["_id"])
+            raise _being_deleted(run.session_id)
         if clash is RunClash.CHANGED:
-            message = ReviewMessage.GENERATION_IN_PROGRESS.format(session_id=record["_id"])
+            message = ReviewMessage.GENERATION_IN_PROGRESS.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.GENERATION_IN_PROGRESS)
-        epoch = record["job"]["epoch"] + 1
+        epoch = run.epoch + 1
         if _controls_were_cancelled(run):  # a cancelled run is resumed whole
-            self._resume_controls(record["_id"])
-        send_job(TaskName.WRITE_SCENARIOS, record["_id"], epoch)  # a lost send is re-sent by the reaper
-        publish_session_status(record["_id"])
+            self._resume_controls(run.session_id)
+        send_job(TaskName.WRITE_SCENARIOS, run.session_id, epoch)  # a lost send is re-sent by the reaper
+        publish_session_status(run.session_id)
         action = AuditAction.RUN_NEXT_SET if kind == RunActionKind.NEXT_SET else AuditAction.RUN_REGENERATED
-        target = audit_target(AuditTarget.SESSION, record["_id"])
+        target = audit_target(AuditTarget.SESSION, run.session_id)
         after = {"epoch": epoch, "batch": batch} | ({"set": asked} if asked else {})
-        record_audit(action, caller_actor(principal), target, after=after)
+        audit_records.create_audit_record(action, caller_actor(principal), target, after=after)
         return epoch
 
     def _resume_controls(self, session_id: str) -> int | None:
         """Queues again and sends the controls a cancel stopped; None when the run is being deleted."""
-        resumed = self._controls.resume_controls(session_id)
+        resumed = self._controls.resume_scenario_controls(session_id)
         if resumed:
             send_job(TaskName.MAP_CONTROLS, session_id, 0)  # the epoch is never checked for controls
         return resumed
@@ -610,57 +617,70 @@ def _being_deleted(session_id: str) -> Conflict:
 
 def find_status_for_caller(session_id: str, entity_id: int) -> SessionStatus:
     """The status of a run the caller's entity owns: 404 unknown, 403 another entity's."""
-    status = find_session_status(session_id)
-    if status is None:
+    return SessionStatus.from_record(read_session_for_caller(session_id, entity_id, "status"))
+
+
+def read_session_for_caller(session_id: str, entity_id: int, fields: str) -> dict[str, Any]:
+    """A tsg_sessions record the caller's entity owns, read by id only with a named field list: 404 unknown,
+    403 another entity's."""
+    record = scenario_sessions.get(fields=fields, _id=session_id)
+    if record is None:
         raise NotFound(SessionMessage.NOT_FOUND.format(session_id=session_id))
-    if status.entity_id != entity_id:
+    if record["entity_id"] != entity_id:
         raise Forbidden(SessionMessage.OTHER_ENTITY.format(session_id=session_id))
-    return status
+    return record
 
 
 def read_current_status(session_id: str) -> dict[str, Any] | None:
     """The run's status body read now; None while MongoDB cannot say; NotFound once the run is deleted."""
     try:
-        status = find_session_status(session_id)
+        record = scenario_sessions.get(fields="status", _id=session_id)
     except MONGO_UNAVAILABLE_ERRORS:
         log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO, exc_info=True)
         return None
-    if status is None:
+    if record is None:
         raise NotFound(SessionMessage.NOT_FOUND.format(session_id=session_id))
-    return build_board(status).model_dump(mode="json")
+    return build_board(SessionStatus.from_record(record)).model_dump(mode="json")
+
+
+#: A page of tsg_scenarios records and the total of the read.
+ScenarioPage = tuple[list[dict[str, Any]], int]
 
 
 class ScenarioQueries:
-    def __init__(self, scenarios: ScenarioRepository, versions: ScenarioVersions) -> None:
-        self._scenarios, self._versions = scenarios, versions
-
-    def run_results(self, run: SessionStatus, include_replaced: bool, offset: int, limit: int) -> RunResults:
-        """The run, its progress and coverage, and a page of its current versions, oldest first."""
+    def run_results(
+        self, record: dict[str, Any], include_replaced: bool, offset: int, limit: int
+    ) -> RunResults:
+        """The run, its progress and coverage (`record`: its tsg_sessions record read once with the
+        status_and_coverage field list), and a page of its current versions, oldest first."""
+        run = SessionStatus.from_record(record)
         page = self._scenario_list(
-            self._scenarios.list_for_run(run.session_id, offset, limit), include_replaced
+            _scenario_page("created_at", offset, limit, session_id=run.session_id), include_replaced
         )
         board = build_board(run)
         header = board.model_dump(include={"session_id", "entity_id", "asset_id", "asset_name", "user_id"})
         return RunResults(
             **header,
             progress=board.progress,
-            coverage=self._run_coverage(run.session_id),
+            coverage=self._run_coverage(run.session_id, run_coverage(record)),
             scenarios=page.scenarios,
             total=page.total,
         )
 
-    def _run_coverage(self, session_id: str) -> dict[str, Any] | None:
-        """The run's coverage, each given-up path named by its threat and its card's reason."""
-        coverage = find_run_coverage(session_id)
+    def _run_coverage(self, session_id: str, coverage: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The run's coverage, each given-up path named by its threat and its newest card's reason."""
         if coverage and coverage["given_up"]:
             path_ids = [entry["path_id"] for entry in coverage["given_up"]]
-            cards = self._versions.newest_cards(session_id, path_ids)
+            found = scenarios.list(
+                fields="given_up", sort="version", session_id=session_id, path_id_in=path_ids
+            )
+            cards = {card["path_id"]: card for card in found}
             coverage["given_up"] = explain_given_up(coverage["given_up"], cards)
         return coverage
 
     def one_scenario(self, session_id: str, scenario_id: str) -> ScenarioView:
         """One scenario of the run; 404 when it is not in the run."""
-        record = self._scenarios.find_in_run(session_id, scenario_id)
+        record = scenarios.get(fields="shown", _id=scenario_id, session_id=session_id, served=True)
         if record is None:
             raise NotFound(
                 SessionMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id, session_id=session_id)
@@ -673,16 +693,19 @@ class ScenarioQueries:
         """Every run's current versions of the caller's entity, newest first; another entity's -> 403."""
         if entity_id != principal.entity_id:
             raise Forbidden(SessionMessage.ENTITY_MISMATCH)
-        return self._scenario_list(self._scenarios.list_for_entity(entity_id, decision, offset, limit))
+        chosen = {} if decision is None else {"decision": decision}
+        return self._scenario_list(
+            _scenario_page("-created_at", offset, limit, entity_id=entity_id, **chosen)
+        )
 
-    def _scenario_list(self, page: Page, include_replaced: bool = False) -> ScenarioList:
+    def _scenario_list(self, page: ScenarioPage, include_replaced: bool = False) -> ScenarioList:
         """A page of records as their views, with the total."""
         records, total = page
         return ScenarioList(scenarios=self._scenario_views(records, include_replaced), total=total)
 
     def _scenario_views(self, records: list[dict[str, Any]], include_replaced: bool) -> list[ScenarioView]:
         """Each record's view with its path's other versions, read once for the whole page."""
-        others = self._versions.find_other_versions(records, include_replaced)
+        others = _other_versions(records, include_replaced)
         accepted = {
             (doc["session_id"], doc["path_id"]): doc["_id"]
             for doc in others
@@ -701,21 +724,48 @@ class ScenarioQueries:
         return views
 
 
+def _scenario_page(sort: str, offset: int, limit: int, **where: Any) -> ScenarioPage:
+    """A page of served current tsg_scenarios versions and their total; a short last page needs no count."""
+    shown = {"served": True, "current": True, **where}
+    records = scenarios.list(fields="shown", sort=sort, skip=offset, limit=limit, **shown)
+    if (records or offset == 0) and len(records) < limit:
+        return records, offset + len(records)
+    return records, scenarios.count(**shown)
+
+
+def _other_versions(records: list[dict[str, Any]], with_replaced: bool) -> list[dict[str, Any]]:
+    """In one tsg_scenarios read for a page: the accepted versions of its attack paths and, `with_replaced`,
+    every replaced version of them (whole records only when they are nested)."""
+    paths = {(record["session_id"], record["path_id"]) for record in records if record.get("path_id")}
+    if not paths:
+        return []
+    wanted: dict[str, Any] = (
+        {"accepted_or_replaced": True} if with_replaced else {"decision": Decision.ACCEPTED}
+    )
+    found = scenarios.list(
+        fields="shown" if with_replaced else "lookup",
+        session_id_in=sorted({session for session, _ in paths}),
+        path_id_in=sorted({path for _, path in paths}),
+        served=True,
+        **wanted,
+    )
+    return [doc for doc in found if (doc["session_id"], doc["path_id"]) in paths]
+
+
 @singleton
 def get_run_service() -> RunService:
     """The process's run service."""
-    return RunService(AssetContextRepository(get_stored_procedure_client()), SessionRepository(get_mongodb()))
+    return RunService(SqlServerRepository(get_stored_procedure_client()), scenario_sessions)
 
 
 @singleton
 def get_run_actions() -> RunActions:
     """The process's next-set and regenerate service."""
     db = get_mongodb()
-    return RunActions(RunActionRecords(db), ScenarioReview(db), SessionRepository(db), JobControlRecords(db))
+    return RunActions(scenario_sessions, JobControlRepository(db))
 
 
 @singleton
 def get_scenario_queries() -> ScenarioQueries:
     """The process's run and scenario reads."""
-    db = get_mongodb()
-    return ScenarioQueries(ScenarioRepository(db), ScenarioVersions(db))
+    return ScenarioQueries()

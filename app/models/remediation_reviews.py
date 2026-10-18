@@ -1,7 +1,7 @@
 """Request bodies of a plan's review and regenerate calls (`POST .../treatment-plan/review` and
 `.../treatment-plan/regenerate`): an unknown field is refused (422), never ignored."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,3 +40,17 @@ class RegenerateRequest(BaseModel):
     """Nothing: the latest version's register data is reused; any field → 422."""
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{}]})
+
+
+class DecisionChange(NamedTuple):
+    """One decision on a remediation plan version as plain values; the store writes it fenced."""
+
+    version: int
+    decision: Decision
+    #: decided_by, decided_by_client, decided_at and review_comment of the decided version
+    stamp: dict[str, Any]
+    #: the version accepted before, put back to pending with no stale stamp (None: none)
+    back_to_pending: int | None
+    accepted_version: int | None
+    #: the record's decision after this change
+    record_decision: Decision

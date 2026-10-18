@@ -1,4 +1,4 @@
--- The threat library. Read-only. Called by app/data_access/library.py (StoredProcedure.GET_THREAT_LIBRARY).
+-- The threat library. Read-only. Called by app/data_access/sql.py (StoredProcedure.GET_THREAT_LIBRARY).
 -- Result sets, in order:
 --   1-6. the live library (active and not deleted): categories, types, threats, actors, type->actor links,
 --        threat->category links

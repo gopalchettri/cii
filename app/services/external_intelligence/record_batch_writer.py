@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from app.core.constants import IntelLimits, IntelMessage, IntelOperationsLimits, IntelSource
 from app.core.exceptions import IntelFetchFailed
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.data_access.external_intelligence.repository import IntelRecordRepository
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import SaveCounts
 
@@ -36,7 +36,7 @@ class WriteRefused(Exception):
 
 
 def write_fetch_result(
-    records: IntelRecordStore,
+    records: IntelRecordRepository,
     source: IntelSource,
     result: FetchResult,
     now: datetime,
@@ -56,17 +56,22 @@ def write_fetch_result(
         if not still_ours():
             raise ClaimLost
         rejected = result.rejected if start == 0 else ()
-        total += records.save_batch(result.records[start : start + size], rejected, now)
+        total += records.save_intel_records(result.records[start : start + size], rejected, now)
     if result.partial:
         return total, 0
     if not still_ours():
         raise ClaimLost
-    return total, records.retire_records_missing_from(source, seen, now)
+    return total, records.retire_intel_records_missing_from(source, seen, now)
 
 
-def _refuse_a_cut_short_feed(records: IntelRecordStore, source: IntelSource, seen: set[str]) -> None:
+def list_current_external_ids(records: IntelRecordRepository, source: IntelSource) -> set[str]:
+    """The external ids of the source's valid current records in tsg_intel."""
+    return {doc["external_id"] for doc in records.list(["external_id"], source=source, current=True)}
+
+
+def _refuse_a_cut_short_feed(records: IntelRecordRepository, source: IntelSource, seen: set[str]) -> None:
     """Raise WriteRefused when a complete result holds under MIN_RETIRE_RATIO of the current records."""
-    current = records.list_current_external_ids(source)
+    current = list_current_external_ids(records, source)
     kept = len(current & seen)
     if current and kept < IntelOperationsLimits.MIN_RETIRE_RATIO * len(current):
         raise WriteRefused(RefreshMessage.CUT_SHORT.format(source=source, kept=kept, current=len(current)))

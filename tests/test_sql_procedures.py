@@ -14,7 +14,7 @@ from sqlalchemy import Engine
 from app.core.constants import AssetType, ErrorMessage, LibraryRowKind, StoredProcedure
 from app.core.database import StoredProcedureClient
 from app.core.exceptions import Invalid, SetupError, Unavailable
-from app.data_access.library import LibraryRepository
+from app.data_access.library.repository import SqlServerRepository
 from app.models.library import PendingLibraryRow, RejectedLibraryThreat
 from tests.sql_test_database import REPO, procedure_files
 
@@ -106,7 +106,9 @@ def test_the_threat_library_lists_the_pending_and_the_rejected_too(procedures: S
 def test_the_control_library_lists_retired_controls_apart(procedures: StoredProcedureClient) -> None:
     """Owner, 2026-10-11: a register may name a retired control; it is loaded apart, by code, name and domain,
     and never among the controls mapped or searched."""
-    active, retired = LibraryRepository(procedures).load_control_library()
+    loaded = SqlServerRepository(procedures).load_library()
+    assert loaded is not None
+    active, retired = loaded.control_library, loaded.retired_controls
     assert "AC-99" not in {control.code for control in active}
     legacy = next(control for control in retired if control.code == "AC-99")
     assert (legacy.name, legacy.domain, legacy.description) == (
@@ -120,7 +122,9 @@ def test_the_loaded_library_knows_the_pending_and_the_rejected_names(
     procedures: StoredProcedureClient,
 ) -> None:
     """For the name checks before a library write: reuse a pending name, never propose a rejected one."""
-    library = LibraryRepository(procedures).load_threat_library()
+    loaded = SqlServerRepository(procedures).load_library()
+    assert loaded is not None
+    library = loaded.threat_library
     assert set(library.pending) == {
         PendingLibraryRow(LibraryRowKind.TYPE, 9, "Supply chain compromise", None),
         PendingLibraryRow(LibraryRowKind.THREAT, 21, "Compromised vendor software update", 9),

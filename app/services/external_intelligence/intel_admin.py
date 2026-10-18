@@ -14,15 +14,18 @@ from app.core.constants import (
     IntelRefreshMessage,
     IntelSource,
 )
-from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
-from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
-from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
+from app.data_access.admin.repository import audit_records
+from app.data_access.external_intelligence.repository import (
+    IntelFeedRepository,
+    intel_feeds,
+    intel_records,
+    intel_snapshots,
+)
 from app.models.external_intelligence.switch_state import SwitchState
 from app.search.external_intelligence.index_keeper import get_evidence_index_keeper
-from app.services.audit import admin_actor, audit_target, record_audit
+from app.services.audit import admin_actor, audit_target
 from app.services.external_intelligence.health import HealthReporter
 from app.services.external_intelligence.intel_refreshes import IntelRefreshes, get_intel_refreshes
 from app.services.external_intelligence.purge_revoked_source import RevokedSourcePurger
@@ -44,7 +47,7 @@ class IntelAdmin:
         refreshes: IntelRefreshes,
         settings: Settings,
         purger: RevokedSourcePurger,
-        feeds: FeedStatusStore,
+        feeds: IntelFeedRepository,
     ) -> None:
         self._switch, self._reporter, self._refreshes, self._settings = switch, reporter, refreshes, settings
         self._purger, self._feeds = purger, feeds
@@ -84,7 +87,7 @@ class IntelAdmin:
         decision on record), then unapproved and its records and vectors purged, whatever the switch says.
         Evidence already copied onto scenarios and plans stays (docs/EXTERNAL_INTELLIGENCE.md)."""
         target = audit_target(AuditTarget.EXTERNAL_INTELLIGENCE_SOURCE, str(source))
-        record_audit(
+        audit_records.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_SOURCE_REVOKED,
             admin_actor(requested_by),
             target,
@@ -102,9 +105,9 @@ class IntelAdmin:
         or the run-time switch is off (either picks the source up later)."""
         if not self._settings.external_intelligence_enabled:
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
-        self._feeds.approve_source(source)
+        self._feeds.update_intel_feed_approval(source, True)
         target = audit_target(AuditTarget.EXTERNAL_INTELLIGENCE_SOURCE, str(source))
-        record_audit(
+        audit_records.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_SOURCE_APPROVED,
             admin_actor(requested_by),
             target,
@@ -134,9 +137,7 @@ class IntelAdmin:
 @singleton
 def get_intel_admin() -> IntelAdmin:
     """The process's IntelAdmin over the process's stores, switch and index keeper."""
-    db = get_mongodb()
-    switch = get_external_intelligence_switch()
-    feeds, keeper = FeedStatusStore(db), get_evidence_index_keeper()
-    reporter = HealthReporter(feeds, SnapshotPointerStore(db), switch, keeper)
-    purger = RevokedSourcePurger(IntelRecordStore(db), feeds, keeper)
-    return IntelAdmin(switch, reporter, get_intel_refreshes(), get_settings(), purger, feeds)
+    switch, keeper = get_external_intelligence_switch(), get_evidence_index_keeper()
+    reporter = HealthReporter(intel_feeds, intel_snapshots, switch, keeper)
+    purger = RevokedSourcePurger(intel_records, intel_feeds, keeper)
+    return IntelAdmin(switch, reporter, get_intel_refreshes(), get_settings(), purger, intel_feeds)

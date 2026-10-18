@@ -20,14 +20,14 @@ from app.core.constants import (
     Generation,
     Lease,
     LogEvent,
+    SessionMessage,
     TaskName,
     WriterStyle,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import Unavailable
-from app.data_access.job_records import JobLease
-from app.data_access.scenario.runs import SessionRepository
-from app.data_access.scenario.scenarios import RunCounts, ScenarioRepository
+from app.core.exceptions import NotFound, Unavailable
+from app.data_access.jobs.repository import JobLease
+from app.data_access.scenario.repository import scenario_sessions
 from app.domain.scenario.write import evidence_problem
 from app.domain.shared.parallel import raise_most_retryable
 from app.models.library import ThreatLibrary
@@ -52,7 +52,9 @@ def write_scenarios(self: Task, record_id: str, epoch: int) -> None:
 def write_batch(lease: JobLease) -> None:
     """Load the run, the chat model and the threat library, then write the batch."""
     db = get_mongodb()
-    run = SessionRepository(db).find_for_writing(lease.record_id)
+    run = scenario_sessions.get(fields="writing", _id=lease.record_id)
+    if run is None:  # deleted since the claim
+        raise NotFound(SessionMessage.NOT_FOUND.format(session_id=lease.record_id))
     library = get_library_service().get_threat_library()  # in memory; reloaded within a minute of an edit
     BatchWriter(lease, run, db, get_chat_model(), library).write()
 
@@ -74,9 +76,9 @@ class BatchWriter:
         self._story = access.is_on(sure=True)
         style = WriterStyle.EVIDENCE_STORY if self._story else WriterStyle.ORIGINAL
         self._lease, self._run = lease, run
-        self._progress = PlanProgress(lease, run, ScenarioRepository(db), RunCounts(db))
+        self._progress = PlanProgress(lease, run)
         self._paths = PathWriter(run, chat, library, style)
-        self._saver = PathSaver(lease, run, db, self._progress, self._paths.threats, self._story)
+        self._saver = PathSaver(lease, run, self._progress, self._paths.threats, self._story)
         self._evidence = EvidenceAtWrite(run, self._paths.threats, self._progress, access)
         items = [item for item in run["job"].get("batch") or [] if item["path_id"] in self._progress.paths]
         self._batch = [item["path_id"] for item in items]

@@ -60,6 +60,7 @@ class ResolveOutcome(StrEnum):
     CREATED_PENDING = "created_pending"  # inserted inactive: a curator decides
     EXISTING_ACTIVE = "existing_active"  # the name is live already: nothing written
     EXISTING_PENDING = "existing_pending"  # the name already waits for a curator: nothing written
+    CURATOR_REJECTED = "curator_rejected"  # a curator rejected the name: nothing written, no ids
 
 
 class DecisionOutcome(StrEnum):
@@ -145,7 +146,7 @@ class ThreatFinding:
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
     CATEGORIES_AT_ONCE: Final = 6  # STRIDE categories judged in parallel
-    AI_BATCHES_AT_ONCE: Final = 16  # gate batches of all categories share one pool this size
+    AI_BATCHES_AT_ONCE: Final = 4  # gate batches of all categories share one pool this size
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id

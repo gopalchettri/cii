@@ -15,7 +15,7 @@ from app import worker
 from app.core.constants import Dependency, ErrorCode, Header, LogEvent, Timeouts
 from app.core.exceptions import Conflict, Invalid, NotFound
 from app.services import readiness
-from app.worker import heartbeat
+from app.worker import heartbeat, lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -323,3 +323,48 @@ def test_a_refusal_carries_its_reason_fields_and_details(client: TestClient) -> 
     }
     assert refused["errors"] == [{"field": "body.sector_id", "message": "Not the sub-sector's parent."}]
     assert "details" not in refused and "errors" not in conflict  # only what applies
+
+
+def test_ready_shows_the_mongodb_topology_and_never_waits_for_it(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The replica set (or standalone), version and default write concern; a topology read that hangs leaves
+    the body's "mongodb" null and /ready answers within its bound."""
+    topology = None
+    for _ in range(50):  # the read runs beside the checks: a first call may answer before it
+        topology = client.get("/ready").json()["mongodb"]
+        if topology:
+            break
+        time.sleep(0.1)
+    assert topology and topology["replica_set"] and topology["version"]
+    assert set(topology) == {"replica_set", "version", "default_write_concern"}
+
+    readiness._runs.clear()
+    release = threading.Event()
+    monkeypatch.setattr(readiness, "describe_mongodb_topology", lambda: release.wait(10))
+    try:
+        began = time.monotonic()
+        assert client.get("/ready").json()["mongodb"] is None
+        assert time.monotonic() - began < Timeouts.READY_CHECK_SECONDS + 1
+    finally:
+        release.set()
+
+
+def test_the_start_up_topology_line_never_fails_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    def mongodb_is_down() -> None:
+        raise ConnectionError("refused")
+
+    logged: list[dict[str, object]] = []
+
+    class RecordingLog:
+        def info(self, event: str, **fields: object) -> None:
+            logged.append({"event": event, **fields})
+
+        warning = info
+
+    monkeypatch.setattr(lifecycle, "log", RecordingLog())
+    lifecycle.log_mongodb_topology()
+    monkeypatch.setattr(lifecycle, "describe_mongodb_topology", mongodb_is_down)
+    lifecycle.log_mongodb_topology()
+    assert [line["event"] for line in logged] == [LogEvent.MONGODB_TOPOLOGY] * 2
+    assert logged[0]["replica_set"] and logged[0]["version"] and logged[1]["replica_set"] is None

@@ -1,5 +1,5 @@
 -- One exact fingerprint per library table: when any value in any row changes, the app reloads its in-memory library.
--- Read-only. Called by app/data_access/library.py once a minute per process (StoredProcedure.GET_LIBRARY_STAMP), ~100 ms CPU.
+-- Read-only. Called by app/data_access/sql.py once a minute per process (StoredProcedure.GET_LIBRARY_STAMP), ~100 ms CPU.
 --
 -- Fingerprint = SHA-256 of the whole table as JSON, rows in primary-key order (so the same data = the same text).
 -- SELECT * covers every column, including any column added later, and every type; NULL shows as a missing key.

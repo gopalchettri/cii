@@ -16,6 +16,7 @@ from app.core.constants import Dependency, LogEvent, Timeouts
 from app.core.database import get_mongodb, get_redis_client, get_stored_procedure_client
 from app.worker.celery_app import ROUTED_QUEUES
 from app.worker.heartbeat import count_online_workers
+from app.worker.lifecycle import describe_mongodb_topology
 
 log = structlog.get_logger(__name__)
 
@@ -37,6 +38,9 @@ _DEPENDENCY_CHECKS: dict[Dependency, Callable[[], object]] = {
 _WORKERS_CHECK = "workers"
 
 
+_TOPOLOGY_CHECK = "mongodb_topology"
+
+
 @dataclass
 class _Run:
     """One run of one check. `reported` makes its outcome logged once, however many calls read it."""
@@ -49,7 +53,7 @@ class _Run:
 # /ready and /metrics are public, so callers must not be able to multiply the work: each check runs at most
 # once per Timeouts.READY_CHECK_REUSE_SECONDS per process, and a check that hangs (a network black hole) is
 # never started again while it hangs. Every call in between reads the same run.
-_CHECKS = ThreadPoolExecutor(max_workers=len(_DEPENDENCY_CHECKS) + 1, thread_name_prefix="ready")
+_CHECKS = ThreadPoolExecutor(max_workers=len(_DEPENDENCY_CHECKS) + 2, thread_name_prefix="ready")
 
 
 _runs: dict[str, _Run] = {}
@@ -95,7 +99,16 @@ async def check_readiness_without_a_thread() -> Readiness:
 
 def _start_runs() -> tuple[dict[Dependency, _Run], _Run]:
     runs = {name: _current_run(name, check) for name, check in _DEPENDENCY_CHECKS.items()}
+    _current_run(_TOPOLOGY_CHECK, describe_mongodb_topology)  # started with the others, never waited for
     return runs, _current_run(_WORKERS_CHECK, count_online_workers, ROUTED_QUEUES)
+
+
+def read_mongodb_topology() -> dict[str, object] | None:
+    """The MongoDB topology for /ready, never waited for: None until its run answered (or if it failed)."""
+    run = _current_run(_TOPOLOGY_CHECK, describe_mongodb_topology)
+    if not run.future.done() or run.future.exception() is not None:
+        return None
+    return run.future.result()
 
 
 def _results(runs: dict[Dependency, _Run], workers_run: _Run) -> Readiness:

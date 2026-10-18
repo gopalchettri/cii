@@ -34,7 +34,7 @@ from app.core.constants import (
 from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
-from app.data_access import job_records
+from app.data_access.jobs.repository import JobLease, JobRepository, ended_job_fields
 from app.domain.shared.parallel import raise_most_retryable
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
 from app.worker.celery_app import BrokerUnavailable, count_waiting_messages
@@ -70,7 +70,7 @@ def _task(task_id: str = "task-1", name: str = TaskName.FIND_THREATS) -> Any:
 
 
 def _claim(record_id: str, delivery: str, epoch: int = 1, task: str = TaskName.FIND_THREATS) -> Any:
-    return job_records.JobLease.claim(_records(), record_id, epoch, task, delivery)
+    return JobRepository(_records()).claim_job(record_id, epoch, task, delivery)
 
 
 @pytest.fixture
@@ -106,10 +106,10 @@ def test_only_the_owner_of_the_current_epoch_can_change_a_plan_path() -> None:
     ]
     _records().update_one({"_id": record_id}, {"$set": {"plan.paths": paths}})
     lease = _claim(record_id, "writer-1")
-    lease.write({"plan.paths.$[p].served": "s1", "plan.paths.$[p].attempts": 1}, [{"p.path_id": "p1"}])
+    lease.update_job({"plan.paths.$[p].served": "s1", "plan.paths.$[p].attempts": 1}, [{"p.path_id": "p1"}])
     _records().update_one({"_id": record_id}, {"$set": {"job.epoch": 2}})  # e.g. a regenerate replaced it
-    with pytest.raises(job_records.LeaseLost):
-        lease.write({"plan.paths.$[p].served": "late"}, [{"p.path_id": "p2"}])
+    with pytest.raises(LeaseLost):
+        lease.update_job({"plan.paths.$[p].served": "late"}, [{"p.path_id": "p2"}])
     stored = _records().find_one({"_id": record_id})["plan"]["paths"]
     assert [(path["served"], path["attempts"]) for path in stored] == [("s1", 1), (None, 0)]
 
@@ -129,8 +129,8 @@ def test_after_the_lease_expires_a_new_owner_takes_over_and_the_old_one_cannot_w
     _records().update_one({"_id": record_id}, {"$set": {"job.lease_until": datetime.now(UTC) - timedelta(1)}})
     second = _claim(record_id, "delivery-b")
     assert second is not None and second.attempts == 2
-    with pytest.raises(job_records.LeaseLost):
-        first.write({"plan": "stale work"})
+    with pytest.raises(LeaseLost):
+        first.update_job({"plan": "stale work"})
     assert "plan" not in _records().find_one({"_id": record_id})
 
 
@@ -143,9 +143,9 @@ def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> N
     again = _claim(record_id, "task-1")
     assert hung is not None and again is not None and again.attempts == hung.attempts + 1
     assert not hung.renew()
-    with pytest.raises(job_records.LeaseLost):
-        hung.finish({"plan": "stale work"})
-    again.finish({"plan": "fresh work"})
+    with pytest.raises(LeaseLost):
+        hung.update_job({"plan": "stale work"} | ended_job_fields(Status.DONE))
+    again.update_job({"plan": "fresh work"} | ended_job_fields(Status.DONE))
     stored = _records().find_one({"_id": record_id})
     assert (stored["status"], stored["plan"]) == (Status.DONE, "fresh work")
 
@@ -153,7 +153,7 @@ def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> N
 def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(published: list[str]) -> None:
     record_id = _insert_job()
 
-    def work(_lease: job_records.JobLease) -> None:
+    def work(_lease: JobLease) -> None:
         raise Unavailable(ErrorMessage.AI_UNREACHABLE)
 
     with pytest.raises(RetryRequested) as retry:
@@ -170,7 +170,7 @@ def test_a_mongo_outage_while_claiming_is_retried_after_the_first_delay(
     def mongo_down(*_args: object) -> None:
         raise AutoReconnect("connection lost")
 
-    monkeypatch.setattr(job_records.JobLease, "claim", mongo_down)
+    monkeypatch.setattr(JobRepository, "claim_job", mongo_down)
     with pytest.raises(RetryRequested) as retry:
         jobs.run_leased_job(_task(), Collection.SESSIONS, uuid.uuid4().hex, 1, lambda _lease: None)
     assert retry.value.countdown == Lease.RETRY_DELAYS_SECONDS[0]
@@ -179,7 +179,7 @@ def test_a_mongo_outage_while_claiming_is_retried_after_the_first_delay(
 def test_the_last_attempt_fails_the_job_with_the_outage_message(published: list[str]) -> None:
     record_id = _insert_job(attempts=Lease.MAX_ATTEMPTS - 1)
 
-    def work(_lease: job_records.JobLease) -> None:
+    def work(_lease: JobLease) -> None:
         raise Unavailable(ErrorMessage.AI_UNREACHABLE)
 
     with pytest.raises(Unavailable):
@@ -192,12 +192,18 @@ def test_the_last_attempt_fails_the_job_with_the_outage_message(published: list[
 def test_an_unexpected_error_fails_the_job_and_a_success_finishes_it(published: list[str]) -> None:
     broken, good = _insert_job(), _insert_job()
 
-    def explode(_lease: job_records.JobLease) -> None:
+    def explode(_lease: JobLease) -> None:
         raise KeyError("bug")
 
     with pytest.raises(KeyError):
         jobs.run_leased_job(_task(), Collection.SESSIONS, broken, 1, explode)
-    jobs.run_leased_job(_task(), Collection.SESSIONS, good, 1, lambda lease: lease.finish({"plan": "ok"}))
+    jobs.run_leased_job(
+        _task(),
+        Collection.SESSIONS,
+        good,
+        1,
+        lambda lease: lease.update_job({"plan": "ok"} | ended_job_fields(Status.DONE)),
+    )
     # The run's id, not a request id: a background job has none, and its log lines carry record_id.
     assert _records().find_one({"_id": broken})["job"]["error"] == {
         "code": ErrorCode.INTERNAL_ERROR,
@@ -232,7 +238,7 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(published: list[str]
 def test_a_worker_makes_every_index_its_reaper_scans_at_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each of the reaper's two scans reads one index; without them it scans whole collections."""
     made: list[object] = []
-    monkeypatch.setattr(lifecycle, "ensure_indexes", made.append)
+    monkeypatch.setattr(lifecycle, "create_all_indexes", made.append)
     for gateway in ("get_chat_model", "get_embedding_model", "get_rerank_model"):
         monkeypatch.setattr(lifecycle, gateway, lambda: None)
     lifecycle._prepare_stores_and_models()
@@ -397,8 +403,8 @@ def test_a_job_the_reaper_failed_cannot_be_finished_by_its_old_owner(
         {"_id": record_id}, {"$set": {"job.lease_until": long_ago, "job.attempts": Lease.MAX_ATTEMPTS}}
     )
     reaper.reap_jobs()
-    with pytest.raises(job_records.LeaseLost):
-        slow_owner.finish({"plan": "late work"})
+    with pytest.raises(LeaseLost):
+        slow_owner.update_job({"plan": "late work"} | ended_job_fields(Status.DONE))
     assert not slow_owner.renew()
     record = _records().find_one({"_id": record_id})
     assert record["status"] == Status.FAILED and "plan" not in record
@@ -409,7 +415,14 @@ def test_a_duplicate_message_cannot_run_a_job_before_its_back_off_ends() -> None
     and the 15/30/60 s back-off could burn every attempt in seconds."""
     record_id = _insert_job()
     first = _claim(record_id, "first")
-    assert first is not None and first.give_back(60)
+    assert first is not None
+    first.update_job(
+        {
+            "status": Status.QUEUED,
+            "job.due_at": datetime.now(UTC) + timedelta(seconds=60),
+            "job.lease_until": None,
+        }
+    )
     assert _claim(record_id, "duplicate") is None
     almost_due = datetime.now(UTC) + timedelta(seconds=Lease.CLOCK_SKEW_SECONDS - 1)
     _records().update_one({"_id": record_id}, {"$set": {"job.due_at": almost_due}})
@@ -603,7 +616,8 @@ def test_a_finished_job_frees_its_asset_and_says_when_it_ended(published: list[s
     """Every end of a job sets active false and finished_at: otherwise the unique "one active run per asset"
     index would block the asset for good after its first run."""
     record_id = _insert_job()
-    jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, lambda lease: lease.finish())
+    finish = lambda lease: lease.update_job(ended_job_fields(Status.DONE))  # noqa: E731
+    jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, finish)
     record = _records().find_one({"_id": record_id})
     assert record["status"] == Status.DONE and record["active"] is False and record["finished_at"] is not None
 
@@ -612,7 +626,7 @@ def test_a_job_failed_by_its_own_rule_keeps_its_code_and_is_not_retried(publishe
     """Before: a job's own final error (e.g. plan_refused) could only end as internal_error."""
     record_id = _insert_job()
 
-    def refuse(_lease: job_records.JobLease) -> None:
+    def refuse(_lease: JobLease) -> None:
         raise JobFailed(ErrorCode.PLAN_REFUSED, "SYS2 has too little room in the landscape.")
 
     with pytest.raises(JobFailed):
@@ -667,10 +681,10 @@ def test_a_job_its_owner_cancelled_ends_quietly(published: list[str], ending: st
     now ends with no outcome (Ignore), the record untouched, and an info line, not a stall warning."""
     record_id = _insert_job()
 
-    def work(lease: job_records.JobLease) -> None:
+    def work(lease: JobLease) -> None:
         _records().update_one({"_id": record_id}, {"$set": {"status": Status.CANCELLED}})
         if ending == "lease lost":
-            lease.write({"plan": "late work"})
+            lease.update_job({"plan": "late work"})
         raise {
             "unusable answer": JobFailed(ErrorCode.GENERATION_FAILED, "unusable"),
             "outage": Unavailable(ErrorMessage.AI_UNREACHABLE),
@@ -689,9 +703,9 @@ def test_a_job_its_owner_cancelled_ends_quietly(published: list[str], ending: st
 def test_a_job_another_delivery_took_over_still_warns() -> None:
     record_id = _insert_job()
 
-    def taken_over(lease: job_records.JobLease) -> None:
+    def taken_over(lease: JobLease) -> None:
         _records().update_one({"_id": record_id}, {"$set": {"job.task_id": "another-delivery"}})
-        lease.write({"plan": "late work"})
+        lease.update_job({"plan": "late work"})
 
     with capture_logs() as logs, pytest.raises(Ignore):
         jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, taken_over)

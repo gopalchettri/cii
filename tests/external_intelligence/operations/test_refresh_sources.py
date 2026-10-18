@@ -5,12 +5,20 @@ from datetime import timedelta
 
 import pytest
 
-from app.core.constants import REFRESH_AFTER_HOURS, IntelKind, IntelLimits, IntelMessage, IntelSource
+from app.core.constants import (
+    REFRESH_AFTER_HOURS,
+    IntelKind,
+    IntelLimits,
+    IntelMessage,
+    IntelSource,
+)
 from app.core.exceptions import IntelFetchFailed
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord
 from app.models.external_intelligence.refresh_summary import RefreshResult
-from app.models.external_intelligence.source_health import SourceHealth
+from app.models.external_intelligence.source_health import (
+    SourceHealth,
+)
 from app.services.external_intelligence.refresh_sources import SourceRefresher
 from tests.external_intelligence.evidence_fakes import NOW, MemoryCatalogue, MemoryKeeper, StubFetcher
 from tests.external_intelligence.operations.refresh_fakes import ClaimFeeds, CurrentRecords
@@ -116,7 +124,7 @@ def test_nothing_new_counts_as_fresh_without_storing() -> None:
 def test_nothing_to_ask_for_on_a_first_run_is_a_no_op_not_a_failure() -> None:
     """EPSS, NVD and ICS wait for KEV's CVEs: until then each hourly check changes nothing."""
     run, feeds, records, _ = refresher({EPSS: StubFetcher(EPSS, None)}, [EPSS])
-    feeds.seed_sources()
+    feeds.create_missing_intel_feeds()
     summary = run.refresh_due_sources(NOW)
     assert summary.sources[0].result == RefreshResult.SKIPPED and summary.failed == ()
     assert feeds.failures == [] and feeds.successes == [] and feeds.claimed == {}  # claim back, nothing else

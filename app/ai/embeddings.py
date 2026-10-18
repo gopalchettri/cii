@@ -1,5 +1,5 @@
 """Embedding gateway: one L2-normalised vector per text, each text embedded once per model and stored with
-what it is (app/data_access/embeddings.py): library texts in tsg_embeddings, search queries in
+what it is (app/data_access/admin/repository.py): library texts in tsg_embeddings, search queries in
 tsg_query_vectors."""
 
 import contextvars
@@ -26,16 +26,19 @@ from app.ai.profiles import EMBEDDING_MODEL_PROFILES, find_model_profile
 from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, get_ai_slots, max_slot_hold_seconds
 from app.core import metrics
 from app.core.config import get_settings
-from app.core.constants import AiOutcome, AiTask, Cache, Collection, EmbeddingCorpus, ErrorMessage, LogEvent
-from app.core.database import get_mongodb
+from app.core.constants import AiOutcome, AiTask, Cache, EmbeddingCorpus, ErrorMessage, LogEvent
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.embeddings import Doc, LibraryVectors, QueryVectors
+from app.data_access.admin.repository import (
+    LibraryVectorRepository,
+    VectorRepository,
+    library_vectors,
+    query_vectors,
+)
+from app.data_access.base import Record as Doc
 from app.models.ai import EmbeddingModelProfile
 
 log = structlog.get_logger(__name__)
-
-_Store = LibraryVectors | QueryVectors
 
 
 class EmbeddingSizeMismatch(UnusableAiAnswer):
@@ -49,7 +52,7 @@ class EmbeddingNotFinite(UnusableAiAnswer):
 
 class EmbeddingModel:
     """Vectors for library texts and search queries: each text embedded once per model and stored with what
-    it is (app/data_access/embeddings.py). _EmbeddingProvider makes the calls."""
+    it is (app/data_access/admin/repository.py). _EmbeddingProvider makes the calls."""
 
     def __init__(
         self,
@@ -57,8 +60,8 @@ class EmbeddingModel:
         profile: EmbeddingModelProfile,
         base_url: str,
         api_key: str,
-        library: LibraryVectors,
-        queries: QueryVectors,
+        library: LibraryVectorRepository,
+        queries: VectorRepository,
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
     ):
@@ -103,7 +106,7 @@ class EmbeddingModel:
             self._library,
             lambda key, text: {"corpus": corpus, "text": text, "sources": in_use[key]},
         )
-        if retired := self._library.reconcile(corpus, in_use, stored):
+        if retired := self._library.update_library_vector_corpus(corpus, in_use, stored):
             log.info(LogEvent.EMBEDDINGS_RETIRED, corpus=corpus, model=self._model, count=retired)
         return matrix
 
@@ -113,11 +116,12 @@ class EmbeddingModel:
         return [text[: self._profile.max_text_chars] for text in texts]
 
     def _load_stored_or_embed(
-        self, texts: list[str], keys: list[str], store: _Store, describe: Callable[[str, str], Doc]
+        self, texts: list[str], keys: list[str], store: VectorRepository, describe: Callable[[str, str], Doc]
     ) -> tuple[np.ndarray, dict[str, Doc]]:
         """The rows for `texts` and what was stored before. A text not stored yet (or stored at another size)
         is embedded once and stored with `describe(key, text)` plus the fields every vector has."""
-        stored = store.read(keys, ("vector", "dimensions", "sources", "retired_at"))
+        found = store.list(("vector", "dimensions", "sources", "retired_at"), ids=keys)
+        stored = {doc["_id"]: doc for doc in found}
         dimensions = self._profile.dimensions
         vectors = {
             key: doc["vector"]
@@ -144,7 +148,7 @@ class EmbeddingModel:
                 for text, vector in zip(batch, embedded, strict=True)
             ]
             vectors.update((document["_id"], document["vector"]) for document in documents)
-            store.store(documents)  # each batch as soon as it arrives, even if a later one fails
+            store.save_vectors(documents)  # each batch as soon as it arrives, even if a later one fails
         if not keys:  # np.vstack refuses an empty list; an empty corpus is a valid (empty) answer
             return np.empty((0, dimensions), dtype=np.float32), stored
         matrix = np.vstack([np.frombuffer(vectors[key], dtype=np.float32) for key in keys])
@@ -270,15 +274,13 @@ def _embed_batches_in_parallel(
 def get_embedding_model() -> EmbeddingModel:
     settings = get_settings()
     apply_proxy_settings(settings)
-    library = LibraryVectors(get_mongodb()[Collection.EMBEDDINGS])
-    queries = QueryVectors(get_mongodb()[Collection.QUERY_VECTORS])
     return EmbeddingModel(
         settings.embedding_model,
         find_model_profile(EMBEDDING_MODEL_PROFILES, settings.embedding_model),
         settings.embedding_base_url,
         settings.embedding_api_key.get_secret_value(),
-        library,
-        queries,
+        library_vectors,
+        query_vectors,
         settings.ai_key_header,
         get_ai_slots(),
     )

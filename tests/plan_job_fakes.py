@@ -53,10 +53,10 @@ def fake_plan_inputs(library: Any) -> tuple[PlanInputs, dict[str, Any]]:
     """PlanInputs on the fakes, and {mapper, search, proposals} to read what the plan job did."""
     proposals: list[ThreatProposal] = []
 
-    def propose(proposal: ThreatProposal) -> ProposedThreat:
+    def propose(operation_id: str, proposal: ThreatProposal) -> tuple[ProposedThreat, bool]:
         proposals.append(proposal)
         type_id = 1 if proposal.type_name == "Malware" else 900
-        return ProposedThreat(type_id, 901, ResolveOutcome.CREATED_PENDING)
+        return ProposedThreat(type_id, 901, ResolveOutcome.CREATED_PENDING), True
 
     search, mapper = FakeSearch(), FakeMapper()
     inputs = PlanInputs(library, search, FakeRerankModel(), SimpleNamespace(propose_threat=propose))  # type: ignore[arg-type]

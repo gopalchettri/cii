@@ -109,6 +109,7 @@ class SessionStatus(BaseModel):
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
     not_assessed: list[str] = Field(default_factory=list)  # categories the plan could not assess
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
+    epoch: int = 0  # its job's epoch: a next set or regenerate queues only while it is unchanged
 
     #: The session fields this body reads: never the plan's threats and paths, nor the context's facts.
     RECORD_FIELDS: ClassVar[dict[str, int]] = {
@@ -129,6 +130,7 @@ class SessionStatus(BaseModel):
         "last_regen": 1,
         "plan.not_assessed": 1,
         "cancelled": 1,
+        "job.epoch": 1,
     }
 
     @classmethod
@@ -158,6 +160,7 @@ class SessionStatus(BaseModel):
             last_regen=record.get("last_regen"),
             not_assessed=(record.get("plan") or {}).get("not_assessed") or [],
             cancelled=record.get("cancelled"),
+            epoch=job.get("epoch") or 0,
         )
 
 
@@ -618,7 +621,7 @@ class ScenarioList(BaseModel):
     total: int  # every match, for paging (offset + limit)
 
 
-class RunResults(ScenarioList):
+class RunResults(BaseModel):
     """GET /v1/sessions/{id}/results: the run, its progress, then its scenarios."""
 
     session_id: str
@@ -628,6 +631,8 @@ class RunResults(ScenarioList):
     user_id: str | None
     progress: Progress
     coverage: dict[str, Any] | None = None  # each system and kind: its scenarios; why any has none
+    scenarios: list[ScenarioView]
+    total: int  # every match, for paging (offset + limit)
 
 
 def _scenario_text(content: dict[str, Any]) -> ScenarioText:

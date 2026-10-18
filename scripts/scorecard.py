@@ -70,7 +70,7 @@ CHECKS: dict[str, Callable[[dict[str, Any]], str]] = {
 
 
 def served_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The written cards the run's results serve (list_for_run, CURRENT_VERSIONS): each path's newest version
+    """The written cards the run's results serve (the current condition): each path's newest version
     and any older one a reviewer decided (an accepted one stays listed after its path was regenerated)."""
     from app.core.constants import Decision
 
@@ -84,7 +84,7 @@ def served_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def duplicates(served: list[dict[str, Any]]) -> dict[str, str]:
     """Each served card that copies an earlier one of another path the run still holds: the same threat key,
-    kind and systems, or the same statement (the app's own duplicate_of). The run holds find_finished's
+    kind and systems, or the same statement (the app's own duplicate_of). The run holds the duplicate check's
     register (MAPPED_VERSIONS): a replaced rejected version is served but has left it."""
     from app.core.constants import Decision
     from app.domain.scenario.write import duplicate_of
@@ -104,6 +104,7 @@ def duplicates(served: list[dict[str, Any]]) -> dict[str, str]:
 def main() -> int:
     from app.core.constants import Collection
     from app.core.database import get_mongodb
+    from app.data_access.scenario.repository import scenarios
 
     run_id = (sys.argv[1] if len(sys.argv) > 1 else "") or debug_value("TSG_RUN_ID")
     db = get_mongodb()
@@ -111,7 +112,7 @@ def main() -> int:
     if not run:
         raise SystemExit(f"  No run '{run_id}'.")
     threats = {threat["key"]: threat for threat in (run.get("plan") or {}).get("threats") or []}
-    cards = list(db[Collection.SCENARIOS].find({"session_id": run_id}).sort("created_at", 1))
+    cards = scenarios.list(sort="created_at", session_id=run_id)
     served = served_cards(cards)
     copies = duplicates(served)
     failed = 0

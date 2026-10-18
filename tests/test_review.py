@@ -24,7 +24,7 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.scenario.scenarios import RunCounts, ScenarioReview
+from app.data_access.scenario.repository import scenarios
 from app.domain.scenario.plan import why_no_path_left
 from app.models.api_clients import Principal
 from app.models.library import LibraryThreat, ThreatLibrary
@@ -49,8 +49,7 @@ def api_key() -> str:
 
 @pytest.fixture
 def service(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[ReviewService]:
-    db = get_mongodb()
-    built = ReviewService(ScenarioReview(db), RunCounts(db), lambda: LIBRARY)
+    built = ReviewService(lambda: LIBRARY)
     client.app.dependency_overrides[get_review_service] = lambda: built  # type: ignore[attr-defined]
     monkeypatch.setattr(review_module, "publish_session_status", PUBLISHED.append)
     yield built
@@ -223,17 +222,17 @@ def test_reject_is_final_and_a_repeat_changes_nothing(
 def _at_the_same_moment(monkeypatch: pytest.MonkeyPatch, calls: list[Callable[[], Any]]) -> list[Any]:
     """The calls in parallel threads, each reading its targets before any of them writes."""
     barrier = threading.Barrier(len(calls))
-    read = ScenarioReview.find_targets
+    read = review_module.list_review_targets
     waited: set[int] = set()
 
-    def read_then_wait(self: ScenarioReview, session_id: str, ids: list[str]) -> dict[str, dict[str, Any]]:
-        found = read(self, session_id, ids)
+    def read_then_wait(session_id: str, ids: list[str]) -> dict[str, dict[str, Any]]:
+        found = read(session_id, ids)
         if threading.get_ident() not in waited:  # each call's first read only; its race re-read runs free
             waited.add(threading.get_ident())
             barrier.wait(timeout=10)
         return found
 
-    monkeypatch.setattr(ScenarioReview, "find_targets", read_then_wait)
+    monkeypatch.setattr(review_module, "list_review_targets", read_then_wait)
     results: list[Any] = [None] * len(calls)
     errors: list[Exception | None] = [None] * len(calls)
 
@@ -354,7 +353,7 @@ def test_why_no_path_is_left_to_write() -> None:
 
 
 def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_heals_the_counts(
-    service: ReviewService,
+    service: ReviewService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """G143: the decision is saved, then the counts write fails (the caller gets 503): the audit record was
     written first; the caller's retry changes no decision, records nothing more and refreshes the counts."""
@@ -363,7 +362,7 @@ def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_h
     record_id = _run()
     target = _scenario(record_id, "p1")
     run = SessionStatus.from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
-    refresh, calls = service._counts.refresh, []
+    refresh, calls = scenarios.update_scenario_session_counts, []
 
     def fails_once(session_id: str) -> dict[str, int]:
         calls.append(session_id)
@@ -371,7 +370,7 @@ def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_h
             raise AutoReconnect("MongoDB went away")
         return refresh(session_id)
 
-    service._counts.refresh = fails_once  # type: ignore[method-assign]
+    monkeypatch.setattr(scenarios, "update_scenario_session_counts", fails_once)
     principal = Principal("client", "u1", 86, "DESC")
     with pytest.raises(AutoReconnect):
         service.accept(principal, run, AcceptRequest(scenario_ids=[target]))
@@ -390,7 +389,7 @@ def test_one_refused_id_never_leaves_the_others_untried() -> None:
     others = [_scenario(record_id, f"p{number}") for number in range(2, 6)]
     stamp = review_module.decided_stamp(Principal("client", "u1", 86, "DESC"))
     ids = [refused, *others]
-    changed = ScenarioReview(get_mongodb()).set_decision(ids, Decision.PENDING, Decision.ACCEPTED, stamp)
+    changed = scenarios.update_scenario_decisions(ids, Decision.PENDING, Decision.ACCEPTED, stamp)
     assert changed == 4
     assert [_decision(scenario_id) for scenario_id in others] == [Decision.ACCEPTED] * 4
     assert _decision(refused) == Decision.PENDING

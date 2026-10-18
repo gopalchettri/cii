@@ -1,5 +1,5 @@
 -- A curator's decisions on pending threats, in one transaction.
--- Called by app/data_access/pending_threats.py (StoredProcedure.DECIDE_PENDING_THREATS). The API checks the lists
+-- Called by app/data_access/sql.py (StoredProcedure.DECIDE_PENDING_THREATS). The API checks the lists
 -- first: 1-100 ids in total, no id in both.
 --   Approve: IsActive = 1, its pending parent type first (a type goes live with its first approved threat).
 --   Reject:  IsDeleted = 1 on a PENDING row only (curator-rejected = IsDeleted 1, IsActive 0), and on its pending type

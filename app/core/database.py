@@ -13,7 +13,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.core.config import get_settings
 from app.core.constants import ErrorMessage, StoredProcedure, Timeouts
-from app.core.exceptions import Invalid, SetupError, Unavailable
+from app.core.exceptions import Invalid, OutcomeUnknown, SetupError, Unavailable
 from app.core.singletons import singleton
 
 Row = dict[str, Any]
@@ -27,6 +27,7 @@ SQL_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
     PoolTimeoutError,
 )
 _INDEX_OPTIONS_CONFLICT: Final = 85  # MongoDB: an index on these keys exists with other options
+_DEADLOCK_SQLSTATE: Final = "40001"  # SQL Server chose the call as a deadlock victim and rolled it back
 
 
 @singleton
@@ -74,27 +75,33 @@ class StoredProcedureClient:
         self._engine = engine
 
     def execute_procedure(self, procedure: StoredProcedure, **params: Any) -> list[list[Row]]:
-        """Run one TSG procedure with bound parameters and return its result sets; the driver's errors become
-        Unavailable (outage), Invalid (a value refused) or SetupError (the procedure itself)."""
+        """Run one TSG procedure with bound parameters and return its result sets. Never sent (connect or pool
+        wait failed) or a deadlock (rolled back): Unavailable; sent with its answer lost (a timeout, a broken
+        link): OutcomeUnknown; a value refused: Invalid; the procedure itself broken: SetupError."""
         if not isinstance(procedure, StoredProcedure):  # the name goes into the SQL text: members only
             raise SetupError(ErrorMessage.PROCEDURE_NOT_ALLOWED.format(procedure=procedure))
         args = ", ".join(f"@{name}=?" for name in params)
         sql = f"EXEC dbo.{procedure} {args}"  # noqa: S608 — procedure is an enum, params are bound
         try:
-            # Inside the try: an unreachable server fails at connect, not at execute.
             connection = self._engine.raw_connection()
-            try:
-                cursor = connection.cursor()
-                cursor.execute(sql, *params.values())
-                return _read_all_result_sets(cursor)
-            finally:
-                connection.close()
         except SQL_UNAVAILABLE_ERRORS as exc:
             raise Unavailable(ErrorMessage.SQL_UNREACHABLE) from exc
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql, *params.values())
+            return _read_all_result_sets(cursor)
         except (pyodbc.DataError, pyodbc.IntegrityError) as exc:
             raise Invalid(ErrorMessage.SQL_VALUE_REFUSED) from exc
         except pyodbc.ProgrammingError as exc:
             raise SetupError(ErrorMessage.SQL_PROCEDURE_BROKEN) from exc
+        except pyodbc.Error as exc:
+            if exc.args and exc.args[0] == _DEADLOCK_SQLSTATE:
+                raise Unavailable(ErrorMessage.SQL_DEADLOCK) from exc
+            if isinstance(exc, SQL_UNAVAILABLE_ERRORS):
+                raise OutcomeUnknown(ErrorMessage.SQL_ANSWER_LOST) from exc
+            raise
+        finally:
+            connection.close()
 
     def close(self) -> None:
         """Close every pooled connection (worker shutdown)."""

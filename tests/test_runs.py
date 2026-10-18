@@ -27,8 +27,9 @@ from app.core.constants import (
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.job_records import JobLease
-from app.data_access.scenario.runs import AssetContextRepository, SessionRepository
+from app.data_access.jobs.repository import JobRepository
+from app.data_access.library.repository import SqlServerRepository
+from app.data_access.scenario.repository import scenario_sessions
 from app.models.api_clients import Principal
 from app.models.asset_context import FrozenContext
 from app.models.scenario.views import SessionStatus, StartRunRequest
@@ -57,9 +58,7 @@ def _identity(api_key: str, entity_id: int = 86) -> dict[str, str]:
 @pytest.fixture(autouse=True)
 def runs_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
     """The run service reads asset facts from the SQL test database; asset 103 starts every test free."""
-    service = RunService(
-        AssetContextRepository(StoredProcedureClient(sql_test_engine)), SessionRepository(get_mongodb())
-    )
+    service = RunService(SqlServerRepository(StoredProcedureClient(sql_test_engine)), scenario_sessions)
     client.app.dependency_overrides[get_run_service] = lambda: service  # type: ignore[attr-defined]
     get_mongodb()[Collection.SESSIONS].delete_many({"entity_id": 86, "asset_id": 103})
     yield
@@ -103,7 +102,9 @@ def test_a_start_queues_the_whole_job_with_the_frozen_context(client: TestClient
     assert "id" not in context["asset_context"]  # the prompts' view of the asset never carries an id
     assert run["client_id"] == get_api_client_service().find_client_id_for_api_key(api_key)
     assert run["active"] is True and run["job"]["task"] == TaskName.FIND_THREATS
-    lease = JobLease.claim(get_mongodb()[Collection.SESSIONS], run["_id"], 1, TaskName.FIND_THREATS, "w1")
+    lease = JobRepository(get_mongodb()[Collection.SESSIONS]).claim_job(
+        run["_id"], 1, TaskName.FIND_THREATS, "w1"
+    )
     assert lease is not None
 
 
@@ -304,19 +305,15 @@ def test_a_version_says_which_accepted_version_of_its_path_it_would_replace(
     """G267, v1's replaces_accepted_version: accepting it replaces the path's accepted version
     (replace_accepted); the accepted one, and a path with none, show None. One read per page, on every
     route."""
-    from app.data_access.scenario.scenarios import ScenarioVersions
+    import app.services.scenario.runs as runs_service
 
     session_id = _start(client, api_key).json()["session_id"]
     newer = _scenario(session_id, "p1", 2)
     accepted = _scenario(session_id, "p1", 1, superseded_by=newer, decision=Decision.ACCEPTED)
     alone = _scenario(session_id, "p2", 1)
     reads: list[int] = []
-    original = ScenarioVersions.find_other_versions
-    monkeypatch.setattr(
-        ScenarioVersions,
-        "find_other_versions",
-        lambda self, *args: reads.append(1) or original(self, *args),
-    )
+    original = runs_service._other_versions
+    monkeypatch.setattr(runs_service, "_other_versions", lambda *args: reads.append(1) or original(*args))
     headers = _identity(api_key)
     shown = client.get(f"/v1/sessions/{session_id}/results", headers=headers).json()["scenarios"]
     by_id = {item["scenario_id"]: item["replaces_accepted_version"] for item in shown}
@@ -401,9 +398,9 @@ def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.
     )
     monkeypatch.setattr(runs_module, "freeze_context", lambda request, rows: context)
     sessions = SimpleNamespace(
-        find_by_idempotency_key=lambda *args: None, insert_run=lambda record: RunClash.IDEMPOTENCY_KEY
+        get=lambda *args, **where: None, create_scenario_session=lambda record: RunClash.IDEMPOTENCY_KEY
     )
-    service = RunService(SimpleNamespace(read=lambda *args: None), sessions)  # type: ignore[arg-type]
+    service = RunService(SimpleNamespace(get_asset_context=lambda *args: None), sessions)  # type: ignore[arg-type]
     with pytest.raises(Conflict) as refused:
         service.start(Principal("client", "u1", 86, "DESC"), StartRunRequest.model_validate(START), "key-1")
     assert refused.value.reason == ConflictReason.IDEMPOTENCY_KEY_CONFLICT

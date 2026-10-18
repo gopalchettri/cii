@@ -14,7 +14,6 @@ from app.core.constants import (
     LogEvent,
     StrideCategory,
 )
-from app.data_access.library import LibraryRepository
 from app.models.library import LibraryThreat, asset_type_label, canonical_asset_type
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -28,6 +27,7 @@ from tests.planner_samples import (
     gap_fill_for_elevation,
     planner_chat,
 )
+from tests.sql_fakes import load_library_from
 
 S = StrideCategory
 #: An IT asset whose SYS1 "SCADA server" is OT and SYS2 "Historian" is IT.
@@ -162,7 +162,7 @@ def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent()
             return sets
 
     with capture_logs() as logs:
-        library = LibraryRepository(_OldProcedures()).load_threat_library()  # type: ignore[arg-type]
+        library = load_library_from(_OldProcedures().execute_procedure(None)).threat_library
     assert {threat.asset_type for threat in library.threats} == {None}
     assert [entry["event"] for entry in logs] == [LogEvent.LIBRARY_THREAT_ASSET_TYPE_MISSING]
 
@@ -173,7 +173,7 @@ def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent()
             return [[row], []]
 
     with capture_logs() as logs:
-        (control,), _ = LibraryRepository(_Controls()).load_control_library()  # type: ignore[arg-type]
+        (control,) = load_library_from(control_sets=_Controls().execute_procedure(None)).control_library
     assert control.fits(set()) and [entry["event"] for entry in logs] == [LogEvent.LIBRARY_ASSET_TYPE_UNKNOWN]
 
 
@@ -203,7 +203,7 @@ class _Procedures:
 
 
 def test_the_loader_reads_each_threats_asset_type_and_lists_the_unknown_ones() -> None:
-    library = LibraryRepository(_Procedures()).load_threat_library()  # type: ignore[arg-type]
+    library = load_library_from(_Procedures().execute_procedure(None)).threat_library
     assert [threat.asset_type for threat in library.threats] == ["OT", r"IT\OT", "IT-OT", None]
     assert library.threats_unknown_asset_type == (3,)
 

@@ -10,7 +10,7 @@ import structlog
 
 from app.core import metrics
 from app.core.constants import AiOutcome, AiTask, LogEvent
-from app.data_access.ai_calls import AiCallRecords
+from app.data_access.admin.repository import AiCallRepository
 
 log = structlog.get_logger(__name__)
 
@@ -105,7 +105,7 @@ def update_call_metrics(
 
 
 def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is kept
-    records: AiCallRecords,
+    records: AiCallRepository,
     task: AiTask,
     model: str,
     messages: list[dict],
@@ -118,6 +118,6 @@ def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is k
     record = build_call_record(task, model, messages, response, seconds, outcome)
     update_call_metrics(task, model, outcome, record["tokens_in"], record["tokens_out"], seconds)
     try:
-        records.insert(record)
+        records.create(record)
     except Exception:  # noqa: BLE001 - ponytail: the audit copy must never fail the AI call; logged instead
         log.warning(LogEvent.AI_CALL_RECORD_FAILED, task=task, exc_info=True)

@@ -13,8 +13,7 @@ from fastapi.testclient import TestClient
 from app.core.constants import Collection, EmbeddingCorpus, ErrorMessage, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.admin_jobs import AdminJobRecords
-from app.data_access.embeddings import LibraryVectors
+from app.data_access.admin.repository import LibraryVectorRepository, admin_jobs
 from app.services import embeddings_builds
 from app.worker.tasks.library_indexes import run_embeddings_job
 from tests.conftest import ADMIN
@@ -45,7 +44,7 @@ def _job(client: TestClient, job_id: str) -> dict[str, Any]:
 
 
 def _run(job_id: str, library: Any, search: Any) -> None:
-    run_embeddings_job(job_id, AdminJobRecords(get_mongodb()), library, search, _Vectors())  # type: ignore[arg-type]
+    run_embeddings_job(job_id, admin_jobs, library, search, _Vectors())  # type: ignore[arg-type]
 
 
 def test_a_build_is_queued_once_at_a_time(client: TestClient, fresh_jobs: list[tuple[str, str]]) -> None:
@@ -65,8 +64,9 @@ def test_a_build_is_queued_once_at_a_time(client: TestClient, fresh_jobs: list[t
 def test_a_build_unfinished_for_an_hour_is_replaced(client: TestClient) -> None:
     """Its worker died or its message was lost: it must not block every later build."""
     old = datetime.now(UTC) - timedelta(hours=2)
-    AdminJobRecords(get_mongodb()).insert_active(
+    admin_jobs.create(
         {
+            "active": True,
             "_id": "old-job",
             "kind": "embeddings_build",
             "status": "running",
@@ -117,7 +117,7 @@ class _Search:
 
 
 class _Vectors:
-    def count_made_since(self, since: datetime) -> dict[str, int]:
+    def count_library_vectors_made_since(self, since: datetime) -> dict[str, int]:
         return {EmbeddingCorpus.THREAT: 2, EmbeddingCorpus.CONTROL: 1}
 
 
@@ -170,7 +170,7 @@ def test_any_failure_to_queue_a_build_frees_the_slot(
 
     monkeypatch.setattr(embeddings_builds, "send_admin_job", broken_send)
     with pytest.raises(RuntimeError):
-        embeddings_builds.EmbeddingsBuilds(AdminJobRecords(get_mongodb())).start("operator-1")
+        embeddings_builds.EmbeddingsBuilds(admin_jobs).start("operator-1")
     failed = get_mongodb()[Collection.ADMIN_JOBS].find_one({})
     assert failed["status"] == "failed" and "active" not in failed
     monkeypatch.setattr(embeddings_builds, "send_admin_job", lambda task, job_id: True)
@@ -185,8 +185,7 @@ def test_a_build_taken_over_while_running_keeps_its_abandoned_outcome(client: Te
     class _TakenOverWhileBuilding(_Search):
         def snapshot(self, *, wait: bool) -> Any:
             error = {"code": "job_abandoned", "message": "taken over"}
-            later = datetime.now(UTC) + timedelta(hours=1)
-            AdminJobRecords(get_mongodb()).end_stale("embeddings_build", later, error, datetime.now(UTC))
+            admin_jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
             return super().snapshot(wait=wait)
 
     _run(job_id, _Library(), _TakenOverWhileBuilding())
@@ -213,7 +212,7 @@ def test_new_vectors_are_counted_by_library_since_a_moment() -> None:
         ]
     )
     try:
-        assert LibraryVectors(vectors).count_made_since(since) == {"threat": 2}
+        assert LibraryVectorRepository(vectors).count_library_vectors_made_since(since) == {"threat": 2}
     finally:
         vectors.delete_many({"_id": {"$regex": "^count-test-"}})
 
@@ -221,6 +220,6 @@ def test_new_vectors_are_counted_by_library_since_a_moment() -> None:
 def test_a_redelivered_build_message_never_runs_a_second_build(client: TestClient) -> None:
     """Before: any active record was marked running, so a redelivered copy of a running build built again."""
     job_id = _start(client).json()["job_id"]
-    jobs = AdminJobRecords(get_mongodb())
-    assert jobs.mark_running(job_id, datetime.now(UTC)) is True
-    assert jobs.mark_running(job_id, datetime.now(UTC)) is False  # the redelivered copy
+    jobs = admin_jobs
+    assert jobs.update_admin_job_running(job_id, datetime.now(UTC)) is True
+    assert jobs.update_admin_job_running(job_id, datetime.now(UTC)) is False  # the redelivered copy

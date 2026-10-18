@@ -1,6 +1,6 @@
 -- =====================================================================================================================
 -- dbo.tsg_GetAssetContext: what TSG knows about one asset and its supporting systems when a run starts.
--- Read-only. Called by the app (app/data_access/asset_context.py) once per run.
+-- Read-only. Called by app/data_access/sql.py once per run.
 -- =====================================================================================================================
 --
 -- HOW TO USE THIS FILE (owner 2026-10-11)

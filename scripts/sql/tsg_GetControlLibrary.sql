@@ -1,4 +1,4 @@
--- Live control library. Read-only. Called by app/data_access/library.py (StoredProcedure.GET_CONTROL_LIBRARY).
+-- Live control library. Read-only. Called by app/data_access/sql.py (StoredProcedure.GET_CONTROL_LIBRARY).
 -- Two result sets: (1) the active controls; (2) every other control (retired or deleted), by code, name and
 -- domain only: a plan request's register may still name one the organisation has, and the AI then gets its
 -- name and domain instead of a bare number. Control_Library only:

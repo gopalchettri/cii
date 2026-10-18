@@ -5,6 +5,7 @@ import re
 import time
 from typing import Any
 
+import pymongo
 import structlog
 from celery import Task, signals, states
 from celery.concurrency import get_implementation
@@ -13,10 +14,10 @@ from prometheus_client import start_http_server
 from app.ai import get_chat_model, get_embedding_model, get_rerank_model
 from app.ai.slots import get_ai_slots, set_ai_slot_wait_seconds
 from app.core import metrics
-from app.core.constants import AiLimits, ErrorMessage, LogEvent, TaskName
+from app.core.constants import AiLimits, ErrorMessage, LogEvent, TaskName, Timeouts
 from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.logging import configure_logging
-from app.data_access.indexes import ensure_indexes
+from app.data_access.base import create_all_indexes
 from app.worker.celery_app import settings
 from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
@@ -51,6 +52,7 @@ def prepare_worker(sender: Any, **_: object) -> None:
     metrics.start_job_counters(TaskName)
     _serve_metrics(pool)
     _prepare_stores_and_models()
+    log_mongodb_topology()
 
 
 def _serve_metrics(pool: str) -> None:
@@ -69,7 +71,7 @@ def _prepare_stores_and_models() -> None:
     job later with "Unexpected error"."""
     set_ai_slot_wait_seconds(AiLimits.WORKER_SLOT_WAIT_SECONDS)  # before the gateways take their limiter
     try:
-        ensure_indexes(JOB_COLLECTIONS)
+        create_all_indexes(JOB_COLLECTIONS)
         get_chat_model()
         get_embedding_model()
         get_rerank_model()
@@ -79,6 +81,28 @@ def _prepare_stores_and_models() -> None:
         get_ai_slots().count_calls_in_progress
     )  # AiSlotsSaturated reads both
     metrics.AI_SLOTS_CAP.set(settings.max_concurrent_ai_calls)
+
+
+def describe_mongodb_topology() -> dict[str, Any]:
+    """The MongoDB server this process writes to: its replica set's name (or standalone), its version and its
+    default write concern (None when the server does not say, e.g. the user lacks the privilege)."""
+    with pymongo.timeout(Timeouts.READY_CHECK_SECONDS):
+        admin = get_mongodb().client.admin
+        replica_set = admin.command("hello").get("setName") or "standalone"
+        version = admin.command("buildInfo")["version"]
+        try:
+            write_concern = admin.command("getDefaultRWConcern").get("defaultWriteConcern")
+        except pymongo.errors.OperationFailure:
+            write_concern = None
+    return {"replica_set": replica_set, "version": version, "default_write_concern": write_concern}
+
+
+def log_mongodb_topology() -> None:
+    """One start-up line naming the MongoDB topology (API and each worker); never fails start-up."""
+    try:
+        log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology())
+    except Exception:  # noqa: BLE001 — a report only: a store that does not answer fails elsewhere
+        log.warning(LogEvent.MONGODB_TOPOLOGY, replica_set=None, exc_info=True)
 
 
 @signals.beat_init.connect

@@ -24,8 +24,8 @@ def _world(monkeypatch: pytest.MonkeyPatch, on: bool, active: dict[str, Any] | N
     monkeypatch.setattr(
         runs_module, "get_external_intelligence_switch", lambda: SimpleNamespace(is_enabled=lambda: on)
     )
-    store = SimpleNamespace(read_active_snapshot=read_active_snapshot)
-    monkeypatch.setattr(runs_module, "SnapshotPointerStore", lambda db: store)
+    store = SimpleNamespace(get=lambda *fields, **where: read_active_snapshot())
+    monkeypatch.setattr(runs_module, "intel_snapshots", store)
     return reads
 
 

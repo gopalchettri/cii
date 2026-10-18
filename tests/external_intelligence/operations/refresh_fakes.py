@@ -16,24 +16,14 @@ class ClaimFeeds(MemoryFeeds):
         super().__init__(approved)
         self.renewals = 0
 
-    def renew_claim(self, source: IntelSource, claim: str, now: datetime) -> bool:
+    def renew_intel_feed_refresh(self, source: IntelSource, claim: str, now: datetime) -> bool:
         if self.claimed.get(source) != claim or source not in self.approved:
             return False
         self.renewals += 1
         return True
 
-    def release_claim(self, source: IntelSource, claim: str) -> bool:
-        if self.claimed.get(source) != claim:
-            return False
-        del self.claimed[source]
-        return True
-
-    def revoke_source(self, source: IntelSource, *, create: bool = True) -> None:
-        self.set_source_approved(source, False)
-        self.health[source] = SourceHealth(source)
-
-    def approve_source(self, source: IntelSource) -> None:
-        self.set_source_approved(source, True)
+    def update_intel_feed_approval(self, source: IntelSource, approved: bool, *, create: bool = True) -> None:
+        self.set_source_approved(source, approved)
         self.health[source] = SourceHealth(source)
 
 
@@ -47,21 +37,21 @@ class CurrentRecords(MemoryRecords):
         self.after_save: Callable[[int], None] | None = None
         self.after_retire: Callable[[], None] | None = None
 
-    def list_current_external_ids(self, source: IntelSource) -> set[str]:
-        return set(self.current)
+    def list(self, fields=None, **where) -> list[dict]:
+        return [{"external_id": external_id} for external_id in self.current]
 
-    def save_batch(
+    def save_intel_records(
         self, records: Sequence[IntelRecord], rejected: Sequence, fetched_at: datetime
     ) -> SaveCounts:
-        counts = super().save_batch(records, rejected, fetched_at)
+        counts = super().save_intel_records(records, rejected, fetched_at)
         if self.after_save:
             self.after_save(len(self.saved))
         return counts
 
-    def retire_records_missing_from(
-        self, source: IntelSource, seen_ids: set[str], retired_at: datetime
+    def retire_intel_records_missing_from(
+        self, source: IntelSource, seen_ids: set[str], retired_at: datetime | None = None
     ) -> int:
-        super().retire_records_missing_from(source, seen_ids)  # type: ignore[call-arg]
+        super().retire_intel_records_missing_from(source, seen_ids)
         if self.after_retire:
             self.after_retire()
         return len(self.current - seen_ids)

@@ -10,7 +10,7 @@ import pytest
 from app.core.config import get_settings
 from app.core.constants import Collection, EvidenceLimits, IntelSource, Status
 from app.core.database import get_mongodb
-from app.data_access.admin_jobs import AdminJobRecords
+from app.data_access.admin.repository import admin_jobs
 from app.worker import lifecycle
 from app.worker.external_intelligence import warm_up as warm_up_module
 from app.worker.external_intelligence.evidence_at_write import alternative_request, evidence_request
@@ -92,9 +92,10 @@ def test_the_scheduled_refresh_runs_the_due_sources_only_while_the_switch_is_on(
 
 def _job(source: str | None = None) -> str:
     get_mongodb()[Collection.ADMIN_JOBS].delete_many({})
-    jobs = AdminJobRecords(get_mongodb())
-    jobs.insert_active(
+    jobs = admin_jobs
+    jobs.create(
         {
+            "active": True,
             "_id": "j1",
             "kind": "intel_refresh",
             "status": Status.QUEUED,
@@ -110,7 +111,7 @@ def test_an_admin_refresh_of_one_source_is_recorded_on_its_job(intel: Intel) -> 
     job_id = _job("cisa_kev")
     refresh_external_intelligence(job_id)
     assert intel.refresher.calls == [("one", IntelSource.CISA_KEV)]
-    stored = AdminJobRecords(get_mongodb()).read(job_id)
+    stored = admin_jobs.get(_id=job_id)
     assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "cisa_kev"})
     refresh_external_intelligence(job_id)  # a repeated message finds the job done
     assert len(intel.refresher.calls) == 1
@@ -120,7 +121,7 @@ def test_an_admin_refresh_while_the_switch_is_off_fails_its_job_with_the_reason(
     intel.switch.enabled = False
     job_id = _job()
     refresh_external_intelligence(job_id)
-    stored = AdminJobRecords(get_mongodb()).read(job_id)
+    stored = admin_jobs.get(_id=job_id)
     assert (
         stored["status"] == Status.FAILED
         and "off" in stored["error"]["message"]
@@ -136,8 +137,8 @@ def test_a_failed_refresh_is_recorded_without_driver_details_then_raised(intel: 
     intel.access._refresher = lambda: Broken()  # noqa: SLF001
     job_id = _job()
     with pytest.raises(ValueError, match="secret"):
-        run_refresh_job(job_id, AdminJobRecords(get_mongodb()), intel.access)
-    stored = AdminJobRecords(get_mongodb()).read(job_id)
+        run_refresh_job(job_id, admin_jobs, intel.access)
+    stored = admin_jobs.get(_id=job_id)
     assert stored["status"] == Status.FAILED and stored["error"] == {
         "code": "internal_error",
         "message": "ValueError",

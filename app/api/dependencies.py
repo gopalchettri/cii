@@ -2,7 +2,7 @@
 admin-key check."""
 
 import hmac
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Path, Query, Request
 from fastapi import Header as HeaderParam
@@ -15,7 +15,7 @@ from app.models.remediation import RemediationStatus
 from app.models.scenario.views import SessionStatus
 from app.services.api_clients import ApiClientService, get_api_client_service
 from app.services.remediation.queries import find_plan_for_caller
-from app.services.scenario.runs import find_status_for_caller
+from app.services.scenario.runs import find_status_for_caller, read_session_for_caller
 
 
 def get_authenticated_principal(
@@ -80,6 +80,14 @@ def valid_session(
     return find_status_for_caller(session_id, principal.entity_id)
 
 
+def valid_session_with_coverage(
+    session_id: SessionId, principal: Annotated[Principal, Depends(get_authenticated_principal)]
+) -> dict[str, Any]:
+    """The caller's tsg_sessions record with its status and coverage fields, read once: 404 unknown, 403
+    another entity's."""
+    return read_session_for_caller(session_id, principal.entity_id, "status_and_coverage")
+
+
 def valid_plan(
     session_id: SessionId,
     scenario_id: ScenarioId,
@@ -94,6 +102,7 @@ AdminUser = Annotated[str, Depends(admin_user_id)]
 #: The authenticated caller, and the caller's run (404 unknown, 403 another entity's), as route parameters.
 Caller = Annotated[Principal, Depends(get_authenticated_principal)]
 CallersRun = Annotated[SessionStatus, Depends(valid_session)]
+CallersRunWithCoverage = Annotated[dict[str, Any], Depends(valid_session_with_coverage)]
 #: The caller's scenario's remediation plan (404 none, 403 another entity's), as a route parameter.
 CallersPlan = Annotated[RemediationStatus, Depends(valid_plan)]
 #: A paged list's position and page size, as query parameters.

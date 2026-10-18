@@ -19,25 +19,27 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.database import get_mongodb
-from app.core.exceptions import Conflict, Forbidden, NotFound
+from app.core.exceptions import Conflict, DuplicateRecord, Forbidden, NotFound
 from app.core.redaction import REDACTED
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.job_records import new_job
-from app.data_access.remediations import RemediationRepository
+from app.data_access.admin.repository import audit_records
+from app.data_access.jobs.repository import new_job
+from app.data_access.remediation.repository import PLANNED_SCENARIO_FIELDS, remediation_plans
+from app.data_access.scenario.repository import scenarios
 from app.models.api_clients import Principal
 from app.models.remediation import PlanStarted
 from app.models.remediation_requests import PlanRequest, RegisterData
 from app.realtime.publisher import publish_remediation_status
-from app.services.audit import audit_target, caller_actor, record_audit
+from app.services.audit import audit_target, caller_actor
+from app.services.remediation.queries import get_remediation_status_of_scenario
 from app.services.remediation.snapshots import SnapshotMaker, get_snapshot_maker
 from app.worker.celery_app import send_job
 
 
 class PlanRequestService:
-    def __init__(self, plans: RemediationRepository, snapshots: SnapshotMaker) -> None:
-        self._plans, self._snapshots = plans, snapshots
+    def __init__(self, snapshots: SnapshotMaker) -> None:
+        self._snapshots = snapshots
 
     @traced("remediation.request")
     def request(self, principal: Principal, body: PlanRequest) -> PlanStarted:
@@ -51,14 +53,16 @@ class PlanRequestService:
     ) -> PlanStarted:
         """R1 steps 3-8 for an accepted scenario, generated or hand-written: one plan per scenario (checked
         before any control is mapped), the snapshot, one insert, the job sent."""
-        if (existing := self._plans.find_for_scenario(scenario["_id"])) is not None:
+        if (existing := get_remediation_status_of_scenario(scenario["_id"])) is not None:
             raise _plan_exists(scenario["_id"], existing.remediation_id)
         record = new_plan_record(principal, register, scenario, self._snapshots.make(register, scenario))
-        if not self._plans.insert(record):  # a request made at the same moment won
-            winner = self._plans.find_for_scenario(scenario["_id"])
-            raise _plan_exists(scenario["_id"], winner.remediation_id if winner else None)
-        if self._plans.find_scenario(scenario["_id"]) is None:  # its run was deleted meanwhile (G214)
-            self._plans.remove(record["_id"])
+        try:
+            remediation_plans.create(record)
+        except DuplicateRecord:  # a request made at the same moment won
+            winner = get_remediation_status_of_scenario(scenario["_id"])
+            raise _plan_exists(scenario["_id"], winner.remediation_id if winner else None) from None
+        if not scenarios.count(_id=scenario["_id"]):  # its run was deleted meanwhile: no plan outlives it
+            remediation_plans.delete(_id=record["_id"])
             raise NotFound(RemediationMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario["_id"]))
         _announce(principal, record)
         return PlanStarted(
@@ -73,7 +77,7 @@ class PlanRequestService:
     def _accepted_scenario(self, principal: Principal, session_id: str, scenario_id: str) -> dict[str, Any]:
         """404 unknown or in another run (v1: "scenario not found in this session"), 403 another entity's, 409
         not accepted."""
-        scenario = self._plans.find_scenario(scenario_id)
+        scenario = scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
         if scenario is None:
             raise NotFound(RemediationMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id))
         if scenario["session_id"] != session_id:
@@ -157,7 +161,7 @@ def _announce(principal: Principal, record: dict[str, Any]) -> None:
     register = dict(record["register"])
     if register.get("risk_owner"):
         register["risk_owner"] = REDACTED
-    record_audit(
+    audit_records.create_audit_record(
         AuditAction.PLAN_REQUESTED,
         caller_actor(principal),
         audit_target(AuditTarget.REMEDIATION, record["_id"]),
@@ -175,5 +179,4 @@ def _plan_exists(scenario_id: str, remediation_id: str | None) -> Conflict:
 
 @singleton
 def get_plan_request_service() -> PlanRequestService:
-    db = get_mongodb()
-    return PlanRequestService(RemediationRepository(db), get_snapshot_maker())
+    return PlanRequestService(get_snapshot_maker())

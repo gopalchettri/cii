@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pymongo.database import Database
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core import metrics
@@ -25,14 +24,8 @@ from app.core.constants import (
     Writing,
 )
 from app.core.exceptions import TEMPORARY_ERRORS, JobFailed, LeaseLost, PathNotWritable
-from app.data_access.job_records import JobLease
-from app.data_access.scenario.scenarios import (
-    ScenarioRepository,
-    ScenarioVersions,
-    TitleTaken,
-    find_finished,
-    find_held_elsewhere,
-)
+from app.data_access.jobs.repository import JobLease
+from app.data_access.scenario.repository import TitleTaken, scenarios
 from app.domain.scenario.plan import is_still_to_write
 from app.domain.scenario.write import (
     build_brief,
@@ -99,29 +92,35 @@ class PathWriter:
             raise
         except Exception:  # one path's fault must not cost the run its other paths
             log.exception(LogEvent.WRITER_PATH_FAILED, path_id=path["path_id"])
-            return PathFailure(
-                ErrorCode.INTERNAL_ERROR, ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
-            )
+            unexpected = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
+            return PathFailure(ErrorCode.INTERNAL_ERROR, unexpected)
 
 
-def save_with_unique_title(scenarios: ScenarioRepository, record: dict[str, Any], qualifier: str) -> bool:
+def save_with_unique_title(record: dict[str, Any], qualifier: str) -> bool:
     """Save `record` under the first title no other current scenario of the run has (the index decides)."""
     titles = title_candidates(record["content"]["title"], qualifier)
     while True:
         title = next(titles)
         record["content"]["title"], record["title_key"] = title, name_match_key(title)
         try:
-            return scenarios.save(record)
+            return scenarios.save_scenario(record)
         except TitleTaken:
             continue
+
+
+def supersede_scenario_version(old_id: str, new_id: str) -> None:
+    """tsg_scenarios version `old_id` replaced by `new_id` (saved first); a repeat changes nothing. An earlier
+    failed regenerate's reason goes with it."""
+    changes = {"superseded_by": new_id, "updated_at": datetime.now(UTC), "regenerate_error": None}
+    scenarios.update(changes, _id=old_id, newest=True)
 
 
 class HeldScenarios:
     """The duplicate-checked save of a written scenario, against the run's finished scenarios (kept up to date
     as the delivery saves) and the asset's held scenarios of its other runs, both read at the first check."""
 
-    def __init__(self, db: Database, run: dict[str, Any]) -> None:
-        self._db, self._run, self._scenarios = db, run, ScenarioRepository(db)
+    def __init__(self, run: dict[str, Any]) -> None:
+        self._run = run
         self._own_run: list[dict[str, Any]] | None = None
         self._elsewhere: list[dict[str, Any]] = []
 
@@ -134,12 +133,13 @@ class HeldScenarios:
         if not written.blocked:
             if self._own_run is None:
                 run = self._run
-                self._own_run = find_finished(self._db, run["_id"])
-                self._elsewhere = find_held_elsewhere(self._db, run["entity_id"], run["asset_id"], run["_id"])
+                self._own_run, self._elsewhere = scenarios.list_scenarios_for_duplicate_check(
+                    run["entity_id"], run["asset_id"], run["_id"]
+                )
             if copy := duplicate_of(record["content"], record["path_id"], self._own_run, self._elsewhere):
                 written = dataclasses.replace(written, findings=(*written.findings, copy))
                 record = build(written)
-        saved = save_with_unique_title(self._scenarios, record, written.title_qualifier)
+        saved = save_with_unique_title(record, written.title_qualifier)
         if saved and record["status"] == ScenarioStatus.DONE and self._own_run is not None:
             self._own_run = _finished_after_save(self._own_run, record)
         return record, saved, written
@@ -161,15 +161,13 @@ class PathSaver:
         self,
         lease: JobLease,
         run: dict[str, Any],
-        db: Database,
         progress: PlanProgress,
         threats: dict[str, dict[str, Any]],
         story: bool,
     ) -> None:
         self._lease, self._run, self._progress = lease, run, progress
         self._threats, self._story = threats, story
-        self._scenarios, self._versions = ScenarioRepository(db), ScenarioVersions(db)
-        self._held = HeldScenarios(db, run)
+        self._held = HeldScenarios(run)
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
     def to_write(self, batch: list[str], replaces: dict[str, str]) -> dict[str, tuple[str, ...]]:
@@ -177,11 +175,14 @@ class PathSaver:
         delivery wrote is served here with no AI call (`replaces`: a regenerate's targets)."""
         if replaces:
             return self._versions_to_write(replaces)
-        paths = self._progress.paths
+        paths, run_id = self._progress.paths, self._run["_id"]
         open_paths = [path_id for path_id in batch if is_still_to_write(paths[path_id])]
-        written = self._scenarios.find_written(self._run["_id"], open_paths)
+        done = ScenarioStatus.DONE
+        written = scenarios.list(
+            fields="path_id", session_id=run_id, path_id_in=open_paths, status=done, newest=True
+        )
         if written:
-            self._progress.record({path_id: {"served": sid} for path_id, sid in written.items()})
+            self._progress.record({row["path_id"]: {"served": row["_id"]} for row in written})
         return {path_id: () for path_id in open_paths if is_still_to_write(paths[path_id])}
 
     def save(self, path_id: str, outcome: PathOutcome, started_at: datetime | None = None) -> None:
@@ -197,7 +198,7 @@ class PathSaver:
             threat = self._threats.get(steps[0]) if len(steps) == 1 else None
             record = failure_record(self._run, path, threat, outcome)
             record["generation"] = generation_stamp(self._lease.epoch, started_at, record)
-            saved, reason, final = self._scenarios.save(record), str(outcome.code), outcome.final
+            saved, reason, final = scenarios.save_scenario(record), str(outcome.code), outcome.final
             self._log_saved(record, saved, reason)
         else:
             record, saved, written = self._save_written(path, *outcome, started_at)
@@ -218,7 +219,13 @@ class PathSaver:
         """A regenerate's paths still to write, each with its versions' statements (oldest first). A next
         version an earlier delivery saved is finished here; a target no longer written is skipped."""
         run_id = self._run["_id"]
-        versions = self._versions.find_versions(run_id, sorted(replaces))
+        versions = scenarios.list(
+            fields="version",
+            sort="version",
+            session_id=run_id,
+            path_id_in=sorted(replaces),
+            status=ScenarioStatus.DONE,
+        )
         by_id = {row["_id"]: row for row in versions}
         statements: defaultdict[str, list[str]] = defaultdict(list)
         for row in versions:
@@ -233,7 +240,7 @@ class PathSaver:
                 self._replaced[path_id], to_write[path_id] = target, tuple(statements[path_id])
                 continue
             if not target["superseded_by"]:
-                self._versions.supersede(target_id, successor)
+                supersede_scenario_version(target_id, successor)
             if self._progress.paths[path_id]["served"] != successor:
                 healed[path_id] = {"served": successor}
         if healed:  # a crash before the path's fenced write: served, counts and watchers in one write
@@ -253,7 +260,7 @@ class PathSaver:
             message = ErrorMessage.REGENERATE_BLOCKED.format(codes=", ".join(codes))
             self._note_failure(old["_id"], ErrorCode.SCENARIO_BLOCKED, message)
             return
-        self._versions.supersede(old["_id"], record["_id"])
+        supersede_scenario_version(old["_id"], record["_id"])
         self._progress.record({path["path_id"]: {"served": record["_id"]}})
 
     def _save_written(
@@ -279,18 +286,13 @@ class PathSaver:
 
     def _log_saved(self, record: dict[str, Any], saved: bool, reason: str) -> None:
         """Log one saved record and count it."""
-        log.info(
-            LogEvent.WRITER_SCENARIO_SAVED,
-            path_id=record["path_id"],
-            status=record["status"],
-            saved=saved,
-            blocker=reason,
-            replaces=record.get("replaces"),
-        )
+        shown = {"path_id": record["path_id"], "status": record["status"], "replaces": record.get("replaces")}
+        log.info(LogEvent.WRITER_SCENARIO_SAVED, saved=saved, blocker=reason, **shown)
         if saved:
             metrics.SCENARIOS.labels(_OUTCOMES[record["status"]]).inc()
 
     def _note_failure(self, target_id: str, code: ErrorCode, message: str) -> None:
         """Log why a regenerate wrote no new version and note it on the old one."""
         log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, reason=message)
-        self._versions.note_failure(target_id, {"code": code, "message": message, "at": datetime.now(UTC)})
+        error = {"code": code, "message": message, "at": datetime.now(UTC)}
+        scenarios.update({"regenerate_error": error, "updated_at": error["at"]}, _id=target_id, newest=True)

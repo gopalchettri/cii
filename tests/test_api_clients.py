@@ -99,8 +99,8 @@ def test_a_key_that_cannot_be_one_tsg_minted_costs_no_database_read(monkeypatch:
     """Before: every request with any junk X-API-Key made a MongoDB read (and held a thread while MongoDB
     was slow). Only a key with TSG's prefix and length is looked up."""
     service = get_api_client_service()
-    reads: list[str] = []
-    monkeypatch.setattr(service._repository, "find_active_client_id_by_key_hash", reads.append)
+    reads: list[dict] = []
+    monkeypatch.setattr(service._repository, "get", lambda *_, **where: reads.append(where))
     for junk in ("", "secret", "tsg_short", "x" * 47, "tsg_" + "a" * 44):
         assert service.find_client_id_for_api_key(junk) is None
     assert reads == []

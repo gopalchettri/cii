@@ -27,10 +27,8 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.manual_scenarios import ManualRecords
-from app.data_access.remediations import RemediationRepository
-from app.data_access.scenario.runs import AssetContextRepository, SessionRepository
-from app.data_access.scenario.scenarios import RunCounts
+from app.data_access.library.repository import SqlServerRepository
+from app.data_access.scenario.repository import scenario_sessions
 from app.models.library import LoadedLibraries
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation.manual import ManualPlans, _fingerprint, get_manual_plans
@@ -72,18 +70,15 @@ def manual(
 ) -> Iterator[dict[str, Any]]:
     """ManualPlans on the SQL test database's asset 103 (entity 86) and the fakes; the plan job's fakes
     (world: mapper, search, proposals, chat)."""
-    db = get_mongodb()
     library = SimpleNamespace(
         check_library_once=lambda: None,
         get_loaded_libraries=lambda: LoadedLibraries((), THREATS, tuple(CONTROLS.values())),
     )
     scenarios = ManualScenarios(
-        AssetContextRepository(StoredProcedureClient(sql_test_engine)),
+        SqlServerRepository(StoredProcedureClient(sql_test_engine)),
         library,  # type: ignore[arg-type]
-        ManualRecords(db),
-        RunCounts(db),
     )
-    built = ManualPlans(SessionRepository(db), RemediationRepository(db), scenarios, _service())
+    built = ManualPlans(scenario_sessions, scenarios, _service())
     client.app.dependency_overrides[get_manual_plans] = lambda: built  # type: ignore[attr-defined]
     yield world
     client.app.dependency_overrides.pop(get_manual_plans, None)  # type: ignore[attr-defined]
@@ -227,7 +222,12 @@ def test_a_parallel_request_with_the_key_and_another_body_is_refused(
     never planned from (or replayed as) the first's scenario."""
     key = uuid.uuid4().hex
     assert _post(client, api_key, BODY, key).status_code == 202
-    monkeypatch.setattr(SessionRepository, "find_by_idempotency_key", lambda *_: None)
+    real_get = scenario_sessions.get
+    monkeypatch.setattr(
+        scenario_sessions,
+        "get",
+        lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
+    )
     other = _post(client, api_key, _with(threat_scenario="Another attack, written differently."), key)
     assert (other.status_code, other.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
 

@@ -4,8 +4,9 @@ ids; NVD last, the slowest), and the one method every source offers the refresh.
 from typing import Protocol
 
 from app.core.constants import IntelSource
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.data_access.external_intelligence.repository import IntelRecordRepository
 from app.models.external_intelligence.fetch_result import FetchResult
+from app.services.external_intelligence.record_batch_writer import list_current_external_ids
 from app.services.external_intelligence.sources.cisa_ics_advisories_source import CisaIcsAdvisoriesSource
 from app.services.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
 from app.services.external_intelligence.sources.first_epss_scores_source import FirstEpssScoresSource
@@ -28,7 +29,7 @@ class IntelSourceFetcher(Protocol):
 class SourceCatalogue:
     """Builds the sources' fetchers over one record store."""
 
-    def __init__(self, record_store: IntelRecordStore, downloader: HttpDownloader | None = None) -> None:
+    def __init__(self, record_store: IntelRecordRepository, downloader: HttpDownloader | None = None) -> None:
         self._store = record_store
         self._downloader = downloader
 
@@ -41,10 +42,10 @@ class SourceCatalogue:
             MitreAttackSource(IntelSource.ATTACK_ENTERPRISE, web),
             MitreAttackSource(IntelSource.ATTACK_ICS, web),
             CisaIcsAdvisoriesSource(web),
-            FirstEpssScoresSource(lambda: store.list_current_external_ids(IntelSource.CISA_KEV), web),
+            FirstEpssScoresSource(lambda: list_current_external_ids(store, IntelSource.CISA_KEV), web),
             NistNvdDetailsSource(
-                lambda: store.list_current_external_ids(IntelSource.CISA_KEV),
-                lambda: store.list_current_external_ids(IntelSource.NIST_NVD),
+                lambda: list_current_external_ids(store, IntelSource.CISA_KEV),
+                lambda: list_current_external_ids(store, IntelSource.NIST_NVD),
             ),
         ]
         return {fetcher.source_id: fetcher for fetcher in ordered}

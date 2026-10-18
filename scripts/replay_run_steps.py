@@ -33,21 +33,22 @@ class NotCached(Exception):
 
 
 class ReadOnlyVectors:
-    """Mixed into a vector store (app/data_access/embeddings.py): reads as the app does, counts what it found,
-    and never writes: store() and reconcile() do nothing."""
+    """Mixed into a vector repository (app/data_access/admin/repository.py): reads as the app does,
+    counts what it found, and never writes: save_vectors() and update_library_vector_corpus() do nothing."""
 
     kind = "vectors"
 
-    def read(self, keys: list[str], fields: tuple[str, ...]) -> dict[str, Any]:
-        found = super().read(keys, fields)  # type: ignore[misc]
+    def list(self, *args: Any, **where: Any) -> list[dict[str, Any]]:
+        """The vectors found by their keys (`ids`), counted as found or missing."""
+        found = super().list(*args, **where)  # type: ignore[misc]
         CACHE[f"{self.kind} found"] += len(found)
-        CACHE[f"{self.kind} missing"] += len(set(keys)) - len(found)
+        CACHE[f"{self.kind} missing"] += len(set(where.get("ids", ()))) - len(found)
         return found
 
-    def store(self, documents: list[dict[str, Any]]) -> None:
+    def save_vectors(self, vectors: list[dict[str, Any]]) -> None:
         """Nothing stored: the replay is read-only."""
 
-    def reconcile(self, *_: Any) -> int:
+    def update_library_vector_corpus(self, *_: Any) -> int:
         return 0  # nothing retired: the replay is read-only
 
 
@@ -61,18 +62,13 @@ class NoProvider:
 
 def load_run(run_id: str) -> tuple[Any, dict[str, Any]]:
     """The run's frozen context and its plan."""
-    from app.core.constants import Collection
-    from app.core.database import get_mongodb
-    from app.data_access.scenario.runs import SessionRepository
+    from app.data_access.scenario.repository import scenario_sessions
     from app.models.asset_context import FrozenContext
 
-    db = get_mongodb()
-    try:
-        context = FrozenContext.from_record(SessionRepository(db).find_context(run_id))
-    except KeyError:
-        raise SystemExit(f"  No run with id '{run_id}' (or it has no context).") from None
-    # SessionRepository has no reader for the whole plan (made_with included): read as run-show does.
-    plan = (db[Collection.SESSIONS].find_one({"_id": run_id}, {"plan": 1}) or {}).get("plan")
+    found = scenario_sessions.get(fields=["context", "plan"], _id=run_id)
+    if found is None or not found.get("context"):
+        raise SystemExit(f"  No run with id '{run_id}' (or it has no context).")
+    context, plan = FrozenContext.from_record(found["context"]), found.get("plan")
     if not plan or "made_with" not in plan:
         raise SystemExit(f"  Run '{run_id}' has no frozen plan: nothing to replay.")
     return context, plan
@@ -81,13 +77,11 @@ def load_run(run_id: str) -> tuple[Any, dict[str, Any]]:
 def load_library(plan: dict[str, Any]) -> Any:
     """Both libraries as app/search/library_cache.py loads them (the stamp first), compared with the run's."""
     from app.core.database import get_stored_procedure_client
-    from app.data_access.library import LibraryRepository
-    from app.models.library import LoadedLibraries
+    from app.data_access.library.repository import SqlServerRepository
 
-    repository = LibraryRepository(get_stored_procedure_client())
-    stamp = repository.read_library_stamp()
-    active, retired = repository.load_control_library()
-    library = LoadedLibraries(stamp, repository.load_threat_library(), active, retired)
+    library = SqlServerRepository(get_stored_procedure_client()).load_library()
+    assert library is not None  # no stamp passed: always loaded
+    stamp = library.stamp
     now = {table: digest.hex() if digest else None for table, digest in stamp}
     then = plan["made_with"]["library"]
     changed = sorted(table for table in now.keys() | then.keys() if now.get(table) != then.get(table))
@@ -105,13 +99,13 @@ def build_snapshot(library: Any, embedding_model: str) -> Any:
     from app.ai.profiles import EMBEDDING_MODEL_PROFILES, find_model_profile
     from app.core.constants import Collection
     from app.core.database import get_mongodb
-    from app.data_access.embeddings import LibraryVectors, QueryVectors
+    from app.data_access.admin.repository import LibraryVectorRepository, VectorRepository
     from app.search.service import _SnapshotBuilder
 
-    class ReadOnlyLibrary(ReadOnlyVectors, LibraryVectors):
+    class ReadOnlyLibrary(ReadOnlyVectors, LibraryVectorRepository):
         kind = "library"
 
-    class ReadOnlyQueries(ReadOnlyVectors, QueryVectors):
+    class ReadOnlyQueries(ReadOnlyVectors, VectorRepository):
         kind = "query"
 
     db = get_mongodb()

@@ -1,4 +1,4 @@
--- Least privilege (BLUEPRINT §12): the app's SQL login may only EXECUTE TSG's own procedures; it gets no table
+-- Least privilege: the app's SQL login may only EXECUTE TSG's own procedures; it gets no table
 -- permission at all, so every read and write goes through the procedures in this folder. Each one is named: a
 -- name pattern would also grant v1's deploy helpers (dbo.tsg_reconcile_column alters tables).
 -- Run after the procedure scripts, as an administrator, naming the app's database user:

@@ -1,15 +1,17 @@
 """Leased background jobs: one owner per job at a time, and retries after outages (the reaper that repairs
 abandoned jobs is app/worker/reaper.py).
 
-A job lives on its MongoDB record (`status`, `job.*`; read and written by app/data_access/job_records.py). A
-delivery claims it with a time-limited lease, renews the lease while it works, and writes only while it still
-owns it. If the worker dies, the lease runs out and the reaper hands the job to another delivery."""
+A job lives on its MongoDB record (`status`, `job.*`; read and written by
+app/data_access/jobs/repository.py). A delivery claims it with a time-limited lease, renews the lease
+while it works, and writes only while it still owns it. If the worker dies, the lease runs out and the
+reaper hands the job to another delivery."""
 
 import contextlib
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, Protocol
 
 import structlog
@@ -23,9 +25,10 @@ from app.core.exceptions import (
     TEMPORARY_ERRORS,
     AppError,
     JobFailed,
+    LeaseLost,
 )
 from app.core.lease_signal import lease_lost_signal
-from app.data_access.job_records import JobLease, LeaseLost, find_job_status
+from app.data_access.jobs.repository import JobLease, JobRepository, failed_job_fields
 from app.realtime.publisher import publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
 
@@ -41,7 +44,16 @@ JOB_COLLECTIONS: dict[Collection, Callable[[str], None]] = {
 
 def hand_over(lease: JobLease, next_task: TaskName, changes: dict[str, Any] | None = None) -> None:
     """End this stage and queue the next one on the same record (same epoch), then send it."""
-    lease.queue_next(next_task, changes)
+    lease.update_job(
+        {
+            **(changes or {}),
+            "status": Status.QUEUED,
+            "job.task": next_task,
+            "job.due_at": datetime.now(UTC),
+            "job.attempts": 0,
+            "job.lease_until": None,
+        }
+    )
     send_job(next_task, lease.record_id, lease.epoch)
 
 
@@ -98,20 +110,28 @@ def _fail_if_still_owned(lease: JobLease, code: ErrorCode, message: str) -> bool
     """False when the job is no longer this delivery's (nothing written). Best effort: if MongoDB is down too,
     the record stays running and the reaper settles it later (True: still this delivery's as far as known)."""
     try:
-        return lease.fail(code, message)
+        lease.update_job(failed_job_fields(lease.collection, {"code": code, "message": message}))
+    except LeaseLost:
+        return False
     except MONGO_UNAVAILABLE_ERRORS:
         log.warning(LogEvent.JOB_FAILED, record_id=lease.record_id, settled_by="reaper", exc_info=True)
-        return True
+    return True
 
 
 def run_leased_job(
-    task: Task, collection: Collection, record_id: str, epoch: int, work: Callable[[JobLease], None]
+    task: Task,
+    collection: Collection,
+    record_id: str,
+    epoch: int,
+    work: Callable[[JobLease], None],
+    fields: Iterable[str] = (),
 ) -> None:
     """The life of one delivery: claim the record → do the work under a live lease → on a temporary outage
     give the job back and retry after Lease.RETRY_DELAYS_SECONDS, up to Lease.MAX_ATTEMPTS → otherwise mark it
-    failed with a clear error. Every status change is announced to the record's subscribers."""
+    failed with a clear error. The lease carries the record's `fields` the work reads. Every status change is
+    announced to the record's subscribers."""
     publish = JOB_COLLECTIONS[collection]
-    lease = _claim_or_ignore(task, collection, record_id, epoch)
+    lease = _claim_or_ignore(task, collection, record_id, epoch, fields)
     structlog.contextvars.bind_contextvars(record_id=record_id, attempt=lease.attempts)
     publish(record_id)
     try:
@@ -148,7 +168,7 @@ def _end_lost_delivery(collection: Collection, record_id: str) -> NoReturn:
     another delivery took it over (a warning: it stalled). Ignore: a delivery's end is not the job's outcome,
     so it counts as neither a success nor a failure (lifecycle.py counts jobs)."""
     try:
-        status = find_job_status(get_mongodb()[collection], record_id)
+        status = JobRepository(get_mongodb()[collection]).get_job_status(record_id)
     except MONGO_UNAVAILABLE_ERRORS:
         status = Status.RUNNING  # unknown: reported as a lost lease
     if status is None or status == Status.CANCELLED:
@@ -158,11 +178,14 @@ def _end_lost_delivery(collection: Collection, record_id: str) -> NoReturn:
     raise Ignore
 
 
-def _claim_or_ignore(task: Task, collection: Collection, record_id: str, epoch: int) -> JobLease:
+def _claim_or_ignore(
+    task: Task, collection: Collection, record_id: str, epoch: int, fields: Iterable[str]
+) -> JobLease:
     """This delivery's lease on the job. A MongoDB outage retries the delivery; a job another delivery owns
     (or finished) raises Ignore."""
     try:
-        lease = JobLease.claim(get_mongodb()[collection], record_id, epoch, task.name, task.request.id)
+        jobs = JobRepository(get_mongodb()[collection])
+        lease = jobs.claim_job(record_id, epoch, task.name, task.request.id, fields)
     except MONGO_UNAVAILABLE_ERRORS as exc:
         # Nothing is owned yet, so nothing to give back: the same message simply comes again after the first
         # back-off instead of waiting for the reaper.
@@ -181,11 +204,15 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
     when it is no longer this delivery's (cancelled meanwhile: nothing to retry or fail)."""
     if lease.attempts < Lease.MAX_ATTEMPTS:
         delay = Lease.RETRY_DELAYS_SECONDS[min(lease.attempts, len(Lease.RETRY_DELAYS_SECONDS)) - 1]
-        # If MongoDB is down too, give_back fails and the record stays running with a live lease: the
+        # If MongoDB is down too, giving it back fails and the record stays running with a live lease: the
         # retry finds it still owned and exits, and the reaper re-queues it once the lease runs out.
         given_back = True
         with contextlib.suppress(*MONGO_UNAVAILABLE_ERRORS):
-            given_back = lease.give_back(delay)
+            due_at = datetime.now(UTC) + timedelta(seconds=delay)
+            try:
+                lease.update_job({"status": Status.QUEUED, "job.due_at": due_at, "job.lease_until": None})
+            except LeaseLost:
+                given_back = False
         if not given_back:
             return False
         log.warning(

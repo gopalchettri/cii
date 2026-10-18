@@ -5,17 +5,19 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
 from app.core.config import get_settings
 from app.core.constants import AuditAction, AuditTarget, IntelDocId, IntelLimits, LogEvent, SwitchTiming
-from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS
 from app.core.singletons import singleton
-from app.data_access.external_intelligence.switch_flag_store import SwitchFlagStore
+from app.data_access.admin.repository import audit_records
+from app.data_access.base import MongoRepository
+from app.data_access.external_intelligence.repository import intel_feeds
 from app.models.external_intelligence.switch_state import SwitchState
-from app.services.audit import admin_actor, audit_target, record_audit
+from app.services.audit import admin_actor, audit_target
 
 log = structlog.get_logger(__name__)
 
@@ -24,9 +26,9 @@ class ExternalIntelligenceSwitch:
     """The one place the flag is read and changed (each change audited and logged here, once)."""
 
     def __init__(
-        self, flag_store: SwitchFlagStore, env_enabled: bool, clock: Callable[[], float] = time.monotonic
+        self, feeds: MongoRepository, env_enabled: bool, clock: Callable[[], float] = time.monotonic
     ) -> None:
-        self._flags = flag_store
+        self._feeds = feeds  # tsg_external_feed_status, whose switch document holds the run-time flag
         self._env_enabled = env_enabled
         self._clock = clock
         self._cached: tuple[SwitchState, float] | None = None  # replaced whole, so a reader never sees half
@@ -57,12 +59,14 @@ class ExternalIntelligenceSwitch:
         nothing audited)."""
         before = self.state()
         now = datetime.now(UTC)
-        self._flags.write_runtime_flag(enabled, changed_by, now)
+        self._feeds.save(
+            {"_id": IntelDocId.SWITCH, "enabled": enabled, "changed_by": changed_by, "changed_at": now}
+        )
         after = SwitchState(self._env_enabled, enabled, now, changed_by)
         self._changes += 1
         self._cached = (after, self._clock() + IntelLimits.SWITCH_CACHE_SECONDS)
         target = audit_target(AuditTarget.EXTERNAL_INTELLIGENCE_SOURCE, IntelDocId.SWITCH)
-        record_audit(
+        audit_records.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_SWITCHED,
             admin_actor(changed_by),
             target,
@@ -80,7 +84,7 @@ class ExternalIntelligenceSwitch:
             return previous[0]
         changes = self._changes
         try:
-            stored = self._flags.read_runtime_flag()
+            stored = self._feeds.get(_id=IntelDocId.SWITCH)
         except MONGO_UNAVAILABLE_ERRORS:
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency="external_intelligence_switch")
             if previous is not None:  # keep the last value for a full period
@@ -91,9 +95,16 @@ class ExternalIntelligenceSwitch:
             return unknown
         if self._changes != changes and self._cached is not None:  # an admin changed it meanwhile
             return self._cached[0]
-        state = SwitchState(self._env_enabled) if stored is None else SwitchState(self._env_enabled, *stored)
+        state = SwitchState(self._env_enabled) if stored is None else _stored_state(self._env_enabled, stored)
         self._cached = (state, self._clock() + IntelLimits.SWITCH_CACHE_SECONDS)
         return state
+
+
+def _stored_state(env_enabled: bool, stored: dict[str, Any]) -> SwitchState:
+    """The switch document as a SwitchState: enabled unless set off, with who changed it and when."""
+    return SwitchState(
+        env_enabled, bool(stored.get("enabled", True)), stored.get("changed_at"), stored.get("changed_by")
+    )
 
 
 def _flags(state: SwitchState) -> dict[str, bool]:
@@ -104,6 +115,4 @@ def _flags(state: SwitchState) -> dict[str, bool]:
 @singleton
 def get_external_intelligence_switch() -> ExternalIntelligenceSwitch:
     """The process's switch."""
-    return ExternalIntelligenceSwitch(
-        SwitchFlagStore(get_mongodb()), get_settings().external_intelligence_enabled
-    )
+    return ExternalIntelligenceSwitch(intel_feeds, get_settings().external_intelligence_enabled)

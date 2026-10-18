@@ -25,10 +25,8 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.remediation_reads import RemediationReads
-from app.data_access.remediation_versions import RemediationVersions
-from app.data_access.remediations import RemediationRepository
-from app.data_access.scenario.runs import SessionRepository
+from app.data_access.remediation.repository import remediation_plans
+from app.data_access.scenario.repository import scenario_sessions
 from app.models.remediation_reviews import DecisionRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.decisions import PlanDecisions
@@ -55,9 +53,8 @@ def plans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[dict[str, Any]]:
     """`world` and a regenerate service on the same fakes; what a regenerate sends."""
-    db = get_mongodb()
-    snapshots = SnapshotMaker(SessionRepository(db), FAKE_LIBRARY)  # type: ignore[arg-type]
-    built = PlanRegeneration(RemediationRepository(db), RemediationVersions(db), snapshots)
+    snapshots = SnapshotMaker(scenario_sessions, FAKE_LIBRARY)  # type: ignore[arg-type]
+    built = PlanRegeneration(snapshots)
     client.app.dependency_overrides[get_plan_regeneration] = lambda: built  # type: ignore[attr-defined]
     monkeypatch.setattr(regenerate_module, "send_job", lambda *args: world["sent"].append(args))
     yield world
@@ -201,13 +198,13 @@ def test_a_decision_raced_by_another_reads_again_once(
     client: TestClient,
     api_key: str,  # noqa: F811
     plans: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Another decision lands between this one's read and its write: this one reads again and applies on the
     new read; when one lands every time, 409 changed_concurrently."""
     remediation_id = _done_plan(client, api_key, plans)
     db = get_mongodb()
-    versions = RemediationVersions(db)
-    decide = versions.decide
+    decide = remediation_plans.update_remediation_plan_decision
     raced: list[bool] = []
 
     def another_decision_first(*args: Any) -> bool:
@@ -216,12 +213,12 @@ def test_a_decision_raced_by_another_reads_again_once(
             db[Collection.REMEDIATIONS].update_one({"_id": remediation_id}, {"$inc": {"decision_seq": 1}})
         return decide(*args)
 
-    versions.decide = another_decision_first  # type: ignore[method-assign]
-    service = PlanDecisions(RemediationRepository(db), versions, RemediationReads(db))
+    monkeypatch.setattr(remediation_plans, "update_remediation_plan_decision", another_decision_first)
+    service = PlanDecisions()
     owner = _record(remediation_id)["entity_id"]
     principal: Any = SimpleNamespace(entity_id=owner, user_id="u1", client_id="c1")
     assert service.accept(principal, remediation_id, DecisionRequest(version=1)).accepted_version == 1
-    versions.decide = lambda *args: False  # type: ignore[method-assign]
+    monkeypatch.setattr(remediation_plans, "update_remediation_plan_decision", lambda *args: False)
     with pytest.raises(Conflict) as clash:
         service.reject(principal, remediation_id, DecisionRequest(version=1))
     assert clash.value.reason == ConflictReason.CHANGED_CONCURRENTLY

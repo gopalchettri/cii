@@ -7,9 +7,8 @@ from typing import Any
 import structlog
 
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
-from app.core.database import get_mongodb
 from app.core.exceptions import AppError
-from app.data_access.admin_jobs import AdminJobRecords
+from app.data_access.admin.repository import AdminJobRepository, admin_jobs
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence.intel_access import IntelAccess, get_intel_access
 
@@ -26,22 +25,22 @@ def refresh_external_intelligence(job_id: str | None = None) -> None:
         else:
             log.info(IntelWorkEvent.REFRESH_SKIPPED)
         return
-    run_refresh_job(job_id, AdminJobRecords(get_mongodb()), access)
+    run_refresh_job(job_id, admin_jobs, access)
 
 
-def run_refresh_job(job_id: str, jobs: AdminJobRecords, access: IntelAccess) -> None:
+def run_refresh_job(job_id: str, jobs: AdminJobRepository, access: IntelAccess) -> None:
     """Run an admin's refresh of its one source, or of the due ones, and record how it went on the job.
     A late or repeated message finds the job no longer active and does nothing; a failure is recorded, then
     raised."""
     now = datetime.now(UTC)
-    if not jobs.mark_running(job_id, now):
+    if not jobs.update_admin_job_running(job_id, now):
         return
-    record = jobs.read(job_id) or {}
+    record = jobs.get(("source",), _id=job_id) or {}
     source = IntelSource(record["source"]) if record.get("source") else None
     try:
         if not access.is_on():
             error = {"code": ErrorCode.CONFLICT, "message": IntelRefreshMessage.SWITCH_OFF.value}
-            jobs.end(job_id, datetime.now(UTC), error=error)
+            jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
             return
         if source is None:
             access.refresher().refresh_due_sources(now)
@@ -49,9 +48,9 @@ def run_refresh_job(job_id: str, jobs: AdminJobRecords, access: IntelAccess) -> 
             access.refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
-        jobs.end(job_id, datetime.now(UTC), error=_job_error(exc))
+        jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=_job_error(exc))
         raise
-    jobs.end(job_id, datetime.now(UTC), result={"source": source})
+    jobs.update_admin_job_finished(job_id, datetime.now(UTC), result={"source": source})
 
 
 def _job_error(exc: Exception) -> dict[str, Any]:

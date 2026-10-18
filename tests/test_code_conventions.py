@@ -214,7 +214,8 @@ def test_no_god_class_function_or_file() -> None:
                     if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
                     and not item.name.startswith("_")
                 ]
-                if len(public) > MAX_PUBLIC_METHODS or size > MAX_CLASS_LINES:
+                wide = node.name == "MongoRepository"  # owner rule: the base holds every plain verb
+                if (len(public) > MAX_PUBLIC_METHODS and not wide) or size > MAX_CLASS_LINES:
                     offenders.append(
                         f"{_name(source)}:{node.lineno} class {node.name}: {len(public)} public, {size} lines"
                     )

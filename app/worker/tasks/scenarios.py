@@ -14,12 +14,11 @@ from app.core.constants import (
     LogEvent,
     PlanMessage,
     RunActionOutcome,
+    Status,
     Step,
     TaskName,
 )
-from app.core.database import get_mongodb
-from app.data_access.job_records import JobLease
-from app.data_access.scenario.runs import SessionRepository
+from app.data_access.jobs.repository import JobLease, ended_job_fields
 from app.domain.scenario.plan import build_plan, get_threat_finder, set_and_first_batch
 from app.models.asset_context import FrozenContext
 from app.worker.celery_app import celery_app
@@ -32,14 +31,14 @@ log = structlog.get_logger(__name__)
 @celery_app.task(name=TaskName.FIND_THREATS, bind=True)
 def find_threats(self: Task, record_id: str, epoch: int) -> None:
     """Celery task: plan the run; a plan refusal fails it for good, an outage retries the job."""
-    run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan_run)
+    run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan_run, fields=("context",))
 
 
 def plan_run(lease: JobLease) -> None:
     """Plan the run and hand its first set to the write job in one fenced write; a plan with no path ends the
     run in that write instead."""
     started = time.perf_counter()
-    context = FrozenContext.from_record(SessionRepository(get_mongodb()).find_context(lease.record_id))
+    context = FrozenContext.from_record(lease.record["context"])
     country = get_settings().context_country if get_intel_access().is_on() else ""  # a fact, ranks nothing
     findings = get_threat_finder().find_threats(context, country)
     plan = build_plan(findings, get_settings().total_scenario_count)
@@ -50,7 +49,8 @@ def plan_run(lease: JobLease) -> None:
         asked, batch = set_and_first_batch(plan["paths"], get_settings().initial_set_size)
         hand_over(lease, TaskName.WRITE_SCENARIOS, changes | {"job.batch": batch, "job.set": asked})
     else:
-        lease.finish(changes | {"last_action.outcome": finished_outcome(plan)})
+        ended = {"last_action.outcome": finished_outcome(plan)} | ended_job_fields(Status.DONE)
+        lease.update_job(changes | ended)
     log.info(
         LogEvent.PLANNER_PLAN_MADE,
         threats=len(plan["threats"]),

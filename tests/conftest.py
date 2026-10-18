@@ -76,7 +76,7 @@ from sqlalchemy import Engine  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_mongodb  # noqa: E402
-from app.data_access.indexes import ensure_indexes  # noqa: E402
+from app.data_access.base import create_all_indexes  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.worker.jobs import JOB_COLLECTIONS  # noqa: E402
 from tests.sql_test_database import build_sql_test_database  # noqa: E402
@@ -100,7 +100,7 @@ def empty_test_database() -> Iterator[None]:
     run = f"{CHECKOUT}:{os.getpid()}"
     _claim_test_redis_databases(run)  # empties them too: messages no worker took, made-up workers' heartbeats
     database.client.drop_database(TEST_DATABASE)
-    ensure_indexes(JOB_COLLECTIONS)
+    create_all_indexes(JOB_COLLECTIONS)
     yield
     database.client.drop_database(TEST_DATABASE)
     _release_test_redis_databases(run)

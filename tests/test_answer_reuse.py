@@ -84,10 +84,10 @@ def test_a_record_store_that_cannot_be_read_never_stops_the_call(monkeypatch: py
     calls = _count_calls(monkeypatch, '{"ok": 1}')
     chat = _chat_model()
 
-    def down(*_: object) -> None:
+    def down(*_: object, **__: object) -> None:
         raise OSError("the store is down")
 
-    monkeypatch.setattr(chat._call_records, "find_usable_reply", down)  # noqa: SLF001 - the store, failing
+    monkeypatch.setattr(chat._call_records, "list", down)  # noqa: SLF001 - the store, failing
     with structlog.contextvars.bound_contextvars(task_id=uuid.uuid4().hex, attempt=3), capture_logs() as logs:
         assert chat.ask_for_json(AiTask.RELEVANCE_GATE, "system", "batch") == {"ok": 1}
     assert calls == [1] and "ai.call_reuse_failed" in [entry["event"] for entry in logs]

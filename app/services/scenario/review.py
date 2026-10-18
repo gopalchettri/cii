@@ -19,10 +19,10 @@ from app.core.constants import (
     Step,
     TargetProblem,
 )
-from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
-from app.data_access.scenario.scenarios import RunCounts, ScenarioReview
+from app.data_access.admin.repository import audit_records
+from app.data_access.scenario.repository import scenarios
 from app.models.api_clients import Principal
 from app.models.library import ThreatLibrary
 from app.models.scenario.views import (
@@ -35,7 +35,7 @@ from app.models.scenario.views import (
 )
 from app.realtime.publisher import publish_session_status
 from app.search.library_cache import get_library_service
-from app.services.audit import audit_target, caller_actor, record_audit
+from app.services.audit import audit_target, caller_actor
 
 Targets = list[dict[str, Any]]
 
@@ -113,11 +113,23 @@ def _accept_problem(
     return None
 
 
+def list_review_targets(session_id: str, scenario_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The scenario session's served tsg_scenarios among `scenario_ids`, by id; another's is not found."""
+    found = scenarios.list(fields="target", scenario_id_in=scenario_ids, session_id=session_id, served=True)
+    return {row["_id"]: row for row in found}
+
+
+def _accepted_version_of_attack_paths(session_id: str, path_ids: list[str]) -> dict[str, str]:
+    """{path_id: scenario_id} of each attack path's accepted tsg_scenarios version (one at most)."""
+    found = scenarios.list(
+        fields="path_id", session_id=session_id, path_id_in=path_ids, decision=Decision.ACCEPTED
+    )
+    return {row["path_id"]: row["_id"] for row in found}
+
+
 class ReviewService:
-    def __init__(
-        self, review: ScenarioReview, counts: RunCounts, threat_library: Callable[[], ThreatLibrary]
-    ) -> None:
-        self._review, self._counts, self._threat_library = review, counts, threat_library
+    def __init__(self, threat_library: Callable[[], ThreatLibrary]) -> None:
+        self._threat_library = threat_library
 
     def accept(self, principal: Principal, run: SessionStatus, request: AcceptRequest) -> AcceptResult:
         """Accepts the chosen scenarios, or every acceptable one ("all")."""
@@ -150,7 +162,7 @@ class ReviewService:
 
     def _chosen(self, session_id: str, scenario_ids: list[str], decision: Decision) -> Targets:
         """The targets in the order sent; 409 scenarios_not_decidable naming every id at fault."""
-        found = self._review.find_targets(session_id, scenario_ids)
+        found = list_review_targets(session_id, scenario_ids)
         known = self._threat_library().known_threat_ids() if decision == Decision.ACCEPTED else frozenset()
         errors = why_ids_cannot_be_decided(scenario_ids, found, decision, known)
         if errors:
@@ -161,11 +173,18 @@ class ReviewService:
     def _everything_acceptable(self, session_id: str) -> tuple[Targets, list[TargetSkipped]]:
         """Accept-all's targets: current written versions not rejected. Skipped: a path with another accepted
         version (accept-all never replaces), a second current version of a path, a retired library threat."""
-        rows = self._review.find_acceptable(session_id)
+        rows = scenarios.list(
+            fields="target",
+            sort="created_at",
+            session_id=session_id,
+            status=ScenarioStatus.DONE,
+            newest=True,
+            not_rejected=True,
+        )
         if not rows:
             message = ReviewMessage.NOTHING_TO_ACCEPT.format(session_id=session_id)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_ACCEPT)
-        accepted = self._review.find_accepted(session_id, sorted({row["path_id"] for row in rows}))
+        accepted = _accepted_version_of_attack_paths(session_id, sorted({row["path_id"] for row in rows}))
         known = self._threat_library().known_threat_ids()
         targets, skipped = [], []
         for row in rows:
@@ -183,7 +202,7 @@ class ReviewService:
         """One accepted version per path: another accepted version of a target's path is 409
         duplicate_version, or with replace_accepted goes back to pending first (its ids returned)."""
         wanted = {target["path_id"]: target["_id"] for target in targets}
-        accepted = self._review.find_accepted(session_id, list(wanted))
+        accepted = _accepted_version_of_attack_paths(session_id, list(wanted))
         others = {path_id: sid for path_id, sid in accepted.items() if sid != wanted[path_id]}
         if others and not replace:
             errors = [
@@ -195,7 +214,9 @@ class ReviewService:
         if others:
             # A crash before the accept leaves the path with none accepted: the same call repeated heals it.
             stamp = decided_stamp(principal)
-            self._review.set_decision(list(others.values()), Decision.ACCEPTED, Decision.PENDING, stamp)
+            scenarios.update_scenario_decisions(
+                list(others.values()), Decision.ACCEPTED, Decision.PENDING, stamp
+            )
         return list(others.values())
 
     def _decide(
@@ -206,10 +227,12 @@ class ReviewService:
         ids = [target["_id"] for target in targets]
         pending = [target["_id"] for target in targets if target["decision"] == Decision.PENDING]
         stamp = decided_stamp(principal)
-        changed = self._review.set_decision(pending, Decision.PENDING, decision, stamp) if pending else 0
+        changed = (
+            scenarios.update_scenario_decisions(pending, Decision.PENDING, decision, stamp) if pending else 0
+        )
         if changed == len(pending):
             return ids, pending, []
-        now = self._review.find_targets(session_id, ids)
+        now = list_review_targets(session_id, ids)
         holding = [scenario_id for scenario_id in ids if now.get(scenario_id, {}).get("decision") == decision]
         mine = {
             scenario_id for scenario_id, row in now.items() if row.get("decision_id") == stamp["decision_id"]
@@ -236,19 +259,18 @@ class ReviewService:
         if decided or changes.get("replaced"):
             decision = Decision.ACCEPTED if action == AuditAction.SCENARIOS_ACCEPTED else Decision.REJECTED
             metrics.DECISIONS.labels(decision).inc(len(decided))
-            record_audit(
+            audit_records.create_audit_record(
                 action,
                 caller_actor(principal),
                 audit_target(AuditTarget.SESSION, session_id),
                 after=changes,
                 details={"skipped": [skip.model_dump(mode="json") for skip in skipped]},
             )
-        self._counts.refresh(session_id)
+        scenarios.update_scenario_session_counts(session_id)
         publish_session_status(session_id)
 
 
 @singleton
 def get_review_service() -> ReviewService:
     """The process's review service."""
-    db = get_mongodb()
-    return ReviewService(ScenarioReview(db), RunCounts(db), get_library_service().get_threat_library)
+    return ReviewService(get_library_service().get_threat_library)

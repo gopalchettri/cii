@@ -22,7 +22,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.redaction import clipped_text, redact
-from app.data_access.audit import record_audit
+from app.data_access.admin.repository import audit_records
 from app.domain.shared.names import shorten_text
 from app.models.asset_context import FrozenContext
 from app.models.external_intelligence.evidence import EvidenceBatchSummary
@@ -137,7 +137,9 @@ class EvidenceAtWrite:
             return
         target = {"type": AuditTarget.SESSION, "id": self._run["_id"]}
         actor = {"system": TaskName.WRITE_SCENARIOS}
-        record_audit(AuditAction.EXTERNAL_INTELLIGENCE_EVIDENCE_USED, actor, target, after=summary.as_doc())
+        audit_records.create_audit_record(
+            AuditAction.EXTERNAL_INTELLIGENCE_EVIDENCE_USED, actor, target, after=summary.as_doc()
+        )
 
 
 def evidence_request(context: FrozenContext, threat: dict[str, Any]) -> EvidenceRequest:

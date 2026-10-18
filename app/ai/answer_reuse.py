@@ -7,13 +7,13 @@ attempt reads nothing; a retry reads one indexed document per call, by its Celer
 import structlog
 
 from app.ai.chat_messages import prompt_hash
-from app.core.constants import AiTask, LogEvent
-from app.data_access.ai_calls import AiCallRecords
+from app.core.constants import AiOutcome, AiTask, LogEvent
+from app.data_access.admin.repository import AiCallRepository
 
 log = structlog.get_logger(__name__)
 
 
-def earlier_reply(records: AiCallRecords, task: AiTask, messages: list[dict]) -> str | None:
+def earlier_reply(records: AiCallRepository, task: AiTask, messages: list[dict]) -> str | None:
     """The reply this job got for these exact `messages` in an earlier attempt, when it was usable; None on a
     first attempt, outside a job, or when the record store cannot be read (the model is asked, as before)."""
     context = structlog.contextvars.get_contextvars()
@@ -21,7 +21,15 @@ def earlier_reply(records: AiCallRecords, task: AiTask, messages: list[dict]) ->
     if not task_id or not isinstance(attempt, int) or attempt < 2:
         return None
     try:
-        reply = records.find_usable_reply(task_id, prompt_hash(messages))
+        found = records.list(  # the newest usable answer: one indexed read, bounded like the write
+            ("response",),
+            sort="-created_at",
+            limit=1,
+            task_id=task_id,
+            prompt_hash=prompt_hash(messages),
+            outcome=AiOutcome.OK,
+        )
+        reply = found[0]["response"] if found else None
     except Exception:  # noqa: BLE001 - a store fault never stops the call: the model answers instead
         log.warning(LogEvent.AI_CALL_REUSE_FAILED, task=task, exc_info=True)
         return None

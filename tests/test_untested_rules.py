@@ -23,10 +23,9 @@ from app.core.constants import (
     TargetProblem,
     TaskName,
 )
-from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.job_records import JobLease
-from app.data_access.scenario.scenarios import ScenarioRepository, find_held_elsewhere
+from app.data_access.jobs.repository import JobRepository
+from app.data_access.scenario.repository import scenarios
 from app.domain.scenario.write import check_exact_rules, scenario_id
 from app.domain.shared.ask_ai import answers_for_asked_slots
 from app.worker.tasks import writing
@@ -80,13 +79,13 @@ def test_a_score_equal_to_the_threshold_is_kept() -> None:
 
 def test_another_runs_rejected_scenario_of_the_same_asset_is_not_offered_as_a_copy() -> None:
     """Only versions a reviewer accepted or has still to decide are held against a new scenario."""
-    scenarios, session_id = ScenarioRepository(get_mongodb()), f"run-{uuid.uuid4().hex}"
-    scenarios.ensure_indexes()
+    session_id = f"run-{uuid.uuid4().hex}"
+    scenarios.create_indexes()
     asset = int(uuid.uuid4().hex[:12], 16)
     rejected = _stored(f"rejected-{session_id}", "p1", asset_id=asset, decision=Decision.REJECTED)
     accepted = _stored(f"accepted-{session_id}", "p1", asset_id=asset, decision=Decision.ACCEPTED)
-    assert scenarios.save(rejected) and scenarios.save(accepted)
-    held = find_held_elsewhere(get_mongodb(), 86, asset, session_id)
+    assert scenarios.save_scenario(rejected) and scenarios.save_scenario(accepted)
+    _, held = scenarios.list_scenarios_for_duplicate_check(86, asset, session_id)
     assert [record["_id"] for record in held] == [accepted["_id"]]
 
 
@@ -140,7 +139,7 @@ def test_a_regenerate_the_ai_is_down_for_on_its_last_try_keeps_the_old_version_a
     chat.responders[AiTask.WRITE_SCENARIO] = down
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
     _sessions().update_one({"_id": record_id}, {"$set": {"job.attempts": Lease.MAX_ATTEMPTS - 1}})
-    lease = JobLease.claim(_sessions(), record_id, 2, TaskName.WRITE_SCENARIOS, "last")
+    lease = JobRepository(_sessions()).claim_job(record_id, 2, TaskName.WRITE_SCENARIOS, "last")
     assert lease is not None and lease.attempts == Lease.MAX_ATTEMPTS
     writing.write_batch(lease)
     old = _scenarios().find_one({"_id": first})

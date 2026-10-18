@@ -37,8 +37,16 @@ class ErrorMessage(StrEnum):
     ADMIN_DISABLED = "Admin endpoints are disabled on this deployment."
     ADMIN_KEY_INVALID = "The admin key is missing or wrong."
     SQL_UNREACHABLE = "The library database is unreachable."
+    SQL_DEADLOCK = "The library database chose this call as a deadlock victim and applied nothing."
+    SQL_ANSWER_LOST = "The library database did not answer after the call was sent: its outcome is unknown."
+    SQL_OPERATION_UNCONFIRMED = (
+        "The library database did not confirm operation {operation_id}; retry the request to reconcile it."
+    )
+    SQL_OPERATION_IN_PROGRESS = "Operation {operation_id} is running now; try again shortly."
     MONGO_UNREACHABLE = "The scenario database is unreachable."
     UNIQUE_RULE_BROKEN = "The unique index '{index_name}' refused the write."
+    NAMED_CONDITION_TAKES_TRUE = "The named condition '{name}' is applied with {name}=True only."
+    WRITE_NEEDS_A_CONDITION = "An update or delete with no condition would change the whole collection."
     REDIS_UNREACHABLE = "The queue and live-update service is unreachable."
     AI_UNREACHABLE = "The AI service is busy or unreachable. Try again shortly."
     AI_ANSWER_UNREADABLE = "The AI answer for '{task}' was not a JSON object."

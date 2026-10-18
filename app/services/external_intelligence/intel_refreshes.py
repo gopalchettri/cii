@@ -2,13 +2,12 @@
 unreachable queue failing the job at once; the worker runs it and its job record says how it went."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import (
     AdminJobKind,
     AdminJobMessage,
-    AdminJobs,
     AuditAction,
     AuditTarget,
     ConflictReason,
@@ -18,12 +17,11 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, Invalid, NotFound, Unavailable
 from app.core.singletons import singleton
-from app.data_access.admin_jobs import AdminJobRecords
-from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
-from app.services.audit import admin_actor, audit_target, record_audit
+from app.data_access.admin.repository import AdminJobRepository, admin_jobs, audit_records
+from app.data_access.external_intelligence.repository import IntelFeedRepository, intel_feeds
+from app.services.audit import admin_actor, audit_target
 from app.services.external_intelligence.switch import (
     ExternalIntelligenceSwitch,
     get_external_intelligence_switch,
@@ -37,7 +35,7 @@ class IntelRefreshes:
     """Starts and reads the admin's refresh jobs."""
 
     def __init__(
-        self, jobs: AdminJobRecords, feeds: FeedStatusStore, switch: ExternalIntelligenceSwitch
+        self, jobs: AdminJobRepository, feeds: IntelFeedRepository, switch: ExternalIntelligenceSwitch
     ) -> None:
         self._jobs, self._feeds, self._switch = jobs, feeds, switch
 
@@ -47,7 +45,7 @@ class IntelRefreshes:
         queue is unreachable (the job is then failed, never left queued)."""
         if not self._switch.is_enabled():
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
-        if source is not None and not self._feeds.is_source_approved(source):
+        if source is not None and not self._feeds.count(_id=source, approved=True):
             raise Invalid(IntelRefreshMessage.SOURCE_NOT_APPROVED.format(source=source))
         now, job_id = datetime.now(UTC), uuid.uuid4().hex
         job: dict[str, Any] = {
@@ -57,8 +55,8 @@ class IntelRefreshes:
             "requested_by": requested_by,
             "source": source,
         }
-        taken, active_id = self._claim_active_slot(job | {"created_at": now}, now)
-        if not taken:
+        active_id = self._jobs.create_admin_job(job | {"created_at": now})
+        if active_id != job_id:
             raise Conflict(
                 IntelRefreshMessage.IN_PROGRESS,
                 reason=ConflictReason.JOB_IN_PROGRESS,
@@ -67,12 +65,14 @@ class IntelRefreshes:
         self._send(job_id)
         target = audit_target(AuditTarget.ADMIN_JOB, job_id)
         after = {"kind": _KIND, "source": source}
-        record_audit(AuditAction.ADMIN_JOB_STARTED, admin_actor(requested_by), target, after=after)
+        audit_records.create_audit_record(
+            AuditAction.ADMIN_JOB_STARTED, admin_actor(requested_by), target, after=after
+        )
         return {"job_id": job_id, "status": Status.QUEUED}
 
     def read(self, job_id: str) -> dict[str, Any]:
         """One refresh job as the API shows it; 404 for any other job."""
-        record = self._jobs.read(job_id)
+        record = self._jobs.get("without_active_flag", _id=job_id)
         if record is None or record.get("kind") != _KIND:
             raise NotFound(AdminJobMessage.NOT_FOUND.format(job_id=job_id))
         return {"job_id": record.pop("_id"), **record}
@@ -91,26 +91,10 @@ class IntelRefreshes:
     def _not_sent(self, job_id: str) -> None:
         """Fail a job whose message could not be queued."""
         error = {"code": ErrorCode.UNAVAILABLE, "message": IntelRefreshMessage.NOT_SENT.value}
-        self._jobs.end(job_id, datetime.now(UTC), error=error)
-
-    def _claim_active_slot(self, job: dict[str, Any], now: datetime) -> tuple[bool, str | None]:
-        """(True, None) when `job` is now the active refresh; else (False, the active one's id). One still
-        unfinished after AdminJobs.STALE_AFTER_SECONDS (its worker died) is failed and replaced."""
-        stale_before = now - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS)
-        abandoned = AdminJobMessage.ABANDONED.format(seconds=AdminJobs.STALE_AFTER_SECONDS)
-        error = {"code": ErrorCode.JOB_ABANDONED, "message": abandoned}
-        if self._jobs.insert_active(job) or (
-            self._jobs.end_stale(_KIND, stale_before, error, now) and self._jobs.insert_active(job)
-        ):
-            return True, None
-        active = self._jobs.find_active(_KIND)
-        if active is None and self._jobs.insert_active(job):  # the active one finished in between
-            return True, None
-        return False, active["_id"] if active else None
+        self._jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
 
 
 @singleton
 def get_intel_refreshes() -> IntelRefreshes:
     """The process's IntelRefreshes."""
-    db = get_mongodb()
-    return IntelRefreshes(AdminJobRecords(db), FeedStatusStore(db), get_external_intelligence_switch())
+    return IntelRefreshes(admin_jobs, intel_feeds, get_external_intelligence_switch())

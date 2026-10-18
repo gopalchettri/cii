@@ -191,7 +191,9 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run)
+    jobs.run_leased_job(
+        _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
+    )
     run = _stored_run(record_id)
     assert (run["status"], run["step"], run["active"]) == (Status.QUEUED, Step.SCENARIOS, True)
     assert (run["job"]["task"], run["job"]["epoch"], run["job"]["attempts"]) == (
@@ -219,7 +221,9 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
     monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run)
+    jobs.run_leased_job(
+        _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
+    )
     run = _stored_run(record_id)
     assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
         Status.DONE,
@@ -244,7 +248,9 @@ def test_a_run_with_a_category_not_assessed_ends_partial(
     monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(chat))
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run)
+    jobs.run_leased_job(
+        _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
+    )
     run = _stored_run(record_id)
     assert run["plan"]["not_assessed"] == [S.SPOOFING]
     assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.PARTIAL)
@@ -257,7 +263,9 @@ def test_a_refused_plan_fails_the_run_with_its_own_code(
     monkeypatch.setattr(scenario_tasks, "get_threat_finder", lambda: finder(planner_chat({}), actors=()))
     record_id = _queued_run()
     with pytest.raises(PlanRefused):
-        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run)
+        jobs.run_leased_job(
+            _threats_task(), Collection.SESSIONS, record_id, 1, scenario_tasks.plan_run, fields=("context",)
+        )
     run = _stored_run(record_id)
     assert run["status"] == Status.FAILED and run["active"] is False and "plan" not in run
     assert run["job"]["error"] == {

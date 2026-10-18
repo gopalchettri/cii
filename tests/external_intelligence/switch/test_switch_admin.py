@@ -9,11 +9,22 @@ import pytest
 from structlog.testing import capture_logs
 
 from app.core.config import get_settings
-from app.core.constants import AuditAction, Collection, IntelKind, IntelLimits, IntelSource, LogEvent
+from app.core.constants import (
+    AuditAction,
+    Collection,
+    IntelKind,
+    IntelLimits,
+    IntelSource,
+    LogEvent,
+)
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.data_access.external_intelligence.repository import (
+    IntelFeedRepository,
+    IntelRecordRepository,
+    intel_feeds,
+    intel_records,
+)
 from app.models.external_intelligence.intel_record import IntelRecord
 from app.services.external_intelligence.intel_admin import IntelAdmin
 from app.services.external_intelligence.purge_revoked_source import RevokedSourcePurger
@@ -40,11 +51,14 @@ class Flags:
     def __init__(self) -> None:
         self.stored: tuple[bool, datetime, str] | None = None
 
-    def read_runtime_flag(self) -> tuple[bool, datetime, str] | None:
-        return self.stored
+    def get(self, fields: Any = None, **where: Any) -> dict[str, Any] | None:
+        if self.stored is None:
+            return None
+        return {"enabled": self.stored[0], "changed_at": self.stored[1], "changed_by": self.stored[2]}
 
-    def write_runtime_flag(self, enabled: bool, changed_by: str, now: datetime) -> None:
-        self.stored = (enabled, now, changed_by)
+    def save(self, record: dict[str, Any], only_if: Any = None) -> bool:
+        self.stored = (record["enabled"], record["changed_at"], record["changed_by"])
+        return True
 
 
 class Refreshes:
@@ -57,7 +71,7 @@ class Refreshes:
 
 
 class NoVectors:
-    def purge_source_vectors(self, source: IntelSource) -> int:
+    def delete(self, **where: Any) -> int:
         return 0
 
 
@@ -76,14 +90,14 @@ def _admin(monkeypatch: pytest.MonkeyPatch, *, env: bool, switch=None, purger=No
 
 
 @pytest.fixture
-def real_stores() -> Iterator[tuple[IntelRecordStore, FeedStatusStore]]:
+def real_stores() -> Iterator[tuple[IntelRecordRepository, IntelFeedRepository]]:
     db = get_mongodb()
     for name in INTEL_COLLECTIONS:
         db[name].drop()
-    yield IntelRecordStore(db), FeedStatusStore(db)
+    yield intel_records, intel_feeds
     for name in INTEL_COLLECTIONS:
         db[name].drop()
-    IntelRecordStore(db).ensure_indexes()  # the suite's other tests expect them
+    intel_records.create_indexes()  # the suite's other tests expect them
 
 
 def test_one_put_writes_exactly_one_audit_row_and_one_log_line(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,11 +136,11 @@ def test_a_revoke_with_the_master_switch_off_creates_nothing_and_deletes_what_ex
     db = get_mongodb()
     assert admin.revoke_source(KEV, "op") == {"source": KEV, "records_purged": 0}  # a store never created
     assert not set(INTEL_COLLECTIONS) & set(db.list_collection_names()) and keeper.rebuilds == 0
-    feeds.seed_sources()  # it was on once: data exists
+    feeds.create_missing_intel_feeds()  # it was on once: data exists
     record = IntelRecord(KEV, "CVE-1", IntelKind.VULNERABILITY, "IT", "t", "x", "https://x", "v")
-    records.save_batch([record], [], NOW)
+    records.save_intel_records([record], [], NOW)
     assert admin.revoke_source(KEV, "op")["records_purged"] == 1
-    assert not feeds.is_source_approved(KEV) and records.count_current_records([KEV]) == 0
+    assert not bool(feeds.count(_id=KEV, approved=True)) and records.count(sources=[KEV], current=True) == 0
     assert (
         Collection.EXTERNAL_INTELLIGENCE_SNAPSHOTS not in db.list_collection_names() and keeper.rebuilds == 0
     )
@@ -152,15 +166,15 @@ def test_approving_a_source_again_blanks_it_audits_and_queues_a_refresh_of_that_
     monkeypatch: pytest.MonkeyPatch, real_stores
 ) -> None:
     records, feeds = real_stores
-    feeds.seed_sources()
-    feeds.revoke_source(KEV)
+    feeds.create_missing_intel_feeds()
+    feeds.update_intel_feed_approval(KEV, False)
     admin, refreshes = _admin(monkeypatch, env=True, feeds=feeds)
     before = len(_audit(AuditAction.EXTERNAL_INTELLIGENCE_SOURCE_APPROVED))
     assert admin.approve_source(KEV, "op-2") == {"source": KEV, "refresh_job_id": "job-1"}
-    assert feeds.is_source_approved(KEV) and refreshes.started == [("op-2", KEV)]
+    assert bool(feeds.count(_id=KEV, approved=True)) and refreshes.started == [("op-2", KEV)]
     row = _audit(AuditAction.EXTERNAL_INTELLIGENCE_SOURCE_APPROVED)
     assert len(row) == before + 1 and row[-1]["actor"]["user_id"] == "op-2"
-    assert feeds.claim_source_for_refresh(KEV, NOW, NOW)  # claimable again
+    assert feeds.claim_intel_feed_refresh(KEV, NOW, NOW)  # claimable again
 
 
 def test_the_approval_is_refused_while_the_master_switch_is_off(monkeypatch: pytest.MonkeyPatch) -> None:

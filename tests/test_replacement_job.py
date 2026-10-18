@@ -172,7 +172,7 @@ def test_a_next_set_whose_path_a_reserve_replaced_still_reads_what_was_asked(cha
 def test_the_results_name_a_given_up_paths_threat_and_its_own_reason(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """G268: the results' coverage.given_up reads each path's newest card (one query): the threat's name and
     the blocked draft's own sentence for its reason, never just a code and an id."""
-    from app.data_access.scenario.scenarios import ScenarioVersions
+    from app.data_access.scenario.repository import scenarios
     from app.models.scenario.views import explain_given_up
 
     _mismatched_for_threats_named(chat, "Wrong")
@@ -180,7 +180,8 @@ def test_the_results_name_a_given_up_paths_threat_and_its_own_reason(chat: FakeC
     _deliver_until_done(record_id)
     coverage = run_coverage(_plan(record_id)[0])
     assert coverage is not None
-    cards = ScenarioVersions(get_mongodb()).newest_cards(record_id, ["p1"])
+    found = scenarios.list(fields="given_up", sort="version", session_id=record_id, path_id_in=["p1"])
+    cards = {card["path_id"]: card for card in found}
     [entry] = explain_given_up(coverage["given_up"], cards)
     assert (entry["threat"], entry["reason"], entry["replaced_by"]) == (
         "Wrong one",

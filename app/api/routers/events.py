@@ -84,6 +84,7 @@ async def _status_stream(
                 await asyncio.wait_for(updates.get(), Realtime.RECHECK_SECONDS if unfinished else None)
             except TimeoutError:
                 continue
+            await asyncio.sleep(Realtime.COALESCE_SECONDS)  # a burst (a batch of saves) ends first: one read
             while not updates.empty():
                 updates.get_nowait()  # one read covers every change announced meanwhile
 

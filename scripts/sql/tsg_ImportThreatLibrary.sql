@@ -1,5 +1,5 @@
 -- Import a library source (pytm, emb3d, atlas, misp_actors) in one transaction.
--- Called by app/data_access/library_imports.py (StoredProcedure.IMPORT_THREAT_LIBRARY).
+-- Run by the DBA or an import script (StoredProcedure.IMPORT_THREAT_LIBRARY); the app never calls it.
 -- Inserts only what is missing ("first writer wins"): an existing type, threat or actor is counted as existing and
 -- keeps its own IsActive and links. A threat row is skipped when a name is blank, its category is not a live
 -- category, or a curator rejected that threat. A dry run computes the same counts and rolls everything back.

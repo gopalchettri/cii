@@ -54,7 +54,7 @@ def manual_run_record(  # noqa: PLR0913 — one record, whole
         "active": False,
         "plan_note": None,
         "last_action": None,
-        "counts": {},  # counted from its scenario once saved (RunCounts)
+        "counts": {},  # counted from its scenario once saved (scenarios.update_scenario_session_counts)
         "created_at": now,
         "updated_at": now,
         "finished_at": now,

@@ -6,6 +6,7 @@ pods whose clocks differ still agree. A slot expires after its call's longest po
 dies mid-call frees its slot by itself."""
 
 import math
+import random
 import time
 import uuid
 from collections.abc import Iterator
@@ -67,6 +68,9 @@ class AiSlots:
         self._redis = redis
         self._cap = cap
         self._wait_seconds = wait_seconds
+        if redis is not None and cap:  # registered: each poll sends EVALSHA, not the whole script
+            self._take_free_slot = redis.register_script(_TAKE_FREE_SLOT_SCRIPT)
+            self._count_slots = redis.register_script(_COUNT_SLOTS_SCRIPT)
 
     @contextmanager
     def hold_slot(self, hold_seconds: int) -> Iterator[None]:
@@ -91,7 +95,7 @@ class AiSlots:
         if self._redis is None or self._cap == 0:
             return 0.0
         try:
-            return float(self._redis.eval(_COUNT_SLOTS_SCRIPT, 1, AiLimits.SLOTS_KEY))  # type: ignore[arg-type]
+            return float(self._count_slots(keys=[AiLimits.SLOTS_KEY]))  # type: ignore[arg-type]
         except REDIS_UNAVAILABLE_ERRORS:
             return math.nan
 
@@ -100,13 +104,12 @@ class AiSlots:
         wait = self._wait_seconds
         deadline = time.monotonic() + wait
         pause = AiLimits.SLOT_FIRST_PAUSE_SECONDS
-        while not self._redis.eval(
-            _TAKE_FREE_SLOT_SCRIPT, 1, AiLimits.SLOTS_KEY, str(self._cap), str(hold_seconds), call_id
-        ):
+        while not self._take_free_slot(keys=[AiLimits.SLOTS_KEY], args=[self._cap, hold_seconds, call_id]):
             if time.monotonic() + pause > deadline:
                 log.warning(LogEvent.AI_SLOTS_BUSY, cap=self._cap, waited_seconds=round(wait, 1))
                 raise Unavailable(ErrorMessage.AI_BUSY.format(seconds=round(wait)))
-            time.sleep(pause)
+            # Jittered, so the threads that found every slot busy together do not all poll again together.
+            time.sleep(pause * random.uniform(0.5, 1.0))  # noqa: S311 — timing jitter, not a secret
             pause = min(pause * 2, AiLimits.SLOT_MAX_PAUSE_SECONDS)
 
     def _release_slot(self, call_id: str) -> None:

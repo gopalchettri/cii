@@ -16,9 +16,7 @@ from fastapi.testclient import TestClient
 from app.core.constants import AiTask, Collection, Controls, ErrorCode, SnapshotWarning, Status, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, Unavailable
-from app.data_access.remediation_versions import RemediationVersions
-from app.data_access.remediations import RemediationRepository
-from app.data_access.scenario.runs import SessionRepository
+from app.data_access.scenario.repository import scenario_sessions
 from app.models.remediation_requests import PlanRequest
 from app.services.remediation import regenerate as regenerate_module
 from app.services.remediation.regenerate import PlanRegeneration, get_plan_regeneration
@@ -131,9 +129,8 @@ def regenerations(
     world: dict[str, Any],  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
 ) -> Any:
-    db = get_mongodb()
-    snapshots = SnapshotMaker(SessionRepository(db), FAKE_LIBRARY)  # type: ignore[arg-type]
-    built = PlanRegeneration(RemediationRepository(db), RemediationVersions(db), snapshots)
+    snapshots = SnapshotMaker(scenario_sessions, FAKE_LIBRARY)  # type: ignore[arg-type]
+    built = PlanRegeneration(snapshots)
     client.app.dependency_overrides[get_plan_regeneration] = lambda: built  # type: ignore[attr-defined]
     monkeypatch.setattr(regenerate_module, "send_job", lambda *args: world["sent"].append(args))
     yield built
@@ -167,9 +164,8 @@ def test_a_regenerate_that_waited_for_its_controls_still_warns_of_the_ones_it_lo
 def test_an_empty_control_library_is_refused_by_the_request_itself(world: dict[str, Any]) -> None:  # noqa: F811
     """No AI is needed to know that no control could ever be kept: 409 control_library_empty at once."""
     empty = SimpleNamespace(get_control_library=lambda: (), get_retired_controls=lambda: ())
-    db = get_mongodb()
-    snapshots = SnapshotMaker(SessionRepository(db), empty)  # type: ignore[arg-type]
-    service = PlanRequestService(RemediationRepository(db), snapshots)
+    snapshots = SnapshotMaker(scenario_sessions, empty)  # type: ignore[arg-type]
+    service = PlanRequestService(snapshots)
     principal: Any = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
     with pytest.raises(Conflict) as refused:
         service.request(principal, PlanRequest.model_validate(generated(_scenario())))

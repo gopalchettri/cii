@@ -31,14 +31,12 @@ from app.core.constants import (
     AiLimits,
     AiOutcome,
     AiTask,
-    Collection,
     ErrorMessage,
 )
-from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
 from app.core.tracing import record_detail, step_detail_enabled, traced
-from app.data_access.ai_calls import AiCallRecords
+from app.data_access.admin.repository import AiCallRepository, ai_calls
 from app.models.ai import ChatModelProfile
 
 #: A task's own check of an answer: the problems found, an empty list when the answer is right.
@@ -99,7 +97,7 @@ class ChatModel:
         models: list[tuple[str, ChatModelProfile]],
         base_url: str,
         api_key: str,
-        call_records: AiCallRecords,
+        call_records: AiCallRepository,
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
     ):
@@ -248,7 +246,6 @@ def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChe
 def get_chat_model() -> ChatModel:
     settings = get_settings()
     apply_proxy_settings(settings)
-    call_records = AiCallRecords(get_mongodb()[Collection.AI_CALLS])
     model_names = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []
     )
@@ -256,7 +253,7 @@ def get_chat_model() -> ChatModel:
         [(name, find_model_profile(CHAT_MODEL_PROFILES, name)) for name in model_names],
         settings.chat_base_url,
         settings.chat_api_key.get_secret_value(),
-        call_records,
+        ai_calls,
         settings.ai_key_header,
         get_ai_slots(),
     )

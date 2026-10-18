@@ -7,11 +7,10 @@ from typing import Any
 import structlog
 
 from app.core.constants import Decision, Dependency, LogEvent, RemediationMessage, SessionMessage, Status
-from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Forbidden, NotFound
 from app.core.singletons import singleton
-from app.data_access.remediation_reads import RemediationReads
-from app.data_access.remediations import RemediationRepository
+from app.data_access.remediation.repository import remediation_plans
+from app.data_access.scenario.repository import scenarios
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
 from app.models.remediation_views import RemediationList, RemediationResult, RemediationSummary
@@ -19,19 +18,20 @@ from app.models.remediation_views import RemediationList, RemediationResult, Rem
 log = structlog.get_logger(__name__)
 
 
-class RemediationQueries:
-    def __init__(self, plans: RemediationReads) -> None:
-        self._plans = plans
+#: What a result shows of the planned scenario.
+_SCENARIO_SUMMARY_FIELDS = ("content", "controls.items")
 
+
+class RemediationQueries:
     def result(
         self, principal: Principal, session_id: str, scenario_id: str, include_history: bool
     ) -> RemediationResult:
         """The scenario's plan as shown, with the scenario it treats; 404/403 as every plan route."""
-        record = self._plans.find_result_of_scenario(scenario_id)
+        record = remediation_plans.get(fields="result", scenario_id=scenario_id)
         status = None if record is None else RemediationStatus.from_record(record)
         _of_scenario(status, principal.entity_id, session_id, scenario_id)
         assert record is not None  # _of_scenario refused a missing plan
-        scenario = self._plans.find_scenario_summary(scenario_id)
+        scenario = scenarios.get(fields=_SCENARIO_SUMMARY_FIELDS, _id=scenario_id)
         return RemediationResult.from_records(record, scenario, include_history)
 
     def entity_plans(  # noqa: PLR0913 — the list's filters, each its own query parameter
@@ -62,8 +62,12 @@ class RemediationQueries:
         """The entity's plans (of one run when `session_id` is given), newest first, filtered by every filter
         given. The caller's run is checked by the route (valid_session)."""
         given = {"session_id": session_id, "status": status, "decision": decision, "risk_level": risk_level}
-        filters: dict[str, Any] = {key: value for key, value in given.items() if value is not None}
-        records, total = self._plans.list_for_entity(entity_id, filters, offset, limit)
+        where: dict[str, Any] = {key: value for key, value in given.items() if value is not None}
+        where["entity_id"] = entity_id  # each filter with the newest-first sort is one index scan
+        records = remediation_plans.list(
+            fields="summary", sort="-created_at", skip=offset, limit=limit, **where
+        )
+        total = remediation_plans.count(**where)
         return RemediationList(
             items=[RemediationSummary.from_record(record) for record in records], total=total
         )
@@ -72,7 +76,7 @@ class RemediationQueries:
 def find_plan_for_caller(session_id: str, scenario_id: str, entity_id: int) -> RemediationStatus:
     """The plan of a scenario in a run, as every `.../treatment-plan` route reads it first: 404 when the
     scenario has no plan or is not in this run, 403 another entity's."""
-    status = RemediationRepository(get_mongodb()).find_for_scenario(scenario_id)
+    status = get_remediation_status_of_scenario(scenario_id)
     return _of_scenario(status, entity_id, session_id, scenario_id)
 
 
@@ -80,13 +84,25 @@ def read_current_remediation_status(remediation_id: str) -> dict[str, Any] | Non
     """The plan's status body read now; None when MongoDB cannot say (the next published change follows
     anyway); NotFound once the plan is gone (deleted with its run, G214)."""
     try:
-        status = RemediationReads(get_mongodb()).find_status(remediation_id)
+        status = get_remediation_status(remediation_id)
     except MONGO_UNAVAILABLE_ERRORS:
         log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO, exc_info=True)
         return None
     if status is None:
         raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))
     return status.model_dump(mode="json")
+
+
+def get_remediation_status(remediation_id: str) -> RemediationStatus | None:
+    """Reads a remediation plan's status from tsg_remediations (never a snapshot or a plan), if it exists."""
+    record = remediation_plans.get(fields="status", _id=remediation_id)
+    return None if record is None else RemediationStatus.from_record(record)
+
+
+def get_remediation_status_of_scenario(scenario_id: str) -> RemediationStatus | None:
+    """Reads the scenario's remediation plan status from tsg_remediations (id-only gate read), if any."""
+    record = remediation_plans.get(fields="status", scenario_id=scenario_id)
+    return None if record is None else RemediationStatus.from_record(record)
 
 
 def _of_scenario(
@@ -104,4 +120,4 @@ def _of_scenario(
 @singleton
 def get_remediation_queries() -> RemediationQueries:
     """The process's plan reads."""
-    return RemediationQueries(RemediationReads(get_mongodb()))
+    return RemediationQueries()

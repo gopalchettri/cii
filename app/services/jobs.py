@@ -16,27 +16,28 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.job_control import JobControlRecords
+from app.data_access.admin.repository import audit_records
+from app.data_access.scenario.repository import JobControlRepository
 from app.models.api_clients import Principal
 from app.models.jobs import JobList, JobProgress, JobView, PlanCancelled, SessionDeleted
 from app.models.scenario.views import RunBoard, SessionStatus, build_board
 from app.realtime.publisher import publish_remediation_status, publish_session_status
-from app.services.audit import audit_target, caller_actor, record_audit
+from app.services.audit import audit_target, caller_actor
 from app.services.scenario.runs import find_status_for_caller
 
 _WORKING = (Status.QUEUED, Status.RUNNING)
 
 
 class JobService:
-    def __init__(self, records: JobControlRecords) -> None:
+    def __init__(self, records: JobControlRepository) -> None:
         self._records = records
 
     def list_jobs(self, principal: Principal) -> JobList:
         """The caller's runs and remediation plans queued or running (a run also while its controls are being
         matched), oldest first; `total` counts them all, though the list shows at most JobControl.LIST_MAX
         runs and as many plans."""
-        runs, run_total = self._records.working_runs(principal.entity_id)
-        plans, plan_total = self._records.working_plans(principal.entity_id)
+        runs, run_total = self._records.list_working_scenario_sessions(principal.entity_id)
+        plans, plan_total = self._records.list_working_remediation_plans(principal.entity_id)
         jobs = [_run_job(record) for record in runs] + [_plan_job(record) for record in plans]
         jobs.sort(key=lambda job: (job.created_at is None, job.created_at))
         return JobList(jobs=jobs, total=run_total + plan_total)
@@ -46,21 +47,25 @@ class JobService:
         """Stop the run now: its job, and the controls still being matched for its scenarios. What is written
         stays readable and decidable; a next set or regenerate resumes it on purpose. 409 when nothing of it
         is queued or running."""
-        stopped, controls = self._records.cancel_run(run.session_id, principal.entity_id, _who(principal))
+        stopped, controls = self._records.cancel_scenario_session(
+            run.session_id, principal.entity_id, _who(principal)
+        )
         if not stopped and not controls:
             message = JobControlMessage.NOTHING_TO_CANCEL.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         publish_session_status(run.session_id)
         after = {"job_stopped": stopped, "controls_cancelled": controls}
         target = audit_target(AuditTarget.SESSION, run.session_id)
-        record_audit(AuditAction.RUN_CANCELLED, caller_actor(principal), target, after=after)
+        audit_records.create_audit_record(
+            AuditAction.RUN_CANCELLED, caller_actor(principal), target, after=after
+        )
         return build_board(find_status_for_caller(run.session_id, principal.entity_id))
 
     @traced("run.delete")
     def delete_run(self, principal: Principal, run: SessionStatus) -> SessionDeleted:
         """Remove the run for good, with its scenarios and remediation plans. 409 cancel_first while anything
         of it is queued or running: nothing is ever deleted under a worker."""
-        deleted = self._records.delete_run(run.session_id, principal.entity_id)
+        deleted = self._records.delete_scenario_session(run.session_id, principal.entity_id)
         if deleted is None:  # still working, or a next set started first
             message = JobControlMessage.CANCEL_FIRST.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.CANCEL_FIRST)
@@ -70,18 +75,20 @@ class JobService:
             publish_remediation_status(plan_id)
         target = audit_target(AuditTarget.SESSION, run.session_id)
         after = {"asset_id": run.asset_id, **removed}
-        record_audit(AuditAction.SESSION_DELETED, caller_actor(principal), target, after=after)
+        audit_records.create_audit_record(
+            AuditAction.SESSION_DELETED, caller_actor(principal), target, after=after
+        )
         return SessionDeleted(session_id=run.session_id, **removed)
 
     @traced("plan.cancel")
     def cancel_plan(self, principal: Principal, remediation_id: str) -> PlanCancelled:
         """Stop a plan being written (409 when it is not); 404/403 come from the route's CallersPlan."""
-        if not self._records.cancel_plan(remediation_id, principal.entity_id, _who(principal)):
+        if not self._records.cancel_remediation_plan(remediation_id, principal.entity_id, _who(principal)):
             message = JobControlMessage.PLAN_NOTHING_TO_CANCEL.format(remediation_id=remediation_id)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         publish_remediation_status(remediation_id)
         target = audit_target(AuditTarget.REMEDIATION, remediation_id)
-        record_audit(AuditAction.PLAN_CANCELLED, caller_actor(principal), target)
+        audit_records.create_audit_record(AuditAction.PLAN_CANCELLED, caller_actor(principal), target)
         return PlanCancelled(remediation_id=remediation_id, status=Status.CANCELLED)
 
 
@@ -132,4 +139,4 @@ def _plan_job(record: dict[str, Any]) -> JobView:
 @singleton
 def get_job_service() -> JobService:
     """The process's job-control service."""
-    return JobService(JobControlRecords(get_mongodb()))
+    return JobService(JobControlRepository(get_mongodb()))

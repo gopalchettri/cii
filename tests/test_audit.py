@@ -12,7 +12,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 
 from app.core.constants import Audit, AuditAction, AuditTarget, Collection, Timeouts
 from app.core.database import get_mongodb
-from app.data_access import audit as audit_records
+from app.data_access.admin import repository as admin
 from app.services import audit
 from tests.conftest import ADMIN
 
@@ -62,10 +62,11 @@ def test_revoking_twice_is_recorded_once(client: TestClient) -> None:
 def test_an_audit_outage_never_fails_the_action_and_is_counted(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def mongo_is_down() -> None:
-        raise ServerSelectionTimeoutError("audit store down")
+    class MongoIsDown:
+        def insert_one(self, _record: dict) -> None:
+            raise ServerSelectionTimeoutError("audit store down")
 
-    monkeypatch.setattr(audit_records, "_audit_records", mongo_is_down)
+    monkeypatch.setattr(admin.audit_records, "_collection", MongoIsDown())
     failures_before = _failures()
     response = client.post(URL, json={"name": "audit-d"}, headers=ADMIN)
     assert response.status_code == 201, response.text
@@ -93,8 +94,8 @@ def test_an_audit_record_is_one_insert_no_index_work(monkeypatch: pytest.MonkeyP
             calls.append(name)
             return lambda *_a, **_k: None
 
-    monkeypatch.setattr(audit_records, "_audit_records", Store)
-    audit.record_audit(
+    monkeypatch.setattr(admin.audit_records, "_collection", Store())
+    admin.audit_records.create_audit_record(
         AuditAction.KEY_MINTED, audit.admin_actor("t"), audit.audit_target(AuditTarget.API_CLIENT, "x")
     )
     assert calls == ["insert_one"]
@@ -117,12 +118,12 @@ def test_an_audit_write_is_bounded_so_a_slow_store_cannot_hold_the_answer(
 
     class Store:
         def insert_one(self, _record: dict) -> None:
-            # Recorded, not asserted here: record_audit only logs a failed write, so an assert would be lost.
+            # Recorded, not asserted here: a failed write is only logged, so an assert would be lost.
             inserted_inside.append(bool(inside))
 
-    monkeypatch.setattr(audit_records.pymongo, "timeout", timeout)
-    monkeypatch.setattr(audit_records, "_audit_records", Store)
-    audit.record_audit(
+    monkeypatch.setattr(admin.pymongo, "timeout", timeout)
+    monkeypatch.setattr(admin.audit_records, "_collection", Store())
+    admin.audit_records.create_audit_record(
         AuditAction.KEY_MINTED, audit.admin_actor("t"), audit.audit_target(AuditTarget.API_CLIENT, "x")
     )
     assert deadlines == [Timeouts.RECORD_WRITE_SECONDS] and inserted_inside == [True]

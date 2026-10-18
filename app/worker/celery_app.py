@@ -7,7 +7,7 @@ Prometheus. A prefork pool would copy open connections into forked children and 
 where Prometheus never looks, so start-up refuses every pool but threads (app/worker/lifecycle.py).
 
 Start (one deployment per queue; dev runs one worker on all three):
-    celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats
+    celery -A app.worker worker --pool=threads -c 4 -Q tsg_threats
     celery -A app.worker beat"""
 
 import structlog

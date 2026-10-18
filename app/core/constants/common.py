@@ -47,6 +47,21 @@ class Collection(StrEnum):
     INTEL = "tsg_intel"  # external intelligence records, one version per change
     EXTERNAL_FEED_STATUS = "tsg_external_feed_status"  # per source: last refresh, checkpoint; the switch
     EXTERNAL_INTELLIGENCE_SNAPSHOTS = "tsg_external_intelligence_snapshots"  # built snapshots, one active
+    SQL_OPERATIONS = "tsg_sql_operations"  # one record per SQL Server write, so a lost answer is reconciled
+
+
+class SqlOperationStatus(StrEnum):
+    """Where one SQL Server write stands (tsg_sql_operations.status)."""
+
+    PENDING = "pending"  # written before the call: the call runs now, or its process died during it
+    DONE = "done"  # applied: its stored result answers every retry, with no SQL call
+    NOT_APPLIED = "not_applied"  # SQL Server answered with an error: rolled back, a retry runs it again
+    REQUIRES_RECONCILIATION = "requires_reconciliation"  # sent, answer lost: the next attempt replays it
+
+
+class SqlOperations:
+    KEEP_DAYS: Final = 30  # a finished record is deleted this long after it finished (TTL on finished_at)
+    PENDING_SECONDS: Final = 60  # above connect + query timeouts: an older pending call has died
 
 
 class Dependency(StrEnum):
@@ -189,6 +204,7 @@ class LogEvent(StrEnum):
     HTTP_APP_ERROR = "http.app_error"
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
     DEPENDENCY_UNAVAILABLE = "dependency.unavailable"
+    MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REUSED = "ai.call_reused"  # a retried job's earlier answer, no AI call made

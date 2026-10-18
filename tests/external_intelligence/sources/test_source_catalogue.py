@@ -8,9 +8,9 @@ class _Store:
     def __init__(self) -> None:
         self.asked: list[IntelSource] = []
 
-    def list_current_external_ids(self, source: IntelSource) -> set[str]:
-        self.asked.append(source)
-        return {"CVE-2024-0001"}
+    def list(self, fields: object = None, **where: IntelSource) -> list[dict[str, str]]:
+        self.asked.append(where["source"])
+        return [{"external_id": "CVE-2024-0001"}]
 
 
 def test_every_source_is_built_kev_first_and_nvd_last() -> None:

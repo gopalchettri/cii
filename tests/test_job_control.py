@@ -28,12 +28,15 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import Conflict, NotFound
-from app.data_access import job_control as job_control_module
-from app.data_access.job_control import JobControlRecords
-from app.data_access.job_records import JobLease, JobRecords, LeaseLost
-from app.data_access.scenario.runs import SessionRepository
-from app.data_access.scenario.scenarios import ControlDeliveries, ControlSweep
+from app.core.exceptions import Conflict, LeaseLost, NotFound
+from app.data_access.jobs.repository import JobLease, JobRepository
+from app.data_access.scenario import repository as job_repository_module
+from app.data_access.scenario.repository import (
+    JobControlRepository,
+    controls_deliveries,
+    scenario_controls,
+    scenario_sessions,
+)
 from app.models.api_clients import Principal
 from app.services import jobs as jobs_module
 from app.services.api_clients import get_api_client_service
@@ -164,15 +167,15 @@ def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops
     stopped_by = board["progress"]["error_message"]["scenarios"]
     assert re.fullmatch(r"Cancelled by user u1 at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC\.", stopped_by)
     with pytest.raises(LeaseLost):
-        lease.write({"counts.written": 7})  # the worker's next save
-    assert JobLease.claim(sessions, run_id, 1, TaskName.WRITE_SCENARIOS, "t2") is None
+        lease.update_job({"counts.written": 7})  # the worker's next save
+    assert JobRepository(sessions).claim_job(run_id, 1, TaskName.WRITE_SCENARIOS, "t2") is None
     sessions.update_one({"_id": run_id}, {"$set": {"job.lease_until": NOW - timedelta(hours=1)}})
-    reaper = JobRecords(sessions)
-    assert run_id not in {r["_id"] for r in reaper.find_expired_leases(datetime.now(UTC))}
-    assert run_id not in {r["_id"] for r in reaper.find_unsent(datetime.now(UTC))}
+    reaper = JobRepository(sessions)
+    assert run_id not in {r["_id"] for r in reaper.list_expired_jobs(datetime.now(UTC))}
+    assert run_id not in {r["_id"] for r in reaper.list_unsent_jobs(datetime.now(UTC))}
     assert (_controls(waiting), _controls(failed)) == (Status.CANCELLED, Status.CANCELLED)
-    assert run_id not in ControlSweep(get_mongodb()).requeue_stalled()
-    assert not ControlDeliveries(get_mongodb()).take(run_id, "t3")
+    assert run_id not in scenario_controls.requeue_stalled_controls()
+    assert controls_deliveries.claim_controls_delivery(run_id, "t3") is None
     stored = sessions.find_one({"_id": run_id})
     assert stored["active"] is False and stored["cancelled"]["user_id"] == "u1"
     audits = get_mongodb()[Collection.AUDIT].find({"target.id": run_id, "action": AuditAction.RUN_CANCELLED})
@@ -190,7 +193,7 @@ def test_a_scenario_saved_in_flight_after_a_cancel_never_has_its_controls_matche
     late = _scenario(
         run_id, Status.QUEUED, controls={"status": Status.QUEUED, "queued_at": datetime.now(UTC)}
     )
-    assert run_id not in ControlSweep(get_mongodb()).requeue_stalled()
+    assert run_id not in scenario_controls.requeue_stalled_controls()
     assert _controls(late) == Status.CANCELLED
     counts = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})["counts"]
     assert (counts["controls_waiting"], counts["controls_cancelled"]) == (0, 1)  # the board and list follow
@@ -295,20 +298,19 @@ def test_a_delivery_mapping_the_run_stops_at_the_cancel(
 ) -> None:
     """The cancel ends the run's controls delivery lease: a delivery mapping it stops after the scenario in
     hand, never claiming one saved later (review)."""
-    deliveries = ControlDeliveries(get_mongodb())
     for status in (Status.RUNNING, Status.DONE):  # a job at work; a finished run still matching controls
         run_id = _run(entity, status)
         _scenario(run_id, Status.QUEUED)
-        assert deliveries.take(run_id, "mapping")
+        assert controls_deliveries.claim_controls_delivery(run_id, "mapping") is not None
         assert client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity)).status_code == 200
-        assert not deliveries.renew(run_id, "mapping"), status
+        assert not controls_deliveries.update_controls_delivery(run_id, "mapping"), status
 
 
 def test_a_deleted_runs_scenario_saved_meanwhile_goes_with_it(entity: int) -> None:
     """A scenario whose run is gone is never queued again for ever: the sweep removes it."""
     gone = uuid.uuid4().hex
     stray = _scenario(gone, Status.QUEUED, entity_id=entity)
-    assert gone not in ControlSweep(get_mongodb()).requeue_stalled()
+    assert gone not in scenario_controls.requeue_stalled_controls()
     assert get_mongodb()[Collection.SCENARIOS].find_one({"_id": stray}) is None
 
 
@@ -319,7 +321,7 @@ def test_a_delete_cut_short_is_finished_by_calling_it_again(
     run_id = _run(entity, Status.DONE)
     _scenario(run_id, Status.DONE)
     _plan(entity, run_id, Status.DONE)
-    records = JobControlRecords(get_mongodb())
+    records = JobControlRepository(get_mongodb())
 
     plans = get_mongodb()[Collection.REMEDIATIONS]
 
@@ -333,7 +335,7 @@ def test_a_delete_cut_short_is_finished_by_calling_it_again(
     with pytest.MonkeyPatch.context() as outage:
         outage.setattr(records, "_plans", Down())
         with pytest.raises(ConnectionError):
-            records.delete_run(run_id, entity)
+            records.delete_scenario_session(run_id, entity)
     response = client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity))
     assert response.json() == {"session_id": run_id, "scenarios": 0, "remediation_plans": 1}
     assert get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id}) is None
@@ -442,7 +444,7 @@ def test_a_deleted_runs_plan_watchers_are_told(
 def test_a_run_gone_under_a_reader_is_a_404_never_a_500() -> None:
     """A plan request or a job that reads a run deleted meanwhile (review: KeyError, a 500)."""
     with pytest.raises(NotFound):
-        SessionRepository(get_mongodb()).find_context(uuid.uuid4().hex)
+        scenario_sessions.get_scenario_session_context(uuid.uuid4().hex)
 
 
 def test_a_next_set_racing_a_delete_is_told_the_run_is_being_deleted(
@@ -457,16 +459,16 @@ def test_a_next_set_racing_a_delete_is_told_the_run_is_being_deleted(
     run_id = _run(entity, Status.DONE, plan={"paths": [path]})
     principal = Principal(client_id="c1", user_id="u2", entity_id=entity, tenant_id="T")
     raced: list[BaseException] = []
-    work_left = JobControlRecords._work_left
+    work_left = JobControlRepository._work_left
 
-    def next_set_lands_meanwhile(records: JobControlRecords, session_id: str, entity_id: int) -> bool:
+    def next_set_lands_meanwhile(records: JobControlRepository, session_id: str, entity_id: int) -> bool:
         try:
             get_run_actions().next_set(principal, find_status_for_caller(run_id, entity))
         except Conflict as exc:
             raced.append(exc)
         return work_left(records, session_id, entity_id)
 
-    monkeypatch.setattr(JobControlRecords, "_work_left", next_set_lands_meanwhile)
+    monkeypatch.setattr(JobControlRepository, "_work_left", next_set_lands_meanwhile)
     assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200
     assert [getattr(exc, "reason", None) for exc in raced] == [ConflictReason.RUN_BEING_DELETED]
     assert sent == []
@@ -493,14 +495,14 @@ def test_a_cancel_landing_during_a_resume_stands(entity: int, monkeypatch: pytes
     earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
     run_id = _run(entity, Status.DONE, cancelled=earlier)
     stopped = _scenario(run_id, Status.CANCELLED)
-    records = JobControlRecords(get_mongodb())
-    being_deleted = job_control_module.is_being_deleted
+    records = JobControlRepository(get_mongodb())
+    being_deleted = job_repository_module.is_scenario_session_being_deleted
 
     def cancel_lands_meanwhile(sessions: Any, session_id: str) -> bool:
-        records.cancel_run(run_id, entity, {"user_id": "u9"})
+        records.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
         return being_deleted(sessions, session_id)
 
-    monkeypatch.setattr(job_control_module, "is_being_deleted", cancel_lands_meanwhile)
-    assert records.resume_controls(run_id) == 0
+    monkeypatch.setattr(job_repository_module, "is_scenario_session_being_deleted", cancel_lands_meanwhile)
+    assert records.resume_scenario_controls(run_id) == 0
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["cancelled"]["user_id"] == "u9" and _controls(stopped) == Status.CANCELLED

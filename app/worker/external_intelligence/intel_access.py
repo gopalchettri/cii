@@ -9,14 +9,17 @@ import structlog
 
 from app.core.config import get_settings
 from app.core.constants import ErrorMessage, IntelSource, IntelWorkEvent
-from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
-from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
+from app.data_access.external_intelligence.repository import intel_feeds
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.models.external_intelligence.evidence import EvidenceBatchSummary
 from app.models.external_intelligence.evidence_request import EvidenceRequest, EvidenceResult
-from app.models.external_intelligence.source_health import FeedFreshness
+from app.models.external_intelligence.source_health import (
+    FeedFreshness,
+    source_health_in_registry_order,
+    sources_in_registry_order,
+)
 from app.models.external_intelligence.switch_state import SwitchState
 from app.search.external_intelligence.index_keeper import get_evidence_index_keeper
 
@@ -95,7 +98,7 @@ class IntelAccess:
 
     def approved_sources(self) -> list[IntelSource]:
         """The sources Legal still allows."""
-        return FeedStatusStore(get_mongodb()).list_approved_sources()
+        return sources_in_registry_order(intel_feeds.list(["_id"], sources=True, approved=True))
 
     def is_stale(self, approved: Collection[IntelSource]) -> bool:
         """True when an approved source that has data is older than IntelLimits.STALE_AFTER_HOURS."""
@@ -103,7 +106,7 @@ class IntelAccess:
 
     def _feeds_are_stale(self, approved: Collection[IntelSource]) -> bool:
         """The staleness of these approved sources, from one read of the source health."""
-        health = FeedStatusStore(get_mongodb()).read_all_source_health()
+        health = source_health_in_registry_order(intel_feeds.list(sources=True))
         return FeedFreshness.of(health, approved, datetime.now(UTC)).stale
 
 

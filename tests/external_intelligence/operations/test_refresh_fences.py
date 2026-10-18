@@ -42,7 +42,7 @@ def three_batches() -> FetchResult:
 
 def test_a_revoke_between_two_batches_stops_the_refresh_and_leaves_no_record_of_the_source() -> None:
     run, feeds, records = build(three_batches())
-    records.after_save = lambda saved: feeds.revoke_source(KEV) if saved == 1 else None
+    records.after_save = lambda saved: feeds.update_intel_feed_approval(KEV, False) if saved == 1 else None
     summary = run.refresh_due_sources(NOW)
     assert summary.sources[0].result == RefreshResult.CLAIM_LOST
     assert len(records.saved) == 1  # the second batch was refused: the claim does not hold a revoked source
@@ -51,7 +51,9 @@ def test_a_revoke_between_two_batches_stops_the_refresh_and_leaves_no_record_of_
 
 def test_a_revoke_during_the_last_batch_is_purged_by_the_refresh_itself() -> None:
     run, feeds, records = build(three_batches())
-    records.after_save = lambda saved: feeds.revoke_source(KEV) if saved == BATCHES else None
+    records.after_save = lambda saved: (
+        feeds.update_intel_feed_approval(KEV, False) if saved == BATCHES else None
+    )
     summary = run.refresh_due_sources(NOW)
     assert len(records.saved) == BATCHES and records.purged == [KEV]  # all written, then deleted again
     assert summary.sources[0].result == RefreshResult.CLAIM_LOST and feeds.successes == []
@@ -59,7 +61,7 @@ def test_a_revoke_during_the_last_batch_is_purged_by_the_refresh_itself() -> Non
 
 def test_a_revoke_after_the_last_write_is_purged_and_the_run_is_recorded_as_revoked() -> None:
     run, feeds, records = build(three_batches())
-    records.after_retire = lambda: feeds.revoke_source(KEV)
+    records.after_retire = lambda: feeds.update_intel_feed_approval(KEV, False)
     summary = run.refresh_due_sources(NOW)
     assert records.purged == [KEV] and feeds.successes == [] and summary.failed == (KEV,)
     assert "revoked" in summary.sources[0].error

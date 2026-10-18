@@ -25,16 +25,24 @@ class MemoryFlags:
     def __init__(self, stored=None) -> None:
         self.stored, self.reads, self.down = stored, 0, False
 
-    def read_runtime_flag(self):
+    def get(self, fields=None, **where):
         self.reads += 1
         if self.down:
             raise MONGO_UNAVAILABLE_ERRORS[0]("down")
-        return self.stored
+        return _switch_doc(self.stored)
 
-    def write_runtime_flag(self, enabled: bool, changed_by: str, now: datetime) -> None:
+    def save(self, record: dict, only_if=None) -> bool:
         if self.down:
             raise MONGO_UNAVAILABLE_ERRORS[0]("down")
-        self.stored = (enabled, now, changed_by)
+        self.stored = (record["enabled"], record["changed_at"], record["changed_by"])
+        return True
+
+
+def _switch_doc(stored):
+    """The switch document a (enabled, changed_at, changed_by) tuple stands for, or None."""
+    if stored is None:
+        return None
+    return {"enabled": stored[0], "changed_at": stored[1], "changed_by": stored[2]}
 
 
 def _audit_count() -> int:
@@ -104,11 +112,11 @@ def test_a_read_that_began_before_a_change_never_overwrites_it() -> None:
     started, finish = threading.Event(), threading.Event()
 
     class SlowFlags(MemoryFlags):
-        def read_runtime_flag(self):
+        def get(self, fields=None, **where):
             value = self.stored
             started.set()
             finish.wait(5)
-            return value
+            return _switch_doc(value)
 
     switch = ExternalIntelligenceSwitch(SlowFlags((True, LATER, "a")), True, clock)
     seen = []

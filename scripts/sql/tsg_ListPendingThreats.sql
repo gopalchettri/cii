@@ -1,5 +1,5 @@
--- Threats waiting for a curator (pending: IsActive = 0 AND IsDeleted = 0), oldest first (BLUEPRINT M05 L5, #23).
--- Read-only. Called by app/data_access/pending_threats.py (StoredProcedure.LIST_PENDING_THREATS).
+-- Threats waiting for a curator (pending: IsActive = 0 AND IsDeleted = 0), oldest first.
+-- Read-only. Called by app/data_access/sql.py (StoredProcedure.LIST_PENDING_THREATS).
 -- Result sets, in order:
 --   1. one page: catalogue_id, threat, threat_type, type_pending (the type is pending too), categories (a JSON array
 --      of names), source ('manual' | 'ai'), created_by, created_at

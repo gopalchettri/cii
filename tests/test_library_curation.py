@@ -12,7 +12,7 @@ from sqlalchemy import Engine
 
 from app.core.constants import Collection, StoredProcedure
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.library import LibraryRepository
+from app.data_access.library.repository import SqlServerRepository
 from app.services.library_curation import LibraryCuration, get_library_curation
 from tests.conftest import ADMIN
 
@@ -35,7 +35,7 @@ DELETE FROM dbo.Threat_Type WHERE ThreatTypeName LIKE N'Curation type %';
 
 @pytest.fixture(autouse=True)
 def curation_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
-    service = LibraryCuration(LibraryRepository(StoredProcedureClient(sql_test_engine)))
+    service = LibraryCuration(SqlServerRepository(StoredProcedureClient(sql_test_engine)))
     client.app.dependency_overrides[get_library_curation] = lambda: service  # type: ignore[attr-defined]
     yield
     client.app.dependency_overrides.pop(get_library_curation, None)  # type: ignore[attr-defined]
@@ -102,8 +102,8 @@ def test_one_call_approves_and_rejects_and_a_repeat_changes_nothing(
     client: TestClient, sql_test_engine: Engine
 ) -> None:
     """T-ADM-02: the approved threat goes live with its new type; the rejected one is gone; both leave the
-    queue; the same call again answers already_*; an unknown id and a live threat asked to be rejected change
-    nothing."""
+    queue; the same call again (a retry) answers the first answer, another curator's answers already_*; an
+    unknown id and a live threat asked to be rejected change nothing."""
     approved = _propose(sql_test_engine, _new_type())
     a_id = approved["threat_catalogue_id"]
     r_id = _propose(sql_test_engine, _new_type())["threat_catalogue_id"]
@@ -125,7 +125,9 @@ def test_one_call_approves_and_rejects_and_a_repeat_changes_nothing(
             "SELECT IsActive FROM dbo.Threat_Catalogue WHERE ThreatCatalogueID = ?", (LIVE_THREAT,)
         ).scalar()
     assert type_live and threat_live  # the new type went live; the live threat stayed live
-    again = {row["catalogue_id"]: row["outcome"] for row in _decide(client, body).json()["results"]}
+    assert _decide(client, body).json()["results"] == first.json()["results"]  # from its operation record
+    other_curator = _decide(client, body, **{"X-User-Id": "curator-2"}).json()["results"]
+    again = {row["catalogue_id"]: row["outcome"] for row in other_curator}
     assert (again[a_id], again[r_id]) == ("already_approved", "already_rejected")
 
 

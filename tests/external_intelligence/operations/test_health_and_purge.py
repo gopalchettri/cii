@@ -6,8 +6,12 @@ import pytest
 
 from app.core.constants import Collection, EmbeddingCorpus, FeedStatus, IntelLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.intel_vector_purge import IntelVectorPurge
-from app.models.external_intelligence.source_health import SourceHealth
+from app.data_access.external_intelligence.repository import (
+    intel_vectors,
+)
+from app.models.external_intelligence.source_health import (
+    SourceHealth,
+)
 from app.models.external_intelligence.switch_state import SwitchState
 from app.services.external_intelligence.health import HealthReporter
 from app.services.external_intelligence.purge_revoked_source import RevokedSourcePurger
@@ -83,8 +87,7 @@ def test_a_revoked_source_counts_neither_as_stale_nor_as_pending() -> None:
 def test_the_worker_search_flag_follows_the_same_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     feeds = MemoryFeeds([KEV, NVD])
     feeds.health = {KEV: _fresh(KEV, 1), NVD: SourceHealth(NVD)}
-    monkeypatch.setattr(intel_access, "FeedStatusStore", lambda _db: feeds)
-    monkeypatch.setattr(intel_access, "get_mongodb", lambda: None)
+    monkeypatch.setattr(intel_access, "intel_feeds", feeds)
     monkeypatch.setattr(intel_access, "datetime", _FixedClock)
     access = IntelAccess()
     assert access.is_stale(access.approved_sources()) is False
@@ -102,8 +105,8 @@ class MemoryVectors:
     def __init__(self) -> None:
         self.purged: list[IntelSource] = []
 
-    def purge_source_vectors(self, source: IntelSource) -> int:
-        self.purged.append(source)
+    def delete(self, **where: IntelSource) -> int:
+        self.purged.append(where["used_only_by_source"])
         return 1
 
 
@@ -117,10 +120,11 @@ def test_a_revoked_source_is_unapproved_first_then_its_records_and_vectors_go_an
         MemoryVectors(),
     )
     order: list[str] = []
-    original = records.purge_source
-    records.purge_source = lambda s: (order.append(f"records approved={KEV in feeds.approved}"), original(s))[
-        1
-    ]  # type: ignore[method-assign]
+    original = records.delete
+    records.delete = lambda **where: (  # type: ignore[method-assign]
+        order.append(f"records approved={KEV in feeds.approved}"),
+        original(**where),
+    )[1]
     purger = RevokedSourcePurger(records, feeds, keeper, vectors)  # type: ignore[arg-type]
     assert purger.revoke_and_purge(KEV) == 1
     assert order == ["records approved=False"] and vectors.purged == [KEV] and keeper.rebuilds == 1
@@ -148,7 +152,7 @@ def test_cached_vectors_of_a_revoked_source_are_deleted_but_a_shared_vector_stay
     vectors.delete_many({"_id": {"$in": [d["_id"] for d in (mine, shared, other, library)]}})
     vectors.insert_many([mine, shared, other, library])
     try:
-        assert IntelVectorPurge(db).purge_source_vectors(KEV) == 1
+        assert intel_vectors.delete(used_only_by_source=KEV) == 1
         left = {doc["_id"] for doc in vectors.find({"_id": {"$regex": "^t\\|"}})}
         assert left == {"t|shared", "t|other", "t|library"}
     finally:

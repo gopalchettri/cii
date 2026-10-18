@@ -39,7 +39,7 @@ def set_debug_value(name: str, value: str) -> None:
 # ---------------------------------------------------------------- read-only checks
 def stores(_: str) -> int:
     from app.core.database import get_stored_procedure_client
-    from app.data_access.library import LibraryRepository
+    from app.data_access.library.repository import SqlServerRepository
     from app.services.readiness import check_readiness
 
     dependencies, workers = check_readiness()
@@ -48,7 +48,8 @@ def stores(_: str) -> int:
     counts = ", ".join(f"{queue}={count}" for queue, count in (workers or {}).items())
     print(f"  live workers per queue: {counts if workers is not None else 'unknown (check Redis)'}")
     if all(dependencies.values()):
-        tables = [table for table, _ in LibraryRepository(get_stored_procedure_client()).read_library_stamp()]
+        loaded = SqlServerRepository(get_stored_procedure_client()).load_library()
+        tables = [table for table, _ in loaded.stamp] if loaded else []
         print(f"  library tables SQL Server reports: {len(tables)} ({', '.join(tables)})")
     return 0 if all(dependencies.values()) and workers and all(workers.values()) else 1
 

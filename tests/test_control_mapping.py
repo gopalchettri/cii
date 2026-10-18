@@ -26,13 +26,13 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, Unavailable
-from app.data_access.scenario.scenarios import (
-    ControlDeliveries,
-    ControlLeases,
-    ControlSweep,
-    RunCounts,
+from app.data_access.scenario.repository import (
+    ControlsDeliveryRepository,
     ScenarioRepository,
     TitleTaken,
+    controls_deliveries,
+    scenario_controls,
+    scenarios,
 )
 from app.domain.scenario.controls import ControlMapper
 from app.models.library import (
@@ -122,12 +122,12 @@ class _Clashing:
 @pytest.mark.parametrize(("written", "title_taken"), [(0, True), (1, False)])
 def test_an_unnamed_duplicate_key_is_checked_never_taken_as_written(written: int, title_taken: bool) -> None:
     """Review fix 7: before, it was always "already written": the path was served with its failure card."""
-    scenarios = ScenarioRepository({"tsg_scenarios": _Clashing(written)})  # type: ignore[arg-type]
+    clashing = ScenarioRepository(_Clashing(written))  # type: ignore[arg-type]
     if title_taken:
         with pytest.raises(TitleTaken):
-            scenarios.save({"_id": "s1"})
+            clashing.save_scenario({"_id": "s1"})
     else:
-        assert scenarios.save({"_id": "s1"}) is False
+        assert clashing.save_scenario({"_id": "s1"}) is False
 
 
 #: As the run freezes it (services/scenario/runs.py): the asset's IT/OT code is `asset.category_code`;
@@ -322,49 +322,53 @@ def _controls_of(scenario_id: str) -> dict[str, Any]:
 
 def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish() -> None:
     """T-CTL-06 (S33): one conditional update per claim; every later write fenced on the claim's task id."""
-    leases = ControlLeases(get_mongodb())
+    leases = scenario_controls
     session_id, scenario_id = _waiting_scenario()
-    first = leases.claim(session_id, "worker-a")
+    first = leases.claim_scenario_controls(session_id, "worker-a")
     assert first is not None and first["_id"] == scenario_id and first["controls"]["attempts"] == 1
-    assert leases.claim(session_id, "worker-b") is None
+    assert leases.claim_scenario_controls(session_id, "worker-b") is None
     expired = {"controls.lease_until": datetime.now(UTC) - timedelta(seconds=1)}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": expired})
-    assert leases.claim(session_id, "worker-b") is not None  # worker-a died: its lease ran out
-    assert not leases.finish(scenario_id, "worker-a", 1, {"items": []})
-    assert leases.finish(scenario_id, "worker-b", 2, {"items": [{"control_id": 1}], "warning": None})
+    assert leases.claim_scenario_controls(session_id, "worker-b") is not None  # worker-a died: lease ran out
+    assert not leases.update_scenario_controls(scenario_id, "worker-a", 1, Status.DONE, mapping={"items": []})
+    mapping = {"items": [{"control_id": 1}], "warning": None}
+    assert leases.update_scenario_controls(scenario_id, "worker-b", 2, Status.DONE, mapping=mapping)
     assert (_controls_of(scenario_id)["status"], _controls_of(scenario_id)["attempts"]) == (Status.DONE, 2)
 
 
 def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> None:
     """Celery reuses the task id on a redelivery: a hung copy and the copy that claimed again after its lease
     ran out share it, so only the attempts the newer claim counted let a write through."""
-    leases = ControlLeases(get_mongodb())
+    leases = scenario_controls
     session_id, scenario_id = _waiting_scenario()
-    hung = leases.claim(session_id, "task-1")
+    hung = leases.claim_scenario_controls(session_id, "task-1")
     expired = {"controls.lease_until": datetime.now(UTC) - timedelta(seconds=1)}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": expired})
-    again = leases.claim(session_id, "task-1")
+    again = leases.claim_scenario_controls(session_id, "task-1")
     assert hung is not None and again is not None
     stale, fresh = hung["controls"]["attempts"], again["controls"]["attempts"]
-    assert not leases.renew(scenario_id, "task-1", stale)
-    assert not leases.fail(scenario_id, "task-1", stale, {"code": "x", "message": "late"})
-    assert leases.finish(scenario_id, "task-1", fresh, {"items": [{"control_id": 1}], "warning": None})
+    assert not leases.update_scenario_controls(scenario_id, "task-1", stale, Status.RUNNING)
+    late = {"code": "x", "message": "late"}
+    assert not leases.update_scenario_controls(scenario_id, "task-1", stale, Status.FAILED, error=late)
+    mapping = {"items": [{"control_id": 1}], "warning": None}
+    assert leases.update_scenario_controls(scenario_id, "task-1", fresh, Status.DONE, mapping=mapping)
     assert _controls_of(scenario_id)["status"] == Status.DONE
 
 
 def test_an_outage_queues_the_mapping_again_until_its_last_attempt_fails_it() -> None:
     """T-CTL-07 (S33)."""
-    leases = ControlLeases(get_mongodb())
+    leases = scenario_controls
     error = {"code": "unavailable", "message": "busy"}
     session_id, scenario_id = _waiting_scenario()
-    leases.claim(session_id, "w")
-    assert (
-        leases.give_back(scenario_id, "w", 1, error) and _controls_of(scenario_id)["status"] == Status.QUEUED
-    )
+    leases.claim_scenario_controls(session_id, "w")
+    assert leases.update_scenario_controls(scenario_id, "w", 1, Status.QUEUED, error=error)
+    assert _controls_of(scenario_id)["status"] == Status.QUEUED
     last = {"controls.attempts": Controls.MAX_ATTEMPTS - 1}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": last})
-    leases.claim(session_id, "w")
-    assert leases.give_back(scenario_id, "w", Controls.MAX_ATTEMPTS, error)
+    leases.claim_scenario_controls(session_id, "w")
+    assert leases.update_scenario_controls(
+        scenario_id, "w", Controls.MAX_ATTEMPTS, Status.QUEUED, error=error
+    )
     assert (
         _controls_of(scenario_id)["status"] == Status.FAILED and _controls_of(scenario_id)["error"] == error
     )
@@ -375,14 +379,14 @@ def test_the_sweep_never_maps_a_hand_written_scenario() -> None:
     long_ago = datetime.now(UTC) - timedelta(hours=1)
     run_id, scenario_id = _waiting_scenario(status=Status.FAILED, last_attempt_at=long_ago, attempts=1)
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"source": RunKind.MANUAL}})
-    assert run_id not in ControlSweep(get_mongodb()).requeue_stalled()
+    assert run_id not in scenario_controls.requeue_stalled_controls()
     assert _controls_of(scenario_id)["status"] == Status.FAILED
 
 
 def test_the_sweep_requeues_lost_dead_and_long_failed_mappings_only() -> None:
     """T-CTL-07 (S33): the queued one whose message was lost, the running one whose worker died, the one that
     failed over 30 minutes ago; never a recent failure or a fresh queue entry."""
-    sweep, now = ControlSweep(get_mongodb()), datetime.now(UTC)
+    now = datetime.now(UTC)
     lost = _waiting_scenario(queued_at=now - timedelta(seconds=Controls.RESEND_QUEUED_AFTER_SECONDS + 5))
     dead = _waiting_scenario(status=Status.RUNNING, lease_until=now - timedelta(seconds=1))
     attempts_left = Controls.MAX_ATTEMPTS - 1
@@ -391,7 +395,7 @@ def test_the_sweep_requeues_lost_dead_and_long_failed_mappings_only() -> None:
     )
     recent_failure = _waiting_scenario(status=Status.FAILED, last_attempt_at=now, attempts=1)
     fresh = _waiting_scenario()
-    touched = sweep.requeue_stalled()
+    touched = scenario_controls.requeue_stalled_controls()
     assert {lost[0], dead[0], old_failure[0]} <= set(touched)
     assert not {recent_failure[0], fresh[0]} & set(touched)
     assert (
@@ -407,7 +411,7 @@ def test_the_sweep_never_requeues_a_failure_that_used_its_last_attempt() -> None
     run_id, scenario_id = _waiting_scenario(
         status=Status.FAILED, last_attempt_at=long_ago, attempts=Controls.MAX_ATTEMPTS
     )
-    assert run_id not in ControlSweep(get_mongodb()).requeue_stalled()
+    assert run_id not in scenario_controls.requeue_stalled_controls()
     assert _controls_of(scenario_id)["status"] == Status.FAILED
 
 
@@ -416,11 +420,11 @@ def test_an_older_count_never_overwrites_a_newer_one() -> None:
     sessions = get_mongodb()[Collection.SESSIONS]
     session_id, _ = _waiting_scenario()
     sessions.update_one({"_id": session_id}, {"$set": {"counts": {"written": 0}}})
-    assert RunCounts(get_mongodb()).refresh(session_id)["controls_waiting"] == 1
+    assert scenarios.update_scenario_session_counts(session_id)["controls_waiting"] == 1
     assert sessions.find_one({"_id": session_id})["counts"]["controls_waiting"] == 1
     newer = datetime.now(UTC) + timedelta(minutes=1)
     sessions.update_one({"_id": session_id}, {"$set": {"counts.written": 99, "counts_at": newer}})
-    RunCounts(get_mongodb()).refresh(session_id)
+    scenarios.update_scenario_session_counts(session_id)
     assert sessions.find_one({"_id": session_id})["counts"]["written"] == 99
 
 
@@ -452,10 +456,10 @@ def mapping_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 def _deliver(record_id: str, task_id: str) -> int | None:
     """One tsg_map_controls delivery as the task makes it: the run's delivery lease first, then its turn. None
     when another delivery holds the run (the message ends at once)."""
-    deliveries = ControlDeliveries(get_mongodb())
-    if not deliveries.take(record_id, task_id):
+    context = controls_deliveries.claim_controls_delivery(record_id, task_id)
+    if context is None:
         return None
-    return controls_job.RunControls(record_id, task_id, deliveries).map_all()
+    return controls_job.RunControls(record_id, task_id, context).map_all()
 
 
 def test_the_control_mapping_job_reranks_as_background_work(mapping_run: dict[str, Any]) -> None:
@@ -550,17 +554,19 @@ def test_an_accepted_version_a_regenerate_replaced_still_gets_its_controls(
     reviewer still works with it, so it is mapped (and counted as waiting until then). A replaced pending
     version is not: nobody is shown it."""
     record_id = mapping_run["record_id"]
-    scenarios = get_mongodb()[Collection.SCENARIOS]
-    scenarios.update_one({"_id": f"{record_id}-1"}, {"$set": {"superseded_by": "v2", "decision": "accepted"}})
+    scenario_collection = get_mongodb()[Collection.SCENARIOS]
+    scenario_collection.update_one(
+        {"_id": f"{record_id}-1"}, {"$set": {"superseded_by": "v2", "decision": "accepted"}}
+    )
     # G148: a replaced rejected version is not mapped either (nobody works with it).
-    scenarios.update_one(
+    scenario_collection.update_one(
         {"_id": f"{record_id}-2"}, {"$set": {"superseded_by": "v2b", "decision": "rejected"}}
     )
-    assert RunCounts(get_mongodb()).refresh(record_id)["controls_waiting"] == 1
+    assert scenarios.update_scenario_session_counts(record_id)["controls_waiting"] == 1
     assert _deliver(record_id, "task-1") == 1
     assert _controls_of(f"{record_id}-1")["status"] == Status.DONE
     assert _controls_of(f"{record_id}-2")["status"] == Status.QUEUED
-    assert RunCounts(get_mongodb()).refresh(record_id)["controls_waiting"] == 0
+    assert scenarios.update_scenario_session_counts(record_id)["controls_waiting"] == 0
 
 
 def test_a_delivery_maps_its_turn_then_hands_the_run_to_its_next_message(
@@ -579,12 +585,12 @@ def test_a_delivery_maps_its_turn_then_hands_the_run_to_its_next_message(
 def test_of_ten_messages_for_one_run_delivered_at_once_exactly_one_maps(mapping_run: dict[str, Any]) -> None:
     """G195: the run's delivery lease is taken in ONE conditional update. On 2026-10-11 ten messages
     redelivered in the same millisecond all passed a look-then-claim check and held every worker thread."""
-    record_id, deliveries = mapping_run["record_id"], ControlDeliveries(get_mongodb())
+    record_id = mapping_run["record_id"]
     barrier, taken = threading.Barrier(10), []
 
     def take(task_id: str) -> None:
         barrier.wait(timeout=10)
-        taken.append(deliveries.take(record_id, task_id))
+        taken.append(controls_deliveries.claim_controls_delivery(record_id, task_id) is not None)
 
     threads = [threading.Thread(target=take, args=(f"task-{number}",)) for number in range(10)]
     for thread in threads:
@@ -599,14 +605,14 @@ def test_a_message_that_finds_the_run_held_ends_at_once_and_its_retry_takes_its_
 ) -> None:
     """G195: another delivery's live lease ends the message (nothing mapped, nothing sent); the holder's own
     retried message (same task id) takes it back; an expired lease is anyone's."""
-    record_id, deliveries = mapping_run["record_id"], ControlDeliveries(get_mongodb())
-    assert deliveries.take(record_id, "holder")
+    record_id, deliveries = mapping_run["record_id"], controls_deliveries
+    assert deliveries.claim_controls_delivery(record_id, "holder") is not None
     assert _deliver(record_id, "duplicate") is None
     assert _controls_of(f"{record_id}-1")["status"] == Status.QUEUED and mapping_run["sent"] == []
-    assert deliveries.take(record_id, "holder")
+    assert deliveries.claim_controls_delivery(record_id, "holder") is not None
     expired = {"controls_delivery.until": datetime.now(UTC) - timedelta(seconds=1)}
     get_mongodb()[Collection.SESSIONS].update_one({"_id": record_id}, {"$set": expired})
-    assert deliveries.take(record_id, "next")
+    assert deliveries.claim_controls_delivery(record_id, "next") is not None
 
 
 def test_the_sweep_sends_nothing_for_a_run_whose_next_turn_is_on_its_way(
@@ -635,13 +641,13 @@ def test_a_scenario_written_while_the_delivery_ended_gets_its_own_message(
     still held and ended, is not left to the sweep's 10 minutes: the delivery sends it one on release."""
     record_id, scenarios = mapping_run["record_id"], get_mongodb()[Collection.SCENARIOS]
     scenarios.update_one({"_id": f"{record_id}-2"}, {"$set": {"controls.status": Status.DONE}})
-    release = ControlDeliveries.release
+    release = ControlsDeliveryRepository.release_controls_delivery
 
-    def release_after_a_write(self: ControlDeliveries, session_id: str, task_id: str) -> None:
+    def release_after_a_write(self: ControlsDeliveryRepository, session_id: str, task_id: str) -> None:
         scenarios.update_one({"_id": f"{record_id}-2"}, {"$set": {"controls.status": Status.QUEUED}})
         release(self, session_id, task_id)
 
-    monkeypatch.setattr(ControlDeliveries, "release", release_after_a_write)
+    monkeypatch.setattr(ControlsDeliveryRepository, "release_controls_delivery", release_after_a_write)
     assert _deliver(record_id, "task-1") == 1
     assert mapping_run["sent"] == [(TaskName.MAP_CONTROLS, record_id, 0)]
 
@@ -662,11 +668,11 @@ def test_the_task_takes_the_run_then_maps_and_a_store_outage_at_the_take_retries
         retried.append(exc)
         return RuntimeError("retry")  # what self.retry raises, once recorded
 
-    def store_down(self: ControlDeliveries, session_id: str, task_id: str) -> bool:
+    def store_down(self: ControlsDeliveryRepository, session_id: str, task_id: str) -> dict[str, Any]:
         raise Unavailable("mongo down")
 
     monkeypatch.setattr(controls_job.map_controls, "retry", retry)
-    monkeypatch.setattr(ControlDeliveries, "take", store_down)
+    monkeypatch.setattr(ControlsDeliveryRepository, "claim_controls_delivery", store_down)
     controls_job.map_controls.apply(args=(record_id, 0), task_id="task-2")
     assert [type(error) for error in retried] == [Unavailable]
 

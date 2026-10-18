@@ -17,13 +17,18 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import IntelFetchFailed
-from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
+from app.data_access.admin.repository import audit_records
+from app.data_access.external_intelligence.repository import IntelFeedRepository, IntelRecordRepository
 from app.models.external_intelligence.refresh_summary import RefreshResult, RefreshSummary, SourceRefresh
-from app.models.external_intelligence.source_health import SourceHealth
+from app.models.external_intelligence.source_health import (
+    SourceHealth,
+    refresh_failure_fields,
+    refresh_success_fields,
+    sources_in_registry_order,
+)
 from app.search.external_intelligence import intelligence_metrics as metrics
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
-from app.services.audit import audit_target, record_audit
+from app.services.audit import audit_target
 from app.services.external_intelligence.record_batch_writer import (
     ClaimLost,
     RefreshMessage,
@@ -42,8 +47,8 @@ class SourceRefresher:
     def __init__(
         self,
         catalogue: SourceCatalogue,
-        record_store: IntelRecordStore,
-        feed_store: FeedStatusStore,
+        record_store: IntelRecordRepository,
+        feed_store: IntelFeedRepository,
         index_keeper: EvidenceIndexKeeper,
     ) -> None:
         self._catalogue = catalogue
@@ -53,8 +58,8 @@ class SourceRefresher:
 
     def refresh_due_sources(self, now: datetime) -> RefreshSummary:
         """Refresh every approved source that is due, in the catalogue's order (KEV before EPSS and NVD)."""
-        self._feeds.seed_sources()
-        approved = set(self._feeds.list_approved_sources())
+        self._feeds.create_missing_intel_feeds()
+        approved = set(sources_in_registry_order(self._feeds.list(["_id"], sources=True, approved=True)))
         outcomes = tuple(
             self._refresh(source, fetcher, now, forced=False)
             for source, fetcher in self._catalogue.fetchers().items()
@@ -64,7 +69,7 @@ class SourceRefresher:
 
     def refresh_one_source(self, source: IntelSource, now: datetime) -> RefreshSummary:
         """Refresh one named source now, due or not (the admin job); revoked or being refreshed is skipped."""
-        self._feeds.seed_sources()
+        self._feeds.create_missing_intel_feeds()
         fetcher = self._catalogue.fetchers().get(source)
         outcome = (
             self._refresh(source, fetcher, now, forced=True)
@@ -86,11 +91,12 @@ class SourceRefresher:
         self, source: IntelSource, fetcher: IntelSourceFetcher, now: datetime, *, forced: bool
     ) -> SourceRefresh:
         """Claim one due (or `forced`) source, download and store it; a failure is recorded against it."""
-        health = self._feeds.read_source_health(source)
+        doc = self._feeds.get(_id=source)
+        health = None if doc is None else SourceHealth.from_doc(doc)
         if health is None or not (forced or self._is_due(health, now)):
             return SourceRefresh(source, RefreshResult.SKIPPED)
         stale_before = now - timedelta(seconds=IntelLimits.CLAIM_STALE_SECONDS)
-        claim = self._feeds.claim_source_for_refresh(source, now, stale_before)
+        claim = self._feeds.claim_intel_feed_refresh(source, now, stale_before)
         if claim is None:
             return SourceRefresh(source, RefreshResult.SKIPPED)
         try:
@@ -105,7 +111,7 @@ class SourceRefresher:
 
     def _is_due(self, health: SourceHealth, now: datetime) -> bool:
         """True when the source never succeeded, its last run was cut short, or its period has passed."""
-        if health.last_success_at is None or self._feeds.is_more_pending(health.source):
+        if health.last_success_at is None or self._feeds.count(_id=health.source, more_pending=True):
             return True
         return now - health.last_success_at >= timedelta(hours=REFRESH_AFTER_HOURS[health.source])
 
@@ -121,7 +127,7 @@ class SourceRefresher:
         result = fetcher.download_changes(_trusted_checkpoint(health))
         if result is None:  # the source's version marker is the one already stored, or it has nothing to ask
             return self._nothing_new(source, claim, health, now)
-        if not self._feeds.is_source_approved(source):  # revoked while it downloaded
+        if not self._feeds.count(_id=source, approved=True):  # revoked while it downloaded
             return self._fail(source, claim, RefreshMessage.REVOKED.format(source=source), now)
         try:
             counts, retired = write_fetch_result(
@@ -134,7 +140,7 @@ class SourceRefresher:
             revoked = self._purge_if_revoked(source)
         if revoked:
             return self._fail(source, claim, RefreshMessage.REVOKED.format(source=source), now)
-        stored = self._records.count_current_records([source])
+        stored = self._records.count(source=source, current=True)
         self._succeed(source, claim, (result.checkpoint, result.source_version), now, result.more, stored)
         metrics.QUARANTINED.labels(source).inc(counts.quarantined)
         done = SourceRefresh(source, RefreshResult.REFRESHED, counts, retired)
@@ -147,20 +153,20 @@ class SourceRefresher:
         """Record an unchanged source as a success; one that never delivered just gives its claim back."""
         checkpoint, version = health.checkpoint, health.source_version
         if checkpoint is None or version is None:
-            _log_if_claim_lost(self._feeds.release_claim(source, claim), source)
+            _log_if_claim_lost(self._feeds.release_intel_feed_refresh(source, claim), source)
             return SourceRefresh(source, RefreshResult.SKIPPED)
         self._succeed(source, claim, (checkpoint, version), now, False, health.records)
         return SourceRefresh(source, RefreshResult.UNCHANGED)
 
     def _holds(self, source: IntelSource, claim: str) -> bool:
         """The heartbeat before a write: the claim is ours and fresh again, and the source still approved."""
-        return self._feeds.renew_claim(source, claim, datetime.now(UTC))
+        return self._feeds.renew_intel_feed_refresh(source, claim, datetime.now(UTC))
 
     def _purge_if_revoked(self, source: IntelSource) -> bool:
         """Delete the records of a source revoked meanwhile (perhaps mid-write); True when revoked."""
-        if self._feeds.is_source_approved(source):
+        if self._feeds.count(_id=source, approved=True):
             return False
-        self._records.purge_source(source)
+        self._records.delete(source=source)
         return True
 
     def _succeed(
@@ -168,18 +174,17 @@ class SourceRefresher:
     ) -> None:
         """Record a success with its checkpoint and version, giving the claim back."""
         checkpoint, version = marks
-        released = self._feeds.record_refresh_success(
-            source, claim, checkpoint, version, now, more=more, records=records
-        )
-        _log_if_claim_lost(released, source)
+        success = refresh_success_fields(checkpoint, version, now, more=more, records=records)
+        _log_if_claim_lost(self._feeds.release_intel_feed_refresh(source, claim, success), source)
 
     def _fail(self, source: IntelSource, claim: str, reason: str, now: datetime) -> SourceRefresh:
         """Record the failure against the source and give its claim back, then audit and log it."""
         try:
-            _log_if_claim_lost(self._feeds.record_refresh_failure(source, claim, reason, now), source)
+            failure = refresh_failure_fields(reason, now)
+            _log_if_claim_lost(self._feeds.release_intel_feed_refresh(source, claim, failure), source)
         except Exception:  # the store is down: the claim goes stale by itself, the others go on
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO, exc_info=True)
-        record_audit(
+        audit_records.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_REFRESH_FAILED, _ACTOR, _target(source), after={"error": reason}
         )
         log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SOURCE_FAILED, source=source, error=reason)
@@ -195,7 +200,9 @@ def _log_if_claim_lost(released: bool, source: IntelSource) -> None:
 def _announce(done: SourceRefresh) -> None:
     """Audit and log a source refreshed."""
     after = done.as_doc()
-    record_audit(AuditAction.EXTERNAL_INTELLIGENCE_REFRESHED, _ACTOR, _target(done.source), after=after)
+    audit_records.create_audit_record(
+        AuditAction.EXTERNAL_INTELLIGENCE_REFRESHED, _ACTOR, _target(done.source), after=after
+    )
     log.info(
         LogEvent.EXTERNAL_INTELLIGENCE_REFRESHED,
         source=done.source,

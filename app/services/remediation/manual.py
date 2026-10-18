@@ -8,32 +8,31 @@ import json
 from typing import Any
 
 from app.core.constants import ConflictReason, Header, RemediationMessage, RunKind, SessionMessage
-from app.core.database import get_mongodb, get_stored_procedure_client
+from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Conflict, Forbidden, Invalid
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.manual_scenarios import ManualRecords
-from app.data_access.remediations import RemediationRepository
-from app.data_access.scenario.runs import AssetContextRepository, SessionRepository
-from app.data_access.scenario.scenarios import RunCounts
+from app.data_access.library.repository import SqlServerRepository
+from app.data_access.remediation.repository import PLANNED_SCENARIO_FIELDS
+from app.data_access.scenario.repository import ScenarioSessionRepository, scenario_sessions, scenarios
 from app.domain.remediation.manual_records import manual_ids
 from app.models.api_clients import Principal
 from app.models.remediation import PlanStarted
 from app.models.remediation_requests import ManualScenario, PlanRequest
 from app.search.library_cache import get_library_service
 from app.services.remediation.manual_scenarios import ManualScenarios
+from app.services.remediation.queries import get_remediation_status_of_scenario
 from app.services.remediation.requests import PlanRequestService, get_plan_request_service
 
 
 class ManualPlans:
     def __init__(
         self,
-        sessions: SessionRepository,
-        plans: RemediationRepository,
-        scenarios: ManualScenarios,
+        sessions: ScenarioSessionRepository,
+        manual_scenarios: ManualScenarios,
         requests: PlanRequestService,
     ) -> None:
-        self._sessions, self._plans, self._scenarios, self._requests = sessions, plans, scenarios, requests
+        self._sessions, self._manual_scenarios, self._requests = sessions, manual_scenarios, requests
 
     @traced("remediation.manual_request")
     def request(self, principal: Principal, body: PlanRequest, key: str | None) -> tuple[PlanStarted, bool]:
@@ -51,8 +50,8 @@ class ManualPlans:
             return replayed, False
         saved_before = scenario is not None  # an earlier call saved it, then stopped (v1: replayed)
         if scenario is None:  # the stored one: a parallel request with this key and body may have saved first
-            saved = self._scenarios.save(principal, body, key, fingerprint)
-            scenario = self._plans.find_scenario(saved["_id"]) or saved
+            saved = self._manual_scenarios.save(principal, body, key, fingerprint)
+            scenario = scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=saved["_id"]) or saved
         try:
             started = self._requests.plan_scenario(principal, body, scenario)
             return started.model_copy(update={"replayed": saved_before}), True
@@ -66,7 +65,7 @@ class ManualPlans:
         self, principal: Principal, manual: ManualScenario, key: str, fingerprint: str
     ) -> dict[str, Any] | None:
         """The scenario an earlier request with this key saved; 409 when the key named another request."""
-        earlier = self._sessions.find_by_idempotency_key(principal.entity_id, key)
+        earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
         same = (
@@ -77,10 +76,10 @@ class ManualPlans:
         if not same:
             message = SessionMessage.IDEMPOTENCY_KEY_CONFLICT
             raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
-        return self._plans.find_scenario(manual_ids(principal.entity_id, key)[1])
+        return scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=manual_ids(principal.entity_id, key)[1])
 
     def _replayed(self, scenario_id: str) -> PlanStarted | None:
-        status = self._plans.find_for_scenario(scenario_id)
+        status = get_remediation_status_of_scenario(scenario_id)
         if status is None:
             return None
         return PlanStarted(
@@ -101,10 +100,6 @@ def _fingerprint(body: PlanRequest) -> str:
 
 @singleton
 def get_manual_plans() -> ManualPlans:
-    db, procedures = get_mongodb(), get_stored_procedure_client()
-    scenarios = ManualScenarios(
-        AssetContextRepository(procedures), get_library_service(), ManualRecords(db), RunCounts(db)
-    )
-    return ManualPlans(
-        SessionRepository(db), RemediationRepository(db), scenarios, get_plan_request_service()
-    )
+    procedures = get_stored_procedure_client()
+    manual_scenarios = ManualScenarios(SqlServerRepository(procedures), get_library_service())
+    return ManualPlans(scenario_sessions, manual_scenarios, get_plan_request_service())

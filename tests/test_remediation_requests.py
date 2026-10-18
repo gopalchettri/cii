@@ -31,8 +31,8 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, NotFound
-from app.data_access.remediations import RemediationRepository
-from app.data_access.scenario.runs import SessionRepository
+from app.data_access.remediation.repository import remediation_plans
+from app.data_access.scenario.repository import scenario_sessions
 from app.models.library import LibraryControl
 from app.models.remediation_requests import PlanRequest
 from app.services.api_clients import get_api_client_service
@@ -63,10 +63,9 @@ def api_key() -> str:
     return key
 
 
-def _service(plans: RemediationRepository | None = None) -> PlanRequestService:
-    db = get_mongodb()
-    snapshots = SnapshotMaker(SessionRepository(db), FAKE_LIBRARY)  # type: ignore[arg-type]
-    return PlanRequestService(plans or RemediationRepository(db), snapshots)
+def _service() -> PlanRequestService:
+    snapshots = SnapshotMaker(scenario_sessions, FAKE_LIBRARY)  # type: ignore[arg-type]
+    return PlanRequestService(snapshots)
 
 
 @pytest.fixture
@@ -214,17 +213,18 @@ def test_every_refusal(client: TestClient, api_key: str, world: dict[str, Any]) 
     assert client.get(elsewhere, headers=_identity(api_key)).status_code == 404
 
 
-def test_a_request_made_at_the_same_moment_gets_409_with_the_winner(world: dict[str, Any]) -> None:
+def test_a_request_made_at_the_same_moment_gets_409_with_the_winner(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The unique scenario_id index decides: this request saw no plan before its insert, the winner's insert
     landed first."""
     scenario_id = _scenario()
-    plans = RemediationRepository(get_mongodb())
     sightings = iter([None, SimpleNamespace(remediation_id="winner")])
-    plans.find_for_scenario = lambda _id: next(sightings)  # type: ignore[method-assign]
+    monkeypatch.setattr(requests_module, "get_remediation_status_of_scenario", lambda _id: next(sightings))
     get_mongodb()[Collection.REMEDIATIONS].insert_one({"_id": "winner", "scenario_id": scenario_id})
     principal = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
     with pytest.raises(Conflict) as clash:
-        _service(plans).request(principal, PlanRequest.model_validate(generated(scenario_id)))  # type: ignore[arg-type]
+        _service().request(principal, PlanRequest.model_validate(generated(scenario_id)))  # type: ignore[arg-type]
     assert (clash.value.reason, clash.value.details) == (
         ConflictReason.PLAN_ALREADY_EXISTS,
         {"remediation_id": "winner"},
@@ -336,13 +336,13 @@ def test_a_plan_requested_as_its_run_is_deleted_never_outlives_its_scenario(
     scenario_id = _scenario()
     scenario = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})
     service = _service()
-    real_insert = RemediationRepository.insert
+    real_create = remediation_plans.create
 
-    def insert_after_the_delete(plans: RemediationRepository, record: dict[str, Any]) -> bool:
+    def create_after_the_delete(record: dict[str, Any]) -> Any:
         get_mongodb()[Collection.SCENARIOS].delete_one({"_id": scenario_id})  # the delete lands first
-        return real_insert(plans, record)
+        return real_create(record)
 
-    monkeypatch.setattr(RemediationRepository, "insert", insert_after_the_delete)
+    monkeypatch.setattr(remediation_plans, "create", create_after_the_delete)
     principal = SimpleNamespace(entity_id=ENTITY, user_id="u1", client_id="c1")
     with pytest.raises(NotFound):
         service.plan_scenario(

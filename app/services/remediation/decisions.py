@@ -7,30 +7,25 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import AuditAction, AuditTarget, ConflictReason, Decision, RemediationMessage, Status
-from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, NotFound
 from app.core.singletons import singleton
 from app.core.tracing import traced
-from app.data_access.remediation_reads import RemediationReads
-from app.data_access.remediation_versions import RemediationVersions
-from app.data_access.remediations import RemediationRepository
-from app.domain.remediation.decisions import decision_update, newest_done_version, version_status
+from app.data_access.admin.repository import audit_records
+from app.data_access.remediation.repository import remediation_plans
+from app.data_access.scenario.repository import scenarios
+from app.domain.remediation.decisions import newest_done_version, version_status, work_out_decision_change
 from app.models.api_clients import Principal
 from app.models.remediation import RemediationStatus
 from app.models.remediation_reviews import DecisionRequest
 from app.realtime.publisher import publish_remediation_status
-from app.services.audit import audit_target, caller_actor, record_audit
+from app.services.audit import audit_target, caller_actor
+from app.services.remediation.queries import get_remediation_status
 from app.services.remediation.regenerate import read_owned, refuse_read_only
 
 _AUDITED = {Decision.ACCEPTED: AuditAction.PLAN_ACCEPTED, Decision.REJECTED: AuditAction.PLAN_REJECTED}
 
 
 class PlanDecisions:
-    def __init__(
-        self, plans: RemediationRepository, versions: RemediationVersions, reads: RemediationReads
-    ) -> None:
-        self._plans, self._versions, self._reads = plans, versions, reads
-
     def accept(self, principal: Principal, remediation_id: str, body: DecisionRequest) -> RemediationStatus:
         return self._decide(principal, remediation_id, body, Decision.ACCEPTED)
 
@@ -43,27 +38,33 @@ class PlanDecisions:
     ) -> RemediationStatus:
         decided_by = {"decided_by": principal.user_id, "decided_by_client": principal.client_id}
         for _read_again in range(2):
-            read = read_owned(self._versions, principal, remediation_id)
-            refuse_read_only(self._plans.find_scenario(read["scenario_id"]), read)
+            read = read_owned(principal, remediation_id)
+            refuse_read_only(scenarios.get(fields=("status", "decision"), _id=read["scenario_id"]), read)
             version = _decidable(read, body.version, remediation_id)
-            update = decision_update(read, version, decision, decided_by, body.comment, datetime.now(UTC))
-            if update is None:  # a repeat
-                return self._status(remediation_id)
-            if self._versions.decide(remediation_id, read["decision_seq"], *update):
+            now = datetime.now(UTC)
+            change = work_out_decision_change(read, version, decision, decided_by, body.comment, now)
+            if change is None:  # a repeat
+                return _status(remediation_id)
+            if remediation_plans.update_remediation_plan_decision(
+                remediation_id, read["decision_seq"], change
+            ):
                 before = {"accepted_version": read.get("accepted_version")}
                 after = {"version": version, "decision": decision}
                 target = audit_target(AuditTarget.REMEDIATION, remediation_id)
-                record_audit(_AUDITED[decision], caller_actor(principal), target, before=before, after=after)
+                audit_records.create_audit_record(
+                    _AUDITED[decision], caller_actor(principal), target, before=before, after=after
+                )
                 publish_remediation_status(remediation_id)
-                return self._status(remediation_id)
+                return _status(remediation_id)
         message = RemediationMessage.CHANGED_CONCURRENTLY.format(remediation_id=remediation_id)
         raise Conflict(message, reason=ConflictReason.CHANGED_CONCURRENTLY)
 
-    def _status(self, remediation_id: str) -> RemediationStatus:
-        status = self._reads.find_status(remediation_id)
-        if status is None:  # deleted with its run just now (G214)
-            raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))
-        return status
+
+def _status(remediation_id: str) -> RemediationStatus:
+    status = get_remediation_status(remediation_id)
+    if status is None:  # deleted with its run just now
+        raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))
+    return status
 
 
 def _decidable(read: dict[str, Any], asked: int | None, remediation_id: str) -> int:
@@ -87,5 +88,4 @@ def _decidable(read: dict[str, Any], asked: int | None, remediation_id: str) -> 
 
 @singleton
 def get_plan_decisions() -> PlanDecisions:
-    db = get_mongodb()
-    return PlanDecisions(RemediationRepository(db), RemediationVersions(db), RemediationReads(db))
+    return PlanDecisions()

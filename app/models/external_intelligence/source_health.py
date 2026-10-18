@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from app.core.constants import FeedStatus, IntelLimits, IntelSource
+from app.core.constants import FeedStatus, IntelLimits, IntelSource, StoreLimits
 from app.models.external_intelligence.switch_state import SwitchState
 
 
@@ -24,6 +24,13 @@ class SourceHealth:
     last_error: str | None = None  # an IntelMessage, filled in
     # set while a worker refreshes it; older than IntelLimits.CLAIM_STALE_SECONDS: the worker is dead
     claimed_at: datetime | None = None
+
+    @classmethod
+    def from_doc(cls, doc: dict[str, Any]) -> "SourceHealth":
+        """A tsg_external_feed_status source document as its SourceHealth, missing fields at defaults."""
+        source = IntelSource(doc["_id"])
+        values = {name: doc.get(name, default) for name, default in cls(source).as_doc().items()}
+        return cls(**{**values, "source": source, "status": FeedStatus(values["status"])})
 
     @property
     def is_pending(self) -> bool:
@@ -98,3 +105,40 @@ class FeedFreshness:
             pending=pending,
             no_data=len(pending) == len(counted),
         )
+
+
+def refresh_success_fields(
+    checkpoint: str, source_version: str, now: datetime, *, more: bool, records: int
+) -> dict[str, Any]:
+    """What a successful refresh records on its source: the new checkpoint, version and count."""
+    return {
+        "status": FeedStatus.OK,
+        "checkpoint": checkpoint,
+        "source_version": source_version,
+        "records": records,
+        "last_success_at": now,
+        "last_error": None,
+        "more_pending": more,
+    }
+
+
+def refresh_failure_fields(error: str, now: datetime) -> dict[str, Any]:
+    """What a failed refresh records on its source; the checkpoint and last success stay, so the last good
+    data stays usable until stale."""
+    return {
+        "status": FeedStatus.FAILED,
+        "last_attempt_at": now,
+        "last_error": error[: StoreLimits.MAX_ERROR_CHARS],
+    }
+
+
+def source_health_in_registry_order(docs: Iterable[dict[str, Any]]) -> list[SourceHealth]:
+    """tsg_external_feed_status source documents as their SourceHealth, in registry order."""
+    by_source = {doc["_id"]: SourceHealth.from_doc(doc) for doc in docs}
+    return [by_source[source] for source in IntelSource if source in by_source]
+
+
+def sources_in_registry_order(docs: Iterable[dict[str, Any]]) -> list[IntelSource]:
+    """The sources of tsg_external_feed_status documents, in registry order."""
+    found = {doc["_id"] for doc in docs}
+    return [source for source in IntelSource if source in found]

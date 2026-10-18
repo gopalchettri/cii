@@ -14,7 +14,11 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.data_access import indexes
+from app.data_access.admin import repository as admin
+from app.data_access.base import create_all_indexes
+from app.data_access.external_intelligence import repository as intelligence
+from app.data_access.remediation import repository as remediation
+from app.data_access.scenario import repository as scenario_repository
 from app.domain.scenario.write import WRITER_PROMPT_VERSION
 from app.worker import lifecycle
 from app.worker.celery_app import celery_app
@@ -90,7 +94,7 @@ def test_the_master_switch_off_decides_the_original_style_before_any_read(
 ) -> None:
     """G229: the batch decides its style ONCE, from the switch; with it off the batch is written in the
     original style and never searches (EvidenceAtWrite is only ever called for an evidence-story batch)."""
-    monkeypatch.setattr(access_module, "get_mongodb", lambda: Untouched())
+    monkeypatch.setattr(access_module, "intel_feeds", Untouched())
     access = IntelAccess(finder=Untouched, is_stale=Untouched)  # type: ignore[arg-type]
     assert access.is_on() is False
 
@@ -112,35 +116,29 @@ def test_no_runtime_installed_counts_as_off(monkeypatch: pytest.MonkeyPatch) -> 
     assert IntelAccess().is_on() is False
 
 
-class Quiet:
-    """Stands in for the app's own index makers, so these tests look at the intelligence ones alone."""
-
-    def __init__(self, *_: object) -> None: ...
-
-    def __getattr__(self, name: str) -> Any:
-        return lambda *args, **kwargs: None
-
-
 def _only_the_intelligence_indexes(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (
-        "ApiClientRepository",
-        "SessionRepository",
-        "ScenarioRepository",
-        "RemediationRepository",
-        "AiCallRecords",
-        "LibraryVectors",
-        "QueryVectors",
-        "AdminJobRecords",
-    ):
-        monkeypatch.setattr(indexes, name, Quiet)
-    monkeypatch.setattr(indexes, "ensure_audit_indexes", lambda: None)
+    """The app's own index makers stand still, so these tests look at the intelligence ones alone."""
+    admin_repositories = (
+        "api_clients",
+        "audit_records",
+        "ai_calls",
+        "library_vectors",
+        "query_vectors",
+        "admin_jobs",
+    )
+    for repository in admin_repositories:
+        monkeypatch.setattr(getattr(admin, repository), "create_indexes", lambda: None)
+    monkeypatch.setattr(admin.library_vectors, "retire_unknown_vector_corpora", lambda: 0)
+    monkeypatch.setattr(scenario_repository.scenarios, "create_indexes", lambda: None)
+    monkeypatch.setattr(remediation.remediation_plans, "create_indexes", lambda: None)
+    monkeypatch.setattr(scenario_repository.scenario_sessions, "create_indexes", lambda: None)
 
 
 def test_start_up_makes_no_intelligence_index_or_collection_while_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _only_the_intelligence_indexes(monkeypatch)
-    indexes.ensure_indexes()
+    create_all_indexes()
     assert _no_intel_collection()
 
 
@@ -150,23 +148,21 @@ def test_start_up_makes_the_indexes_and_seeds_the_sources_only_while_on(
     _only_the_intelligence_indexes(monkeypatch)
     done: list[str] = []
 
-    def recorder(name: str) -> type:
-        class Store:
-            def __init__(self, db: object) -> None: ...
-
-            def ensure_indexes(self) -> None:
+    def recorder(name: str) -> object:
+        class Repository:
+            def create_indexes(self) -> None:
                 done.append(name)
 
-            def seed_sources(self) -> None:
+            def create_missing_intel_feeds(self) -> None:
                 done.append(name)
 
-        return Store
+        return Repository()
 
-    for attribute in ("IntelRecordStore", "SnapshotPointerStore", "FeedStatusStore"):
-        monkeypatch.setattr(indexes, attribute, recorder(attribute))
+    for attribute in ("intel_records", "intel_snapshots", "intel_feeds"):
+        monkeypatch.setattr(intelligence, attribute, recorder(attribute))
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    indexes.ensure_indexes()
-    assert done == ["IntelRecordStore", "SnapshotPointerStore", "FeedStatusStore"]
+    create_all_indexes()
+    assert done == ["intel_records", "intel_snapshots", "intel_feeds"]
 
 
 def test_no_refresh_is_scheduled_and_a_stray_one_does_nothing_while_off() -> None:

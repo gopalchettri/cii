@@ -170,23 +170,29 @@ class MemoryRecords:
         self.purged: list[str] = []
         self.counts = 0
 
-    def stream_current_records(self, sources: Sequence[IntelSource]) -> Iterator[dict]:
+    def stream_current_intel_records(self, sources: Sequence[IntelSource]) -> Iterator[dict]:
         return iter([doc for doc in self.docs if doc["source"] in sources])
 
-    def save_batch(
+    def save_intel_records(
         self, records: Sequence[IntelRecord], rejected: Sequence[Any], fetched_at: datetime
     ) -> SaveCounts:
         self.saved.append((records, len(rejected)))
         return SaveCounts(len(records), 0, len(rejected))
 
-    def retire_records_missing_from(self, source: IntelSource, seen_ids: set[str]) -> int:
+    def retire_intel_records_missing_from(
+        self, source: IntelSource, seen_ids: set[str], retired_at: datetime | None = None
+    ) -> int:
         self.retired.append((source, seen_ids))
         return 0
 
-    def count_current_records(self, sources: Sequence[IntelSource]) -> int:
+    def list(self, fields: Any = None, **where: Any) -> list[dict]:
+        return [doc for doc in self.docs if doc["source"] == where.get("source")]
+
+    def count(self, **where: Any) -> int:
         return len(self.saved)
 
-    def purge_source(self, source: IntelSource) -> int:
+    def delete(self, **where: Any) -> int:
+        source = where["source"]
         self.purged.append(source)
         self.docs = [doc for doc in self.docs if doc["source"] != source]
         return 1
@@ -197,18 +203,21 @@ class MemoryPointer:
         self.saved: list[dict] = []
         self.active: dict | None = None
 
-    def save_snapshot_description(self, description: dict) -> None:
-        self.saved.append(description)
+    def save(self, record: dict, only_if: Any = None) -> bool:
+        self.saved.append({name: value for name, value in record.items() if name != "_id"})
+        return True
 
-    def activate_snapshot(self, snapshot_id: str) -> bool:
+    def activate_intel_snapshot(self, snapshot_id: str) -> bool:
         self.active = next(d for d in self.saved if d["snapshot_id"] == snapshot_id)
         return True
 
-    def read_active_snapshot(self) -> dict | None:
+    def get(self, fields: Any = None, **where: Any) -> dict | None:
         return self.active
 
 
 class MemoryFeeds:
+    """tsg_external_feed_status in memory, answering the base verbs the services ask with."""
+
     def __init__(self, approved: list[IntelSource] | None = None) -> None:
         self.approved = list(ALL_SOURCES if approved is None else approved)
         self.health: dict[IntelSource, SourceHealth] = {}
@@ -219,15 +228,9 @@ class MemoryFeeds:
         self.claims_made = 0
         self.lock = threading.Lock()
 
-    def seed_sources(self) -> None:
+    def create_missing_intel_feeds(self) -> None:
         for source in self.approved:
             self.health.setdefault(source, SourceHealth(source))
-
-    def list_approved_sources(self) -> list[IntelSource]:
-        return list(self.approved)
-
-    def is_source_approved(self, source: IntelSource) -> bool:
-        return source in self.approved
 
     def set_source_approved(self, source: IntelSource, approved: bool) -> None:
         if approved and source not in self.approved:
@@ -235,16 +238,30 @@ class MemoryFeeds:
         if not approved and source in self.approved:
             self.approved.remove(source)
 
-    def read_source_health(self, source: IntelSource) -> SourceHealth | None:
-        return self.health.get(source)
+    def _doc(self, source: IntelSource) -> dict:
+        doc = self.health[source].as_doc()
+        return {
+            **doc,
+            "_id": source,
+            "approved": source in self.approved,
+            "more_pending": source in self.more,
+        }
 
-    def read_all_source_health(self) -> list[SourceHealth]:
-        return list(self.health.values())
+    def get(self, fields: Any = None, **where: Any) -> dict | None:
+        return self._doc(where["_id"]) if where["_id"] in self.health else None
 
-    def is_more_pending(self, source: IntelSource) -> bool:
-        return source in self.more
+    def list(self, fields: Any = None, **where: Any) -> list[dict]:
+        if where.get("approved"):
+            return [{"_id": source} for source in self.approved]
+        return [self._doc(source) for source in self.health]
 
-    def claim_source_for_refresh(
+    def count(self, **where: Any) -> int:
+        source = where["_id"]
+        if where.get("more_pending"):
+            return int(source in self.more)
+        return int(source in self.approved)
+
+    def claim_intel_feed_refresh(
         self, source: IntelSource, now: datetime, stale_before: datetime
     ) -> str | None:
         with self.lock:
@@ -254,29 +271,31 @@ class MemoryFeeds:
             self.claimed[source] = f"token-{self.claims_made}"
             return self.claimed[source]
 
-    def record_refresh_success(
-        self, source, claim, checkpoint, source_version, now, *, more, records
+    def release_intel_feed_refresh(
+        self, source: IntelSource, claim: str, outcome: dict | None = None
     ) -> bool:
         if self.claimed.get(source) != claim:
             return False
         del self.claimed[source]
-        self.successes.append((source, checkpoint, source_version, more, records))
-        self.health[source] = SourceHealth(
-            source, FeedStatus.OK, checkpoint, source_version, records, now, now
-        )
+        if outcome and outcome["status"] == FeedStatus.OK:
+            self._record_success(source, outcome)
+        elif outcome:
+            self._record_failure(source, outcome)
         return True
 
-    def record_refresh_failure(self, source: IntelSource, claim: str, error: str, now: datetime) -> bool:
-        if self.claimed.get(source) != claim:
-            return False
-        del self.claimed[source]
-        self.failures.append((source, error))
+    def _record_success(self, source: IntelSource, done: dict) -> None:
+        now, records = done["last_success_at"], done["records"]
+        checkpoint, version = done["checkpoint"], done["source_version"]
+        self.successes.append((source, checkpoint, version, done["more_pending"], records))
+        self.health[source] = SourceHealth(source, FeedStatus.OK, checkpoint, version, records, now, now)
+
+    def _record_failure(self, source: IntelSource, failed: dict) -> None:
+        self.failures.append((source, failed["last_error"]))
         previous = self.health.get(source) or SourceHealth(source)
         self.health[source] = SourceHealth(
             source, FeedStatus.FAILED, previous.checkpoint, previous.source_version, previous.records,
-            now, previous.last_success_at, error,
+            failed["last_attempt_at"], previous.last_success_at, failed["last_error"],
         )  # fmt: skip
-        return True
 
 
 class MemoryCatalogue:

@@ -65,6 +65,14 @@ class Conflict(AppError):
     status, code = 409, ErrorCode.CONFLICT
 
 
+class DuplicateRecord(Conflict):
+    """A unique index refused a write: `index_name` says which rule (e.g. one active run per asset)."""
+
+    def __init__(self, index_name: str) -> None:
+        super().__init__(ErrorMessage.UNIQUE_RULE_BROKEN.format(index_name=index_name))
+        self.index_name = index_name
+
+
 class SetupError(AppError):
     """The server's own set-up is wrong (a procedure, a setting): 500 naming what to fix, logged."""
 
@@ -75,6 +83,11 @@ class Unavailable(AppError):
     status, code = 503, ErrorCode.UNAVAILABLE
     # Set here, not by each raiser: every 503 tells the caller when to retry, whoever raised it.
     default_retry_after = Limits.RETRY_AFTER_SECONDS
+
+
+class OutcomeUnknown(Unavailable):
+    """A SQL Server call was sent but its answer was lost (a timeout, a broken link): it may have applied.
+    Retried through its operation record (tsg_sql_operations), which replays the same parameters."""
 
 
 #: A store or AI service busy or down for now: the job is given back and retried later.

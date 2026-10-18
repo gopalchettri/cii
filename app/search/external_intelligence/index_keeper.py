@@ -11,13 +11,18 @@ import structlog
 
 from app.ai import EmbeddingModel, RerankModel, get_embedding_model, get_rerank_model
 from app.core.config import get_settings
-from app.core.constants import Dependency, IntelLimits, IntelMessage, LogEvent
-from app.core.database import get_mongodb
+from app.core.constants import Dependency, IntelDocId, IntelLimits, IntelMessage, LogEvent
 from app.core.singletons import singleton
-from app.data_access.external_intelligence.feed_status_store import FeedStatusStore
-from app.data_access.external_intelligence.intel_record_store import IntelRecordStore
-from app.data_access.external_intelligence.snapshot_pointer_store import SnapshotPointerStore
+from app.data_access.external_intelligence.repository import (
+    IntelFeedRepository,
+    IntelRecordRepository,
+    IntelSnapshotRepository,
+    intel_feeds,
+    intel_records,
+    intel_snapshots,
+)
 from app.models.external_intelligence.evidence_corpus import EvidenceCorpus, SnapshotDescription
+from app.models.external_intelligence.source_health import sources_in_registry_order
 from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import (
     EvidenceIndex,
@@ -36,9 +41,9 @@ class EvidenceIndexKeeper:
 
     def __init__(
         self,
-        record_store: IntelRecordStore,
-        snapshot_store: SnapshotPointerStore,
-        feed_store: FeedStatusStore,
+        record_store: IntelRecordRepository,
+        snapshot_store: IntelSnapshotRepository,
+        feed_store: IntelFeedRepository,
         embeddings: EmbeddingModel,
         rerank: RerankModel,
         embedding_model: str = "",
@@ -136,9 +141,9 @@ class EvidenceIndexKeeper:
 
     def _build_and_swap(self) -> EvidenceIndex:
         """Build the approved records' index aside (unless in use already), publish it and swap it in."""
-        approved = self._feeds.list_approved_sources()
+        approved = sources_in_registry_order(self._feeds.list(["_id"], sources=True, approved=True))
         try:
-            corpus = build_corpus(self._records.stream_current_records(approved), self._embedding_model)
+            corpus = build_corpus(self._records.stream_current_intel_records(approved), self._embedding_model)
         except EvidenceIndexRefused:
             if approved:  # sources are approved but hold nothing: a broken refresh, not an order to empty
                 raise
@@ -172,7 +177,7 @@ class EvidenceIndexKeeper:
     def _rebuild_if_pointer_is_newer(self) -> None:
         """Start a build when the active snapshot is a newer corpus; an outage keeps the index serving."""
         try:
-            active = self._snapshots.read_active_snapshot()
+            active = self._snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT)
         except Exception:  # any failure of this read: keep serving, look again later
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO)
             return
@@ -184,12 +189,12 @@ class EvidenceIndexKeeper:
 
 
 def publish_index(
-    snapshots: SnapshotPointerStore, index: EvidenceIndex, embedding_model: str, rerank_model: str
+    snapshots: IntelSnapshotRepository, index: EvidenceIndex, embedding_model: str, rerank_model: str
 ) -> None:
     """Store and activate the index's description, unless another process already published this corpus. An
     empty index is published too, so other processes drop what was revoked; the store never moves the pointer
     to an older build."""
-    active = snapshots.read_active_snapshot()
+    active = snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT)
     if active is not None and active.get("checksum") == index.corpus.checksum:
         return
     description = SnapshotDescription(
@@ -201,8 +206,8 @@ def publish_index(
         embedding_model,
         rerank_model,
     )
-    snapshots.save_snapshot_description(description.as_doc())
-    activated = snapshots.activate_snapshot(description.snapshot_id)
+    snapshots.save({**description.as_doc(), "_id": description.snapshot_id})
+    activated = snapshots.activate_intel_snapshot(description.snapshot_id)
     event = (
         LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_ACTIVATED
         if activated
@@ -214,11 +219,11 @@ def publish_index(
 @singleton
 def get_evidence_index_keeper() -> EvidenceIndexKeeper:
     """The process's evidence index keeper, its snapshot age exported as a gauge."""
-    settings, db = get_settings(), get_mongodb()
+    settings = get_settings()
     keeper = EvidenceIndexKeeper(
-        IntelRecordStore(db),
-        SnapshotPointerStore(db),
-        FeedStatusStore(db),
+        intel_records,
+        intel_snapshots,
+        intel_feeds,
         get_embedding_model(),
         get_rerank_model(),
         settings.embedding_model,

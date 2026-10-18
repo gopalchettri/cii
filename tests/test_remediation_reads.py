@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.core.constants import Collection, Decision, Header, Status
 from app.core.database import get_mongodb
-from app.data_access.remediation_reads import RemediationReads
+from app.data_access.remediation.repository import remediation_plans
 from app.domain.remediation.planner import finish
 from app.models.remediation import PlanDraft
 from app.models.remediation_views import RemediationResult
@@ -123,7 +123,7 @@ def test_the_history_never_holds_a_snapshot(client: TestClient, api_key: str) ->
     shown = answer.json()
     assert "snapshot" not in answer.text and "requested_by_client" not in answer.text
     scenario_id = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": remediation_id})["scenario_id"]
-    stored = RemediationReads(get_mongodb()).find_result_of_scenario(scenario_id)
+    stored = remediation_plans.get(fields="result", scenario_id=scenario_id)
     assert "snapshot" not in stored["versions"][0]  # IO
     assert [(v["version"], v["status"]) for v in shown["versions"]] == [(1, "done"), (2, "failed")]
     assert shown["versions"][1]["error"] == error and shown["versions"][1]["plan"] is None

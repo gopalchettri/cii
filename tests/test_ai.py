@@ -22,8 +22,7 @@ from app.core.constants import AiLimits, AiTask, EmbeddingCorpus, ErrorCode
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
-from app.data_access.ai_calls import AiCallRecords
-from app.data_access.embeddings import LibraryVectors, QueryVectors
+from app.data_access.admin.repository import AiCallRepository, LibraryVectorRepository, VectorRepository
 from app.models.ai import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 
 JSON_CHAT = ChatModelProfile(
@@ -39,7 +38,7 @@ def _chat_model(*models: tuple[str, ChatModelProfile]) -> ai.ChatModel:
         list(models) or [("test-chat", JSON_CHAT)],
         "http://ai.invalid",
         "key",
-        AiCallRecords(get_mongodb()["test_ai_calls"]),
+        AiCallRepository(get_mongodb()["test_ai_calls"]),
     )
 
 
@@ -139,7 +138,7 @@ def test_a_busy_provider_is_retried_by_us_alone_then_the_fallback_then_unavailab
     sent 12 times (litellm read our max_retries=0 as "use the default", 2, under each of our 4 attempts)."""
     _no_waiting(monkeypatch)
     url, requested = busy_provider
-    records = AiCallRecords(get_mongodb()["test_ai_calls"])
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
     chat = ai.ChatModel([("openai/first", JSON_CHAT), ("openai/fallback", PLAIN_CHAT)], url, "key", records)
     models = ("openai/first", "openai/fallback")
     before = [_ai_calls(AiTask.RELEVANCE_GATE, model, "unavailable") for model in models]
@@ -152,8 +151,8 @@ def test_a_busy_provider_is_retried_by_us_alone_then_the_fallback_then_unavailab
     requested.clear()
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
     stores = (
-        LibraryVectors(get_mongodb()["test_embeddings"]),
-        QueryVectors(get_mongodb()["test_query_vectors"]),
+        LibraryVectorRepository(get_mongodb()["test_embeddings"]),
+        VectorRepository(get_mongodb()["test_query_vectors"]),
     )
     embed_before = _ai_calls(AiTask.EMBED, "openai/embed", "unavailable")
     with pytest.raises(Unavailable):
@@ -202,8 +201,8 @@ def _embedding_model(
         EmbeddingModelProfile(dimensions=dimensions, **values),
         "http://ai.invalid",
         "key",
-        LibraryVectors(get_mongodb()[library]),
-        QueryVectors(get_mongodb()["test_query_vectors"]),
+        LibraryVectorRepository(get_mongodb()[library]),
+        VectorRepository(get_mongodb()["test_query_vectors"]),
         key_header,
     )
 
@@ -257,8 +256,8 @@ def test_a_rerank_score_outside_0_to_1_is_refused(monkeypatch: pytest.MonkeyPatc
 
 def test_changing_the_retention_updates_the_index_instead_of_stopping_start_up() -> None:
     collection = get_mongodb()["test_retention"]
-    AiCallRecords(collection).ensure_indexes(14)
-    AiCallRecords(collection).ensure_indexes(30)  # used to raise IndexOptionsConflict
+    AiCallRepository(collection, ttl=[("created_at", 14 * 86_400)]).create_indexes()
+    AiCallRepository(collection, ttl=[("created_at", 30 * 86_400)]).create_indexes()  # IndexOptionsConflict
     ttl = next(index for index in collection.list_indexes() if index["key"] == {"created_at": 1})
     assert ttl["expireAfterSeconds"] == 30 * 86_400
 
@@ -411,7 +410,7 @@ def test_the_key_goes_in_the_gateways_own_header_on_every_call(
         [("test-chat", JSON_CHAT)],
         "http://ai.invalid",
         "key",
-        AiCallRecords(get_mongodb()["test_ai_calls"]),
+        AiCallRepository(get_mongodb()["test_ai_calls"]),
         key_header,
     ).ask_for_json(AiTask.WRITE_SCENARIO, "s", "u")
     _embedding_model(2, key_header).embed_search_queries([f"header {uuid.uuid4().hex}"])
@@ -671,13 +670,13 @@ def test_the_vector_cache_ignores_a_duplicate_but_not_a_refused_write() -> None:
 
     database = get_mongodb()
     database.drop_collection("test_vectors_duplicate")
-    cache = QueryVectors(database["test_vectors_duplicate"])
-    cache.store([{"_id": "key", "vector": b"vector"}])
-    cache.store([{"_id": "key", "vector": b"vector"}])  # another worker stored it first: fine
+    cache = VectorRepository(database["test_vectors_duplicate"])
+    cache.save_vectors([{"_id": "key", "vector": b"vector"}])
+    cache.save_vectors([{"_id": "key", "vector": b"vector"}])  # another worker stored it first: fine
     database.drop_collection("test_vectors_refused")
     database.create_collection("test_vectors_refused", validator={"$jsonSchema": {"required": ["never_set"]}})
     with pytest.raises(BulkWriteError):
-        QueryVectors(database["test_vectors_refused"]).store([{"_id": "key", "vector": b"vector"}])
+        VectorRepository(database["test_vectors_refused"]).save_vectors([{"_id": "key", "vector": b"vector"}])
 
 
 def test_a_timed_out_call_goes_to_the_fallback_model_without_retries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -693,7 +692,7 @@ def test_a_timed_out_call_goes_to_the_fallback_model_without_retries(monkeypatch
         return _json_response('{"relevant": true}')
 
     monkeypatch.setattr(litellm, "completion", first_model_times_out)
-    records = AiCallRecords(get_mongodb()["test_ai_calls"])
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
     models = [("openai/first", JSON_CHAT), ("openai/fallback", PLAIN_CHAT)]
     chat = ai.ChatModel(models, "http://ai.invalid", "key", records)
     assert chat.ask_for_json(AiTask.RELEVANCE_GATE, "system", "user") == {"relevant": True}

@@ -18,6 +18,7 @@ from app.core.constants import (
     ErrorCode,
     EvidenceMode,
     EvidenceSearchFailure,
+    Generation,
     IntelKind,
     IntelSource,
     ScenarioStatus,
@@ -27,7 +28,7 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.job_records import JobLease
+from app.data_access.jobs.repository import JobRepository
 from app.domain.scenario.write import WRITER_PROMPT_VERSION, scenario_id
 from app.worker.external_intelligence import evidence_at_write, intel_access
 from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
@@ -75,10 +76,11 @@ def test_a_batch_searches_once_and_only_for_the_threats_it_writes(intel: Intel) 
 
 
 def test_one_audit_row_per_written_batch(intel: Intel) -> None:
-    record_id = _queued_run([f"Threat {n}" for n in range(1, 9)])  # batches of 6 and 2
+    batch = Generation.WRITER_BATCH
+    record_id = _queued_run([f"Threat {n}" for n in range(1, batch + 3)])  # one full batch, then 2
     assert _deliver_until_done(record_id) == 2
     first, second = _audit_rows(record_id)
-    assert (first["threats_searched"], second["threats_searched"]) == (6, 2)
+    assert (first["threats_searched"], second["threats_searched"]) == (batch, 2)
     assert first["snapshot_id"] == second["snapshot_id"] == SNAPSHOT
     assert len(intel.finder.calls) == 2
 
@@ -101,10 +103,11 @@ def test_a_retry_after_an_outage_does_not_search_again(intel: Intel, story_chat:
         return plain(user_prompt)
 
     story_chat.responders[AiTask.WRITE_SCENARIO] = down_once
-    lease = JobLease.claim(_sessions(), record_id, 1, TaskName.WRITE_SCENARIOS, "first")
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable):
         writing.write_batch(lease)
-    assert lease.give_back(0) and len(intel.finder.calls) == 1
+    lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
+    assert len(intel.finder.calls) == 1
     assert _deliver_until_done(record_id) == 1
     assert len(intel.finder.calls) == 1 and len(_scenarios_of(record_id)) == 2  # no second search
     assert len(_audit_rows(record_id)) == 1
@@ -119,12 +122,12 @@ def test_an_evidence_outage_holds_the_paths_back_and_a_later_try_writes_them_wit
     next try searches again and writes each story on its evidence. Before, the stories were saved inferred."""
     setattr(intel.finder, fault, True)
     record_id = _queued_run(["Threat 1", "Threat 2"])
-    lease = JobLease.claim(_sessions(), record_id, 1, TaskName.WRITE_SCENARIOS, "first")
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable):
         writing.write_batch(lease)
     assert _scenarios_of(record_id) == [] and not story_chat.asked(AiTask.WRITE_SCENARIO)
     assert all(not t.get("intel_search") for t in _threat_docs(record_id).values())  # not kept: a later try
-    assert lease.give_back(0)
+    lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
     setattr(intel.finder, fault, False)
     assert _deliver_until_done(record_id) == 1
     stored = _scenarios_of(record_id)
@@ -140,7 +143,7 @@ def test_a_search_that_breaks_names_its_own_reason_never_a_missing_snapshot(inte
     the search's own."""
     intel.finder.raises = True
     record_id = _queued_run(["Threat 1"])
-    lease = JobLease.claim(_sessions(), record_id, 1, TaskName.WRITE_SCENARIOS, "first")
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable) as error:
         writing.write_batch(lease)
     assert "RuntimeError: a bug in the search" in str(error.value)
@@ -164,7 +167,7 @@ def _start_regenerate(record_id: str, first: str) -> None:
             }
         },
     )
-    writing.write_batch(JobLease.claim(_sessions(), record_id, 2, TaskName.WRITE_SCENARIOS, "again"))
+    writing.write_batch(JobRepository(_sessions()).claim_job(record_id, 2, TaskName.WRITE_SCENARIOS, "again"))
 
 
 def test_a_regenerate_keeps_the_evidence_numbering_and_searches_nothing(intel: Intel) -> None:
@@ -319,17 +322,15 @@ def test_a_batch_with_one_retry_reads_the_approved_sources_and_their_health_once
     reads: list[str] = []
 
     class CountedFeeds:
-        def list_approved_sources(self) -> list[IntelSource]:
-            reads.append("approved")
-            return list(IntelSource)
-
-        def read_all_source_health(self) -> list[Any]:
+        def list(self, fields: Any = None, **where: Any) -> list[dict[str, Any]]:
+            if where.get("approved"):
+                reads.append("approved")
+                return [{"_id": source} for source in IntelSource]
             reads.append("health")
             return []
 
-    monkeypatch.setattr(intel_access, "FeedStatusStore", lambda _db: CountedFeeds())
-    monkeypatch.setattr(intel_access, "get_mongodb", lambda: None)
-    monkeypatch.setattr(evidence_at_write, "record_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(intel_access, "intel_feeds", CountedFeeds())
+    monkeypatch.setattr(evidence_at_write.audit_records, "create_audit_record", lambda *args, **kwargs: None)
     monkeypatch.setattr(get_settings(), "evidence_search_retries", 1)
     finder = FakeFinder()
     finder.evidence = ()  # settled with nothing usable: searched again in other words

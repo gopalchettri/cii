@@ -14,7 +14,7 @@ from app.api.routers import external_intelligence as router_module
 from app.core.config import get_settings
 from app.core.constants import Collection, IntelSource, TaskName
 from app.core.database import get_mongodb
-from app.data_access.admin_jobs import AdminJobRecords
+from app.data_access.admin.repository import admin_jobs
 from app.models.external_intelligence.source_health import HealthReport
 from app.models.external_intelligence.switch_state import SwitchState
 from app.services.external_intelligence import intel_refreshes
@@ -54,10 +54,11 @@ class Feeds:
     def __init__(self) -> None:
         self.approved: list[IntelSource] = []
 
-    def is_source_approved(self, source: IntelSource) -> bool:
-        return source != IntelSource.NIST_NVD or source in self.approved  # NVD is revoked in these tests
+    def count(self, **where: Any) -> int:
+        source = where["_id"]
+        return int(source != IntelSource.NIST_NVD or source in self.approved)  # NVD is revoked in these tests
 
-    def approve_source(self, source: IntelSource) -> None:
+    def update_intel_feed_approval(self, source: IntelSource, approved: bool, *, create: bool = True) -> None:
         self.approved.append(source)
 
 
@@ -79,7 +80,7 @@ class Api:
         self.switch, self.sent = MemorySwitch(), []
         self.reporter, self.purger = Reporter(self.switch), Purger()
         self.feeds = Feeds()
-        self.refreshes = IntelRefreshes(AdminJobRecords(get_mongodb()), self.feeds, self.switch)  # type: ignore[arg-type]
+        self.refreshes = IntelRefreshes(admin_jobs, self.feeds, self.switch)  # type: ignore[arg-type]
         self.admin = IntelAdmin(  # type: ignore[arg-type]
             self.switch, self.reporter, self.refreshes, get_settings(), self.purger, self.feeds
         )
@@ -207,8 +208,15 @@ def test_an_approval_with_the_runtime_switch_off_queues_nothing(client: TestClie
 
 
 def test_a_job_of_another_kind_is_not_found_here(client: TestClient, api: Api) -> None:
-    AdminJobRecords(get_mongodb()).insert_active(
-        {"_id": "emb-1", "kind": "embeddings_build", "status": "queued", "requested_by": "x", "created_at": 0}
+    admin_jobs.create(
+        {
+            "active": True,
+            "_id": "emb-1",
+            "kind": "embeddings_build",
+            "status": "queued",
+            "requested_by": "x",
+            "created_at": 0,
+        }
     )
     assert client.get(f"{URL}/refresh/emb-1", headers=ADMIN).status_code == 404
 

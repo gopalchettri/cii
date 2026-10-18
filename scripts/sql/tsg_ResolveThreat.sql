@@ -1,12 +1,15 @@
--- Propose a threat to the library: the only write of AI-proposed and hand-written threats (BLUEPRINT M05 L4).
--- Called by app/data_access/library.py (StoredProcedure.RESOLVE_THREAT) when the in-memory check found the threat
--- missing: promote-to-library (#27, Source 'ai') and hand-written scenarios (Source 'manual').
+-- Propose a threat to the library: the only write of AI-proposed and hand-written threats.
+-- Called by app/data_access/sql.py (StoredProcedure.RESOLVE_THREAT) when the in-memory check found the threat
+-- missing: promote-to-library (Source 'ai') and hand-written scenarios (Source 'manual'). The app may call it again
+-- with the same parameters after a lost answer: an existing name is answered as it is, so it writes once.
 -- New rows are PENDING (IsActive = 0): a curator activates them (tsg_DecidePendingThreats). Accepting a scenario
 -- never writes here.
 -- One result row: threat_type_id, threat_catalogue_id, outcome
 --   existing_active   the threat name is live already: nothing written
 --   existing_pending  the threat name is already waiting for a curator: nothing written
 --   created_pending   the threat (and its type, when new) was inserted as pending
+--   curator_rejected  a curator rejected this name (IsDeleted 1, IsActive 0) and none is live or pending:
+--                     nothing written, both ids NULL (as tsg_ImportThreatLibrary skips it)
 -- Names are unique among non-deleted rows (UX_ThreatType_NaturalKey, UX_ThreatCatalogue_NaturalKey), compared
 -- case-insensitively by SQL Server. The re-checks run under UPDLOCK, HOLDLOCK, so two callers proposing the same
 -- name wait for each other; a duplicate-key race that still slips through returns the row that won.
@@ -26,7 +29,7 @@ BEGIN
 
     DECLARE @CategoryID INT = (SELECT ThreatCategoryID FROM dbo.Threat_Category
                                WHERE ThreatCategoryName = @CategoryName AND IsActive = 1 AND IsDeleted = 0);
-    DECLARE @TypeID INT, @ThreatID INT, @ThreatActive BIT, @Created BIT = 0, @TypeCreated BIT = 0;
+    DECLARE @TypeID INT, @ThreatID INT, @ThreatActive BIT, @Created BIT = 0, @TypeCreated BIT = 0, @Rejected BIT = 0;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -36,6 +39,11 @@ BEGIN
         WHERE ThreatName = @ThreatName AND IsDeleted = 0;
 
         IF @ThreatID IS NULL
+           AND EXISTS (SELECT 1 FROM dbo.Threat_Catalogue
+                       WHERE ThreatName = @ThreatName AND IsDeleted = 1 AND IsActive = 0)
+            SET @Rejected = 1;   -- a curator rejected this name: never proposed again
+
+        IF @ThreatID IS NULL AND @Rejected = 0
         BEGIN
             SELECT @TypeID = ThreatTypeID
             FROM dbo.Threat_Type WITH (UPDLOCK, HOLDLOCK)
@@ -75,7 +83,8 @@ BEGIN
     END CATCH
 
     SELECT @TypeID AS threat_type_id, @ThreatID AS threat_catalogue_id,
-           CASE WHEN @Created = 1 THEN N'created_pending'
+           CASE WHEN @Rejected = 1 THEN N'curator_rejected'
+                WHEN @Created = 1 THEN N'created_pending'
                 WHEN @ThreatActive = 1 THEN N'existing_active'
                 ELSE N'existing_pending' END AS outcome;
 END

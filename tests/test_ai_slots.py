@@ -87,10 +87,22 @@ def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch
     def redis_is_down(*_: object) -> None:
         raise RedisConnectionError("refused")
 
-    monkeypatch.setattr(limiter._redis, "eval", redis_is_down)
+    monkeypatch.setattr(limiter._redis, "evalsha", redis_is_down)
     assert math.isnan(
         limiter.count_calls_in_progress()
     )  # unknown, never a stale number; the scrape still works
+
+
+def test_a_slot_wait_sends_the_registered_script_never_its_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every poll for a free slot is an EVALSHA: the script's text is sent once, not on every poll."""
+    limiter = AiSlots(get_redis_client(), cap=1, wait_seconds=5)
+
+    def script_text_sent(*_: object) -> None:
+        raise AssertionError("EVAL sent the whole script")
+
+    monkeypatch.setattr(limiter._redis, "eval", script_text_sent)
+    with limiter.hold_slot(hold_seconds=60):
+        assert limiter.count_calls_in_progress() == 1
 
 
 def test_a_slot_outlives_its_call_s_longest_run() -> None:

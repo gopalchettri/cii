@@ -9,11 +9,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.constants import ConflictReason, ErrorCode, PlanMessage, SessionMessage
-from app.core.exceptions import Conflict, Unavailable
+from app.core.exceptions import Conflict, DuplicateRecord, Unavailable
 from app.core.tracing import traced
-from app.data_access.manual_scenarios import ManualRecords
-from app.data_access.scenario.runs import AssetContextRepository
-from app.data_access.scenario.scenarios import RunCounts
+from app.data_access.library.repository import SqlServerRepository
+from app.data_access.scenario.repository import scenario_sessions, scenarios
 from app.domain.remediation.manual_records import (
     given_controls,
     manual_ids,
@@ -32,13 +31,10 @@ from app.services.scenario.runs import freeze_context
 class ManualScenarios:
     def __init__(
         self,
-        asset_contexts: AssetContextRepository,
+        asset_contexts: SqlServerRepository,
         library: LibraryService,
-        records: ManualRecords,
-        counts: RunCounts,
     ) -> None:
         self._asset_contexts, self._library = asset_contexts, library
-        self._records, self._counts = records, counts
 
     @traced("remediation.manual_scenario")
     def save(self, principal: Principal, body: PlanRequest, key: str, request_hash: str) -> dict[str, Any]:
@@ -46,7 +42,7 @@ class ManualScenarios:
         checked before the first write; no AI is called."""
         manual = body.manual_scenario
         assert manual is not None
-        rows = self._asset_contexts.read(principal.entity_id, manual)
+        rows = self._asset_contexts.get_asset_context(principal.entity_id, manual)
         context = freeze_context(manual, rows)
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()
@@ -68,8 +64,13 @@ class ManualScenarios:
         scenario = manual_scenario_record(
             principal, manual, ids, identity, context, saved, caller_actor(principal), now
         )
-        if self._records.save(run, scenario) is not None:  # another request took the key meanwhile
+        if scenario_sessions.create_manual_scenario_session(run) is not None:  # the key was taken meanwhile
             message = SessionMessage.IDEMPOTENCY_KEY_CONFLICT
             raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
-        self._counts.refresh(ids[0])
+        try:  # inserted once: a retry after a crash finds it stored and changes nothing
+            scenarios.create(scenario)
+        except DuplicateRecord as clash:
+            if clash.index_name != "_id_":
+                raise
+        scenarios.update_scenario_session_counts(ids[0])
         return scenario

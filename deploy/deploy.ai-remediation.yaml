@@ -41,7 +41,7 @@ spec:
         - name: worker
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
           imagePullPolicy: IfNotPresent
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_threats]
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_threats]
           envFrom:
             - configMapRef: { name: tsg-config }
             - secretRef: { name: tsg-secrets }
@@ -93,7 +93,7 @@ spec:
         - name: worker
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
           imagePullPolicy: IfNotPresent
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_scenarios]
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_scenarios]
           envFrom:
             - configMapRef: { name: tsg-config }
             - secretRef: { name: tsg-secrets }

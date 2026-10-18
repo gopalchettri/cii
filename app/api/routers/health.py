@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.core.constants import ApiTag, Dependency
-from app.services.readiness import check_readiness_without_a_thread
+from app.services.readiness import check_readiness_without_a_thread, read_mongodb_topology
 
 router = APIRouter(tags=[ApiTag.HEALTH])
 
@@ -29,7 +29,12 @@ async def report_readiness() -> JSONResponse:
     stores_up = all(up for name, up in dependencies.items() if name != Dependency.SQL)
     ready = stores_up and workers is not None and all(workers.values())
     return JSONResponse(
-        {"status": "ready" if ready else "not_ready", "dependencies": dependencies, "workers": workers},
+        {
+            "status": "ready" if ready else "not_ready",
+            "dependencies": dependencies,
+            "workers": workers,
+            "mongodb": read_mongodb_topology(),  # replica set, version, write concern; never waited
+        },
         status_code=200 if ready else 503,
     )
 
