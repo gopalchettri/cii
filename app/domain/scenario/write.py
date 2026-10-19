@@ -67,6 +67,7 @@ from app.domain.shared.ask_ai import (
 )
 from app.domain.shared.names import (
     as_json,
+    cut_to_fit,
     find_name_mentions,
     is_same_name,
     name_match_key,
@@ -388,7 +389,7 @@ def build_brief(
     facts = [_named_facts(context.asset["name"], _asset_facts(context, style))] + [
         _named_facts(system["name"], raw_system_facts(system)) for system in _path_systems(path, context)
     ]
-    asset, *systems = _cut_to_fit(facts, budget)
+    asset, *systems = cut_to_fit(facts, budget)
     return WriterBrief(
         asset=asset,
         asset_name=asset["name"],
@@ -557,30 +558,6 @@ def _check_still_live(threat: dict[str, Any], path_id: str, live: LiveLibrary) -
 def _named_facts(name: str, facts: dict[str, Any]) -> dict[str, Any]:
     """A part's name first, then its recorded facts cleaned for a prompt; the name is never dropped."""
     return {"name": redact(" ".join(str(name).split())), **facts_safe_for_prompt(facts | {"name": None})}
-
-
-def _json_length(facts: dict[str, Any]) -> int:
-    """How many characters `facts` take as JSON."""
-    return len(json.dumps(facts, ensure_ascii=False, default=str))
-
-
-def _cut_to_fit(parts: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    """`parts` within `limit` JSON characters together: the longest text fact (never a name) is cut first,
-    so each part stays one valid JSON object."""
-    # ponytail: lists (technology, platforms) are never cut: they hold the platform's short option names.
-    kept = [dict(part) for part in parts]
-    while (over := sum(map(_json_length, kept)) - limit) > 0:
-        texts = [
-            (len(value), index, key)
-            for index, part in enumerate(kept)
-            for key, value in part.items()
-            if key != "name" and isinstance(value, str)
-        ]
-        length, index, key = max(texts, default=(0, 0, ""))
-        if length <= 1:
-            break
-        kept[index][key] = shorten_text(kept[index][key], max(length - over, 1))
-    return kept
 
 
 # --- the exact checks: safety and data integrity only; meaning is the reviewer's
@@ -1009,9 +986,10 @@ def duplicate_of(
     run_finished: Iterable[dict[str, Any]],
     elsewhere: Iterable[dict[str, Any]],
 ) -> Finding | None:
-    """The finding when `content`, a new scenario of `path_id`, tells the same threat as the same kind on the
-    same systems, or in the very same words, as one of its run's other paths' (`run_finished`) or one of its
-    asset's other runs' (`elsewhere`, hand-written ones included); else None."""
+    """The finding when `content`, a new scenario of `path_id`, tells the same threat as the same kind (on
+    any systems: they are its entry points), or in the very same words, as one of its run's other paths'
+    (`run_finished`) or one of its asset's other runs' (`elsewhere`, hand-written ones included); else
+    None."""
     own_run = (item for item in run_finished if item.get("path_id") != path_id)
     for other in (*own_run, *elsewhere):
         if _same_path(content, other["content"]) or _same_words(content, other["content"]):
@@ -1025,8 +1003,8 @@ def held_repeat_of(
     path: dict[str, Any], threat: dict[str, Any], held: Iterable[dict[str, Any]]
 ) -> str | None:
     """The id of a held scenario (another path's, or another run's) that `path`, told around `threat`, would
-    repeat as the same path, compared as its written card would be; else None. Asks no AI."""
-    mine = _threat_content(path, threat) | {"systems": [{"id": system_id} for system_id in path["systems"]]}
+    repeat as the same asset-level scenario, compared as its written card would be; else None. Asks no AI."""
+    mine = _threat_content(path, threat)
     return next(
         (
             other["_id"]
@@ -1038,13 +1016,12 @@ def held_repeat_of(
 
 
 def _same_path(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
-    """The same threat (same key or same name) written as the same kind on the same systems."""
+    """The same asset-level scenario: the same threat (same key or same name) as the same kind of attack,
+    whatever systems it enters through (owner 2026-10-19)."""
     key, name = _threat_key(mine), _threat_name(mine)
     return (
-        ((key is not None and key == _threat_key(theirs)) or (bool(name) and name == _threat_name(theirs)))
-        and mine.get("category") == theirs.get("category")
-        and _system_ids(mine) == _system_ids(theirs)
-    )
+        (key is not None and key == _threat_key(theirs)) or (bool(name) and name == _threat_name(theirs))
+    ) and mine.get("category") == theirs.get("category")
 
 
 def _same_words(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
@@ -1065,11 +1042,6 @@ def _threat_key(content: dict[str, Any]) -> str | None:
 def _threat_name(content: dict[str, Any]) -> str:
     """The threat's name as names are matched: library code left out, normalised ('' when it has none)."""
     return name_match_key(threat_name_without_code((content.get("threat") or {}).get("name") or ""))
-
-
-def _system_ids(content: dict[str, Any]) -> set[Any]:
-    """The ids of the systems a card is on."""
-    return {system.get("id") for system in content.get("systems") or []}
 
 
 def _plain(text: str) -> str:

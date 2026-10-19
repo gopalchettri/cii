@@ -13,6 +13,7 @@ from app.core.constants import (
     GroundingStatus,
     LibraryOutcome,
     Limits,
+    PlanStage,
     PromotionOutcome,
     Review,
     ReviewFlag,
@@ -371,6 +372,80 @@ class ScenarioView(BaseModel):
 class ScenarioList(BaseModel):
     scenarios: list[ScenarioView]
     total: int  # every match, for paging (offset + limit)
+
+
+# How a run's plan was made.
+
+
+class PlanDrop(BaseModel):
+    """One candidate that left the plan: which threat, as which kind (None: every kind), where and why."""
+
+    threat_key: str  # "lib:<id>" or "ai:<name>"
+    threat_name: str
+    kind: str | None
+    stage: PlanStage
+    reason: str  # a CandidateRejection, PlanLoss or AttackerCheck value
+    detail: str  # what the gate said it needs, its reason, the threat it merged into, the held scenario...
+
+
+class PlanCounts(BaseModel):
+    """How many candidates entered and left each stage, in planning order (a slot: one threat, one kind)."""
+
+    library_threats: int  # threats in the library
+    type_fits_no_place: int  # threats whose asset type fits neither the asset nor a chosen system
+    no_linked_actor: int  # threats whose type links no attacker
+    gate_asked: int  # slots sent to the relevance gate
+    not_judged: int  # slots whose gate batch was skipped
+    not_relevant: int
+    needs_unrecorded: int  # slots needing something no recorded fact mentions
+    asset_type_mismatch: int  # slots on places their asset type does not fit
+    needs_unrecorded_elsewhere: int  # slots of a threat that needs something under another kind
+    gate_accepted: int  # slots kept after the gate and code's checks
+    ai_threats: int  # gap-fill threats added
+    gap_fill_lost: int  # gap-fill proposals not kept (a library repeat, no type, not relevant...)
+    merged: int  # AI threats folded into a library or earlier AI threat
+    unfit_after_merge: int  # slots a merge brought onto places their type does not fit
+    no_attacker: int  # threats with no acting attacker
+    threats: int  # threats planned
+    paths: int  # asset-level scenarios found: one per threat per kind
+    already_held: int  # of those, held by the asset already (pending or accepted)
+    not_selected: int  # left out by TOTAL_SCENARIO_COUNT
+    selected: int
+    first_set: int  # written first; the rest on "Next set"
+
+
+class GivenUpPath(BaseModel):
+    """A planned path the writer gave up, and why."""
+
+    path_id: str
+    threat_key: str
+    kind: str
+    rank: int
+    reason: str | None  # the blocker or failure that gave it up
+    repeats: str | None  # the held scenario it repeats, when that is why
+    replaced_by: str | None  # the spare path written in its place
+
+
+class WriteOutcomes(BaseModel):
+    """What became of the planned paths so far."""
+
+    served: int
+    still_to_write: int
+    given_up: int
+    replaced: int  # given up and replaced by a spare
+    given_up_paths: list[GivenUpPath]
+
+
+class PlanTraceView(BaseModel):
+    """GET /v1/sessions/{id}/plan-trace: how many candidates each planning stage took in and let out, each
+    candidate left out with its reason, and what became of the planned paths."""
+
+    session_id: str
+    counts: PlanCounts
+    landscape_cut: bool  # facts were shortened to fit the AI's prompt (every system kept its name)
+    drops: list[PlanDrop]  # the most telling first, at most PlanTraceLimits.MAX_DROPS
+    drops_total: int
+    writing: WriteOutcomes
 
 
 class RunResults(BaseModel):

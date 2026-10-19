@@ -4,10 +4,15 @@ as a kind reads that kind's reason; the card's threat block shows the threat's o
 import dataclasses
 
 from app.core.constants import PlanCheckStatus, Route, StrideCategory
-from app.domain.scenario.plan import merge_two_threats, planned_threat_record, threat_reason_for
+from app.domain.scenario.plan import (
+    merge_two_threats,
+    place_for,
+    planned_threat_record,
+    threat_reason_for,
+)
 from app.domain.scenario.results import _threat_block, build_scenario_view
 from app.domain.scenario.write import brief_entry_point_options, build_brief, written_record
-from app.models.scenario.plan import PlannedThreat
+from app.models.scenario.plan import KindPlace, PlannedThreat
 from app.models.scenario.write import PlanCheck, WrittenScenario
 from tests.planner_samples import CONTEXT, planned
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
@@ -104,3 +109,20 @@ def test_the_threat_blocks_category_id_is_its_own_categorys() -> None:
     assert (block.threat_category, block.threat_category_id) == (S.SPOOFING, None)  # before: (Spoofing, 12)
     same_kind = old_plan | {"threat": {"key": "lib:1", "category": S.TAMPERING}}
     assert _threat_block(same_kind).threat_category_id == 12
+
+
+def test_each_kind_keeps_its_own_place_through_any_merge_order() -> None:
+    """Like its reason, each kind's systems, impact and confidence survive a merge in either order."""
+    spoofing = dataclasses.replace(
+        _judged(S.SPOOFING, SPOOFING_WHY), kind_places=((S.SPOOFING, KindPlace((321,), 3, 90.0)),)
+    )
+    privilege = dataclasses.replace(
+        _judged(S.ELEVATION_OF_PRIVILEGE, PRIVILEGE_WHY),
+        systems=(322,),
+        kind_places=((S.ELEVATION_OF_PRIVILEGE, KindPlace((322,), 1, 40.0)),),
+    )
+    for kept, other in ((spoofing, privilege), (privilege, spoofing)):
+        merged = merge_two_threats(kept, other)
+        assert place_for(merged, S.SPOOFING) == KindPlace((321,), 3, 90.0)
+        assert place_for(merged, S.ELEVATION_OF_PRIVILEGE) == KindPlace((322,), 1, 40.0)
+        assert merged.systems == (321, 322)

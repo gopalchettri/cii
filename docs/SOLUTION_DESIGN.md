@@ -44,7 +44,7 @@ Hand-written scenarios are slow, generic, duplicated and not tied to real threat
 |---|---|---|
 | F1 | Start a session | asset + systems → the asset's facts are frozen; one active session per asset; a safe retry with Idempotency-Key |
 | F2 | Find threats | the AI checks each library threat that has a linked attacker, per kind of attack; may propose one missing threat; picks the attacker. A broken reply is retried later; on the last try planning carries on with what it could check |
-| F3 | Attack paths | threats grouped by kind of attack + systems, ranked; the first set is written now, more on "Next set"; spares replace failures |
+| F3 | Attack paths | one asset-level path per threat per kind of attack it was accepted for, entering through that kind's own systems (never one per system); each threat's strongest kind first, then by impact; the first set is written now, more on "Next set"; spares replace failures; every candidate left out is traced (GET /v1/sessions/{id}/plan-trace) |
 | F4 | Write scenarios | code prepares the facts → the AI writes → code checks → the AI reviews; the AI is given each word range from .env, its upper number a hard limit (no code cut); a blocked draft is given up at once and a spare takes its place (the writer's own retry is commented out, ready to switch back on); no duplicates; unique titles |
 | F5 | Evidence | on: one search per write (a regenerate searches again); the AI writes no marker; it writes an evidence passage from the cited entry, which code cites once the reviewer confirms it, else code cites its own sentence from the entry's facts (D11); the nearest evidence when none meets the threshold; never blocked for missing evidence. Off: cite nothing |
 | F6 | Map controls | library controls matched to each scenario by search + score; never written by the AI |
@@ -279,7 +279,8 @@ API change.
 2. **No duplicate threat scenario.** An AI-written scenario is refused (near_duplicate) when it repeats
    another scenario of the session, or a pending or accepted scenario of the same asset in another
    session (hand-written ones included). "Repeats" means either:
-   - the same threat (same library id **or** same name), the same kind of attack and the same systems;
+   - the same threat (same library id **or** same name) as the same kind of attack, whatever systems it
+     enters through: the systems are its entry points, the scenario is the asset's (owner, 2026-10-19);
    - or the same statement.
 
    The check reads the database right before each save. Saves run one at a time per batch, and there
@@ -363,12 +364,16 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | D10 | Never plan or write a path the asset already holds; a spare may come from the next set (session 72a02461 planned 12, wrote 1 and gave up 5: 4 repeats found only after the AI wrote them, 1 with no spare left) |
 | D11 | Word limits (owner, 2026-10-19): THREAT_SCENARIO_WORD_LIMIT 150-200, RISK_STATEMENT_WORD_LIMIT 100-150, EVIDENCE_STATEMENT_WORD_LIMIT 30-80, each a separate limit given to the AI, the upper number a hard limit, the lower a target; code cuts nothing. Revises D7: the AI writes the evidence passage from the cited entry, the reviewer confirms it, code cites it; code's own sentence is the fallback. scripts/scorecard.py reports any text over its maximum |
 
+| D12 | Asset-level scenarios (owner, 2026-10-19): one per threat per kind of attack, its systems the entry points; duplicates are the same threat + kind, whatever systems. Replaces the 2026-10-13 grouping (one path per kind × exact system set), which capped asset 1166 at 12 paths from 34-42 accepted threats (60-95% only "also applies") and lost whole groups to the held drop on re-runs (12 → 7, 2, 8, 3). Each kind keeps its own systems, impact and confidence; a "none fits" attacker pick never vetoes one another kind named; the landscape is cut fairly (every system keeps its line, the ASSET line lists the systems by name and asset type); the plan's trace is saved with it |
+
 ## 6. Not in this round (backlog, one at a time after the re-architecture)
 1. Scenario regenerate has no version cap: AI cost is unbounded.
 2. A crashed admin job can block new index builds for up to an hour.
 3. Monitoring pages (Grafana, Prometheus, Flower) have no login.
 4. An approved threat without a category disappears from the app.
 5. An intelligence import shows "done" even when every source failed.
+6. The same threat told as two or more kinds may read alike; if reviewers report it, show the writer the
+   run's other kinds of that threat (today only a regenerate shows the writer other versions).
 
 ## 7. Build plan and progress
 | Step | What | Status |

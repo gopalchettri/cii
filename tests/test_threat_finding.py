@@ -91,10 +91,16 @@ def test_the_landscape_names_systems_by_alias_and_keeps_to_its_budget() -> None:
     assert "321" not in landscape.text and '"alias"' not in landscape.text  # never a database id
     assert "backup_tested" not in landscape.text  # an unrecorded fact is left out, never written as "no"
     assert landscape.system_ids == {"SYS1": 321, "SYS2": 322}
+    listed = '"supporting_systems": [{"name": "SCADA server", "asset_type": "OT"}, {"name": "Historian"'
+    assert listed in landscape.text and not landscape.cut  # the asset's systems by name and asset type
     wordy_scada = system_row(321, "SYS1", "SCADA server", past_incidents="Outage after a patch. " * 30)
     wordy = FrozenContext(**{**CONTEXT.to_record(), "systems": [wordy_scada, CONTEXT.systems[1]]})
     squeezed = describe_asset_for_ai(wordy, budget=1_200)
-    assert len(squeezed.text) == 1_200 and squeezed.text.endswith("…")
+    # The longest fact is cut, never the last system: every system keeps its line, name and asset type.
+    assert len(squeezed.text) <= 1_200 and squeezed.cut
+    assert '\nSYS2 "Historian": {"name": "Historian"' in squeezed.text
+    scada_line = next(line for line in squeezed.text.splitlines() if line.startswith("SYS1 "))
+    assert "…" in scada_line and '"asset_type": "OT"' in scada_line
 
 
 def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
@@ -436,3 +442,19 @@ def test_an_outage_in_one_call_wins_over_a_bad_answer_in_another() -> None:
     with pytest.raises(Unavailable):
         run_in_parallel(work, [0, 1, 2, 3], 4, "test")
     assert run_in_parallel(lambda item: item * 2, [1, 2, 3], 2, "test") == [2, 4, 6]
+
+
+def test_the_landscape_cut_is_even_and_never_blanks_a_fact() -> None:
+    """Over budget, every long fact is cut to one common length, the first systems no less than the last; a
+    fact cut to nothing is left out (unknown), never written as ""."""
+    long_systems = [system_row(321 + n, f"SYS{n + 1}", f"S{n}", description="word " * 80) for n in range(6)]
+    context = FrozenContext(**{**CONTEXT.to_record(), "systems": long_systems})
+    squeezed = describe_asset_for_ai(context, budget=1_800)
+    lines = [line for line in squeezed.text.splitlines() if line.startswith("SYS")]
+    assert len(lines) == 6 and squeezed.cut and len(squeezed.text) <= 1_800
+    lengths = {len(line) for line in lines}
+    assert max(lengths) - min(lengths) <= 2  # one common length, give or take the alias digits
+    assert '""' not in squeezed.text
+    unrecorded = system_row(330, "SYS1", "Historian", category_name=None)
+    listed = describe_asset_for_ai(FrozenContext(**{**CONTEXT.to_record(), "systems": [unrecorded]}), 30_000)
+    assert '"supporting_systems": [{"name": "Historian"}]' in listed.text  # no asset type: left out, not null

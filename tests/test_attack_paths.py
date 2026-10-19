@@ -19,7 +19,9 @@ from app.core.constants import (
     Decision,
     ErrorCode,
     Lease,
+    PlanLoss,
     PlanMessage,
+    PlanStage,
     RunActionKind,
     RunActionOutcome,
     ScenarioStatus,
@@ -40,10 +42,11 @@ from app.domain.scenario.plan import (
     attack_path_systems,
     build_plan,
     describe_asset_for_ai,
+    merge_same_threats,
     rank_paths,
 )
 from app.domain.scenario.write import held_repeat_of
-from app.models.scenario.plan import AttackPath, PlannedThreat, ThreatFindings
+from app.models.scenario.plan import AttackPath, KindPlace, PlannedThreat, ThreatFindings
 from app.worker import jobs
 from app.worker.scenario.plan_job import PLAN_JOB_FIELDS, PlanJob
 from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
@@ -59,34 +62,37 @@ def one_step(key: str, category: S, systems: tuple[int, ...], impact: int) -> At
     return AttackPath((planned(key, key, systems, categories=(category,), impact=impact),))
 
 
-def test_each_kind_of_attack_on_each_route_is_one_path_and_its_other_threats_stay_with_it() -> None:
-    """Threats are grouped by kind of attack and by route (the systems each was judged on); each group is one
-    path around its strongest threat, the others kept as also_applies (names, no codes)."""
+def test_every_threat_is_its_own_asset_level_path_none_grouped_under_another() -> None:
+    """Owner 2026-10-19: one asset-level scenario per distinct threat per kind of attack, its systems the
+    entry points. Two threats on the same kind and systems are two scenarios, never one that names the
+    other as also_applies; a threat on several systems is one scenario, never one per system."""
     strong = planned("lib:1", "T0839: Firmware change", (321, 322), impact=3)
     second = planned("lib:4", "Logic overwrite", (321, 322), impact=2)
     weak = planned("lib:2", "Log wipe", (321,), impact=1)
     on_asset = planned("lib:3", "Grid data theft", (), categories=(S.INFORMATION_DISCLOSURE,))
     plan = build_plan(findings_of(weak, strong, second, on_asset), 0)
-    groups = {(p["category"], tuple(p["systems"])): (p["steps"], p["also_applies"]) for p in plan["paths"]}
-    assert groups == {
-        (S.TAMPERING, (321,)): (["lib:2"], []),  # its own route: its own scenario
-        (S.TAMPERING, (321, 322)): (["lib:1"], ["Logic overwrite"]),  # the strongest; the other stays
-        (S.INFORMATION_DISCLOSURE, ()): (["lib:3"], []),  # judged on no system: the asset itself
-    }
-    assert len({p["path_id"] for p in plan["paths"]}) == 3 and all("links" not in p for p in plan["paths"])
+    assert [(p["steps"], p["category"], p["systems"], p["also_applies"]) for p in plan["paths"]] == [
+        (["lib:1"], S.TAMPERING, [321, 322], []),
+        (["lib:4"], S.TAMPERING, [321, 322], []),  # the same kind and systems: its own scenario
+        (["lib:3"], S.INFORMATION_DISCLOSURE, [], []),  # judged on no system: the asset itself
+        (["lib:2"], S.TAMPERING, [321], []),
+    ]
+    assert len({p["path_id"] for p in plan["paths"]}) == 4 and all("links" not in p for p in plan["paths"])
     assert [t["key"] for t in plan["threats"]] == ["lib:2", "lib:1", "lib:4", "lib:3"]  # every threat, once
 
 
-def test_a_threat_counts_in_every_kind_it_fits_and_each_kind_prefers_an_untaken_threat() -> None:
-    """Each kind a threat fits is a group, told by a threat no earlier group took, and shown as that kind."""
+def test_a_threat_is_a_path_for_every_kind_it_fits_and_distinct_threats_come_first() -> None:
+    """Each kind a threat was accepted for is its own scenario (another consequence for the asset), shown as
+    that kind; every threat's strongest kind comes before any threat's next one, so the first sets tell
+    distinct threats."""
     login = planned("lib:1", "Fake operator login", (321,), categories=(S.SPOOFING, S.REPUDIATION), impact=3)
     wipe = planned("lib:2", "Log wipe", (321,), categories=(S.REPUDIATION,), impact=1)
     plan = build_plan(findings_of(login, wipe), 0)
-    by_kind = {p["category"]: (p["steps"], p["also_applies"], p["categories"][0]) for p in plan["paths"]}
-    assert by_kind == {
-        S.SPOOFING: (["lib:1"], [], S.SPOOFING),
-        S.REPUDIATION: (["lib:2"], ["Fake operator login"], S.REPUDIATION),  # lib:1 was taken by Spoofing
-    }
+    assert [(p["steps"], p["category"], p["categories"][0]) for p in plan["paths"]] == [
+        (["lib:1"], S.SPOOFING, S.SPOOFING),
+        (["lib:2"], S.REPUDIATION, S.REPUDIATION),  # lib:2's only kind before lib:1's second
+        (["lib:1"], S.REPUDIATION, S.REPUDIATION),
+    ]
     alone = planned("lib:5", "Ladder logic change", (321,), categories=(S.TAMPERING, S.DENIAL_OF_SERVICE))
     paths = build_plan(findings_of(alone), 0)["paths"]
     assert [(p["category"], p["steps"]) for p in paths] == [
@@ -94,6 +100,29 @@ def test_a_threat_counts_in_every_kind_it_fits_and_each_kind_prefers_an_untaken_
         (S.DENIAL_OF_SERVICE, ["lib:5"]),  # only one threat: told once per kind, as that kind
     ]
     assert paths[0]["path_id"] != paths[1]["path_id"]
+
+
+def test_each_kind_enters_through_its_own_systems_with_its_own_impact_and_confidence() -> None:
+    """A threat accepted as two kinds on different systems keeps each verdict through the merge: each kind's
+    scenario enters only through the systems the gate named for it."""
+    tampering = planned(
+        "lib:5", "Logic change", (321,), impact=3, kind_places=((S.TAMPERING, KindPlace((321,), 3, 80.0)),)
+    )
+    denial = planned(
+        "lib:5",
+        "Logic change",
+        (322,),
+        categories=(S.DENIAL_OF_SERVICE,),
+        impact=1,
+        kind_places=((S.DENIAL_OF_SERVICE, KindPlace((322,), 1, 50.0)),),
+    )
+    (merged,) = merge_same_threats([tampering, denial])
+    assert merged.systems == (321, 322)  # the union, for the evidence search
+    paths = build_plan(findings_of(merged), 0)["paths"]
+    assert [(p["category"], p["systems"], p["impact"], p["confidence"]) for p in paths] == [
+        (S.TAMPERING, [321], 3, 80.0),
+        (S.DENIAL_OF_SERVICE, [322], 1, 50.0),
+    ]
 
 
 def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_steps() -> None:
@@ -159,13 +188,15 @@ def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:
 
 
 def test_a_path_repeating_a_held_scenario_is_dropped_before_the_target_and_the_next_is_selected() -> None:
-    """The same threat (by key, or by name) as the same kind on the same systems as a scenario the asset
-    holds never enters the plan; the target fills with the next path and the ranks close up."""
+    """The same threat (by key, or by name) as the same kind as a scenario the asset holds, whatever systems
+    either enters through (owner 2026-10-19), never enters the plan; another kind of the same threat does.
+    The target fills with the next path and the ranks close up."""
     threats = [
         planned("lib:1", "T0001: One", (321,), categories=(S.SPOOFING,), impact=3),
         planned("lib:2", "Two", (322,), categories=(S.TAMPERING,), impact=2),
         planned("ai:3", "Three", (323,), categories=(S.TAMPERING,), impact=2),
         planned("lib:4", "Four", (324,), categories=(S.TAMPERING,), impact=1),
+        planned("lib:6", "Six", (322,), categories=(S.TAMPERING,), impact=2),
     ]
 
     def held_card(threat: dict[str, str], category: S, systems: list[int]) -> dict[str, Any]:
@@ -175,16 +206,28 @@ def test_a_path_repeating_a_held_scenario_is_dropped_before_the_target_and_the_n
     held: list[dict[str, Any]] = []
     held.append(held_card({"key": "lib:1"}, S.SPOOFING, [321]))  # by key
     held.append(held_card({"key": "ai:old", "name": "three"}, S.TAMPERING, [323]))  # by name
-    held.append(held_card({"key": "lib:2"}, S.SPOOFING, [322]))  # another kind
-    held.append(held_card({"key": "lib:4"}, S.TAMPERING, []))  # other systems
+    held.append(held_card({"key": "lib:2"}, S.SPOOFING, [322]))  # another kind: not held
+    held.append(held_card({"key": "lib:4"}, S.TAMPERING, []))  # other systems: still the same scenario
     plan = build_plan(
         findings_of(*threats), 1, lambda path, threat: held_repeat_of(path, threat, held) is not None
     )
     assert [(p["steps"], p["rank"], p["selected"]) for p in plan["paths"]] == [
         (["lib:2"], 1, True),
-        (["lib:4"], 2, False),
+        (["lib:6"], 2, False),  # on lib:2's kind and systems, and never lost with it
     ]
-    assert [threat["key"] for threat in plan["threats"]] == ["lib:1", "lib:2", "ai:3", "lib:4"]  # all listed
+    assert [t["key"] for t in plan["threats"]] == ["lib:1", "lib:2", "ai:3", "lib:4", "lib:6"]  # all listed
+
+
+def test_a_held_threat_drops_only_its_own_path_never_another_on_the_same_kind_and_systems() -> None:
+    """The held drop is per path: the leader of what used to be one group is held, the other threat stays."""
+    leader, other = planned("lib:2", "Two", (322,), impact=3), planned("lib:6", "Six", (322,), impact=2)
+    held = [
+        {"_id": "held-0", "content": {"threat": {"key": "lib:2"}, "category": S.TAMPERING, "systems": []}}
+    ]
+    plan = build_plan(
+        findings_of(leader, other), 0, lambda path, threat: held_repeat_of(path, threat, held) is not None
+    )
+    assert [(p["steps"], p["rank"]) for p in plan["paths"]] == [(["lib:6"], 1)]
 
 
 def _queued_run(attempts: int = 0) -> str:
@@ -270,6 +313,18 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     # What made the plan, so a later reviewer can tell why this plan and not another.
     assert set(plan["made_with"]) == {"chat_models", "embedding_model", "rerank_model", "library"}
     assert plan["made_with"]["chat_models"][0] == get_settings().chat_model
+    # Its trace, saved in the same write: each stage's counts add up.
+    counts = run["plan_trace"]["counts"]
+    assert (counts["threats"], counts["paths"], counts["selected"], counts["first_set"]) == (2, 2, 2, 1)
+    assert counts["already_held"] == 0 and counts["gate_accepted"] == 2
+    lost = (
+        "not_judged",
+        "not_relevant",
+        "needs_unrecorded",
+        "asset_type_mismatch",
+        "needs_unrecorded_elsewhere",
+    )
+    assert counts["gate_asked"] == counts["gate_accepted"] + sum(counts[name] for name in lost)
 
 
 def test_a_plan_with_no_path_ends_the_run_at_once(
@@ -308,12 +363,14 @@ def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_noth
     sessions.update_one({"_id": earlier}, {"$set": {"status": Status.DONE, "active": False}})
     names = {threat["key"]: threat["name"] for threat in first["plan"]["threats"]}
     assert len(first["plan"]["paths"]) == 2
+    held_ids = []
     for number, path in enumerate(first["plan"]["paths"]):
         key = path["steps"][0]
         threat = {"key": key} if number == 0 else {"key": "ai:other", "name": names[key]}
         systems = [{"id": system_id} for system_id in path["systems"]]
         held = {"session_id": earlier, "entity_id": first["entity_id"], "asset_id": first["asset_id"]}
-        held |= {"_id": uuid.uuid4().hex, "path_id": path["path_id"], "superseded_by": None}
+        held_ids.append(str(uuid.uuid4()))  # a card id as the app makes them (uuid5, with its dashes)
+        held |= {"_id": held_ids[-1], "path_id": path["path_id"], "superseded_by": None}
         held |= {"status": ScenarioStatus.DONE, "decision": Decision.PENDING}
         held |= {"content": {"threat": threat, "category": path["category"], "systems": systems}}
         scenarios.insert_one(held)
@@ -327,6 +384,15 @@ def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_noth
     run = _stored_run(record_id)
     assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.COMPLETE)
     assert run["plan"]["paths"] == [] and len(run["plan"]["threats"]) == 2 and sent == []
+    trace = run["plan_trace"]  # why nothing is left to write: each path held, by which scenario
+    assert (trace["counts"]["paths"], trace["counts"]["already_held"], trace["counts"]["first_set"]) == (
+        2,
+        2,
+        0,
+    )
+    held_drops = [drop for drop in trace["drops"] if drop["stage"] == PlanStage.HELD]
+    assert all(drop["reason"] == PlanLoss.ALREADY_HELD for drop in held_drops)
+    assert sorted(drop["detail"] for drop in held_drops) == sorted(held_ids)
 
 
 def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(

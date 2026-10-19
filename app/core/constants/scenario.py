@@ -231,6 +231,43 @@ class ActionStatus(StrEnum):
     MAPPING_CONTROLS = "mapping_controls"  # a next set that only resumed stopped controls
 
 
+class PlanStage(StrEnum):
+    """Where a candidate left the plan (plan_trace.drops[].stage), in planning order."""
+
+    PRE_FILTER = "pre_filter"  # before the gate: its type fits no place, or it links no attacker
+    GATE = "gate"  # the relevance gate's verdict, or its batch was skipped
+    CHECKS = "checks"  # code's checks on the verdicts: the asset-type fit, a need refused elsewhere
+    GAP_FILL = "gap_fill"  # the AI's proposal for a kind with nothing accepted, not kept
+    MERGE = "merge"  # folded into another threat, or a merged kind fitting no place
+    ATTACKER = "attacker"  # no acting attacker
+    HELD = "held"  # the asset already holds this threat as this kind
+
+
+class PlanLoss(StrEnum):
+    """Why a candidate left the plan, beside CandidateRejection and AttackerCheck."""
+
+    TYPE_FITS_NO_PLACE = "type_fits_no_place"
+    NO_LINKED_ACTOR = "no_linked_actor"
+    NOT_JUDGED = "not_judged"  # its gate batch was skipped
+    NEEDS_UNRECORDED_ELSEWHERE = "needs_unrecorded_elsewhere"  # a need found under another kind
+    MERGED = "merged"
+    ALREADY_HELD = "already_held"
+    LIBRARY_REPEAT = "library_repeat"  # a gap-fill proposal that is a library threat already judged
+    TYPE_UNMATCHED = "type_unmatched"  # a gap-fill proposal whose type matches no library type
+
+
+class PlanTraceLimits:
+    MAX_DROPS: Final = 300  # drops listed on a trace; its counts are always whole
+    DETAIL_MAX_CHARS: Final = 160
+
+
+class PlanTraceMessage(StrEnum):
+    NOT_PLANNED = (
+        "Session '{session_id}' has no plan trace: it is not planned yet, or it was planned before plan "
+        "traces were kept."
+    )
+
+
 #: content.route.status in results words: a route on an unrecorded link between systems is ASSUMED.
 ROUTE_WORDS: Final[dict[str, str]] = {"standalone": "STANDALONE", "unknown": "ASSUMED"}
 CONTROLS_EXHAUSTED: Final = "retry_budget_exhausted"  # the controls job gave up after its tries

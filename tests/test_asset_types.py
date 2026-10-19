@@ -11,10 +11,14 @@ from app.core.asset_types import asset_type_fits, asset_type_label, canonical_as
 from app.core.constants import (
     AiTask,
     AssetType,
+    AttackerCheck,
     CandidateRejection,
     LogEvent,
+    PlanLoss,
+    PlanStage,
     StrideCategory,
 )
+from app.domain.scenario.plan import build_plan, place_for
 from app.models.library.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -150,6 +154,35 @@ def test_a_threat_never_keeps_a_system_of_another_type_through_a_fold() -> None:
     rerank = FakeRerankModel({("Malware", "Malware"): 90.0})
     findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
     assert {threat.name: threat.systems for threat in findings.threats} == {RANSOMWARE.name: (321,)}
+    (threat,) = findings.threats  # the twin's kind enters only through the OT system too
+    assert place_for(threat, S.INFORMATION_DISCLOSURE).systems == (321,)
+    assert [path["systems"] for path in build_plan(findings, 0)["paths"]] == [[321]] * len(threat.categories)
+
+
+def test_a_kind_a_twin_brought_onto_no_fitting_place_is_dropped_and_traced() -> None:
+    """The AI twin's kind sits only on the IT system: the OT library threat it folds into never takes that
+    kind, and the trace names it (merge, asset_type_mismatch); its own kind stays."""
+    chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
+    twin = {"applies": True, "threat_type": "Malware", "threat": RANSOMWARE.name, "attacker": "Gang"}
+    twin |= {"systems": ["SYS2"], "reason": "It encrypts the IT historian."}
+    on_it = planner_chat({RANSOMWARE.name: ["SYS2"]}).responders[AiTask.RELEVANCE_GATE]
+    gate = chat.responders[AiTask.RELEVANCE_GATE]
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
+        on_it(user) if "category: Information Disclosure" in user else gate(user)
+    )
+    chat.responders[AiTask.GAP_FILL] = lambda user: (
+        twin if "category: Information Disclosure" in user else {"applies": False, "reason": "None."}
+    )
+    rerank = FakeRerankModel({("Malware", "Malware"): 90.0})
+    findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
+    (threat,) = findings.threats
+    assert S.INFORMATION_DISCLOSURE not in threat.categories and threat.systems == (321,)
+    assert [
+        (d["kind"], d["stage"], d["reason"]) for d in findings.drops if d["stage"] == PlanStage.MERGE
+    ] == [
+        (S.INFORMATION_DISCLOSURE, PlanStage.MERGE, CandidateRejection.ASSET_TYPE_MISMATCH),
+        (None, PlanStage.MERGE, PlanLoss.MERGED),
+    ]
 
 
 def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent() -> None:
@@ -218,3 +251,34 @@ def test_it_slash_ot_is_both_and_is_kept_in_one_spelling() -> None:
     assert asset_type_label("IT-OT") is None
     assert canonical_asset_type("IT/OT") == r"IT\OT" and canonical_asset_type("IT-OT") == "IT-OT"
     assert canonical_asset_type(None) is None
+
+
+def test_a_dropped_kinds_attacker_never_speaks_for_the_kinds_that_stay() -> None:
+    """The OT library threat's own kinds say no listed attacker fits; its AI twin's kind, on the IT system it
+    cannot fit, named one. That kind is dropped, so its pick goes with it: the threat has no attacker and is
+    traced as none fits, never written with the dropped kind's attacker."""
+    gate = planner_chat({RANSOMWARE.name: ["SYS1"]}).responders[AiTask.RELEVANCE_GATE]
+    on_it = planner_chat({RANSOMWARE.name: ["SYS2"]}).responders[AiTask.RELEVANCE_GATE]
+
+    def picked(answer: dict[str, Any], attacker: str | None) -> dict[str, Any]:
+        for verdict in answer["verdicts"]:
+            if verdict["relevant"]:
+                verdict |= {"attacker": attacker, "attacker_reason": "Who could carry it out."}
+        return answer
+
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
+        picked(on_it(user), "Ransomware gang")
+        if "category: Information Disclosure" in user
+        else picked(gate(user), None)
+    )
+    twin = {"applies": True, "threat_type": "Malware", "threat": RANSOMWARE.name, "attacker": "Gang"}
+    twin |= {"systems": ["SYS2"], "reason": "It encrypts the IT historian."}
+    chat.responders[AiTask.GAP_FILL] = lambda user: (
+        twin if "category: Information Disclosure" in user else {"applies": False, "reason": "None."}
+    )
+    rerank = FakeRerankModel({("Malware", "Malware"): 90.0})
+    findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
+    assert findings.threats == []
+    attacker = [(d["threat_name"], d["reason"]) for d in findings.drops if d["stage"] == PlanStage.ATTACKER]
+    assert attacker == [(RANSOMWARE.name, AttackerCheck.NONE_FITS)]

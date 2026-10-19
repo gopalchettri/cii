@@ -426,6 +426,25 @@
   "INCONSISTENT": "inconsistent",
   "UNCHECKED": "unchecked"
  },
+ "PlanLoss": {
+  "ALREADY_HELD": "already_held",
+  "LIBRARY_REPEAT": "library_repeat",
+  "MERGED": "merged",
+  "NEEDS_UNRECORDED_ELSEWHERE": "needs_unrecorded_elsewhere",
+  "NOT_JUDGED": "not_judged",
+  "NO_LINKED_ACTOR": "no_linked_actor",
+  "TYPE_FITS_NO_PLACE": "type_fits_no_place",
+  "TYPE_UNMATCHED": "type_unmatched"
+ },
+ "PlanStage": {
+  "ATTACKER": "attacker",
+  "CHECKS": "checks",
+  "GAP_FILL": "gap_fill",
+  "GATE": "gate",
+  "HELD": "held",
+  "MERGE": "merge",
+  "PRE_FILTER": "pre_filter"
+ },
  "PlanText": {
   "AFTER": ", after {ids} complete",
   "DATED": "{start} \u2192 {end} ({span}{after})",

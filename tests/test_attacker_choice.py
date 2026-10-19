@@ -7,7 +7,7 @@ from typing import Any
 
 from app.core.constants import AiTask, AttackerCheck, LibraryStatus, StrideCategory
 from app.domain.remediation.manual_actors import manual_attacker
-from app.domain.scenario.plan import actor_pick, choose_actor, relevance_gate_prompt
+from app.domain.scenario.plan import actor_pick, choose_actor, merge_two_threats, relevance_gate_prompt
 from app.models.scenario.plan import ActorPick, PlannedThreat
 from tests.fakes import items_in
 from tests.planner_samples import (
@@ -23,6 +23,7 @@ from tests.planner_samples import (
     S,
     finder,
     library_search,
+    planned,
     planner_chat,
 )
 
@@ -119,3 +120,18 @@ def test_a_hand_written_threat_takes_its_linked_actors_else_its_types_else_the_w
     # Its type links no actor, or a new type: the whole library's nearest, flagged.
     assert acting(library_id=PHISHING.catalogue_id, library_status=active) == (CREW.name, True)
     assert acting(type_id=None) == (CREW.name, True)
+
+
+def test_one_kinds_none_fits_never_vetoes_the_attacker_another_kind_named() -> None:
+    """A threat merged across kinds keeps a pick that names an attacker over one that says none fits, in
+    either order; a "none fits" still beats no pick at all."""
+    named = planned("lib:1", "Ransomware", actor_pick=ActorPick(GANG.name, "It needs a crew."))
+    none_fits = planned(
+        "lib:1", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), actor_pick=ActorPick(None, "None could.")
+    )
+    for kept, other in ((named, none_fits), (none_fits, named)):
+        merged = merge_two_threats(kept, other)
+        assert merged.actor_pick == ActorPick(GANG.name, "It needs a crew.")
+        assert choose_actor(merged, LINKED).attacker_check == AttackerCheck.CHOSEN
+    unpicked = dataclasses.replace(named, actor_pick=None)
+    assert merge_two_threats(unpicked, none_fits).actor_pick == ActorPick(None, "None could.")

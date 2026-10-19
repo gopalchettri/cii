@@ -268,11 +268,11 @@ flowchart TB
     PL --> GF["Gap fill (AI)<br/>only for a kind with nothing accepted<br/>one new threat, checked against the library"]
     GF --> MG["Merge same and reworded threats"]
     MG --> AT["Choose each threat's attacker"]
-    AT --> GR["Group into attack paths<br/>one per kind of attack + systems"]
-    GR --> RK["Rank: impact, confidence, kind, tie-break"]
-    RK --> DROP["Drop paths the asset already holds"]
+    AT --> GR["Asset-level paths<br/>one per threat per kind it was accepted for<br/>entering through that kind's own systems"]
+    GR --> RK["Rank: each threat's strongest kind first,<br/>then impact, confidence, kind, tie-break"]
+    RK --> DROP["Drop each path the asset already holds<br/>(same threat + kind, any systems)"]
     DROP --> SEL["Select up to TOTAL_SCENARIO_COUNT"]
-    SEL --> FZ["Freeze the plan on the session<br/>frozen_at, made_with"]
+    SEL --> FZ["Freeze the plan and its trace on the session<br/>frozen_at, made_with, plan_trace"]
     FZ --> FR{"Any path selected?"}
     FR -- yes --> HO["First set (6) and first batch (4)<br/>hand over to tsg_write_scenarios"]
     FR -- no --> END["Session done, complete<br/>(nothing to write)"]
@@ -308,19 +308,26 @@ approve it into the library (section 13).
 ### 5.4 Merge, attacker, paths, rank
 - **Merge:** one threat per key. An AI threat named like a library threat of the same type, or worded almost
   exactly like (cosine ≥ 0.98) a library threat or an earlier AI threat of the same type, is folded into it.
-  After the merge each library threat's systems are trimmed to its type again.
+  Each kind keeps its own verdict through the merge: its systems, impact and confidence (`kind_places`).
+  After the merge each kind's systems are re-fitted to the library threat's type; a kind that fits no place
+  is dropped (and traced).
 - **Attacker:** the gate's named pick when it gave one; otherwise the top-ranked linked attacker (one
-  embedding search). A threat left with no attacker is dropped.
-- **Attack paths:** one group per *(kind of attack, systems route)*. Groups are taken in STRIDE order, then
-  by route. Each group is told by its strongest threat that no earlier group already took (or by its
-  strongest, if all are taken); the others are listed as `also_applies`. `path_id` is a hash of the threat
-  key and scope.
-- **Rank:** highest impact first, then confidence, then the STRIDE order, then a fixed tie-break.
+  embedding search). A "none fits" answer under one kind never vetoes an attacker another kind named. A
+  threat left with no attacker is dropped.
+- **Asset-level paths** (owner, 2026-10-19): one path per threat per kind of attack it was accepted for,
+  entering through **that kind's own systems** (one or several; the asset itself when none). A threat is
+  never split per system, and two threats never share a path (`also_applies` is stored as `[]`). `path_id`
+  is a hash of the threat key and `kind@scope`, so the same input always gives the same ids.
+- **Rank:** each threat's strongest kind comes before any threat's next kind, so the first sets tell
+  distinct threats; within that, highest impact first, then confidence, then the STRIDE order, then a fixed
+  tie-break.
 
 ### 5.5 Never plan what the asset already holds
 `_covered_by_held` reads the asset's scenarios from its **other** sessions that are written (scenario status
 `done`), the current version, and still pending or accepted by a reviewer. A path with the same threat (key
-or name), the same kind and the same systems is dropped before any writing
+or name) as the same kind is dropped before any writing, whatever systems either enters through (the
+systems are entry points; the scenario is the asset's). The drop is per path: another threat on the same
+kind and systems is never lost with it. Each drop is traced with the scenario holding it, and logged
 (`planner.covered_paths_dropped`). Ranks are renumbered.
 
 ### 5.6 Select and freeze
@@ -330,6 +337,15 @@ or name), the same kind and the same systems is dropped before any writing
   `also_applies`, and `selected` / `served` / `attempts` / `abandoned`); the target; `prompt_version`;
   `frozen_at`; `made_with` (models and library stamp). The plan note reads *"N attack paths selected; 0
   written, N still to write, set by set."*
+- **The plan's trace** (`plan_trace`, saved in the same write, read by no job): how many candidates each
+  stage took in and let out (library threats; left out before the gate; slots asked; not judged, not
+  relevant, needing unrecorded facts, wrong asset type, refused for a need under another kind; accepted;
+  AI threats, and gap-fill proposals not kept (a library repeat, no matching type, not relevant...);
+  merged; no attacker; threats; paths; already held; selected; first set), and each candidate
+  left out with its stage, reason and a short detail (what it needs, the gate's reason, the threat it merged
+  into, the held scenario), the most telling first (at most 300). `GET /v1/sessions/{id}/plan-trace` serves
+  it with what became of the paths since (written, still to write, given up and why, replaced); one
+  `planner.funnel` log line carries the counts.
 - **Hand-over:** the first set is the best `INITIAL_SET_SIZE` (default 6) open paths; its first batch is up
   to 4 of them. One fenced write sets `job.task=tsg_write_scenarios`, `attempts=0`, and the job is sent with
   the same epoch.
@@ -382,8 +398,9 @@ then best rank. Paths an earlier delivery already wrote are marked served withou
 
 ### 6.3 Pre-AI repeat check
 Before any evidence search or AI call (and never on a regenerate), each path is compared with the scenarios
-held now (this session's, and the asset's pending or accepted ones in other sessions): same threat, same
-kind, same systems. A repeat is given up with no AI call and no card, recording which scenario it repeats;
+held now (this session's, and the asset's pending or accepted ones in other sessions): the same threat as
+the same kind, whatever its systems. A repeat is given up with no AI call and no card, recording which
+scenario it repeats;
 a spare may take its place when the set's budget allows and one exists (section 8.4).
 
 ### 6.4 The brief (code, no AI)
@@ -555,10 +572,10 @@ A real ending:
 1. **Renew the lease** (`progress.hold()`): a session cancelled or deleted during the AI call never gets the
    scenario.
 2. **Duplicate check**, read right before the save, only for a written scenario no other blocker has
-   stopped: the same path (threat, kind, systems) or the same statement as one of this session's other
-   paths' finished scenarios, or a pending or accepted scenario of the asset's other sessions, is a
-   `near_duplicate` blocker, final at once. Hand-written scenarios count as held, but are never refused
-   themselves.
+   stopped: the same threat as the same kind (whatever its systems) or the same statement as one of this
+   session's other paths' finished scenarios, or a pending or accepted scenario of the asset's other
+   sessions, is a `near_duplicate` blocker, final at once. Hand-written scenarios count as held, but are
+   never refused themselves.
 
 ### 8.2 The record (`tsg_scenarios`)
 - Id: `uuid5(session, path, version)`, so a repeated delivery saves the same record once.
@@ -640,6 +657,7 @@ finding threats. Reads, promote, cancel and delete do not.
 | Action | Route | What it does | Job sent |
 |---|---|---|---|
 | Read results | `GET /v1/sessions/{id}/results`, `.../scenarios/{sid}`, `GET /v1/entities/{eid}/scenarios` | the scenarios with evidence, controls, findings, review flags | - |
+| Read the plan's trace | `GET /v1/sessions/{id}/plan-trace` | why the session has as many scenarios as it has: each stage's counts, each candidate left out and why, what became of the paths (section 5.6) | - |
 | Accept | `POST /v1/sessions/{id}/accept` | pending → accepted; one accepted version per path (`replace_accepted` swaps) | - |
 | Reject | `POST /v1/sessions/{id}/scenarios/reject` | pending → rejected | - |
 | Regenerate | `POST /v1/sessions/{id}/regenerate/scenarios` | a new version of each chosen current scenario, told differently; the old one is superseded only when the new one is written | `tsg_write_scenarios` (epoch + 1) |
@@ -803,7 +821,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 ### 16.3 Where things are stored
 | Store | What |
 |---|---|
-| MongoDB `tsg_sessions` | sessions: frozen context, plan, paths, counts, job |
+| MongoDB `tsg_sessions` | sessions: frozen context, plan, paths, its trace (`plan_trace`), counts, job |
 | MongoDB `tsg_scenarios` | scenarios: content, evidence, findings, controls, decision |
 | MongoDB `tsg_remediations` | treatment plans and their versions |
 | MongoDB `tsg_intel`, `tsg_external_feed_status`, `tsg_external_intelligence_snapshots` | intelligence records, source state and switch, evidence snapshots |

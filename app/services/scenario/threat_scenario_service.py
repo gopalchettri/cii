@@ -22,6 +22,7 @@ from app.core.constants import (
     IntelDocId,
     LibrarySource,
     LogEvent,
+    PlanTraceMessage,
     ReviewMessage,
     RunActionKind,
     RunClash,
@@ -62,6 +63,7 @@ from app.domain.scenario.plan import (
     request_fingerprint,
     set_and_first_batch,
 )
+from app.domain.scenario.plan_trace import plan_trace_view
 from app.domain.scenario.results import build_board, build_scenario_view
 from app.domain.scenario.review import (
     Targets,
@@ -85,6 +87,7 @@ from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.views import (
     AcceptRequest,
     AcceptResult,
+    PlanTraceView,
     PromotedThreat,
     PromotionResult,
     RejectResult,
@@ -246,6 +249,15 @@ class ThreatScenarioService:
             scenarios=page.scenarios,
             total=page.total,
         )
+
+    def get_plan_trace(self, run: SessionStatus) -> PlanTraceView:
+        """How the run's plan was made: each stage's counts, each candidate left out and why, and what became
+        of the planned paths; 404 before it is planned, or for a run planned before traces were kept."""
+        record = self._sessions.get(fields="plan_trace", _id=run.session_id)
+        if record is None or not record.get("plan_trace"):
+            raise NotFound(PlanTraceMessage.NOT_PLANNED.format(session_id=run.session_id))
+        paths = (record.get("plan") or {}).get("paths") or []
+        return plan_trace_view(run.session_id, record["plan_trace"], paths)
 
     def get_threat_scenario(self, session_id: str, scenario_id: str) -> ScenarioView:
         """One scenario of the run; 404 when it is not in the run."""

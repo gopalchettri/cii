@@ -37,6 +37,16 @@ class Verdict:
 
 
 @dataclass(frozen=True)
+class KindPlace:
+    """Where and how strongly a threat applies as one kind of attack: that category's own verdict."""
+
+    systems: tuple[int, ...]  # its entry points; () = the asset itself
+    impact: int
+    confidence: float
+    actor_pick: ActorPick | None = None  # that category's attacker pick
+
+
+@dataclass(frozen=True)
 class PlannedActor:
     actor_id: int
     name: str
@@ -60,6 +70,8 @@ class PlannedThreat:
     actors: tuple[PlannedActor, ...] = ()  # the acting actor
     # The gate's reason under each category it accepted the threat for; a category not here reads `reason`.
     kind_reasons: tuple[tuple[str, str], ...] = ()
+    # Each accepted category's own systems, impact and confidence; a category not here reads the threat's.
+    kind_places: tuple[tuple[str, KindPlace], ...] = ()
     attacker_check: AttackerCheck | None = None
     attacker_check_reason: str = ""
     actor_pick: ActorPick | None = None  # the gate's pick, until code decides
@@ -71,7 +83,10 @@ class CategoryAudit:
 
     category: StrideCategory
     judged_ids: set[int] = field(default_factory=set)  # library threats whose verdict came back
-    rejected: list[dict[str, Any]] = field(default_factory=list)  # {threat, library_id, code}
+    # {threat, library_id, code, detail}, and `under`: the category a need refusing it everywhere came from
+    rejected: list[dict[str, Any]] = field(default_factory=list)
+    not_judged: list[LibraryThreat] = field(default_factory=list)  # in a gate batch that was skipped
+    gap_fill_lost: dict[str, Any] | None = None  # the AI's proposal not kept: {threat, reason, detail}
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,7 @@ class Landscape:
     system_ids: dict[str, int]  # alias -> supporting system id
     system_names: dict[str, str]  # alias -> name, to turn an alias the AI still wrote back into the name
     sector: str  # the asset's sector, sub-sector and critical service in one line ('' when none is set)
+    cut: bool = False  # facts were shortened to fit the prompt (every system kept its name)
 
 
 @dataclass(frozen=True)
@@ -92,6 +108,10 @@ class ThreatFindings:
     library_stamp: dict[str, str | None] = field(default_factory=dict)  # SHA-256 per library table, hex
     # Every live category's id by its lower-case name, so a path keeps its card's category id.
     category_ids: dict[str, int] = field(default_factory=dict)
+    # Candidates that left outside the gate's audits (plan_trace drops: before the gate, merged, no attacker).
+    drops: list[dict[str, Any]] = field(default_factory=list)
+    library_threats: int = 0  # library threats looked at
+    ai_threats: int = 0  # gap-fill threats proposed and accepted
 
 
 @dataclass(frozen=True)

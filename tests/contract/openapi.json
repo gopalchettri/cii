@@ -936,6 +936,71 @@
     "title": "EvidenceView",
     "type": "object"
    },
+   "GivenUpPath": {
+    "description": "A planned path the writer gave up, and why.",
+    "properties": {
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "path_id": {
+      "title": "Path Id",
+      "type": "string"
+     },
+     "rank": {
+      "title": "Rank",
+      "type": "integer"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "repeats": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Repeats"
+     },
+     "replaced_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Replaced By"
+     },
+     "threat_key": {
+      "title": "Threat Key",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path_id",
+     "threat_key",
+     "kind",
+     "rank",
+     "reason",
+     "repeats",
+     "replaced_by"
+    ],
+    "title": "GivenUpPath",
+    "type": "object"
+   },
    "GroundingStatus": {
     "description": "A scenario's threat.grounding_status in the results.",
     "enum": [
@@ -2103,6 +2168,165 @@
     "title": "PlanControlView",
     "type": "object"
    },
+   "PlanCounts": {
+    "description": "How many candidates entered and left each stage, in planning order (a slot: one threat, one kind).",
+    "properties": {
+     "ai_threats": {
+      "title": "Ai Threats",
+      "type": "integer"
+     },
+     "already_held": {
+      "title": "Already Held",
+      "type": "integer"
+     },
+     "asset_type_mismatch": {
+      "title": "Asset Type Mismatch",
+      "type": "integer"
+     },
+     "first_set": {
+      "title": "First Set",
+      "type": "integer"
+     },
+     "gap_fill_lost": {
+      "title": "Gap Fill Lost",
+      "type": "integer"
+     },
+     "gate_accepted": {
+      "title": "Gate Accepted",
+      "type": "integer"
+     },
+     "gate_asked": {
+      "title": "Gate Asked",
+      "type": "integer"
+     },
+     "library_threats": {
+      "title": "Library Threats",
+      "type": "integer"
+     },
+     "merged": {
+      "title": "Merged",
+      "type": "integer"
+     },
+     "needs_unrecorded": {
+      "title": "Needs Unrecorded",
+      "type": "integer"
+     },
+     "needs_unrecorded_elsewhere": {
+      "title": "Needs Unrecorded Elsewhere",
+      "type": "integer"
+     },
+     "no_attacker": {
+      "title": "No Attacker",
+      "type": "integer"
+     },
+     "no_linked_actor": {
+      "title": "No Linked Actor",
+      "type": "integer"
+     },
+     "not_judged": {
+      "title": "Not Judged",
+      "type": "integer"
+     },
+     "not_relevant": {
+      "title": "Not Relevant",
+      "type": "integer"
+     },
+     "not_selected": {
+      "title": "Not Selected",
+      "type": "integer"
+     },
+     "paths": {
+      "title": "Paths",
+      "type": "integer"
+     },
+     "selected": {
+      "title": "Selected",
+      "type": "integer"
+     },
+     "threats": {
+      "title": "Threats",
+      "type": "integer"
+     },
+     "type_fits_no_place": {
+      "title": "Type Fits No Place",
+      "type": "integer"
+     },
+     "unfit_after_merge": {
+      "title": "Unfit After Merge",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "library_threats",
+     "type_fits_no_place",
+     "no_linked_actor",
+     "gate_asked",
+     "not_judged",
+     "not_relevant",
+     "needs_unrecorded",
+     "asset_type_mismatch",
+     "needs_unrecorded_elsewhere",
+     "gate_accepted",
+     "ai_threats",
+     "gap_fill_lost",
+     "merged",
+     "unfit_after_merge",
+     "no_attacker",
+     "threats",
+     "paths",
+     "already_held",
+     "not_selected",
+     "selected",
+     "first_set"
+    ],
+    "title": "PlanCounts",
+    "type": "object"
+   },
+   "PlanDrop": {
+    "description": "One candidate that left the plan: which threat, as which kind (None: every kind), where and why.",
+    "properties": {
+     "detail": {
+      "title": "Detail",
+      "type": "string"
+     },
+     "kind": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Kind"
+     },
+     "reason": {
+      "title": "Reason",
+      "type": "string"
+     },
+     "stage": {
+      "$ref": "#/components/schemas/PlanStage"
+     },
+     "threat_key": {
+      "title": "Threat Key",
+      "type": "string"
+     },
+     "threat_name": {
+      "title": "Threat Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "threat_key",
+     "threat_name",
+     "kind",
+     "stage",
+     "reason",
+     "detail"
+    ],
+    "title": "PlanDrop",
+    "type": "object"
+   },
    "PlanRequest": {
     "additionalProperties": false,
     "description": "Body of `POST /v1/remediation`: v1's ONE request for both kinds of scenario (owner, 2026-10-15), each\nkind sending its own half (mixing them is a 422), and the register's data.",
@@ -2384,6 +2608,20 @@
     "title": "PlanRequested",
     "type": "object"
    },
+   "PlanStage": {
+    "description": "Where a candidate left the plan (plan_trace.drops[].stage), in planning order.",
+    "enum": [
+     "pre_filter",
+     "gate",
+     "checks",
+     "gap_fill",
+     "merge",
+     "attacker",
+     "held"
+    ],
+    "title": "PlanStage",
+    "type": "string"
+   },
    "PlanStarted": {
     "description": "202 of `POST /v1/remediation` (200 on a replay of a hand-written request), with v1's two flags.",
     "properties": {
@@ -2425,6 +2663,46 @@
      "is_manual"
     ],
     "title": "PlanStarted",
+    "type": "object"
+   },
+   "PlanTraceView": {
+    "description": "GET /v1/sessions/{id}/plan-trace: how many candidates each planning stage took in and let out, each\ncandidate left out with its reason, and what became of the planned paths.",
+    "properties": {
+     "counts": {
+      "$ref": "#/components/schemas/PlanCounts"
+     },
+     "drops": {
+      "items": {
+       "$ref": "#/components/schemas/PlanDrop"
+      },
+      "title": "Drops",
+      "type": "array"
+     },
+     "drops_total": {
+      "title": "Drops Total",
+      "type": "integer"
+     },
+     "landscape_cut": {
+      "title": "Landscape Cut",
+      "type": "boolean"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "writing": {
+      "$ref": "#/components/schemas/WriteOutcomes"
+     }
+    },
+    "required": [
+     "session_id",
+     "counts",
+     "landscape_cut",
+     "drops",
+     "drops_total",
+     "writing"
+    ],
+    "title": "PlanTraceView",
     "type": "object"
    },
    "PlanView": {
@@ -4783,6 +5061,43 @@
     "title": "VersionView",
     "type": "object"
    },
+   "WriteOutcomes": {
+    "description": "What became of the planned paths so far.",
+    "properties": {
+     "given_up": {
+      "title": "Given Up",
+      "type": "integer"
+     },
+     "given_up_paths": {
+      "items": {
+       "$ref": "#/components/schemas/GivenUpPath"
+      },
+      "title": "Given Up Paths",
+      "type": "array"
+     },
+     "replaced": {
+      "title": "Replaced",
+      "type": "integer"
+     },
+     "served": {
+      "title": "Served",
+      "type": "integer"
+     },
+     "still_to_write": {
+      "title": "Still To Write",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "served",
+     "still_to_write",
+     "given_up",
+     "replaced",
+     "given_up_paths"
+    ],
+    "title": "WriteOutcomes",
+    "type": "object"
+   },
    "YesNo": {
     "enum": [
      "Yes",
@@ -7102,6 +7417,118 @@
     "summary": "1. A run's live status",
     "tags": [
      "9. Live updates"
+    ]
+   }
+  },
+  "/v1/sessions/{session_id}/plan-trace": {
+   "get": {
+    "description": "Why the run has as many scenarios as it has: how many candidates each planning stage took in and let\nout (`counts`; a slot is one threat as one kind of attack), each candidate left out with its stage,\nreason and detail (`drops`, the most telling first), and what became of the planned paths (`writing`:\nwritten, still to write, given up and why). 404 before the run is planned.",
+    "operationId": "get_plan_trace_v1_sessions__session_id__plan_trace_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PlanTraceView"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "6. How a run's plan was made",
+    "tags": [
+     "5. Threat scenarios: runs"
     ]
    }
   },

@@ -30,11 +30,17 @@ def test_the_same_threat_kind_and_systems_is_a_copy_naming_the_scenario_it_copie
     assert duplicate_of(_content("Told again."), "p1", _held(_content()), []) is not None  # this run's too
 
 
-def test_another_kind_other_systems_or_another_threat_in_other_words_is_kept() -> None:
+def test_another_kind_or_another_threat_in_other_words_is_kept() -> None:
     held = _held(_content())
     assert duplicate_of(_content("Other words.", category="Denial of Service"), "p1", [], held) is None
-    assert duplicate_of(_content("Other words.", systems=[{"id": 1}, {"id": 2}]), "p1", [], held) is None
     assert duplicate_of(_content("Other words.", threat="lib:2"), "p1", [], held) is None
+
+
+def test_the_same_threat_and_kind_through_other_systems_is_the_same_asset_level_scenario() -> None:
+    """Owner 2026-10-19: the systems are its entry points; told again through others, it is a copy."""
+    held = _held(_content())
+    assert duplicate_of(_content("Other words.", systems=[{"id": 1}, {"id": 2}]), "p1", [], held) is not None
+    assert duplicate_of(_content("Other words.", systems=[]), "p1", [], held) is not None
 
 
 def test_the_very_same_words_are_a_copy_whatever_the_threat_case_spaces_or_markers() -> None:

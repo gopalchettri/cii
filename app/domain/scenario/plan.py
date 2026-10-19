@@ -6,7 +6,7 @@ import functools
 import hashlib
 import itertools
 import json
-from collections import defaultdict
+from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import date
@@ -38,7 +38,10 @@ from app.core.constants import (
     IntelMessage,
     LibraryRowKind,
     LogEvent,
+    PlanLoss,
     PlanMessage,
+    PlanStage,
+    PlanTraceLimits,
     PromotionOutcome,
     PropertyMessage,
     ReviewMessage,
@@ -59,6 +62,7 @@ from app.domain.shared.ask_ai import (
 )
 from app.domain.shared.names import (
     as_json,
+    cut_to_fit,
     name_match_key,
     quoted_for_prompt,
     remove_asset_name,
@@ -81,6 +85,7 @@ from app.models.scenario.plan import (
     CategoryAudit,
     CategoryFindings,
     GapFillResponse,
+    KindPlace,
     Landscape,
     PlannedActor,
     PlannedThreat,
@@ -131,6 +136,31 @@ def threat_reason_for(threat: PlannedThreat, kind: str) -> str:
 def threat_reasons_by_kind(threat: PlannedThreat) -> dict[str, str]:
     """Every category's own reason."""
     return {str(category): threat_reason_for(threat, category) for category in threat.categories}
+
+
+def place_for(threat: PlannedThreat, kind: str) -> KindPlace:
+    """Where and how strongly the threat applies as `kind`: that category's verdict, else the threat's own."""
+    own = KindPlace(threat.systems, threat.impact, threat.confidence, threat.actor_pick)
+    return dict(threat.kind_places).get(kind) or own
+
+
+def places_by_kind(threat: PlannedThreat) -> dict[str, KindPlace]:
+    """Every category's own place."""
+    return {str(category): place_for(threat, category) for category in threat.categories}
+
+
+def plan_drop(
+    key: str, name: str, kind: str | None, stage: PlanStage, reason: str, detail: str = ""
+) -> dict[str, Any]:
+    """One candidate that left the plan, as its trace lists it: the detail redacted and short."""
+    return {
+        "threat_key": key,
+        "threat_name": threat_name_without_code(name),
+        "kind": kind,
+        "stage": stage,
+        "reason": reason,
+        "detail": shorten_text(redact(" ".join(detail.split())), PlanTraceLimits.DETAIL_MAX_CHARS),
+    }
 
 
 def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
@@ -233,35 +263,57 @@ def _sector_text(asset_context: dict[str, Any]) -> str:
 
 
 def describe_asset_for_ai(context: FrozenContext, budget: int, country: str = "") -> Landscape:
-    """The asset (its lead facts first, the organisation's on a background line) and each system by alias and
-    quoted name with its facts, cut to `budget` characters. `country`: a fact, intelligence on only."""
+    """The asset (its lead facts first, its systems by name and asset type, the organisation's facts on a
+    background line) and each system by alias and quoted name with its facts, within `budget` characters:
+    the longest fact is cut first, so every system keeps its line. `country`: a fact, intelligence on only."""
     own_facts, organisation_facts = context.own_and_organisation_facts()
     lead = {key: own_facts[key] for key in _LEAD_KEYS if key in own_facts}
+    systems = [facts_safe_for_prompt(raw_system_facts(system)) for system in context.systems]
+    asset_facts = facts_safe_for_prompt({**lead, **own_facts})
+    parts = [asset_facts, facts_safe_for_prompt(organisation_facts), *systems]
+    # unrecorded is left out, never null: the AI reads it as unknown
+    listed: list[dict[str, Any]] = [
+        {key: facts[key] for key in ("name", "asset_type") if key in facts} for facts in systems
+    ]
+    text = _landscape_text(context, country, listed, parts)
+    if over := max(len(text) - budget, 0):
+        cut = cut_to_fit(parts, sum(len(as_json(part)) for part in parts) - over)
+        text = _landscape_text(context, country, listed, cut)
+    return Landscape(
+        # ponytail: names, aliases and lists are never cut; past them the text is cut, never a system's line
+        text=shorten_text(text, budget),
+        system_ids={system["alias"]: system["id"] for system in context.systems},
+        system_names={system["alias"]: system["name"] for system in context.systems},
+        sector=_sector_text(context.asset_context),
+        cut=over > 0,
+    )
+
+
+def _landscape_text(
+    context: FrozenContext, country: str, listed: list[dict[str, Any]], parts: list[dict[str, Any]]
+) -> str:
+    """The landscape's lines from its parts: the asset's facts, the organisation's, then each system's."""
+    asset_facts, organisation, *systems = parts
     where = {ContextProperties.COUNTRY_KEY: country} if country else {}
     described = {
         "asset": redact(context.asset["name"]),
         **where,
-        "asset_context": facts_safe_for_prompt({**lead, **own_facts}),
-        "supporting_systems": [],
+        "asset_context": asset_facts,
+        "supporting_systems": listed,
     }
     lines = ["ASSET: " + as_json(described)]
-    if organisation := facts_safe_for_prompt(organisation_facts):
+    if organisation:
         lines.append(ThreatFinding.ORGANISATION_LABEL + as_json(organisation))
-    for system in context.systems:
+    for system, facts in zip(context.systems, systems, strict=True):
         name = quoted_for_prompt(shorten_text(system["name"], ThreatFinding.SYSTEM_NAME_CHARS))
-        lines.append(f"{system['alias']} {name}: {as_json(facts_safe_for_prompt(raw_system_facts(system)))}")
-    return Landscape(
-        text=shorten_text("\n".join(lines), budget),
-        system_ids={system["alias"]: system["id"] for system in context.systems},
-        system_names={system["alias"]: system["name"] for system in context.systems},
-        sector=_sector_text(context.asset_context),
-    )
+        lines.append(f"{system['alias']} {name}: {as_json(facts)}")
+    return "\n".join(lines)
 
 
 # --- the planner's prompts (prompts/gate.txt, prompts/gap_fill.txt)
 
 #: Bumped by hand whenever a planner prompt changes; frozen on every plan.
-PLANNER_PROMPT_VERSION = "planner-3"
+PLANNER_PROMPT_VERSION = "planner-4"
 _PROMPTS = Path(__file__).with_name("prompts")
 _GATE_RULES = (_PROMPTS / "gate.txt").read_text(encoding="utf-8")
 _GAP_FILL_RULES = (_PROMPTS / "gap_fill.txt").read_text(encoding="utf-8")
@@ -411,9 +463,14 @@ def _read_proposal(
     return (None, problems) if problems else ({**fields, "applies": True, "systems": systems}, [])
 
 
-def _rejected(threat: LibraryThreat, code: CandidateRejection) -> dict[str, Any]:
-    """A library threat not kept under a category: its name feeds the gap-fill ask."""
-    return {"threat": threat.name, "library_id": threat.catalogue_id, "code": code}
+def _lost(threat: str, reason: str, detail: str = "") -> dict[str, Any]:
+    """A gap-fill proposal not kept: its threat ('' when the reply was skipped), why, and a detail."""
+    return {"threat": threat, "reason": reason, "detail": detail}
+
+
+def _rejected(threat: LibraryThreat, code: CandidateRejection, detail: str = "") -> dict[str, Any]:
+    """A library threat not kept under a category: its name feeds the gap-fill ask, its detail the trace."""
+    return {"threat": threat.name, "library_id": threat.catalogue_id, "code": code, "detail": detail}
 
 
 # --- one run's gate and gap fill
@@ -452,15 +509,16 @@ class _CategoryJudge:
         for item, threat in zip(items, threats, strict=True):
             verdict = verdicts.get(item["slot"])
             if verdict is None:  # its batch was skipped
+                audit.not_judged.append(threat)
                 continue
             audit.judged_ids.add(threat.catalogue_id)
             if verdict_applies(verdict):
                 accepted.append((threat, verdict))
+            elif verdict.needs:
+                needs = "; ".join(verdict.needs)
+                audit.rejected.append(_rejected(threat, CandidateRejection.NEEDS_UNRECORDED, needs))
             else:
-                code = (
-                    CandidateRejection.NEEDS_UNRECORDED if verdict.needs else CandidateRejection.NOT_RELEVANT
-                )
-                audit.rejected.append(_rejected(threat, code))
+                audit.rejected.append(_rejected(threat, CandidateRejection.NOT_RELEVANT, verdict.reason))
         return CategoryFindings(accepted=accepted, ai_threat=None, audit=audit)
 
     def fill_gap(self, found: CategoryFindings) -> CategoryFindings:
@@ -471,7 +529,8 @@ class _CategoryJudge:
             return found
         if not {threat.catalogue_id for threat in self._by_category[audit.category]} <= audit.judged_ids:
             return found
-        return dataclasses.replace(found, ai_threat=self._propose(audit))
+        proposed, audit.gap_fill_lost = self._propose(audit)
+        return dataclasses.replace(found, ai_threat=proposed)
 
     def _attackers_for(self, threat: LibraryThreat | LibraryThreatType) -> list[str]:
         """What a candidate lists for the gate's pick: its type's linked actors."""
@@ -502,9 +561,10 @@ class _CategoryJudge:
             raise Unavailable(str(error)) from error
         log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, category=category, check=check, error=str(error))
 
-    def _propose(self, audit: CategoryAudit) -> PlannedThreat | None:
+    def _propose(self, audit: CategoryAudit) -> tuple[PlannedThreat | None, dict[str, Any] | None]:
         """The AI's one proposal, kept when it is no library threat already judged, its type matches a library
-        type that links an attacker and the gate finds it applies, with the gate's pick among those."""
+        type that links an attacker and the gate finds it applies, with the gate's pick among those; else
+        why a proposal was not kept (None when the AI proposed none)."""
         names = list(
             dict.fromkeys(threat_name_without_code(rejected["threat"]) for rejected in audit.rejected)
         )
@@ -514,29 +574,31 @@ class _CategoryJudge:
             proposal: dict[str, Any] = ask_ai_and_check(self._chat, AiTask.GAP_FILL, prompt, read)
         except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
             self._retry_or_skip(audit.category, AiTask.GAP_FILL, exc)
-            return None
-        if not proposal["applies"] or self._is_library_threat(proposal["threat"], audit.category):
-            return None
+            return None, _lost("", PlanLoss.NOT_JUDGED)
+        if not proposal["applies"]:
+            return None, None
+        threat = proposal["threat"]
+        if self._is_library_threat(threat, audit.category):
+            return None, _lost(threat, PlanLoss.LIBRARY_REPEAT)
         (types,) = self._snapshot.find_threat_types(
             [proposal["threat_type"]], top_k=ThreatFinding.LIBRARY_MATCH_CANDIDATES, category=audit.category
         )
         matched = self._best_match(proposal["threat_type"], [(found, found.name) for found, _ in types])
         if matched is None:
-            return None
+            return None, _lost(threat, PlanLoss.TYPE_UNMATCHED, proposal["threat_type"])
         if not matched.linked_actors:
             log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, category=audit.category, type_id=matched.type_id)
-            return None
+            return None, _lost(threat, PlanLoss.NO_LINKED_ACTOR, matched.name)
         item = _candidate_for_gate(
-            f"{ThreatFinding.RECORD_SLOT}1",
-            proposal["threat_type"],
-            proposal["threat"],
-            self._attackers_for(matched),
+            f"{ThreatFinding.RECORD_SLOT}1", proposal["threat_type"], threat, self._attackers_for(matched)
         )
-        verdicts = self._judge(audit.category, [item])
-        if item["slot"] not in verdicts:  # its gate reply was skipped
-            return None
-        verdict = verdicts[item["slot"]]
-        return _ai_threat(audit.category, proposal, verdict, matched) if verdict_applies(verdict) else None
+        verdict = self._judge(audit.category, [item]).get(item["slot"])
+        if verdict is None:  # its gate reply was skipped
+            return None, _lost(threat, PlanLoss.NOT_JUDGED)
+        if not verdict_applies(verdict):
+            code = CandidateRejection.NEEDS_UNRECORDED if verdict.needs else CandidateRejection.NOT_RELEVANT
+            return None, _lost(threat, code, "; ".join(verdict.needs) or verdict.reason)
+        return _ai_threat(audit.category, proposal, verdict, matched), None
 
     def _is_library_threat(self, threat: str, category: StrideCategory) -> bool:
         """Whether a proposal is a library threat of the category this run judged (and found not to apply)."""
@@ -574,6 +636,7 @@ def _ai_threat(
         impact=verdict.impact,
         confidence=verdict.confidence,
         reason=verdict.reason,
+        kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
     )
 
@@ -591,8 +654,14 @@ def _library_threat(category: StrideCategory, threat: LibraryThreat, verdict: Ve
         impact=verdict.impact,
         confidence=verdict.confidence,
         reason=verdict.reason,
+        kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
     )
+
+
+def _place_of(verdict: Verdict) -> KindPlace:
+    """Where and how strongly a verdict says its threat applies, and its attacker pick."""
+    return KindPlace(verdict.systems, verdict.impact, verdict.confidence, verdict.actor_pick)
 
 
 #: What the library holds under a name: the outcome, the type id and the threat id (None when rejected).
@@ -632,7 +701,7 @@ def _run_asset_types(context: FrozenContext) -> frozenset[str]:
 def _refuse_unrecorded_needs_everywhere(found: list[CategoryFindings]) -> None:
     """A threat refused under one category for a need nothing records is refused under every category."""
     refused = {
-        rejection["library_id"]: rejection
+        rejection["library_id"]: rejection | {"under": result.audit.category}  # the copies say where from
         for result in found
         for rejection in result.audit.rejected
         if rejection["code"] == CandidateRejection.NEEDS_UNRECORDED
@@ -653,7 +722,9 @@ def _place_on_matching_systems(found: list[CategoryFindings], context: FrozenCon
         for threat, verdict in result.accepted:
             placed = _placed(threat, verdict, asset_fits, system_fits)
             if placed is None:
-                result.audit.rejected.append(_rejected(threat, CandidateRejection.ASSET_TYPE_MISMATCH))
+                detail = f"asset type {threat.asset_type}"
+                mismatch = _rejected(threat, CandidateRejection.ASSET_TYPE_MISMATCH, detail)
+                result.audit.rejected.append(mismatch)
             else:
                 kept.append((threat, placed))
         result.accepted[:] = kept
@@ -661,20 +732,57 @@ def _place_on_matching_systems(found: list[CategoryFindings], context: FrozenCon
 
 def _keep_on_matching_systems(
     threats: list[PlannedThreat], library: Sequence[LibraryThreat], context: FrozenContext
-) -> list[PlannedThreat]:
-    """After a merge united two threats' systems, each library threat keeps only the systems its type fits."""
+) -> tuple[list[PlannedThreat], list[dict[str, Any]]]:
+    """After a merge (an AI twin's kinds folded in), each library threat keeps each kind only on the places
+    its type fits; a kind fitting none is dropped, and a threat left with no kind. The threats, the drops."""
     by_id = {threat.catalogue_id: threat for threat in library}
-    _, system_fits = _place_fits(context)
-    kept = []
+    asset_fits, system_fits = _place_fits(context)
+    kept, drops = [], []
     for threat in threats:
         own = by_id.get(threat.catalogue_id) if threat.catalogue_id is not None else None
-        systems = tuple(
-            s
-            for s in threat.systems
-            if own is None or asset_type_fits(own.asset_type, system_fits.get(s, frozenset()))
-        )
-        kept.append(threat if systems == threat.systems else dataclasses.replace(threat, systems=systems))
-    return kept
+        if own is None:
+            kept.append(threat)
+            continue
+        places: dict[str, KindPlace] = {}
+        for kind, place in places_by_kind(threat).items():
+            systems = _fitting(own.asset_type, place.systems, asset_fits, system_fits)
+            if systems is None:
+                reason = CandidateRejection.ASSET_TYPE_MISMATCH
+                drops.append(plan_drop(threat.key, threat.name, kind, PlanStage.MERGE, reason))
+            else:
+                places[kind] = dataclasses.replace(place, systems=systems)
+        if places:
+            kept.append(_with_places(threat, places))
+    return kept, drops
+
+
+def _with_places(threat: PlannedThreat, places: dict[str, KindPlace]) -> PlannedThreat:
+    """The threat on only these kinds' places: its categories (first kept first), systems, impact, confidence
+    and attacker pick follow them, so a kind dropped never speaks for the threat."""
+    if places == places_by_kind(threat):
+        return threat
+    return dataclasses.replace(
+        threat,
+        categories=tuple(category for category in threat.categories if category in places),
+        systems=tuple(sorted({system for place in places.values() for system in place.systems})),
+        impact=max(place.impact for place in places.values()),
+        confidence=max(place.confidence for place in places.values()),
+        actor_pick=functools.reduce(_named_pick_first, (place.actor_pick for place in places.values()), None),
+        kind_places=tuple(places.items()),
+    )
+
+
+def _fitting(
+    asset_type: str | None,
+    systems: tuple[int, ...],
+    asset_fits: Collection[str],
+    system_fits: dict[int, frozenset[str]],
+) -> tuple[int, ...] | None:
+    """The places (systems, or () for the asset itself) a library type fits; None when it fits none."""
+    if not systems:
+        return () if asset_type_fits(asset_type, asset_fits) else None
+    fitting = tuple(s for s in systems if asset_type_fits(asset_type, system_fits.get(s, frozenset())))
+    return fitting or None
 
 
 def _place_fits(context: FrozenContext) -> tuple[frozenset[str], dict[int, frozenset[str]]]:
@@ -694,14 +802,8 @@ def _placed(
     system_fits: dict[int, frozenset[str]],
 ) -> Verdict | None:
     """The verdict on only the places its threat's type fits; None when it fits none of them."""
-    if not verdict.systems:  # the asset itself
-        return verdict if asset_type_fits(threat.asset_type, asset_fits) else None
-    systems = tuple(
-        system
-        for system in verdict.systems
-        if asset_type_fits(threat.asset_type, system_fits.get(system, frozenset()))
-    )
-    if not systems:
+    systems = _fitting(threat.asset_type, verdict.systems, asset_fits, system_fits)
+    if systems is None:
         return None
     return verdict if systems == verdict.systems else dataclasses.replace(verdict, systems=systems)
 
@@ -710,8 +812,9 @@ def _placed(
 
 
 def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThreat:
-    """One threat for both: every category and system, the higher impact and confidence, the kept one's reason
-    and each category's own reason. Another threat folded in never moves the kept one's first category."""
+    """One threat for both: every category and system, the higher impact and confidence, the kept one's
+    reason, each category's own reason and place, and an attacker pick that names one over one that names
+    none. Another threat folded in never moves the kept one's first category."""
     union = set(kept.categories) | set(other.categories)
     lead = (kept.categories[0],) if kept.key != other.key else ()
     return dataclasses.replace(
@@ -720,9 +823,16 @@ def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThrea
         systems=tuple(sorted(set(kept.systems) | set(other.systems))),
         impact=max(kept.impact, other.impact),
         confidence=max(kept.confidence, other.confidence),
-        actor_pick=kept.actor_pick or other.actor_pick,
+        actor_pick=_named_pick_first(kept.actor_pick, other.actor_pick),
         kind_reasons=tuple((threat_reasons_by_kind(other) | threat_reasons_by_kind(kept)).items()),
+        kind_places=tuple((places_by_kind(other) | places_by_kind(kept)).items()),
     )
+
+
+def _named_pick_first(kept: ActorPick | None, other: ActorPick | None) -> ActorPick | None:
+    """A pick naming an attacker, else one saying none fits, else none; the kept one's on a tie. So one kind's
+    "none fits" never vetoes the attacker another kind named."""
+    return min((kept, other), key=lambda pick: 2 if pick is None else 0 if pick.name else 1)
 
 
 def _name_key(name: str) -> str:
@@ -730,9 +840,11 @@ def _name_key(name: str) -> str:
     return name_match_key(threat_name_without_code(name))
 
 
-def merge_same_threats(threats: list[PlannedThreat]) -> list[PlannedThreat]:
+def merge_same_threats(
+    threats: list[PlannedThreat], folded: dict[str, str] | None = None
+) -> list[PlannedThreat]:
     """One threat per key, and an AI threat named like a library threat of the same type folded into it (the
-    library record is canonical); in key order."""
+    library record is canonical); in key order. `folded` records each AI threat folded: key -> the kept."""
     by_key: dict[str, PlannedThreat] = {}
     for threat in threats:
         seen = by_key.get(threat.key)
@@ -746,14 +858,20 @@ def merge_same_threats(threats: list[PlannedThreat]) -> list[PlannedThreat]:
         )
         if twin is not None:
             by_key[twin] = merge_two_threats(by_key[twin], by_key.pop(threat.key))
+            if folded is not None:
+                folded[threat.key] = twin
     return [by_key[key] for key in sorted(by_key)]
 
 
 def merge_reworded_threats(
-    threats: list[PlannedThreat], embeddings: EmbeddingModel, asset_name: str
+    threats: list[PlannedThreat],
+    embeddings: EmbeddingModel,
+    asset_name: str,
+    folded: dict[str, str] | None = None,
 ) -> list[PlannedThreat]:
     """An AI threat whose name means what a library threat's or an earlier AI threat's of the same type means
-    (cosine at least AI_DUPLICATE_COSINE, the asset's name left out) is folded into it; one embedding call."""
+    (cosine at least AI_DUPLICATE_COSINE, the asset's name left out) is folded into it; one embedding call.
+    `folded` records each AI threat folded: its key -> the kept."""
     ai_threats = [threat for threat in threats if not threat_from_library(threat)]
     if not ai_threats:
         return threats
@@ -779,6 +897,8 @@ def merge_reworded_threats(
             compared.append(threat.key)
         else:
             by_key[twin] = merge_two_threats(by_key[twin], by_key.pop(threat.key))
+            if folded is not None:
+                folded[threat.key] = twin
     return [by_key[t.key] for t in threats if t.key in by_key]
 
 
@@ -851,50 +971,62 @@ class ThreatFinder:
         if not any(threat.linked_actors for threat in library.threats):  # refused before any AI call
             raise PlanRefused(ErrorCode.ACTOR_LIBRARY_EMPTY, PlanMessage.ACTOR_LIBRARY_EMPTY)
         landscape = describe_asset_for_ai(context, self._chat.max_prompt_chars // 2, country)
-        found = self._judge_categories(snapshot, context, landscape, last_attempt)
-        accepted = [
-            _library_threat(result.audit.category, threat, verdict)
-            for result in found
-            for threat, verdict in result.accepted
-        ]
-        ai_threats = [result.ai_threat for result in found if result.ai_threat is not None]
-        threats = merge_same_threats(accepted + ai_threats)
-        threats = merge_reworded_threats(threats, self._embeddings, context.asset["name"])
-        threats = _keep_on_matching_systems(threats, library.threats, context)
-        threats = assign_attackers(snapshot, threats, landscape.sector)
-        for threat in threats:
-            if not threat.actors:  # no linked attacker, or none the gate found plausible
-                log.info(
-                    LogEvent.PLANNER_THREAT_NOT_PLANNED,
-                    library_id=threat.catalogue_id,
-                    type_id=threat.type_id,
-                    attacker_check=threat.attacker_check,
-                )
+        found, drops = self._judge_categories(snapshot, context, landscape, last_attempt)
+        threats, later_drops = self._one_per_threat(snapshot, found, context, landscape)
         return ThreatFindings(
-            [_named_threat(threat, landscape) for threat in threats if threat.actors],
+            [_named_threat(threat, landscape) for threat in threats],
             [result.audit for result in found],
             landscape=landscape,
             library_stamp={
                 table: digest.hex() if digest else None for table, digest in snapshot.library.stamp
             },
             category_ids={name.strip().lower(): row_id for row_id, name in library.category_ids},
+            drops=drops + later_drops,
+            library_threats=len(library.threats),
+            ai_threats=sum(result.ai_threat is not None for result in found),
         )
+
+    def _one_per_threat(
+        self,
+        snapshot: LibrarySnapshot,
+        found: list[CategoryFindings],
+        context: FrozenContext,
+        land: Landscape,
+    ) -> tuple[list[PlannedThreat], list[dict[str, Any]]]:
+        """The accepted threats merged into one per threat, each kind on the places its type fits, each with
+        its acting attacker; the threats left with an attacker, and every drop on the way."""
+        accepted = [
+            _library_threat(result.audit.category, threat, verdict)
+            for result in found
+            for threat, verdict in result.accepted
+        ]
+        # an AI threat's name says systems by name before any merge, so no drop shows an alias
+        ai_threats = [
+            _named_threat(result.ai_threat, land) for result in found if result.ai_threat is not None
+        ]
+        names = {threat.key: threat.name for threat in accepted + ai_threats}
+        folded: dict[str, str] = {}
+        threats = merge_same_threats(accepted + ai_threats, folded)
+        threats = merge_reworded_threats(threats, self._embeddings, context.asset["name"], folded)
+        threats, drops = _keep_on_matching_systems(threats, snapshot.library.threat_library.threats, context)
+        for key, kept in folded.items():
+            drops.append(plan_drop(key, names[key], None, PlanStage.MERGE, PlanLoss.MERGED, f"into {kept}"))
+        threats = assign_attackers(snapshot, threats, land.sector)
+        for threat in (threat for threat in threats if not threat.actors):  # none linked, or none plausible
+            none_fits = threat.attacker_check == AttackerCheck.NONE_FITS
+            reason = AttackerCheck.NONE_FITS if none_fits else PlanLoss.NO_LINKED_ACTOR
+            detail = replace_codes_with_names(threat.attacker_check_reason, land.system_names)
+            drops.append(plan_drop(threat.key, threat.name, None, PlanStage.ATTACKER, reason, detail))
+        return [threat for threat in threats if threat.actors], drops
 
     def _judge_categories(
         self, snapshot: LibrarySnapshot, context: FrozenContext, landscape: Landscape, last_attempt: bool
-    ) -> list[CategoryFindings]:
+    ) -> tuple[list[CategoryFindings], list[dict[str, Any]]]:
         """The six categories at once, their gate calls in one shared pool; the asset-type fit and the needs
-        refusal; then any gap fill. In STRIDE order. A threat whose type links no attacker is never judged;
-        gate batches asked and not one answered: Unavailable."""
+        refusal; then any gap fill. In STRIDE order, with the threats left out before the gate. A threat
+        whose type links no attacker is never judged; gate batches asked and not one answered: Unavailable."""
         allowed = _run_asset_types(context)
-        fitting = [
-            threat
-            for threat in snapshot.library.threat_library.threats
-            if asset_type_fits(threat.asset_type, allowed)
-        ]
-        if unlinked := [threat.catalogue_id for threat in fitting if not threat.linked_actors]:
-            log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, library_ids=unlinked)
-            fitting = [threat for threat in fitting if threat.linked_actors]
+        fitting, drops = _judgeable(snapshot.library.threat_library.threats, allowed)
         by_category = {
             category: [t for t in fitting if category in t.categories] for category in StrideCategory
         }
@@ -912,7 +1044,27 @@ class ThreatFinder:
                 raise Unavailable(PlanMessage.AI_COULD_NOT_ANSWER)  # nothing checked is never "none apply"
             _place_on_matching_systems(found, context)  # before any gap fill: these may empty a category
             _refuse_unrecorded_needs_everywhere(found)
-            return run_in_shared_pool(pool, judge.fill_gap, found)
+            return run_in_shared_pool(pool, judge.fill_gap, found), drops
+
+
+def _judgeable(
+    threats: Sequence[LibraryThreat], allowed: Collection[str]
+) -> tuple[list[LibraryThreat], list[dict[str, Any]]]:
+    """The library threats the gate is asked about: their type fits the asset or a chosen system and links an
+    attacker. Those threats, and a drop for each one left out."""
+    fitting, drops = [], []
+    for threat in threats:
+        key, stage = f"lib:{threat.catalogue_id}", PlanStage.PRE_FILTER
+        if not asset_type_fits(threat.asset_type, allowed):
+            detail = f"asset type {threat.asset_type}"
+            drops.append(plan_drop(key, threat.name, None, stage, PlanLoss.TYPE_FITS_NO_PLACE, detail))
+        elif not threat.linked_actors:
+            drops.append(plan_drop(key, threat.name, None, stage, PlanLoss.NO_LINKED_ACTOR))
+        else:
+            fitting.append(threat)
+    if unlinked := [drop["threat_key"] for drop in drops if drop["reason"] == PlanLoss.NO_LINKED_ACTOR]:
+        log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, threat_keys=unlinked)
+    return fitting, drops
 
 
 def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
@@ -932,30 +1084,24 @@ def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
     )
 
 
-# --- the plan: one path per kind of attack per route, ranked
+# --- the plan: one asset-level path per threat per kind of attack, ranked
 
 #: A path's scope when it is on no listed system: the asset itself.
 _ASSET_ITSELF = "asset"
 _STRIDE_ORDER = list(STRIDE_DEFINITIONS)
 
 
-def _group_by_attack(threats: Sequence[PlannedThreat]) -> list[tuple[AttackPath, list[str]]]:
-    """(path, the group's other threat names, strongest first) per kind of attack per route of systems, in
-    STRIDE order then route; each group is told by its strongest threat no earlier group took."""
-    groups: defaultdict[tuple[int, tuple[int, ...]], list[PlannedThreat]] = defaultdict(list)
+def threat_paths(threats: Sequence[PlannedThreat]) -> list[AttackPath]:
+    """One path per threat per kind of attack it was accepted for (owner 2026-10-19: scenarios at asset
+    level), entering through that kind's own systems and told with that kind's impact and confidence; two
+    threats never share a path, and one is never split per system."""
+    paths = []
     for threat in threats:
-        route = tuple(sorted(threat.systems))
-        for category in dict.fromkeys(threat.categories):
-            groups[(_STRIDE_ORDER.index(category), route)].append(threat)
-    taken: set[str] = set()
-    grouped: list[tuple[AttackPath, list[str]]] = []
-    for (place, route), members in sorted(groups.items()):
-        ranked = sorted(members, key=_strength)
-        best = next((threat for threat in ranked if threat.key not in taken), ranked[0])
-        taken.add(best.key)
-        others = [threat_name_without_code(threat.name) for threat in ranked if threat.key != best.key]
-        grouped.append((path_on(best, route, _STRIDE_ORDER[place]), others))
-    return grouped
+        for kind in dict.fromkeys(threat.categories):
+            place = place_for(threat, kind)
+            step = dataclasses.replace(threat, impact=place.impact, confidence=place.confidence)
+            paths.append(path_on(step, place.systems, kind))
+    return paths
 
 
 def path_on(
@@ -973,22 +1119,27 @@ def path_on(
     return AttackPath((step,), scope=f"{kind}@{scope}")
 
 
-def _strength(threat: PlannedThreat) -> tuple[Any, ...]:
-    """Impact, then confidence, then the paths' tie-break: library before AI, the lowest library id."""
-    return (-threat.impact, -threat.confidence, *attack_path_tie_break(AttackPath((threat,))))
+def _path_strength(path: AttackPath) -> tuple[Any, ...]:
+    """Impact, confidence, the STRIDE order of the kind, then the tie-break: library before AI, the lowest
+    library id, the path id."""
+    return (
+        -attack_path_impact(path),
+        -attack_path_confidence(path),
+        _STRIDE_ORDER.index(attack_path_categories(path)[0]),
+        *attack_path_tie_break(path),
+    )
 
 
 def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
-    """Most relevant first: impact, confidence, the STRIDE order of the kind, then the tie-break."""
-    return sorted(
-        paths,
-        key=lambda path: (
-            -attack_path_impact(path),
-            -attack_path_confidence(path),
-            _STRIDE_ORDER.index(attack_path_categories(path)[0]),
-            *attack_path_tie_break(path),
-        ),
-    )
+    """Each threat's strongest kind before any threat's next kind, so the first sets tell distinct threats;
+    within a turn the most relevant first. The same order on every run."""
+    ordered = sorted(paths, key=_path_strength)
+    turns: Counter[str] = Counter()
+    turn_of = {}
+    for path in ordered:
+        turn_of[attack_path_id(path)] = turns[path.steps[0].key]
+        turns[path.steps[0].key] += 1
+    return sorted(ordered, key=lambda path: turn_of[attack_path_id(path)])  # stable: strength within a turn
 
 
 def select_up_to_target(paths: list[dict[str, Any]], max_scenarios: int) -> list[dict[str, Any]]:
@@ -1010,23 +1161,25 @@ CoveredPath = Callable[[dict[str, Any], dict[str, Any]], bool]
 def build_plan(
     findings: ThreatFindings, target: int, covered: CoveredPath = lambda _path, _threat: False
 ) -> dict[str, Any]:
-    """The plan the run freezes: every threat once, its paths ranked, those `covered` dropped, and the
-    `target` (TOTAL_SCENARIO_COUNT, 0 = no cap) best selected."""
-    grouped = _group_by_attack(findings.threats)
-    also_applies = {attack_path_id(path): others for path, others in grouped}
+    """The plan the run freezes: every threat once, one path per threat per kind, ranked, each path `covered`
+    (held by the asset already) dropped on its own, and the `target` (TOTAL_SCENARIO_COUNT, 0 = no cap)
+    best selected."""
     threats = [
         planned_threat_record(threat)
         | {"category_id": findings.category_ids.get(threat.categories[0].lower())}
         for threat in findings.threats
     ]
     by_key = {threat["key"]: threat for threat in threats}
-    records = [
-        _path_record(path, 0, findings.category_ids, also_applies[attack_path_id(path)])
-        for path in rank_paths(path for path, _ in grouped)
+    paths = threat_paths(findings.threats)
+    # held first, then ranked: a threat's turns count only the paths still to write
+    open_paths = [
+        path
+        for path in paths
+        if not covered(_path_record(path, 0, findings.category_ids), by_key[path.steps[0].key])
     ]
-    fresh = [record for record in records if not covered(record, by_key[record["steps"][0]])]
-    if len(fresh) < len(records):
-        log.info(LogEvent.PLANNER_COVERED_PATHS_DROPPED, dropped=len(records) - len(fresh))
+    if len(open_paths) < len(paths):
+        log.info(LogEvent.PLANNER_COVERED_PATHS_DROPPED, dropped=len(paths) - len(open_paths))
+    fresh = [_path_record(path, 0, findings.category_ids) for path in rank_paths(open_paths)]
     for rank, record in enumerate(fresh, start=1):
         record["rank"] = rank
     return {
@@ -1038,9 +1191,7 @@ def build_plan(
     }
 
 
-def _path_record(
-    path: AttackPath, rank: int, category_ids: dict[str, int], also_applies: list[str]
-) -> dict[str, Any]:
+def _path_record(path: AttackPath, rank: int, category_ids: dict[str, int]) -> dict[str, Any]:
     """A path as the plan holds it: its threats by key, the card's category with its library id."""
     category = path.steps[-1].categories[0]
     return {
@@ -1056,7 +1207,7 @@ def _path_record(
         "systems": list(attack_path_systems(path)),
         "impact": attack_path_impact(path),
         "confidence": attack_path_confidence(path),
-        "also_applies": also_applies,
+        "also_applies": [],  # stored field: two threats never share a path (owner 2026-10-19)
     }
 
 

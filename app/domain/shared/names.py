@@ -54,6 +54,37 @@ def shorten_text(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…" if limit > 1 else ""
 
 
+def cut_to_fit(parts: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """`parts` within `limit` JSON characters together: every text fact (never a name) longer than one common
+    length is cut to it, the longest length that fits, so no part loses its facts before another; a fact
+    cut to nothing is left out (unknown, never ""). Each part stays one valid JSON object."""
+    # ponytail: lists (technology, platforms) are never cut: they hold the platform's short option names.
+    texts = [
+        (index, key)
+        for index, part in enumerate(parts)
+        for key, value in part.items()
+        if key != "name" and isinstance(value, str)
+    ]
+
+    def cut(cap: int) -> list[dict[str, Any]]:
+        kept = [dict(part) for part in parts]
+        for index, key in texts:
+            if len(kept[index][key]) > cap:
+                if shortened := shorten_text(kept[index][key], cap):
+                    kept[index][key] = shortened
+                else:
+                    del kept[index][key]
+        return kept
+
+    low, high = 0, max((len(parts[index][key]) for index, key in texts), default=0)
+    while low < high:  # the longest common length that fits; 0 leaves every text fact out
+        middle = (low + high + 1) // 2
+        low, high = (
+            (middle, high) if sum(len(as_json(part)) for part in cut(middle)) <= limit else (low, middle - 1)
+        )
+    return cut(low)
+
+
 def _asset_name_pattern(asset_name: str, plural: bool = False) -> re.Pattern[str] | None:
     """The asset's name inside a text: any spacing, an optional "'s", never inside another word;
     case-sensitive at 3 characters or fewer, so "IT" never matches "it". `plural`: "hacktivists" also names

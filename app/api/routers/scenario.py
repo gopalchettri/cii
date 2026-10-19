@@ -36,6 +36,7 @@ from app.core.exceptions import NotFound
 from app.models.scenario.views import (
     AcceptRequest,
     AcceptResult,
+    PlanTraceView,
     PromotionResult,
     RejectResult,
     RunActionStarted,
@@ -133,6 +134,19 @@ def list_entity_scenarios(
     """Every run's current scenarios of the entity, newest first; `decision` filters (pending, accepted,
     rejected). The entity must be the caller's (`X-Entity-Id`), else 403."""
     return scenarios.list_threat_scenarios_of_entity(principal, listed_entity_id, decision, offset, limit)
+
+
+@router.get(
+    "/v1/sessions/{session_id}/plan-trace",
+    response_model=PlanTraceView,
+    summary="6. How a run's plan was made",
+)
+def get_plan_trace(run: CallersRun, scenarios: Scenarios) -> PlanTraceView:
+    """Why the run has as many scenarios as it has: how many candidates each planning stage took in and let
+    out (`counts`; a slot is one threat as one kind of attack), each candidate left out with its stage,
+    reason and detail (`drops`, the most telling first), and what became of the planned paths (`writing`:
+    written, still to write, given up and why). 404 before the run is planned."""
+    return scenarios.get_plan_trace(run)
 
 
 # Review.
