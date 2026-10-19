@@ -45,7 +45,7 @@ Hand-written scenarios are slow, generic, duplicated and not tied to real threat
 | F1 | Start a session | asset + systems → the asset's facts are frozen; one active session per asset; a safe retry with Idempotency-Key |
 | F2 | Find threats | the AI checks each library threat that has a linked attacker, per kind of attack; may propose one missing threat; picks the attacker. A broken reply is retried later; on the last try planning carries on with what it could check |
 | F3 | Attack paths | threats grouped by kind of attack + systems, ranked; the first set is written now, more on "Next set"; spares replace failures |
-| F4 | Write scenarios | code prepares the facts → the AI writes → code checks → the AI reviews; a blocked draft is given up at once and a spare takes its place (the writer's own retry is commented out, ready to switch back on); no duplicates; unique titles |
+| F4 | Write scenarios | code prepares the facts → the AI writes → code checks → the AI reviews; the AI is given each word range from .env, its upper number a hard limit (no code cut); a blocked draft is given up at once and a spare takes its place (the writer's own retry is commented out, ready to switch back on); no duplicates; unique titles |
 | F5 | Evidence | on: one search per write (a regenerate searches again); the AI writes no marker, code adds one cited sentence from the entry's own facts; the nearest evidence when none meets the threshold; never blocked for missing evidence. Off: cite nothing |
 | F6 | Map controls | library controls matched to each scenario by search + score; never written by the AI |
 | F7 | Review | accept, reject, regenerate, next set, cancel, delete, propose a threat to the library, read results, live status |
@@ -261,7 +261,11 @@ API change.
    retries; it never guesses.
    - **On (owner, 2026-10-19):** every AI-written scenario cites the best evidence from an approved
      source.
-     - The AI writes no marker. Code adds one sentence built from the cited entry's own facts, e.g.
+     - The AI writes no marker. It writes a separate evidence passage (EVIDENCE_STATEMENT_WORD_LIMIT,
+       30-80 words) from the cited entry's facts only; code appends it to the statement and cites it [1]
+       once the reviewer confirms it.
+     - A passage that is missing, too long, carries a marker, link or code, or is not confirmed is
+       replaced by a sentence code builds from the same entry's facts (a warning, never a blocker), e.g.
        'In real-world attacks, APT41 and FIN8 have used the technique "Valid Accounts" [1].'
      - **Nearest evidence:** when nothing meets the relevance threshold, the nearest evidence is cited.
        It is said as "related" and stored with evidence_mode "nearest".
@@ -357,6 +361,7 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | D8 | Nearest evidence when none meets the threshold, said as "related"; a scenario is never blocked for missing evidence (owner, 2026-10-19) |
 | D9 | mypy runs inside the test suite (tests/test_types.py, warn_unused_ignores), so a type error fails the tests like any other (owner, 2026-10-19) |
 | D10 | Never plan or write a path the asset already holds; a spare may come from the next set (session 72a02461 planned 12, wrote 1 and gave up 5: 4 repeats found only after the AI wrote them, 1 with no spare left) |
+| D11 | Word limits (owner, 2026-10-19): THREAT_SCENARIO_WORD_LIMIT 150-200, RISK_STATEMENT_WORD_LIMIT 100-150, EVIDENCE_STATEMENT_WORD_LIMIT 30-80, each a separate limit given to the AI, the upper number a hard limit, the lower a target; code cuts nothing. Revises D7: the AI writes the evidence passage from the cited entry, the reviewer confirms it, code cites it; code's own sentence is the fallback. scripts/scorecard.py reports any text over its maximum |
 
 ## 6. Not in this round (backlog, one at a time after the re-architecture)
 1. Scenario regenerate has no version cap: AI cost is unbounded.

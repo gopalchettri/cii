@@ -37,6 +37,7 @@ os.environ.update(
     MAX_CONTROLS="10",
     THREAT_SCENARIO_WORD_LIMIT="1-100000",
     RISK_STATEMENT_WORD_LIMIT="1-100000",
+    EVIDENCE_STATEMENT_WORD_LIMIT="1-100000",
 )
 # External intelligence OFF for the whole suite, whatever the developer's .env says: the app's own tests then
 # exercise the original path. A test of the ON path asks for the `intel` fixture

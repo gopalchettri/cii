@@ -118,7 +118,7 @@ _SCENARIO_FIELD_LISTS = {
     #: A served scenario as shown: never the control search text, what mapped it, the plan check.
     "shown": {"controls.query": 0, "controls.made_with": 0, "plan_check": 0},
     #: A regenerate's versions of an attack path.
-    "version": ("path_id", "version", "superseded_by", "content.statement"),
+    "version": ("path_id", "version", "superseded_by", "content.statement", "content.evidence.supports"),
     #: What finding an attack path's accepted version reads.
     "lookup": ("session_id", "path_id", "version", "decision", "superseded_by"),
     #: What a review call reads of a target: its state and threat, never its text.

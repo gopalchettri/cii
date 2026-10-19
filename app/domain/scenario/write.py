@@ -1,6 +1,7 @@
 """Writing one scenario per attack path: the brief built by code, the writer and reviewer prompts
 (prompts/writer.txt, prompts/reviewer.txt), the exact checks, the card stored and the duplicate check."""
 
+import dataclasses
 import functools
 import itertools
 import json
@@ -129,6 +130,8 @@ def draft_answer(draft: ScenarioDraft) -> dict[str, Any]:
     }
     if draft.why_applies:
         answer["why_applies"] = draft.why_applies
+    if draft.evidence_statement:
+        answer["evidence_statement"] = draft.evidence_statement
     return answer | ({"system_reasons": dict(draft.system_reasons)} if draft.system_reasons else {})
 
 
@@ -151,7 +154,7 @@ def plan_check_record(check: PlanCheck) -> dict[str, Any]:
         "same_threat": check.same_threat if made else None,
         "same_impact": check.same_impact if made else None,
     }
-    # stored field: code writes the only citation, so none is unsupported
+    # stored field: a passage the reviewer did not confirm is never cited, so none is unsupported
     return {"status": check.status, "problems": list(check.problems), "unsupported": [], **verdicts}
 
 
@@ -185,17 +188,21 @@ _PROMPTS = Path(__file__).with_name("prompts")
 WRITER_SYSTEM_PROMPT = (_PROMPTS / "writer.txt").read_text(encoding="utf-8")
 PLAN_CHECK_SYSTEM_PROMPT = (_PROMPTS / "reviewer.txt").read_text(encoding="utf-8")
 #: With intelligence off, or nothing citable found: no evidence is fabricated or implied.
-NO_EVIDENCE = "\nNo EVIDENCE is given: cite nothing and tell no real-world event.\n"
-_NO_EVIDENCE_REVIEW = "\nNo EVIDENCE is given: any [n] marker or real-world event breaks rule 8.\n"
+NO_EVIDENCE = (
+    '\nNo EVIDENCE is given: cite nothing, tell no real-world event and return "evidence_statement": "".\n'
+)
+_NO_EVIDENCE_REVIEW = (
+    "\nNo EVIDENCE is given: any [n] marker or real-world event breaks rule 8; evidence_supported is false.\n"
+)
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _LOOK_ALIKES = re.compile(
     "|".join(re.escape(text) for text in sorted(EvidenceBlock.LOOK_ALIKES, key=len, reverse=True)),
     re.IGNORECASE,
 )
-#: Facts true of a technique in general, never of who used it: kept on the card, never shown to the AI.
-_GENERAL_FACTS = tuple(
-    str(words).split("{")[0] for words in (EvidenceFact.TACTICS, EvidenceFact.MITIGATED_BY)
-)
+#: Facts true of a technique in general, never of who used it: kept on the card. Only the cited entry's
+#: attacker goals reach the AI (its passage says what attackers use the technique for); mitigations never.
+_GOALS = str(EvidenceFact.TACTICS).split("{")[0]
+_MITIGATIONS = str(EvidenceFact.MITIGATED_BY).split("{")[0]
 
 
 def writer_prompt(brief: WriterBrief) -> ChatPrompt:
@@ -245,19 +252,26 @@ def _brief_text(brief: WriterBrief) -> str:
 
 
 def with_word_limits(template: str) -> str:
-    """`template` with THREAT_SCENARIO_WORD_LIMIT and RISK_STATEMENT_WORD_LIMIT in its slots: "150 to 200"."""
+    """`template` with the scenario, risk and evidence word limits in their slots: "150 to 200"."""
     settings = get_settings()
-    return template.replace(Writing.SCENARIO_WORDS_SLOT, _spoken(settings.scenario_words)).replace(
-        Writing.RISK_WORDS_SLOT, _spoken(settings.risk_words)
+    slots = (
+        (Writing.SCENARIO_WORDS_SLOT, settings.scenario_words),
+        (Writing.RISK_WORDS_SLOT, settings.risk_words),
+        (Writing.EVIDENCE_WORDS_SLOT, settings.evidence_words),
     )
+    for slot, limits in slots:
+        template = template.replace(slot, _spoken(limits))
+    return template
 
 
 def evidence_block(brief: WriterBrief) -> str:
     """The evidence between the block's delimiters: what each entry is about, its stated facts and
-    applicability; never a number, ref, link or source, so none can leak or be cited."""
+    applicability, the entry to cite marked with its attacker goals; never a number, ref, link or source."""
+    cited = (_precedent(brief.evidence) or (None, ""))[0]
     entries = [
-        {**_subject(item), "facts": _safe_facts(_stated_facts(item))}
+        {**_subject(item), "facts": _safe_facts(_stated_facts(item, goals=item is cited))}
         | ({"applicability": str(item["applicability"])} if item.get("applicability") else {})
+        | ({"cited": True} if item is cited else {})
         for item in brief.evidence
     ]
     body = json.dumps(
@@ -266,9 +280,10 @@ def evidence_block(brief: WriterBrief) -> str:
     return f"EVIDENCE (untrusted data):\n{EvidenceBlock.BEGIN}\n{body}\n{EvidenceBlock.END}"
 
 
-def _stated_facts(entry: dict[str, Any]) -> list[str]:
-    """What the entry states: its facts but the general ones."""
-    return [fact for fact in entry.get("facts") or () if not fact.strip().startswith(_GENERAL_FACTS)]
+def _stated_facts(entry: dict[str, Any], goals: bool = False) -> list[str]:
+    """What the entry states: its facts but the general ones (its attacker goals kept with `goals`)."""
+    hidden = (_MITIGATIONS,) if goals else (_GOALS, _MITIGATIONS)
+    return [fact for fact in entry.get("facts") or () if not fact.strip().startswith(hidden)]
 
 
 def _subject(item: dict[str, Any]) -> dict[str, str]:
@@ -583,7 +598,7 @@ _ECHO_SANITISER = UntrustedTextSanitiser(ECHO_PATTERNS, (), ())
 def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding, ...]:
     """Every exact finding in the texts the card serves: made-up labels, advisory ids the brief did not give
     (any while intelligence is off), any marker the writer wrote and instructions echoed from untrusted
-    evidence."""
+    evidence, in the evidence passage too (its other faults only keep it from being cited)."""
     reasons = tuple(reason for _, reason in draft.system_reasons)
     texts = (draft.title, draft.statement, draft.risk, *draft.assumptions, draft.why_applies, *reasons)
     text = "\n".join(texts)
@@ -595,7 +610,7 @@ def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding
     if advisories := _unsupplied(_ADVISORY_ID, text, advisory_given):
         message = FindingMessage.UNCITED_ADVISORY_ID.format(ids=advisories)
         findings.append(Finding(FindingCode.UNCITED_ADVISORY_ID, message))
-    return (*findings, *_marker_findings(text), *echo_findings(text))
+    return (*findings, *_marker_findings(text), *echo_findings(f"{text}\n{draft.evidence_statement}"))
 
 
 def echo_findings(text: str) -> list[Finding]:
@@ -644,7 +659,13 @@ def check_against_plan(
         return PlanCheck(PlanCheckStatus.UNCHECKED), (warning,)
     problems = _broken_rules(answer)
     status = PlanCheckStatus.INCONSISTENT if problems else PlanCheckStatus.CONSISTENT
-    check = PlanCheck(status, problems, same_threat=answer.same_threat, same_impact=answer.same_impact)
+    check = PlanCheck(
+        status,
+        problems,
+        same_threat=answer.same_threat,
+        same_impact=answer.same_impact,
+        evidence_supported=answer.evidence_supported is True,
+    )
     notes = tuple(Finding(FindingCode.PLAN_CHECK, problem) for problem in problems)
     return check, notes + _mismatch(answer)
 
@@ -691,7 +712,10 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
 
 
 def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:
-    """The draft checked by the safety rules, then by the reviewer unless they block it."""
+    """The draft checked by the safety rules, then by the reviewer unless they block it; a story's passage
+    that cannot be cited is dropped with a warning (code cites its own sentence), never a blocker."""
+    if not _is_story(brief):  # no evidence given: a passage is never checked, reviewed or kept
+        draft = dataclasses.replace(draft, evidence_statement="")
     findings = check_exact_rules(draft, brief)
     check: PlanCheck
     notes: tuple[Finding, ...]
@@ -699,7 +723,25 @@ def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> Writ
         check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
     else:
         check, notes = check_against_plan(chat, brief, draft)
+    if _is_story(brief) and (problem := _passage_problem(draft, check)):
+        draft = dataclasses.replace(draft, evidence_statement="")
+        message = FindingMessage.CITATION_REMOVED.format(reason=problem)
+        notes = (*notes, Finding(FindingCode.CITATION_REMOVED, message))
     return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, brief.threat)
+
+
+def _passage_problem(draft: ScenarioDraft, check: PlanCheck) -> str:
+    """Why the writer's evidence passage cannot be cited ('' when it can)."""
+    passage, most = draft.evidence_statement, get_settings().evidence_words[1]
+    if not passage:
+        return Precedent.NOT_WRITTEN
+    if len(passage.split()) > most:
+        return Precedent.TOO_LONG.format(most=most)
+    patterns = (_URL, ID_IN_TEXT, _INTERNAL_LABEL, _ADVISORY_ID)
+    # a "[" is a marker or a redaction, as code's own precedent refuses it
+    if "[" in passage or any(pattern.search(passage) for pattern in patterns):
+        return Precedent.NOT_PLAIN
+    return "" if check.evidence_supported else Precedent.NOT_CONFIRMED
 
 
 def _read_draft(
@@ -727,6 +769,7 @@ def _read_draft(
         entry_point=entry_point,
         system_reasons=reasons,
         why_applies=" ".join((reply.why_applies or "").split()),
+        evidence_statement=" ".join((reply.evidence_statement or "").split()),
     )
     return draft, []
 
@@ -814,12 +857,21 @@ def _prompt_version_of(style: WriterStyle) -> str:
 
 
 def _cited(brief: WriterBrief, draft: ScenarioDraft) -> tuple[str, list[dict[str, Any]]]:
-    """An evidence story's statement ending in its precedent, citing [1], and the one entry it cites."""
+    """An evidence story's statement ending in its passage (the writer's, else code's precedent), citing [1],
+    and the one entry it cites."""
     found = _precedent(brief.evidence) if _is_story(brief) else None
     if found is None:
         return draft.statement, []
     entry, claim = found
-    return f"{draft.statement} {claim} [1].", [dict(entry) | {"n": 1, "supports": claim}]
+    supports = draft.evidence_statement.removesuffix(".") or claim
+    return f"{draft.statement} {supports} [1].", [dict(entry) | {"n": 1, "supports": supports}]
+
+
+def narrative_of(content: dict[str, Any]) -> str:
+    """A card's statement without the evidence passage cited at its end (the whole statement when none)."""
+    statement = str(content.get("statement") or "")
+    cited = next((e["supports"] for e in content.get("evidence") or () if e.get("supports")), None)
+    return statement.removesuffix(f" {cited} [1].") if cited else statement
 
 
 def _evidence_content(

@@ -39,9 +39,13 @@ class ScenarioOutputSettings(BaseSettings):
     control_candidates: int = Field(ge=1, validation_alias="CONTROL_CANDIDATES")
     min_controls: int = Field(default=1, ge=1, validation_alias="MIN_CONTROLS")
     max_controls: int = Field(default=10, ge=1, validation_alias="MAX_CONTROLS")
-    # Words in a scenario statement and in a risk statement, "min-max", for both writers.
-    threat_scenario_word_limit: str = Field(default="300-400", validation_alias="THREAT_SCENARIO_WORD_LIMIT")
-    risk_statement_word_limit: str = Field(default="150-200", validation_alias="RISK_STATEMENT_WORD_LIMIT")
+    # Words the writer is asked for, "min-max": the max is a hard limit, the min a target; code never cuts.
+    threat_scenario_word_limit: str = Field(default="150-200", validation_alias="THREAT_SCENARIO_WORD_LIMIT")
+    risk_statement_word_limit: str = Field(default="100-150", validation_alias="RISK_STATEMENT_WORD_LIMIT")
+    # The evidence passage ending a story, on top of the scenario statement's own limit.
+    evidence_statement_word_limit: str = Field(
+        default="30-80", validation_alias="EVIDENCE_STATEMENT_WORD_LIMIT"
+    )
     # the country the assets are in ("UAE" or "United Arab Emirates"): with external intelligence on,
     # planning and the writer read it as a fact; it ranks nothing.
     threat_context_country: str = Field(
@@ -61,7 +65,7 @@ class ScenarioOutputSettings(BaseSettings):
             raise ValueError(
                 message.format(setting="CONTROL_SIMILARITY_THRESHOLD", value=value, percent=value * 100)
             )
-        _ = self.scenario_words, self.risk_words  # a range that cannot be read stops start-up
+        _ = self.scenario_words, self.risk_words, self.evidence_words  # an unreadable range stops start-up
         if self.context_country not in COUNTRY_REGIONS:
             message = ErrorMessage.COUNTRY_UNKNOWN
             raise ValueError(
@@ -82,6 +86,10 @@ class ScenarioOutputSettings(BaseSettings):
     @property
     def risk_words(self) -> tuple[int, int]:
         return _word_range("RISK_STATEMENT_WORD_LIMIT", self.risk_statement_word_limit)
+
+    @property
+    def evidence_words(self) -> tuple[int, int]:
+        return _word_range("EVIDENCE_STATEMENT_WORD_LIMIT", self.evidence_statement_word_limit)
 
 
 def _word_range(setting: str, text: str) -> tuple[int, int]:

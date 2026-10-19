@@ -1,10 +1,14 @@
-"""scripts/scorecard.py, the owner's five checks of every served card (2026-10-18): a card is judged by the
+"""scripts/scorecard.py, the owner's checks of every served card (2026-10-18): a card is judged by the
 app's own rules, so one the app writes as correct passes, and a fault names what is really wrong."""
 
 import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
+from app.core import config
+from app.core.config import Settings
 from app.core.constants import StoryLimits
 
 REPO = Path(__file__).resolve().parents[1]
@@ -76,6 +80,26 @@ def test_a_nearest_story_and_one_written_without_evidence_pass() -> None:
     assert scorecard.WRITTEN_WITHOUT == "no evidence found: written without"
     marked = {"content": without["content"] | {"statement": "Abuse [1]."}}
     assert scorecard.evidence(marked) == "cites [1] though written without evidence"
+
+
+def test_each_text_is_within_its_configured_word_maximum(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The narrative (the statement less its cited passage), the passage and the risk, each against its own
+    maximum; the [1] marker is no word of the passage."""
+    settings = Settings(  # type: ignore[call-arg]
+        THREAT_SCENARIO_WORD_LIMIT="1-5", RISK_STATEMENT_WORD_LIMIT="1-3", EVIDENCE_STATEMENT_WORD_LIMIT="1-4"
+    )
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    passage = "In real-world attacks, APT41 did"
+    card = {"content": {"statement": f"One two three four five {passage} [1].", "risk_statement": "a b c"}}
+    card["content"]["evidence"] = [{"n": 1, "supports": passage}]
+    assert scorecard.words(card) == "evidence passage 5 words, over 4"
+    short = {"content": card["content"] | {"evidence": [{"n": 1, "supports": "A B C D"}]}}
+    short["content"]["statement"] = "One two three four five A B C D [1]."
+    assert scorecard.words(short) == ""
+    long = {
+        "content": short["content"] | {"statement": "1 2 3 4 5 6 A B C D [1].", "risk_statement": "a b c d"}
+    }
+    assert scorecard.words(long) == "statement 6 words, over 5; risk 4 words, over 3"
 
 
 def test_a_copy_of_an_accepted_replaced_version_is_a_duplicate_but_not_of_a_rejected_one() -> None:

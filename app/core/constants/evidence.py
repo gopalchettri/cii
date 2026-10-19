@@ -206,12 +206,17 @@ class StoryLimits:
 
 
 class Precedent:
-    """The one sentence code adds to an evidence story, from its cited entry's own facts."""
+    """The sentence code cites in an evidence story when the writer's own passage cannot be: from the cited
+    entry's own facts; and why the passage was not cited."""
 
     USED_BY: Final = 'In real-world attacks, {names} {verb} used the technique "{technique}"'
     # nearest evidence: only related, and said so
     USED_RELATED: Final = 'In real-world attacks, {names} {verb} used the related technique "{technique}"'
     RELATED_RECORD: Final = "A related record: {fact}"
+    NOT_WRITTEN: Final = "none was written"
+    TOO_LONG: Final = "over its {most}-word limit"
+    NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code or an internal label"
+    NOT_CONFIRMED: Final = "the reviewer did not confirm it against its source"
 
 
 class EvidenceBlock:

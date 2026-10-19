@@ -33,6 +33,7 @@ from app.domain.scenario.write import (
     generation_stamp,
     is_final,
     live_library_of,
+    narrative_of,
     path_style,
     scenario_id,
     title_candidates,
@@ -205,7 +206,7 @@ class PathSaver:
         by_id = {row["_id"]: row for row in versions}
         statements: defaultdict[str, list[str]] = defaultdict(list)
         for row in versions:
-            statements[row["path_id"]].append(row["content"]["statement"])
+            statements[row["path_id"]].append(narrative_of(row["content"]))  # never its evidence passage
         to_write: dict[str, tuple[str, ...]] = {}
         healed: dict[str, dict[str, Any]] = {}
         for path_id, target_id in replaces.items():

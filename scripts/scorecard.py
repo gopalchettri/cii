@@ -1,8 +1,8 @@
 """The owner's check of every card a run serves (2026-10-18): an acting attacker the plan listed for its
 threat, the reviewer's verdicts that the scenario tells its threat and the risk its impact, the evidence
 (cited with external intelligence on, source-documented or nearest; none with it off, or when none was
-found) and no duplicate. Blocked records are listed with why, for review. Read-only: no AI call, nothing
-written.
+found), each text within its configured word maximum and no duplicate. Blocked records are listed with why,
+for review. Read-only: no AI call, nothing written.
 
 From the project folder: .venv\\Scripts\\python scripts\\scorecard.py [run id]   (default: TSG_RUN_ID in
 debug/.env). Exit 1 when any served card fails."""
@@ -78,8 +78,24 @@ def evidence_note(card: dict[str, Any]) -> str:
     return WRITTEN_WITHOUT if card["content"].get("evidence_mode") == EvidenceMode.INFERRED else ""
 
 
+def words(card: dict[str, Any]) -> str:
+    """The narrative, the evidence passage and the risk each within its configured word maximum."""
+    from app.core.config import get_settings
+    from app.domain.scenario.write import narrative_of
+
+    settings, content = get_settings(), card["content"]
+    passage = next((e["supports"] for e in content.get("evidence") or [] if e.get("supports")), "")
+    texts = (
+        ("statement", narrative_of(content), settings.scenario_words[1]),
+        ("evidence passage", passage, settings.evidence_words[1]),
+        ("risk", content.get("risk_statement") or "", settings.risk_words[1]),
+    )
+    counted = ((name, len(text.split()), most) for name, text, most in texts)
+    return "; ".join(f"{name} {count} words, over {most}" for name, count, most in counted if count > most)
+
+
 CHECKS: dict[str, Callable[[dict[str, Any]], str]] = {
-    "threat": threat, "risk": risk, "evidence": evidence,
+    "threat": threat, "risk": risk, "evidence": evidence, "words": words,
 }  # fmt: skip
 
 
