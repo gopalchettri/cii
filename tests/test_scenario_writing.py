@@ -545,6 +545,42 @@ def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None
     ]
 
 
+def test_the_writer_gets_in_through_its_turns_system_and_the_card_marks_that_one() -> None:
+    """A path whose turn is the Historian's offers only the Historian as the way in: a reply naming the SCADA
+    server is asked again, and the card marks the Historian, though it is the path's second system, even when
+    the two names are redacted alike. A plan made before paths took turns offers any of its systems."""
+    threat = _plan_threat(systems=(321, 322))
+    brief = _brief_of(threat, entry_system=322)
+    assert brief_entry_point_options(brief) == ("Historian",)
+    chat = _chat_answering(
+        [draft_answer(_CLEAN), draft_answer(_CLEAN) | {"entry_point": "Historian"}], [_CONSISTENT]
+    )
+    written = write_scenario(chat, brief)
+    assert written.draft.entry_point == "Historian" and _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
+    path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321, 322]}
+    run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
+    assert written_record(run, path | {"entry_system": 322}, threat, brief, written)["content"][
+        "systems"
+    ] == [
+        {"id": 321, "name": "SCADA server", "entry_point": False},
+        {"id": 322, "name": "Historian", "entry_point": True},
+    ]
+    hosts = [system_row(321, "SYS1", "scada01.plant.local"), system_row(322, "SYS2", "hist01.plant.local")]
+    context = dataclasses.replace(CONTEXT, systems=hosts)
+    alike = build_brief({threat["key"]: threat}, path | {"entry_system": 322}, context, 30_000, _LIVE)
+    assert brief_entry_point_options(alike) == ("[REDACTED]",)
+    draft = dataclasses.replace(_CLEAN, entry_point="[REDACTED]")
+    record = written_record(
+        run | {"context": context.to_record()},
+        path | {"entry_system": 322},
+        threat,
+        alike,
+        WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE),
+    )
+    assert [system["entry_point"] for system in record["content"]["systems"]] == [False, True]
+    assert brief_entry_point_options(_brief_of(threat)) == ("SCADA server", "Historian")
+
+
 def test_a_failure_card_is_built_for_a_threat_with_no_name_type_or_attacker() -> None:
     threat = {
         "key": "lib:9",

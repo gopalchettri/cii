@@ -237,9 +237,11 @@ class ThreatScenarioService:
     def list_threat_scenarios_of_session(
         self, run: SessionStatus, include_replaced: bool, offset: int, limit: int
     ) -> RunResults:
-        """The run, its progress and a page of its current versions, oldest first."""
+        """The run, its progress and a page of its current versions in the plan's order (the turns over the
+        systems), oldest first within one path: a set's cards are written at once and finish in any order."""
+        in_turns = ["content.threat.rank", "created_at"]
         page = self._scenario_list(
-            self._scenario_page("created_at", offset, limit, session_id=run.session_id), include_replaced
+            self._scenario_page(in_turns, offset, limit, session_id=run.session_id), include_replaced
         )
         board = build_board(run)
         header = board.model_dump(include={"session_id", "entity_id", "asset_id", "asset_name", "user_id"})
@@ -304,7 +306,7 @@ class ThreatScenarioService:
             views.append(build_scenario_view(record, elsewhere, older))
         return views
 
-    def _scenario_page(self, sort: str, offset: int, limit: int, **where: Any) -> ScenarioPage:
+    def _scenario_page(self, sort: str | list[str], offset: int, limit: int, **where: Any) -> ScenarioPage:
         """A page of served current tsg_scenarios versions and their total; a short last page needs no
         count."""
         shown = {"served": True, "current": True, **where}

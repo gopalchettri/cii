@@ -1100,7 +1100,7 @@ $(function () {
   }
   function evList(s) {
     var l = s.evidence || [];
-    return l.length ? '<div class="lbl">Evidence</div><ul class="ev-list">' + l.map(function (e) {
+    return l.length ? '<div class="lbl">Citation</div><ul class="ev-list">' + l.map(function (e) {
       return "<li><span>[" + evRef(s, e.n) + ']</span><span class="ev-t" title="' + attr(e.title || e.ref || "") + '">' + esc(e.title || e.ref || "") + "</span>" +
         ([e.source, e.kind].filter(Boolean).length ? '<span class="faint">' + esc([e.source, e.kind].filter(Boolean).join(" · ")) + "</span>" : "") + "</li>";
     }).join("") + "</ul>" : "";
@@ -1180,7 +1180,7 @@ $(function () {
       (st === "failed" ? '<div class="callout warn"><code>' + esc((s.failure || {}).code) + "</code> " + esc((s.failure || {}).message) + "</div>" : "") +
       (st !== "failed"
         ? sec("Scenario", '<p style="white-space:pre-line">' + (x.scenario_statement ? evText(s, x.scenario_statement) : "—") + "</p>") +
-          ((s.evidence || []).length ? sec("Evidence", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
+          ((s.evidence || []).length ? sec("Citation", s.evidence.map(function (e) { return '<div class="ev-card">' + evBox(e, true) + "</div>"; }).join("")) : "") +
           sec("Risk", "<p>" + (x.risk_statement ? evText(s, x.risk_statement) : val(null)) + "</p>") +
           ((x.assumptions || []).length ? sec("Assumptions", ul(x.assumptions)) : "") +
           sec("Supporting systems", sys.length ? '<table class="tbl"><thead><tr><th>System</th><th>Applicable</th><th>Entry point</th><th>Reason</th></tr></thead><tbody>' +
@@ -1342,7 +1342,7 @@ $(function () {
 
   // The evidence box: opens on a cited [n] (hover or keyboard focus, on a card or in Details), stays while the
   // pointer is on it so its link can be clicked, and closes on leaving, scrolling or Esc.
-  var $evPop = $('<div class="ev-pop" role="dialog" aria-label="Evidence"></div>').appendTo("body"), evTimer = null;
+  var $evPop = $('<div class="ev-pop" role="dialog" aria-label="Citation"></div>').appendTo("body"), evTimer = null;
   function evShow(el) {
     var s = scnFind($(el).attr("data-ev-scn")), e = s && evOf(s, +$(el).attr("data-ev-n"));
     if (!e) return;
@@ -1368,7 +1368,7 @@ $(function () {
       DOCX_SRI = "sha256-AtVo0gPAGArzdgm89f9sCRnSIPkzqIyoluugVWoI+q0=";
   var READ_ME = [
     ["Scenario statement", "A short story of how an attack could happen to this asset."],
-    ["Evidence", "Public sources the scenario cites. [1] in the text means evidence item 1."],
+    ["Citation", "The public source the scenario cites. [1] in the text means citation 1."],
     ["Risk statement", "What the organisation could lose."],
     ["Threat actor", "Who would most likely do it."],
     ["Supporting system", "Which of our systems the attack goes through. The entry point is where it starts."],
@@ -1448,7 +1448,7 @@ $(function () {
       body.push(H(no + scnTitle(s), D.HeadingLevel.HEADING_1, true), H("Scenario Statement", D.HeadingLevel.HEADING_2));
       body = body.concat(paras(x.scenario_statement));
       if ((s.evidence || []).length) {
-        body.push(H("Evidence", D.HeadingLevel.HEADING_2));
+        body.push(H("Citation", D.HeadingLevel.HEADING_2));
         s.evidence.forEach(function (e) { body = body.concat(evidence(e)); });
       }
       body.push(H("Risk Statement", D.HeadingLevel.HEADING_2));

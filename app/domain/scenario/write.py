@@ -116,7 +116,10 @@ def brief_evidence_mode(brief: WriterBrief) -> EvidenceMode:
 
 
 def brief_entry_point_options(brief: WriterBrief) -> tuple[str, ...]:
-    """The threat's systems; none = the attack reaches the asset itself."""
+    """The system the path gets in through, else (a plan made before paths took turns) any of the threat's
+    systems; none = the attack reaches the asset itself."""
+    if brief.entry_system:
+        return (brief.entry_system,)
     return tuple(system["name"] for system in brief.systems)
 
 
@@ -410,7 +413,14 @@ def build_brief(
             for system in context.systems
         ),
         evidence=tuple(threat.get("evidence") or ()) if style is WriterStyle.EVIDENCE_STORY else (),
+        entry_system=_entry_name(path, systems),
     )
+
+
+def _entry_name(path: dict[str, Any], systems: list[dict[str, Any]]) -> str:
+    """The brief's name for the system the path's turn gets in through; "" when it has none."""
+    entry = path.get("entry_system")
+    return systems[path["systems"].index(entry)]["name"] if entry in path["systems"] else ""
 
 
 def evidence_problem(threat: dict[str, Any]) -> Unavailable | None:
@@ -874,7 +884,12 @@ def _systems_content(
     """The card's systems with the entry point, and every supporting system of the run with whether the route
     goes through it and the writer's reason; by recorded name, never the prompt's redacted one."""
     names = {system["id"]: system["name"] for system in run["context"]["systems"]}
-    entry = brief_entry_point_options(brief).index(draft.entry_point) if draft.entry_point else -1
+    if not draft.entry_point:
+        entry = -1
+    elif path.get("entry_system") in path["systems"]:  # its turn's way in, the one option, whatever its name
+        entry = path["systems"].index(path["entry_system"])
+    else:  # an option is one of the brief's systems, in the path's order
+        entry = [system["name"] for system in brief.systems].index(draft.entry_point)
     card = [
         {"id": system_id, "name": names[system_id], "entry_point": place == entry}
         for place, system_id in enumerate(path["systems"])  # in the brief's order: the path's systems

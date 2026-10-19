@@ -144,6 +144,12 @@ def place_for(threat: PlannedThreat, kind: str) -> KindPlace:
     return dict(threat.kind_places).get(kind) or own
 
 
+def ways_in(place: Verdict | KindPlace) -> tuple[int, ...]:
+    """The systems an attacker could get in through: those the gate named, else every system it involves
+    (a plan made before the gate named them); () = the asset itself."""
+    return place.entry_points or place.systems
+
+
 def places_by_kind(threat: PlannedThreat) -> dict[str, KindPlace]:
     """Every category's own place."""
     return {str(category): place_for(threat, category) for category in threat.categories}
@@ -313,7 +319,7 @@ def _landscape_text(
 # --- the planner's prompts (prompts/gate.txt, prompts/gap_fill.txt)
 
 #: Bumped by hand whenever a planner prompt changes; frozen on every plan.
-PLANNER_PROMPT_VERSION = "planner-4"
+PLANNER_PROMPT_VERSION = "planner-5"
 _PROMPTS = Path(__file__).with_name("prompts")
 _GATE_RULES = (_PROMPTS / "gate.txt").read_text(encoding="utf-8")
 _GAP_FILL_RULES = (_PROMPTS / "gap_fill.txt").read_text(encoding="utf-8")
@@ -373,17 +379,15 @@ def _candidate_for_gate(slot: str, threat_type: str, threat: str, attackers: lis
 def parse_verdict(
     item: dict[str, Any], aliases: dict[str, int], listed: Sequence[str]
 ) -> tuple[Verdict | None, list[str]]:
-    """One verdict checked: known aliases, a yes/no, an impact when relevant, a 0-100 confidence and always a
-    reason. The attacker pick is read from the slot's `listed` attackers only."""
+    """One verdict checked: known aliases, a way in among them when relevant, a yes/no, an impact when
+    relevant, a 0-100 confidence and always a reason. The attacker pick is read from the slot's `listed`
+    attackers only."""
     slot, systems = item["slot"], item.get("systems") or []
+    entry_points = (item.get("entry_points") or []) if item.get("relevant") is True else None
     impact = str(item.get("impact") or "").upper()
     confidence, reason = item.get("confidence"), str(item.get("reason") or "").strip()
     needs = item.get("needs") or []
-    problems = []
-    if not isinstance(systems, list) or any(
-        not isinstance(alias, str) or alias not in aliases for alias in systems
-    ):
-        problems.append(f"{slot}: systems must be listed aliases only (SYS1, SYS2 ...)")
+    problems = _place_problems(slot, systems, entry_points, aliases)
     if not isinstance(item.get("relevant"), bool):
         problems.append(f"{slot}: relevant must be true or false")
     if item.get("relevant") is True and impact not in ThreatFinding.IMPACT_RANK:
@@ -395,17 +399,35 @@ def parse_verdict(
     if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
         problems.append(f"{slot}: needs must be a list of names ([] when everything it needs is recorded)")
     shown = {**item, "impact": impact if item.get("relevant") else None, "systems": systems, "needs": needs}
+    shown["entry_points"] = entry_points or []
     if problems or (problems := answer_item_problems(RelevanceVerdict, shown, slot)):
         return None, problems
     return Verdict(
         relevant=item["relevant"],
         systems=tuple(sorted({aliases[alias] for alias in systems})),
+        entry_points=tuple(sorted({aliases[alias] for alias in entry_points or ()})),
         reason=reason[: ThreatFinding.REASON_MAX_CHARS],
         impact=ThreatFinding.IMPACT_RANK.get(impact, 0),
         confidence=float(confidence or 0),
         needs=_needs(needs),
         actor_pick=actor_pick(item, listed) if item["relevant"] else None,
     ), []
+
+
+def _place_problems(slot: str, systems: Any, entry_points: Any, aliases: dict[str, int]) -> list[str]:
+    """What is wrong with a verdict's systems and ways in: listed aliases only, the ways in among them, and at
+    least one way in when it names systems."""
+    if not isinstance(systems, list) or any(
+        not isinstance(alias, str) or alias not in aliases for alias in systems
+    ):
+        return [f"{slot}: systems must be listed aliases only (SYS1, SYS2 ...)"]
+    if entry_points is None:  # a rejected threat has no way in to name
+        return []
+    if not isinstance(entry_points, list) or any(alias not in systems for alias in entry_points):
+        return [f"{slot}: entry_points must be aliases from its own systems"]
+    if systems and not entry_points:
+        return [f"{slot}: entry_points must name the systems among its own an attacker could get in through"]
+    return []
 
 
 def actor_pick(item: dict[str, Any], listed: Sequence[str]) -> ActorPick | None:
@@ -661,7 +683,9 @@ def _library_threat(category: StrideCategory, threat: LibraryThreat, verdict: Ve
 
 def _place_of(verdict: Verdict) -> KindPlace:
     """Where and how strongly a verdict says its threat applies, and its attacker pick."""
-    return KindPlace(verdict.systems, verdict.impact, verdict.confidence, verdict.actor_pick)
+    return KindPlace(
+        verdict.systems, verdict.impact, verdict.confidence, verdict.actor_pick, verdict.entry_points
+    )
 
 
 #: What the library holds under a name: the outcome, the type id and the threat id (None when rejected).
@@ -714,8 +738,8 @@ def _refuse_unrecorded_needs_everywhere(found: list[CategoryFindings]) -> None:
 
 
 def _place_on_matching_systems(found: list[CategoryFindings], context: FrozenContext) -> None:
-    """Each accepted library threat keeps only the places (systems, or the asset itself) its AssetType fits;
-    fitting none, it is refused."""
+    """Each accepted library threat keeps only the ways in (systems, or the asset itself) its AssetType fits,
+    and every system it involves; with no way in that fits, it is refused."""
     asset_fits, system_fits = _place_fits(context)
     for result in found:
         kept = []
@@ -733,8 +757,8 @@ def _place_on_matching_systems(found: list[CategoryFindings], context: FrozenCon
 def _keep_on_matching_systems(
     threats: list[PlannedThreat], library: Sequence[LibraryThreat], context: FrozenContext
 ) -> tuple[list[PlannedThreat], list[dict[str, Any]]]:
-    """After a merge (an AI twin's kinds folded in), each library threat keeps each kind only on the places
-    its type fits; a kind fitting none is dropped, and a threat left with no kind. The threats, the drops."""
+    """After a merge (an AI twin's kinds folded in), each library threat keeps each kind only through the ways
+    in its type fits; a kind with none is dropped, and a threat left with no kind. The threats, the drops."""
     by_id = {threat.catalogue_id: threat for threat in library}
     asset_fits, system_fits = _place_fits(context)
     kept, drops = [], []
@@ -745,12 +769,12 @@ def _keep_on_matching_systems(
             continue
         places: dict[str, KindPlace] = {}
         for kind, place in places_by_kind(threat).items():
-            systems = _fitting(own.asset_type, place.systems, asset_fits, system_fits)
-            if systems is None:
+            entry_points = _fitting(own.asset_type, ways_in(place), asset_fits, system_fits)
+            if entry_points is None:
                 reason = CandidateRejection.ASSET_TYPE_MISMATCH
                 drops.append(plan_drop(threat.key, threat.name, kind, PlanStage.MERGE, reason))
             else:
-                places[kind] = dataclasses.replace(place, systems=systems)
+                places[kind] = dataclasses.replace(place, entry_points=entry_points)
         if places:
             kept.append(_with_places(threat, places))
     return kept, drops
@@ -778,7 +802,8 @@ def _fitting(
     asset_fits: Collection[str],
     system_fits: dict[int, frozenset[str]],
 ) -> tuple[int, ...] | None:
-    """The places (systems, or () for the asset itself) a library type fits; None when it fits none."""
+    """The places (systems, or () for the asset itself) a library type fits; None when it fits none. Asked of
+    the ways in only: the other systems a threat involves may be of any type."""
     if not systems:
         return () if asset_type_fits(asset_type, asset_fits) else None
     fitting = tuple(s for s in systems if asset_type_fits(asset_type, system_fits.get(s, frozenset())))
@@ -801,11 +826,16 @@ def _placed(
     asset_fits: Collection[str],
     system_fits: dict[int, frozenset[str]],
 ) -> Verdict | None:
-    """The verdict on only the places its threat's type fits; None when it fits none of them."""
-    systems = _fitting(threat.asset_type, verdict.systems, asset_fits, system_fits)
-    if systems is None:
+    """The verdict through only the ways in its threat's type fits, every system it involves kept; None when
+    no way in fits."""
+    entry_points = _fitting(threat.asset_type, ways_in(verdict), asset_fits, system_fits)
+    if entry_points is None:
         return None
-    return verdict if systems == verdict.systems else dataclasses.replace(verdict, systems=systems)
+    return (
+        verdict
+        if entry_points == verdict.entry_points
+        else dataclasses.replace(verdict, entry_points=entry_points)
+    )
 
 
 # --- one threat per threat
@@ -1142,6 +1172,41 @@ def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
     return sorted(ordered, key=lambda path: turn_of[attack_path_id(path)])  # stable: strength within a turn
 
 
+def take_turns(records: list[dict[str, Any]], order: Sequence[int]) -> list[dict[str, Any]]:
+    """The ranked path records dealt in turns over the systems in `order`, then the asset itself: each turn
+    takes the best record left that an attacker could get in through that system, which becomes its
+    `entry_system`; a system with none left is skipped."""
+    left, dealt = list(records), []
+    turns = (*order, None)
+    while left:
+        before = len(left)
+        for position, system in enumerate(turns):
+            taken = _best_through(system, turns[position + 1 :], left)
+            if taken is not None:
+                left.remove(taken)
+                dealt.append(taken | {"entry_system": system})
+        if len(left) == before:  # ponytail: a way in outside `order`; the gate names listed systems only
+            dealt += [record | {"entry_system": (record["entry_points"] or [None])[0]} for record in left]
+            break
+    return dealt
+
+
+def _best_through(
+    system: int | None, later: tuple[int | None, ...], left: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The best record left that gets in through `system`, passing over one that a system still to play this
+    round has no other way to take while `system` has another; None when none gets in through it."""
+    through = [record for record in left if _enters_through(record, system)]
+    scarce = [other for other in later if sum(_enters_through(record, other) for record in left) == 1]
+    spare = next((record for record in through if not any(_enters_through(record, s) for s in scarce)), None)
+    return spare or next(iter(through), None)
+
+
+def _enters_through(record: dict[str, Any], system: int | None) -> bool:
+    """Whether an attacker could get in through `system` on this path; None: whether it is on the asset."""
+    return system in record["entry_points"] if system is not None else not record["systems"]
+
+
 def select_up_to_target(paths: list[dict[str, Any]], max_scenarios: int) -> list[dict[str, Any]]:
     """The paths by rank, the `max_scenarios` best selected (0 = all), the rest set aside (target_reached)."""
     ranked = sorted(paths, key=lambda path: path["rank"])
@@ -1179,7 +1244,8 @@ def build_plan(
     ]
     if len(open_paths) < len(paths):
         log.info(LogEvent.PLANNER_COVERED_PATHS_DROPPED, dropped=len(paths) - len(open_paths))
-    fresh = [_path_record(path, 0, findings.category_ids) for path in rank_paths(open_paths)]
+    ranked = [_path_record(path, 0, findings.category_ids) for path in rank_paths(open_paths)]
+    fresh = take_turns(ranked, list(findings.landscape.system_ids.values()))
     for rank, record in enumerate(fresh, start=1):
         record["rank"] = rank
     return {
@@ -1205,6 +1271,8 @@ def _path_record(path: AttackPath, rank: int, category_ids: dict[str, int]) -> d
         "category_id": category_ids.get(category.lower()),
         "categories": list(attack_path_categories(path)),
         "systems": list(attack_path_systems(path)),
+        "entry_points": list(ways_in(place_for(path.steps[0], category))),
+        "entry_system": None,  # take_turns: the system this path's turn gets in through; None: the asset
         "impact": attack_path_impact(path),
         "confidence": attack_path_confidence(path),
         "also_applies": [],  # stored field: two threats never share a path (owner 2026-10-19)

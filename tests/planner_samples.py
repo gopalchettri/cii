@@ -86,18 +86,23 @@ CONTEXT = FrozenContext(
 )
 
 
-def judged(relevant: dict[str, list[str]]) -> Callable[[str], dict[str, Any]]:
-    """A gate that finds a candidate relevant when its threat is a key of `relevant`, on those systems."""
+def judged(
+    relevant: dict[str, list[str]], ways_in: dict[str, list[str]] | None = None
+) -> Callable[[str], dict[str, Any]]:
+    """A gate that finds a candidate relevant when its threat is a key of `relevant`, on those systems, an
+    attacker getting in through its `ways_in` (all of them by default)."""
 
     def answer(user_prompt: str) -> dict[str, Any]:
         verdicts = []
         for candidate in items_in(user_prompt, "CANDIDATES"):
             applies = candidate["threat"] in relevant
+            systems = relevant.get(candidate["threat"], [])
             verdicts.append(
                 {
                     "slot": candidate["slot"],
                     "relevant": applies,
-                    "systems": relevant.get(candidate["threat"], []),
+                    "systems": systems,
+                    "entry_points": (ways_in or {}).get(candidate["threat"], systems),
                     "reason": f"{candidate['threat']} hits SYS1." if applies else "Nothing here allows it.",
                     "impact": "HIGH" if applies else None,
                     "confidence": 80,
@@ -108,10 +113,14 @@ def judged(relevant: dict[str, list[str]]) -> Callable[[str], dict[str, Any]]:
     return answer
 
 
-def planner_chat(relevant: dict[str, list[str]]) -> FakeChatModel:
-    """A chat model answering every planner task: the gate by `relevant`, no gap-fill threat."""
+def planner_chat(
+    relevant: dict[str, list[str]], ways_in: dict[str, list[str]] | None = None
+) -> FakeChatModel:
+    """A chat model answering every planner task: the gate by `relevant` (and `ways_in`), no gap-fill
+    threat."""
     chat = FakeChatModel()
-    chat.responders = {AiTask.RELEVANCE_GATE: judged(relevant), AiTask.GAP_FILL: lambda _: GAP_FILL_NONE}
+    gate = judged(relevant, ways_in)
+    chat.responders = {AiTask.RELEVANCE_GATE: gate, AiTask.GAP_FILL: lambda _: GAP_FILL_NONE}
     return chat
 
 

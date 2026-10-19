@@ -259,6 +259,7 @@ class PlanLoss(StrEnum):
 class PlanTraceLimits:
     MAX_DROPS: Final = 300  # drops listed on a trace; its counts are always whole
     DETAIL_MAX_CHARS: Final = 160
+    ASSET_ITSELF: Final = "the asset itself"  # the turn and group of a path on no supporting system
 
 
 class PlanTraceMessage(StrEnum):

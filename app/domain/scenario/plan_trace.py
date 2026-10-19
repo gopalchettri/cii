@@ -14,7 +14,7 @@ from app.core.constants import (
 )
 from app.domain.scenario.plan import plan_drop
 from app.domain.shared.names import name_match_key, replace_codes_with_names
-from app.models.scenario.plan import CategoryAudit, ThreatFindings
+from app.models.scenario.plan import CategoryAudit, Landscape, ThreatFindings
 from app.models.scenario.views import GivenUpPath, PlanTraceView, WriteOutcomes
 
 #: The drops listed first: those that could have been a scenario, then the AI's verdicts, then the filter.
@@ -76,7 +76,29 @@ def build_plan_trace(
         "landscape_cut": findings.landscape.cut,
         "drops": sorted(drops, key=_telling)[: PlanTraceLimits.MAX_DROPS],
         "drops_total": len(drops),
+        **_turns_and_groups(plan["paths"], findings.landscape),
     }
+
+
+def _turns_and_groups(paths: list[dict[str, Any]], landscape: Landscape) -> dict[str, dict[str, int]]:
+    """How many paths get in through each system, in turn order and 0 for a system no path gets in through,
+    and how many cover each group of systems; by name, with the alias when two systems share one."""
+    shared = Counter(landscape.system_names.values())
+    names = {
+        system_id: name if shared[name] == 1 else f"{name} ({alias})"
+        for alias, system_id in landscape.system_ids.items()
+        for name in (landscape.system_names[alias],)
+    }
+    entered = Counter(path["entry_system"] for path in paths if "entry_system" in path)
+    turns = {names[system_id]: entered[system_id] for system_id in names}
+    if entered[None]:
+        turns[PlanTraceLimits.ASSET_ITSELF] = entered[None]
+    groups = Counter(
+        " + ".join(names.get(system_id, str(system_id)) for system_id in path["systems"])
+        or PlanTraceLimits.ASSET_ITSELF
+        for path in paths
+    )
+    return {"turns": turns, "groups": dict(groups.most_common())}
 
 
 def _counts(findings: ThreatFindings, plan: dict[str, Any], by: Counter[tuple[str, str]]) -> dict[str, int]:

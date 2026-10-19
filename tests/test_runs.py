@@ -303,6 +303,25 @@ def test_results_show_current_versions_and_keep_a_decided_older_one(client: Test
     assert len(page["scenarios"]) == 1 and page["total"] == 2
 
 
+def test_results_follow_the_plans_turns_whatever_order_the_cards_were_saved_in(
+    client: TestClient, api_key: str
+) -> None:
+    """A set's cards are written at once and saved as each finishes: the run lists them by their path's rank
+    (the turns over the systems), oldest first within a path; a regenerated version keeps its path's place."""
+    session_id = _start(client, api_key).json()["session_id"]
+
+    def card(path_id: str, rank: int, version: int = 1, **fields: Any) -> str:
+        content = {"title": f"Loss of {path_id}", "statement": "It stops.", "why_applies": "It is exposed."}
+        return _scenario(session_id, path_id, version, content=content | {"threat": {"rank": rank}}, **fields)
+
+    third = card("p3", 3)  # finished first
+    second = card("p2", 2)
+    card("p1", 1, superseded_by="regenerated")
+    first = card("p1", 1, version=2)  # the regenerated version, saved last
+    shown = client.get(f"/v1/sessions/{session_id}/results", headers=_identity(api_key)).json()["scenarios"]
+    assert [item["scenario_id"] for item in shown] == [first, second, third]
+
+
 def test_a_version_says_which_accepted_version_of_its_path_it_would_replace(
     client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

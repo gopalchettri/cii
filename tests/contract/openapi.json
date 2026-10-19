@@ -2682,6 +2682,13 @@
       "title": "Drops Total",
       "type": "integer"
      },
+     "groups": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Groups",
+      "type": "object"
+     },
      "landscape_cut": {
       "title": "Landscape Cut",
       "type": "boolean"
@@ -2689,6 +2696,13 @@
      "session_id": {
       "title": "Session Id",
       "type": "string"
+     },
+     "turns": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Turns",
+      "type": "object"
      },
      "writing": {
       "$ref": "#/components/schemas/WriteOutcomes"

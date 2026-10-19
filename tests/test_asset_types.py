@@ -18,7 +18,7 @@ from app.core.constants import (
     PlanStage,
     StrideCategory,
 )
-from app.domain.scenario.plan import build_plan, place_for
+from app.domain.scenario.plan import build_plan, place_for, places_by_kind, ways_in
 from app.models.library.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -66,10 +66,11 @@ def test_a_threat_whose_type_fits_neither_the_asset_nor_a_system_is_never_judged
     assert RANSOMWARE.name not in asked and LOG_WIPE.name in asked
 
 
-def test_a_threat_stays_only_where_its_type_fits_and_is_refused_where_it_cannot_be() -> None:
-    """An OT threat judged to apply on the OT and the IT system keeps the OT one; judged to apply only on the
-    IT system, or only on the IT asset itself, it is refused. Code decides, before any gap fill: a category
-    it empties still gets its one AI threat."""
+def test_a_threat_gets_in_only_where_its_type_fits_and_is_refused_where_it_cannot() -> None:
+    """The type limits the way in only: an OT threat judged to involve the OT and the IT system keeps both,
+    an attacker getting in through the OT one only; involving only the IT system, or only the IT asset
+    itself, it has no way in its type fits and is refused. Code decides, before any gap fill: a category it
+    empties still gets its one AI threat."""
     relevant = {
         RANSOMWARE.name: ["SYS1", "SYS2"],
         FLOOD.name: ["SYS2"],
@@ -80,9 +81,11 @@ def test_a_threat_stays_only_where_its_type_fits_and_is_refused_where_it_cannot_
     chat = planner_chat(relevant)
     findings = finder(chat, threats=library).find_threats(MIXED)
     assert {threat.name: threat.systems for threat in findings.threats} == {
-        RANSOMWARE.name: (321,),
+        RANSOMWARE.name: (321, 322),
         LOG_WIPE.name: (322,),
     }
+    ransomware = next(threat for threat in findings.threats if threat.name == RANSOMWARE.name)
+    assert {ways_in(place) for place in places_by_kind(ransomware).values()} == {(321,)}
     refused = {
         rejected["threat"]
         for audit in findings.audits
@@ -137,9 +140,10 @@ def test_an_ai_proposal_is_never_a_repeat_of_a_library_threat_this_run_never_jud
     assert any(proposal["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))  # judged, no repeat
 
 
-def test_a_threat_never_keeps_a_system_of_another_type_through_a_fold() -> None:
+def test_a_fold_never_brings_a_way_in_of_another_type() -> None:
     """A merge unites the systems of the threats it joins: an OT threat on its OT system, merged with an AI
-    twin of the same name and type on the IT system too, keeps only the OT one."""
+    twin of the same name and type on the IT system too, involves both, but an attacker gets in through the
+    OT one only, on every path."""
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
     on_both = planner_chat({RANSOMWARE.name: ["SYS1", "SYS2"]}).responders[AiTask.RELEVANCE_GATE]
     gate = chat.responders[AiTask.RELEVANCE_GATE]
@@ -153,10 +157,13 @@ def test_a_threat_never_keeps_a_system_of_another_type_through_a_fold() -> None:
     )
     rerank = FakeRerankModel({("Malware", "Malware"): 90.0})
     findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
-    assert {threat.name: threat.systems for threat in findings.threats} == {RANSOMWARE.name: (321,)}
-    (threat,) = findings.threats  # the twin's kind enters only through the OT system too
-    assert place_for(threat, S.INFORMATION_DISCLOSURE).systems == (321,)
-    assert [path["systems"] for path in build_plan(findings, 0)["paths"]] == [[321]] * len(threat.categories)
+    assert {threat.name: threat.systems for threat in findings.threats} == {RANSOMWARE.name: (321, 322)}
+    (threat,) = findings.threats  # the twin's kind involves the IT system, but enters through the OT one
+    twin_kind = place_for(threat, S.INFORMATION_DISCLOSURE)
+    assert twin_kind.systems == (321, 322) and ways_in(twin_kind) == (321,)
+    paths = build_plan(findings, 0)["paths"]
+    assert len(paths) == len(threat.categories)
+    assert all(path["entry_points"] == [321] and path["entry_system"] == 321 for path in paths)
 
 
 def test_a_kind_a_twin_brought_onto_no_fitting_place_is_dropped_and_traced() -> None:

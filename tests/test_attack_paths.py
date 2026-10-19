@@ -44,7 +44,9 @@ from app.domain.scenario.plan import (
     describe_asset_for_ai,
     merge_same_threats,
     rank_paths,
+    take_turns,
 )
+from app.domain.scenario.plan_trace import build_plan_trace
 from app.domain.scenario.write import held_repeat_of
 from app.models.scenario.plan import AttackPath, KindPlace, PlannedThreat, ThreatFindings
 from app.worker import jobs
@@ -164,6 +166,80 @@ def test_paths_are_ranked_by_impact_then_confidence_then_stride_order() -> None:
     surer = AttackPath((planned("lib:4", "lib:4", (323,), impact=1, confidence=95.0),))
     ranked = rank_paths([weak_spoofing, surer, strong_tampering, medium, strong_spoofing])
     assert ranked == [strong_spoofing, strong_tampering, medium, surer, weak_spoofing]
+
+
+def _turn(path_id: str, systems: list[int], entry_points: list[int]) -> dict[str, Any]:
+    return {"path_id": path_id, "systems": systems, "entry_points": entry_points}
+
+
+def test_paths_take_turns_over_the_systems_each_through_a_way_in_the_gate_named() -> None:
+    """SYS1, SYS2, SYS3, SYS4, the asset itself, then SYS1 again: each turn the best path left that an
+    attacker could get in through that system. The cabinet attack involves SYS2 and SYS3 but gets in through
+    SYS3 only, so SYS2's turn passes it by; a group of all four takes the turn of one of its ways in; a
+    system with nothing left to get in through is skipped, never filled."""
+    ranked = [
+        _turn("ransomware", [1, 2, 3, 4], [1, 4]),
+        _turn("login", [1, 4], [1, 4]),
+        _turn("cabinet", [2, 3], [3]),
+        _turn("timing", [2, 3], [2, 3]),
+        _turn("alerts", [1, 4], [1, 4]),
+        _turn("flood", [2, 3], [2, 3]),
+        _turn("asset", [], []),
+    ]
+    dealt = take_turns(ranked, [1, 2, 3, 4])
+    assert [(record["path_id"], record["entry_system"]) for record in dealt] == [
+        ("ransomware", 1),
+        ("timing", 2),
+        ("cabinet", 3),
+        ("login", 4),
+        ("asset", None),
+        ("alerts", 1),
+        ("flood", 2),
+    ]
+    assert all(  # the whole sequence: every turn's system is one of that path's ways in
+        record["entry_system"] in record["entry_points"]
+        or (record["entry_system"] is None and not record["systems"])
+        for record in dealt
+    )
+    skipped = take_turns([_turn("a", [1, 2], [1]), _turn("b", [1], [1]), _turn("c", [3], [3])], [1, 2, 3])
+    assert [(record["path_id"], record["entry_system"]) for record in skipped] == [
+        ("a", 1),
+        ("c", 3),
+        ("b", 1),
+    ]
+    # SYS1's turn passes over the one path SYS4 could take, while it has another of its own
+    shared = [_turn("r1", [1, 4], [1, 4]), _turn("r2", [1], [1]), _turn("r3", [1], [1])]
+    assert [(record["path_id"], record["entry_system"]) for record in take_turns(shared, [1, 2, 3, 4])] == [
+        ("r2", 1),
+        ("r1", 4),
+        ("r3", 1),
+    ]
+
+
+def test_the_plan_stores_each_paths_ways_in_and_turn_and_the_trace_counts_them() -> None:
+    """The stronger threat gets in through the Historian only, so the SCADA server's first turn goes to the
+    weaker one; the ranks follow the turns, and the trace counts each system's turns and each group."""
+    place = KindPlace((321, 322), 3, 70.0, None, (322,))
+    via_historian = planned(
+        "lib:1", "Firmware change", (321, 322), impact=3, kind_places=((S.TAMPERING, place),)
+    )
+    on_scada = planned("lib:2", "Log wipe", (321,), impact=1)
+    findings = findings_of(via_historian, on_scada)
+    plan = build_plan(findings, 0)
+    assert [
+        (p["steps"], p["systems"], p["entry_points"], p["entry_system"], p["rank"]) for p in plan["paths"]
+    ] == [
+        (["lib:2"], [321], [321], 321, 1),
+        (["lib:1"], [321, 322], [322], 322, 2),
+    ]
+    trace = build_plan_trace(findings, plan, [], 2)
+    assert trace["turns"] == {"SCADA server": 1, "Historian": 1}
+    assert trace["groups"] == {"SCADA server": 1, "SCADA server + Historian": 1}
+    # every system is listed, 0 when no path gets in through it, and two systems named alike stay apart
+    alike = replace(LANDSCAPE, system_names=dict.fromkeys(LANDSCAPE.system_names, "HMI"))
+    only_scada = {"paths": [p | {"entry_system": 321} for p in plan["paths"]], "threats": plan["threats"]}
+    trace = build_plan_trace(replace(findings, landscape=alike), only_scada, [], 2)
+    assert trace["turns"] == {"HMI (SYS1)": 2, "HMI (SYS2)": 0}
 
 
 def test_equal_paths_rank_library_first_then_by_library_id_whatever_the_input_order() -> None:

@@ -67,17 +67,18 @@ def test_the_gate_asks_for_needs_and_never_takes_preparation_for_an_attack() -> 
 
 
 def test_each_threat_is_its_own_scenario_ranked_by_impact_and_confidence_with_no_ai_call() -> None:
-    """Every accepted threat is a scenario (owner 2026-10-19: asset level, none hidden under another),
-    most relevant first: impact, then confidence, then the tie-break."""
+    """Every accepted threat is a scenario (owner 2026-10-19: asset level, none hidden under another), in
+    turns over the systems, each turn the most relevant left: impact, then confidence, then the tie-break."""
     strongest = planned("lib:1", "Firmware change", (321,), impact=3, confidence=90.0)
     other = planned("lib:2", "Logic overwrite", (321,), impact=3, confidence=70.0)
     alone = planned("lib:3", "Log wipe", (322,), categories=(StrideCategory.SPOOFING,), impact=1)
     plan = build_plan(findings_of(other, strongest, alone), 0)
-    assert [(path["category"], path["steps"], path["also_applies"]) for path in plan["paths"]] == [
-        (StrideCategory.TAMPERING, ["lib:1"], []),
-        (StrideCategory.TAMPERING, ["lib:2"], []),
-        (StrideCategory.SPOOFING, ["lib:3"], []),
+    assert [(path["category"], path["steps"], path["entry_system"]) for path in plan["paths"]] == [
+        (StrideCategory.TAMPERING, ["lib:1"], 321),  # SYS1's turn
+        (StrideCategory.SPOOFING, ["lib:3"], 322),  # SYS2's turn, though the weakest
+        (StrideCategory.TAMPERING, ["lib:2"], 321),  # SYS1's next turn
     ]
+    assert all(path["also_applies"] == [] for path in plan["paths"])
 
 
 def test_a_listed_need_under_one_category_refuses_the_threat_under_every_category() -> None:

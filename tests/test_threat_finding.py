@@ -22,6 +22,7 @@ from app.domain.scenario.plan import (
     merge_reworded_threats,
     merge_same_threats,
     parse_verdict,
+    relevance_gate_prompt,
     threat_from_library,
 )
 from app.domain.shared.names import replace_codes_with_names
@@ -124,6 +125,28 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
     rejection = {"slot": "R2", "relevant": False, "systems": [], "reason": "No mail.", "impact": "N/A"}
     verdict, problems = parse_verdict(rejection | {"confidence": 5}, {"SYS1": 321}, [])
     assert problems == [] and verdict == Verdict(False, (), "No mail.", 0, 5.0)
+
+
+def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
+    """The gate says through which of a threat's systems an attacker could get in: at least one when it
+    names systems, never one it does not name; a rejection needs none, and the asset itself has none."""
+    aliases = {"SYS1": 321, "SYS2": 322}
+    relevant = {"slot": "R1", "relevant": True, "systems": ["SYS1", "SYS2"], "reason": "On both."}
+    relevant |= {"impact": "HIGH", "confidence": 80}
+    assert parse_verdict(relevant, aliases, [])[1] == [
+        "R1: entry_points must name the systems among its own an attacker could get in through"
+    ]
+    outside = relevant | {"systems": ["SYS1"], "entry_points": ["SYS2"]}
+    assert parse_verdict(outside, aliases, [])[1] == ["R1: entry_points must be aliases from its own systems"]
+    verdict, problems = parse_verdict(relevant | {"entry_points": ["SYS2"]}, aliases, [])
+    assert problems == [] and verdict is not None
+    assert (verdict.systems, verdict.entry_points) == ((321, 322), (322,))
+    rejected = relevant | {"relevant": False, "impact": None, "entry_points": ["SYS9"]}
+    assert parse_verdict(rejected, aliases, [])[1] == []
+    asset = relevant | {"systems": [], "entry_points": []}
+    assert parse_verdict(asset, aliases, [])[0] == Verdict(True, (), "On both.", 3, 80.0)
+    prompt = relevance_gate_prompt("LANDSCAPE", S.TAMPERING, [{"slot": "R1"}])[1]
+    assert '"entry_points": ["SYS1"]' in prompt and "one, several or all of them" in prompt
 
 
 def test_an_unreadable_gate_reply_retries_before_gap_fill_and_a_cut_off_one_is_skipped() -> None:

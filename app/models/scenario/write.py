@@ -57,6 +57,7 @@ class WriterBrief:
     evidence: tuple[dict[str, Any], ...] = ()
     # Every supporting system of the run, applicable or not: the writer gives each a reason.
     supporting_systems: tuple[BriefSystem, ...] = ()
+    entry_system: str = ""  # the system the path gets in through, by its name in `systems` ("" = any of them)
 
 
 @dataclass(frozen=True)

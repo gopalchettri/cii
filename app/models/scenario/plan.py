@@ -34,16 +34,18 @@ class Verdict:
     confidence: float  # 0-100
     needs: tuple[str, ...] = ()  # what the threat needs that no recorded fact mentions
     actor_pick: ActorPick | None = None
+    entry_points: tuple[int, ...] = ()  # the systems among `systems` an attacker could get in through
 
 
 @dataclass(frozen=True)
 class KindPlace:
     """Where and how strongly a threat applies as one kind of attack: that category's own verdict."""
 
-    systems: tuple[int, ...]  # its entry points; () = the asset itself
+    systems: tuple[int, ...]  # the systems it involves; () = the asset itself
     impact: int
     confidence: float
     actor_pick: ActorPick | None = None  # that category's attacker pick
+    entry_points: tuple[int, ...] = ()  # its ways in among `systems`; () with systems: all of them
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,7 @@ class RelevanceVerdict(BaseModel):
     slot: str
     relevant: bool
     systems: list[str]
+    entry_points: list[str] = Field(default_factory=list)  # among `systems`: where an attacker could get in
     reason: str
     impact: Literal["HIGH", "MEDIUM", "LOW"] | None = None
     confidence: int | None = Field(default=None, ge=0, le=100)

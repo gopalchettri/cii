@@ -445,6 +445,10 @@ class PlanTraceView(BaseModel):
     landscape_cut: bool  # facts were shortened to fit the AI's prompt (every system kept its name)
     drops: list[PlanDrop]  # the most telling first, at most PlanTraceLimits.MAX_DROPS
     drops_total: int
+    # The planned paths by the system each gets in through, in turn order, and by the systems each covers;
+    # by name ({} for a plan made before paths took turns).
+    turns: dict[str, int] = Field(default_factory=dict)
+    groups: dict[str, int] = Field(default_factory=dict)
     writing: WriteOutcomes
 
 

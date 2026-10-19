@@ -82,7 +82,8 @@ def _gate(
             needs = (kind_needs or {}).get((item["threat"], kind), [])
             verdict = {"slot": item["slot"], "relevant": given is not None, "systems": [], "confidence": 80}
             verdict |= {"reason": "It applies." if given else "Nothing here allows it.", "needs": needs}
-            verdicts.append(verdict | ({"impact": "HIGH"} | given if given else {}))
+            verdict |= {"impact": "HIGH"} | given if given else {}
+            verdicts.append({"entry_points": verdict["systems"]} | verdict)
         return {"verdicts": verdicts}
 
     return answer
