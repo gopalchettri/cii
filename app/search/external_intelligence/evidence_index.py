@@ -36,14 +36,18 @@ def remove_indicators(text: str) -> str:
     return _SPACES.sub(" ", _INDICATOR.sub(" ", text)).strip()
 
 
-def scoring_text(hit: IntelHit) -> str:
-    """What the reranker reads of a record: a technique's name and description only. Its id and its Tactics /
-    Platforms / Mitigations lists let records that share only those words outscore the right one (36-threat
-    benchmark, 2026-10-19); other kinds are read whole."""
+def scoring_text(hit: IntelHit, titles: dict[tuple[IntelSource, str], str]) -> str:
+    """What the reranker reads of a record: a technique's name and description only, a sub-technique's name
+    after its parent's ("Unauthorized Message: Command Message" is not "Block Operational Technology Message:
+    Command Message"). Its id and its Tactics / Platforms / Mitigations lists let records that share only
+    those words outscore the right one (36-threat benchmark, 2026-10-19); other kinds are read whole.
+    `titles`: each technique's title by (source, id)."""
     text = remove_indicators(hit.text)
     if hit.kind != IntelKind.TECHNIQUE:
         return text
-    return _LABELS_TAIL.sub("", text.removeprefix(f"{hit.external_id} "))
+    text = _LABELS_TAIL.sub("", text.removeprefix(f"{hit.external_id} "))
+    parent = titles.get((hit.source, hit.external_id.partition(".")[0])) if "." in hit.external_id else None
+    return f"{parent}: {text}" if parent else text
 
 
 class EvidenceIndexRefused(Exception):
@@ -81,6 +85,9 @@ class EvidenceIndex:
         self.built_at = datetime.now(UTC)
         self._asset_types = np.array([hit.asset_type for hit in corpus.hits])
         self._sources = [frozenset({hit.source, *hit.joined}) for hit in corpus.hits]
+        self._titles = {
+            (h.source, h.external_id): h.title for h in corpus.hits if h.kind == IntelKind.TECHNIQUE
+        }
 
     def reuse_for(self, corpus: EvidenceCorpus) -> "EvidenceIndex | None":
         """A new index over `corpus` that shares this one's vectors, when the corpus differs only in what the
@@ -139,7 +146,9 @@ class EvidenceIndex:
         caller decides what a low score means."""
         if not hits:
             return []
-        scores = self._rerank.score_relevance(remove_indicators(query), [scoring_text(hit) for hit in hits])
+        scores = self._rerank.score_relevance(
+            remove_indicators(query), [scoring_text(hit, self._titles) for hit in hits]
+        )
         scored = [replace(hit, score=score) for hit, score in zip(hits, scores, strict=True)]
         return sorted(scored, key=lambda hit: (-hit.score, hit.external_id))
 
