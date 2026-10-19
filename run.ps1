@@ -143,6 +143,33 @@ function Get-EnvValue([string]$Name) {
     return $value.Trim()
 }
 
+function Get-ShadowedSettings {
+    # The names (never the values) of the settings .env owns that this shell also sets: every key .env names,
+    # set, blank or commented out (blank or missing means the default), and every GF_ key (a GF_ line left out
+    # means Grafana's default). A setting in the environment beats .env, and VS Code's
+    # python.terminal.useEnvFile copies .env into a terminal once, when it opens.
+    $lines = if (Test-Path -LiteralPath $EnvFile) { Get-Content -LiteralPath $EnvFile } else { @() }
+    $named = foreach ($line in $lines) { if ($line -match '^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') { $Matches[1] } }
+    $grafana = Get-ChildItem -Path 'Env:GF_*' | ForEach-Object { $_.Name }
+    @($named) + @($grafana) | Where-Object { $_ -and (Test-Path -LiteralPath "Env:$_") } | Sort-Object -Unique
+}
+
+function Hide-ShadowedSettings([hashtable]$Saved) {
+    # Unsets those keys while the script runs, so every check and program it starts reads .env; each value is
+    # kept in $Saved before it goes, for Restore-Settings. Returns the names whose value differs from .env's
+    # (compared here, never shown): with useEnvFile every key is a copy, and only a stale one needs a warning.
+    foreach ($key in Get-ShadowedSettings) {
+        $Saved[$key] = [Environment]::GetEnvironmentVariable($key)
+        Remove-Item -LiteralPath "Env:$key"
+        if ($Saved[$key] -cne (Get-EnvValue $key)) { $key }
+    }
+}
+
+function Restore-Settings([hashtable]$Saved) {
+    # Puts back what Hide-ShadowedSettings unset: the caller's shell stays as it was.
+    foreach ($entry in $Saved.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value) }
+}
+
 function Get-Program($Window) {
     # The python program inside a window (the window stays open after it ends, so its error stays readable).
     Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Window.Id) AND Name = 'python.exe'"
@@ -368,14 +395,18 @@ function Show-Status {
 # Every python call reads .env and imports app\ from the project folder, so the script works from there
 # wherever it is started; the caller's shell is put back afterwards.
 $exitCode = 0
+$shadowed = @{}
 Push-Location -LiteralPath $Root
 try {
+    $stale = @(Hide-ShadowedSettings $shadowed)
+    if ($stale) { Write-Warning "Set differently in this shell; .env's are used: $($stale -join ', ')" }
     switch ($Action) {
         'start' { $exitCode = Invoke-Start }
         'stop' { $exitCode = Invoke-Stop }
         'status' { Show-Status }
     }
 } finally {
+    Restore-Settings $shadowed
     Pop-Location
 }
 exit $exitCode

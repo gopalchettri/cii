@@ -387,12 +387,14 @@ def test_start_fails_when_a_window_s_program_has_ended() -> None:
 
 
 def _run_powershell_function(script: Path, function: str, call: str) -> list[str]:
-    """Defines one function exactly as the script has it, runs `call`, and returns the output lines."""
+    """Defines the functions named (comma-separated) exactly as the script has them, runs `call`, and returns
+    the output lines."""
     loader = (
         "$errors = $null; $ast = [System.Management.Automation.Language.Parser]::ParseFile("
-        f"'{script.as_posix()}', [ref]$null, [ref]$errors); "
-        "$fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] "
-        f"-and $n.Name -eq '{function}' }}, $true)[0]; Invoke-Expression $fn.Extent.Text; {call}"
+        f"'{script.as_posix()}', [ref]$null, [ref]$errors); $names = '{function}'.Split(','); "
+        "foreach ($fn in $ast.FindAll({ param($n) $n -is "
+        "[System.Management.Automation.Language.FunctionDefinitionAst] -and $names -contains $n.Name }, "
+        f"$true)) {{ Invoke-Expression $fn.Extent.Text }}; {call}"
     )
     powershell = [shutil.which("powershell") or "powershell", "-NoProfile", "-Command", loader]
     result = subprocess.run(powershell, capture_output=True, text=True, timeout=60, check=False)  # noqa: S603
@@ -419,6 +421,35 @@ def test_the_scripts_read_env_values_as_the_app_does(tmp_path: Path) -> None:
     )
     deploy = REPO / "deploy" / "observability.ps1"
     assert _run_powershell_function(deploy, "Read-EnvFile", read_all) == expected
+
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
+def test_the_script_runs_on_env_not_on_a_copy_left_in_the_shell(tmp_path: Path) -> None:
+    """A setting .env owns that the shell also sets (VS Code's useEnvFile copies .env into a terminal once,
+    and the environment beats .env) is unset while the script runs, so every check and program it starts
+    reads .env, then put back. Owned: every key .env names, set, blank or commented out (blank means the
+    default), and every GF_ key (a GF_ line left out means Grafana's default). Only a value that differs is
+    named."""
+    env = tmp_path / ".env"
+    env.write_text('A=1\n# B=2\nC="x"\nE=\nA=3\nG=same\n', encoding="utf-8")
+    shell = "$env:A = 'stale'; $env:B = 'b'; $env:E = 'e'; $env:F = 'f'; $env:G = 'same'; $env:GF_X = 'g'"
+    call = (
+        f"Get-ChildItem Env:GF_* | Remove-Item; $EnvFile = '{env}'; {shell}; $saved = @{{}}; "
+        "$stale = @(Hide-ShadowedSettings $saved); \"stale:$($stale -join ',')\"; "
+        "\"hidden:$(($saved.Keys | Sort-Object) -join ',')\"; & cmd /c 'echo child:[%A%,%G%,%F%]'; "
+        'Restore-Settings $saved; "back:$env:A,$env:B,$env:E,$env:F,$env:G,$env:GF_X"'
+    )
+    functions = "Get-ShadowedSettings,Get-EnvValue,Hide-ShadowedSettings,Restore-Settings"
+    assert _run_powershell_function(REPO / "run.ps1", functions, call) == [
+        "stale:A,B,E,GF_X",  # G is the same copy as .env's: not worth a warning
+        "hidden:A,B,E,G,GF_X",  # F is no key of .env's: the shell's own
+        "child:[%A%,%G%,f]",  # a program started meanwhile does not inherit the copies
+        "back:stale,b,e,f,same,g",
+    ]
+    script = (REPO / "run.ps1").read_text(encoding="ascii")
+    main = script[script.index("$exitCode = 0") :]
+    assert main.index("$stale = @(Hide-ShadowedSettings $shadowed)") < main.index("switch ($Action)")
+    assert main.index("Restore-Settings $shadowed") > main.index("} finally {")
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
