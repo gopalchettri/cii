@@ -225,7 +225,12 @@ def get_evidence_finder() -> EvidenceFinder:
     process's one rerank gate."""
     keeper, settings = get_evidence_index_keeper(), get_settings()
     gate = rerank_gate_for(settings.rerank_base_url)
-    return EvidenceFinder(lambda: keeper.current_index(), settings.evidence_similarity_threshold, gate=gate)
+    return EvidenceFinder(
+        lambda: keeper.current_index(),
+        settings.evidence_similarity_threshold,
+        gate=gate,
+        candidates=settings.evidence_candidates,
+    )
 
 
 @singleton

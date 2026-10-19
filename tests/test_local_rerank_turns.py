@@ -10,7 +10,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from app import ai
-from app.core.constants import AiLimits, AiOutcome, AiTask, EvidenceLimits
+from app.core.constants import AiOutcome, AiTask
 from app.core.exceptions import LeaseLost
 from app.core.lease_signal import lease_lost_signal
 from app.models.ai.profiles import RerankModelProfile
@@ -78,7 +78,6 @@ def test_a_waiting_scenario_goes_before_waiting_control_mapping() -> None:
 
 
 def test_mapping_scores_a_few_documents_per_turn_so_a_scenario_never_waits_for_the_whole_call() -> None:
-    assert AiLimits.LOCAL_RERANK_TURN_DOCUMENTS == EvidenceLimits.CANDIDATES  # one turn = one evidence call
     model = _Model(hold="mapping")
     rerank, errors, scores = _reranker(model), [], {}
     mapping = _start(

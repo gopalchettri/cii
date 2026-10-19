@@ -36,10 +36,16 @@ OT = {"OT", AssetType.IT_OT}
 WINCC = {"vendors": ["Siemens"], "products": ["Siemens WinCC"]}
 
 
-def finder_of(docs: list[dict], rerank: ScoredBy | None = None, threshold: float = 1.0, embeddings=None):
+def finder_of(
+    docs: list[dict],
+    rerank: ScoredBy | None = None,
+    threshold: float = 1.0,
+    embeddings=None,
+    candidates: int = 6,
+):
     embeddings = embeddings or TextEmbeddings()
     index = build_index(build_corpus(docs), embeddings, rerank or ScoredBy(), "rr-model")
-    return EvidenceFinder(lambda: index, threshold, gate=RerankGate(2)), embeddings
+    return EvidenceFinder(lambda: index, threshold, gate=RerankGate(2), candidates=candidates), embeddings
 
 
 def one(finder: EvidenceFinder, request: Any, *, stale: bool = False):
@@ -58,6 +64,14 @@ def test_an_it_asset_sees_it_and_it_ot_records_and_an_ot_asset_ot_and_it_ot() ->
     assert refs(result) == {"T1", "T3"} and {c.ref for c in result.search.considered} == {"T1", "T3"}
     result, _ = one(finder, request_of(types=OT))
     assert refs(result) == {"T2", "T3"} and set(result.search.asset_types) == OT
+
+
+def test_the_finder_reranks_at_most_its_candidates() -> None:
+    docs = [technique_doc(f"T{n}") for n in range(1, 6)]
+    for candidates in (2, 30):
+        finder, _ = finder_of(docs, candidates=candidates)
+        result, _ = one(finder, request_of())
+        assert len(result.search.considered) == min(candidates, len(docs))
 
 
 def test_the_audit_names_the_query_the_snapshot_the_threshold_and_the_rerank_model() -> None:
@@ -139,7 +153,7 @@ def test_a_technique_has_no_applicability_and_a_known_version_confirms_only_insi
 
 def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     empty = empty_index(TextEmbeddings(), ScoredBy())
-    finder = EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1))
+    finder = EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1), candidates=6)
     result, summary = one(finder, request_of())
     assert result.evidence == () and result.search.snapshot_id is None and result.search.considered == ()
     assert (summary.snapshot_id, summary.threats_searched, summary.source_versions) == (None, 0, {})
@@ -157,7 +171,7 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
 def test_a_settled_empty_index_finds_no_evidence_and_is_no_outage() -> None:
     """Searched and nothing found: the path is written without evidence, never held back."""
     empty = empty_index(TextEmbeddings(), ScoredBy(), settled=True)
-    result, _ = one(EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1)), request_of())
+    result, _ = one(EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1), candidates=6), request_of())
     search = result.search
     assert (result.evidence, search.snapshot_id, search.failure) == ((), EMPTY_SNAPSHOT_ID, None)
     assert evidence_problem({"intel_search": search.as_doc(), "evidence": []}) is None

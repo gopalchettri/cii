@@ -52,7 +52,7 @@ def _shape(results) -> list[tuple]:
 
 def test_many_users_get_exactly_what_a_serial_run_gives_and_never_each_others_evidence() -> None:
     keeper = _keeper(_docs())
-    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3))
+    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3), candidates=6)
     serial = {
         user: _shape(finder.find_evidence(_requests(user), stale=False, approved=ALL_SOURCES)[0])
         for user in range(USERS)
@@ -80,7 +80,7 @@ def test_many_users_get_exactly_what_a_serial_run_gives_and_never_each_others_ev
 def test_the_gate_is_never_exceeded_by_many_batches_at_once() -> None:
     rerank = CountingRerank(0.01)
     keeper = _keeper(_docs(), rerank)
-    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3))
+    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3), candidates=6)
     with ThreadPoolExecutor(USERS) as pool:
         list(
             pool.map(
@@ -107,7 +107,7 @@ def test_a_rebuild_during_searches_keeps_serving_whole_indexes_and_swaps_at_once
         records, MemoryPointer(), MemoryFeeds(), SlowEmbeddings(), ScoredBy(), "m", "r"
     )
     old = keeper.rebuild_index().result(10)
-    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3))
+    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3), candidates=6)
     records.docs.append(vulnerability_doc("CVE-9", "V", "P"))
     rebuilding = keeper.rebuild_index()
     assert started.wait(5)

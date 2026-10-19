@@ -39,7 +39,7 @@ def make_finder(rerank_seconds: float, gate_size: int) -> tuple[EvidenceFinder, 
     rerank = CountingRerank(rerank_seconds)
     corpus = build_corpus(docs)
     index = build_index(corpus, TextEmbeddings(), rerank)  # type: ignore[arg-type]  # fakes stand in: no AI
-    return EvidenceFinder(lambda: index, 1.0, gate=RerankGate(gate_size)), rerank
+    return EvidenceFinder(lambda: index, 1.0, gate=RerankGate(gate_size), candidates=30), rerank
 
 
 def one_batch(finder: EvidenceFinder, user: int) -> float:

@@ -55,10 +55,12 @@ class EvidenceFinder:
         threshold: float,
         *,
         gate: RerankGate,
+        candidates: int,
     ) -> None:
         self._provider = search_provider  # the index in use now: empty until the first build is done
         self._threshold = threshold  # the cut-off on the reranker's own 0-100 scale
         self._gate = gate
+        self._candidates = candidates  # records reranked per threat (EVIDENCE_CANDIDATES)
         self._selector = EvidenceSelector(threshold, PlainFactWriter())
 
     def find_evidence(
@@ -86,7 +88,7 @@ class EvidenceFinder:
         snapshot, down = search.snapshot_id, EvidenceSearchFailure.UNAVAILABLE
         searches = [(request.text, request.asset_types) for request in requests]
         try:
-            candidates = search.find_candidates(searches, EvidenceLimits.CANDIDATES, approved)
+            candidates = search.find_candidates(searches, self._candidates, approved)
         except _SEARCH_ERRORS:  # the embedding service: no request gets evidence, the batch goes on
             log.warning(
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=len(requests), exc_info=True

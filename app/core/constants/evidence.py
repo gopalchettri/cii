@@ -42,8 +42,7 @@ class EvidenceSearchFailure(StrEnum):
 class EvidenceLimits:
     """How much evidence one threat gets and how big its search is."""
 
-    PER_THREAT: Final = 3  # evidence records kept for one threat
-    CANDIDATES: Final = 6  # records reranked per threat
+    PER_THREAT: Final = 3  # evidence records kept for one threat; how many are reranked: EVIDENCE_CANDIDATES
     QUERY_MAX_CHARS: Final = 700  # the search text of one threat, cut from the end
     MAX_FACTS: Final = 6  # plain sentences kept per evidence record
     REAL_WORLD_USERS: Final = 2  # named groups / malware per technique

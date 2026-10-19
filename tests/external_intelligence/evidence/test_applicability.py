@@ -46,7 +46,7 @@ def kev(cve: str, *entries: Any) -> dict[str, Any]:
 
 def verdict(docs: list[dict], *rows: RecordedProduct, scores: dict[str, float] | None = None):
     index = build_index(build_corpus(docs), TextEmbeddings(), ScoredBy(scores or {}))
-    finder = EvidenceFinder(lambda: index, 1.0, gate=RerankGate(1))
+    finder = EvidenceFinder(lambda: index, 1.0, gate=RerankGate(1), candidates=6)
     request = EvidenceRequest("Threat: ransomware", ALL_TYPES, RecordedProducts(tuple(rows)))
     (result,), _ = finder.find_evidence([request], stale=False, approved=ALL_SOURCES)
     return result
