@@ -41,7 +41,7 @@ class RemoteLikeRerank(CountingRerank):
 
 def _finder(rerank, gate: RerankGate) -> EvidenceFinder:
     index = build_index(build_corpus([technique_doc("T1")]), TextEmbeddings(), rerank)
-    return EvidenceFinder(lambda: index, 1.0, gate=gate, candidates=6)
+    return EvidenceFinder(lambda: index, 1.0, gate=gate, candidates=6, kept_per_threat=3)
 
 
 def _batch(finder: EvidenceFinder, size: int = 12) -> None:

@@ -230,6 +230,7 @@ def get_evidence_finder() -> EvidenceFinder:
         settings.evidence_similarity_threshold,
         gate=gate,
         candidates=settings.evidence_candidates,
+        kept_per_threat=settings.evidence_kept_per_threat,
     )
 
 

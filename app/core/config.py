@@ -219,6 +219,8 @@ class Settings(ScenarioOutputSettings):
     # Intelligence records the reranker scores per threat: more finds the right record more often, each
     # rerank takes longer.
     evidence_candidates: int = Field(default=30, ge=1, le=100, validation_alias="EVIDENCE_CANDIDATES")
+    # Intelligence records kept per threat after the reranker: the writer sees them all and cites one.
+    evidence_kept_per_threat: int = Field(default=3, ge=1, le=10, validation_alias="EVIDENCE_KEPT_PER_THREAT")
     # Optional NVD key (a secret): raises NVD's rate limit from 5 to 50 requests per 30 s. Empty = unkeyed.
     nvd_api_key: SecretStr = SecretStr("")
 

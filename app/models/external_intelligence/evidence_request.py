@@ -35,5 +35,5 @@ class EvidenceRequest:
 
 @dataclass(frozen=True)
 class EvidenceResult:
-    evidence: tuple[Evidence, ...]  # best first, at most EvidenceLimits.PER_THREAT
+    evidence: tuple[Evidence, ...]  # best first, at most EVIDENCE_KEPT_PER_THREAT
     search: EvidenceSearchRecord

@@ -56,12 +56,13 @@ class EvidenceFinder:
         *,
         gate: RerankGate,
         candidates: int,
+        kept_per_threat: int,
     ) -> None:
         self._provider = search_provider  # the index in use now: empty until the first build is done
         self._threshold = threshold  # the cut-off on the reranker's own 0-100 scale
         self._gate = gate
         self._candidates = candidates  # records reranked per threat (EVIDENCE_CANDIDATES)
-        self._selector = EvidenceSelector(threshold, PlainFactWriter())
+        self._selector = EvidenceSelector(threshold, PlainFactWriter(), kept_per_threat)
 
     def find_evidence(
         self, requests: Sequence[EvidenceRequest], *, stale: bool, approved: Collection[IntelSource]
@@ -140,14 +141,15 @@ class EvidenceFinder:
 class EvidenceSelector:
     """Chooses a request's evidence from its scored candidates; the request's product checker is passed in."""
 
-    def __init__(self, threshold: float, writer: PlainFactWriter) -> None:
+    def __init__(self, threshold: float, writer: PlainFactWriter, kept_per_threat: int) -> None:
         self._threshold = threshold
         self._writer = writer
+        self._kept = kept_per_threat  # EVIDENCE_KEPT_PER_THREAT
 
     def select(
         self, scored: Sequence[IntelHit], checker: ProductLinkChecker
     ) -> tuple[tuple[Evidence, ...], tuple[Considered, ...]]:
-        """The evidence used (best first, at most EvidenceLimits.PER_THREAT) and one row per candidate; when
+        """The evidence used (best first, at most EVIDENCE_KEPT_PER_THREAT) and one row per candidate; when
         none meets the threshold, the nearest under it, by the same other rules, each marked nearest."""
         found = self._choose(scored, checker, nearest=False)
         return found if found[0] else self._choose(scored, checker, nearest=True)
@@ -163,7 +165,7 @@ class EvidenceSelector:
             if evidence is not None:
                 usable.append(evidence)
             rows.append(evidence or row)
-        used = choose_within_limit(usable, EvidenceLimits.PER_THREAT)
+        used = choose_within_limit(usable, self._kept)
         return tuple(used), tuple(self._final_row(row, used) for row in rows)
 
     def _judge(
@@ -216,7 +218,7 @@ class EvidenceSelector:
         if any(row is item for item in used):
             reason = self._below_threshold(row.score) if row.nearest else ""
             return Considered(row.ref, row.score, EvidenceDecision.USED, reason)
-        reason = EvidenceReason.OVER_LIMIT.format(limit=EvidenceLimits.PER_THREAT)
+        reason = EvidenceReason.OVER_LIMIT.format(limit=self._kept)
         return Considered(row.ref, row.score, EvidenceDecision.OVER_LIMIT, reason)
 
     def _below_threshold(self, score: float) -> str:

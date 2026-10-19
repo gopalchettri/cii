@@ -8,7 +8,6 @@ from app.core.constants import (
     Applicability,
     AssetType,
     EvidenceDecision,
-    EvidenceLimits,
     EvidenceRole,
     EvidenceSearchFailure,
     IntelSource,
@@ -42,10 +41,13 @@ def finder_of(
     threshold: float = 1.0,
     embeddings=None,
     candidates: int = 6,
+    kept_per_threat: int = 3,
 ):
     embeddings = embeddings or TextEmbeddings()
     index = build_index(build_corpus(docs), embeddings, rerank or ScoredBy(), "rr-model")
-    return EvidenceFinder(lambda: index, threshold, gate=RerankGate(2), candidates=candidates), embeddings
+    return EvidenceFinder(
+        lambda: index, threshold, gate=RerankGate(2), candidates=candidates, kept_per_threat=kept_per_threat
+    ), embeddings
 
 
 def one(finder: EvidenceFinder, request: Any, *, stale: bool = False):
@@ -72,6 +74,14 @@ def test_the_finder_reranks_at_most_its_candidates() -> None:
         finder, _ = finder_of(docs, candidates=candidates)
         result, _ = one(finder, request_of())
         assert len(result.search.considered) == min(candidates, len(docs))
+
+
+def test_the_finder_keeps_at_most_its_kept_count_and_marks_the_rest_over_limit() -> None:
+    docs = [technique_doc(f"T{n}") for n in range(1, 5)]
+    finder, _ = finder_of(docs, kept_per_threat=2)
+    result, _ = one(finder, request_of())
+    over = [c for c in result.search.considered if c.decision == EvidenceDecision.OVER_LIMIT]
+    assert len(result.evidence) == 2 and len(over) == 2 and "2 places" in over[0].reason
 
 
 def test_the_audit_names_the_query_the_snapshot_the_threshold_and_the_rerank_model() -> None:
@@ -104,7 +114,7 @@ def test_only_the_best_few_are_used_and_the_rest_are_over_the_limit() -> None:
     docs = [technique_doc(f"T{n}") for n in range(1, 7)]
     scores = {f"Technique T{n}": 100.0 - n for n in range(1, 7)}
     result, _ = one(finder_of(docs, ScoredBy(scores))[0], request_of())
-    assert [item.ref for item in result.evidence] == ["T1", "T2", "T3"][: EvidenceLimits.PER_THREAT]
+    assert [item.ref for item in result.evidence] == ["T1", "T2", "T3"]
     over = [c.ref for c in result.search.considered if c.decision == EvidenceDecision.OVER_LIMIT]
     assert over == ["T4", "T5", "T6"]
 
@@ -153,7 +163,7 @@ def test_a_technique_has_no_applicability_and_a_known_version_confirms_only_insi
 
 def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     empty = empty_index(TextEmbeddings(), ScoredBy())
-    finder = EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1), candidates=6)
+    finder = EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1), candidates=6, kept_per_threat=3)
     result, summary = one(finder, request_of())
     assert result.evidence == () and result.search.snapshot_id is None and result.search.considered == ()
     assert (summary.snapshot_id, summary.threats_searched, summary.source_versions) == (None, 0, {})
@@ -171,7 +181,9 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
 def test_a_settled_empty_index_finds_no_evidence_and_is_no_outage() -> None:
     """Searched and nothing found: the path is written without evidence, never held back."""
     empty = empty_index(TextEmbeddings(), ScoredBy(), settled=True)
-    result, _ = one(EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1), candidates=6), request_of())
+    result, _ = one(
+        EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1), candidates=6, kept_per_threat=3), request_of()
+    )
     search = result.search
     assert (result.evidence, search.snapshot_id, search.failure) == ((), EMPTY_SNAPSHOT_ID, None)
     assert evidence_problem({"intel_search": search.as_doc(), "evidence": []}) is None
