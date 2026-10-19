@@ -16,11 +16,13 @@ from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
     Collection,
+    Decision,
     ErrorCode,
     Lease,
     PlanMessage,
     RunActionKind,
     RunActionOutcome,
+    ScenarioStatus,
     Status,
     Step,
     TaskName,
@@ -43,7 +45,6 @@ from app.domain.scenario.plan import (
 from app.domain.scenario.write import held_repeat_of
 from app.models.scenario.plan import AttackPath, PlannedThreat, ThreatFindings
 from app.worker import jobs
-from app.worker.scenario import plan_job as plan_job_module
 from app.worker.scenario.plan_job import PLAN_JOB_FIELDS, PlanJob
 from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
 
@@ -295,12 +296,34 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
 def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_nothing_to_write(
     monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
 ) -> None:
-    """Every path repeats a held scenario: none is planned, the run ends complete, no writer job is queued."""
-    monkeypatch.setattr(plan_job_module, "held_repeat_of", lambda path, threat, held: "held-scenario")
+    """An earlier run of the asset holds a scenario on each path (one matched by key, one by name only): the
+    second run plans none of them, ends complete, and queues no writer job."""
+    monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     chat = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
     plan = _plan_job(finder(chat))
+    earlier = _queued_run()
+    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, earlier, 1, plan, fields=PLAN_JOB_FIELDS)
+    first = _stored_run(earlier)
+    sessions, scenarios = get_mongodb()[Collection.SESSIONS], get_mongodb()[Collection.SCENARIOS]
+    sessions.update_one({"_id": earlier}, {"$set": {"status": Status.DONE, "active": False}})
+    names = {threat["key"]: threat["name"] for threat in first["plan"]["threats"]}
+    assert len(first["plan"]["paths"]) == 2
+    for number, path in enumerate(first["plan"]["paths"]):
+        key = path["steps"][0]
+        threat = {"key": key} if number == 0 else {"key": "ai:other", "name": names[key]}
+        systems = [{"id": system_id} for system_id in path["systems"]]
+        held = {"session_id": earlier, "entity_id": first["entity_id"], "asset_id": first["asset_id"]}
+        held |= {"_id": uuid.uuid4().hex, "path_id": path["path_id"], "superseded_by": None}
+        held |= {"status": ScenarioStatus.DONE, "decision": Decision.PENDING}
+        held |= {"content": {"threat": threat, "category": path["category"], "systems": systems}}
+        scenarios.insert_one(held)
+    sent.clear()
     record_id = _queued_run()
-    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
+    sessions.update_one({"_id": record_id}, {"$set": {"asset_id": first["asset_id"]}})
+    try:
+        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
+    finally:  # bare cards: an entity's scenario list in a later test would trip on them
+        scenarios.delete_many({"session_id": earlier})
     run = _stored_run(record_id)
     assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.COMPLETE)
     assert run["plan"]["paths"] == [] and len(run["plan"]["threats"]) == 2 and sent == []

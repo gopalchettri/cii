@@ -156,6 +156,18 @@ def test_a_path_repeating_a_held_scenario_is_given_up_before_the_ai_and_a_spare_
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
 
 
+def test_a_reserve_the_scenario_count_left_out_comes_before_a_later_sets_path(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
+    """A limit of 3 and a set of 2: p1 is given up; p4, left out by the count, takes its place, not p3 (a
+    later set's path, though better ranked), so 3 stay selected and p3 still waits for its set."""
+    _mismatched_for_threats_named(chat, "Wrong")
+    record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=3, first_set=2)
+    _deliver_until_done(record_id)
+    _, paths = _plan(record_id)
+    assert (paths["p1"]["replaced_by"], paths["p4"]["replaces"]) == ("p4", "p1") and paths["p4"]["served"]
+    assert paths["p3"]["selected"] and not paths["p3"]["served"]
+    assert sum(path["selected"] for path in paths.values()) == 3
+
+
 def test_with_no_limit_a_rejected_path_is_replaced_by_the_next_sets_best_path(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """No reserve exists when every path is selected: the next set's best open path takes the blocked one's
     place, so the set is complete and the blocked path is not counted as one that could not be written."""

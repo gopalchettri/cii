@@ -174,7 +174,8 @@ Hand-written scenarios are slow, generic, duplicated and not tied to real threat
  · Every job: record saved first, then sent; a lease and epoch fence each write.
  · Outage → retry after 15/30/60/120 s, up to 5 tries; the reaper re-sends lost jobs, ends dead ones.
  · Broken AI reply → retry; on the last try carry on with what was checked; nothing checked → "AI unavailable".
- · Blocked draft → tried again later in the set (up to 5); then a spare path; a duplicate is given up at once.
+ · Blocked draft → given up at once; a spare path takes its place (from the next set if none is left).
+ · A path the asset already holds → never planned; one held since planning → given up before any AI call.
  · SQL write → operation record first; a lost answer is replayed, never guessed.
  · Cancel/delete → fenced writes stop running jobs; the controls sweep settles what is left.
 ```
@@ -280,6 +281,10 @@ API change.
    The check reads the database right before each save. Saves run one at a time per batch, and there
    is one active session per asset.
 
+   The same rule runs twice earlier, with no AI call: the planner drops every path the asset already
+   holds before it picks the set, and the write job gives up a path that repeats a scenario held now
+   before its evidence search. A given-up path's spare may come from the next set.
+
 **Features removed in this round (owner, 2026-10-18)**
 | Removed | What remains |
 |---|---|
@@ -351,6 +356,7 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | D7 | Code writes the one evidence citation; the AI writes no marker (owner, 2026-10-19, after the end-to-end test showed 9 of 12 drafts citing evidence wrongly) |
 | D8 | Nearest evidence when none meets the threshold, said as "related"; a scenario is never blocked for missing evidence (owner, 2026-10-19) |
 | D9 | mypy runs inside the test suite (tests/test_types.py, warn_unused_ignores), so a type error fails the tests like any other (owner, 2026-10-19) |
+| D10 | Never plan or write a path the asset already holds; a spare may come from the next set (session 72a02461 planned 12, wrote 1 and gave up 5: 4 repeats found only after the AI wrote them, 1 with no spare left) |
 
 ## 6. Not in this round (backlog, one at a time after the re-architecture)
 1. Scenario regenerate has no version cap: AI cost is unbounded.
@@ -358,7 +364,6 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 3. Monitoring pages (Grafana, Prometheus, Flower) have no login.
 4. An approved threat without a category disappears from the app.
 5. An intelligence import shows "done" even when every source failed.
-6. A same-path duplicate is found only after the AI writes it; checking first would save AI cost.
 
 ## 7. Build plan and progress
 | Step | What | Status |
