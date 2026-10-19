@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import numpy as np
 
 from app.ai import EmbeddingModel, RerankModel
-from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, IntelMessage, IntelSource
+from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, IntelKind, IntelMessage, IntelSource
 from app.models.external_intelligence.evidence import IntelHit
 from app.models.external_intelligence.evidence_corpus import EvidenceCorpus
 from app.search.indexes import HybridIndex
@@ -28,11 +28,22 @@ _INDICATOR = re.compile(
     re.IGNORECASE,
 )
 _SPACES = re.compile(r"\s+")
+_LABELS_TAIL = re.compile(r"\s*(?:Tactics|Platforms|Mitigations): .*$", re.DOTALL)
 
 
 def remove_indicators(text: str) -> str:
     """The text without indicators, spaces collapsed."""
     return _SPACES.sub(" ", _INDICATOR.sub(" ", text)).strip()
+
+
+def scoring_text(hit: IntelHit) -> str:
+    """What the reranker reads of a record: a technique's name and description only. Its id and its Tactics /
+    Platforms / Mitigations lists let records that share only those words outscore the right one (36-threat
+    benchmark, 2026-10-19); other kinds are read whole."""
+    text = remove_indicators(hit.text)
+    if hit.kind != IntelKind.TECHNIQUE:
+        return text
+    return _LABELS_TAIL.sub("", text.removeprefix(f"{hit.external_id} "))
 
 
 class EvidenceIndexRefused(Exception):
@@ -128,9 +139,7 @@ class EvidenceIndex:
         caller decides what a low score means."""
         if not hits:
             return []
-        scores = self._rerank.score_relevance(
-            remove_indicators(query), [remove_indicators(hit.text) for hit in hits]
-        )
+        scores = self._rerank.score_relevance(remove_indicators(query), [scoring_text(hit) for hit in hits])
         scored = [replace(hit, score=score) for hit, score in zip(hits, scores, strict=True)]
         return sorted(scored, key=lambda hit: (-hit.score, hit.external_id))
 

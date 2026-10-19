@@ -148,6 +148,15 @@ def test_all_searches_of_a_batch_are_embedded_in_one_call_and_an_unanswerable_on
     assert _ids(answers[0]) == ["T1"] and answers[2] == []
 
 
+def test_the_reranker_reads_a_techniques_name_and_description_without_its_id_or_labels() -> None:
+    rerank = ScoredBy()
+    index, _ = _index([technique_doc("T1"), vulnerability_doc("CVE-1", "V", "P")], rerank)
+    index.score_candidates(QUERY, index.corpus.hits)
+    documents = dict(zip((hit.external_id for hit in index.corpus.hits), rerank.calls[0][1], strict=True))
+    assert documents["T1"] == "Technique T1. ransomware encrypts files"  # no "T1 " id, no "Tactics: impact."
+    assert documents["CVE-1"].startswith("CVE-1 ")  # other kinds are read whole
+
+
 def test_scores_are_the_rerankers_0_to_100_best_first_and_keep_every_hit() -> None:
     rerank = ScoredBy({"Technique T1": 20.0, "Technique T2": 80.0})
     index, _ = _index([technique_doc("T1"), technique_doc("T2")], rerank)

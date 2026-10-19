@@ -266,7 +266,7 @@ class RecordedFields:
 
 
 #: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on (scripts/calibrate_evidence_threshold.py).
-EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, str]] = {"bge-reranker-v2-m3": "2026-10-12"}
+EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, str]] = {"bge-reranker-v2-m3": "2026-10-19"}
 
 
 class EvidenceSettingMessage(StrEnum):
