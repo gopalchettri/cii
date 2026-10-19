@@ -413,6 +413,75 @@ def test_a_regenerated_copy_of_another_path_is_kept_hidden_and_the_old_version_s
 
 
 @pytest.mark.usefixtures("sent")
+def test_ten_generations_keep_one_current_version_and_every_older_one_in_its_history(
+    client: TestClient, api_key: str, queued: list[tuple[Any, ...]], fake_chat: Any
+) -> None:
+    """Owner 2026-10-19: generated once, then regenerated 9 times, a scenario has 10 versions: one current,
+    the 9 older ones each superseded by the next and all in its history, newest first, none lost or repeated.
+    A refused try (a near copy, kept hidden), an unreadable one and a second call while a job waits each
+    change nothing, and the next try goes on from the current version."""
+    record_id = _written_run(["Threat 1", "Threat 2"])
+    writes = fake_chat.responders[AiTask.WRITE_SCENARIO]
+    other = _scenarios().find_one({"_id": scenario_id(record_id, "p2", 1)})
+    copied = {"scenario_statement": other["content"]["statement"]}
+    current, epoch = scenario_id(record_id, "p1", 1), 1
+
+    def versions() -> list[dict[str, Any]]:
+        return list(_scenarios().find({"session_id": record_id, "path_id": "p1"}).sort("version", 1))
+
+    def kept() -> list[tuple[str, Any]]:
+        """The written versions and what each was superseded by: what a try that fails must leave alone."""
+        return [
+            (doc["_id"], doc["superseded_by"]) for doc in versions() if doc["status"] == ScenarioStatus.DONE
+        ]
+
+    def regenerate(writer: Any) -> None:
+        nonlocal epoch
+        fake_chat.responders[AiTask.WRITE_SCENARIO] = writer
+        assert _regenerate(client, api_key, record_id, [current]).status_code == 202
+        epoch += 1
+        if epoch == 9:  # a second call while the job waits is refused and writes nothing
+            busy = _regenerate(client, api_key, record_id, [current])
+            assert (busy.status_code, busy.json()["reason"]) == (409, ConflictReason.GENERATION_IN_PROGRESS)
+        _deliver(record_id, epoch)
+
+    for version in range(2, 11):
+        if version in (4, 7):  # refused as a near copy of p2 (kept hidden), then an unreadable answer
+            before = kept()
+            regenerate(
+                (lambda prompt: _answer_for(prompt) | copied)
+                if version == 4
+                else lambda _: {"scenario_title": "x"}
+            )
+            assert kept() == before
+            assert _scenarios().find_one({"_id": current})["regenerate_error"] is not None
+            refused = _scenarios().find_one({"_id": scenario_id(record_id, "p1", version)})
+            assert (refused or {}).get("status") == (ScenarioStatus.BLOCKED if version == 4 else None)
+        regenerate(writes)
+        new = _scenarios().find_one({"_id": scenario_id(record_id, "p1", version)})
+        assert (new["status"], new["replaces"], new["superseded_by"]) == (ScenarioStatus.DONE, current, None)
+        assert _scenarios().find_one({"_id": current})["superseded_by"] == new["_id"]
+        assert [doc for doc, after in kept() if after is None] == [new["_id"]]  # one current version
+        current = new["_id"]
+
+    written = versions()
+    assert [doc["version"] for doc in written] == list(range(1, 11))  # the hidden refused card was replaced
+    assert all(doc["status"] == ScenarioStatus.DONE for doc in written)
+    assert [doc["superseded_by"] for doc in written] == [doc["_id"] for doc in written[1:]] + [None]
+    shown = client.get(
+        f"/v1/sessions/{record_id}/results", params={"include_replaced": True}, headers=_identity(api_key)
+    ).json()["scenarios"]
+    [card] = [item for item in shown if item["scenario_id"] in {doc["_id"] for doc in written}]
+    assert card["scenario_id"] == current
+    assert [old["version"] for old in card["replaced_scenarios"]] == list(range(9, 0, -1))
+    assert [old["scenario_id"] for old in card["replaced_scenarios"]] == [
+        doc["_id"] for doc in written[-2::-1]
+    ]
+    one = client.get(f"/v1/sessions/{record_id}/scenarios/{current}", headers=_identity(api_key)).json()
+    assert [old["version"] for old in one["replaced_scenarios"]] == list(range(9, 0, -1))  # one, in full
+
+
+@pytest.mark.usefixtures("sent")
 def test_a_copy_of_another_paths_accepted_older_version_is_kept_hidden(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]], fake_chat: Any
 ) -> None:

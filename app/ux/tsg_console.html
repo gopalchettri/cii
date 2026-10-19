@@ -1147,10 +1147,11 @@ $(function () {
       body = '<p class="muted">The writer could not produce this scenario' + (s.threat && s.threat.threat_name ? " for <b>" + esc(s.threat.threat_name) + "</b>" : "") +
              '.</p><div class="callout warn"><code>' + esc(f.code || "failed") + "</code> " + esc(f.message || "") + "</div>";
     } else {
-      var rep = scnReplacesAccepted(s), prev = scnPrev(s);
+      var rep = scnReplacesAccepted(s), prev = scnPrev(s), more = (s.replaced_scenarios || []).length - 1;
       body = (scnReplaces(s) ? '<div class="callout info">Version ' + esc(s.version) + " of this scenario" +
                (rep ? ": the accepted version " + esc(rep.version) + " stays until you accept this one as its replacement." :
-                prev ? " (replaces version " + esc(prev.version) + ")." : ".") + "</div>" : "") +
+                prev ? " (replaces version " + esc(prev.version) + (more > 0 ? "; " + more + " earlier version" + (more === 1 ? "" : "s") +
+                  " in Details" : "") + ")." : ".") + "</div>" : "") +
              (s.regenerate_error ? '<div class="callout warn">Last regenerate failed: <code>' + esc(s.regenerate_error.code) + "</code> " +
                esc(s.regenerate_error.message || "") + "</div>" : "") +
              '<div class="lbl">Threat Scenario</div>' + scnClamp(id, "s", x.scenario_statement, s) + evList(s) +
@@ -1164,6 +1165,19 @@ $(function () {
     return '<div class="' + cls + '" data-id="' + attr(id) + '"><div class="sc-h"><h3>' + esc(scnTitle(s)) + "</h3>" +
            '<div class="meta">' + (scnMem().regen[id] ? '<span class="badge blue"><span class="scn-spin"></span>Regenerating…</span>' : "") +
            '</div></div><div class="sc-b">' + body + '</div><div class="sc-f">' + scnFooter(s, st) + "</div></div>";
+  }
+
+  // Every version of the scenario, oldest first (the API sends replaced_scenarios newest first), then this one.
+  function scnHistory(s, sec) {
+    var older = (s.replaced_scenarios || []).slice().reverse();
+    if (!older.length) return "";
+    function row(v, now) {
+      var st = scnStatus(v), shown = now ? "current" : st === "pending" ? "replaced" : st + ", replaced";
+      return "<tr><td>Version " + esc(v.version) + "</td><td>" + esc(scnText(v).scenario_title || "") + "</td><td>" + esc(shown) +
+        "</td><td>" + esc(fmtTime(v.created_at)) + "</td></tr>";
+    }
+    return sec("Version history", '<table class="tbl"><thead><tr><th>Version</th><th>Title</th><th>State</th><th>Written</th></tr></thead><tbody>' +
+      older.map(function (v) { return row(v, false); }).join("") + row(s, true) + "</tbody></table>");
   }
 
   function scnDetails(s) {
@@ -1187,6 +1201,7 @@ $(function () {
             sys.map(function (y) { return "<tr><td>" + esc(y.supporting_system) + "</td><td>" + (y.is_applicable === false ? "no" : "yes") + "</td><td>" + (y.is_entry_point ? "yes" : "") + "</td><td>" + esc(y.justification || "") + "</td></tr>"; }).join("") + "</tbody></table>"
             : '<p class="faint">None listed</p>')
         : "") +
+      scnHistory(s, sec) +
       sec("Threat", kv([["Category", val(x.threat_category ? x.threat_category + ((x.contributing_categories || []).length ? " (also " + x.contributing_categories.join(", ") + ")" : "") : null)],
                         ["Type", val(t.threat_type)], ["Name", val(t.threat_name)],
                         ["Origin", val(t.is_threat_ai_generated ? "Proposed by the AI (gap fill, stage 2.7)" : t.threat_catalogue_id != null ? "Library threat " + t.threat_catalogue_id : null)]])) +

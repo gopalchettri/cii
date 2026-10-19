@@ -262,13 +262,13 @@ class ThreatScenarioService:
         return plan_trace_view(run.session_id, record["plan_trace"], paths)
 
     def get_threat_scenario(self, session_id: str, scenario_id: str) -> ScenarioView:
-        """One scenario of the run; 404 when it is not in the run."""
+        """One scenario of the run in full, with every version it replaced; 404 when it is not in the run."""
         record = self._scenarios.get(fields="shown", _id=scenario_id, session_id=session_id, served=True)
         if record is None:
             raise NotFound(
                 SessionMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id, session_id=session_id)
             )
-        return self._scenario_views([record], include_replaced=False)[0]
+        return self._scenario_views([record], include_replaced=True)[0]
 
     def list_threat_scenarios_of_entity(
         self, principal: Principal, entity_id: int, decision: Decision | None, offset: int, limit: int
