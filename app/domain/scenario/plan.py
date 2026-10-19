@@ -7,7 +7,7 @@ import hashlib
 import itertools
 import json
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
@@ -1003,24 +1003,36 @@ def select_up_to_target(paths: list[dict[str, Any]], max_scenarios: int) -> list
     ]
 
 
-def build_plan(findings: ThreatFindings, target: int) -> dict[str, Any]:
-    """The plan the run freezes: every threat once, its paths ranked and the `target` (TOTAL_SCENARIO_COUNT,
-    0 = no cap) best selected."""
+#: Whether a path (its record, its plan threat) repeats a scenario the asset already holds.
+CoveredPath = Callable[[dict[str, Any], dict[str, Any]], bool]
+
+
+def build_plan(
+    findings: ThreatFindings, target: int, covered: CoveredPath = lambda _path, _threat: False
+) -> dict[str, Any]:
+    """The plan the run freezes: every threat once, its paths ranked, those `covered` dropped, and the
+    `target` (TOTAL_SCENARIO_COUNT, 0 = no cap) best selected."""
     grouped = _group_by_attack(findings.threats)
     also_applies = {attack_path_id(path): others for path, others in grouped}
-    ranked = rank_paths(path for path, _ in grouped)
-    records = [
-        _path_record(path, rank, findings.category_ids, also_applies[attack_path_id(path)])
-        for rank, path in enumerate(ranked, start=1)
+    threats = [
+        planned_threat_record(threat)
+        | {"category_id": findings.category_ids.get(threat.categories[0].lower())}
+        for threat in findings.threats
     ]
+    by_key = {threat["key"]: threat for threat in threats}
+    records = [
+        _path_record(path, 0, findings.category_ids, also_applies[attack_path_id(path)])
+        for path in rank_paths(path for path, _ in grouped)
+    ]
+    fresh = [record for record in records if not covered(record, by_key[record["steps"][0]])]
+    if len(fresh) < len(records):
+        log.info(LogEvent.PLANNER_COVERED_PATHS_DROPPED, dropped=len(records) - len(fresh))
+    for rank, record in enumerate(fresh, start=1):
+        record["rank"] = rank
     return {
         "prompt_version": PLANNER_PROMPT_VERSION,
-        "threats": [
-            planned_threat_record(threat)
-            | {"category_id": findings.category_ids.get(threat.categories[0].lower())}
-            for threat in findings.threats
-        ],
-        "paths": select_up_to_target(records, target),
+        "threats": threats,
+        "paths": select_up_to_target(fresh, target),
         "target": target,
         "not_assessed": [],  # ponytail: old pods read it during a rolling update; drop next release
     }
@@ -1099,7 +1111,10 @@ def why_no_path_left(paths: Iterable[dict[str, Any]]) -> ConflictReason:
     paths = list(paths)
     if any(path["selected"] and path["abandoned"] for path in paths):
         return ConflictReason.SCENARIOS_ABANDONED
-    if any(not path["selected"] for path in paths):
+    replaced = (
+        UnselectedReason.REPLACED_AFTER_FAILURE
+    )  # a spare took its place: no scenario count left it out
+    if any(not path["selected"] and path.get("unselected_reason") != replaced for path in paths):
         return ConflictReason.TARGET_REACHED
     return ConflictReason.NOTHING_LEFT
 
@@ -1118,18 +1133,22 @@ def set_summary(in_set: list[dict[str, Any]], paths: list[dict[str, Any]], outco
 
 
 def best_reserve(
-    paths: Iterable[dict[str, Any]], threats: dict[str, dict[str, Any]]
+    paths: Iterable[dict[str, Any]], threats: dict[str, dict[str, Any]], in_set: Collection[str]
 ) -> dict[str, Any] | None:
-    """The best-ranked path the scenario count left out, to write in a failed path's place: only one whose
-    attacker is supported."""
-    reserves = (
+    """The best-ranked path to write in a failed path's place, only one whose attacker is supported: one the
+    scenario count left out, else a later set's open path (selected, not in `in_set`)."""
+    writable = [path for path in paths if _attributable(_threat_of(path, threats))]
+    left_out = [
         path
-        for path in paths
-        if not path["selected"]
-        and path.get("unselected_reason") == UnselectedReason.TARGET_REACHED
-        and _attributable(_threat_of(path, threats))
-    )
-    return min(reserves, key=lambda path: path["rank"], default=None)
+        for path in writable
+        if not path["selected"] and path.get("unselected_reason") == UnselectedReason.TARGET_REACHED
+    ]
+    later = [
+        path
+        for path in writable
+        if path["selected"] and is_still_to_write(path) and path["path_id"] not in in_set
+    ]
+    return min(left_out or later, key=lambda path: path["rank"], default=None)
 
 
 def budget_left(set_paths: Iterable[dict[str, Any]]) -> bool:

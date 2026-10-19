@@ -19,18 +19,25 @@ from app.core.constants import (
 )
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
-from app.domain.scenario.plan import ThreatFinder, build_plan, set_and_first_batch
+from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
+from app.domain.scenario.plan import CoveredPath, ThreatFinder, build_plan, set_and_first_batch
+from app.domain.scenario.write import held_repeat_of
 from app.models.scenario.asset_context import FrozenContext
 from app.worker.jobs import hand_over
 
 log = structlog.get_logger(__name__)
 
+#: What the plan job reads of its run when it claims it.
+PLAN_JOB_FIELDS = ("context", "entity_id", "asset_id")
+
 
 class PlanJob:
     """Plans threat scenario sessions; long-lived, one per worker."""
 
-    def __init__(self, threat_finder: ThreatFinder, switch: IntelligenceSwitch) -> None:
-        self._threat_finder, self._switch = threat_finder, switch
+    def __init__(
+        self, threat_finder: ThreatFinder, switch: IntelligenceSwitch, scenarios: ThreatScenarioRepository
+    ) -> None:
+        self._threat_finder, self._switch, self._scenarios = threat_finder, switch, scenarios
 
     def plan_threat_scenario_session(self, lease: JobLease) -> None:
         """Plan the run and hand its first set to the write job in one fenced write; a plan with no path ends
@@ -40,7 +47,7 @@ class PlanJob:
         country = get_settings().context_country if self._switch.is_on() else ""  # a fact, ranks nothing
         last_attempt = lease.attempts >= Lease.MAX_ATTEMPTS
         findings = self._threat_finder.find_threats(context, country, last_attempt=last_attempt)
-        plan = build_plan(findings, get_settings().total_scenario_count)
+        plan = build_plan(findings, get_settings().total_scenario_count, self._covered_by_held(lease))
         plan |= {"frozen_at": datetime.now(UTC), "made_with": _made_with(findings.library_stamp)}
         selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
         changes = _plan_changes(plan, len(selected), time.perf_counter() - started)
@@ -51,6 +58,14 @@ class PlanJob:
             ended = {"last_action.outcome": RunActionOutcome.COMPLETE} | ended_job_fields(Status.DONE)
             lease.update_job(changes | ended)
         log.info(LogEvent.PLANNER_PLAN_MADE, threats=len(plan["threats"]), paths=len(plan["paths"]))
+
+    def _covered_by_held(self, lease: JobLease) -> CoveredPath:
+        """Whether a path repeats a scenario the asset's other runs hold, so the plan never takes it."""
+        record = lease.record
+        _, held = self._scenarios.list_scenarios_for_duplicate_check(
+            record["entity_id"], record["asset_id"], lease.record_id
+        )
+        return lambda path, threat: held_repeat_of(path, threat, held) is not None
 
 
 def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:

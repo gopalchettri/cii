@@ -969,6 +969,22 @@ def duplicate_of(
     return None
 
 
+def held_repeat_of(
+    path: dict[str, Any], threat: dict[str, Any], held: Iterable[dict[str, Any]]
+) -> str | None:
+    """The id of a held scenario (another path's, or another run's) that `path`, told around `threat`, would
+    repeat as the same path, compared as its written card would be; else None. Asks no AI."""
+    mine = _threat_content(path, threat) | {"systems": [{"id": system_id} for system_id in path["systems"]]}
+    return next(
+        (
+            other["_id"]
+            for other in held
+            if other.get("path_id") != path["path_id"] and _same_path(mine, other["content"])
+        ),
+        None,
+    )
+
+
 def _same_path(mine: dict[str, Any], theirs: dict[str, Any]) -> bool:
     """The same threat (same key or same name) written as the same kind on the same systems."""
     key, name = _threat_key(mine), _threat_name(mine)

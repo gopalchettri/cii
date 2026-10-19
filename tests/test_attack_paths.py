@@ -40,9 +40,11 @@ from app.domain.scenario.plan import (
     describe_asset_for_ai,
     rank_paths,
 )
+from app.domain.scenario.write import held_repeat_of
 from app.models.scenario.plan import AttackPath, PlannedThreat, ThreatFindings
 from app.worker import jobs
-from app.worker.scenario.plan_job import PlanJob
+from app.worker.scenario import plan_job as plan_job_module
+from app.worker.scenario.plan_job import PLAN_JOB_FIELDS, PlanJob
 from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
 
 LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
@@ -155,6 +157,35 @@ def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:
     assert len(build_plan(findings_of(*threats), 5)["paths"]) == 2
 
 
+def test_a_path_repeating_a_held_scenario_is_dropped_before_the_target_and_the_next_is_selected() -> None:
+    """The same threat (by key, or by name) as the same kind on the same systems as a scenario the asset
+    holds never enters the plan; the target fills with the next path and the ranks close up."""
+    threats = [
+        planned("lib:1", "T0001: One", (321,), categories=(S.SPOOFING,), impact=3),
+        planned("lib:2", "Two", (322,), categories=(S.TAMPERING,), impact=2),
+        planned("ai:3", "Three", (323,), categories=(S.TAMPERING,), impact=2),
+        planned("lib:4", "Four", (324,), categories=(S.TAMPERING,), impact=1),
+    ]
+
+    def held_card(threat: dict[str, str], category: S, systems: list[int]) -> dict[str, Any]:
+        content = {"threat": threat, "category": category, "systems": [{"id": s} for s in systems]}
+        return {"_id": f"held-{len(held)}", "content": content}
+
+    held: list[dict[str, Any]] = []
+    held.append(held_card({"key": "lib:1"}, S.SPOOFING, [321]))  # by key
+    held.append(held_card({"key": "ai:old", "name": "three"}, S.TAMPERING, [323]))  # by name
+    held.append(held_card({"key": "lib:2"}, S.SPOOFING, [322]))  # another kind
+    held.append(held_card({"key": "lib:4"}, S.TAMPERING, []))  # other systems
+    plan = build_plan(
+        findings_of(*threats), 1, lambda path, threat: held_repeat_of(path, threat, held) is not None
+    )
+    assert [(p["steps"], p["rank"], p["selected"]) for p in plan["paths"]] == [
+        (["lib:2"], 1, True),
+        (["lib:4"], 2, False),
+    ]
+    assert [threat["key"] for threat in plan["threats"]] == ["lib:1", "lib:2", "ai:3", "lib:4"]  # all listed
+
+
 def _queued_run(attempts: int = 0) -> str:
     """A run waiting for its threats job, on an asset of its own (one active run per asset)."""
     record_id, now = uuid.uuid4().hex, datetime.now(UTC)
@@ -190,6 +221,12 @@ def _stored_run(record_id: str) -> dict[str, Any]:
     return run
 
 
+def _plan_job(threat_finder: Any) -> Any:
+    """The plan job as the app builds it, planning with `threat_finder`."""
+    switch, scenarios = container.get_intelligence_switch(), container.get_threat_scenario_repository()
+    return PlanJob(threat_finder, switch, scenarios).plan_threat_scenario_session
+
+
 def _threats_task() -> Any:
     return SimpleNamespace(
         name=TaskName.FIND_THREATS, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None
@@ -211,10 +248,10 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     write stage's set and batch; the other waits for a next set."""
     monkeypatch.setattr(get_settings(), "initial_set_size", 1)
     chat = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
-    plan = PlanJob(finder(chat), container.get_intelligence_switch()).plan_threat_scenario_session
+    plan = _plan_job(finder(chat))
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
+    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
     assert (run["status"], run["step"], run["active"]) == (Status.QUEUED, Step.SCENARIOS, True)
     assert (run["job"]["task"], run["job"]["epoch"], run["job"]["attempts"]) == (
@@ -239,10 +276,10 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
 ) -> None:
     """Nothing applies: the run is done in the same write; no writer job is queued for nothing."""
     chat = planner_chat({})
-    plan = PlanJob(finder(chat), container.get_intelligence_switch()).plan_threat_scenario_session
+    plan = _plan_job(finder(chat))
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     record_id = _queued_run()
-    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
+    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
     assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
         Status.DONE,
@@ -255,16 +292,30 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
     assert sent == []
 
 
+def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_nothing_to_write(
+    monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
+) -> None:
+    """Every path repeats a held scenario: none is planned, the run ends complete, no writer job is queued."""
+    monkeypatch.setattr(plan_job_module, "held_repeat_of", lambda path, threat, held: "held-scenario")
+    chat = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
+    plan = _plan_job(finder(chat))
+    record_id = _queued_run()
+    jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
+    run = _stored_run(record_id)
+    assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.COMPLETE)
+    assert run["plan"]["paths"] == [] and len(run["plan"]["threats"]) == 2 and sent == []
+
+
 def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(
     sent: list[tuple[Any, ...]],
 ) -> None:
     """Not one gate reply usable on the job's last attempt: the run fails unavailable, never "none apply"."""
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = lambda _: {"verdicts": "?"}
-    plan = PlanJob(finder(chat), container.get_intelligence_switch()).plan_threat_scenario_session
+    plan = _plan_job(finder(chat))
     record_id = _queued_run(attempts=Lease.MAX_ATTEMPTS - 1)  # the claim makes it the last
     with pytest.raises(Unavailable):
-        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
+        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
     assert (run["status"], run["active"]) == (Status.FAILED, False) and "plan" not in run
     assert run["job"]["error"] == {"code": ErrorCode.UNAVAILABLE, "message": PlanMessage.AI_COULD_NOT_ANSWER}
@@ -275,10 +326,10 @@ def test_a_refused_plan_fails_the_run_with_its_own_code(sent: list[tuple[Any, ..
     """No type links a live actor: the run fails actor_library_empty, frees the asset, is never retried."""
     unlinked = tuple(replace(threat, linked_actors=()) for threat in THREATS)
     refusing = finder(planner_chat({}), threats=unlinked)
-    plan = PlanJob(refusing, container.get_intelligence_switch()).plan_threat_scenario_session
+    plan = _plan_job(refusing)
     record_id = _queued_run()
     with pytest.raises(PlanRefused):
-        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=("context",))
+        jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
     assert run["status"] == Status.FAILED and run["active"] is False and "plan" not in run
     assert run["job"]["error"] == {

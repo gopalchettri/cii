@@ -1,8 +1,9 @@
 """G229 in the write job (owner 2026-10-13: "Reject the invalid candidate and follow the bounded replacement
 policy ... final_scenario_count <= TOTAL_SCENARIO_COUNT"). A path whose scenario is blocked (here by the
 reviewer's mismatch or as a duplicate) is given up at once; with TOTAL_SCENARIO_COUNT N a reserve takes its
-place in the same set, the selected count never grows; with 0 there is no reserve and nothing is padded. The
-job runs on the test MongoDB with the fake chat model."""
+place in the same set, the selected count never grows; with 0 a later set's open path does, and with none left
+nothing is padded. A path repeating a held scenario is given up before any AI call. The job runs on the test
+MongoDB with the fake chat model."""
 
 from typing import Any
 
@@ -18,6 +19,7 @@ from app.core.constants import (
     Generation,
     RunActionOutcome,
     ScenarioStatus,
+    UnselectedReason,
 )
 from app.core.database import get_mongodb
 from tests.fakes import FakeChatModel
@@ -48,6 +50,12 @@ def _plan(record_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     return run, {path["path_id"]: path for path in run["plan"]["paths"]}
 
 
+def _on_the_asset_of(record_id: str, earlier: str) -> None:
+    """Run `record_id` on the asset of run `earlier` (done by now, so the asset is free)."""
+    asset_id = _sessions().find_one({"_id": earlier})["asset_id"]
+    _sessions().update_one({"_id": record_id}, {"$set": {"asset_id": asset_id}})
+
+
 def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     _mismatched_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=2)
@@ -65,7 +73,8 @@ def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: Fake
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
 
 
-def test_with_no_limit_a_rejected_path_is_never_replaced_and_nothing_is_padded(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
+def test_with_no_limit_and_every_path_in_the_set_a_rejected_path_is_not_replaced(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
+    """No reserve and no later set's path: nothing is padded, the set ends partial."""
     _mismatched_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3"])
     _deliver_until_done(record_id)
@@ -101,25 +110,64 @@ def test_a_duplicate_is_kept_hidden_given_up_and_replaced(chat: FakeChatModel) -
 
 def test_a_second_run_of_the_asset_never_copies_what_the_first_run_holds(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """6.1c/6.1d (owner 2026-10-17: "Prevent duplicate scenarios ... against existing scenarios in the
-    relevant library or database"): a second run of the asset writes the same paths again, under the same path
-    ids. Each is compared with the first run's scenario of that path, accepted or still to decide, and kept
-    hidden naming it."""
+    relevant library or database"): a second run of the asset planned with the same paths. Each repeats the
+    first run's scenario of that path, accepted or still to decide, so it is given up before any AI call, with
+    no card; with no path left, the set ends partial."""
     first = _queued_run(["Threat 1", "Threat 2"])
     _deliver_until_done(first)
     held = {scenario["path_id"]: scenario["_id"] for scenario in _scenarios_of(first)}
     accepted = {"$set": {"decision": Decision.ACCEPTED}}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": held["p1"]}, accepted)
+    written_by_first = len(chat.asked(AiTask.WRITE_SCENARIO))
     again = _queued_run(["Threat 1", "Threat 2"])
-    _sessions().update_one(
-        {"_id": again}, {"$set": {"asset_id": _sessions().find_one({"_id": first})["asset_id"]}}
-    )
+    _on_the_asset_of(again, first)
     _deliver_until_done(again)
-    copies = _scenarios_of(again)
-    assert [scenario["path_id"] for scenario in copies] == ["p1", "p2"]
-    for scenario in copies:
-        finding = scenario["findings"][-1]
-        assert scenario["status"] == ScenarioStatus.BLOCKED and finding["code"] == FindingCode.NEAR_DUPLICATE
-        assert held[scenario["path_id"]] in finding["message"]
+    run, paths = _plan(again)
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == written_by_first and _scenarios_of(again) == []
+    for path in paths.values():
+        assert (path["abandoned"], path["abandoned_reason"]) == (True, FindingCode.NEAR_DUPLICATE)
+        assert (path["attempts"], path["last_blocker"]) == (0, FindingCode.NEAR_DUPLICATE)
+    assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
+
+
+def test_a_path_repeating_a_held_scenario_is_given_up_before_the_ai_and_a_spare_takes_its_place(
+    chat: FakeChatModel,  # noqa: F811 - the imported fixture
+) -> None:
+    """No limit, a set of 2 of 3 paths: p1 repeats the asset's other run's scenario, so it is given up with no
+    write call and no card, and the next set's p3 is written in its place; the set ends complete."""
+    first = _queued_run(["Threat 1"])
+    _deliver_until_done(first)
+    calls_before = len(chat.asked(AiTask.WRITE_SCENARIO))
+    again = _queued_run(["Threat 1", "Threat 2", "Threat 3"], first_set=2)
+    _on_the_asset_of(again, first)
+    _deliver_until_done(again)
+    run, paths = _plan(again)
+    repeat, spare = paths["p1"], paths["p3"]
+    assert (repeat["selected"], repeat["unselected_reason"]) == (
+        False,
+        UnselectedReason.REPLACED_AFTER_FAILURE,
+    )
+    assert (repeat["abandoned_reason"], repeat["replaced_by"], repeat["attempts"]) == (
+        FindingCode.NEAR_DUPLICATE, "p3", 0,
+    )  # fmt: skip
+    assert spare["replaces"] == "p1" and spare["served"] and paths["p2"]["served"]
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) - calls_before == 2  # p2 and p3 only
+    assert sorted(s["path_id"] for s in _scenarios_of(again)) == ["p2", "p3"]  # no card for p1
+    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
+
+
+def test_with_no_limit_a_rejected_path_is_replaced_by_the_next_sets_best_path(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
+    """No reserve exists when every path is selected: the next set's best open path takes the blocked one's
+    place, so the set is complete and the blocked path is not counted as one that could not be written."""
+    _mismatched_for_threats_named(chat, "Wrong")
+    record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], first_set=2)
+    _deliver_until_done(record_id)
+    run, paths = _plan(record_id)
+    assert (paths["p1"]["selected"], paths["p1"]["replaced_by"]) == (False, "p3")
+    assert paths["p3"]["replaces"] == "p1" and paths["p3"]["served"] and not paths["p4"]["served"]
+    assert sorted(run["job"]["set"]) == ["p1", "p2", "p3"]
+    assert (run["counts"]["abandoned"], run["counts"]["replaced"], run["counts"]["remaining"]) == (0, 1, 1)
+    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE
 
 
 def test_replacements_stop_when_the_sets_write_calls_are_spent(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture

@@ -9,6 +9,7 @@ from app.core.exceptions import TEMPORARY_ERRORS
 from app.data_access.jobs.job_repository import JobLease
 from app.worker.celery_app import celery_app
 from app.worker.jobs import run_leased_job
+from app.worker.scenario.plan_job import PLAN_JOB_FIELDS
 
 
 @celery_app.task(name=TaskName.FIND_THREATS, bind=True)
@@ -19,7 +20,7 @@ def find_threats(self: Task, record_id: str, epoch: int) -> None:
     def plan(lease: JobLease) -> None:
         container.get_plan_job().plan_threat_scenario_session(lease)
 
-    run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan, fields=("context",))
+    run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan, fields=PLAN_JOB_FIELDS)
 
 
 @celery_app.task(name=TaskName.WRITE_SCENARIOS, bind=True)

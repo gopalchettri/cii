@@ -70,7 +70,9 @@ def jobs_faked(
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, lambda _session_id: None)
     monkeypatch.setattr(controls_job, "publish_session_status", lambda _session_id: None)
     planner = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
-    plan = PlanJob(finder(planner), container.get_intelligence_switch())
+    plan = PlanJob(
+        finder(planner), container.get_intelligence_switch(), container.get_threat_scenario_repository()
+    )
     monkeypatch.setattr(container, "get_plan_job", lambda: plan)
     writer = write_job_with(chat, LIBRARY)
     monkeypatch.setattr(container, "get_scenario_write_job", lambda: writer)

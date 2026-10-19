@@ -358,6 +358,13 @@ def test_why_no_path_is_left_to_write() -> None:
     assert why_no_path_left([written]) == ConflictReason.NOTHING_LEFT
     assert why_no_path_left([written, left_out]) == ConflictReason.TARGET_REACHED
     assert why_no_path_left([written, left_out, abandoned]) == ConflictReason.SCENARIOS_ABANDONED
+    replaced = {
+        "selected": False,
+        "served": None,
+        "abandoned": True,
+        "unselected_reason": "replaced_after_failure",
+    }
+    assert why_no_path_left([written, replaced]) == ConflictReason.NOTHING_LEFT  # a spare, not the count
 
 
 def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_heals_the_counts(

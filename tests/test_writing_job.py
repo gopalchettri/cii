@@ -509,8 +509,9 @@ def test_each_saved_scenario_says_which_write_made_it_and_when(
 def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_thread(
     chat: FakeChatModel, sent: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A scenario saved meanwhile is seen and two saves of one batch never race: each save reads the held
-    scenarios itself, one after the other, on the job's thread."""
+    """A scenario saved meanwhile is seen and two saves of one batch never race: the batch reads the held
+    scenarios once before any AI call, then each save reads them itself, one after the other, on the job's
+    thread."""
     scenarios = container.get_threat_scenario_repository()
     read = scenarios.list_scenarios_for_duplicate_check
     threads: list[int] = []
@@ -522,7 +523,7 @@ def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_t
     monkeypatch.setattr(scenarios, "list_scenarios_for_duplicate_check", recorded)
     record_id = _queued_run(["Threat 1", "Threat 2", "Threat 3", "Threat 4"])
     assert _deliver_until_done(record_id) == 1
-    assert threads == [threading.get_ident()] * 4
+    assert threads == [threading.get_ident()] * (1 + 4)
 
 
 @pytest.mark.usefixtures("chat")

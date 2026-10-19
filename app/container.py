@@ -330,7 +330,7 @@ def get_job_service() -> JobService:
 @singleton
 def get_plan_job() -> PlanJob:
     finder = ThreatFinder(get_chat_model(), get_library_search(), get_rerank_model(), get_embedding_model())
-    return PlanJob(finder, get_intelligence_switch())
+    return PlanJob(finder, get_intelligence_switch(), get_threat_scenario_repository())
 
 
 @singleton

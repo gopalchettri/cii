@@ -4,9 +4,14 @@ plan note, then the set's next batch handed over, or the set or the regenerate e
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
+
+from app.core import metrics
 from app.core.constants import (
+    LogEvent,
     RunActionKind,
     RunActionOutcome,
+    ScenarioOutcome,
     ScenarioStatus,
     Status,
     TaskName,
@@ -25,6 +30,8 @@ from app.domain.scenario.plan import (
 )
 from app.realtime.publisher import publish_session_status
 from app.worker.jobs import hand_over
+
+log = structlog.get_logger(__name__)
 
 
 class PlanProgress:
@@ -53,13 +60,17 @@ class PlanProgress:
     def abandon(
         self, path_id: str, state: dict[str, Any], reason: str, threats: dict[str, dict[str, Any]]
     ) -> str | None:
-        """Give a path up for good; when the set's budget allows and a reserve exists, the reserve takes its
-        place in the same fenced write. Return the reserve's id, or None."""
+        """Give a path up for good, logged and counted; when the set's budget allows and a reserve exists, the
+        reserve takes its place in the same fenced write. Return the reserve's id, or None."""
+        log.warning(
+            LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"], reason=reason
+        )
+        metrics.SCENARIOS.labels(ScenarioOutcome.ABANDONED).inc()
         states = {path_id: state | {"abandoned_reason": reason}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
         in_set = [path for key, path in self.paths.items() if key in self._set]
-        reserve = best_reserve(self.paths.values(), threats) if budget_left(in_set) else None
+        reserve = best_reserve(self.paths.values(), threats, self._set) if budget_left(in_set) else None
         if reserve is None:
             self.record(states)
             return None

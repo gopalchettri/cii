@@ -211,6 +211,7 @@ class LogEvent(StrEnum):
     LIBRARY_INDEXES_BUILD_FAILED = "library.indexes_build_failed"
     PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
     PLANNER_PLAN_MADE = "planner.plan_made"
+    PLANNER_COVERED_PATHS_DROPPED = "planner.covered_paths_dropped"  # paths repeating a held scenario
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
