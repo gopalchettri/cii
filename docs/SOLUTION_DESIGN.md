@@ -45,8 +45,8 @@ Hand-written scenarios are slow, generic, duplicated and not tied to real threat
 | F1 | Start a session | asset + systems → the asset's facts are frozen; one active session per asset; a safe retry with Idempotency-Key |
 | F2 | Find threats | the AI checks each library threat that has a linked attacker, per kind of attack; may propose one missing threat; picks the attacker. A broken reply is retried later; on the last try planning carries on with what it could check |
 | F3 | Attack paths | threats grouped by kind of attack + systems, ranked; the first set is written now, more on "Next set"; spares replace failures |
-| F4 | Write scenarios | code prepares the facts → the AI writes → code checks → the AI reviews; a blocked draft is retried later in the set (up to 5), then a spare takes its place; no duplicates; unique titles |
-| F5 | Evidence | on: one search per write (a regenerate searches again); cite at least one or the scenario is not served. Off: cite nothing |
+| F4 | Write scenarios | code prepares the facts → the AI writes → code checks → the AI reviews; a blocked draft is given up at once and a spare takes its place (the writer's own retry is commented out, ready to switch back on); no duplicates; unique titles |
+| F5 | Evidence | on: one search per write (a regenerate searches again); the AI writes no marker, code adds one cited sentence from the entry's own facts; the nearest evidence when none meets the threshold; never blocked for missing evidence. Off: cite nothing |
 | F6 | Map controls | library controls matched to each scenario by search + score; never written by the AI |
 | F7 | Review | accept, reject, regenerate, next set, cancel, delete, propose a threat to the library, read results, live status |
 | F8 | Hand-written scenarios | entered with a remediation request; checked against the library; no AI in the request; the person's own record (needs no evidence, never refused as a duplicate) |
@@ -258,9 +258,16 @@ API change.
 1. **Evidence.** Intelligence counts as on when EXTERNAL_INTELLIGENCE_ENABLED=true **and** the runtime
    switch is on, read once when a write batch starts. If the switch cannot be read, the batch waits and
    retries; it never guesses.
-   - **On:** every AI-written scenario cites at least one evidence entry from an approved source, or it
-     is not served, and a spare path may take its place. Start, next set and regenerate all refuse when
-     intelligence is on but has no data.
+   - **On (owner, 2026-10-19):** every AI-written scenario cites the best evidence from an approved
+     source.
+     - The AI writes no marker. Code adds one sentence built from the cited entry's own facts, e.g.
+       'In real-world attacks, APT41 and FIN8 have used the technique "Valid Accounts" [1].'
+     - **Nearest evidence:** when nothing meets the relevance threshold, the nearest evidence is cited.
+       It is said as "related" and stored with evidence_mode "nearest".
+     - **No record at all:** the scenario is still written, without a citation, and stored with
+       evidence_mode "inferred".
+     - **Outages:** a search that could not be made waits and retries.
+     - Start, next set and regenerate all refuse when intelligence is on but has no data.
    - **Off:** no evidence; any citation or advisory number blocks the draft, including one copied from
      the asset's own facts.
    - Hand-written scenarios, and versions written before a switch change, stay as stored.
@@ -278,7 +285,7 @@ API change.
 |---|---|
 | Attacker balancing and the "closest" actor pool | Settled when planning. A threat whose type links no attacker is not checked, and neither is an AI-proposed one. The attacker is the AI's pick among the linked actors, else the top-ranked linked actor. A hand-written scenario takes its threat's linked actors, else its type's, else the top-ranked actor of the whole library |
 | Coverage report | Results show the session, its progress and its scenarios. The `coverage` field, the given-up explanations and their second reader go. Two messages are reworded |
-| The one rewrite | A draft with a problem is not rewritten. It counts an attempt and the path tries again later in the set (up to 5), then a spare takes its place. Only a duplicate is given up at once. A draft that code already blocked skips the AI reviewer |
+| The one rewrite, and the writer's own retry | A draft with a problem is not rewritten, and is given up at once (owner, 2026-10-19). A spare path takes its place. The retry branch in PathSaver.save is commented out, ready to switch back on (up to MAX_PATH_ATTEMPTS). A draft that code already blocked skips the AI reviewer |
 | Evidence re-search, and the same evidence for every version | One evidence search per write, kept in memory only; evidence stored on old plans is ignored. EVIDENCE_SEARCH_RETRIES is removed |
 | AI answer reuse on retry | A retried job asks the AI again (R3). The AI call log and its index stay |
 | Step-tracing tools | `@traced`, record_detail, core/tracing.py, the console's "How it runs" panel, scripts/replay_run_steps.py. DEBUG_STEP_OUTPUT, DEBUG_STEP_DETAIL and DEBUG_STEP_TOP are removed |
@@ -341,6 +348,9 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | D6 | Not one threat checked after 5 tries: the session fails as "AI unavailable" ("The AI could not answer. Start a new session later."). If at least one was checked, it carries on (owner, 2026-10-18) |
 | R1, R2 | Accepted risks: API keys are not tied to an entity; the intelligence admin routes have no login |
 | R3 | Accepted cost: a broken-reply retry asks the AI again for every planning batch (rare; it shows in tsg_ai_calls_total) |
+| D7 | Code writes the one evidence citation; the AI writes no marker (owner, 2026-10-19, after the end-to-end test showed 9 of 12 drafts citing evidence wrongly) |
+| D8 | Nearest evidence when none meets the threshold, said as "related"; a scenario is never blocked for missing evidence (owner, 2026-10-19) |
+| D9 | mypy runs inside the test suite (tests/test_types.py, warn_unused_ignores), so a type error fails the tests like any other (owner, 2026-10-19) |
 
 ## 6. Not in this round (backlog, one at a time after the re-architecture)
 1. Scenario regenerate has no version cap: AI cost is unbounded.
