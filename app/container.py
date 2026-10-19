@@ -20,6 +20,7 @@ from app.data_access.admin.api_client_repository import ApiClientRepository
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.admin.embedding_repository import EmbeddingRepository
 from app.data_access.admin.query_vector_repository import QueryVectorRepository
+from app.data_access.base import MongoRepository
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.data_access.external_intelligence.intel_snapshot_repository import IntelSnapshotRepository
@@ -378,6 +379,7 @@ def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
     """Every MongoDB index and expiry TSG uses, made at start-up (the API's lifespan, each worker's start):
     idempotent, never on a request or job path, and a failure stops start-up with its reason.
     `job_collections`: the worker's leased-job collections, whose indexes serve the reaper's scans."""
+    repository: MongoRepository
     for repository in (
         get_api_client_repository(),
         get_threat_scenario_session_repository(),

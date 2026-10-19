@@ -19,7 +19,6 @@ from app.core.constants import (
     AiTask,
     Collection,
     ErrorCode,
-    Generation,
     Lease,
     LogEvent,
     RunActionOutcome,
@@ -283,22 +282,22 @@ def test_a_set_is_partial_only_when_one_of_its_paths_was_given_up(older_plan: di
     assert changes["last_action.outcome"] == RunActionOutcome.COMPLETE
 
 
-def test_an_unreadable_path_is_retried_then_abandoned_and_the_run_ends_partial(
+def test_an_unreadable_path_is_abandoned_at_once_and_the_run_ends_partial(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
-    """T-WRT-21 (S25-S26): a visible failure card per attempt; never-tried paths go first; after five
-    attempts the path is abandoned and never written again."""
+    """T-WRT-21 (S25-S26): a visible failure card; the writer's own retry is off, so the path is abandoned
+    after its first attempt and never written again."""
     record_id = _queued_run(["Good threat", "Unreadable threat"])
     failed_before, abandoned_before = _settled("failed"), _settled("abandoned")
-    assert _deliver_until_done(record_id) == Generation.MAX_PATH_ATTEMPTS
-    assert (_settled("failed"), _settled("abandoned")) == (failed_before + 5, abandoned_before + 1)
+    assert _deliver_until_done(record_id) == 1
+    assert (_settled("failed"), _settled("abandoned")) == (failed_before + 1, abandoned_before + 1)
     run = _sessions().find_one({"_id": record_id})
     bad = next(path for path in run["plan"]["paths"] if path["path_id"] == "p2")
-    assert (bad["attempts"], bad["abandoned"], bad["served"]) == (5, True, None)
+    assert (bad["attempts"], bad["abandoned"], bad["served"]) == (1, True, None)
     assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL and run["counts"]["abandoned"] == 1
     card = _scenarios_of(record_id)[1]
     assert (card["status"], card["failure"]["code"]) == (ScenarioStatus.FAILED, ErrorCode.GENERATION_FAILED)
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 1 + 2 * Generation.MAX_PATH_ATTEMPTS
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 1 + 2  # the good path, the unreadable one and its repair
 
 
 def test_a_path_the_plan_cannot_support_is_abandoned_at_once(
@@ -376,10 +375,10 @@ def test_a_retry_after_a_crash_still_sends_the_written_scenarios_controls_messag
     assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 1
 
 
-def test_a_blocked_scenario_is_kept_hidden_and_its_path_tried_again(
+def test_a_blocked_scenario_is_kept_hidden_and_its_path_given_up_at_once(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
-    """T-WRT-10 (S25): a blocked draft hides the scenario and counts as an attempt."""
+    """T-WRT-10 (S25): a blocked draft hides the scenario, counts as an attempt and gives its path up."""
 
     def cites_an_advisory(user_prompt: str) -> dict[str, Any]:
         answer = _answer_for(user_prompt)
@@ -390,10 +389,10 @@ def test_a_blocked_scenario_is_kept_hidden_and_its_path_tried_again(
     _write_batch(JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first"))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[0]["status"] == ScenarioStatus.BLOCKED and "controls" not in stored[0]
-    assert run["plan"]["paths"][0]["attempts"] == 1 and run["counts"]["written"] == 0
-    # the next attempt's card replaces this one (the same id): why it was rejected stays on the path
-    assert run["plan"]["paths"][0]["last_blocker"] == "uncited_advisory_id"
-    assert run["status"] == Status.QUEUED and run["job"]["batch"] == [{"path_id": "p1", "replaces": None}]
+    path = run["plan"]["paths"][0]
+    assert (path["attempts"], path["abandoned"], run["counts"]["written"]) == (1, True, 0)
+    assert path["last_blocker"] == path["abandoned_reason"] == "uncited_advisory_id"
+    assert run["status"] == Status.DONE and run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
 
 
 def _on_last_try(record_id: str) -> JobLease:
@@ -407,7 +406,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
     """Review fix 4: on the job's last try, with another path of the batch written, the outage is that path's
-    own: a failure card and an attempt, and the next batch is handed over; the run no longer fails."""
+    own: a failure card and an attempt, and the path is given up; the run no longer fails."""
 
     def threat_two_times_out(user_prompt: str) -> dict[str, Any]:
         if '"Threat 2"' in user_prompt:
@@ -419,7 +418,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     _write_batch(_on_last_try(record_id))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[1]["failure"]["code"] == ErrorCode.UNAVAILABLE and run["plan"]["paths"][1]["attempts"] == 1
-    assert run["status"] == Status.QUEUED and run["job"]["batch"] == [{"path_id": "p2", "replaces": None}]
+    assert run["plan"]["paths"][1]["abandoned"] and run["status"] == Status.DONE
 
 
 def test_with_no_path_written_an_outage_on_the_last_try_still_fails_the_job(

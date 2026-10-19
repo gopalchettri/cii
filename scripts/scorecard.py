@@ -1,7 +1,8 @@
 """The owner's check of every card a run serves (2026-10-18): an acting attacker the plan listed for its
 threat, the reviewer's verdicts that the scenario tells its threat and the risk its impact, the evidence
-(cited with external intelligence on, none with it off) and no duplicate. Blocked records are listed with
-why, for review. Read-only: no AI call, nothing written.
+(cited with external intelligence on, source-documented or nearest; none with it off, or when none was
+found) and no duplicate. Blocked records are listed with why, for review. Read-only: no AI call, nothing
+written.
 
 From the project folder: .venv\\Scripts\\python scripts\\scorecard.py [run id]   (default: TSG_RUN_ID in
 debug/.env). Exit 1 when any served card fails."""
@@ -47,21 +48,34 @@ def _verdict(card: dict[str, Any], verdict: str, wrong: str) -> str:
     return "" if value else wrong
 
 
+#: The note on a card written with intelligence on when no evidence was found.
+WRITTEN_WITHOUT = "no evidence found: written without"
+
+
 def evidence(card: dict[str, Any]) -> str:
-    """With intelligence on (an evidence story), one or more markers, each naming a stored entry; with it
-    off, no marker and no entry."""
+    """With intelligence on (an evidence story), one or more markers, each naming a stored entry; written
+    without evidence (none found) or with it off, no marker and no entry."""
     from app.core.constants import StoryLimits
     from app.models.external_intelligence.evidence_view import markers_of
 
     content = card["content"]
     cited = set(markers_of(f"{content.get('statement', '')}\n{content.get('risk_statement', '')}"))
     entries = content.get("evidence") or []
+    if evidence_note(card):
+        return f"cites {sorted(cited)} though written without evidence" if cited or entries else ""
     if content.get("prompt_version") != StoryLimits.PROMPT_VERSION:
         return f"cites {sorted(cited)} with intelligence off" if cited or entries else ""
     if not cited:
         return "cites no evidence"
     unknown = sorted(n for n in cited if not 1 <= n <= len(entries))
     return f"markers {unknown} name no stored source" if unknown else ""
+
+
+def evidence_note(card: dict[str, Any]) -> str:
+    """WRITTEN_WITHOUT for a card written with intelligence on and no evidence found (inferred); else ''."""
+    from app.core.constants import EvidenceMode
+
+    return WRITTEN_WITHOUT if card["content"].get("evidence_mode") == EvidenceMode.INFERRED else ""
 
 
 CHECKS: dict[str, Callable[[dict[str, Any]], str]] = {
@@ -123,10 +137,8 @@ def main() -> int:
         faults |= {"duplicate": copies[card["_id"]]} if card["_id"] in copies else {}
         failed += bool(faults)
         name = (card["content"].get("threat") or {}).get("name", "")[:48]
-        print(
-            f"  {'FAIL' if faults else 'pass'}  {name:48}  "
-            + "; ".join(f"{k}: {v}" for k, v in faults.items())
-        )
+        said = "; ".join(f"{k}: {v}" for k, v in faults.items()) or evidence_note(card)
+        print(f"  {'FAIL' if faults else 'pass'}  {name:48}  {said}")
     review = [c for c in cards if c.get("status") != "done"]
     print(f"\n  {len(served) - failed} of {len(served)} served cards pass every check")
     print(f"  {len(review)} record(s) held back for review:")

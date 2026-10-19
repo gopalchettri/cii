@@ -193,9 +193,11 @@ class WriterStyle(StrEnum):
 
 
 class EvidenceMode(StrEnum):
-    """content.evidence_mode: whether the story rests on source documents or is inferred from the asset."""
+    """content.evidence_mode: whether the story rests on source documents, on the nearest related ones, or is
+    inferred from the asset."""
 
     SOURCE_DOCUMENTED = "source-documented"
+    NEAREST = "nearest"  # none met the threshold: the closest records, only related
     INFERRED = "inferred"
 
 
@@ -207,6 +209,9 @@ class Precedent:
     """The one sentence code adds to an evidence story, from its cited entry's own facts."""
 
     USED_BY: Final = 'In real-world attacks, {names} {verb} used the technique "{technique}"'
+    # nearest evidence: only related, and said so
+    USED_RELATED: Final = 'In real-world attacks, {names} {verb} used the related technique "{technique}"'
+    RELATED_RECORD: Final = "A related record: {fact}"
 
 
 class EvidenceBlock:

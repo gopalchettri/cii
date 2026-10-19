@@ -7,12 +7,12 @@ from app.core.exceptions import Conflict
 _WORKING = (Status.QUEUED, Status.RUNNING)
 
 
-def run_job_kind_and_status(status: str, task: str | None) -> tuple[JobKind, str]:
+def run_job_kind_and_status(status: str, task: str | None) -> tuple[JobKind, Status]:
     """A run's job kind and shown status: finding threats or writing scenarios while its job is queued or
     running, else matching its scenarios' controls (shown running)."""
     if status not in _WORKING:
         return JobKind.CONTROLS, Status.RUNNING
-    return (JobKind.THREATS if task == TaskName.FIND_THREATS else JobKind.SCENARIOS), status
+    return (JobKind.THREATS if task == TaskName.FIND_THREATS else JobKind.SCENARIOS), Status(status)
 
 
 def check_run_cancel_stopped_something(session_id: str, job_stopped: bool, controls_cancelled: int) -> None:

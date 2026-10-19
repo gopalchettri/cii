@@ -44,4 +44,6 @@ ignore = ["S101"]
 
 [tool.mypy]
 python_version = "3.12"
+files = ["app"]
 ignore_missing_imports = true
+warn_unused_ignores = true  # an ignore that is no longer needed is reported, so none hides a later error

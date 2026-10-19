@@ -13,7 +13,7 @@ from app.core import metrics
 from app.core.constants import (
     ErrorCode,
     ErrorMessage,
-    Generation,
+    Generation,  # noqa: F401 - the writer's own retry, commented out below, reads it
     LogEvent,
     ScenarioOutcome,
     ScenarioStatus,
@@ -33,6 +33,7 @@ from app.domain.scenario.write import (
     generation_stamp,
     is_final,
     live_library_of,
+    path_style,
     scenario_id,
     title_candidates,
     write_scenario,
@@ -72,8 +73,9 @@ class PathWriter:
         self.threats = {threat["key"]: threat for threat in run["plan"]["threats"]}
 
     def write(self, path: dict[str, Any], other_scenarios: tuple[str, ...] = ()) -> PathOutcome:
-        """In a pool thread: build one path's brief and write its scenario (`other_scenarios`: the versions a
-        regenerate must differ from). An outage or a job-wide failure is raised."""
+        """In a pool thread: build one path's brief in its own style and write its scenario
+        (`other_scenarios`: the versions a regenerate must differ from). An outage or a job-wide failure is
+        raised."""
         try:
             brief = build_brief(
                 self.threats,
@@ -82,7 +84,7 @@ class PathWriter:
                 self._budget,
                 self._live,
                 other_scenarios=other_scenarios,
-                style=self._style,
+                style=path_style(self.threats, path, self._style),
             )
             return brief, write_scenario(self._chat, brief)
         except PathNotWritable as exc:
@@ -177,15 +179,16 @@ class PathSaver:
             self._log_saved(record, saved, reason)
         else:
             record, saved, written = self._save_written(path, *outcome, started_at)
-            reason, final = blocking_finding_code(written), is_final(written)  # a final rule: given up
+            reason, final = blocking_finding_code(written), is_final(written)  # noqa: F841 - retry below
         if not saved or record["status"] == ScenarioStatus.DONE:  # not saved: its scenario was already there
             self._progress.record({path_id: {"served": record["_id"]}})
             return
         # The next attempt's card replaces this one (the same id): why this one was rejected stays here.
         state = {"attempts": path["attempts"] + 1, "last_blocker": reason}
-        if not (final or state["attempts"] >= Generation.MAX_PATH_ATTEMPTS):
-            self._progress.record({path_id: state | {"abandoned": False}})
-            return
+        # The writer's own retry is off; uncomment to retry a blocked path later, up to MAX_PATH_ATTEMPTS.
+        # if not (final or state["attempts"] >= Generation.MAX_PATH_ATTEMPTS):
+        #     self._progress.record({path_id: state | {"abandoned": False}})
+        #     return
         log.warning(LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"])
         metrics.SCENARIOS.labels(ScenarioOutcome.ABANDONED).inc()
         self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats)

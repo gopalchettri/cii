@@ -56,6 +56,26 @@ def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None
         scorecard.evidence({"content": plain | {"statement": "Abuse [1]."}})
         == "cites [1] with intelligence off"
     )
+    assert scorecard.evidence({"content": plain | {"evidence": [entry]}}) == "cites [] with intelligence off"
+
+
+def test_a_nearest_story_and_one_written_without_evidence_pass() -> None:
+    """Owner 2026-10-19: the nearest evidence is cited like any other; none found, the card is written
+    without (inferred) and passes with a note. An on-story with a mode but no citation still fails."""
+    story = {"prompt_version": StoryLimits.PROMPT_VERSION, "risk_statement": "Pumps stop."}
+    entry = {"n": 1, "url": "https://example.test/a", "ref": "A", "nearest": True}
+    cited = {"statement": "Abuse [1].", "evidence": [entry], "evidence_mode": "nearest"}
+    nearest = {"content": story | cited}
+    assert scorecard.evidence(nearest) == "" and scorecard.evidence_note(nearest) == ""
+    for mode in ("nearest", "source-documented"):
+        uncited = {"content": story | {"statement": "Abuse.", "evidence": [entry], "evidence_mode": mode}}
+        assert scorecard.evidence(uncited) == "cites no evidence"
+    plain = {"prompt_version": "scenario writer-1", "statement": "Abuse.", "risk_statement": "Stop."}
+    without = {"content": plain | {"evidence_mode": "inferred", "evidence": []}}
+    assert scorecard.evidence(without) == "" and scorecard.evidence_note(without) == scorecard.WRITTEN_WITHOUT
+    assert scorecard.WRITTEN_WITHOUT == "no evidence found: written without"
+    marked = {"content": without["content"] | {"statement": "Abuse [1]."}}
+    assert scorecard.evidence(marked) == "cites [1] though written without evidence"
 
 
 def test_a_copy_of_an_accepted_replaced_version_is_a_duplicate_but_not_of_a_rejected_one() -> None:

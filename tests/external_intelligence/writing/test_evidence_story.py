@@ -11,9 +11,9 @@ import pytest
 from app.core.constants import (
     AiTask,
     Applicability,
-    ErrorCode,
     EvidenceBlock,
     EvidenceFact,
+    EvidenceMode,
     FindingCode,
     FindingSeverity,
     IntelKind,
@@ -29,6 +29,8 @@ from app.core.exceptions import Unavailable
 from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
     NO_EVIDENCE,
+    PLAN_CHECK_SYSTEM_PROMPT,
+    WRITER_PROMPT_VERSION,
     WRITER_SYSTEM_PROMPT,
     build_brief,
     check_exact_rules,
@@ -38,6 +40,7 @@ from app.domain.scenario.write import (
     finding_severity,
     is_blocked,
     is_final,
+    path_style,
     plan_check_prompt,
     with_word_limits,
     write_scenario,
@@ -45,7 +48,7 @@ from app.domain.scenario.write import (
     written_record,
 )
 from app.models.external_intelligence.evidence import Evidence
-from app.models.scenario.write import PathFailure, PlanCheck, ScenarioDraft, WrittenScenario
+from app.models.scenario.write import PlanCheck, ScenarioDraft, WrittenScenario
 from tests.external_intelligence.conftest import STORY_MARKED, STORY_PLAIN
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.fakes import WHY_APPLIES
@@ -289,9 +292,57 @@ def test_a_search_that_could_not_be_made_is_an_outage(search: dict[str, Any] | N
 @pytest.mark.parametrize(
     "evidence", [[], [_NO_FACTS.as_doc(), _ID_ONLY_CAMPAIGN.as_doc()]], ids=["none_kept", "none_citable"]
 )
-def test_no_citable_source_fails_the_path_for_good_before_any_ai_call(evidence: list[dict[str, Any]]) -> None:
-    problem = evidence_problem({"intel_search": {"snapshot_id": "s"}, "evidence": evidence})
-    assert isinstance(problem, PathFailure) and problem.code == ErrorCode.EVIDENCE_NOT_FOUND and problem.final
+def test_no_citable_source_is_written_without_evidence_never_failed(evidence: list[dict[str, Any]]) -> None:
+    """Owner 2026-10-19 ("do not block the threat scenario"): searched with nothing citable, the path is no
+    outage and is written in the original style: no evidence block, off-mode rules, inferred."""
+    threat = _plan_threat(evidence=evidence, intel_search={"snapshot_id": "s"})
+    assert evidence_problem(threat) is None
+    path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
+    style = path_style({threat["key"]: threat}, path, WriterStyle.EVIDENCE_STORY)
+    brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, style=style)
+    assert style is WriterStyle.ORIGINAL and "EVIDENCE (untrusted data)" not in writer_prompt(brief)[1]
+    assert _codes(_with_statement(f"{STORY_PLAIN} (CVE-2024-0001) [1]."), brief) == [
+        FindingCode.UNCITED_ADVISORY_ID,
+        StoryFindingCode.UNKNOWN_MARKER,
+    ]
+    written = WrittenScenario(_DRAFT, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE)
+    run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
+    record = written_record(run, path, threat, brief, written)
+    content = record["content"]
+    assert record["status"] == ScenarioStatus.DONE and content["statement"] == STORY_PLAIN
+    assert (content["evidence_mode"], content["evidence"]) == (EvidenceMode.INFERRED, [])
+    assert content["prompt_version"] == WRITER_PROMPT_VERSION
+    assert content["intel_search"] == {"snapshot_id": "s"}
+
+
+@pytest.mark.parametrize(
+    ("item", "claim"),
+    [
+        (_GROUPS, 'In real-world attacks, APT41 and FIN8 have used the related technique "Valid Accounts"'),
+        (
+            _KEV,
+            "A related record: CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks "
+            "(added 2024-01-05)",
+        ),
+    ],
+    ids=["technique", "other_kind"],
+)
+def test_nearest_evidence_is_cited_as_related_and_its_mode_is_nearest(item: Evidence, claim: str) -> None:
+    """Owner 2026-10-19: none met the threshold, so the nearest is cited, said to be related; the writer and
+    the reviewer read evidence_mode "nearest" and the prompts say it is only related context."""
+    nearest = dataclasses.replace(item, nearest=True)
+    brief = _story_brief(nearest)
+    assert _block_of(writer_prompt(brief)[1])["evidence_mode"] == EvidenceMode.NEAREST
+    assert '`evidence_mode` is "nearest"' in WRITER_SYSTEM_PROMPT
+    assert "Nearest evidence is only related context." in PLAN_CHECK_SYSTEM_PROMPT
+    threat = _plan_threat(evidence=[nearest.as_doc()], intel_search={"query": "q"})
+    written = WrittenScenario(_DRAFT, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE)
+    run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
+    path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
+    record = written_record(run, path, threat, brief, written)
+    content = record["content"]
+    assert record["status"] == ScenarioStatus.DONE and content["statement"] == f"{STORY_PLAIN} {claim} [1]."
+    assert content["evidence_mode"] == EvidenceMode.NEAREST and content["evidence"][0]["nearest"] is True
 
 
 def test_one_citable_source_lets_the_story_be_written() -> None:

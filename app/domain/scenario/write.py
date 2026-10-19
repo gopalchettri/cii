@@ -104,8 +104,13 @@ def live_library_of(library: ThreatLibrary) -> LiveLibrary:
 
 
 def brief_evidence_mode(brief: WriterBrief) -> EvidenceMode:
-    """Source-documented when the brief carries evidence, else inferred."""
-    return EvidenceMode.SOURCE_DOCUMENTED if brief.evidence else EvidenceMode.INFERRED
+    """Source-documented when the brief carries evidence, nearest when every entry is only the nearest, else
+    inferred."""
+    if not brief.evidence:
+        return EvidenceMode.INFERRED
+    if all(entry.get("nearest") for entry in brief.evidence):
+        return EvidenceMode.NEAREST
+    return EvidenceMode.SOURCE_DOCUMENTED
 
 
 def brief_entry_point_options(brief: WriterBrief) -> tuple[str, ...]:
@@ -179,7 +184,7 @@ WRITER_PROMPT_VERSION = "scenario writer-1"
 _PROMPTS = Path(__file__).with_name("prompts")
 WRITER_SYSTEM_PROMPT = (_PROMPTS / "writer.txt").read_text(encoding="utf-8")
 PLAN_CHECK_SYSTEM_PROMPT = (_PROMPTS / "reviewer.txt").read_text(encoding="utf-8")
-#: With intelligence off: no evidence is fabricated or implied.
+#: With intelligence off, or nothing citable found: no evidence is fabricated or implied.
 NO_EVIDENCE = "\nNo EVIDENCE is given: cite nothing and tell no real-world event.\n"
 _NO_EVIDENCE_REVIEW = "\nNo EVIDENCE is given: any [n] marker or real-world event breaks rule 8.\n"
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -308,17 +313,23 @@ def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str]
 
 
 def _claim(entry: dict[str, Any]) -> str | None:
-    """The entry's claim from its cleaned facts: who used a technique, else its first fact; None when none."""
+    """The entry's claim from its cleaned facts: who used a technique, else its first fact; a nearest entry's
+    says it is only related. None when none."""
     facts = _safe_facts(_stated_facts(entry))
+    related = bool(entry.get("nearest"))
     if entry.get("kind") != IntelKind.TECHNIQUE:
-        return facts[0].removesuffix(".") if facts else None
+        if not facts:
+            return None
+        fact = facts[0].removesuffix(".")
+        return Precedent.RELATED_RECORD.format(fact=fact) if related else fact
     users = (match for match in map(_USER.fullmatch, facts) if match)
     names = [m["name"] or f"the {m['campaign']}" for m in users][: EvidenceLimits.REAL_WORLD_USERS]
     title = _safe_facts([str(entry.get("title") or "")])
     if not (names and title):
         return None
     verb = "has" if len(names) == 1 else "have"
-    return Precedent.USED_BY.format(names=" and ".join(names), verb=verb, technique=title[0])
+    template = Precedent.USED_RELATED if related else Precedent.USED_BY
+    return template.format(names=" and ".join(names), verb=verb, technique=title[0])
 
 
 def _spoken(limits: tuple[int, int]) -> str:
@@ -386,17 +397,24 @@ def build_brief(
     )
 
 
-def evidence_problem(threat: dict[str, Any]) -> PathFailure | Unavailable | None:
-    """Why this threat's evidence story cannot be written (None: an entry can be cited), before any AI call:
-    a search that could not be made is an outage (retried); one that kept nothing citable fails the path for
-    good."""
+def evidence_problem(threat: dict[str, Any]) -> Unavailable | None:
+    """The outage when this threat's evidence search could not be made (its path waits and is retried); None
+    once searched, whatever it kept: nothing citable is written without evidence (path_style)."""
     search = threat.get("intel_search")
     if search is None or search.get("failure") is not None or search.get("snapshot_id") is None:
         failure = (search or {}).get("failure") or EvidenceSearchFailure.NO_SNAPSHOT
         return Unavailable(ErrorMessage.EVIDENCE_SEARCH_UNAVAILABLE.format(reason=failure))
-    if _precedent(threat.get("evidence") or ()) is None:
-        return PathFailure(ErrorCode.EVIDENCE_NOT_FOUND, ErrorMessage.EVIDENCE_NOT_FOUND, final=True)
     return None
+
+
+def path_style(threats: dict[str, dict[str, Any]], path: dict[str, Any], style: WriterStyle) -> WriterStyle:
+    """The delivery's style for one path: an evidence story only when its threat holds an entry to cite, else
+    the original style, written without evidence."""
+    steps = path.get("steps") or []
+    evidence = (threats.get(steps[0]) or {}).get("evidence") if steps else None
+    if style is WriterStyle.EVIDENCE_STORY and _precedent(evidence or ()) is None:
+        return WriterStyle.ORIGINAL
+    return style
 
 
 def _kind_reason(threat: dict[str, Any], path: dict[str, Any]) -> str:
@@ -675,6 +693,8 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
 def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:
     """The draft checked by the safety rules, then by the reviewer unless they block it."""
     findings = check_exact_rules(draft, brief)
+    check: PlanCheck
+    notes: tuple[Finding, ...]
     if any(finding_severity(finding) == FindingSeverity.BLOCKER for finding in findings):
         check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
     else:
@@ -806,8 +826,9 @@ def _evidence_content(
     brief: WriterBrief, threat: dict[str, Any], cited: list[dict[str, Any]]
 ) -> dict[str, Any]:
     """An evidence story's proof: each cited entry under its number, the mode, how many vulnerabilities apply
-    and the search's audit; nothing on an original-style scenario."""
-    if brief.style is not WriterStyle.EVIDENCE_STORY:
+    and the search's audit. An original-style scenario has none, unless its threat was searched (intelligence
+    on, nothing citable found): then it is inferred, with no evidence and the search's audit."""
+    if brief.style is not WriterStyle.EVIDENCE_STORY and threat.get("intel_search") is None:
         return {}
     applies = Counter(str(item["applicability"]) for item in cited if item.get("applicability"))
     return {

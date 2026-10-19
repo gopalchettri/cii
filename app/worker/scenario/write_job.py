@@ -96,8 +96,8 @@ class BatchWriter:
         scenarios: ThreatScenarioRepository,
         evidence: EvidenceSearchBuilder | None,
     ) -> None:
-        """`evidence`: the batch's evidence search while intelligence is on (evidence stories); None writes
-        the original scenarios."""
+        """`evidence`: the batch's evidence search while intelligence is on (evidence stories, a path with
+        nothing citable written without evidence); None writes the original scenarios."""
         style = WriterStyle.ORIGINAL if evidence is None else WriterStyle.EVIDENCE_STORY
         self._lease, self._run = lease, run
         self._progress = PlanProgress(lease, run, sessions, scenarios)
@@ -137,13 +137,10 @@ class BatchWriter:
         return [key for key in self._batch if paths[key]["served"] not in (None, self._replaces.get(key))]
 
     def _held_back(self, path_id: str, outages: dict[str, BaseException]) -> bool:
-        """Hold a story back when its threat has no usable evidence: a final failure is saved now with no
-        write call, a search that could not be made waits as an outage."""
+        """Hold a story back while its threat's evidence search could not be made: it waits as an outage."""
         steps = self._progress.paths[path_id].get("steps") or []
         problem = evidence_problem(self._paths.threats[steps[0]]) if steps else None
-        if isinstance(problem, PathFailure):
-            self._saver.save(path_id, problem)
-        elif problem is not None:
+        if problem is not None:
             outages[path_id] = problem
             self._evidence_waits.add(path_id)
         return problem is not None

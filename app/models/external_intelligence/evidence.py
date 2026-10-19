@@ -55,14 +55,18 @@ class Evidence:
     mitigations: tuple[str, ...] = ()
     modified: str | None = None  # the source's last change to the record (`published` is when it came out)
     joined: tuple[IntelSource, ...] = ()  # the sources its facts also rest on (IntelHit.joined)
+    nearest: bool = False  # under the threshold: the nearest record, used because none met it
 
     def as_doc(self) -> dict[str, Any]:
-        """The entry as stored, its tuples as lists."""
-        return asdict(self) | {
+        """The entry as stored, its tuples as lists; `nearest` only when it is."""
+        doc = asdict(self) | {
             "facts": list(self.facts),
             "mitigations": list(self.mitigations),
             "joined": list(self.joined),
         }
+        if not self.nearest:
+            del doc["nearest"]
+        return doc
 
 
 @dataclass(frozen=True)

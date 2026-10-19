@@ -1,8 +1,8 @@
 """G229 in the write job (owner 2026-10-13: "Reject the invalid candidate and follow the bounded replacement
-policy ... final_scenario_count <= TOTAL_SCENARIO_COUNT"). A path whose scenario stays blocked (here by
-the reviewer's mismatch) is given up after MAX_PATH_ATTEMPTS, a duplicate at once; with TOTAL_SCENARIO_COUNT
-N a reserve takes its place in the same set, the selected count never grows; with 0 there is no reserve and
-nothing is padded. The job runs on the test MongoDB with the fake chat model."""
+policy ... final_scenario_count <= TOTAL_SCENARIO_COUNT"). A path whose scenario is blocked (here by the
+reviewer's mismatch or as a duplicate) is given up at once; with TOTAL_SCENARIO_COUNT N a reserve takes its
+place in the same set, the selected count never grows; with 0 there is no reserve and nothing is padded. The
+job runs on the test MongoDB with the fake chat model."""
 
 from typing import Any
 
@@ -55,11 +55,11 @@ def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: Fake
     run, paths = _plan(record_id)
     failed, reserve = paths["p1"], paths["p3"]
     assert (failed["selected"], failed["abandoned"]) == (False, True)
-    assert failed["attempts"] == Generation.MAX_PATH_ATTEMPTS  # written again later, not given up at once
+    assert failed["attempts"] == 1  # given up at once, never written again
     assert (failed["abandoned_reason"], failed["replaced_by"]) == (FindingCode.SCENARIO_MISMATCH, "p3")
     assert reserve["selected"] and reserve["replaces"] == "p1" and reserve["served"]
     assert not paths["p4"]["selected"] and sum(path["selected"] for path in paths.values()) == 2
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS + 2  # p1 each time, p2, p3
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 3  # p1, p2, p3
     done = [s for s in _scenarios_of(record_id) if s["status"] == ScenarioStatus.DONE]
     assert sorted(s["path_id"] for s in done) == ["p2", "p3"]
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
@@ -71,7 +71,7 @@ def test_with_no_limit_a_rejected_path_is_never_replaced_and_nothing_is_padded(c
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
     assert paths["p1"]["abandoned"] and paths["p1"].get("replaced_by") is None
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS + 2 and len(paths) == 3
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 3 and len(paths) == 3
     assert [s["status"] for s in _scenarios_of(record_id)].count(ScenarioStatus.DONE) == 2
     assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
 
@@ -123,17 +123,19 @@ def test_a_second_run_of_the_asset_never_copies_what_the_first_run_holds(chat: F
 
 
 def test_replacements_stop_when_the_sets_write_calls_are_spent(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
-    """A set of 1 may spend MAX_PATH_ATTEMPTS write calls: its path rejected each time, the set stops there
-    with reserves left, its path given up with no replacement."""
+    """A set of 1 may spend MAX_PATH_ATTEMPTS write calls: each path rejected and given up at once, a reserve
+    in its place, until the calls are spent; the set stops there with reserves left, its last path given up
+    with no replacement."""
     _mismatched_for_threats_named(chat, "Wrong")
     names = [f"Wrong {n}" for n in range(Generation.MAX_PATH_ATTEMPTS + 3)]
     record_id = _queued_run(names, limit=1)
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
     assert len(chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS
-    [tried] = [path for path in paths.values() if path["attempts"]]
-    assert tried["attempts"] == Generation.MAX_PATH_ATTEMPTS and tried["selected"]
-    assert tried["abandoned"] and tried.get("replaced_by") is None
+    tried = [path for path in paths.values() if path["attempts"]]
+    assert len(tried) == Generation.MAX_PATH_ATTEMPTS and all(path["attempts"] == 1 for path in tried)
+    [last] = [path for path in tried if path["selected"]]
+    assert last["abandoned"] and last.get("replaced_by") is None
     assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
 
 

@@ -1,9 +1,8 @@
-"""G229 (owner 2026-10-13; 2026-10-18: "Each threat scenario will have relevant one or more evidence when
-EXTERNAL_INTELLIGENCE_ENABLED=true"): with external intelligence on, the write job holds back every story with
-no evidence, enforced in code with no AI call added: a threat whose search kept no source at or above the
-threshold, or none it can cite, fails its path for good before any write call; one whose search could not
-be made waits as an outage. The style is decided once per delivery, and a switch in doubt makes the
-delivery wait. Each cited entry keeps its dates, role and claim."""
+"""G229 (owner 2026-10-13; 2026-10-19: "if there is no evidence is found try to get the evidence which is
+nearest possible. do not block the threat scenario"): with external intelligence on, a threat whose search
+kept nothing citable is written without evidence (inferred), never failed; one whose search could not be made
+waits as an outage. The switch is read once per delivery, and a switch in doubt makes the delivery wait.
+Each cited entry keeps its dates, role and claim."""
 
 import dataclasses
 from typing import Any
@@ -14,8 +13,7 @@ from app import container
 from app.core.constants import (
     AiTask,
     Applicability,
-    ErrorCode,
-    ErrorMessage,
+    EvidenceMode,
     EvidenceRole,
     ScenarioStatus,
     TaskName,
@@ -23,9 +21,8 @@ from app.core.constants import (
 from app.core.exceptions import Unavailable
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import evidence_problem
+from app.domain.scenario.write import WRITER_PROMPT_VERSION, evidence_problem
 from app.models.external_intelligence.evidence import Evidence
-from app.models.scenario.write import PathFailure
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.switch.test_switch import MemoryFlags
@@ -42,11 +39,9 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
 pytestmark = pytest.mark.usefixtures("story_chat", "sent")
 
 
-def test_the_gate_fails_a_threat_with_no_evidence_for_good_and_holds_back_an_outage() -> None:
+def test_the_gate_holds_back_only_an_outage() -> None:
     settled = {"snapshot_id": "s1", "failure": None}
-    failure = evidence_problem({"evidence": [], "intel_search": settled})
-    assert isinstance(failure, PathFailure) and failure.final and failure.code == ErrorCode.EVIDENCE_NOT_FOUND
-    assert failure.message == ErrorMessage.EVIDENCE_NOT_FOUND
+    assert evidence_problem({"evidence": [], "intel_search": settled}) is None  # written without evidence
     assert isinstance(evidence_problem({"intel_search": settled | {"failure": "down"}}), Unavailable)
     assert isinstance(evidence_problem({"intel_search": None}), Unavailable)  # never searched: no snapshot
     assert evidence_problem({"evidence": [TECHNIQUE.as_doc()], "intel_search": settled}) is None
@@ -55,17 +50,32 @@ def test_the_gate_fails_a_threat_with_no_evidence_for_good_and_holds_back_an_out
 @pytest.mark.parametrize(
     "found", [(), (dataclasses.replace(TECHNIQUE, facts=()),)], ids=["nothing", "nothing_citable"]
 )
-def test_nothing_citable_fails_its_path_for_good_with_no_write_call(
+def test_nothing_citable_is_written_without_evidence(
     intel: Intel, story_chat: Any, found: tuple[Evidence, ...]
 ) -> None:
+    """The path is written in the original style (no evidence block), done, inferred, with no failure."""
     intel.finder.evidence = found
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     (card,) = _scenarios_of(record_id)
-    assert card["status"] == ScenarioStatus.FAILED and card["failure"]["code"] == ErrorCode.EVIDENCE_NOT_FOUND
-    assert not story_chat.asked(AiTask.WRITE_SCENARIO)  # no AI call spent on a scenario that cannot be proven
-    plan = _sessions().find_one({"_id": record_id})["plan"]
-    assert plan["paths"][0]["abandoned"] and plan["paths"][0]["attempts"] == 1
+    content = card["content"]
+    assert card["status"] == ScenarioStatus.DONE and "failure" not in card
+    assert (content["evidence_mode"], content["evidence"]) == (EvidenceMode.INFERRED, [])
+    assert content["prompt_version"] == WRITER_PROMPT_VERSION and content["intel_search"]["snapshot_id"]
+    (prompt,) = story_chat.asked(AiTask.WRITE_SCENARIO)
+    assert "EVIDENCE (untrusted data)" not in prompt
+    path = _sessions().find_one({"_id": record_id})["plan"]["paths"][0]
+    assert path["served"] == card["_id"] and not path.get("abandoned")
+
+
+def test_an_evidence_search_outage_still_waits(intel: Intel, story_chat: Any) -> None:
+    """A search that could not be made is no "nothing found": the path waits, no scenario and no write."""
+    intel.finder.down = True
+    record_id = _queued_run(["Threat 1"])
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "one")
+    with pytest.raises(Unavailable):
+        _write_batch(lease)
+    assert _scenarios_of(record_id) == [] and not story_chat.asked(AiTask.WRITE_SCENARIO)
 
 
 def test_the_switch_is_read_once_per_batch(intel: Intel, monkeypatch: pytest.MonkeyPatch) -> None:

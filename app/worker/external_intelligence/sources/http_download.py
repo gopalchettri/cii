@@ -58,7 +58,7 @@ class _CappedReader(io.RawIOBase):
 def open_gzip_text(body: bytes, source: str) -> io.TextIOWrapper:
     """The UTF-8 text inside gzip `body`, read lazily; IntelFetchFailed once it unpacks past the limit
     (also inside one endless line: the cap is on bytes, not on rows)."""
-    unpacked = _CappedReader(gzip.GzipFile(fileobj=io.BytesIO(body)), source)  # type: ignore[arg-type]
+    unpacked = _CappedReader(gzip.GzipFile(fileobj=io.BytesIO(body)), source)
     return io.TextIOWrapper(io.BufferedReader(unpacked), encoding="utf-8", newline="")
 
 

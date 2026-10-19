@@ -83,7 +83,7 @@ class AiSlots:
         if self._redis is None or self._cap == 0:
             return 0.0
         try:
-            return float(self._count_slots(keys=[AiLimits.SLOTS_KEY]))  # type: ignore[arg-type]
+            return float(self._count_slots(keys=[AiLimits.SLOTS_KEY]))
         except REDIS_UNAVAILABLE_ERRORS:
             return math.nan
 

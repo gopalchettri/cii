@@ -352,7 +352,7 @@ def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None
 
 
 def test_a_mismatch_blocks_after_one_write_and_is_not_final() -> None:
-    """The blocked draft counts an attempt and its path is written again later."""
+    """The blocked draft counts an attempt and its path is given up at once: the writer's own retry is off."""
     chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH])
     written = write_scenario(chat, _brief_of(_plan_threat()))
     assert is_blocked(written) and not is_final(written)

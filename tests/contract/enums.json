@@ -264,6 +264,7 @@
  },
  "EvidenceMode": {
   "INFERRED": "inferred",
+  "NEAREST": "nearest",
   "SOURCE_DOCUMENTED": "source-documented"
  },
  "EvidenceReason": {

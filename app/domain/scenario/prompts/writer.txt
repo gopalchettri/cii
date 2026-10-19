@@ -87,6 +87,7 @@ Use EVIDENCE only to ground the specified threat action; the platform adds the o
 - Do not change the requested threat to fit evidence (e.g., domain acquisition alone does not support DNS hijacking).
 - In your own text write no technique labels/codes, attack-pattern codes, CVEs, URLs, or source names; paraphrase facts in plain language (only the platform's cited sentence names them).
 - Unknown facts about this asset are assumptions, not evidence claims.
+- If `evidence_mode` is "nearest", the evidence is only related: use it as loose context and never shape the threat to fit it.
 
 12. CATEGORY SHAPES
 The primary impact and risk opening must follow BRIEF's category:

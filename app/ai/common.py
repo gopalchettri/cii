@@ -154,6 +154,7 @@ def count_and_convert_ai_errors(
     """Counts a failed AI call in tsg_ai_calls_total by its outcome (each gateway counts its own "ok"), and
     turns the provider busy or down, or an answer still short after the retries, into Unavailable: the job
     backs off and retries. `unreadable_errors` are counted unreadable and raised as they are."""
+    unreadable: tuple[type[Exception], ...] = (UnusableAiAnswer, *unreadable_errors)
     try:
         yield
     except LeaseLost:
@@ -181,7 +182,7 @@ def count_and_convert_ai_errors(
     except IncompleteAiAnswer as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.UNREADABLE).inc()
         raise Unavailable(str(exc)) from exc
-    except (UnusableAiAnswer, *unreadable_errors):
+    except unreadable:
         metrics.AI_CALLS.labels(task, model, AiOutcome.UNREADABLE).inc()
         raise
     except Exception:

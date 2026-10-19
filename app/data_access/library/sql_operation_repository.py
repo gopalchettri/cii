@@ -58,9 +58,9 @@ class SqlOperationRepository(MongoRepository):
         record = self.get(_id=operation_id)
         if record is not None and record["status"] == SqlOperationStatus.DONE:
             return record["result"], False
-        reconciling = record is not None and record["status"] != SqlOperationStatus.NOT_APPLIED
-        if reconciling:
-            parameters = record["parameters"]  # replayed exactly as first sent
+        reconciling = False
+        if record is not None and record["status"] != SqlOperationStatus.NOT_APPLIED:
+            reconciling, parameters = True, record["parameters"]  # replayed exactly as first sent
         attempt = self._start_attempt(operation_id, procedure, parameters, reconciling)
         try:
             result_sets = self._procedures.execute_procedure(procedure, **parameters)

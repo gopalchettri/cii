@@ -186,7 +186,7 @@ class MongoRepository:
             ]
             if refused or details.get("writeConcernErrors"):
                 raise
-            return details
+            return dict(details)
 
     def filter(self, where: Mapping[str, Any]) -> Record:
         """`where` as a MongoDB filter: field equality and each named condition (name=True or a value)."""
@@ -234,7 +234,7 @@ def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> No
     existing collection, else the collection created with it; a server or user refusing it is logged."""
     if not required:
         return
-    options = {
+    options: Record = {
         "validator": {"$jsonSchema": {"bsonType": "object", "required": list(required)}},
         "validationLevel": "moderate",  # records stored invalid before stay writable
         "validationAction": "error",

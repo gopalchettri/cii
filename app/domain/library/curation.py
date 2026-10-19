@@ -9,7 +9,7 @@ from app.core.constants import ConflictReason, Decision, PromotionOutcome, Resol
 from app.core.exceptions import Conflict
 
 #: tsg_ResolveThreat's answer as a promotion outcome; any other answer: the library has it already.
-_PROMOTION_OUTCOME = {
+_PROMOTION_OUTCOME: dict[str, PromotionOutcome] = {
     ResolveOutcome.CREATED_PENDING: PromotionOutcome.INSERTED,
     ResolveOutcome.CURATOR_REJECTED: PromotionOutcome.CURATOR_REJECTED,
 }

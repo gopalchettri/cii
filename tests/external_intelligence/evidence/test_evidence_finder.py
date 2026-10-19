@@ -7,7 +7,6 @@ from typing import Any
 from app.core.constants import (
     Applicability,
     AssetType,
-    ErrorCode,
     EvidenceDecision,
     EvidenceLimits,
     EvidenceRole,
@@ -18,7 +17,6 @@ from app.core.exceptions import Unavailable
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import RerankGate
 from app.domain.scenario.write import evidence_problem
-from app.models.scenario.write import PathFailure
 from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import EMPTY_SNAPSHOT_ID, build_index, empty_index
 from tests.external_intelligence.evidence_fakes import (
@@ -80,10 +78,12 @@ def test_a_candidate_under_the_threshold_is_recorded_with_its_score_and_a_reason
 
 
 def test_the_threshold_is_the_constructor_argument() -> None:
+    """Under it, the same record is used only as the nearest."""
     docs = [technique_doc("T1")]
     low, _ = finder_of(docs, ScoredBy(default=3.0), threshold=1.0)
     high, _ = finder_of(docs, ScoredBy(default=3.0), threshold=5.0)
-    assert refs(one(low, request_of())[0]) == {"T1"} and one(high, request_of())[0].evidence == ()
+    assert [item.nearest for item in one(low, request_of())[0].evidence] == [False]
+    assert [item.nearest for item in one(high, request_of())[0].evidence] == [True]
 
 
 def test_only_the_best_few_are_used_and_the_rest_are_over_the_limit() -> None:
@@ -154,14 +154,13 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     )
 
 
-def test_a_settled_empty_index_finds_no_evidence_and_the_path_is_given_up_not_retried() -> None:
+def test_a_settled_empty_index_finds_no_evidence_and_is_no_outage() -> None:
+    """Searched and nothing found: the path is written without evidence, never held back."""
     empty = empty_index(TextEmbeddings(), ScoredBy(), settled=True)
     result, _ = one(EvidenceFinder(lambda: empty, 1.0, gate=RerankGate(1)), request_of())
     search = result.search
     assert (result.evidence, search.snapshot_id, search.failure) == ((), EMPTY_SNAPSHOT_ID, None)
-    problem = evidence_problem({"intel_search": search.as_doc(), "evidence": []})
-    assert isinstance(problem, PathFailure) and problem.final
-    assert problem.code == ErrorCode.EVIDENCE_NOT_FOUND
+    assert evidence_problem({"intel_search": search.as_doc(), "evidence": []}) is None
 
 
 def test_an_embedding_outage_leaves_every_request_without_evidence_and_says_why() -> None:
@@ -253,14 +252,38 @@ def test_published_is_the_records_publication_date_and_modified_its_last_change(
     assert (shown.published, shown.modified) == (None, "2024-01-02")  # before: ("2024-01-02", None)
 
 
-def test_no_source_at_the_threshold_means_no_evidence_and_nothing_near_offered() -> None:
-    """No candidate at or above EVIDENCE_SIMILARITY_THRESHOLD: no evidence at all (the G254 "nearest" and the
-    G250 "related" sources are gone); every candidate stays in the audit with its score."""
+def test_no_source_at_the_threshold_means_the_nearest_are_used_and_marked() -> None:
+    """Owner 2026-10-19 ("try to get the evidence which is nearest possible"): no candidate at or above
+    EVIDENCE_SIMILARITY_THRESHOLD, so the nearest are used, best first, each marked nearest; the audit says
+    used, with its score under the threshold."""
     docs = [technique_doc("T1"), vulnerability_doc("CVE-1", "Siemens", "WinCC")]
     finder, _ = finder_of(docs, ScoredBy({"Technique T1": 30.0, "CVE-1": 40.0}), threshold=50.0)
     result, summary = one(finder, request_of(**WINCC))
-    assert result.evidence == () and summary.threats_with_evidence == 0
-    assert {c.decision for c in result.search.considered} == {EvidenceDecision.BELOW_THRESHOLD}
+    assert [(item.ref, item.nearest) for item in result.evidence] == [("CVE-1", True), ("T1", True)]
+    assert summary.threats_with_evidence == 1 and result.evidence[0].as_doc()["nearest"] is True
+    assert {c.decision for c in result.search.considered} == {EvidenceDecision.USED}
+    assert all("50 needed" in c.reason for c in result.search.considered)
+
+
+def test_one_source_at_the_threshold_leaves_the_nearest_out() -> None:
+    docs = [technique_doc("T1"), technique_doc("T2")]
+    finder, _ = finder_of(docs, ScoredBy({"Technique T1": 60.0, "Technique T2": 30.0}), threshold=50.0)
+    result, _ = one(finder, request_of())
+    assert [(item.ref, item.nearest) for item in result.evidence] == [("T1", False)]
+    assert "nearest" not in result.evidence[0].as_doc()
+
+
+def test_a_not_applicable_or_unlinked_record_is_never_used_as_the_nearest() -> None:
+    """Only the threshold is set aside: the product rules still hold."""
+    docs = [vulnerability_doc("CVE-2", "Apache", "HTTP Server"), technique_doc("T1")]
+    finder, _ = finder_of(docs, ScoredBy({"CVE-2": 45.0, "Technique T1": 20.0}), threshold=50.0)
+    result, _ = one(finder, request_of(**WINCC))
+    assert refs(result) == {"T1"}
+    assert {c.ref: c.decision for c in result.search.considered}["CVE-2"] == EvidenceDecision.NOT_APPLICABLE
+    unlinked, _ = finder_of([vulnerability_doc("CVE-1", "Siemens", "WinCC")], ScoredBy(default=40.0), 50.0)
+    result, _ = one(unlinked, request_of())  # the asset records no product
+    assert result.evidence == ()
+    assert [c.decision for c in result.search.considered] == [EvidenceDecision.NO_PRODUCT_LINK]
 
 
 def test_a_vulnerability_entry_names_the_sources_joined_into_it() -> None:

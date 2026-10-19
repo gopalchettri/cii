@@ -45,7 +45,8 @@ def cited_evidence(content: dict[str, Any]) -> list[EvidenceView]:
     text = f"{content.get('statement') or ''}\n{content.get('risk_statement') or ''}"
     cited = dict.fromkeys(n for n in markers_of(text) if n in by_number)
     return [
-        EvidenceView(**{key: by_number[n].get(key) for key in _SHOWN if key in by_number[n]}) for n in cited
+        EvidenceView.model_validate({key: by_number[n][key] for key in _SHOWN if key in by_number[n]})
+        for n in cited
     ]
 
 

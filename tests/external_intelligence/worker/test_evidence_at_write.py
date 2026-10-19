@@ -15,7 +15,6 @@ from app.core.constants import (
     AiTask,
     AuditAction,
     Collection,
-    ErrorCode,
     EvidenceMode,
     EvidenceSearchFailure,
     Generation,
@@ -199,20 +198,29 @@ def test_a_regenerate_searches_again(intel: Intel) -> None:
     assert new["content"]["prompt_version"] == StoryLimits.PROMPT_VERSION
 
 
-def test_a_regenerate_of_a_story_whose_threat_has_no_evidence_keeps_the_version_with_no_write_call(
+def _written_without_evidence(record_id: str) -> dict[str, Any]:
+    """The regenerate's new version, checked to be written without evidence, its old one superseded."""
+    first = scenario_id(record_id, "p1", 1)
+    scenarios = get_mongodb()[Collection.SCENARIOS]
+    new = scenarios.find_one({"_id": scenario_id(record_id, "p1", 2)})
+    assert scenarios.find_one({"_id": first})["superseded_by"] == new["_id"]
+    assert new["status"] == ScenarioStatus.DONE and new["content"]["prompt_version"] == WRITER_PROMPT_VERSION
+    assert (new["content"]["evidence_mode"], new["content"]["evidence"]) == (EvidenceMode.INFERRED, [])
+    return new
+
+
+def test_a_regenerate_of_a_story_whose_threat_has_no_evidence_is_written_without(
     intel: Intel, story_chat: Any
 ) -> None:
-    """G229: the regenerate path cannot bypass the evidence rule: its threat's search holds nothing usable,
-    so the old version stays current with the reason, and no write call is spent."""
+    """Owner 2026-10-19 ("do not block the threat scenario"): its threat's search holds nothing usable, so the
+    new version is written without evidence and replaces the old one."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     intel.finder.evidence = ()
     writes = len(story_chat.asked(AiTask.WRITE_SCENARIO))
-    first = scenario_id(record_id, "p1", 1)
-    _start_regenerate(record_id, first)
-    old = get_mongodb()[Collection.SCENARIOS].find_one({"_id": first})
-    assert old["superseded_by"] is None and old["regenerate_error"]["code"] == ErrorCode.EVIDENCE_NOT_FOUND
-    assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == writes
+    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
+    _written_without_evidence(record_id)
+    assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == writes + 1
 
 
 def test_a_regenerate_is_written_in_the_style_of_its_own_delivery(intel: Intel) -> None:
@@ -297,13 +305,12 @@ def test_a_search_whose_only_records_were_revoked_finds_no_evidence_and_is_no_ou
     intel: Intel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Revoked records are cut before the top-k, so a search only they could answer settles with no evidence:
-    the regenerate keeps the old version with evidence_not_found and never waits as for an outage."""
+    the regenerate is written without evidence and never waits as for an outage."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
     _start_regenerate(record_id, scenario_id(record_id, "p1", 1))  # the fake holds mitre_attack_ics only
-    old = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 1)})
-    assert old["superseded_by"] is None and old["regenerate_error"]["code"] == ErrorCode.EVIDENCE_NOT_FOUND
+    _written_without_evidence(record_id)
 
 
 def test_a_threat_already_searched_is_searched_again_reading_the_feeds_once(

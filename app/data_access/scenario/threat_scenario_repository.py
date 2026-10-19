@@ -18,7 +18,7 @@ from app.core.constants import (
     Status,
 )
 from app.core.exceptions import DuplicateRecord
-from app.data_access.base import MongoRepository, Record
+from app.data_access.base import Condition, MongoRepository, Record
 
 #: The versions a reviewer works with: the newest of each attack path, and any older one already decided.
 CURRENT_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": {"$ne": Decision.PENDING}}]}
@@ -99,7 +99,7 @@ def _controls_waiting(_: Any = True) -> Record:
     }
 
 
-_SCENARIO_CONDITIONS = {
+_SCENARIO_CONDITIONS: dict[str, Condition] = {
     "served": {"status": {"$ne": ScenarioStatus.BLOCKED}},
     "current": CURRENT_VERSIONS,
     "mapped": MAPPED_VERSIONS,
@@ -249,7 +249,8 @@ class ThreatScenarioRepository(MongoRepository):
             "status": ScenarioStatus.DONE,
             **CURRENT_VERSIONS,
         }
-        rows = self.list(fields=_DUPLICATE_CHECK_FIELDS, **{"$or": [own_session, elsewhere]})
+        either: Record = {"$or": [own_session, elsewhere]}
+        rows = self.list(fields=_DUPLICATE_CHECK_FIELDS, **either)
         own, other = [], []
         for row in rows:
             if row.pop("session_id") == session_id:

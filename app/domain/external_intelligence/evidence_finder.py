@@ -1,6 +1,7 @@
 """Finds each threat's evidence in the active evidence index: one embedding call for the batch, a rerank per
-threat behind the process gate, then the rule-based choice of what counts as evidence. A search that cannot
-be made leaves that threat without evidence and says why; it never fails the batch."""
+threat behind the process gate, then the rule-based choice of what counts as evidence (the nearest when none
+meets the threshold). A search that cannot be made leaves that threat without evidence and says why; it never
+fails the batch."""
 
 import time
 from collections.abc import Callable, Collection, Sequence
@@ -144,23 +145,33 @@ class EvidenceSelector:
     def select(
         self, scored: Sequence[IntelHit], checker: ProductLinkChecker
     ) -> tuple[tuple[Evidence, ...], tuple[Considered, ...]]:
-        """The evidence used (best first, at most EvidenceLimits.PER_THREAT) and one row per candidate."""
+        """The evidence used (best first, at most EvidenceLimits.PER_THREAT) and one row per candidate; when
+        none meets the threshold, the nearest under it, by the same other rules, each marked nearest."""
+        found = self._choose(scored, checker, nearest=False)
+        return found if found[0] else self._choose(scored, checker, nearest=True)
+
+    def _choose(
+        self, scored: Sequence[IntelHit], checker: ProductLinkChecker, *, nearest: bool
+    ) -> tuple[tuple[Evidence, ...], tuple[Considered, ...]]:
+        """Every candidate judged, the threshold ignored when `nearest`; the usable ones within the limit."""
         usable: list[Evidence] = []
         rows: list[Considered | Evidence] = []
         for hit in scored:  # best first, so the limit keeps the most relevant
-            evidence, row = self._judge(hit, usable, checker)
+            evidence, row = self._judge(hit, usable, checker, nearest)
             if evidence is not None:
                 usable.append(evidence)
             rows.append(evidence or row)
         used = choose_within_limit(usable, EvidenceLimits.PER_THREAT)
         return tuple(used), tuple(self._final_row(row, used) for row in rows)
 
-    def _judge(self, hit: IntelHit, usable: list[Evidence], checker: ProductLinkChecker) -> Judgement:
-        """Leave a candidate out when under the threshold, a product record the asset's products cannot tie or
-        that concerns another product or version, or a duplicate; else make it evidence."""
-        if hit.score < self._threshold:
-            reason = EvidenceReason.BELOW_THRESHOLD.format(score=hit.score, threshold=self._threshold)
-            return _left_out(hit, EvidenceDecision.BELOW_THRESHOLD, reason)
+    def _judge(
+        self, hit: IntelHit, usable: list[Evidence], checker: ProductLinkChecker, nearest: bool
+    ) -> Judgement:
+        """Leave a candidate out when under the threshold (unless `nearest`), a product record the asset's
+        products cannot tie or that concerns another product or version, or a duplicate; else make it
+        evidence."""
+        if hit.score < self._threshold and not nearest:
+            return _left_out(hit, EvidenceDecision.BELOW_THRESHOLD, self._below_threshold(hit.score))
         applicability = None
         if hit.kind in _HAS_APPLICABILITY:
             if checker.has_no_link(hit):
@@ -171,9 +182,9 @@ class EvidenceSelector:
         if any(item.ref == hit.external_id for item in usable):
             return _left_out(hit, EvidenceDecision.DUPLICATE, EvidenceReason.DUPLICATE.value)
         used = Considered(hit.external_id, hit.score, EvidenceDecision.USED)
-        return self._evidence(hit, applicability), used
+        return self._evidence(hit, applicability, nearest), used
 
-    def _evidence(self, hit: IntelHit, applicability: Applicability | None) -> Evidence:
+    def _evidence(self, hit: IntelHit, applicability: Applicability | None, nearest: bool) -> Evidence:
         """The evidence entry of a used candidate: its plain facts, cleaned title and link, and dates."""
         return Evidence(
             hit.external_id,
@@ -192,16 +203,23 @@ class EvidenceSelector:
             role=EvidenceRole.DIRECT if applicability == Applicability.CONFIRMED else EvidenceRole.CONTEXT,
             mitigations=self._writer.safe_mitigations(hit),  # the control search reads them
             joined=hit.joined,
+            nearest=nearest,
         )
 
     def _final_row(self, row: Considered | Evidence, used: list[Evidence]) -> Considered:
-        """A usable record's row: USED when it fit the limit, else OVER_LIMIT; other rows stand."""
+        """A usable record's row: USED when it fit the limit (a nearest one says its score is under the
+        threshold), else OVER_LIMIT; other rows stand."""
         if isinstance(row, Considered):
             return row
         if any(row is item for item in used):
-            return Considered(row.ref, row.score, EvidenceDecision.USED)
+            reason = self._below_threshold(row.score) if row.nearest else ""
+            return Considered(row.ref, row.score, EvidenceDecision.USED, reason)
         reason = EvidenceReason.OVER_LIMIT.format(limit=EvidenceLimits.PER_THREAT)
         return Considered(row.ref, row.score, EvidenceDecision.OVER_LIMIT, reason)
+
+    def _below_threshold(self, score: float) -> str:
+        """The reason a score under the threshold gives."""
+        return EvidenceReason.BELOW_THRESHOLD.format(score=score, threshold=self._threshold)
 
 
 def choose_within_limit(usable: list[Evidence], limit: int) -> list[Evidence]:
