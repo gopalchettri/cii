@@ -37,6 +37,10 @@ STRIDE_DEFINITIONS: Final[dict[StrideCategory, str]] = {
 
 
 class StoredProcedure(StrEnum):
+    GET_SERVICE_MAPPER_ASSOCIATIONS = "tsg_GetServiceMapperAssociations"
+    GET_SECTORS_AND_SUBSECTORS = "Onboarding_GetSectorsAndSubsectorsList"
+    GET_SECTOR_SERVICE_MAPPINGS = "Onboarding_GetSectorServiceMappings"
+    GET_SERVICES_WITH_SECTOR_DETAILS = "Onboarding_GetServicesWithSectorDetails"
     GET_ASSET_CONTEXT = "tsg_GetAssetContext"
     GET_THREAT_LIBRARY = "tsg_GetThreatLibrary"
     GET_CONTROL_LIBRARY = "tsg_GetControlLibrary"

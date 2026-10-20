@@ -503,4 +503,4 @@ def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> Non
     )
     (worker,) = [job for job in local["scrape_configs"] if job["job_name"] == "worker"]
     targets = {target for config in worker["static_configs"] for target in config["targets"]}
-    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 1
+    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 2

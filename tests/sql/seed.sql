@@ -38,6 +38,12 @@ SET IDENTITY_INSERT dbo.onboarding_services ON;
 INSERT dbo.onboarding_services (id, name, is_deleted) VALUES
     (1, N'Electricity transmission', 0), (2, N'Customer billing', 0), (3, N'Retired service', 1);
 SET IDENTITY_INSERT dbo.onboarding_services OFF;
+UPDATE dbo.onboarding_services SET sector_id = 11, description = N'Transmits electricity.' WHERE id = 1;
+UPDATE dbo.onboarding_services SET sector_id = 10 WHERE id = 2;
+INSERT dbo.onboarding_sector_services (sector_id, service_id) VALUES
+    (11, 1), (10, 2), (12, 1), (11, 3);
+UPDATE dbo.[group] SET name = N'Test Entity' WHERE id = 86;
+INSERT dbo.onboarding_service_entity (sector_id, service_id, group_id) VALUES (11, 1, 86);
 
 SET IDENTITY_INSERT dbo.ctm_scan_entity ON;
 INSERT dbo.ctm_scan_entity (id, type, name, ctm_category_id, description, operating_system, location, criticality,

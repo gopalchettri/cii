@@ -7,11 +7,12 @@
     It stops at the first step that fails and names it; after a fix, run it again (every step can be repeated).
 
     Before: the image is built and pushed (deploy\build-image.ps1), you are logged in (oc login ...), and the
-    DBA has installed the procedures (every scripts\sql\tsg_*.sql except the "copy" backup, then grants.sql).
+    DBA has installed the procedures (every scripts\sql\tsg_*.sql except the "copy" backup, then grants.sql),
+    including tsg_GetServiceMapperAssociations, and the three existing Onboarding catalog procedures are present.
 
     What goes where (as in v1):
       ai-threatgen    deploy\deploy.yaml (API, one worker per queue, beat) and deploy\networkpolicy.yaml
-      ai-remediation  deploy\deploy.ai-remediation.yaml (the second threats and scenarios worker),
+      ai-remediation  deploy\deploy.ai-remediation.yaml (the second threats, scenarios and mapper workers),
                       deploy\networkpolicy.ai-remediation.yaml, the monitoring (deploy\observability.ps1 applies
                       deploy\observability.yaml) and Flower (deploy\flower.yaml)
       both            the settings (ConfigMap tsg-config, Secret tsg-secrets), made from the env file
@@ -54,8 +55,8 @@ $FingerprintPlaceholder = 'tsg/settings-fingerprint: none'
 # v2's app Deployments per project, in rollout order: the workers and beat first (an API pod is ready only when
 # every queue has a live worker), the API last. One at a time: only one extra pod is ever starting.
 $Rollout = [ordered]@{
-    $App   = @('worker-threats', 'worker-scenarios', 'worker-maintenance', 'beat', 'api')
-    $Extra = @('worker-threats', 'worker-scenarios')
+    $App   = @('worker-threats', 'worker-scenarios', 'worker-service-mapper', 'worker-maintenance', 'beat', 'api')
+    $Extra = @('worker-threats', 'worker-scenarios', 'worker-service-mapper')
 }
 # v2's monitoring programs (deploy\observability.yaml, deploy\flower.yaml): v1 has some under the same names.
 $Monitoring = @('prometheus', 'alertmanager', 'loki', 'alloy', 'grafana', 'redis-exporter', 'kube-state-metrics', 'flower')

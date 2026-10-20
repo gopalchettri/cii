@@ -29,7 +29,7 @@ from app.core.exceptions import (
 )
 from app.core.lease_signal import lease_lost_signal
 from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields
-from app.realtime.publisher import publish_remediation_status, publish_session_status
+from app.realtime.publisher import publish_mapping_status, publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
 
 log = structlog.get_logger(__name__)
@@ -37,6 +37,7 @@ log = structlog.get_logger(__name__)
 
 #: Every collection whose records carry a leased job, and how a change to one of them is announced.
 JOB_COLLECTIONS: dict[Collection, Callable[[str], None]] = {
+    Collection.SERVICE_MAPPINGS: publish_mapping_status,
     Collection.SESSIONS: publish_session_status,
     Collection.REMEDIATIONS: publish_remediation_status,
 }

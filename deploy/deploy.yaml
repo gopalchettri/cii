@@ -16,8 +16,8 @@
 # single pod blocks every node drain); the API has two copies and its budget.
 #
 # CPU budget (v1's notes: ai-threatgen allows 6 CPU in limits). Limits here: api 2 x 1, threats 1, scenarios 1,
-# maintenance 0.5, beat 0.25 = 4.75 CPU, and an update starts one extra pod at a time (at most 1 CPU): 5.75.
-# tests/test_deploy.py keeps it under 6.
+# service-mapper 0.25, maintenance 0.5, beat 0.25 = 5 CPU, and an update starts one extra pod at a time (at most
+# 1 CPU): 6, the limit. tests/test_deploy.py keeps it within 6.
 #
 # Every pod carries app.kubernetes.io/part-of: tsg and app.kubernetes.io/component: api|worker|beat: Prometheus
 # names its jobs by the component (the alerts read job="api" and job="worker") and Alloy labels logs by both.
@@ -201,6 +201,58 @@ spec:
           resources:
             requests: { cpu: 500m, memory: 1Gi }
             limits: { cpu: "1", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-service-mapper
+  namespace: ai-threatgen
+  labels: { app.kubernetes.io/name: worker-service-mapper, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker-service-mapper }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: worker-service-mapper, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+        tsg/settings-fingerprint: none
+    spec:
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_servicemapper]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env:
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+          ports: [{ name: metrics, containerPort: 9100 }]
+          livenessProbe:
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 125m, memory: 1Gi }
+            limits: { cpu: 250m, memory: 2Gi }
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

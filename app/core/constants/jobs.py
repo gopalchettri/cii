@@ -8,9 +8,12 @@ class Queue(StrEnum):
     THREATS = "tsg_threats"
     SCENARIOS = "tsg_scenarios"
     MAINTENANCE = "tsg_maintenance"
+    REMEDIATION = "tsg_remediation"
+    SERVICEMAPPER = "tsg_servicemapper"
 
 
 class TaskName(StrEnum):
+    MAP_SERVICES = "tsg_map_services"
     FIND_THREATS = "tsg_find_threats"
     WRITE_SCENARIOS = "tsg_write_scenarios"
     MAP_CONTROLS = "tsg_map_controls"
@@ -23,6 +26,7 @@ class TaskName(StrEnum):
 
 #: The queue each task's messages go to (the Celery app's task_routes).
 TASK_ROUTES: Final[dict[str, dict[str, str]]] = {
+    TaskName.MAP_SERVICES: {"queue": Queue.SERVICEMAPPER},
     TaskName.FIND_THREATS: {"queue": Queue.THREATS},
     TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
     TaskName.MAP_CONTROLS: {"queue": Queue.SCENARIOS},
@@ -60,6 +64,7 @@ class Event(StrEnum):
 
     SESSION_UPDATED = "session.updated"
     REMEDIATION_UPDATED = "remediation.updated"
+    MAPPING_UPDATED = "mapping.updated"
     SESSION_DELETED = "session.deleted"  # the run is gone: the stream ends
     REMEDIATION_DELETED = "remediation.deleted"  # the plan is gone with its run: the stream ends
 
@@ -69,6 +74,7 @@ class Realtime:
 
     SESSION_CHANNEL: Final = "tsg:events:session:{session_id}"  # one Redis channel per run
     REMEDIATION_CHANNEL: Final = "tsg:events:remediation:{remediation_id}"  # one per remediation plan
+    MAPPING_CHANNEL: Final = "tsg:events:mapping:{mapping_id}"
     CHANNEL_PATTERN: Final = "tsg:events:*"  # one subscription per API process covers every channel
     RETRY_MS: Final = 3_000  # tells a client how soon to reconnect after its stream drops
     STREAM_BUFFER: Final = 16  # updates held for a slow client; the oldest is dropped

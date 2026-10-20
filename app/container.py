@@ -34,14 +34,21 @@ from app.data_access.remediation.remediation_repository import RemediationReposi
 from app.data_access.scenario.asset_repository import AssetRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
+from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import rerank_gate_for
 from app.domain.scenario.plan import ThreatFinder
-from app.realtime.publisher import publish_remediation_status, publish_session_status
+from app.realtime.publisher import (
+    publish_mapping_status,
+    publish_remediation_status,
+    publish_session_status,
+)
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
 from app.search.external_intelligence.intelligence_metrics import SNAPSHOT_AGE_SECONDS
 from app.search.library_cache import LibraryCache
 from app.search.service import LibrarySearch
+from app.search.service_mapper import ServiceCandidateSearch
 from app.services.admin.admin_service import AdminService
 from app.services.external_intelligence.external_intelligence_service import ExternalIntelligenceService
 from app.services.jobs.job_service import JobService
@@ -57,6 +64,8 @@ from app.worker.remediation.remediation_plan_job import RemediationPlanJob
 from app.worker.scenario.controls_job import ControlsJob
 from app.worker.scenario.plan_job import PlanJob
 from app.worker.scenario.write_job import ScenarioWriteJob
+from app.worker.service_mapper.catalog_provider import ServiceCatalogProvider
+from app.worker.service_mapper.job import ServiceMapperJob
 
 #: How long this process waits for a free AI slot: the API answers callers, so it waits briefly; a worker
 #: waits longer, because its job would otherwise only be retried later (set_up_worker).
@@ -250,7 +259,51 @@ def get_external_intelligence_service() -> ExternalIntelligenceService:
 
 @singleton
 def get_service_mapper_service() -> ServiceMapperService:
-    return ServiceMapperService()
+    return ServiceMapperService(
+        get_mapping_repository(),
+        get_mapping_history_repository(),
+        get_settings(),
+        send_job,
+        get_service_catalog_repository(),
+        get_audit_repository(),
+        publish_mapping_status,
+    )
+
+
+@singleton
+def get_service_catalog_repository() -> ServiceCatalogRepository:
+    return ServiceCatalogRepository(get_stored_procedure_client())
+
+
+@singleton
+def get_service_catalog_provider() -> ServiceCatalogProvider:
+    return ServiceCatalogProvider(get_service_catalog_repository())
+
+
+@singleton
+def get_service_candidate_search() -> ServiceCandidateSearch:
+    return ServiceCandidateSearch(get_embedding_model())
+
+
+@singleton
+def get_mapping_repository() -> MappingRepository:
+    return MappingRepository()
+
+
+@singleton
+def get_mapping_history_repository() -> MappingHistoryRepository:
+    return MappingHistoryRepository()
+
+
+@singleton
+def get_service_mapper_job() -> ServiceMapperJob:
+    return ServiceMapperJob(
+        get_mapping_repository(),
+        get_mapping_history_repository(),
+        get_service_catalog_provider(),
+        get_service_candidate_search(),
+        get_chat_model(),
+    )
 
 
 # --- scenario, remediation and jobs
@@ -385,6 +438,8 @@ def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
         get_threat_scenario_session_repository(),
         get_threat_scenario_repository(),
         get_remediation_repository(),
+        get_mapping_repository(),
+        get_mapping_history_repository(),
         get_audit_repository(),
         get_ai_call_repository(),
         get_embedding_repository(),

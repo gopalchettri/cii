@@ -172,6 +172,10 @@ class AuditAction(StrEnum):
     KEY_MINTED = "key.minted"
     KEY_REVOKED = "key.revoked"
     RUN_STARTED = "run.started"
+    MAPPING_STARTED = "mapping.started"
+    MAPPING_REGENERATED = "mapping.regenerated"
+    MAPPING_REVIEWED = "mapping.reviewed"
+    DEPENDENCY_REVIEWED = "mapping.dependency_reviewed"
     RUN_NEXT_SET = "run.next_set"
     RUN_REGENERATED = "run.regenerated"
     SCENARIOS_ACCEPTED = "scenario.accepted"
@@ -202,6 +206,7 @@ class AuditTarget(StrEnum):
 
     API_CLIENT = "api_client"
     SESSION = "session"
+    MAPPING = "mapping"
     SCENARIO = "scenario"
     REMEDIATION = "remediation"
     LIBRARY_THREAT = "library_threat"
@@ -232,28 +237,9 @@ class MapperDirection(StrEnum):
     DOWNSTREAM = "downstream"
 
 
-class MapperConfidence(StrEnum):
-    """The model's own estimate, not a probability."""
-
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-
 class MapperAction(StrEnum):
     ACCEPT = "accept"
     REJECT = "reject"
-
-
-class MapperRecommendationStatus(StrEnum):
-    PROPOSED = "proposed"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    SUPERSEDED = "superseded"  # was proposed when a newer round started
-
-
-class MapperEvent(StrEnum):
-    STATUS = "status"  # the one live-status event: ids and status only, never the result
 
 
 class MapperConflict(StrEnum):
@@ -261,35 +247,27 @@ class MapperConflict(StrEnum):
 
     GENERATION_IN_PROGRESS = "generation_in_progress"
     DECISION_FINAL = "decision_final"
-    SUPERSEDED = "superseded"
+    RELATIONSHIPS_PENDING = "relationships_pending"  # accept needs a decision on every relationship
 
 
 class MapperMessage(StrEnum):
+    AI_ANSWER_INVALID = "The AI answer did not satisfy the Service Mapper output contract."
+    IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another mapping input."
+    MAPPING_NOT_READY = "The mapping has not finished generating."
+    DEPENDENCY_NOT_FOUND = "No such dependency in the current generation."
+    DIRECTION_NOT_PRESENT = "This dependency has no relationship in the requested direction."
+    REQUIRED_VALUE_BLANK = "A required value cannot be blank."
+    ENTITY_NAME_INVALID = "Each entity name must contain 1 to 255 characters."
+    ENTITY_NAMES_REPEATED = "Entity names must be unique."
+    CATALOG_RESULT_SETS = "The Service Mapper SQL procedures returned an unexpected number of result sets."
+    CATALOG_ROW_INVALID = "The Service Mapper SQL catalog contains an invalid or inconsistent row."
     NOT_YOUR_ENTITY = "entity_id must be the caller's entity (the X-Entity-Id header)."
     MAPPING_NOT_FOUND = "No such mapping."
     ROUND_RUNNING = "A round is already running for this mapping."
     DECISION_FINAL = "This recommendation was already decided differently; decisions are final."
-    RECOMMENDATION_SUPERSEDED = "A newer round replaced this recommendation."
-    ONE_SERVICE_ONLY = "Give service_id (an existing service) or service_name (a new one): exactly one."
+    RELATIONSHIPS_PENDING = "Decide every upstream and downstream relationship before accepting the mapping."
+    MAPPING_DECIDED = "The mapping is already decided; its relationships cannot change."
 
 
 class MapperLimits:
-    MAX_SERVICE_NAME_CHARS: Final = 255
-    MAX_COMMENT_CHARS: Final = 2_000
-
-
-class MapperSample:
-    """Fixed answers of the stub; the all-zero ids end in a digit that picks the error a caller sees."""
-
-    MAPPING_ID: Final = "6a1f0c2e9b7d4e58a3c1d2e4f5a60718"
-    ACCEPTED_ID: Final = "c41d9e07b2a84f6e9d5a3b1c7e8f2a60"
-    REJECTED_ID: Final = "e5b2a7c9013d4f68b9a1c3d5e7f90214"
-    PROPOSED_ID: Final = "0b7e3d5a9c1f4286a4d6e8f0b2c41973"
-    UNKNOWN_MAPPING_ID: Final = "0" * 32  # any call on it: 404
-    BUSY_MAPPING_ID: Final = "0" * 31 + "1"  # regenerate on it: 409 generation_in_progress
-    DECIDED_RECOMMENDATION_ID: Final = "0" * 31 + "2"  # decide on it: 409 decision_final
-    STALE_RECOMMENDATION_ID: Final = "0" * 31 + "3"  # decide on it: 409 superseded
-    SERVICE_ID: Final = 31
-    SERVICE_NAME: Final = "Online Payment Service"
-    SECTOR: Final = "Finance"
-    SUB_SECTOR: Final = "Payments"
+    CANDIDATE_POOL: Final = 80

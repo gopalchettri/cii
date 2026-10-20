@@ -165,18 +165,35 @@ def plans(api: Api, args: argparse.Namespace, run: str, scenario: str) -> None:
 
 def service_mapper(api: Api, args: argparse.Namespace) -> None:
     api.call("GET", "/v1/entities/{listed_entity_id}/services", listed_entity_id=args.entity)
-    body = {"entity_id": args.entity, "service_id": args.service}
+    body = {
+        "service_name": args.mapper_service_name,
+        "service_description": args.mapper_service_description,
+        "sector": args.mapper_sector,
+        "subsector": args.mapper_subsector,
+        "entity_names": [args.mapper_entity_name],
+    }
     mapping = api.call("POST", "/v1/service-mapper", (202,), idempotent=True, body=body)["mapping_id"]
+    api.call("GET", "/v1/service-mapper")
     api.first_event(MAPPING + "/events", mapping_id=mapping)
     done = wait(api, MAPPING, job_settled, 20, mapping_id=mapping) or {}
-    found = done.get("recommendations", [])
-    proposed = [item["recommendation_id"] for item in found if item["status"] == "proposed"]
-    if proposed:
-        path = "/v1/service-mapper/recommendations/{recommendation_id}/decision"
-        decision = {"action": "accept", "reviewer_comment": "e2e"}
-        api.call("PATCH", path, body=decision, recommendation_id=proposed[0])
-    else:
-        FAILED.append("service mapper: no proposed recommendation to decide on")
+    if done.get("status") != "done":
+        FAILED.append("service mapper: generation did not complete")
+        return
+    directions = (("upstream_services", ("upstream",)), ("downstream_services", ("downstream",)))
+    directions += (("bidirectional_services", ("upstream", "downstream")),)
+    relationships = [(i["dependency_id"], d) for f, ds in directions for i in done.get(f, []) for d in ds]
+    if relationships:  # the mapping is accepted only once every relationship has its own decision
+        api.call("POST", MAPPING + "/decision", (409,), body={"action": "accept"}, mapping_id=mapping)
+    for dependency_id, direction in relationships or [("missing", "upstream")]:
+        api.call(
+            "POST",
+            MAPPING + "/dependencies/{dependency_id}/decision",
+            (200,) if relationships else (404,),
+            body={"direction": direction, "action": "accept"},
+            mapping_id=mapping,
+            dependency_id=dependency_id,
+        )
+    api.call("POST", MAPPING + "/decision", body={"action": "accept"}, mapping_id=mapping)
     api.call("POST", MAPPING + "/regenerate", (202,), idempotent=True, mapping_id=mapping)
     wait(api, MAPPING, job_settled, 20, mapping_id=mapping)
 
@@ -235,6 +252,14 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--service", type=int, default=1546)
     parser.add_argument("--sector", type=int, default=183)
     parser.add_argument("--subsector", type=int, default=199)
+    parser.add_argument("--mapper-service-name", default="Power Generation System")
+    parser.add_argument(
+        "--mapper-service-description",
+        default="Generates electricity and dispatches it to the transmission grid.",
+    )
+    parser.add_argument("--mapper-sector", default="Energy")
+    parser.add_argument("--mapper-subsector", default="Power")
+    parser.add_argument("--mapper-entity-name", default="Example Utility")
     parser.add_argument("--source", default="cisa_kev", help="the intel source withdrawn and approved again")
     return parser.parse_args()
 

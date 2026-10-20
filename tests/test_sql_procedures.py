@@ -309,7 +309,23 @@ def test_grants_name_every_tsg_procedure_and_nothing_else() -> None:
     grants = (REPO / "scripts" / "sql" / "grants.sql").read_text(encoding="utf-8")
     granted = set(re.findall(r"GRANT EXECUTE ON dbo\.(\w+) TO", grants))
     shipped = {path.stem for path in procedure_files()}
-    assert granted == shipped == {procedure.value for procedure in StoredProcedure}
+    external = {
+        StoredProcedure.GET_SECTORS_AND_SUBSECTORS.value,
+        StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS.value,
+        StoredProcedure.GET_SERVICES_WITH_SECTOR_DETAILS.value,
+    }
+    assert shipped == {procedure.value for procedure in StoredProcedure} - external
+    assert granted == {procedure.value for procedure in StoredProcedure}
+
+
+def test_service_mapper_associations_keep_exact_hierarchy_and_filter_deleted_rows(
+    procedures: StoredProcedureClient,
+) -> None:
+    sectors, links, entities = procedures.execute_procedure(StoredProcedure.GET_SERVICE_MAPPER_ASSOCIATIONS)
+    assert {row["sector_id"] for row in sectors} == {10, 11}
+    assert next(row for row in sectors if row["sector_id"] == 11)["parent_sector_id"] == 10
+    assert links == [{"service_id": 1, "sector_id": 11}, {"service_id": 2, "sector_id": 10}]
+    assert entities == [{"service_id": 1, "sector_id": 11, "entity_id": 86, "entity_name": "Test Entity"}]
 
 
 def test_a_backup_copy_beside_a_procedure_is_never_installed_or_granted(tmp_path: Path) -> None:

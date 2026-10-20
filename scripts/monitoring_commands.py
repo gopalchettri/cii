@@ -25,7 +25,8 @@ FIXED_GRAFANA_SETTINGS = (
     "GF_LOG_MODE",
     "GF_PATHS_",
 )
-QUEUES = ("tsg_threats", "tsg_scenarios", "tsg_maintenance")  # app/core/constants.py Queue
+# Keep in step with app/core/constants.py Queue for queue-depth monitoring.
+QUEUES = ("tsg_threats", "tsg_scenarios", "tsg_servicemapper", "tsg_maintenance")
 QUEUE_KEY_PREFIX = "tsg:"  # app/core/constants.py Worker.BROKER_KEY_PREFIX
 Command = tuple[list[str], dict[str, str]]  # (command line, extra environment)
 

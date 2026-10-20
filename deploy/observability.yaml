@@ -622,7 +622,7 @@ spec:
               valueFrom: { secretKeyRef: { name: tsg-monitoring, key: REDIS_DB } }
             # Each Celery queue is a Redis list named <Worker.BROKER_KEY_PREFIX><queue>: its length = jobs waiting.
             - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS
-              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_maintenance"
+              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_maintenance"
             - { name: REDIS_EXPORTER_INCL_SYSTEM_METRICS, value: "false" }
           ports: [{ name: metrics, containerPort: 9121 }]
           readinessProbe:

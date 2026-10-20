@@ -5,7 +5,8 @@
 SET NOCOUNT ON;
 
 -- Platform tables (owned by the onboarding product; TSG only reads them through tsg_GetAssetContext).
-CREATE TABLE dbo.[group] (id INT IDENTITY PRIMARY KEY, technology_context NVARCHAR(MAX) NULL);
+CREATE TABLE dbo.[group] (id INT IDENTITY PRIMARY KEY, name NVARCHAR(255) NULL,
+    is_deleted BIT NOT NULL DEFAULT 0, technology_context NVARCHAR(MAX) NULL);
 CREATE TABLE dbo.ctm_scan_category (id INT IDENTITY PRIMARY KEY, code NVARCHAR(45) NULL, name NVARCHAR(255) NULL);
 CREATE TABLE dbo.ctm_scan_entity (
     id INT IDENTITY PRIMARY KEY, type NVARCHAR(255) NULL, name NVARCHAR(255) NULL, ctm_category_id INT NULL,
@@ -14,9 +15,13 @@ CREATE TABLE dbo.ctm_scan_entity (
     data_handled NVARCHAR(MAX) NULL, can_service_continue_without_asset BIT NULL,
     has_disaster_recovery_setup BIT NULL);
 CREATE TABLE dbo.onboarding_services (
-    id INT IDENTITY PRIMARY KEY, name NVARCHAR(255) NOT NULL, is_deleted BIT NOT NULL DEFAULT 0);
+    id INT IDENTITY PRIMARY KEY, name NVARCHAR(255) NOT NULL, description NVARCHAR(MAX) NULL,
+    sector_id INT NULL, is_deleted BIT NOT NULL DEFAULT 0);
 CREATE TABLE dbo.onboarding_sectors (
     id INT IDENTITY PRIMARY KEY, name NVARCHAR(255) NOT NULL, parent_id INT NULL, is_deleted BIT NOT NULL DEFAULT 0);
+CREATE TABLE dbo.onboarding_sector_services (sector_id INT NOT NULL, service_id INT NOT NULL);
+CREATE TABLE dbo.onboarding_service_entity (sector_id INT NOT NULL, service_id INT NOT NULL,
+    group_id INT NOT NULL);
 CREATE TABLE dbo.ctm_scan_entity_bu (
     id INT IDENTITY PRIMARY KEY, ctm_scan_entity_id INT NOT NULL, group_id INT NOT NULL, service_id INT NULL);
 CREATE TABLE dbo.onboarding_supporting_systems (

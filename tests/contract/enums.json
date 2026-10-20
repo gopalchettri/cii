@@ -30,6 +30,7 @@
   "RELEVANCE_GATE": "relevance_gate",
   "REMEDIATION_PLAN": "remediation_plan",
   "RERANK": "rerank",
+  "SERVICE_MAPPER": "service_mapper",
   "WRITE_SCENARIO": "write_scenario"
  },
  "AnswerProblem": {
@@ -72,6 +73,7 @@
  "AuditAction": {
   "ADMIN_JOB_FINISHED": "admin.job_finished",
   "ADMIN_JOB_STARTED": "admin.job_started",
+  "DEPENDENCY_REVIEWED": "mapping.dependency_reviewed",
   "EXTERNAL_INTELLIGENCE_EVIDENCE_USED": "external_intelligence.evidence_used",
   "EXTERNAL_INTELLIGENCE_REFRESHED": "external_intelligence.refreshed",
   "EXTERNAL_INTELLIGENCE_REFRESH_FAILED": "external_intelligence.refresh_failed",
@@ -83,6 +85,9 @@
   "LIBRARY_DECIDED": "library.decided",
   "LIBRARY_PROMOTED": "library.promoted",
   "LIBRARY_PROPOSED": "library.proposed",
+  "MAPPING_REGENERATED": "mapping.regenerated",
+  "MAPPING_REVIEWED": "mapping.reviewed",
+  "MAPPING_STARTED": "mapping.started",
   "PLAN_ACCEPTED": "plan.accepted",
   "PLAN_CANCELLED": "plan.cancelled",
   "PLAN_COMPLETED": "plan.completed",
@@ -102,6 +107,7 @@
   "API_CLIENT": "api_client",
   "EXTERNAL_INTELLIGENCE_SOURCE": "external_intelligence_source",
   "LIBRARY_THREAT": "library_threat",
+  "MAPPING": "mapping",
   "REMEDIATION": "remediation",
   "SCENARIO": "scenario",
   "SESSION": "session"
@@ -123,6 +129,8 @@
   "QUERY_VECTORS": "tsg_query_vectors",
   "REMEDIATIONS": "tsg_remediations",
   "SCENARIOS": "tsg_scenarios",
+  "SERVICE_MAPPINGS": "tsg_service_mappings",
+  "SERVICE_MAPPING_HISTORY": "tsg_service_mapping_history",
   "SESSIONS": "tsg_sessions",
   "SQL_OPERATIONS": "tsg_sql_operations"
  },
@@ -200,6 +208,7 @@
  "EmbeddingCorpus": {
   "CONTROL": "control",
   "EXTERNAL_INTELLIGENCE": "external_intelligence",
+  "SERVICE": "service",
   "THREAT": "threat",
   "THREAT_ACTOR": "threat_actor",
   "THREAT_TYPE": "threat_type"
@@ -231,6 +240,7 @@
   "VALIDATION_ERROR": "validation_error"
  },
  "Event": {
+  "MAPPING_UPDATED": "mapping.updated",
   "REMEDIATION_DELETED": "remediation.deleted",
   "REMEDIATION_UPDATED": "remediation.updated",
   "SESSION_DELETED": "session.deleted",
@@ -388,28 +398,14 @@
   "ACCEPT": "accept",
   "REJECT": "reject"
  },
- "MapperConfidence": {
-  "HIGH": "high",
-  "LOW": "low",
-  "MEDIUM": "medium"
- },
  "MapperConflict": {
   "DECISION_FINAL": "decision_final",
   "GENERATION_IN_PROGRESS": "generation_in_progress",
-  "SUPERSEDED": "superseded"
+  "RELATIONSHIPS_PENDING": "relationships_pending"
  },
  "MapperDirection": {
   "DOWNSTREAM": "downstream",
   "UPSTREAM": "upstream"
- },
- "MapperEvent": {
-  "STATUS": "status"
- },
- "MapperRecommendationStatus": {
-  "ACCEPTED": "accepted",
-  "PROPOSED": "proposed",
-  "REJECTED": "rejected",
-  "SUPERSEDED": "superseded"
  },
  "PathProblem": {
   "ATTACKER_RETIRED": "its acting attacker is no longer active in the library",
@@ -484,7 +480,9 @@
  },
  "Queue": {
   "MAINTENANCE": "tsg_maintenance",
+  "REMEDIATION": "tsg_remediation",
   "SCENARIOS": "tsg_scenarios",
+  "SERVICEMAPPER": "tsg_servicemapper",
   "THREATS": "tsg_threats"
  },
  "RemediationProgress": {
@@ -616,6 +614,10 @@
   "GET_ASSET_CONTEXT": "tsg_GetAssetContext",
   "GET_CONTROL_LIBRARY": "tsg_GetControlLibrary",
   "GET_LIBRARY_STAMP": "tsg_GetLibraryStamp",
+  "GET_SECTORS_AND_SUBSECTORS": "Onboarding_GetSectorsAndSubsectorsList",
+  "GET_SECTOR_SERVICE_MAPPINGS": "Onboarding_GetSectorServiceMappings",
+  "GET_SERVICES_WITH_SECTOR_DETAILS": "Onboarding_GetServicesWithSectorDetails",
+  "GET_SERVICE_MAPPER_ASSOCIATIONS": "tsg_GetServiceMapperAssociations",
   "GET_THREAT_LIBRARY": "tsg_GetThreatLibrary",
   "IMPORT_THREAT_LIBRARY": "tsg_ImportThreatLibrary",
   "LIST_PENDING_THREATS": "tsg_ListPendingThreats",
@@ -649,6 +651,7 @@
   "BUILD_LIBRARY_INDEXES": "tsg_build_library_indexes",
   "FIND_THREATS": "tsg_find_threats",
   "MAP_CONTROLS": "tsg_map_controls",
+  "MAP_SERVICES": "tsg_map_services",
   "REAP": "tsg_reap",
   "REFRESH_EXTERNAL_INTELLIGENCE": "tsg_refresh_external_intelligence",
   "RETRY_CONTROLS": "tsg_retry_controls",

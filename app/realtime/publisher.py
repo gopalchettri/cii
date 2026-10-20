@@ -31,6 +31,15 @@ def publish_remediation_status(remediation_id: str) -> None:
     _publish(remediation_channel(remediation_id), remediation_id)
 
 
+def mapping_channel(mapping_id: str) -> str:
+    return Realtime.MAPPING_CHANNEL.format(mapping_id=mapping_id)
+
+
+def publish_mapping_status(mapping_id: str) -> None:
+    """Tell mapping streams to re-read the saved status, without putting results on Redis."""
+    _publish(mapping_channel(mapping_id), mapping_id)
+
+
 def _publish(channel: str, record_id: str) -> None:
     """Best effort, on purpose: the change is already saved, so a failure here costs only this live update
     (the client sees it on its next change or reconnect), never the job; any failure is logged, never

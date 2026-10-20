@@ -35,6 +35,8 @@ class Step(StrEnum):
 
 
 class Collection(StrEnum):
+    SERVICE_MAPPINGS = "tsg_service_mappings"
+    SERVICE_MAPPING_HISTORY = "tsg_service_mapping_history"
     SESSIONS = "tsg_sessions"
     SCENARIOS = "tsg_scenarios"
     API_CLIENTS = "tsg_api_clients"
@@ -85,6 +87,7 @@ class Timeouts:
 
 
 class Cache:
+    SERVICE_MAPPER_CATALOG_SECONDS: Final = 60
     API_KEY_TTL_SECONDS: Final = 60  # an API key is checked again after this
     LIBRARY_STAMP_EVERY_SECONDS: Final = 60  # the library stamp is read again after this
     LIBRARY_INDEXES_EVERY_SECONDS: Final = 1_800  # the maintenance worker embeds new library rows this often
@@ -112,6 +115,7 @@ class AiOutcome(StrEnum):
 
 
 class AiTask(StrEnum):
+    SERVICE_MAPPER = "service_mapper"
     """Why an AI model is called (metrics label and tsg_ai_calls field)."""
 
     RELEVANCE_GATE = "relevance_gate"
@@ -125,6 +129,7 @@ class AiTask(StrEnum):
 
 #: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a retry differs.
 CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
+    AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
     AiTask.PLAN_CHECK: 0.0,
@@ -165,6 +170,7 @@ class EmbeddingCorpus(StrEnum):
     THREAT_ACTOR = "threat_actor"
     THREAT_TYPE = "threat_type"
     EXTERNAL_INTELLIGENCE = "external_intelligence"
+    SERVICE = "service"
 
 
 #: Each library corpus by the name the embeddings API reports it under.
@@ -177,6 +183,7 @@ LIBRARY_OF_CORPUS: Final = {
 
 #: The table each corpus's rows come from (tsg_embeddings.sources[].table).
 EMBEDDING_SOURCE_TABLE: Final[dict[EmbeddingCorpus, str]] = {
+    EmbeddingCorpus.SERVICE: "onboarding_services",
     EmbeddingCorpus.CONTROL: "Control_Library",
     EmbeddingCorpus.THREAT: "Threat_Catalogue",
     EmbeddingCorpus.THREAT_ACTOR: "Threat_Actor",

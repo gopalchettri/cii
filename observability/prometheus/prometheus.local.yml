@@ -20,7 +20,7 @@ scrape_configs:
       - targets: ["localhost:8000"]
   - job_name: worker # CII_WORKER_METRICS_PORT: the main worker, and the maintenance worker (run.ps1)
     static_configs:
-      - targets: ["localhost:9100", "localhost:9102"]
+      - targets: ["localhost:9100", "localhost:9102", "localhost:9103"]
   - job_name: flower
     metrics_path: /flower/metrics
     static_configs:

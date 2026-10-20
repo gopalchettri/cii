@@ -6,8 +6,7 @@ from typing import Any
 from app.core.constants import ApiTag
 
 API_DESCRIPTION = """
-**Threat Scenario Generator (TSG) v2.** Work through the groups in order: set-up once (2-4), then runs,
-review, remediation plans.
+**Threat Scenario Generator (TSG) | Remedation | Service Mapper.
 
 **Who is calling.** Every call in groups 5-9 and 11 sends four headers: `X-API-Key` (from group 2),
 `X-User-Id`, `X-Entity-Id` (a number) and `X-Tenant-Id`. Groups 2, 3 and 10 send `X-Admin-Key` instead.
@@ -48,7 +47,10 @@ _GROUPS: dict[ApiTag, str] = {
         "Threats proposed by people or by the AI wait here for a curator to approve or reject. Needs "
         "`X-Admin-Key`."
     ),
-    ApiTag.SERVICE_MAPPER: "Suggest which services an asset supports; accept or reject each suggestion.",
+    ApiTag.SERVICE_MAPPER: (
+        "Generate upstream and downstream service dependencies from a described service, review each "
+        "relationship, and regenerate a new version. Requires the caller identity headers."
+    ),
 }
 
 #: Swagger shows the groups in this order (ApiTag's).

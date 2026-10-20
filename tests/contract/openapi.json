@@ -378,6 +378,73 @@
     "title": "ApiClientOut",
     "type": "object"
    },
+   "BidirectionalService": {
+    "properties": {
+     "ai_suggested": {
+      "title": "Ai Suggested",
+      "type": "boolean"
+     },
+     "dependency_id": {
+      "title": "Dependency Id",
+      "type": "string"
+     },
+     "downstream": {
+      "$ref": "#/components/schemas/DirectionalDependency"
+     },
+     "sector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sector"
+     },
+     "service_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Service Id"
+     },
+     "service_name": {
+      "title": "Service Name",
+      "type": "string"
+     },
+     "subsector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Subsector"
+     },
+     "upstream": {
+      "$ref": "#/components/schemas/DirectionalDependency"
+     }
+    },
+    "required": [
+     "dependency_id",
+     "service_id",
+     "service_name",
+     "sector",
+     "subsector",
+     "ai_suggested",
+     "upstream",
+     "downstream"
+    ],
+    "title": "BidirectionalService",
+    "type": "object"
+   },
    "ControlCoverage": {
     "enum": [
      "gaps",
@@ -578,69 +645,47 @@
    },
    "CreateMappingRequest": {
     "additionalProperties": false,
-    "description": "Body of POST /v1/service-mapper: one service of an entity, an existing one (`service_id`) or a new one\n(`service_name`, with its sector and sub-sector when known). An unknown field is refused (422).",
     "properties": {
-     "entity_id": {
-      "exclusiveMinimum": 0.0,
-      "maximum": 2147483647.0,
-      "title": "Entity Id",
-      "type": "integer"
+     "entity_names": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Entity Names",
+      "type": "array"
      },
-     "sector_id": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "maximum": 2147483647.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Sector Id"
+     "sector": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Sector",
+      "type": "string"
      },
-     "service_id": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "maximum": 2147483647.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Service Id"
+     "service_description": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Service Description",
+      "type": "string"
      },
      "service_name": {
-      "anyOf": [
-       {
-        "maxLength": 255,
-        "minLength": 1,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Service Name"
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Service Name",
+      "type": "string"
      },
-     "sub_sector_id": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "maximum": 2147483647.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Sub Sector Id"
+     "subsector": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Subsector",
+      "type": "string"
      }
     },
     "required": [
-     "entity_id"
+     "service_name",
+     "service_description",
+     "sector",
+     "subsector",
+     "entity_names"
     ],
     "title": "CreateMappingRequest",
     "type": "object"
@@ -653,37 +698,6 @@
     ],
     "title": "Decision",
     "type": "string"
-   },
-   "DecisionInfo": {
-    "properties": {
-     "at": {
-      "format": "date-time",
-      "title": "At",
-      "type": "string"
-     },
-     "by": {
-      "title": "By",
-      "type": "string"
-     },
-     "comment": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Comment"
-     }
-    },
-    "required": [
-     "by",
-     "at",
-     "comment"
-    ],
-    "title": "DecisionInfo",
-    "type": "object"
    },
    "DecisionOutcome": {
     "description": "tsg_DecidePendingThreats's answer for one id.",
@@ -698,30 +712,207 @@
     "title": "DecisionOutcome",
     "type": "string"
    },
-   "DecisionRequest": {
+   "DecisionResult": {
+    "properties": {
+     "catalogue_id": {
+      "title": "Catalogue Id",
+      "type": "integer"
+     },
+     "outcome": {
+      "$ref": "#/components/schemas/DecisionOutcome"
+     }
+    },
+    "required": [
+     "catalogue_id",
+     "outcome"
+    ],
+    "title": "DecisionResult",
+    "type": "object"
+   },
+   "DependencyDecisionRequest": {
     "additionalProperties": false,
-    "description": "Body of PATCH .../decision: accept or reject one recommendation, with an optional comment.",
     "properties": {
      "action": {
       "$ref": "#/components/schemas/MapperAction"
      },
-     "reviewer_comment": {
+     "direction": {
+      "$ref": "#/components/schemas/MapperDirection"
+     }
+    },
+    "required": [
+     "direction",
+     "action"
+    ],
+    "title": "DependencyDecisionRequest",
+    "type": "object"
+   },
+   "DependencyService": {
+    "properties": {
+     "accepted_by": {
       "anyOf": [
        {
-        "maxLength": 2000,
         "type": "string"
        },
        {
         "type": "null"
        }
       ],
-      "title": "Reviewer Comment"
+      "title": "Accepted By"
+     },
+     "accepted_datetime": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Accepted Datetime"
+     },
+     "ai_suggested": {
+      "title": "Ai Suggested",
+      "type": "boolean"
+     },
+     "applicability": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Applicability"
+     },
+     "dependency_id": {
+      "title": "Dependency Id",
+      "type": "string"
+     },
+     "dependency_reason": {
+      "title": "Dependency Reason",
+      "type": "string"
+     },
+     "isAccepted": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Isaccepted"
+     },
+     "sector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sector"
+     },
+     "service_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Service Id"
+     },
+     "service_name": {
+      "title": "Service Name",
+      "type": "string"
+     },
+     "subsector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Subsector"
      }
     },
     "required": [
-     "action"
+     "dependency_id",
+     "service_id",
+     "service_name",
+     "sector",
+     "subsector",
+     "dependency_reason",
+     "applicability",
+     "ai_suggested"
     ],
-    "title": "DecisionRequest",
+    "title": "DependencyService",
+    "type": "object"
+   },
+   "DirectionalDependency": {
+    "properties": {
+     "accepted_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Accepted By"
+     },
+     "accepted_datetime": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Accepted Datetime"
+     },
+     "applicability": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Applicability"
+     },
+     "dependency_reason": {
+      "title": "Dependency Reason",
+      "type": "string"
+     },
+     "isAccepted": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Isaccepted"
+     }
+    },
+    "required": [
+     "dependency_reason",
+     "applicability"
+    ],
+    "title": "DirectionalDependency",
     "type": "object"
    },
    "EmbeddingsBuildResult": {
@@ -1403,7 +1594,7 @@
     "properties": {
      "results": {
       "items": {
-       "$ref": "#/components/schemas/app__models__library_curation__DecisionResult"
+       "$ref": "#/components/schemas/DecisionResult"
       },
       "title": "Results",
       "type": "array"
@@ -1694,16 +1885,6 @@
     "title": "MapperAction",
     "type": "string"
    },
-   "MapperConfidence": {
-    "description": "The model's own estimate, not a probability.",
-    "enum": [
-     "high",
-     "medium",
-     "low"
-    ],
-    "title": "MapperConfidence",
-    "type": "string"
-   },
    "MapperDirection": {
     "description": "From the selected service: upstream = it needs this service, downstream = this one relies on it.",
     "enum": [
@@ -1713,18 +1894,7 @@
     "title": "MapperDirection",
     "type": "string"
    },
-   "MapperRecommendationStatus": {
-    "enum": [
-     "proposed",
-     "accepted",
-     "rejected",
-     "superseded"
-    ],
-    "title": "MapperRecommendationStatus",
-    "type": "string"
-   },
    "MappingAccepted": {
-    "description": "What a create or a regenerate answers at once: the job is queued, the result comes later.",
     "properties": {
      "generation": {
       "title": "Generation",
@@ -1746,6 +1916,19 @@
     "title": "MappingAccepted",
     "type": "object"
    },
+   "MappingDecisionRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "action": {
+      "$ref": "#/components/schemas/MapperAction"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "title": "MappingDecisionRequest",
+    "type": "object"
+   },
    "MappingError": {
     "properties": {
      "code": {
@@ -1764,12 +1947,131 @@
     "title": "MappingError",
     "type": "object"
    },
-   "MappingView": {
-    "description": "A mapping: its status and every recommendation of every round.",
+   "MappingList": {
     "properties": {
-     "entity_id": {
-      "title": "Entity Id",
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/MappingListItem"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "total": {
+      "title": "Total",
       "type": "integer"
+     }
+    },
+    "required": [
+     "items",
+     "total"
+    ],
+    "title": "MappingList",
+    "type": "object"
+   },
+   "MappingListItem": {
+    "properties": {
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "generation": {
+      "title": "Generation",
+      "type": "integer"
+     },
+     "mapping_id": {
+      "title": "Mapping Id",
+      "type": "string"
+     },
+     "review": {
+      "$ref": "#/components/schemas/MappingReview"
+     },
+     "selected_service": {
+      "$ref": "#/components/schemas/SelectedService"
+     },
+     "status": {
+      "$ref": "#/components/schemas/Status"
+     },
+     "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+     }
+    },
+    "required": [
+     "mapping_id",
+     "status",
+     "generation",
+     "review",
+     "selected_service",
+     "created_at",
+     "updated_at"
+    ],
+    "title": "MappingListItem",
+    "type": "object"
+   },
+   "MappingReview": {
+    "enum": [
+     "pending",
+     "accepted",
+     "rejected"
+    ],
+    "title": "MappingReview",
+    "type": "string"
+   },
+   "MappingSummary": {
+    "properties": {
+     "downstream_count": {
+      "title": "Downstream Count",
+      "type": "integer"
+     },
+     "max_downstream": {
+      "title": "Max Downstream",
+      "type": "integer"
+     },
+     "max_upstream": {
+      "title": "Max Upstream",
+      "type": "integer"
+     },
+     "unique_services": {
+      "title": "Unique Services",
+      "type": "integer"
+     },
+     "upstream_count": {
+      "title": "Upstream Count",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "unique_services",
+     "upstream_count",
+     "downstream_count",
+     "max_upstream",
+     "max_downstream"
+    ],
+    "title": "MappingSummary",
+    "type": "object"
+   },
+   "MappingView": {
+    "properties": {
+     "bidirectional_services": {
+      "items": {
+       "$ref": "#/components/schemas/BidirectionalService"
+      },
+      "title": "Bidirectional Services",
+      "type": "array"
+     },
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "downstream_services": {
+      "items": {
+       "$ref": "#/components/schemas/DependencyService"
+      },
+      "title": "Downstream Services",
+      "type": "array"
      },
      "error": {
       "anyOf": [
@@ -1789,28 +2091,43 @@
       "title": "Mapping Id",
       "type": "string"
      },
-     "recommendations": {
-      "items": {
-       "$ref": "#/components/schemas/Recommendation"
-      },
-      "title": "Recommendations",
-      "type": "array"
+     "review": {
+      "$ref": "#/components/schemas/MappingReview"
      },
-     "service": {
-      "$ref": "#/components/schemas/ServiceRef"
+     "selected_service": {
+      "$ref": "#/components/schemas/SelectedService"
      },
      "status": {
       "$ref": "#/components/schemas/Status"
+     },
+     "summary": {
+      "$ref": "#/components/schemas/MappingSummary"
+     },
+     "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+     },
+     "upstream_services": {
+      "items": {
+       "$ref": "#/components/schemas/DependencyService"
+      },
+      "title": "Upstream Services",
+      "type": "array"
      }
     },
     "required": [
      "mapping_id",
-     "entity_id",
      "status",
      "generation",
-     "error",
-     "service",
-     "recommendations"
+     "review",
+     "selected_service",
+     "upstream_services",
+     "downstream_services",
+     "bidirectional_services",
+     "summary",
+     "created_at",
+     "updated_at"
     ],
     "title": "MappingView",
     "type": "object"
@@ -2927,112 +3244,6 @@
      "results"
     ],
     "title": "PromotionResult",
-    "type": "object"
-   },
-   "Recommendation": {
-    "description": "One suggested service. `ai_generated` is true exactly when `related_service_id` is null.",
-    "properties": {
-     "ai_generated": {
-      "title": "Ai Generated",
-      "type": "boolean"
-     },
-     "confidence": {
-      "$ref": "#/components/schemas/MapperConfidence"
-     },
-     "cross_sector": {
-      "anyOf": [
-       {
-        "type": "boolean"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "description": "True when its sector differs from the selected service's.",
-      "title": "Cross Sector"
-     },
-     "decision": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/DecisionInfo"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
-     "direction": {
-      "$ref": "#/components/schemas/MapperDirection"
-     },
-     "generation": {
-      "title": "Generation",
-      "type": "integer"
-     },
-     "name": {
-      "title": "Name",
-      "type": "string"
-     },
-     "reason": {
-      "title": "Reason",
-      "type": "string"
-     },
-     "recommendation_id": {
-      "title": "Recommendation Id",
-      "type": "string"
-     },
-     "related_service_id": {
-      "anyOf": [
-       {
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Related Service Id"
-     },
-     "sector": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Sector"
-     },
-     "status": {
-      "$ref": "#/components/schemas/MapperRecommendationStatus"
-     },
-     "sub_sector": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Sub Sector"
-     }
-    },
-    "required": [
-     "recommendation_id",
-     "generation",
-     "direction",
-     "related_service_id",
-     "name",
-     "sector",
-     "sub_sector",
-     "cross_sector",
-     "ai_generated",
-     "reason",
-     "confidence",
-     "status",
-     "decision"
-    ],
-    "title": "Recommendation",
     "type": "object"
    },
    "RegenerateRequest": {
@@ -4435,8 +4646,65 @@
     "title": "ScopeView",
     "type": "object"
    },
+   "SelectedService": {
+    "properties": {
+     "entity_names": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Entity Names",
+      "type": "array"
+     },
+     "operational_context": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Operational Context"
+     },
+     "sector": {
+      "title": "Sector",
+      "type": "string"
+     },
+     "service_description": {
+      "title": "Service Description",
+      "type": "string"
+     },
+     "service_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Service Id"
+     },
+     "service_name": {
+      "title": "Service Name",
+      "type": "string"
+     },
+     "subsector": {
+      "title": "Subsector",
+      "type": "string"
+     }
+    },
+    "required": [
+     "service_name",
+     "service_description",
+     "sector",
+     "subsector",
+     "entity_names"
+    ],
+    "title": "SelectedService",
+    "type": "object"
+   },
    "ServiceRef": {
-    "description": "A service with its own sector and sub-sector; `service_id` is null for a service the AI named.",
     "properties": {
      "name": {
       "title": "Name",
@@ -4454,15 +4722,8 @@
       "title": "Sector"
      },
      "service_id": {
-      "anyOf": [
-       {
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Service Id"
+      "title": "Service Id",
+      "type": "integer"
      },
      "sub_sector": {
       "anyOf": [
@@ -5120,23 +5381,6 @@
     "title": "YesNo",
     "type": "string"
    },
-   "app__models__library_curation__DecisionResult": {
-    "properties": {
-     "catalogue_id": {
-      "title": "Catalogue Id",
-      "type": "integer"
-     },
-     "outcome": {
-      "$ref": "#/components/schemas/DecisionOutcome"
-     }
-    },
-    "required": [
-     "catalogue_id",
-     "outcome"
-    ],
-    "title": "DecisionResult",
-    "type": "object"
-   },
    "app__models__remediation__Progress": {
     "properties": {
      "generation": {
@@ -5222,32 +5466,11 @@
     ],
     "title": "Progress",
     "type": "object"
-   },
-   "app__models__service_map__DecisionResult": {
-    "properties": {
-     "decision": {
-      "$ref": "#/components/schemas/DecisionInfo"
-     },
-     "recommendation_id": {
-      "title": "Recommendation Id",
-      "type": "string"
-     },
-     "status": {
-      "$ref": "#/components/schemas/MapperRecommendationStatus"
-     }
-    },
-    "required": [
-     "recommendation_id",
-     "status",
-     "decision"
-    ],
-    "title": "DecisionResult",
-    "type": "object"
    }
   }
  },
  "info": {
-  "description": "\n**Threat Scenario Generator (TSG) v2.** Work through the groups in order: set-up once (2-4), then runs,\nreview, remediation plans.\n\n**Who is calling.** Every call in groups 5-9 and 11 sends four headers: `X-API-Key` (from group 2),\n`X-User-Id`, `X-Entity-Id` (a number) and `X-Tenant-Id`. Groups 2, 3 and 10 send `X-Admin-Key` instead.\nGroups 1 and 4 need no key.\n\n**Long work runs in the background.** A start answers 202 with an id; poll its status (or open its live\nupdates, group 9) until it is done. Errors come as `application/problem+json`: `code`, `detail`, and a\n`reason` on a 409.\n",
+  "description": "\n**Threat Scenario Generator (TSG) | Remedation | Service Mapper.\n\n**Who is calling.** Every call in groups 5-9 and 11 sends four headers: `X-API-Key` (from group 2),\n`X-User-Id`, `X-Entity-Id` (a number) and `X-Tenant-Id`. Groups 2, 3 and 10 send `X-Admin-Key` instead.\nGroups 1 and 4 need no key.\n\n**Long work runs in the background.** A start answers 202 with an id; poll its status (or open its live\nupdates, group 9) until it is done. Errors come as `application/problem+json`: `code`, `detail`, and a\n`reason` on a 409.\n",
   "title": "DESC - Critical Information Infrastructure",
   "version": "1.0.0"
  },
@@ -5579,7 +5802,6 @@
   },
   "/v1/entities/{listed_entity_id}/services": {
    "get": {
-    "description": "The entity's services; the entity must be the caller's, else 403.",
     "operationId": "list_entity_services_v1_entities__listed_entity_id__services_get",
     "parameters": [
      {
@@ -5682,7 +5904,7 @@
       "description": "Validation Error"
      }
     },
-    "summary": "3. An entity's services",
+    "summary": "List Entity Services",
     "tags": [
      "11. Service mapper"
     ]
@@ -6104,8 +6326,148 @@
    }
   },
   "/v1/service-mapper": {
+   "get": {
+    "operationId": "list_mappings_v1_service_mapper_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "entity_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Entity Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "offset",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "maximum": 2147483647,
+       "minimum": 0,
+       "title": "Offset",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MappingList"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Mappings",
+    "tags": [
+     "11. Service mapper"
+    ]
+   },
    "post": {
-    "description": "A stub with fixed answers, for integration tests (real keys, checks and error shapes). 202 with\n`mapping_id`.",
     "operationId": "create_mapping_v1_service_mapper_post",
     "parameters": [
      {
@@ -6226,129 +6588,7 @@
       "description": "Validation Error"
      }
     },
-    "summary": "1. Create a mapping",
-    "tags": [
-     "11. Service mapper"
-    ]
-   }
-  },
-  "/v1/service-mapper/recommendations/{recommendation_id}/decision": {
-   "patch": {
-    "description": "Recommendation `...0002` answers 409 `decision_final` and `...0003` 409 `superseded`, for\ntesting.",
-    "operationId": "decide_recommendation_v1_service_mapper_recommendations__recommendation_id__decision_patch",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "recommendation_id",
-      "required": true,
-      "schema": {
-       "maxLength": 64,
-       "title": "Recommendation Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-API-Key",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Api-Key"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-User-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 256,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-User-Id"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-Entity-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "exclusiveMinimum": 0,
-         "maximum": 2147483647,
-         "type": "integer"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Entity-Id"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-Tenant-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 256,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Tenant-Id"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/DecisionRequest"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/app__models__service_map__DecisionResult"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "5. Accept or reject a suggestion",
+    "summary": "Create Mapping",
     "tags": [
      "11. Service mapper"
     ]
@@ -6356,7 +6596,6 @@
   },
   "/v1/service-mapper/{mapping_id}": {
    "get": {
-    "description": "The mapping and its recommendations.",
     "operationId": "get_mapping_v1_service_mapper__mapping_id__get",
     "parameters": [
      {
@@ -6460,7 +6699,259 @@
       "description": "Validation Error"
      }
     },
-    "summary": "2. Read a mapping",
+    "summary": "Get Mapping",
+    "tags": [
+     "11. Service mapper"
+    ]
+   }
+  },
+  "/v1/service-mapper/{mapping_id}/decision": {
+   "post": {
+    "operationId": "decide_mapping_v1_service_mapper__mapping_id__decision_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "mapping_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Mapping Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MappingDecisionRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MappingView"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Decide Mapping",
+    "tags": [
+     "11. Service mapper"
+    ]
+   }
+  },
+  "/v1/service-mapper/{mapping_id}/dependencies/{dependency_id}/decision": {
+   "post": {
+    "operationId": "decide_dependency_v1_service_mapper__mapping_id__dependencies__dependency_id__decision_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "mapping_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Mapping Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "dependency_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Dependency Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DependencyDecisionRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MappingView"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Decide Dependency",
     "tags": [
      "11. Service mapper"
     ]
@@ -6468,7 +6959,6 @@
   },
   "/v1/service-mapper/{mapping_id}/events": {
    "get": {
-    "description": "Server-Sent Events of the mapping's status.",
     "operationId": "stream_mapping_events_v1_service_mapper__mapping_id__events_get",
     "parameters": [
      {
@@ -6587,7 +7077,7 @@
       "description": "Validation Error"
      }
     },
-    "summary": "6. A mapping's live status",
+    "summary": "Stream Mapping Events",
     "tags": [
      "11. Service mapper"
     ]
@@ -6595,7 +7085,6 @@
   },
   "/v1/service-mapper/{mapping_id}/regenerate": {
    "post": {
-    "description": "202. Mapping `...0001` answers 409 `generation_in_progress`, for testing.",
     "operationId": "regenerate_mapping_v1_service_mapper__mapping_id__regenerate_post",
     "parameters": [
      {
@@ -6716,7 +7205,7 @@
       "description": "Validation Error"
      }
     },
-    "summary": "4. A new round of suggestions",
+    "summary": "Regenerate Mapping",
     "tags": [
      "11. Service mapper"
     ]
@@ -9998,7 +10487,7 @@
    "name": "10. Library curation"
   },
   {
-   "description": "Suggest which services an asset supports; accept or reject each suggestion.",
+   "description": "Generate upstream and downstream service dependencies from a described service, review each relationship, and regenerate a new version. Requires the caller identity headers.",
    "name": "11. Service mapper"
   }
  ]

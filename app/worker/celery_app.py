@@ -6,7 +6,7 @@ and Redis clients are thread-safe), and one metrics registry, served on settings
 Prometheus. A prefork pool would copy open connections into forked children and keep each child's AI metrics
 where Prometheus never looks, so start-up refuses every pool but threads (app/worker/lifecycle.py).
 
-Start (one deployment per queue; dev runs one worker on all three):
+Start (one deployment per queue; dev gives the mapper and maintenance separate workers):
     celery -A app.worker worker --pool=threads -c 4 -Q tsg_threats
     celery -A app.worker beat"""
 
@@ -34,6 +34,7 @@ settings = get_settings()
 
 #: Every module that defines tasks: a task missing here is never registered and its messages are refused.
 TASK_MODULES = [
+    "app.worker.service_mapper.tasks",
     "app.worker.jobs",
     "app.worker.reaper",
     "app.worker.admin.library_indexes",

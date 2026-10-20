@@ -56,6 +56,7 @@ $EnvFile = Join-Path $Root '.env'
 $StateFile = Join-Path $Root '.run\processes.json'
 $Monitoring = Join-Path $Root 'scripts\monitoring.py'
 $WorkerName = "dev@$env:COMPUTERNAME"
+$MapperWorkerName = "mapper@$env:COMPUTERNAME"
 $MaintenanceName = "maint@$env:COMPUTERNAME"
 $ReadyUrl = 'http://127.0.0.1:8000/ready'
 $GrafanaUrl = 'http://localhost:3000/grafana/'
@@ -68,13 +69,18 @@ $Programs = [ordered]@{
     api         = @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000')
     worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '10',
                     '-Q', 'tsg_threats,tsg_scenarios', '-n', $WorkerName, '--loglevel=INFO')
+    service_mapper = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
+                       '-Q', 'tsg_servicemapper', '-n', $MapperWorkerName, '--loglevel=INFO')
     maintenance = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '3',
                     '-Q', 'tsg_maintenance', '-n', $MaintenanceName, '--loglevel=INFO')
     beat        = @('-m', 'celery', '-A', 'app.worker', 'beat', '--loglevel=INFO')
 }
 # Settings a program's window gets on top of .env: each worker serves its metrics on its own port (9101 is the
 # VS Code debug worker's).
-$ProgramEnv = @{ maintenance = @{ CII_WORKER_METRICS_PORT = '9102' } }
+$ProgramEnv = @{
+    maintenance = @{ CII_WORKER_METRICS_PORT = '9102' }
+    service_mapper = @{ CII_WORKER_METRICS_PORT = '9103' }
+}
 
 # PowerShell also takes the typographic apostrophes as quotes: each is doubled, or a folder such as
 # "Gopal's" typed with a curly apostrophe would break the window's command.
@@ -211,7 +217,7 @@ function Assert-CanStart {
         throw ("v1's worker or beat is running (process $($v1.ProcessId -join ', ')). v1 and v2 share Redis " +
                'databases 0 and 1: stop v1 first (its stop.ps1).')
     }
-    foreach ($port in 8000, 9100, 9102) {
+    foreach ($port in 8000, 9100, 9102, 9103) {
         $listener = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
                     Select-Object -First 1
         if ($listener) {
@@ -337,7 +343,7 @@ function Invoke-Start {
 
 function Invoke-Stop {
     $state = Read-State
-    $workers = @(foreach ($name in 'worker', 'maintenance') {
+    $workers = @(foreach ($name in 'worker', 'service_mapper', 'maintenance') {
         if ($state.Contains($name)) { try { Get-Owned $state[$name] } catch { $null } }
     }) | Where-Object { $_ }
     if ($workers -and -not (Test-Broker)) {
@@ -347,7 +353,7 @@ function Invoke-Stop {
         # stays "running" until its lease runs out (2 min), and /ready counts the dead worker for up to 1 min.
         Write-Host "Asking the workers to finish their running jobs (up to $DrainSeconds s)..." -ForegroundColor Cyan
         # A worker shuts down instead of answering, so celery reports "No nodes replied": expected.
-        $names = "$WorkerName,$MaintenanceName"
+        $names = "$WorkerName,$MapperWorkerName,$MaintenanceName"
         Invoke-Native { & $Python -m celery -A app.worker control shutdown --destination $names --timeout 5 } |
             Out-Null
         $deadline = (Get-Date).AddSeconds($DrainSeconds)
