@@ -19,7 +19,6 @@ from app.core.constants import (
     Decision,
     ErrorCode,
     Lease,
-    PlanLoss,
     PlanMessage,
     PlanStage,
     RunActionKind,
@@ -47,7 +46,6 @@ from app.domain.scenario.plan import (
     take_turns,
 )
 from app.domain.scenario.plan_trace import build_plan_trace
-from app.domain.scenario.write import held_repeat_of
 from app.models.scenario.plan import AttackPath, KindPlace, PlannedThreat, ThreatFindings
 from app.worker import jobs
 from app.worker.scenario.plan_job import PLAN_JOB_FIELDS, PlanJob
@@ -232,13 +230,13 @@ def test_the_plan_stores_each_paths_ways_in_and_turn_and_the_trace_counts_them()
         (["lib:2"], [321], [321], 321, 1),
         (["lib:1"], [321, 322], [322], 322, 2),
     ]
-    trace = build_plan_trace(findings, plan, [], 2)
+    trace = build_plan_trace(findings, plan, 2)
     assert trace["turns"] == {"SCADA server": 1, "Historian": 1}
     assert trace["groups"] == {"SCADA server": 1, "SCADA server + Historian": 1}
     # every system is listed, 0 when no path gets in through it, and two systems named alike stay apart
     alike = replace(LANDSCAPE, system_names=dict.fromkeys(LANDSCAPE.system_names, "HMI"))
     only_scada = {"paths": [p | {"entry_system": 321} for p in plan["paths"]], "threats": plan["threats"]}
-    trace = build_plan_trace(replace(findings, landscape=alike), only_scada, [], 2)
+    trace = build_plan_trace(replace(findings, landscape=alike), only_scada, 2)
     assert trace["turns"] == {"HMI (SYS1)": 2, "HMI (SYS2)": 0}
 
 
@@ -261,49 +259,6 @@ def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:
     assert [(p["steps"], p["selected"]) for p in plan["paths"]] == [(["lib:1"], True), (["lib:2"], False)]
     assert plan["paths"][1]["unselected_reason"] == UnselectedReason.TARGET_REACHED and plan["target"] == 1
     assert len(build_plan(findings_of(*threats), 5)["paths"]) == 2
-
-
-def test_a_path_repeating_a_held_scenario_is_dropped_before_the_target_and_the_next_is_selected() -> None:
-    """The same threat (by key, or by name) as the same kind as a scenario the asset holds, whatever systems
-    either enters through (owner 2026-10-19), never enters the plan; another kind of the same threat does.
-    The target fills with the next path and the ranks close up."""
-    threats = [
-        planned("lib:1", "T0001: One", (321,), categories=(S.SPOOFING,), impact=3),
-        planned("lib:2", "Two", (322,), categories=(S.TAMPERING,), impact=2),
-        planned("ai:3", "Three", (323,), categories=(S.TAMPERING,), impact=2),
-        planned("lib:4", "Four", (324,), categories=(S.TAMPERING,), impact=1),
-        planned("lib:6", "Six", (322,), categories=(S.TAMPERING,), impact=2),
-    ]
-
-    def held_card(threat: dict[str, str], category: S, systems: list[int]) -> dict[str, Any]:
-        content = {"threat": threat, "category": category, "systems": [{"id": s} for s in systems]}
-        return {"_id": f"held-{len(held)}", "content": content}
-
-    held: list[dict[str, Any]] = []
-    held.append(held_card({"key": "lib:1"}, S.SPOOFING, [321]))  # by key
-    held.append(held_card({"key": "ai:old", "name": "three"}, S.TAMPERING, [323]))  # by name
-    held.append(held_card({"key": "lib:2"}, S.SPOOFING, [322]))  # another kind: not held
-    held.append(held_card({"key": "lib:4"}, S.TAMPERING, []))  # other systems: still the same scenario
-    plan = build_plan(
-        findings_of(*threats), 1, lambda path, threat: held_repeat_of(path, threat, held) is not None
-    )
-    assert [(p["steps"], p["rank"], p["selected"]) for p in plan["paths"]] == [
-        (["lib:2"], 1, True),
-        (["lib:6"], 2, False),  # on lib:2's kind and systems, and never lost with it
-    ]
-    assert [t["key"] for t in plan["threats"]] == ["lib:1", "lib:2", "ai:3", "lib:4", "lib:6"]  # all listed
-
-
-def test_a_held_threat_drops_only_its_own_path_never_another_on_the_same_kind_and_systems() -> None:
-    """The held drop is per path: the leader of what used to be one group is held, the other threat stays."""
-    leader, other = planned("lib:2", "Two", (322,), impact=3), planned("lib:6", "Six", (322,), impact=2)
-    held = [
-        {"_id": "held-0", "content": {"threat": {"key": "lib:2"}, "category": S.TAMPERING, "systems": []}}
-    ]
-    plan = build_plan(
-        findings_of(leader, other), 0, lambda path, threat: held_repeat_of(path, threat, held) is not None
-    )
-    assert [(p["steps"], p["rank"]) for p in plan["paths"]] == [(["lib:6"], 1)]
 
 
 def _queued_run(attempts: int = 0) -> str:
@@ -343,8 +298,7 @@ def _stored_run(record_id: str) -> dict[str, Any]:
 
 def _plan_job(threat_finder: Any) -> Any:
     """The plan job as the app builds it, planning with `threat_finder`."""
-    switch, scenarios = container.get_intelligence_switch(), container.get_threat_scenario_repository()
-    return PlanJob(threat_finder, switch, scenarios).plan_threat_scenario_session
+    return PlanJob(threat_finder, container.get_intelligence_switch()).plan_threat_scenario_session
 
 
 def _threats_task() -> Any:
@@ -424,11 +378,12 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
     assert sent == []
 
 
-def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_nothing_to_write(
+def test_another_session_of_the_asset_never_takes_a_path_away(
     monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
 ) -> None:
-    """An earlier run of the asset holds a scenario on each path (one matched by key, one by name only): the
-    second run plans none of them, ends complete, and queues no writer job."""
+    """D15 (owner 2026-10-20): an earlier session of the asset holds a scenario on each path, one pending and
+    matched by key, one accepted and matched by name; the second session still plans both and queues its
+    first set: nothing is traced as held."""
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     chat = planner_chat({LOG_WIPE.name: ["SYS1"], ADMIN_ABUSE.name: ["SYS2"]})
     plan = _plan_job(finder(chat))
@@ -447,7 +402,7 @@ def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_noth
         held = {"session_id": earlier, "entity_id": first["entity_id"], "asset_id": first["asset_id"]}
         held_ids.append(str(uuid.uuid4()))  # a card id as the app makes them (uuid5, with its dashes)
         held |= {"_id": held_ids[-1], "path_id": path["path_id"], "superseded_by": None}
-        held |= {"status": ScenarioStatus.DONE, "decision": Decision.PENDING}
+        held |= {"status": ScenarioStatus.DONE, "decision": [Decision.PENDING, Decision.ACCEPTED][number]}
         held |= {"content": {"threat": threat, "category": path["category"], "systems": systems}}
         scenarios.insert_one(held)
     sent.clear()
@@ -458,17 +413,16 @@ def test_a_plan_whose_every_path_the_asset_already_holds_ends_complete_with_noth
     finally:  # bare cards: an entity's scenario list in a later test would trip on them
         scenarios.delete_many({"session_id": earlier})
     run = _stored_run(record_id)
-    assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.COMPLETE)
-    assert run["plan"]["paths"] == [] and len(run["plan"]["threats"]) == 2 and sent == []
-    trace = run["plan_trace"]  # why nothing is left to write: each path held, by which scenario
+    planned = [path["steps"] for path in run["plan"]["paths"]]
+    assert planned == [path["steps"] for path in first["plan"]["paths"]]
+    assert len(sent) == 1 and run["job"]["set"] == [path["path_id"] for path in run["plan"]["paths"]]
+    trace = run["plan_trace"]
     assert (trace["counts"]["paths"], trace["counts"]["already_held"], trace["counts"]["first_set"]) == (
         2,
-        2,
         0,
+        2,
     )
-    held_drops = [drop for drop in trace["drops"] if drop["stage"] == PlanStage.HELD]
-    assert all(drop["reason"] == PlanLoss.ALREADY_HELD for drop in held_drops)
-    assert sorted(drop["detail"] for drop in held_drops) == sorted(held_ids)
+    assert not [drop for drop in trace["drops"] if drop["stage"] == PlanStage.HELD]
 
 
 def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(

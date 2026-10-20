@@ -108,11 +108,10 @@ def test_a_duplicate_is_kept_hidden_given_up_and_replaced(chat: FakeChatModel) -
     assert paths[copied]["attempts"] == 1 and len(chat.asked(AiTask.WRITE_SCENARIO)) == 3  # given up at once
 
 
-def test_a_second_run_of_the_asset_never_copies_what_the_first_run_holds(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
-    """6.1c/6.1d (owner 2026-10-17: "Prevent duplicate scenarios ... against existing scenarios in the
-    relevant library or database"): a second run of the asset planned with the same paths. Each repeats the
-    first run's scenario of that path, accepted or still to decide, so it is given up before any AI call, with
-    no card; with no path left, the set ends partial."""
+def test_a_second_run_of_the_asset_writes_again_what_the_first_run_holds(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
+    """D15 (owner 2026-10-20, revising 6.1c/6.1d's cross-run part): a second run of the asset planned with the
+    same paths writes each of them, though the first run holds a scenario of each, accepted or still to
+    decide: the asset's other runs never block one."""
     first = _queued_run(["Threat 1", "Threat 2"])
     _deliver_until_done(first)
     held = {scenario["path_id"]: scenario["_id"] for scenario in _scenarios_of(first)}
@@ -123,23 +122,24 @@ def test_a_second_run_of_the_asset_never_copies_what_the_first_run_holds(chat: F
     _on_the_asset_of(again, first)
     _deliver_until_done(again)
     run, paths = _plan(again)
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == written_by_first and _scenarios_of(again) == []
-    for path in paths.values():
-        assert (path["abandoned"], path["abandoned_reason"]) == (True, FindingCode.NEAR_DUPLICATE)
-        assert (path["attempts"], path["last_blocker"]) == (0, FindingCode.NEAR_DUPLICATE)
-    assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) - written_by_first == 2
+    assert sorted(scenario["path_id"] for scenario in _scenarios_of(again)) == ["p1", "p2"]
+    assert not any(path["abandoned"] for path in paths.values())
+    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE
 
 
-def test_a_path_repeating_a_held_scenario_is_given_up_before_the_ai_and_a_spare_takes_its_place(
+def test_a_path_repeating_its_own_runs_scenario_is_given_up_before_the_ai_and_a_spare_takes_its_place(
     chat: FakeChatModel,  # noqa: F811 - the imported fixture
 ) -> None:
-    """No limit, a set of 2 of 3 paths: p1 repeats the asset's other run's scenario, so it is given up with no
-    write call and no card, and the next set's p3 is written in its place; the set ends complete."""
+    """No limit, a set of 2 of 3 paths: p1 repeats a scenario its own run already holds on another path, so
+    it is given up with no write call and no card, and the next set's p3 is written in its place; the set
+    ends complete."""
     first = _queued_run(["Threat 1"])
     _deliver_until_done(first)
     calls_before = len(chat.asked(AiTask.WRITE_SCENARIO))
     again = _queued_run(["Threat 1", "Threat 2", "Threat 3"], first_set=2)
-    _on_the_asset_of(again, first)
+    held = _scenarios_of(first)[0] | {"_id": f"held-{again}", "session_id": again, "path_id": "p0"}
+    get_mongodb()[Collection.SCENARIOS].insert_one(held | {"title_key": f"held-{again}"})
     _deliver_until_done(again)
     run, paths = _plan(again)
     repeat, spare = paths["p1"], paths["p3"]
@@ -152,7 +152,7 @@ def test_a_path_repeating_a_held_scenario_is_given_up_before_the_ai_and_a_spare_
     )  # fmt: skip
     assert spare["replaces"] == "p1" and spare["served"] and paths["p2"]["served"]
     assert len(chat.asked(AiTask.WRITE_SCENARIO)) - calls_before == 2  # p2 and p3 only
-    assert sorted(s["path_id"] for s in _scenarios_of(again)) == ["p2", "p3"]  # no card for p1
+    assert sorted(s["path_id"] for s in _scenarios_of(again)) == ["p0", "p2", "p3"]  # no card for p1
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
 
 

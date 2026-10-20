@@ -126,7 +126,7 @@ def duplicates(served: list[dict[str, Any]]) -> dict[str, str]:
             for c in served[:index]
             if c.get("superseded_by") is None or c.get("decision") == Decision.ACCEPTED
         ]
-        if copy := duplicate_of(card["content"], card["path_id"], held, ()):
+        if copy := duplicate_of(card["content"], card["path_id"], held):
             found[card["_id"]] = copy.message
     return found
 

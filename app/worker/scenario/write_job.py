@@ -140,19 +140,18 @@ class BatchWriter:
         return [key for key in self._batch if paths[key]["served"] not in (None, self._replaces.get(key))]
 
     def _without_repeats(self, to_write: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
-        """Give up, with no AI call and no card, each path repeating a scenario held now (the run's other
-        paths', the asset's other runs'); a spare may take its place. The paths left to write."""
+        """Give up, with no AI call and no card, each path repeating a scenario the run's other paths hold
+        now (the asset's other sessions never block one: D15); a spare may take its place. The paths left to
+        write."""
         if not to_write:
             return to_write
-        run, threats, repeat = self._run, self._paths.threats, FindingCode.NEAR_DUPLICATE
-        own, other = self._scenarios.list_scenarios_for_duplicate_check(
-            run["entity_id"], run["asset_id"], run["_id"]
-        )
+        threats, repeat = self._paths.threats, FindingCode.NEAR_DUPLICATE
+        own = self._scenarios.list_scenarios_for_duplicate_check(self._run["_id"])
         left = dict(to_write)
         for path_id in to_write:
             path = self._progress.paths[path_id]
             steps = path.get("steps") or []
-            held_id = held_repeat_of(path, threats.get(steps[0], {}) if steps else {}, (*own, *other))
+            held_id = held_repeat_of(path, threats.get(steps[0], {}) if steps else {}, own)
             if held_id is not None:  # the plan path keeps which scenario it repeats
                 state = {
                     "attempts": path["attempts"],

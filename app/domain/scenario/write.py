@@ -996,17 +996,12 @@ _MARKER = re.compile(r"\s*\[\d+(?:\s*,\s*\d+)*\]")
 
 
 def duplicate_of(
-    content: dict[str, Any],
-    path_id: str,
-    run_finished: Iterable[dict[str, Any]],
-    elsewhere: Iterable[dict[str, Any]],
+    content: dict[str, Any], path_id: str, run_finished: Iterable[dict[str, Any]]
 ) -> Finding | None:
     """The finding when `content`, a new scenario of `path_id`, tells the same threat as the same kind (on
-    any systems: they are its entry points), or in the very same words, as one of its run's other paths'
-    (`run_finished`) or one of its asset's other runs' (`elsewhere`, hand-written ones included); else
-    None."""
-    own_run = (item for item in run_finished if item.get("path_id") != path_id)
-    for other in (*own_run, *elsewhere):
+    any systems), or in the very same words, as one of its run's other paths' (`run_finished`); the asset's
+    other sessions never block one (D15). Else None."""
+    for other in (item for item in run_finished if item.get("path_id") != path_id):
         if _same_path(content, other["content"]) or _same_words(content, other["content"]):
             return Finding(
                 FindingCode.NEAR_DUPLICATE, FindingMessage.NEAR_DUPLICATE.format(scenario_id=other["_id"])
@@ -1017,8 +1012,8 @@ def duplicate_of(
 def held_repeat_of(
     path: dict[str, Any], threat: dict[str, Any], held: Iterable[dict[str, Any]]
 ) -> str | None:
-    """The id of a held scenario (another path's, or another run's) that `path`, told around `threat`, would
-    repeat as the same asset-level scenario, compared as its written card would be; else None. Asks no AI."""
+    """The id of a held scenario (another path's of the run) that `path`, told around `threat`, would repeat
+    as the same asset-level scenario, compared as its written card would be; else None. Asks no AI."""
     mine = _threat_content(path, threat)
     return next(
         (

@@ -19,7 +19,6 @@ from app.models.scenario.views import GivenUpPath, PlanTraceView, WriteOutcomes
 
 #: The drops listed first: those that could have been a scenario, then the AI's verdicts, then the filter.
 _TELLING_ORDER = (
-    (PlanStage.HELD, PlanLoss.ALREADY_HELD),
     (PlanStage.ATTACKER, AttackerCheck.NONE_FITS),
     (PlanStage.ATTACKER, PlanLoss.NO_LINKED_ACTOR),
     (PlanStage.MERGE, CandidateRejection.ASSET_TYPE_MISMATCH),
@@ -64,15 +63,13 @@ def gate_drops(audits: list[CategoryAudit], system_names: dict[str, str]) -> lis
     return drops
 
 
-def build_plan_trace(
-    findings: ThreatFindings, plan: dict[str, Any], held: list[dict[str, Any]], first_set: int
-) -> dict[str, Any]:
+def build_plan_trace(findings: ThreatFindings, plan: dict[str, Any], first_set: int) -> dict[str, Any]:
     """The trace saved with the plan: every stage's counts, whether the landscape was cut, and the drops
     (the most telling first, at most PlanTraceLimits.MAX_DROPS; the counts are always whole)."""
-    drops = [*findings.drops, *gate_drops(findings.audits, findings.landscape.system_names), *held]
+    drops = [*findings.drops, *gate_drops(findings.audits, findings.landscape.system_names)]
     return {
         "counts": _counts(findings, plan, Counter((str(d["stage"]), str(d["reason"])) for d in drops))
-        | {"paths": len(plan["paths"]) + len(held), "already_held": len(held), "first_set": first_set},
+        | {"paths": len(plan["paths"]), "already_held": 0, "first_set": first_set},  # never held: D15
         "landscape_cut": findings.landscape.cut,
         "drops": sorted(drops, key=_telling)[: PlanTraceLimits.MAX_DROPS],
         "drops_total": len(drops),

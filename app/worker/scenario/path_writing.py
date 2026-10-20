@@ -124,11 +124,10 @@ def supersede_scenario_version(scenarios: ThreatScenarioRepository, old_id: str,
 def _near_copy_held_now(
     scenarios: ThreatScenarioRepository, run: dict[str, Any], record: dict[str, Any]
 ) -> Finding | None:
-    """The final NEAR_DUPLICATE finding when `record` copies a scenario the store holds now: one of the run's
-    finished ones or one the asset's other runs hold."""
-    # ponytail: reads every held scenario of the asset; add a limit if it holds thousands
-    own, other = scenarios.list_scenarios_for_duplicate_check(run["entity_id"], run["asset_id"], run["_id"])
-    return duplicate_of(record["content"], record["path_id"], own, other)
+    """The final NEAR_DUPLICATE finding when `record` copies one of the run's finished scenarios held now
+    (the asset's other sessions never block one: D15)."""
+    own = scenarios.list_scenarios_for_duplicate_check(run["_id"])
+    return duplicate_of(record["content"], record["path_id"], own)
 
 
 class PathSaver:

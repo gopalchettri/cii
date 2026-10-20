@@ -175,7 +175,7 @@ Hand-written scenarios are slow, generic, duplicated and not tied to real threat
  · Outage → retry after 15/30/60/120 s, up to 5 tries; the reaper re-sends lost jobs, ends dead ones.
  · Broken AI reply → retry; on the last try carry on with what was checked; nothing checked → "AI unavailable".
  · Blocked draft → given up at once; a spare path takes its place (from the next set if none is left).
- · A path the asset already holds → never planned; one held since planning → given up before any AI call.
+ · A path repeating another path of the same session → given up before any AI call (other sessions never block: D15).
  · SQL write → operation record first; a lost answer is replayed, never guessed.
  · Cancel/delete → fenced writes stop running jobs; the controls sweep settles what is left.
 ```
@@ -287,9 +287,9 @@ API change.
    The check reads the database right before each save. Saves run one at a time per batch, and there
    is one active session per asset.
 
-   The same rule runs twice earlier, with no AI call: the planner drops every path the asset already
-   holds before it picks the set, and the write job gives up a path that repeats a scenario held now
-   before its evidence search. A given-up path's spare may come from the next set.
+   The same rule runs earlier, with no AI call: the write job gives up a path that repeats one of the
+   session's own scenarios before its evidence search. A given-up path's spare may come from the next set.
+   The asset's other sessions never take a path away (D15).
 
 **Features removed in this round (owner, 2026-10-18)**
 | Removed | What remains |
@@ -367,6 +367,7 @@ keeps the load order safe. Findings the skeptics refuted are dropped.
 | D12 | Asset-level scenarios (owner, 2026-10-19): one per threat per kind of attack, its systems the entry points; duplicates are the same threat + kind, whatever systems. Replaces the 2026-10-13 grouping (one path per kind × exact system set), which capped asset 1166 at 12 paths from 34-42 accepted threats (60-95% only "also applies") and lost whole groups to the held drop on re-runs (12 → 7, 2, 8, 3). Each kind keeps its own systems, impact and confidence; a "none fits" attacker pick never vetoes one another kind named; the landscape is cut fairly (every system keeps its line, the ASSET line lists the systems by name and asset type); the plan's trace is saved with it |
 | D13 | run.ps1 takes .env over the shell: every setting .env owns (each key it names, set, blank or commented out, and every GF_ key) that the shell also sets is unset while run.ps1 runs (start, stop, status) and put back after, so every check and program it starts reads .env; a warning names, never shows, the ones whose value differs. A setting in the environment beats .env, and VS Code's python.terminal.useEnvFile copies .env into a terminal once, when it opens: session 13bd93f2 wrote evidence with EXTERNAL_INTELLIGENCE_ENABLED=false in .env (2026-10-19). Other commands typed into such a terminal (scorecard, monitoring.py, the debug tools) still see that copy; the setting off removes it. A deployment is unchanged: its environment is its config |
 | D14 | Turns and groups (owner, 2026-10-19): the gate names, per threat and kind, every system it involves (one, several or all, judged with the asset and all its systems together) and the ways in among them; the asset type limits the way in only, so a group may mix IT and OT (asset + SYS1 + SYS2, or all four), and a threat with no way in its type fits is refused. One scenario per threat per kind on its whole group (D12). The ranked paths are dealt in turns over the systems (SYS1, SYS2 ... the asset itself, then SYS1 again), each turn the best path that can get in through that system, passing over one a system still to play that round has no other way to take; a system with nothing left is skipped. A run's results list follows the turns (the path's rank, then the save time), so a set written at once still reads in turn order. Code assigns that system as the card's entry point and the writer is offered only it. Revises the 2026-10-12/13 type fit (every system of the threat's type). Planner prompt planner-5 |
+| D15 | Other sessions of the asset never block a scenario (owner, 2026-10-20): every duplicate check (the plan, the write job before the AI, the near-copy check before a save) reads only the session's own finished scenarios. Session 99447a6e planned 84 paths and kept 2: 82 were held by 20 earlier test sessions (74 pending, 8 accepted). Revises D10 and G268's cross-session part; two sessions may now hold, and both accept, the same threat. `counts.already_held` stays in the API, always 0 |
 
 ## 6. Not in this round (backlog, one at a time after the re-architecture)
 1. Scenario regenerate has no version cap: AI cost is unbounded.

@@ -76,16 +76,19 @@ def test_a_score_equal_to_the_threshold_is_kept() -> None:
     assert refs(one(finder, request_of())[0]) == {"T1"}
 
 
-def test_another_runs_rejected_scenario_of_the_same_asset_is_not_offered_as_a_copy() -> None:
-    """Only versions a reviewer accepted or has still to decide are held against a new scenario."""
+def test_no_scenario_of_another_run_of_the_same_asset_is_offered_as_a_copy() -> None:
+    """D15 (owner 2026-10-20): another run's versions never block a new scenario, whatever their decision;
+    only the run's own finished ones are held against it."""
     session_id, scenarios = f"run-{uuid.uuid4().hex}", container.get_threat_scenario_repository()
     scenarios.create_indexes()
     asset = int(uuid.uuid4().hex[:12], 16)
-    rejected = _stored(f"rejected-{session_id}", "p1", asset_id=asset, decision=Decision.REJECTED)
-    accepted = _stored(f"accepted-{session_id}", "p1", asset_id=asset, decision=Decision.ACCEPTED)
-    assert scenarios.save_scenario(rejected) and scenarios.save_scenario(accepted)
-    _, held = scenarios.list_scenarios_for_duplicate_check(86, asset, session_id)
-    assert [record["_id"] for record in held] == [accepted["_id"]]
+    for decision in (Decision.REJECTED, Decision.ACCEPTED, Decision.PENDING):
+        other = _stored(f"{decision}-{session_id}", "p1", asset_id=asset, decision=decision)
+        assert scenarios.save_scenario(other)
+    own = _stored(session_id, "p2", asset_id=asset)
+    assert scenarios.save_scenario(own)
+    held = scenarios.list_scenarios_for_duplicate_check(session_id)
+    assert [record["_id"] for record in held] == [own["_id"]]
 
 
 def test_answers_for_asked_slots_names_a_repeated_an_unknown_and_a_missing_slot() -> None:

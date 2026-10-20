@@ -11,9 +11,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     Lease,
     LogEvent,
-    PlanLoss,
     PlanMessage,
-    PlanStage,
     RunActionOutcome,
     Status,
     Step,
@@ -21,26 +19,22 @@ from app.core.constants import (
 )
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.domain.scenario.plan import CoveredPath, ThreatFinder, build_plan, plan_drop, set_and_first_batch
+from app.domain.scenario.plan import ThreatFinder, build_plan, set_and_first_batch
 from app.domain.scenario.plan_trace import build_plan_trace
-from app.domain.scenario.write import held_repeat_of
 from app.models.scenario.asset_context import FrozenContext
 from app.worker.jobs import hand_over
 
 log = structlog.get_logger(__name__)
 
 #: What the plan job reads of its run when it claims it.
-PLAN_JOB_FIELDS = ("context", "entity_id", "asset_id")
+PLAN_JOB_FIELDS = ("context",)
 
 
 class PlanJob:
     """Plans threat scenario sessions; long-lived, one per worker."""
 
-    def __init__(
-        self, threat_finder: ThreatFinder, switch: IntelligenceSwitch, scenarios: ThreatScenarioRepository
-    ) -> None:
-        self._threat_finder, self._switch, self._scenarios = threat_finder, switch, scenarios
+    def __init__(self, threat_finder: ThreatFinder, switch: IntelligenceSwitch) -> None:
+        self._threat_finder, self._switch = threat_finder, switch
 
     def plan_threat_scenario_session(self, lease: JobLease) -> None:
         """Plan the run and hand its first set to the write job in one fenced write, its trace in the same
@@ -50,12 +44,11 @@ class PlanJob:
         country = get_settings().context_country if self._switch.is_on() else ""  # a fact, ranks nothing
         last_attempt = lease.attempts >= Lease.MAX_ATTEMPTS
         findings = self._threat_finder.find_threats(context, country, last_attempt=last_attempt)
-        held: list[dict[str, Any]] = []
-        plan = build_plan(findings, get_settings().total_scenario_count, self._covered_by_held(lease, held))
+        plan = build_plan(findings, get_settings().total_scenario_count)  # other sessions never block (D15)
         plan |= {"frozen_at": datetime.now(UTC), "made_with": _made_with(findings.library_stamp)}
         selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
         asked, batch = set_and_first_batch(plan["paths"], get_settings().initial_set_size)  # [] when none
-        trace = build_plan_trace(findings, plan, held, len(asked))
+        trace = build_plan_trace(findings, plan, len(asked))
         changes = _plan_changes(plan, len(selected), time.perf_counter() - started) | {"plan_trace": trace}
         if asked:
             hand_over(lease, TaskName.WRITE_SCENARIOS, changes | {"job.batch": batch, "job.set": asked})
@@ -63,24 +56,6 @@ class PlanJob:
             ended = {"last_action.outcome": RunActionOutcome.COMPLETE} | ended_job_fields(Status.DONE)
             lease.update_job(changes | ended)
         log.info(LogEvent.PLANNER_FUNNEL, **trace["counts"], landscape_cut=trace["landscape_cut"])
-
-    def _covered_by_held(self, lease: JobLease, held_drops: list[dict[str, Any]]) -> CoveredPath:
-        """Whether a path repeats a scenario the asset's other runs hold, so the plan never takes it; each one
-        is added to `held_drops` with the scenario that holds it."""
-        record = lease.record
-        _, held = self._scenarios.list_scenarios_for_duplicate_check(
-            record["entity_id"], record["asset_id"], lease.record_id
-        )
-
-        def covered(path: dict[str, Any], threat: dict[str, Any]) -> bool:
-            """Whether `path` repeats a held scenario; recorded when it does."""
-            if (held_id := held_repeat_of(path, threat, held)) is None:
-                return False
-            reason, kind = PlanLoss.ALREADY_HELD, path["category"]
-            held_drops.append(plan_drop(threat["key"], threat["name"], kind, PlanStage.HELD, reason, held_id))
-            return True
-
-        return covered
 
 
 def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:

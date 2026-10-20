@@ -35,7 +35,7 @@ the matching controls from our own control library, and a person's decision to a
 |---|---|---|---|
 | 1 | Start | A reviewer picks the asset and its systems. TSG reads their recorded facts once and freezes them for the run. | Traffic Control Platform with 4 systems (2 IT, 2 OT) |
 | 2 | Find the threats that fit | An AI reviews every library threat against the recorded facts, for each of the six standard kinds of attack. Code then checks each answer. | 75 library threats checked, 41 fit |
-| 3 | Plan | One scenario per threat per kind of attack. Anything the asset already has from earlier assessments is skipped. The rest are ranked, strongest first. | 63 already held and skipped, 51 planned, first set of 6 |
+| 3 | Plan | One scenario per threat per kind of attack, ranked strongest first. (The example run predates D15: since 2026-10-20 nothing from earlier assessments is skipped.) | 63 already held and skipped, 51 planned, first set of 6 |
 | 4 | Find evidence | For each threat, TSG searches the six public sources, scores the closest records out of 100, and keeps only those above a bar. At most one is cited. | "Command Message" (MITRE) scored 31, the bar is 20, so it was cited |
 | 5 | Write | An AI writer drafts the scenario and risk from a fixed brief: the asset's facts, the threat, the attacker, and the evidence marked as untrusted. | Drafted in 6 seconds |
 | 6 | Check | Code checks for invented ids, links and hidden instructions. A second AI acts as reviewer: same threat, same impact, evidence quoted faithfully. A repeat of an existing scenario is never saved. | All checks passed, saved |
@@ -53,7 +53,7 @@ about 1 more minute.
 - **Outside text is untrusted.** Public data is cleaned. Text that reads like instructions to an AI is set aside,
   and the writer is told to treat the evidence as data only.
 - **Checked twice.** Plain code rules first, then a reviewer AI that checks the draft against the plan.
-- **No duplicates.** A scenario the asset already holds is not planned again, and an exact repeat is never saved.
+- **No duplicates within a session.** A session never tells the same threat as the same kind twice, and an exact repeat is never saved. The asset's other sessions never block a scenario (D15).
 - **People decide.** Every scenario waits for a person's decision, and decisions are audited.
 - **Bounded cost and safe failure.** AI calls are limited (by default 16 at once across all servers). Versions per
   scenario are capped at 10 (this cap is ready to merge). Every job is tracked and retried, so an outage never
@@ -987,8 +987,7 @@ flowchart TB
     I --> J
     J --> K["Choose each threat's attacker"]
     K --> L["One path per threat per kind"]
-    L --> M["Drop each path the asset already holds"]
-    M --> N["Rank: each threat's strongest kind first"]
+    L --> N["Rank: each threat's strongest kind first"]
     N --> O["Deal the ranked paths in turns<br/>over the systems: entry_system"]
     O --> P["Select up to TOTAL_SCENARIO_COUNT"]
     P --> Q["Freeze the plan and its trace"]
@@ -1330,7 +1329,9 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 - The plan threat holds `"actors": [{"id": 29, "name": "Cybercriminal", "role": "acting", "closest": false}]`, `"attacker_check": "chosen"`, and `attacker_check_reason` set to Tampering's `attacker_reason`. This matches the rule.
 - All four paths of lib:281 name Cybercriminal. `no_attacker` was 0.
 
-### 5.12 Never plan what the asset already holds
+### 5.12 Never plan what the asset already holds (replaced by D15)
+
+> **Since 2026-10-20 (D15) this step is gone:** the asset's other sessions never take a path away, and `counts.already_held` is always 0. The plan job no longer reads them, and `list_scenarios_for_duplicate_check(session_id)` returns the session's own finished scenarios only. The rest of this section describes the example run, which was made before D15.
 
 > **In plain words:** An asset is often assessed more than once. Before ranking anything, the plan removes every scenario the asset already has from an earlier session that a reviewer accepted or still has to decide. "The same" means the same threat told as the same kind of attack, whatever systems either involves or gets in through (its systems are the group, its entry points the ways in; the scenario is the asset's). This avoids paying twice for the same scenario and keeps the reviewer from reading it twice.
 
@@ -1424,7 +1425,7 @@ The real record of `e6e2f9ec043f7c21`. Its `path_id` was **checked**: sha256 of 
 2. `set_and_first_batch(plan["paths"], INITIAL_SET_SIZE)` (default 6) works in two steps:
    - `next_set_paths` takes the best 6 selected, unwritten paths by rank;
    - `next_paths_to_write` takes up to `Generation.WRITER_BATCH` (4) of them, never-tried first, then by rank, as `[{"path_id", "replaces": null}]`.
-3. `build_plan_trace(findings, plan, held, len(set))` gives `counts`, `landscape_cut`, `drops` (most telling first, at most 300; `PlanTraceLimits.MAX_DROPS`), `drops_total`, `turns` and `groups` (`_turns_and_groups`):
+3. `build_plan_trace(findings, plan, len(set))` gives `counts`, `landscape_cut`, `drops` (most telling first, at most 300; `PlanTraceLimits.MAX_DROPS`), `drops_total`, `turns` and `groups` (`_turns_and_groups`):
    - `turns`: how many paths get in through each system, every system in turn order, with 0 when no path gets in through it. When two systems share a name, the alias is added. The asset itself is listed only when a path is on it.
    - `groups`: how many paths cover each group of systems, most common first.
 4. `_plan_changes` sets the following:
@@ -1495,7 +1496,7 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 ## 6. Step 3: the write job
 
 > **In plain words:** The write job turns the plan into scenarios, a few attack paths at a time (at most four
-> together). For each group it first skips anything already written or already held for this asset, looks up
+> together). For each group it first skips anything already written or repeated within this session, looks up
 > real-world evidence once for the whole group, then writes the scenarios side by side and saves each one the
 > moment it is ready. If a service it needs is down, it waits and tries again later rather than write a scenario
 > without its evidence; when the set is done it says whether every scenario was delivered.
@@ -1542,8 +1543,8 @@ checks are §8; saving one scenario is §9.
    scenario an earlier delivery already saved is marked served, with no AI call. On a regenerate,
    `_versions_to_write` is used instead.
 7. **Pre-AI repeat check** (`BatchWriter._without_repeats`; only when the batch has no `replaces`, so never on a
-   regenerate). One read, `list_scenarios_for_duplicate_check`, gives this session's `done` scenarios and the
-   asset's `done`, current, pending or accepted scenarios of other sessions. `held_repeat_of` → `_same_path`: the
+   regenerate). One read, `list_scenarios_for_duplicate_check(session_id)`, gives this session's `done`
+   scenarios only; the asset's other sessions are never read (D15). `held_repeat_of` → `_same_path`: the
    same threat (key or normalised name) as the same kind of attack, whatever its systems. A repeat is given up
    with no AI call and no card (`PlanProgress.abandon`, `last_blocker` `near_duplicate`, `repeats` = the held
    scenario's id). A spare may take its place (`best_reserve`, §9).
@@ -2653,20 +2654,18 @@ flowchart TB
        `[n, m]` markers.
    - **Which scenarios are compared** (`list_scenarios_for_duplicate_check`, one read of `tsg_scenarios`):
      this session's `done` scenarios of its other paths (each path's newest version, and an older accepted
-     one; the path's own versions are skipped), and the asset's `done`, current scenarios in its other sessions
-     that are `pending` or `accepted`. Hand-written scenarios count as held.
+     one; the path's own versions are skipped). The asset's other sessions are never read (D15, 2026-10-20).
    - A match adds a `near_duplicate` **blocker**, naming the held scenario's id. It is final
      (`FINAL_FINDINGS`): no new attempt can change it.
    - How it compares with the two earlier checks:
 
      | Check | When | Code | Compares | Against | Result |
      |---|---|---|---|---|---|
-     | Plan-time held check (section 5) | while planning | `PlanJob._covered_by_held` (`app/worker/scenario/plan_job.py`) → `held_repeat_of` | same threat and category | the asset's other sessions only | the path is never planned (`already_held`) |
-     | Pre-AI repeat check (section 6) | before the evidence search and the AI; never on a regenerate | `BatchWriter._without_repeats` → `held_repeat_of` | same threat and category | this session's other paths and the asset's other sessions | the path is given up with no AI call and no card (`repeats`) |
-     | Near-copy check (here) | right before the save | `_near_copy_held_now` → `duplicate_of` | same threat and category, **or** the same words | the same two lists, read again now | the card is saved `blocked` and the path is given up |
+     | Pre-AI repeat check (section 6) | before the evidence search and the AI; never on a regenerate | `BatchWriter._without_repeats` → `held_repeat_of` | same threat and category | this session's other paths | the path is given up with no AI call and no card (`repeats`) |
+     | Near-copy check (here) | right before the save | `_near_copy_held_now` → `duplicate_of` | same threat and category, **or** the same words | the same list, read again now | the card is saved `blocked` and the path is given up |
 
-     The last check catches what the first two cannot see: a scenario saved meanwhile by another path or
-     session, and the same statement told for a different threat.
+     The plan-time held check (section 5.12) was removed by D15. The near-copy check catches what the first
+     cannot see: a scenario another path saved meanwhile, and the same statement told for a different threat.
 7. **Unique title** (`save_with_unique_title`). `title_candidates` yields the title as written, then
    "title (threat name)" (skipped when the title already holds the threat name), then "title (2)", "(3)" and so
    on. Each try sets `content.title` and `title_key`. The unique index on `(session_id, title_key)` covers
@@ -2699,8 +2698,8 @@ flowchart TB
 > the set's six scenarios. Its controls were queued for the next step.
 
 The writer and reviewer both answered (sections 8.2 and 8.5). Nothing blocked, so the near-copy check ran. It
-compared against the four scenarios batch 1 had saved and the asset's held scenarios in other sessions, and
-found no match. The title "Unauthorized Signal Command Tampering" was free, so it was saved as written. The id is
+compared against the four scenarios batch 1 had saved and (before D15) the asset's held scenarios in other
+sessions, and found no match. The title "Unauthorized Signal Command Tampering" was free, so it was saved as written. The id is
 `4909e75f-c1c1-5802-bc21-a7a16fd34d36`; we computed `uuid5(NAMESPACE_URL,
 "tsg:13bd93f254ce4d2788f18c56f1c011ab:e6e2f9ec043f7c21:1")` in Python and it matches (checked).
 

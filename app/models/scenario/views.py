@@ -408,7 +408,7 @@ class PlanCounts(BaseModel):
     no_attacker: int  # threats with no acting attacker
     threats: int  # threats planned
     paths: int  # asset-level scenarios found: one per threat per kind
-    already_held: int  # of those, held by the asset already (pending or accepted)
+    already_held: int  # 0 since D15 (other sessions never take a path away); kept for the v1 format
     not_selected: int  # left out by TOTAL_SCENARIO_COUNT
     selected: int
     first_set: int  # written first; the rest on "Next set"

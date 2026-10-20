@@ -1,6 +1,6 @@
-"""A duplicate is caught before a save: the same threat (key or name) as the same kind on the same systems,
-or the very same words.
-Another kind, other systems or another threat told in other words is kept."""
+"""A duplicate of another path of the same run is caught before a save: the same threat (key or name) as the
+same kind on any systems, or the very same words; the asset's other sessions never block one (D15).
+Another kind or another threat told in other words is kept."""
 
 from typing import Any
 
@@ -25,33 +25,32 @@ def _held(content: dict[str, Any], path_id: str = "p2") -> list[dict[str, Any]]:
 
 
 def test_the_same_threat_kind_and_systems_is_a_copy_naming_the_scenario_it_copies() -> None:
-    finding = duplicate_of(_content("Told in other words."), "p1", [], _held(_content()))
+    finding = duplicate_of(_content("Told in other words."), "p1", _held(_content()))
     assert finding is not None and finding.code == FindingCode.NEAR_DUPLICATE and "s-first" in finding.message
-    assert duplicate_of(_content("Told again."), "p1", _held(_content()), []) is not None  # this run's too
 
 
 def test_another_kind_or_another_threat_in_other_words_is_kept() -> None:
     held = _held(_content())
-    assert duplicate_of(_content("Other words.", category="Denial of Service"), "p1", [], held) is None
-    assert duplicate_of(_content("Other words.", threat="lib:2"), "p1", [], held) is None
+    assert duplicate_of(_content("Other words.", category="Denial of Service"), "p1", held) is None
+    assert duplicate_of(_content("Other words.", threat="lib:2"), "p1", held) is None
 
 
 def test_the_same_threat_and_kind_through_other_systems_is_the_same_asset_level_scenario() -> None:
     """Owner 2026-10-19: the systems are its entry points; told again through others, it is a copy."""
     held = _held(_content())
-    assert duplicate_of(_content("Other words.", systems=[{"id": 1}, {"id": 2}]), "p1", [], held) is not None
-    assert duplicate_of(_content("Other words.", systems=[]), "p1", [], held) is not None
+    assert duplicate_of(_content("Other words.", systems=[{"id": 1}, {"id": 2}]), "p1", held) is not None
+    assert duplicate_of(_content("Other words.", systems=[]), "p1", held) is not None
 
 
 def test_the_very_same_words_are_a_copy_whatever_the_threat_case_spaces_or_markers() -> None:
     held = _held(_content(threat="lib:2", category="Spoofing"))
     reworded = _STATEMENT.upper().replace(" ", "   ").replace(" [1]", " [2, 3]")
-    assert duplicate_of(_content(reworded, threat="lib:9"), "p1", [], held) is not None
-    assert duplicate_of(_content(_STATEMENT.replace(" [1]", ""), threat="lib:9"), "p1", [], held) is not None
+    assert duplicate_of(_content(reworded, threat="lib:9"), "p1", held) is not None
+    assert duplicate_of(_content(_STATEMENT.replace(" [1]", ""), threat="lib:9"), "p1", held) is not None
 
 
 def test_the_paths_own_versions_are_never_its_copies() -> None:
-    assert duplicate_of(_content(), "p1", _held(_content(), path_id="p1"), []) is None
+    assert duplicate_of(_content(), "p1", _held(_content(), path_id="p1")) is None
 
 
 def test_a_hand_written_scenario_of_the_same_live_threat_is_its_threat_and_a_pending_one_is_not() -> None:
@@ -60,17 +59,17 @@ def test_a_hand_written_scenario_of_the_same_live_threat_is_its_threat_and_a_pen
     hand_written = _content("Hand written.", threat="") | {
         "threat": {"library_id": 1, "library_status": "active"}
     }
-    assert duplicate_of(_content(), "p1", [], _held(hand_written)) is not None
+    assert duplicate_of(_content(), "p1", _held(hand_written)) is not None
     pending = hand_written | {"threat": {"library_id": 1, "library_status": "pending"}}
-    assert duplicate_of(_content(), "p1", [], _held(pending)) is None
+    assert duplicate_of(_content(), "p1", _held(pending)) is None
 
 
 def test_the_same_threat_name_is_the_same_threat_whatever_its_key() -> None:
     """An AI threat later approved into the library keeps its "ai:" key on old scenarios: its name matches."""
     accepted_ai = _content("Told first.") | {"threat": {"key": "ai:x", "name": "Firmware tampering"}}
     library = _content("Told again.") | {"threat": {"key": "lib:9", "name": "T0839 firmware  TAMPERING"}}
-    assert duplicate_of(library, "p1", [], _held(accepted_ai)) is not None
+    assert duplicate_of(library, "p1", _held(accepted_ai)) is not None
     pending = {"name": "Firmware tampering", "library_id": 3, "library_status": "pending"}
-    assert duplicate_of(library, "p1", [], _held(_content("Hand written.") | {"threat": pending})) is not None
+    assert duplicate_of(library, "p1", _held(_content("Hand written.") | {"threat": pending})) is not None
     other = _content("Other words.") | {"threat": {"key": "lib:9", "name": "Spoofed commands"}}
-    assert duplicate_of(other, "p1", [], _held(accepted_ai)) is None
+    assert duplicate_of(other, "p1", _held(accepted_ai)) is None

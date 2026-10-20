@@ -7,7 +7,7 @@ import hashlib
 import itertools
 import json
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
@@ -1219,32 +1219,17 @@ def select_up_to_target(paths: list[dict[str, Any]], max_scenarios: int) -> list
     ]
 
 
-#: Whether a path (its record, its plan threat) repeats a scenario the asset already holds.
-CoveredPath = Callable[[dict[str, Any], dict[str, Any]], bool]
-
-
-def build_plan(
-    findings: ThreatFindings, target: int, covered: CoveredPath = lambda _path, _threat: False
-) -> dict[str, Any]:
-    """The plan the run freezes: every threat once, one path per threat per kind, ranked, each path `covered`
-    (held by the asset already) dropped on its own, and the `target` (TOTAL_SCENARIO_COUNT, 0 = no cap)
-    best selected."""
+def build_plan(findings: ThreatFindings, target: int) -> dict[str, Any]:
+    """The plan the run freezes: every threat once, one path per threat per kind, dealt in turns over the
+    systems, and the `target` (TOTAL_SCENARIO_COUNT, 0 = no cap) best selected; the asset's other sessions
+    never take a path away (D15)."""
     threats = [
         planned_threat_record(threat)
         | {"category_id": findings.category_ids.get(threat.categories[0].lower())}
         for threat in findings.threats
     ]
-    by_key = {threat["key"]: threat for threat in threats}
-    paths = threat_paths(findings.threats)
-    # held first, then ranked: a threat's turns count only the paths still to write
-    open_paths = [
-        path
-        for path in paths
-        if not covered(_path_record(path, 0, findings.category_ids), by_key[path.steps[0].key])
-    ]
-    if len(open_paths) < len(paths):
-        log.info(LogEvent.PLANNER_COVERED_PATHS_DROPPED, dropped=len(paths) - len(open_paths))
-    ranked = [_path_record(path, 0, findings.category_ids) for path in rank_paths(open_paths)]
+    paths = rank_paths(threat_paths(findings.threats))
+    ranked = [_path_record(path, 0, findings.category_ids) for path in paths]
     fresh = take_turns(ranked, list(findings.landscape.system_ids.values()))
     for rank, record in enumerate(fresh, start=1):
         record["rank"] = rank

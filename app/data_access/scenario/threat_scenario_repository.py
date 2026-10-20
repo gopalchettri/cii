@@ -234,31 +234,12 @@ class ThreatScenarioRepository(MongoRepository):
         found = next(self.collection.aggregate(pipeline), None)
         return {key: int((found or {}).get(key, 0)) for key in group if key != "_id"}
 
-    def list_scenarios_for_duplicate_check(
-        self, entity_id: int, asset_id: int, session_id: str
-    ) -> tuple[list[Record], list[Record]]:
-        """In one tsg_scenarios read: the scenario session's finished scenarios (each attack path's newest
-        version and an older accepted one), and the asset's scenarios of its other sessions a reviewer
-        accepted or has still to decide, read without their attack path (path ids repeat across sessions)."""
-        own_session = {"session_id": session_id, "status": ScenarioStatus.DONE, **MAPPED_VERSIONS}
-        elsewhere = {
-            "entity_id": entity_id,
-            "asset_id": asset_id,
-            "decision": {"$in": [Decision.PENDING, Decision.ACCEPTED]},
-            "session_id": {"$ne": session_id},
-            "status": ScenarioStatus.DONE,
-            **CURRENT_VERSIONS,
-        }
-        either: Record = {"$or": [own_session, elsewhere]}
-        rows = self.list(fields=_DUPLICATE_CHECK_FIELDS, **either)
-        own, other = [], []
-        for row in rows:
-            if row.pop("session_id") == session_id:
-                own.append(row)
-            else:
-                row.pop("path_id", None)
-                other.append(row)
-        return own, other
+    def list_scenarios_for_duplicate_check(self, session_id: str) -> list[Record]:
+        """The scenario session's finished scenarios (each attack path's newest version and an older accepted
+        one): the only ones a new scenario of the session may repeat. The asset's other sessions never block
+        one (owner, 2026-10-20: D15)."""
+        own_session: Record = {"session_id": session_id, "status": ScenarioStatus.DONE, **MAPPED_VERSIONS}
+        return self.list(fields=_DUPLICATE_CHECK_FIELDS, **own_session)
 
     def update_scenario_decisions(
         self, scenario_ids: list[str], expected: Decision, decision: Decision, stamp: dict[str, Any]

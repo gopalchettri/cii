@@ -26,9 +26,7 @@ from app.core.database import get_mongodb
 from app.domain.scenario import plan_trace
 from app.domain.scenario.plan import build_plan
 from app.domain.scenario.plan_trace import build_plan_trace, plan_trace_view
-from app.domain.scenario.write import held_repeat_of
 from app.models.library.library import LibraryThreat
-from app.models.scenario.plan import KindPlace, ThreatFindings
 from app.models.scenario.views import PlanCounts
 from app.worker import jobs
 from app.worker.scenario.plan_job import PLAN_JOB_FIELDS
@@ -45,7 +43,6 @@ from tests.planner_samples import (
     S,
     finder,
     gap_fill_for_elevation,
-    planned,
     planner_chat,
 )
 from tests.test_attack_paths import (  # noqa: F401 - `sent` is a fixture used by name
@@ -92,7 +89,7 @@ def _gate(
 def _trace(chat: Any, threats: tuple[LibraryThreat, ...] = THREATS, **found: Any) -> dict[str, Any]:
     findings = finder(chat, threats=threats).find_threats(CONTEXT, **found)
     plan = build_plan(findings, 0)
-    return build_plan_trace(findings, plan, [], min(len(plan["paths"]), 6))
+    return build_plan_trace(findings, plan, min(len(plan["paths"]), 6))
 
 
 def _drops(trace: dict[str, Any], stage: PlanStage) -> list[tuple[str, str | None, str, str]]:
@@ -174,19 +171,16 @@ def test_a_skipped_batch_and_a_threat_no_attacker_fits_are_traced() -> None:
 
 
 def test_the_drops_are_bounded_and_the_most_telling_come_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A held path before a gate verdict before the pre-filter; the counts stay whole."""
+    """A gate verdict before the pre-filter; the counts stay whole, and nothing is ever held (D15)."""
     monkeypatch.setattr(plan_trace.PlanTraceLimits, "MAX_DROPS", 2)
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = _gate({FLOOD.name: {"systems": ["SYS1"]}})
     findings = finder(chat, threats=(*THREATS, UNLINKED)).find_threats(CONTEXT)
     plan = build_plan(findings, 0)
-    held = [
-        plan_trace.plan_drop("lib:5", FLOOD.name, S.DENIAL_OF_SERVICE, PlanStage.HELD, PlanLoss.ALREADY_HELD)
-    ]
-    trace = build_plan_trace(findings, plan, held, 0)
-    assert [drop["stage"] for drop in trace["drops"]] == [PlanStage.HELD, PlanStage.GATE]
-    assert trace["drops_total"] == 1 + 6 + 1  # held, the gate's six not relevant, the unlinked threat
-    assert trace["counts"]["already_held"] == 1 and trace["counts"]["paths"] == 2
+    trace = build_plan_trace(findings, plan, 0)
+    assert [drop["stage"] for drop in trace["drops"]] == [PlanStage.GATE, PlanStage.GATE]
+    assert trace["drops_total"] == 6 + 1  # the gate's six not relevant, the unlinked threat
+    assert trace["counts"]["already_held"] == 0 and trace["counts"]["paths"] == 1  # the flood, once
 
 
 def test_the_view_adds_what_became_of_the_planned_paths() -> None:
@@ -280,27 +274,8 @@ def test_a_gap_fill_proposal_not_kept_is_traced_with_its_reason() -> None:
     rerank = FakeRerankModel({("Insider misuses SYS1 admin rights", ADMIN_ABUSE.name): 90.0})
     findings = finder(chat, rerank).find_threats(CONTEXT)
     plan = build_plan(findings, 0)
-    trace = build_plan_trace(findings, plan, [], 0)
+    trace = build_plan_trace(findings, plan, 0)
     assert _drops(trace, PlanStage.GAP_FILL) == [
         ("Insider misuses SCADA server admin rights", S.ELEVATION_OF_PRIVILEGE, PlanLoss.LIBRARY_REPEAT, "")
     ]
     assert trace["counts"]["gap_fill_lost"] == 1 and trace["counts"]["ai_threats"] == 0
-
-
-def test_a_kind_already_held_never_takes_a_turn_from_the_threats_other_kinds() -> None:
-    """Held paths leave before the ranking: X's held Spoofing never pushes its only new kind behind Y's second
-    kind, so with room for two the plan tells X and Y once each."""
-    x = planned("lib:1", "X", (321,), categories=(S.SPOOFING, S.TAMPERING), impact=3)
-    x = dataclasses.replace(
-        x, kind_places=((S.SPOOFING, KindPlace((321,), 3, 70.0)), (S.TAMPERING, KindPlace((321,), 1, 70.0)))
-    )
-    y = planned(
-        "lib:2", "Y", (321,), categories=(S.INFORMATION_DISCLOSURE, S.ELEVATION_OF_PRIVILEGE), impact=2
-    )
-    held = [{"_id": "h1", "content": {"threat": {"key": "lib:1"}, "category": S.SPOOFING, "systems": []}}]
-    findings = ThreatFindings([x, y], [], LANDSCAPE)
-    plan = build_plan(findings, 2, lambda path, threat: held_repeat_of(path, threat, held) is not None)
-    assert [(p["steps"], p["category"]) for p in plan["paths"] if p["selected"]] == [
-        (["lib:2"], S.INFORMATION_DISCLOSURE),
-        (["lib:1"], S.TAMPERING),
-    ]

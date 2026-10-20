@@ -470,20 +470,22 @@ def test_the_counts_read_the_run_counts_index_only_and_skip_a_replaced_pending_v
     assert "run_counts" in winning and '"FETCH"' not in winning
 
 
-def test_the_duplicate_read_of_an_assets_other_runs_examines_that_asset_only() -> None:
-    """Once per duplicate check, never a walk over the entity's whole register."""
+def test_the_duplicate_read_examines_the_runs_own_scenarios_only() -> None:
+    """D15 (owner 2026-10-20): once per duplicate check, the run's own finished scenarios only; the asset's
+    other sessions are never read, so none of their scenarios, pending or accepted, blocks one."""
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
     asset = int(uuid.uuid4().hex[:12], 16)
-    for number in range(20):
-        scenarios.save_scenario(
-            _stored(f"other-{session_id}", f"p{number}", f"T{number}", asset_id=asset + 1 + number)
-        )
-    scenarios.save_scenario(_stored(f"earlier-{session_id}", "p1", asset_id=asset))
+    for number, decision in enumerate([Decision.PENDING, Decision.ACCEPTED] * 10):
+        stored = _stored(f"other-{session_id}", f"p{number}", f"T{number}", asset_id=asset, decision=decision)
+        scenarios.save_scenario(stored)
+    scenarios.save_scenario(_stored(session_id, "p1", asset_id=asset))
     asked: list[dict[str, Any]] = []
     spy = ThreatScenarioRepository(SimpleNamespace(find=lambda query, fields, **_: asked.append(query) or []))  # type: ignore[arg-type]
-    spy.list_scenarios_for_duplicate_check(86, asset, session_id)
+    spy.list_scenarios_for_duplicate_check(session_id)
     explained = get_mongodb()[Collection.SCENARIOS].find(asked[0]).explain()
     assert explained["executionStats"]["totalDocsExamined"] == 1
+    held = scenarios.list_scenarios_for_duplicate_check(session_id)
+    assert [row["_id"] for row in held] == [f"{session_id}:p1"]
 
 
 def test_a_clashing_title_takes_the_threat_name_then_a_number() -> None:
