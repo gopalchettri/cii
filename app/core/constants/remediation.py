@@ -20,15 +20,10 @@ class Remediation:
     RATING_MAX_DIGITS: Final = 15  # a rating is exact up to 15 significant digits (a JSON number) ...
     RATING_DECIMALS: Final = 4  # ... 4 of them after the point
     STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code
-    RETIRED_MARK: Final = ", retired in the library"  # after a retired register control's name and domain
     REASON_MAX_CHARS: Final = 300  # the AI's problems quoted in a failed version's error message
-
-
-class RiskLevel(StrEnum):
-    """The register's urgent risk levels; the API accepts and echoes any other label too."""
-
-    CRITICAL = "Critical"
-    HIGH = "High"
+    PROMPT_VERSION: Final = "remediation-2"  # stored on every plan version the prompt writes
+    #: The code at the head of a control label ("CID-0477 · Social Engineering"): what the label names.
+    LABEL_CODE_PATTERN: Final = r"[^\s·•|:—–]+"
 
 
 class YesNo(StrEnum):
@@ -37,8 +32,18 @@ class YesNo(StrEnum):
 
 
 class ControlCoverage(StrEnum):
-    GAPS = "gaps"  # some mapped control is not covered yet: those are the controls to implement
-    COVERED = "covered"  # every one is: the actions verify them instead
+    """Set by code from the controls' implementation status."""
+
+    GAPS = "gaps"  # some scenario control is missing or partially implemented
+    COVERED = "covered"  # every scenario control is implemented
+
+
+class ImplementationStatus(StrEnum):
+    """Where one scenario control stands against the register, decided by code."""
+
+    IMPLEMENTED = "implemented"  # in the register, on every subsystem (existing_controls_all_subsystems Yes)
+    PARTIALLY_IMPLEMENTED = "partially_implemented"  # in the register, not on every subsystem (No or empty)
+    MISSING = "missing"  # not in the register
 
 
 class ControlType(StrEnum):
@@ -92,17 +97,11 @@ class RemediationMessage(StrEnum):
     CONTROL_REF_EMPTY = (
         "A control entry must name the control: send control_id, control_code or control_name."
     )
-    CONTROL_NAMED_TWICE = "The same control is named twice ({key}): send one entry per control."
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
-    CONTROL_REPEATED = "{reference} names the same control as an earlier entry: send one entry per control."
-    CONTROL_ID_CODE_DISAGREE = (
-        "control_id {control_id} and control_code {control_code} name two different controls."
-    )
     REFERENCES_INVALID = "Some control references cannot be resolved."
     CONTROLS_BEING_MAPPED = (
-        "The scenario's controls were still being matched by another job after {seconds} seconds; the plan "
-        "job tries again."
+        "The scenario's controls are being matched by another job; the plan job tries again."
     )
     SCENARIO_NOT_FOUND = "Scenario '{scenario_id}' does not exist."
     SCENARIO_OTHER_ENTITY = "Scenario '{scenario_id}' belongs to another entity."
@@ -141,41 +140,35 @@ class RemediationMessage(StrEnum):
     CATEGORY_NOT_OF_THREAT = "The library files '{threat}' under {categories}, not '{category}'."
     PLAN_UNUSABLE = "The AI could not write a usable remediation plan: {reason}"  # a version's own failure
     PLAN_WITHOUT_ACTION = "The AI's remediation plan has no action, so there is nothing to schedule or do."
+    # The re-ask's problems: what the AI's first answer got wrong about the gaps.
+    GAP_REQUIRED = "controls_to_be_implemented must include {code}: it is {status} for this scenario"
+    IMPLEMENTED_LISTED = (
+        "{code} is already implemented: remove it from controls_to_be_implemented and from every "
+        "implements_controls"
+    )
 
 
 class PlanWarning(StrEnum):
     """What the planner's checks and the scheduler warn about on a plan version; never a block."""
 
     CONTROL_NOT_IN_LIBRARY = (
-        "recommended control {code!r} matched no library control and was removed from the plan"
+        "recommended control {code!r} is not a control of this scenario and was removed from the plan"
     )
     CONTROL_IN_REGISTER = (
-        "recommended control {code!r} is already in the register (matched by library id) and was removed "
-        "from the plan"
+        "recommended control {code!r} is already implemented per the register and was removed from the plan"
+    )
+    GAP_NOT_ADDRESSED = (
+        "scenario control {code} is {status} but the plan does not recommend it — this gap stays open"
+    )
+    CONTROL_UNMATCHED = (
+        "control {reference!r} matches no active library control — it covers no scenario control"
     )
     CONTROL_LISTED_TWICE = "recommended control {code!r} is listed more than once — the repeat was removed"
-    ALL_COVERED_BUT_GAPS = (
-        "every library-mapped control is already in the register (matched by library id) but "
-        "control_coverage says 'gaps' — only the free-text register entries could justify that verdict"
-    )
-    COVERED_WITH_CONTROLS = (
-        "controls_to_be_implemented.control_coverage says 'covered' but controls is non-empty"
-    )
-    COVERED_WITHOUT_LIBRARY = (
-        "control_coverage says 'covered' but the scenario has no library-mapped controls — there was nothing "
-        "to cover; the verdict is unverifiable"
-    )
-    URGENCY_NOT_REFLECTED = (
-        "risk_level is {level} but no recommended control or action carries Critical/High priority — the "
-        "plan's urgency does not reflect the register's scored verdict"
-    )
     DURATION_REPAIRED = (
         "{action}.duration_days {value} is not a whole number of days of at least 1 — scheduled as 1 day"
     )
     DURATION_CAPPED = "{action}.duration_days {days} exceeds {limit} — capped"
     DEPENDENCY_NOT_EARLIER = "{action}.depends_on {reference!r} is not an earlier action — ignored"
-    DEPENDENCY_PROSE_EXTRA = "{action}.dependencies mentions {named} but depends_on does not include it"
-    DEPENDENCY_PROSE_NONE = "{action}.dependencies says None but it waits for {ids}"
     ACTION_ID_REPEATED = (
         "{action}.action_id {action_id!r} is already used by remediation_action_plan[{position}] — this "
         "action cannot be named as a prerequisite"
@@ -184,51 +177,15 @@ class PlanWarning(StrEnum):
         "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} days fit, "
         "so the dates at and beyond {last} are clamped and no longer reflect the durations"
     )
-    IDS_OUT_OF_SEQUENCE = "action ids are not A1..A{count} in order: {ids}"
-    OUT_OF_ORDER = (
-        "{action} is listed after work that starts later (day {latest}) although it can start on day {start} "
-        "— the sequence is out of order"
-    )
-    LESS_URGENT_PREREQUISITE = (
-        "{prerequisite} ({prerequisite_priority}) is a prerequisite of {action} ({priority}) but is less "
-        "urgent than the work it blocks"
-    )
     NO_WINDOW = (
         "no mitigation window supplied — the {total}-day schedule is not bounded by a register deadline"
     )
     PAST_WINDOW = "the plan finishes {end}, {days} days after the mitigation window closes ({deadline})"
-    STATED_DAYS = "action_plan states {stated} days but the computed critical path is {total} days"
-    IMPLEMENTS_UNKNOWN = "{action}.implements_controls names {code!r}, which is not a control of this plan"
+    IMPLEMENTS_UNKNOWN = (
+        "{action}.implements_controls names {code!r}, which is not a recommended control of this plan — "
+        "removed"
+    )
     CONTROL_NOT_IMPLEMENTED = "recommended control {code} is not implemented by any action"
-
-
-class SnapshotWarning(StrEnum):
-    """What a plan version's frozen input warns about: flags for the reviewer, never a block."""
-
-    RATING_MISMATCH = (
-        "final_risk_rating {final} does not equal likelihood x impact ({likelihood}x{impact}={product}); "
-        "register values taken as-is"
-    )
-    NOT_CALIBRATED = (
-        "risk_assessment carries no risk level and no final risk rating — the plan is NOT risk-calibrated"
-    )
-    WINDOW_OVER = "mitigation window ended {end} — already in the past at plan creation"
-    REGISTER_CONTROL_RETIRED = (
-        "register control {code} is retired in the library — sent to the AI by its name and domain"
-    )
-    REGISTER_ID_UNKNOWN = (
-        "register control id {control_id} matches no active library control — left out of the plan's input"
-    )
-    REGISTER_REF_CHANGED = (
-        "register control {reference} no longer names one library control (its id and code now name two "
-        "rows) — kept as text"
-    )
-    CONTROL_NO_LONGER_MAPPED = (
-        "control {code} was mapped to the scenario for version {version} but is not mapped any more"
-    )
-    CONTROL_RETIRED = (
-        "mapped control {code} is no longer active in the library — left out of the plan's input"
-    )
 
 
 class PlanText(StrEnum):
