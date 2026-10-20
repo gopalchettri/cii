@@ -180,6 +180,20 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     )
 
 
+def test_a_first_index_build_the_ai_stopped_holds_the_paths_back_as_that_outage() -> None:
+    """Owner 2026-10-20: no snapshot yet because the AI was down while building it: the held path is told as
+    "ai_down", not as a missing snapshot."""
+    waiting = empty_index(TextEmbeddings(), ScoredBy(), outage=AiOutage.DOWN)
+    finder = EvidenceFinder(lambda: waiting, 1.0, gate=RerankGate(1), candidates=6, kept_per_threat=3)
+    result, _ = one(finder, request_of())
+    assert result.search.snapshot_id is None and result.search.outage == AiOutage.DOWN
+    problem = evidence_problem({"intel_search": result.search.as_doc()})
+    assert problem is not None and (problem.reason, problem.detail) == (
+        AiOutage.DOWN,
+        AI_OUTAGE_MESSAGES[AiOutage.DOWN],
+    )
+
+
 def test_a_settled_empty_index_finds_no_evidence_and_is_no_outage() -> None:
     """Searched and nothing found: the path is written without evidence, never held back."""
     empty = empty_index(TextEmbeddings(), ScoredBy(), settled=True)

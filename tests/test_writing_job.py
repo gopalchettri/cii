@@ -15,7 +15,10 @@ from structlog.testing import capture_logs
 
 from app import container
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AI_PATH_OUTAGE_MESSAGE,
     ActorRole,
+    AiOutage,
     AiTask,
     Collection,
     ErrorCode,
@@ -419,6 +422,32 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[1]["failure"]["code"] == ErrorCode.UNAVAILABLE and run["plan"]["paths"][1]["attempts"] == 1
     assert run["plan"]["paths"][1]["abandoned"] and run["status"] == Status.DONE
+
+
+def test_a_path_the_ai_timed_out_on_gets_a_card_that_names_the_outage(
+    chat: FakeChatModel, sent: list[tuple[Any, ...]]
+) -> None:
+    """Owner 2026-10-20: the card says the AI timed out (with its reason), not only that it did not answer; an
+    outage that names none keeps the plain message."""
+
+    def two_and_three_fail(user_prompt: str) -> dict[str, Any]:
+        if '"Threat 2"' in user_prompt:
+            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
+        if '"Threat 3"' in user_prompt:
+            raise Unavailable("down")
+        return _answer_for(user_prompt)
+
+    chat.responders[AiTask.WRITE_SCENARIO] = two_and_three_fail
+    record_id = _queued_run(["Threat 1", "Threat 2", "Threat 3"])
+    _write_batch(_on_last_try(record_id))
+    stored = _scenarios_of(record_id)
+    outage = AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT]
+    assert stored[1]["failure"] == {
+        "code": ErrorCode.UNAVAILABLE,
+        "message": AI_PATH_OUTAGE_MESSAGE.format(outage=outage, tries=Lease.MAX_ATTEMPTS),
+        "reason": AiOutage.TIMED_OUT,
+    }
+    assert "reason" not in stored[2]["failure"] and "did not answer" in stored[2]["failure"]["message"]
 
 
 def test_with_no_path_written_an_outage_on_the_last_try_still_fails_the_job(

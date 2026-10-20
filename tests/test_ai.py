@@ -78,6 +78,10 @@ def test_provider_outage_becomes_unavailable(monkeypatch: pytest.MonkeyPatch) ->
         (litellm.RateLimitError("busy", llm_provider="openai", model="m"), AiOutage.BUSY),
         (litellm.ServiceUnavailableError("overloaded", llm_provider="openai", model="m"), AiOutage.BUSY),
         (litellm.Timeout("no answer in time", model="m", llm_provider="openai"), AiOutage.TIMED_OUT),
+        # Statuses litellm maps to no class of its own come as a plain APIError: the status tells the outage.
+        (litellm.APIError(524, "origin timed out", llm_provider="openai", model="m"), AiOutage.TIMED_OUT),
+        (litellm.APIError(529, "overloaded", llm_provider="openai", model="m"), AiOutage.BUSY),
+        (litellm.APIError(500, "server error", llm_provider="openai", model="m"), AiOutage.DOWN),
     ],
 )
 def test_each_ai_outage_tells_the_ui_which_it_was(error: Exception, outage: AiOutage) -> None:
@@ -89,6 +93,45 @@ def test_each_ai_outage_tells_the_ui_which_it_was(error: Exception, outage: AiOu
     ):
         raise error
     assert (raised.value.reason, raised.value.detail) == (outage, AI_OUTAGE_MESSAGES[outage])
+
+
+def test_an_unmapped_server_error_is_retried_and_a_client_error_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain APIError with a 5xx is an outage (asked again, then Unavailable for the job to back off);
+    with a 4xx it is no outage: raised as it is, asked once."""
+    _no_waiting(monkeypatch)
+    asked: list[int] = []
+
+    def failing(status: int) -> None:
+        asked.append(status)
+        raise litellm.APIError(status, "gateway said no", llm_provider="openai", model="m")
+
+    with pytest.raises(Unavailable), ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"):
+        ai.common.call_with_retries(lambda: failing(529))
+    with pytest.raises(litellm.APIError), ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"):
+        ai.common.call_with_retries(lambda: failing(413))
+    assert asked == [529] * (AiLimits.RETRIES + 1) + [413]
+
+
+def test_an_unmapped_timed_out_status_is_not_asked_again_and_is_told_as_timed_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-10: a call that timed out is not asked again in the call (a 524 is a timeout as much as
+    litellm's Timeout); the fallback model or the job's back-off asks later, told "ai_timed_out"."""
+    _no_waiting(monkeypatch)
+    asked: list[int] = []
+
+    def origin_timed_out() -> None:
+        asked.append(524)
+        raise litellm.APIError(524, "origin timed out", llm_provider="openai", model="m")
+
+    with (
+        pytest.raises(Unavailable) as raised,
+        ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"),
+    ):
+        ai.common.call_with_retries(origin_timed_out)
+    assert asked == [524] and raised.value.reason == AiOutage.TIMED_OUT
 
 
 def test_fenced_json_answer_is_read_and_the_call_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -7,19 +7,22 @@ import pytest
 
 from app import container
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
     REFRESH_AFTER_HOURS,
+    AiOutage,
     IntelKind,
     IntelLimits,
     IntelMessage,
     IntelSource,
 )
-from app.core.exceptions import IntelFetchFailed
+from app.core.exceptions import IntelFetchFailed, Unavailable
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord
 from app.models.external_intelligence.refresh_summary import RefreshResult
 from app.models.external_intelligence.source_health import (
     SourceHealth,
 )
+from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from tests.external_intelligence.evidence_fakes import NOW, MemoryCatalogue, MemoryKeeper, StubFetcher
 from tests.external_intelligence.operations.refresh_fakes import ClaimFeeds, CurrentRecords
@@ -177,6 +180,26 @@ def test_a_failed_index_rebuild_does_not_fail_the_refresh() -> None:
     run, feeds, *_ = refresher({KEV: StubFetcher(KEV, result("A"))}, [KEV], MemoryKeeper(fail=True))
     summary = run.refresh_due_sources(NOW)
     assert summary.index_rebuilt is False and summary.sources[0].result == RefreshResult.REFRESHED
+    assert summary.index_error == {"code": "internal_error", "message": "RuntimeError"}  # no driver text
+
+
+def test_a_rebuild_refused_for_want_of_data_is_told_with_its_own_message() -> None:
+    """Nothing current to index (a first import that failed): a known state, never an internal error."""
+    refused = EvidenceIndexRefused(IntelMessage.SNAPSHOT_EMPTY)
+    run, *_ = refresher({KEV: StubFetcher(KEV, result("A"))}, [KEV], MemoryKeeper(fail=refused))
+    assert run.refresh_due_sources(NOW).index_error == {"code": "conflict", "message": str(refused)}
+
+
+def test_an_index_rebuild_the_ai_stopped_is_told_with_its_outage() -> None:
+    """Owner 2026-10-20: the refresh job then says the AI was down, not that all went well."""
+    down = Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
+    run, *_ = refresher({KEV: StubFetcher(KEV, result("A"))}, [KEV], MemoryKeeper(fail=down))
+    summary = run.refresh_due_sources(NOW)
+    assert summary.index_error == {
+        "code": "unavailable",
+        "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN],
+        "reason": AiOutage.DOWN,
+    }
 
 
 def test_two_refreshes_of_one_source_at_once_run_it_once() -> None:

@@ -112,6 +112,17 @@ def test_an_admin_refresh_of_one_source_is_recorded_on_its_job(intel: Intel) -> 
     assert len(intel.refresher.calls) == 1
 
 
+def test_a_refresh_whose_index_the_ai_could_not_rebuild_is_done_and_says_why(intel: Intel) -> None:
+    """Owner 2026-10-20: the data refresh stands (done), and the job tells the index error with its AI
+    reason instead of reading as if all went well."""
+    down = {"code": "unavailable", "message": "The AI service is down.", "reason": "ai_down"}
+    intel.refresher.index_error = down
+    job_id = _job("cisa_kev")
+    refresh_external_intelligence(job_id)
+    stored = _admin_jobs().get(_id=job_id)
+    assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "cisa_kev", "index_error": down})
+
+
 def test_an_admin_refresh_runs_while_the_workers_cached_switch_still_reads_off(intel: Intel) -> None:
     """Turning the switch on queues a refresh the worker takes before its cached switch catches up."""
     intel.switch.enabled = False

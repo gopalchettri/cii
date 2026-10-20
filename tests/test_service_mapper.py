@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app import container
 from app.core.constants import (
+    AiOutage,
     AuditAction,
     Collection,
     MapperAction,
@@ -431,6 +432,40 @@ def _decide_mapping(mapper: ServiceMapperService, mapping_id: str, accept: bool 
 
 def _record(mapping_id: str) -> dict:
     return get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping_id})
+
+
+def test_a_mapping_waiting_out_an_ai_outage_says_so_and_a_failed_one_names_the_outage(
+    empty_test_database: None,
+) -> None:
+    """Owner 2026-10-20: the status and the mapping show the retry notice while the job waits, and once it
+    failed, which AI outage it was."""
+    mapper, mapping_id, _ = _finished_mapping()
+    mappings = get_mongodb()[Collection.SERVICE_MAPPINGS]
+    notice = {
+        "reason": AiOutage.BUSY,
+        "message": "The AI service is busy: overloaded or too many requests right now.",
+        "attempt": 2,
+        "max_attempts": 5,
+        "retry_at": datetime.now(UTC),
+    }
+    mappings.update_one({"_id": mapping_id}, {"$set": {"status": Status.QUEUED, "job.retry": notice}})
+    for shown in (
+        mapper.get_service_mapping_status(PRINCIPAL, mapping_id),
+        mapper.get_service_mapping(PRINCIPAL, mapping_id),
+    ):
+        assert shown.retrying is not None and (shown.retrying.reason, shown.retrying.attempt) == (
+            AiOutage.BUSY,
+            2,
+        )
+    error = {"code": "unavailable", "message": "The AI service is down.", "reason": AiOutage.DOWN}
+    mappings.update_one(
+        {"_id": mapping_id}, {"$set": {"status": Status.FAILED, "job.error": error, "job.retry": None}}
+    )
+    status = mapper.get_service_mapping_status(PRINCIPAL, mapping_id)
+    view = mapper.get_service_mapping(PRINCIPAL, mapping_id)
+    assert status.retrying is None and view.retrying is None
+    assert status.error is not None and view.error is not None
+    assert status.error.reason == view.error.reason == AiOutage.DOWN
 
 
 def test_a_mapping_is_accepted_only_once_every_relationship_has_its_own_decision(

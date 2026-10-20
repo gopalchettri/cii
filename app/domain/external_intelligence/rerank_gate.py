@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from app.core.constants import ErrorMessage, RerankGateLimits
+from app.core.constants import AiOutage, ErrorMessage, RerankGateLimits
 from app.core.exceptions import Unavailable
 from app.core.lease_signal import raise_if_lease_lost
 
@@ -45,7 +45,8 @@ class RerankGate:
                 return
             raise_if_lease_lost()
             if until is not None and time.monotonic() >= until:
-                raise Unavailable(ErrorMessage.RERANK_BUSY.format(seconds=round(self._wait_seconds or 0)))
+                seconds = round(self._wait_seconds or 0)
+                raise Unavailable(ErrorMessage.RERANK_BUSY.format(seconds=seconds), reason=AiOutage.BUSY)
 
 
 def rerank_gate_for(rerank_base_url: str) -> RerankGate:

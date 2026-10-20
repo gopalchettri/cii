@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from app import container
 from app.core.constants import (
     ActionStatus,
+    AiOutage,
     AuditAction,
     Collection,
     ConflictReason,
@@ -175,6 +176,23 @@ def test_the_list_shows_my_work_queued_or_running_oldest_first_and_never_another
         "controls_waiting": 0,
     }
     assert listed["jobs"][3]["remediation_id"] == plan
+    assert all(job["retrying"] is None for job in listed["jobs"])
+
+
+def test_the_list_says_why_a_job_waits_out_an_ai_outage(
+    client: TestClient, api_key: str, entity: int
+) -> None:
+    """Owner 2026-10-20: a run or a plan given back after an AI outage is listed with its retry notice."""
+    notice = {"reason": AiOutage.TIMED_OUT, "message": "The AI service timed out.", "attempt": 1,
+              "max_attempts": 5, "retry_at": NOW}  # fmt: skip
+    run = _run(entity, Status.QUEUED, TaskName.FIND_THREATS, step=Step.THREATS)
+    get_mongodb()[Collection.SESSIONS].update_one({"_id": run}, {"$set": {"job.retry": notice}})
+    plan = _plan(entity, run, Status.QUEUED)
+    get_mongodb()[Collection.REMEDIATIONS].update_one({"_id": plan}, {"$set": {"job.retry": notice}})
+    listed = client.get("/v1/jobs", headers=_who(api_key, entity)).json()["jobs"]
+    by_kind = {job["kind"]: job["retrying"] for job in listed}
+    assert by_kind[JobKind.THREATS]["reason"] == by_kind[JobKind.REMEDIATION]["reason"] == AiOutage.TIMED_OUT
+    assert (by_kind[JobKind.THREATS]["stage"], by_kind[JobKind.REMEDIATION]["stage"]) == (Step.THREATS, None)
 
 
 def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops(
@@ -467,6 +485,8 @@ def test_a_finished_runs_stopped_controls_resume_with_a_next_set(
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": "s1", "attempts": 1, "abandoned": False}
     run_id = _run(entity, Status.DONE, plan={"paths": [path]})
     stopped = _scenario(run_id, Status.QUEUED)
+    outage = {"code": "unavailable", "message": "The AI service is down.", "reason": AiOutage.DOWN}
+    get_mongodb()[Collection.SCENARIOS].update_one({"_id": stopped}, {"$set": {"controls.error": outage}})
     client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity))
     resumed = client.post(f"/v1/sessions/{run_id}/scenarios/next-set", headers=_who(api_key, entity))
     # G268: v1's 202 shape; only stopped controls resumed, so the current epoch and mapping_controls.
@@ -475,6 +495,8 @@ def test_a_finished_runs_stopped_controls_resume_with_a_next_set(
         "session_id": run_id, "status": ActionStatus.MAPPING_CONTROLS, "epoch": 1,
     }  # fmt: skip
     assert sent == [(TaskName.MAP_CONTROLS, run_id, 0)] and _controls(stopped) == Status.QUEUED
+    # Resumed on purpose: the outage from before the cancel no longer says why they wait.
+    assert get_mongodb()[Collection.SCENARIOS].find_one({"_id": stopped})["controls"].get("error") is None
     board = client.get(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).json()
     assert board["progress"]["controls"] == "RUNNING" and board["progress"]["error_message"] == {}
 

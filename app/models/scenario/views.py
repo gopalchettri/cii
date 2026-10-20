@@ -368,6 +368,8 @@ class ScenarioView(BaseModel):
     regenerate_error: dict[str, Any] | None  # why the last regenerate kept this version
     created_at: datetime
     controls_status: Status | None  # queued, running, done, failed or cancelled; None on a failure card
+    # Why its controls wait or failed: {code, message} and, for an AI outage, its reason (ai_down, ...).
+    controls_error: dict[str, Any] | None = None
     replaced_by: str | None  # the newer version, when this one was regenerated
     # An evidence story only: source-documented (or inferred), the evidence its [n] cite, the search.
     evidence_mode: str | None = None

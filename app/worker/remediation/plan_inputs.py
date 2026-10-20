@@ -19,7 +19,6 @@ from app.core.constants import (
     AuditAction,
     AuditTarget,
     Controls,
-    ErrorCode,
     LibrarySource,
     LibraryStatus,
     LogEvent,
@@ -28,7 +27,7 @@ from app.core.constants import (
     RunKind,
     Status,
 )
-from app.core.exceptions import ControlsNotMapped, JobFailed, LeaseLost, Unavailable
+from app.core.exceptions import TEMPORARY_ERRORS, ControlsNotMapped, JobFailed, LeaseLost, Unavailable
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.jobs.job_repository import JobLease
 from app.data_access.library.threat_repository import ThreatRepository
@@ -46,7 +45,7 @@ from app.models.scenario.plan import PlannedActor
 from app.realtime.publisher import publish_session_status
 from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
-from app.worker.jobs import describe_outage, keep_lease_alive
+from app.worker.jobs import job_error_of, keep_lease_alive, outage_error
 
 log = structlog.get_logger(__name__)
 
@@ -159,7 +158,7 @@ class PlanInputs:
             self._settle(claimed)
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
-            self._give_back(claimed, task_id, describe_outage(exc))
+            self._give_back(claimed, task_id, exc)
             if isinstance(exc, LeaseLost) and str(exc) == scenario_id:  # its control lease, not the job's
                 raise _controls_being_mapped() from exc
             raise
@@ -172,10 +171,14 @@ class PlanInputs:
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=True)
         return record["items"]
 
-    def _give_back(self, claimed: dict[str, Any], task_id: str, reason: str) -> None:
+    def _give_back(self, claimed: dict[str, Any], task_id: str, exc: Exception) -> None:
         """A generated scenario's controls queued again (its run's controls job may map them first); a
-        hand-written one's failed, as nothing in the background maps it: this job's retry claims it again."""
-        error = {"code": ErrorCode.UNAVAILABLE, "message": reason}
+        hand-written one's failed, as nothing in the background maps it: this job's retry claims it again.
+        The error kept says why: the outage, nothing for a stopped job, else the fault's own."""
+        if isinstance(exc, TEMPORARY_ERRORS):
+            error: dict[str, str] | None = outage_error(exc)
+        else:
+            error = None if isinstance(exc, LeaseLost) else job_error_of(exc)
         outcome = Status.FAILED if claimed.get("source") == RunKind.MANUAL else Status.QUEUED
         self._scenarios.update_scenario_controls(
             claimed["_id"], task_id, claimed["controls"]["attempts"], outcome, error=error

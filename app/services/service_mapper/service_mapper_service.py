@@ -25,6 +25,7 @@ from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.views import mapping_list_item, mapping_view, pending_relationships
 from app.domain.shared.audit import audit_target, caller_actor
 from app.models.admin.api_clients import Principal
+from app.models.jobs.views import retry_notice_of
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
     DependencyDecisionRequest,
@@ -87,7 +88,14 @@ class ServiceMapperService:
 
     def get_service_mapping_status(self, principal: Principal, mapping_id: str) -> StatusEvent:
         record = self._owned(principal, mapping_id)
-        return StatusEvent(mapping_id=mapping_id, status=record["status"], generation=record["generation"])
+        job, status = record.get("job") or {}, record["status"]
+        return StatusEvent(
+            mapping_id=mapping_id,
+            status=status,
+            generation=record["generation"],
+            retrying=retry_notice_of(status, job.get("retry")),
+            error=job.get("error") if status == Status.FAILED else None,
+        )
 
     def get_service_mapping_live_status(
         self,

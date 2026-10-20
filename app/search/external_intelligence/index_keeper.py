@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 import structlog
 
 from app.ai import EmbeddingModel, RerankModel
+from app.ai.common import outage_reason
 from app.core.constants import Dependency, IntelDocId, IntelLimits, IntelMessage, LogEvent
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
@@ -21,6 +22,7 @@ from app.search.external_intelligence.evidence_index import (
     EMPTY_SNAPSHOT_ID,
     EvidenceIndex,
     EvidenceIndexRefused,
+    after_failed_build,
     build_index,
     empty_index,
 )
@@ -100,6 +102,7 @@ class EvidenceIndexKeeper:
         except Exception as exc:  # handed to whoever waits; the index in use keeps serving
             self._settle_failure()
             self._log_failure(exc)
+            self._index = after_failed_build(self._index, outage_reason(exc))
             future.set_exception(exc)
         else:
             future.set_result(index)

@@ -336,8 +336,8 @@ class StubFetcher:
 class MemoryKeeper:
     """What the refresher, health and purge need of the index keeper."""
 
-    def __init__(self, fail: bool = False) -> None:
-        self.rebuilds, self.fail = 0, fail
+    def __init__(self, fail: bool | Exception = False) -> None:
+        self.rebuilds, self.fail = 0, fail  # an exception: the rebuild fails with it; True: RuntimeError
 
     def rebuild_index(self):
         from concurrent.futures import Future
@@ -345,7 +345,7 @@ class MemoryKeeper:
         self.rebuilds += 1
         future: Future = Future()
         if self.fail:
-            future.set_exception(RuntimeError("down"))
+            future.set_exception(self.fail if isinstance(self.fail, Exception) else RuntimeError("down"))
         else:
             future.set_result(None)
         return future

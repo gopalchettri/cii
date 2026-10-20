@@ -166,6 +166,7 @@ def _running(task_id: str, now: datetime) -> Record:
             "controls.task_id": task_id,
             "controls.lease_until": now + timedelta(seconds=Controls.LEASE_SECONDS),
             "controls.last_attempt_at": now,
+            "controls.error": None,  # this attempt's own outcome says why, if it fails too
         },
         "$inc": {"controls.attempts": 1},
     }

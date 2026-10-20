@@ -22,7 +22,7 @@ V1_KEYS = [
 ]  # fmt: skip
 V2_EXTRAS = [
     "session_id", "version", "status", "failure", "regenerate_error", "created_at", "controls_status",
-    "replaced_by",
+    "controls_error", "replaced_by",
     "evidence_mode", "evidence", "evidence_search",
 ]  # fmt: skip
 WRITTEN_AT = datetime(2026, 10, 16, 3, 24, 57, tzinfo=UTC)

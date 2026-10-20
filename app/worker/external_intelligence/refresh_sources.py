@@ -6,7 +6,15 @@ from datetime import UTC, datetime
 
 import structlog
 
-from app.core.constants import AuditAction, AuditTarget, Dependency, IntelSource, LogEvent, TaskName
+from app.core.constants import (
+    AuditAction,
+    AuditTarget,
+    Dependency,
+    ErrorCode,
+    IntelSource,
+    LogEvent,
+    TaskName,
+)
 from app.core.exceptions import IntelFetchFailed
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
@@ -25,6 +33,7 @@ from app.models.external_intelligence.source_health import (
     sources_in_registry_order,
 )
 from app.search.external_intelligence import intelligence_metrics as metrics
+from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
 from app.worker.external_intelligence.record_batch_writer import (
     ClaimLost,
@@ -33,6 +42,7 @@ from app.worker.external_intelligence.record_batch_writer import (
     write_fetch_result,
 )
 from app.worker.external_intelligence.sources.source_catalogue import IntelSourceFetcher, SourceCatalogue
+from app.worker.jobs import job_error_of
 
 log = structlog.get_logger(__name__)
 _ACTOR = {"system": TaskName.REFRESH_EXTERNAL_INTELLIGENCE}
@@ -81,10 +91,11 @@ class SourceRefresher:
         """Rebuild the index whatever happened (an unchanged corpus costs one read) and sum the refresh up."""
         try:
             self._keeper.rebuild_index().result()
-            rebuilt = True
-        except Exception:  # the keeper logged it and keeps the old index; the refresh stands
-            rebuilt = False
-        return RefreshSummary(outcomes, rebuilt)
+        except EvidenceIndexRefused as exc:  # nothing current to index yet: its message says so
+            return RefreshSummary(outcomes, False, {"code": ErrorCode.CONFLICT, "message": str(exc)})
+        except Exception as exc:  # the keeper logged it and keeps the old index; the refresh stands
+            return RefreshSummary(outcomes, False, job_error_of(exc))
+        return RefreshSummary(outcomes, True)
 
     def _refresh(
         self, source: IntelSource, fetcher: IntelSourceFetcher, now: datetime, *, forced: bool

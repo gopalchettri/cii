@@ -17,6 +17,8 @@ from app.ai import reranks_in_background
 from app.core.asset_types import asset_type_fits, unknown_asset_type
 from app.core.config import get_settings
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AiOutage,
     Collection,
     ControlMatch,
     ControlMessage,
@@ -333,6 +335,21 @@ def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish(
     assert (_controls_of(scenario_id)["status"], _controls_of(scenario_id)["attempts"]) == (Status.DONE, 2)
 
 
+def test_a_claim_drops_the_last_outage_so_a_lost_worker_never_shows_it_again() -> None:
+    """Owner 2026-10-20: the card tells the outage its controls wait out; once claimed again, that attempt's
+    own outcome says why (a worker lost meanwhile requeues them with nothing stale on the card)."""
+    leases = container.get_threat_scenario_repository()
+    session_id, scenario_id = _waiting_scenario()
+    down = {
+        "code": ErrorCode.UNAVAILABLE,
+        "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN],
+        "reason": AiOutage.DOWN,
+    }
+    get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"controls.error": down}})
+    assert leases.claim_scenario_controls(session_id, "worker-a") is not None
+    assert _controls_of(scenario_id).get("error") is None
+
+
 def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> None:
     """Celery reuses the task id on a redelivery: a hung copy and the copy that claimed again after its lease
     ran out share it, so only the attempts the newer claim counted let a write through."""
@@ -534,17 +551,19 @@ def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps
 
     class _Down(_ScoresByText):
         def score_relevance(self, query: str, documents: list[str]) -> list[float]:
-            raise Unavailable("rerank down")
+            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
 
     mapping_run["rerank"] = _Down({})
     with pytest.raises(Unavailable):
         _deliver(record_id, "task-1")
     first = _controls_of(f"{record_id}-1")
-    assert (first["status"], first["attempts"], first["error"]["code"]) == (
-        Status.QUEUED,
-        1,
-        ErrorCode.UNAVAILABLE,
-    )
+    assert (first["status"], first["attempts"]) == (Status.QUEUED, 1)
+    down = {
+        "code": ErrorCode.UNAVAILABLE,
+        "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN],
+        "reason": AiOutage.DOWN,
+    }
+    assert first["error"] == down
     mapping_run["rerank"] = _ScoresByText({"Backup policy": 70.0})
     mapping_run["search"] = SimpleNamespace(
         snapshot=lambda: _snapshot(LibraryControl(1, "C-IT", "IT", None, "Offline backup", None))
@@ -555,6 +574,7 @@ def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps
         controls = _controls_of(f"{record_id}-{number}")
         assert (controls["status"], [item["code"] for item in controls["items"]]) == (Status.DONE, ["C-IT"])
         assert controls["warning"].startswith("No control of asset type(s) ")
+    assert _controls_of(f"{record_id}-1").get("error") is None  # mapped: the outage is no longer told
 
 
 def test_a_run_cancelled_during_its_mapping_ends_it_quietly(mapping_run: dict[str, Any]) -> None:

@@ -17,7 +17,16 @@ from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
 from app import container
-from app.core.constants import AiTask, Collection, Controls, ErrorCode, SnapshotWarning, Status, TaskName
+from app.core.constants import (
+    AiOutage,
+    AiTask,
+    Collection,
+    Controls,
+    ErrorCode,
+    SnapshotWarning,
+    Status,
+    TaskName,
+)
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
@@ -113,10 +122,11 @@ def test_an_outage_frees_the_scenarios_controls_and_the_retry_maps_and_plans(
 ) -> None:
     scenario_id = _scenario(controls={"status": Status.QUEUED, "attempts": 0})
     remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
-    world["mapper"].failure = Unavailable("The reranker is busy.")
+    world["mapper"].failure = Unavailable("The reranker is busy.", reason=AiOutage.BUSY)
     _deliver(remediation_id)
     controls = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})["controls"]
     assert (controls["status"], controls["error"]["code"]) == (Status.QUEUED, ErrorCode.UNAVAILABLE)
+    assert controls["error"]["reason"] == AiOutage.BUSY  # the card can say the AI was busy
     assert _record(remediation_id)["status"] == Status.QUEUED  # the job retries after its back-off
     _due_now(remediation_id)
     world["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
@@ -165,6 +175,8 @@ def test_a_cancel_stops_the_plan_jobs_mapping_and_only_a_plan_cancel_ends_the_jo
     if cancelled == "plan":
         assert stopped_by == [remediation_id] and "job.stopped_by_owner" in events
         assert record["status"] == Status.CANCELLED
+        controls = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})["controls"]
+        assert controls.get("error") is None  # stopped, not failed: never told as an outage
     else:
         assert stopped_by == [scenario_id] and "job.retry_scheduled" in events
         assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 1)

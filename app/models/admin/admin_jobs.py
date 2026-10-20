@@ -21,6 +21,13 @@ class IntelRefreshResult(BaseModel):
     source: IntelSource | None = Field(
         default=None, description="The source refreshed; none = every source due."
     )
+    index_error: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Why the evidence index could not be rebuilt after the refresh: {code, message} and, when the AI "
+            "was down, unreachable, busy or timed out, its reason. The refreshed data is kept."
+        ),
+    )
 
 
 class AdminJobOut(BaseModel):

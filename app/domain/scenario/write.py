@@ -927,7 +927,8 @@ def failure_record(
     return _record_fields(run, path, ScenarioStatus.FAILED, datetime.now(UTC)) | {
         "content": content,
         "findings": [],
-        "failure": {"code": failure.code, "message": failure.message},
+        "failure": {"code": failure.code, "message": failure.message}
+        | ({"reason": failure.reason} if failure.reason else {}),
     }
 
 

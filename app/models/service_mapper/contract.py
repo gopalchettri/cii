@@ -5,7 +5,8 @@ from enum import StrEnum
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from app.core.constants import MapperAction, MapperDirection, MapperMessage, Status
+from app.core.constants import AiOutage, MapperAction, MapperDirection, MapperMessage, Status
+from app.models.jobs.views import RetryNotice
 
 
 class MappingReview(StrEnum):
@@ -72,10 +73,19 @@ class EntityServices(BaseModel):
     services: list[ServiceRef]
 
 
+class MappingError(BaseModel):
+    code: str
+    message: str
+    # The AI outage that failed it: ai_down, ai_unreachable, ai_busy, ai_timed_out; None for any other.
+    reason: AiOutage | None = None
+
+
 class StatusEvent(BaseModel):
     mapping_id: str
     status: Status
     generation: int
+    retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
+    error: MappingError | None = None  # once failed
 
 
 class DependencyService(BaseModel):
@@ -119,11 +129,6 @@ class MappingSummary(BaseModel):
     max_downstream: int
 
 
-class MappingError(BaseModel):
-    code: str
-    message: str
-
-
 class MappingView(BaseModel):
     mapping_id: str
     status: Status
@@ -135,6 +140,7 @@ class MappingView(BaseModel):
     bidirectional_services: list[BidirectionalService]
     summary: MappingSummary
     error: MappingError | None = None
+    retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
     created_at: datetime
     updated_at: datetime
 

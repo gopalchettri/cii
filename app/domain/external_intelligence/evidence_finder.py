@@ -74,8 +74,10 @@ class EvidenceFinder:
         if searched:
             results = self._search_all(search, requests, stale, approved)
         else:  # nothing to search: settled empty, or no snapshot yet (search.snapshot_id says which)
-            snapshot = search.snapshot_id
-            results = [EvidenceResult((), self._record(search, r, snapshot, False)) for r in requests]
+            snapshot, outage = search.snapshot_id, search.outage
+            results = [
+                EvidenceResult((), self._record(search, r, snapshot, False, outage=outage)) for r in requests
+            ]
         return results, _summary(search, results, stale and searched, searched)
 
     def _search_all(

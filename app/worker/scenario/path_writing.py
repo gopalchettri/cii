@@ -11,6 +11,7 @@ import structlog
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core import metrics
 from app.core.constants import (
+    AiOutage,
     ErrorCode,
     ErrorMessage,
     Generation,  # noqa: F401 - the writer's own retry, commented out below, reads it
@@ -228,7 +229,7 @@ class PathSaver:
         one, which stays current, why none was written."""
         old = self._replaced[path["path_id"]]
         if isinstance(outcome, PathFailure):
-            self._note_failure(old["_id"], outcome.code, outcome.message)
+            self._note_failure(old["_id"], outcome.code, outcome.message, outcome.reason)
             return
         record, _, written = self._save_written(path, *outcome, started_at, old)
         if record["status"] != ScenarioStatus.DONE:  # kept hidden, for audit only
@@ -270,9 +271,12 @@ class PathSaver:
         if saved:
             metrics.SCENARIOS.labels(_OUTCOMES[record["status"]]).inc()
 
-    def _note_failure(self, target_id: str, code: ErrorCode, message: str) -> None:
-        """Log why a regenerate wrote no new version and note it on the old one."""
+    def _note_failure(
+        self, target_id: str, code: ErrorCode, message: str, reason: AiOutage | None = None
+    ) -> None:
+        """Log why a regenerate wrote no new version and note it on the old one, with the AI outage if one."""
         log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, reason=message)
         error = {"code": code, "message": message, "at": datetime.now(UTC)}
+        error |= {"reason": reason} if reason else {}
         changes = {"regenerate_error": error, "updated_at": error["at"]}
         self._scenarios.update(changes, _id=target_id, newest=True)

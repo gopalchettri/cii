@@ -1,6 +1,7 @@
 """Turn one persisted generation into the minimal public JSON shape."""
 
 from app.core.constants import Status
+from app.models.jobs.views import retry_notice_of
 from app.models.service_mapper.contract import (
     BidirectionalService,
     DependencyService,
@@ -67,6 +68,7 @@ def mapping_view(record: dict) -> MappingView:
         bidirectional_services=bidirectional,
         summary=MappingSummary.model_validate(summary),
         error=record.get("job", {}).get("error") if record["status"] == Status.FAILED else None,
+        retrying=retry_notice_of(record["status"], record.get("job", {}).get("retry")),
         created_at=record["created_at"],
         updated_at=record["updated_at"],
     )

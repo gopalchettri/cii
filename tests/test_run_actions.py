@@ -16,7 +16,10 @@ from structlog.testing import capture_logs
 from app import container
 from app.core.config import get_settings
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AI_PATH_OUTAGE_MESSAGE,
     ActionStatus,
+    AiOutage,
     AiTask,
     AuditAction,
     Collection,
@@ -26,6 +29,7 @@ from app.core.constants import (
     FindingCode,
     Generation,
     Header,
+    Lease,
     LogEvent,
     RunActionKind,
     RunActionOutcome,
@@ -36,7 +40,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import LeaseLost, NotFound
+from app.core.exceptions import LeaseLost, NotFound, Unavailable
 from app.data_access.jobs.job_repository import (
     JobRepository,
     failed_job_fields,
@@ -383,6 +387,27 @@ def test_a_failed_regenerate_keeps_the_version_current_with_its_reason(
     assert _regenerate(client, api_key, record_id, [first]).json()["epoch"] == 3
     _deliver(record_id, 3)
     assert _scenarios().find_one({"_id": first}).get("regenerate_error") is None  # cleared
+
+
+@pytest.mark.usefixtures("sent")
+def test_a_regenerate_the_ai_timed_out_on_keeps_the_version_and_names_the_outage(
+    client: TestClient, api_key: str, queued: list[tuple[Any, ...]], fake_chat: Any
+) -> None:
+    """Owner 2026-10-20: the kept version's regenerate_error says which AI outage it was, with its reason."""
+    record_id = _written_run(["Threat 1"])
+    first = scenario_id(record_id, "p1", 1)
+
+    def timed_out(_prompt: str) -> dict[str, Any]:
+        raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
+
+    fake_chat.responders[AiTask.WRITE_SCENARIO] = timed_out
+    assert _regenerate(client, api_key, record_id, [first]).status_code == 202
+    _sessions().update_one({"_id": record_id}, {"$set": {"job.attempts": Lease.MAX_ATTEMPTS - 1}})
+    _deliver(record_id, 2)
+    error = _scenarios().find_one({"_id": first})["regenerate_error"]
+    outage = AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT]
+    assert (error["code"], error["reason"]) == (ErrorCode.UNAVAILABLE, AiOutage.TIMED_OUT)
+    assert error["message"] == AI_PATH_OUTAGE_MESSAGE.format(outage=outage, tries=Lease.MAX_ATTEMPTS)
 
 
 @pytest.mark.usefixtures("sent")

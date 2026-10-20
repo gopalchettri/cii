@@ -3,6 +3,7 @@ removed or a plan cancel stopped; and the retry notice a run's and a plan's stat
 answers with its status body (models/scenario/views.py)."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -18,6 +19,15 @@ class RetryNotice(BaseModel):
     attempt: int  # the try that failed
     max_attempts: int  # the job fails after this many
     retry_at: datetime  # when the next try starts
+
+
+def retry_notice_of(
+    status: str, retry: dict[str, Any] | None, stage: str | None = None
+) -> RetryNotice | None:
+    """The stored notice (job.retry) as a status shows it: only while its job is queued or running."""
+    if not retry or status not in (Status.QUEUED, Status.RUNNING):
+        return None
+    return RetryNotice(stage=stage, **retry)
 
 
 class JobProgress(BaseModel):
@@ -43,6 +53,7 @@ class JobView(BaseModel):
     attempts: int = 0
     user_id: str | None = None
     progress: JobProgress | None = None  # a run's; None for a remediation plan
+    retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
 
 
 class JobList(BaseModel):

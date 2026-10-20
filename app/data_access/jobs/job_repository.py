@@ -175,9 +175,10 @@ class JobRepository:
         self, record: dict[str, Any], now: datetime, error: dict[str, str] | None = None
     ) -> bool:
         """Queue an expired job again, due now (or fail it with `error`), only while it is running with the
-        lease the reaper read; False when its worker renewed or finished in between."""
+        lease the reaper read; False when its worker renewed or finished in between. A requeue drops any
+        retry notice: the job waits because its worker was lost, not for an outage."""
         changes = (
-            {"status": Status.QUEUED, "job.due_at": now}
+            {"status": Status.QUEUED, "job.due_at": now, "job.retry": None}
             if error is None
             else failed_job_fields(self._records.name, error, now)
         )

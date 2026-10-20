@@ -5,6 +5,7 @@ import contextvars
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor, wait
 
+from app.ai.common import outage_reason
 from app.core.exceptions import TEMPORARY_ERRORS, LeaseLost
 
 
@@ -33,9 +34,14 @@ def run_in_shared_pool[Item, Result](
 
 def raise_most_retryable(errors: list[BaseException]) -> None:
     """Raise a lost lease first (the job is no longer this delivery's: nothing else matters), then the
-    first retryable error, else the first error; nothing when there is none."""
+    first retryable error that names an AI outage (so the retry notice tells which), then any retryable
+    one, else the first error; nothing when there is none."""
     if errors:
         raise min(
             errors,
-            key=lambda error: (not isinstance(error, LeaseLost), not isinstance(error, TEMPORARY_ERRORS)),
+            key=lambda error: (
+                not isinstance(error, LeaseLost),
+                not isinstance(error, TEMPORARY_ERRORS),
+                outage_reason(error) is None,
+            ),
         )

@@ -123,6 +123,14 @@ class AiOutage(StrEnum):
     TIMED_OUT = "ai_timed_out"  # no answer within the time limit
 
 
+#: A failure card's message when an AI outage cost its path on the job's last try: the outage, then the tries.
+AI_PATH_OUTAGE_MESSAGE: Final = "{outage} This attack path got no answer in {tries} tries."
+
+#: HTTP statuses that tell the outage when the provider error's class does not: a request, gateway or origin
+#: timeout (408, 504, 524, 598, 599); an overloaded provider (503, and 529, Anthropic's "overloaded").
+AI_TIMED_OUT_STATUSES: Final = frozenset({408, 504, 524, 598, 599})
+AI_BUSY_STATUSES: Final = frozenset({503, 529})
+
 #: What the UI is told for each outage: a retry notice's message, then the failed stage's.
 AI_OUTAGE_MESSAGES: Final = {
     AiOutage.DOWN: "The AI service is down: it answered with a server error.",

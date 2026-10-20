@@ -26,7 +26,17 @@ from app.data_access.scenario.threat_scenario_session_repository import (
 
 _WORKING = [Status.QUEUED, Status.RUNNING]
 _LISTED_FIELDS = dict.fromkeys(
-    ("asset_id", "status", "job.due_at", "job.attempts", "user_id", "client_id", "created_at", "updated_at"),
+    (
+        "asset_id",
+        "status",
+        "job.due_at",
+        "job.attempts",
+        "job.retry",
+        "user_id",
+        "client_id",
+        "created_at",
+        "updated_at",
+    ),
     1,
 )
 _SCENARIO_SESSION_FIELDS = _LISTED_FIELDS | dict.fromkeys(
@@ -145,7 +155,14 @@ class WorkControlRepository:
             return None if self._sessions.is_being_deleted(session_id) else 0
         requeued_at = datetime.now(UTC)
         requeued = scenarios.update_many(
-            stopped, {"$set": {"controls.status": Status.QUEUED, "controls.queued_at": requeued_at}}
+            stopped,
+            {
+                "$set": {
+                    "controls.status": Status.QUEUED,
+                    "controls.queued_at": requeued_at,
+                    "controls.error": None,
+                }
+            },
         ).modified_count
         if self._sessions.is_being_deleted(session_id):
             self._stop_requeued_controls(session_id, requeued_at)  # undone: as before the click

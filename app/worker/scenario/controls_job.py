@@ -25,7 +25,7 @@ from app.realtime.publisher import publish_session_status
 from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
 from app.worker.celery_app import send_job
-from app.worker.jobs import describe_outage, keep_lease_alive
+from app.worker.jobs import keep_lease_alive, outage_error
 
 log = structlog.get_logger(__name__)
 
@@ -127,9 +127,8 @@ class RunControls:
             self._fail(scenario_id, attempts, exc.code, exc.message)
             return 0
         except TEMPORARY_ERRORS as exc:
-            outage = {"code": ErrorCode.UNAVAILABLE, "message": describe_outage(exc)}
             self._scenarios.update_scenario_controls(
-                scenario_id, self._task_id, attempts, Status.QUEUED, error=outage
+                scenario_id, self._task_id, attempts, Status.QUEUED, error=outage_error(exc)
             )
             raise
         except JobFailed as exc:

@@ -45,6 +45,7 @@ class RefreshSummary:
 
     sources: tuple[SourceRefresh, ...]
     index_rebuilt: bool  # the evidence index was rebuilt after the refresh
+    index_error: dict[str, str] | None = None  # why it was not: {code, message} and an AI outage's reason
 
     @property
     def failed(self) -> tuple[IntelSource, ...]:

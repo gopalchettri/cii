@@ -21,7 +21,14 @@ from app.domain.scenario.results import build_board
 from app.domain.scenario.review import check_session_of_caller
 from app.domain.shared.audit import audit_target, caller_actor
 from app.models.admin.api_clients import Principal
-from app.models.jobs.views import JobList, JobProgress, JobView, PlanCancelled, SessionDeleted
+from app.models.jobs.views import (
+    JobList,
+    JobProgress,
+    JobView,
+    PlanCancelled,
+    SessionDeleted,
+    retry_notice_of,
+)
 from app.models.scenario.views import RunBoard, SessionStatus, session_status_from_record
 
 
@@ -120,6 +127,7 @@ def _run_job(record: dict[str, Any]) -> JobView:
         attempts=job.get("attempts") or 0,
         user_id=record.get("user_id"),
         progress=JobProgress(**{key: counts.get(key, 0) for key in JobProgress.model_fields}),
+        retrying=retry_notice_of(record["status"], job.get("retry"), record.get("step")),
     )
 
 
@@ -136,4 +144,5 @@ def _plan_job(record: dict[str, Any]) -> JobView:
         created_at=record.get("created_at"),
         attempts=job.get("attempts") or 0,
         user_id=record.get("user_id"),
+        retrying=retry_notice_of(record["status"], job.get("retry")),
     )

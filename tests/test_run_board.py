@@ -255,6 +255,28 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
     assert waiting.library is not None and waiting.library.threat.status == "inserted"
 
 
+@pytest.mark.parametrize(
+    ("status", "shown"),
+    [("queued", True), ("failed", True), ("running", False), ("done", False)],
+)
+def test_a_card_tells_why_its_controls_wait_or_failed(status: str, shown: bool) -> None:
+    """Owner 2026-10-20: the AI outage its control mapping met (with the reason), while it waits or once it
+    failed; never while it runs or once mapped."""
+    down = {"code": "unavailable", "message": "The AI service is down.", "reason": AiOutage.DOWN}
+    record = {
+        "_id": "s1",
+        "session_id": "run-1",
+        "version": 1,
+        "status": "done",
+        "source": RunKind.GENERATED,
+        "decision": "pending",
+        "content": {"category": "Tampering", "threat": {"name": "Ransomware", "library_id": 1, "type_id": 2}},
+        "controls": {"status": status, "error": down},
+        "created_at": datetime.now(UTC),
+    }
+    assert build_scenario_view(record).controls_error == (down if shown else None)
+
+
 def test_a_control_shows_its_description_and_why_it_was_kept() -> None:
     """v1's control fields: the description kept with the mapping, the match in capitals and in words."""
     item = {"control_id": 7, "code": "C-7", "name": "Patch", "domain": "Ops", "asset_type": "OT", "rank": 1}

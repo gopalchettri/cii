@@ -36,7 +36,7 @@ from app.core.constants import (
 )
 from app.domain.scenario.plan import attacker_unsupported
 from app.models.external_intelligence.evidence_view import cited_evidence
-from app.models.jobs.views import RetryNotice
+from app.models.jobs.views import retry_notice_of
 from app.models.scenario.controls import control_view
 from app.models.scenario.views import (
     ActorView,
@@ -89,7 +89,7 @@ def build_board(run: SessionStatus) -> RunBoard:
         ),
         error_message=_stage_errors(run, controls),
         error_reason=_failed_reason(run),
-        retrying=_retry_notice(run),
+        retrying=retry_notice_of(run.status, run.retry, run.step),
         last_next_set=_action_summary(run, RunActionKind.NEXT_SET, run.last_next_set),
         last_regen=_action_summary(run, RunActionKind.REGENERATE, run.last_regen),
         scenario_count=_scenario_count(run, threats),
@@ -119,13 +119,6 @@ def _failed_reason(run: SessionStatus) -> AiOutage | None:
     """Which AI outage failed the run; None for any other failure."""
     reason = (run.error or {}).get("reason") if run.status == Status.FAILED else None
     return AiOutage(reason) if reason and reason in AiOutage else None
-
-
-def _retry_notice(run: SessionStatus) -> RetryNotice | None:
-    """The outage the run's stage waits out, while the run is queued or running only."""
-    if not run.retry or run.status not in (Status.QUEUED, Status.RUNNING):
-        return None
-    return RetryNotice(stage=run.step, **run.retry)
 
 
 def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:
@@ -265,6 +258,7 @@ def build_scenario_view(
         regenerate_error=record.get("regenerate_error"),
         created_at=record["created_at"],
         controls_status=controls.get("status"),
+        controls_error=_controls_error(controls),
         replaced_by=record.get("superseded_by"),
         evidence_mode=content.get("evidence_mode"),
         evidence=cited_evidence(content),
@@ -445,6 +439,11 @@ def _generation_fields(record: dict[str, Any]) -> dict[str, Any]:
         "gen_finished_at": finished,
         "gen_seconds": seconds if seconds is None or seconds >= 0 else None,
     }
+
+
+def _controls_error(controls: dict[str, Any]) -> dict[str, Any] | None:
+    """Why a card's controls wait to be tried again or failed; None while they run or once they are mapped."""
+    return controls.get("error") if controls.get("status") in (Status.QUEUED, Status.FAILED) else None
 
 
 def _controls_flags(status: str | None) -> dict[str, Any]:

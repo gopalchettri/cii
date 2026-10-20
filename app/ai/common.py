@@ -15,7 +15,9 @@ import structlog
 from app.core import metrics
 from app.core.config import Settings
 from app.core.constants import (
+    AI_BUSY_STATUSES,
     AI_OUTAGE_MESSAGES,
+    AI_TIMED_OUT_STATUSES,
     LITELLM_MODEL_PREFIX,
     AiLimits,
     AiOutage,
@@ -41,17 +43,29 @@ AI_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
 
 
 def ai_outage_of(error: Exception) -> AiOutage:
-    """Which outage a provider error is. A timeout is tested first: litellm's Timeout is a lost connection."""
+    """Which outage a provider error is: by its class, else by its HTTP status. A timeout is tested first:
+    litellm's Timeout is a lost connection too."""
     if isinstance(error, litellm.Timeout):
         return AiOutage.TIMED_OUT
     if isinstance(error, litellm.APIConnectionError):
         return AiOutage.UNREACHABLE
     if isinstance(error, (litellm.RateLimitError, litellm.ServiceUnavailableError)):
         return AiOutage.BUSY
-    return AiOutage.DOWN  # InternalServerError, BadGatewayError: it answered, with a server error
+    status = getattr(error, "status_code", None)
+    if status in AI_TIMED_OUT_STATUSES:
+        return AiOutage.TIMED_OUT
+    return AiOutage.BUSY if status in AI_BUSY_STATUSES else AiOutage.DOWN  # any other server error: down
 
 
-def outage_reason(error: Exception) -> AiOutage | None:
+def is_unmapped_outage(error: Exception) -> bool:
+    """A plain litellm.APIError (a status litellm maps to no class of its own, e.g. a 524 origin timeout or a
+    529 overloaded) that is an outage: a server's status (5xx), a request timeout (408) or none at all. Any
+    other (a 4xx) stays an error."""
+    status = getattr(error, "status_code", None)
+    return isinstance(error, litellm.APIError) and (status is None or status == 408 or status >= 500)
+
+
+def outage_reason(error: BaseException) -> AiOutage | None:
     """Which AI outage an error carries (an Unavailable's reason); None for any other error or outage (a
     store, a SQL write still in progress)."""
     reason = error.reason if isinstance(error, AppError) else None
@@ -169,7 +183,12 @@ def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
             return call()
         except litellm.Timeout:
             raise
-        except _RETRYABLE_ERRORS:
+        except Exception as exc:
+            unmapped = is_unmapped_outage(exc)  # a timed-out status is a timeout too: not asked again
+            if unmapped and ai_outage_of(exc) is AiOutage.TIMED_OUT:
+                raise
+            if not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
+                raise
             time.sleep(AiLimits.RETRY_FIRST_WAIT_SECONDS * 2**attempt)
     return call()  # the last try: its outage reaches the caller
 
@@ -208,6 +227,11 @@ def count_and_convert_ai_errors(
         raise  # no provider answered: counted already, or no slot was free (app/ai/slots.py)
     except AI_UNAVAILABLE_ERRORS as exc:
         raise _counted_outage(task, model, exc) from exc
+    except litellm.APIError as exc:  # a status litellm maps to no class: an outage when a server's (5xx)
+        if is_unmapped_outage(exc):
+            raise _counted_outage(task, model, exc) from exc
+        metrics.AI_CALLS.labels(task, model, AiOutcome.ERROR).inc()
+        raise
     except AI_CONFIGURATION_ERRORS as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.ERROR).inc()
         status = getattr(exc, "status_code", None)

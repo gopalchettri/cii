@@ -46,11 +46,13 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
             jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
             return
         if source is None:
-            refresher().refresh_due_sources(now)
+            summary = refresher().refresh_due_sources(now)
         else:
-            refresher().refresh_one_source(source, now)
+            summary = refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
         jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=job_error_of(exc))
         raise
-    jobs.update_admin_job_finished(job_id, datetime.now(UTC), result={"source": source})
+    # Done: the data refresh stands; an index the AI could not rebuild is told beside it (with its reason).
+    index_error = {"index_error": summary.index_error} if summary.index_error else {}
+    jobs.update_admin_job_finished(job_id, datetime.now(UTC), result={"source": source} | index_error)

@@ -11,7 +11,10 @@ from typing import Any
 import structlog
 
 from app.ai import ChatModel
+from app.ai.common import outage_reason
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AI_PATH_OUTAGE_MESSAGE,
     ErrorCode,
     ErrorMessage,
     FindingCode,
@@ -184,10 +187,16 @@ class BatchWriter:
         if not paths_own_outage:
             raise_most_retryable(errors)
         log.warning(LogEvent.WRITER_OUTAGE_SETTLED, paths=list(outages), attempts=self._lease.attempts)
-        message = ErrorMessage.PATH_AI_UNAVAILABLE.format(tries=self._lease.attempts)
-        for path_id, error in outages.items():  # an evidence outage keeps its own reason
-            reason = str(error) if path_id in self._evidence_waits else message
-            self._saver.save(path_id, PathFailure(ErrorCode.UNAVAILABLE, reason))
+        tries = self._lease.attempts
+        for path_id, error in outages.items():  # an evidence outage keeps its own message
+            outage = outage_reason(error)
+            if path_id in self._evidence_waits:
+                message = str(error)
+            elif outage is not None:  # which AI outage it was, not only that the AI did not answer
+                message = AI_PATH_OUTAGE_MESSAGE.format(outage=AI_OUTAGE_MESSAGES[outage], tries=tries)
+            else:
+                message = ErrorMessage.PATH_AI_UNAVAILABLE.format(tries=tries)
+            self._saver.save(path_id, PathFailure(ErrorCode.UNAVAILABLE, message, reason=outage))
 
 
 def write_at_once(

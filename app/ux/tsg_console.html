@@ -1086,8 +1086,11 @@ $(function () {
   function scnCtlState(s) {
     var st = s.controls_status;
     if (!st) return '<div class="scn-st">No controls (this card is not a written scenario)</div>';
+    // controls_error: why they wait to be tried again or failed (an AI outage carries its reason).
+    var why = s.controls_error ? " &mdash; " + esc(s.controls_error.message) : "";
+    if (st === "queued" && why) return '<div class="scn-st warn"><span class="scn-spin"></span>Controls wait to be tried again' + why + "</div>";
     if (st === "queued" || st === "running") return '<div class="scn-st"><span class="scn-spin"></span>Controls are being mapped&hellip;</div>';
-    if (st === "failed") return '<div class="scn-st warn">Control mapping failed: the sweep retries it after 30 minutes</div>';
+    if (st === "failed") return '<div class="scn-st warn">Control mapping failed: the sweep retries it after 30 minutes' + why + "</div>";
     return (s.controls || []).length ? "" : '<div class="scn-st">No matching library controls</div>';
   }
   function scnChips(s) {
@@ -2053,7 +2056,8 @@ $(function () {
       dd("Summary", esc(sum.unique_services || 0) + " services · " + esc(sum.upstream_count || 0) + " of " + esc(sum.max_upstream) +
          " upstream · " + esc(sum.downstream_count || 0) + " of " + esc(sum.max_downstream) + " downstream") +
       dd("Updated", esc(fmtTime(m.updated_at))) + "</dl>";
-    if (m.error) html += '<div class="callout err"><b>' + esc(m.error.code) + "</b> " + esc(m.error.message) + "</div>";
+    if (m.error) html += '<div class="callout err"><b>' + esc(m.error.reason || m.error.code) + "</b> " + esc(m.error.message) + "</div>";
+    if (m.retrying) html += '<div class="callout warn"><code>' + esc(m.retrying.reason || "outage") + "</code> " + esc(retryText(m.retrying)) + "</div>";
     html += '<div class="row" style="margin-top:12px">' +
       (open ? '<button class="btn success" data-sm="accept">Accept mapping</button><button class="btn danger" data-sm="reject">Reject mapping</button>' : "") +
       (running ? "" : '<button class="btn" data-sm="regenerate">Regenerate</button>') + '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';

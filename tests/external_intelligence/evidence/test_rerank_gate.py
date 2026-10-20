@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from app import container
-from app.core.constants import EvidenceSearchFailure, RerankGateLimits
+from app.core.constants import AiOutage, EvidenceSearchFailure, RerankGateLimits
 from app.core.exceptions import LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
@@ -104,9 +104,9 @@ def test_a_wait_for_the_gate_ends_at_its_limit_as_unavailable() -> None:
     holder.start()
     assert held.wait(5)
     started = time.monotonic()
-    with pytest.raises(Unavailable), gate.hold_place():
+    with pytest.raises(Unavailable) as busy, gate.hold_place():
         pass
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 5 and busy.value.reason == AiOutage.BUSY  # the UI is told "busy"
     release.set()
     holder.join()
 

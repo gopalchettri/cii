@@ -119,11 +119,20 @@ def describe_outage(error: Exception) -> str:
     return ErrorMessage.REDIS_UNREACHABLE
 
 
+def outage_error(exc: Exception) -> dict[str, str]:
+    """An outage as a stored error: unavailable, its message, and which AI outage it was when the AI's."""
+    error = {"code": ErrorCode.UNAVAILABLE, "message": describe_outage(exc)}
+    if reason := outage_reason(exc):
+        error["reason"] = reason
+    return error
+
+
 def job_error_of(exc: Exception) -> dict[str, str]:
     """The failure as an admin job record shows it: an app error's or a job failure's own code and message,
     else only the exception's type (its text may carry a provider's or a driver's details)."""
     if isinstance(exc, AppError):
-        return {"code": exc.code, "message": exc.detail}
+        reason = outage_reason(exc)
+        return {"code": exc.code, "message": exc.detail} | ({"reason": reason} if reason else {})
     if isinstance(exc, JobFailed):
         return {"code": exc.code, "message": exc.message}
     return {"code": ErrorCode.INTERNAL_ERROR, "message": type(exc).__name__}

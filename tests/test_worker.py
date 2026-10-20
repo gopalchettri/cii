@@ -300,13 +300,23 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(published: list[str]
     for collection in jobs.JOB_COLLECTIONS:
         get_mongodb()[collection].delete_many({})
     long_ago = datetime.now(UTC) - timedelta(hours=1)
-    expired = _insert_job(Status.RUNNING, attempts=1, lease_until=long_ago, task_id="gone")
+    notice = {
+        "reason": AiOutage.BUSY,
+        "message": "busy",
+        "attempt": 1,
+        "max_attempts": 5,
+        "retry_at": long_ago,
+    }
+    expired = _insert_job(Status.RUNNING, attempts=1, lease_until=long_ago, task_id="gone", retry=notice)
     worn_out = _insert_job(Status.RUNNING, attempts=Lease.MAX_ATTEMPTS, lease_until=long_ago, task_id="gone")
-    never_sent = _insert_job(Status.QUEUED, due_at=long_ago)
+    never_sent = _insert_job(Status.QUEUED, due_at=long_ago, retry=notice)
     failures_before = _job_failures()
     reaper.reap_jobs()
     reaper.reap_jobs()  # a second pass right after must not send anything again
-    assert _records().find_one({"_id": expired})["status"] == Status.QUEUED
+    requeued = _records().find_one({"_id": expired})
+    # Its worker was lost: an earlier outage's notice no longer says why it waits; a resend keeps its own.
+    assert requeued["status"] == Status.QUEUED and requeued["job"]["retry"] is None
+    assert _records().find_one({"_id": never_sent})["job"]["retry"]["reason"] == AiOutage.BUSY
     abandoned = _records().find_one({"_id": worn_out})
     assert abandoned["job"]["error"]["code"] == ErrorCode.JOB_ABANDONED
     assert abandoned["active"] is False and abandoned["finished_at"] is not None  # the asset is free again
@@ -748,6 +758,14 @@ def test_a_job_whose_lease_is_lost_makes_no_more_ai_calls(monkeypatch: pytest.Mo
         thread.join()
         assert len(errors) == 1
     raise_if_lease_lost()  # the job is over: nothing to stop
+
+
+def test_an_outage_that_names_the_ai_is_raised_before_one_that_names_none() -> None:
+    """The retry notice then says which AI outage the batch met (owner 2026-10-20)."""
+    timed_out = Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
+    with pytest.raises(Unavailable) as raised:
+        raise_most_retryable([RuntimeError("bug"), Unavailable("evidence search"), timed_out])
+    assert raised.value is timed_out
 
 
 def test_a_lost_lease_is_raised_before_any_outage() -> None:

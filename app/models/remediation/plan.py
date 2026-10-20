@@ -19,7 +19,7 @@ from app.core.constants import (
     StrideCategory,
     YesNo,
 )
-from app.models.jobs.views import RetryNotice
+from app.models.jobs.views import RetryNotice, retry_notice_of
 
 
 def _given(value: str) -> str:
@@ -184,16 +184,11 @@ class RemediationStatus(BaseModel):
                 generation=status,
                 review=decision,
                 overall=_overall(status, decision),
-                retrying=_retry_notice(status, job.get("retry")),
+                retrying=retry_notice_of(status, job.get("retry")),
             ),
             error=job.get("error"),
             updated_at=record["updated_at"],
         )
-
-
-def _retry_notice(status: Status, retry: dict[str, Any] | None) -> RetryNotice | None:
-    """The outage the generation waits out, while it is queued or running only."""
-    return RetryNotice(**retry) if retry and status in (Status.QUEUED, Status.RUNNING) else None
 
 
 def _overall(status: Status, decision: Decision) -> RemediationProgress:

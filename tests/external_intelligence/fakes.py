@@ -24,6 +24,7 @@ from app.models.external_intelligence.evidence import (
     EvidenceSearchRecord,
 )
 from app.models.external_intelligence.evidence_request import EvidenceRequest, EvidenceResult
+from app.models.external_intelligence.refresh_summary import RefreshSummary
 from app.models.external_intelligence.switch_state import SwitchState
 from app.services.external_intelligence.external_intelligence_service import ExternalIntelligenceService
 
@@ -107,12 +108,15 @@ class FakeSwitch(IntelligenceSwitch):
 class FakeRefresher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
+        self.index_error: dict[str, str] | None = None  # set: the index rebuild after the refresh failed
 
-    def refresh_due_sources(self, now: datetime) -> None:
+    def refresh_due_sources(self, now: datetime) -> RefreshSummary:
         self.calls.append(("due", None))
+        return RefreshSummary((), self.index_error is None, self.index_error)
 
-    def refresh_one_source(self, source: IntelSource, now: datetime) -> None:
+    def refresh_one_source(self, source: IntelSource, now: datetime) -> RefreshSummary:
         self.calls.append(("one", source))
+        return RefreshSummary((), self.index_error is None, self.index_error)
 
 
 def intelligence_service(**changed: Any) -> ExternalIntelligenceService:

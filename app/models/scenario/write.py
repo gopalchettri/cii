@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, field_validator, model_validator
 
 from app.core.constants import (
+    AiOutage,
     AnswerProblem,
     ErrorCode,
     FindingCode,
@@ -106,6 +107,7 @@ class PathFailure:
     code: ErrorCode
     message: str
     final: bool = False  # no retry can help (the frozen plan lacks a fact): the path is abandoned at once
+    reason: AiOutage | None = None  # the AI outage that cost the path: what the card and the UI are told
 
 
 class ScenarioAnswer(BaseModel):

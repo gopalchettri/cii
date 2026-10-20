@@ -10,7 +10,14 @@ from datetime import UTC, datetime
 import numpy as np
 
 from app.ai import EmbeddingModel, RerankModel
-from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, IntelKind, IntelMessage, IntelSource
+from app.core.constants import (
+    EMBEDDING_SOURCE_TABLE,
+    AiOutage,
+    EmbeddingCorpus,
+    IntelKind,
+    IntelMessage,
+    IntelSource,
+)
 from app.models.external_intelligence.evidence import IntelHit
 from app.models.external_intelligence.evidence_corpus import EvidenceCorpus
 from app.search.indexes import HybridIndex
@@ -75,9 +82,11 @@ class EvidenceIndex:
         rerank_model: str = "",
         *,
         settled: bool = True,
+        outage: AiOutage | None = None,
     ) -> None:
         self._corpus = corpus
         self._settled = settled  # False only for the placeholder served until the first build ends
+        self.outage = outage  # the placeholder's: the AI outage that stopped the first build
         self._hybrid = hybrid
         self._embeddings = embeddings
         self._rerank = rerank
@@ -153,12 +162,26 @@ class EvidenceIndex:
         return sorted(scored, key=lambda hit: (-hit.score, hit.external_id))
 
 
+def after_failed_build(index: EvidenceIndex, outage: AiOutage | None) -> EvidenceIndex:
+    """The index to serve once a build failed: `index`, or, while it is the placeholder (no first build yet),
+    a placeholder naming the AI outage that stopped the build (None: not the AI's)."""
+    if index.snapshot_id is not None:
+        return index
+    return empty_index(index._embeddings, index._rerank, index.rerank_model, outage=outage)
+
+
 def empty_index(
-    embeddings: EmbeddingModel, rerank: RerankModel, rerank_model: str = "", *, settled: bool = False
+    embeddings: EmbeddingModel,
+    rerank: RerankModel,
+    rerank_model: str = "",
+    *,
+    settled: bool = False,
+    outage: AiOutage | None = None,
 ) -> EvidenceIndex:
     """An index with nothing to search. Settled: the corpus is empty, so every search finds no evidence. Else
-    the placeholder until the first build ends: it names no snapshot, so a write waits as for an outage."""
-    return EvidenceIndex(_EMPTY, None, embeddings, rerank, rerank_model, settled=settled)
+    the placeholder until the first build ends: it names no snapshot, so a write waits as for an outage (the
+    AI outage that stopped the first build, when it was one)."""
+    return EvidenceIndex(_EMPTY, None, embeddings, rerank, rerank_model, settled=settled, outage=outage)
 
 
 def build_index(

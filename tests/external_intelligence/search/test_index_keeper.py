@@ -7,7 +7,8 @@ from datetime import timedelta
 import pytest
 from structlog.testing import capture_logs
 
-from app.core.constants import IntelLimits, IntelSource, LogEvent
+from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, IntelLimits, IntelSource, LogEvent
+from app.core.exceptions import Unavailable
 from app.search.external_intelligence.evidence_index import EMPTY_SNAPSHOT_ID, EvidenceIndexRefused
 from app.search.external_intelligence.index_keeper import (
     RETRY_FIRST_SECONDS,
@@ -88,6 +89,32 @@ def test_a_failed_build_keeps_the_old_index_then_tries_again_after_a_growing_pau
     keeper.current_index()  # due: tries again in the background
     keeper.rebuild_index().result(10)
     assert keeper.current_index() is not first and len(pointer.saved) == 2
+
+
+def test_a_first_build_the_ai_stopped_leaves_writes_waiting_for_that_outage() -> None:
+    """Owner 2026-10-20: until a first build ends, writes wait for a snapshot; when the AI stopped it, the
+    placeholder names which AI outage, so the wait is told as that outage. The next build clears it."""
+
+    class Down(TextEmbeddings):
+        def __init__(self) -> None:
+            super().__init__()
+            self.down = True
+
+        def embed_library_texts(self, corpus, texts, sources):
+            if self.down:
+                raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
+            return super().embed_library_texts(corpus, texts, sources)
+
+    clock, embeddings = Clock(), Down()
+    keeper, *_ = _keeper([technique_doc("T1")], embeddings, clock=clock)
+    with pytest.raises(Unavailable):
+        keeper.rebuild_index().result(10)
+    waiting = keeper.current_index()
+    assert waiting.snapshot_id is None and waiting.outage == AiOutage.DOWN
+    embeddings.down = False
+    clock.now += RETRY_FIRST_SECONDS + 1
+    keeper.rebuild_index().result(10)
+    assert keeper.current_index().snapshot_id is not None and keeper.current_index().outage is None
 
 
 def test_the_pause_doubles_with_each_failure() -> None:

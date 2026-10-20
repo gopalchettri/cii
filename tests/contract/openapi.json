@@ -1299,6 +1299,21 @@
    },
    "IntelRefreshResult": {
     "properties": {
+     "index_error": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Why the evidence index could not be rebuilt after the refresh: {code, message} and, when the AI was down, unreachable, busy or timed out, its reason. The refreshed data is kept.",
+      "title": "Index Error"
+     },
      "source": {
       "anyOf": [
        {
@@ -1563,6 +1578,16 @@
        }
       ],
       "title": "Remediation Id"
+     },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "session_id": {
       "anyOf": [
@@ -1949,6 +1974,16 @@
      "message": {
       "title": "Message",
       "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AiOutage"
+       },
+       {
+        "type": "null"
+       }
+      ]
      }
     },
     "required": [
@@ -2101,6 +2136,16 @@
      "mapping_id": {
       "title": "Mapping Id",
       "type": "string"
+     },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "review": {
       "$ref": "#/components/schemas/MappingReview"
@@ -4333,6 +4378,18 @@
       },
       "title": "Controls",
       "type": "array"
+     },
+     "controls_error": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Controls Error"
      },
      "controls_mapped": {
       "title": "Controls Mapped",
