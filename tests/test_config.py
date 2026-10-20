@@ -63,6 +63,16 @@ def test_the_plan_version_cap_is_configurable_within_one_to_forty(monkeypatch: p
             Settings()  # type: ignore[call-arg]
 
 
+def test_service_mapper_counts_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT", "7")
+    monkeypatch.setenv("SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT", "0")  # 0 turns a direction off
+    settings = Settings()  # type: ignore[call-arg]
+    assert (settings.service_mapper_upstream_total_count, settings.service_mapper_downstream_total_count) == (
+        7,
+        0,
+    )
+
+
 def test_operational_limits_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CII_MAX_REQUEST_MB", "3")
     monkeypatch.setenv("CII_MAX_CONCURRENT_AI_CALLS", "0")  # 0 = no limit

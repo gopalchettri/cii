@@ -1,7 +1,11 @@
 """Service Mapper's catalog, reconciliation, scoped lifecycle and review contract."""
 
+import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -22,7 +26,9 @@ from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
+from app.domain.service_mapper import generate
 from app.domain.service_mapper.catalog import build_catalog
+from app.domain.service_mapper.generate import generate_result
 from app.domain.service_mapper.reconcile import reconcile
 from app.domain.service_mapper.views import approved_relationships, pending_relationships
 from app.models.admin.api_clients import Principal
@@ -146,13 +152,72 @@ def test_reconciliation_deduplicates_cross_sector_links_and_rejects_fabricated_i
     result = reconcile("mapping", 1, _request(), _answer(), _catalog(), 2, 2)
     assert result["selected_service"]["service_id"] == 1
     assert result["summary"]["upstream_count"] == 2
-    assert result["summary"]["downstream_count"] == 2
+    assert result["summary"]["downstream_count"] == 1
     assert result["summary"]["unique_services"] == 3
     water = next(item for item in result["dependencies"] if item["service_id"] == 2)
     assert water["sector"] == "Water" and water["ai_suggested"] is False
-    assert set(water["relations"]) == {"upstream", "downstream"}
+    assert set(water["relations"]) == {"upstream"}  # in both lists at the same rank: upstream wins the tie
     assert all(item["service_id"] != 999 for item in result["dependencies"])
     assert len({item["dependency_id"] for item in result["dependencies"]}) == 3
+
+
+def test_a_service_in_both_lists_is_kept_only_where_the_ai_ranked_it_higher() -> None:
+    answer = _answer().model_dump()
+    answer["upstream_services"] = answer["upstream_services"][2:3] + answer["upstream_services"][:1]
+    result = reconcile("mapping", 1, _request(), GeneratedAnswer.model_validate(answer), _catalog(), 5, 5)
+    water = next(item for item in result["dependencies"] if item["service_id"] == 2)
+    assert set(water["relations"]) == {"downstream"}  # first downstream, second upstream
+    assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (1, 2)
+
+
+def test_a_short_direction_gets_one_more_ai_call_that_adds_no_duplicates() -> None:
+    def item(name: str) -> dict[str, Any]:
+        return {"service_name": name, "dependency_reason": f"{name} is a direct operational dependency here."}
+
+    context = "The plant converts primary energy into electricity for grid delivery."
+    answers = [
+        {
+            "operational_context": context,
+            "upstream_services": [item("Water Treatment Service")],
+            "downstream_services": [item("Grid Balancing Service")],
+        },
+        {
+            "operational_context": context,
+            "upstream_services": [item("Water Treatment Service"), item("Fuel Logistics Service")],
+            "downstream_services": [item("Grid Balancing Service")],
+        },
+    ]
+    prompts: list[dict[str, Any]] = []
+
+    class Chat:
+        max_prompt_chars = 200_000
+
+        def ask_for_checked_json(self, _task, _system, prompt, check):
+            prompts.append(json.loads(prompt))
+            answer = answers.pop(0)
+            assert check(answer) == []
+            return answer
+
+    class Search:
+        def candidates(self, _catalog, _queries):
+            return []
+
+    result = generate_result(Chat(), Search(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    assert [(p["upstream_count"], p["downstream_count"]) for p in prompts] == [(2, 1), (1, 0)]
+    assert "already_selected" not in prompts[0]
+    assert sorted(prompts[1]["already_selected"]) == ["Grid Balancing Service", "Water Treatment Service"]
+    assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (2, 1)
+    assert sorted(item["service_name"] for item in result["dependencies"]) == [
+        "Fuel Logistics Service",
+        "Grid Balancing Service",
+        "Water Treatment Service",
+    ]
+
+
+def test_the_prompt_reads_the_counts_and_writes_none_itself() -> None:
+    prompt = (Path(generate.__file__).parent / "prompts" / "generate.txt").read_text(encoding="utf-8")
+    assert "upstream_count" in prompt and "downstream_count" in prompt and "already_selected" in prompt
+    assert not re.search(r"\d", prompt)
 
 
 def test_empty_catalog_still_keeps_defensible_ai_services() -> None:
@@ -304,10 +369,10 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
         path = f"/v1/service-mapper/{mapping_id}/dependencies/{water['dependency_id']}/decision"
         decided = client.post(path, json={"direction": "upstream", "action": "accept"}, headers=headers)
         assert decided.status_code == 200, decided.text
-        relation = decided.json()["bidirectional_services"][0]["upstream"]
+        relation = decided.json()["upstream_services"][0]
         assert relation["isAccepted"] is True
         assert relation["accepted_by"] == "reviewer-1" and relation["accepted_datetime"]
-        assert decided.json()["bidirectional_services"][0]["downstream"]["isAccepted"] is None
+        assert decided.json()["downstream_services"][0]["isAccepted"] is None
         reversal = client.post(path, json={"direction": "upstream", "action": "reject"}, headers=headers)
         assert reversal.status_code == 409
         regenerated = client.post(
@@ -372,7 +437,7 @@ def test_a_mapping_is_accepted_only_once_every_relationship_has_its_own_decision
     empty_test_database: None,
 ) -> None:
     mapper, mapping_id, relations = _finished_mapping()
-    assert len(relations) >= 3  # the answer gives one two-way and two one-way relationships
+    assert len(relations) == 3  # water and fuel upstream, grid balancing downstream
     with pytest.raises(Conflict) as refused:
         _decide_mapping(mapper, mapping_id)
     assert refused.value.reason == MapperConflict.RELATIONSHIPS_PENDING

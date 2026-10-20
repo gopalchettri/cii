@@ -19,5 +19,10 @@ downstream_services. Each list item has exactly: service_name, catalog_service_i
 dependency_reason, applicability. The operational_context concisely explains the selected service's
 purpose and boundaries. Each dependency_reason states the direct causal relationship in the correct
 direction. applicability is null only when the relationship is generally applicable; otherwise describe
-the condition. Order each list by strongest direct relevance first. Return [] for a direction with no
-defensible service. The requested maxima are upper bounds, never targets to fill.
+the condition. Order each list by strongest direct relevance first.
+
+Return exactly upstream_count upstream services and downstream_count downstream services when that many
+defensible ones exist; return fewer, or [], rather than pad a list with weak, indirect or invented services.
+Every service is unique: never list one twice, and never put one in both lists; place it only in the
+direction of its strongest direct relationship. When already_selected is given, return only services that
+are not in it.

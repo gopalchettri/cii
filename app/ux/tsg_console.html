@@ -2045,8 +2045,8 @@ $(function () {
       dd("Sector", esc([s.sector, s.subsector].filter(Boolean).join(" / "))) +
       dd("Entities", esc((s.entity_names || []).join(", "))) +
       (s.operational_context ? dd("Operational context", esc(s.operational_context)) : "") +
-      dd("Summary", esc(sum.unique_services || 0) + " services · " + esc(sum.upstream_count || 0) + " of max " + esc(sum.max_upstream) +
-         " upstream · " + esc(sum.downstream_count || 0) + " of max " + esc(sum.max_downstream) + " downstream") +
+      dd("Summary", esc(sum.unique_services || 0) + " services · " + esc(sum.upstream_count || 0) + " of " + esc(sum.max_upstream) +
+         " upstream · " + esc(sum.downstream_count || 0) + " of " + esc(sum.max_downstream) + " downstream") +
       dd("Updated", esc(fmtTime(m.updated_at))) + "</dl>";
     if (m.error) html += '<div class="callout err"><b>' + esc(m.error.code) + "</b> " + esc(m.error.message) + "</div>";
     html += '<div class="row" style="margin-top:12px">' +

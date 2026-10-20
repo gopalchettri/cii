@@ -187,13 +187,12 @@ class Settings(ScenarioOutputSettings):
         default=10, ge=1, le=40, validation_alias="REGENERATIONS_MAX_VERSION_COUNT"
     )
 
-    # Unique dependencies per direction, globally across every sector and subsector. Zero disables one
-    # direction; the bounded maximum keeps a single AI response and Mongo document within safe limits.
-    service_mapper_max_upstream: int = Field(
-        default=20, ge=0, le=100, validation_alias="SERVICE_MAPPER_MAX_UPSTREAM"
+    # Services the AI is asked for per direction (fewer is fine, none in both lists); 0 turns a direction off.
+    service_mapper_upstream_total_count: int = Field(
+        default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT"
     )
-    service_mapper_max_downstream: int = Field(
-        default=20, ge=0, le=100, validation_alias="SERVICE_MAPPER_MAX_DOWNSTREAM"
+    service_mapper_downstream_total_count: int = Field(
+        default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
     )
 
     # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for both: a control

@@ -5,8 +5,7 @@ from app.core.constants import ErrorCode, MapperMessage
 from app.core.exceptions import JobFailed
 from app.data_access.jobs.job_repository import JobLease
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
-from app.domain.service_mapper.generate import generate_answer
-from app.domain.service_mapper.reconcile import reconcile
+from app.domain.service_mapper.generate import generate_result
 from app.models.service_mapper.contract import CreateMappingRequest
 from app.search.service_mapper import ServiceCandidateSearch
 from app.worker.service_mapper.catalog_provider import ServiceCatalogProvider
@@ -36,23 +35,14 @@ class ServiceMapperJob:
         limits = record["limits"]
         catalog = self._catalog.snapshot()
         try:
-            answer = generate_answer(
+            result = generate_result(
                 self._chat,
                 self._search,
                 request,
                 catalog,
-                limits["max_upstream"],
-                limits["max_downstream"],
+                (lease.record_id, lease.epoch),
+                (limits["max_upstream"], limits["max_downstream"]),
             )
         except UnreadableAiAnswer as exc:
             raise JobFailed(ErrorCode.INTERNAL_ERROR, MapperMessage.AI_ANSWER_INVALID) from exc
-        result = reconcile(
-            lease.record_id,
-            lease.epoch,
-            request,
-            answer,
-            catalog,
-            limits["max_upstream"],
-            limits["max_downstream"],
-        )
         self._mappings.finish_generation(lease, result)

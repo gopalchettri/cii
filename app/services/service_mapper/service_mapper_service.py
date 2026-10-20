@@ -294,8 +294,8 @@ class ServiceMapperService:
 
     def _limits(self) -> dict[str, int]:
         return {
-            "max_upstream": self._settings.service_mapper_max_upstream,
-            "max_downstream": self._settings.service_mapper_max_downstream,
+            "max_upstream": self._settings.service_mapper_upstream_total_count,
+            "max_downstream": self._settings.service_mapper_downstream_total_count,
         }
 
     @staticmethod

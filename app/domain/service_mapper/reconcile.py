@@ -22,6 +22,7 @@ def reconcile(
     selected_id = _selected_id(request, catalog)
     upstream = _resolve_list(answer.upstream_services, catalog, request.service_name, selected_id)
     downstream = _resolve_list(answer.downstream_services, catalog, request.service_name, selected_id)
+    upstream, downstream = _one_direction(upstream, downstream)
     upstream = upstream[:max_upstream]
     downstream = downstream[:max_downstream]
     dependencies = _merge(mapping_id, generation, upstream, downstream, catalog)
@@ -93,6 +94,18 @@ def _resolve_list(
         if resolved is not None and resolved.identity not in kept:
             kept[resolved.identity] = resolved
     return list(kept.values())
+
+
+def _one_direction(
+    upstream: list[ResolvedDependency], downstream: list[ResolvedDependency]
+) -> tuple[list[ResolvedDependency], list[ResolvedDependency]]:
+    """A service in both lists stays only where the AI ranked it higher (upstream on a tie)."""
+    up_rank = {item.identity: item.rank for item in upstream}
+    down_rank = {item.identity: item.rank for item in downstream}
+    return (
+        [item for item in upstream if item.rank <= down_rank.get(item.identity, item.rank)],
+        [item for item in downstream if item.rank < up_rank.get(item.identity, item.rank + 1)],
+    )
 
 
 def _match_service(
