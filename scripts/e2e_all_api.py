@@ -109,6 +109,7 @@ def review_run(api: Api, args: argparse.Namespace) -> tuple[str, list[str]]:
     api.call("GET", "/v1/jobs")
     wait(api, RUN, run_settled, 60, session_id=run)
     results = api.call("GET", RUN + "/results", session_id=run)
+    api.call("GET", RUN + "/plan-trace", session_id=run)
     written = [item["scenario_id"] for item in results["scenarios"] if item.get("status") == "done"]
     print(f"      {len(written)} written of {len(results['scenarios'])}")
     if not written:
