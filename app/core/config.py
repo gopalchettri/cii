@@ -216,8 +216,7 @@ class Settings(ScenarioOutputSettings):
     evidence_similarity_threshold: float = Field(
         default=1.0, ge=0, le=100, validation_alias="EVIDENCE_SIMILARITY_THRESHOLD"
     )
-    # Intelligence records the reranker scores per threat: more finds the right record more often, each
-    # rerank takes longer.
+    # Intelligence records the reranker scores per threat: more finds the right one, each rerank is slower.
     evidence_candidates: int = Field(default=30, ge=1, le=100, validation_alias="EVIDENCE_CANDIDATES")
     # Intelligence records kept per threat after the reranker: the writer sees them all and cites one.
     evidence_kept_per_threat: int = Field(default=3, ge=1, le=10, validation_alias="EVIDENCE_KEPT_PER_THREAT")
