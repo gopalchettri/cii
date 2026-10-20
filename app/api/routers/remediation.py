@@ -12,10 +12,14 @@ from app.api.dependencies import Caller, CallersPlan, CallersRun, Limit, Offset,
 from app.container import get_job_service, get_remediation_plan_service
 from app.core.constants import ApiTag, Decision, Header, Limits, Remediation, Status
 from app.models.jobs.views import PlanCancelled
-from app.models.remediation.plan import PlanRequested, PlanStarted, RemediationStatus
-from app.models.remediation.requests import PlanRequest
-from app.models.remediation.reviews import RegenerateRequest, ReviewRequest
-from app.models.remediation.views import RemediationList, RemediationResult
+from app.models.remediation.plan import (
+    PlanRequested,
+    PlanStarted,
+    RemediationList,
+    RemediationResult,
+    RemediationStatus,
+)
+from app.models.remediation.requests import PlanRequest, RegenerateRequest, ReviewRequest
 from app.services.jobs.job_service import JobService
 from app.services.remediation.remediation_plan_service import RemediationPlanService
 
@@ -87,9 +91,7 @@ def review_plan(plan: CallersPlan, body: ReviewRequest, principal: Caller, plans
     """v1's review call: `{"decision": "accepted"}` or `"rejected"`, for `version` (leave it out for the
     newest finished one), with an optional `comment`. Accepting a version makes it THE plan; repeating a
     decision changes nothing. 409 `not_complete` while the version is still being written."""
-    accepted = body.decision == Decision.ACCEPTED
-    decide = plans.accept_remediation_plan if accepted else plans.reject_remediation_plan
-    return decide(principal, plan.remediation_id, body)
+    return plans.review_remediation_plan(principal, plan.remediation_id, body)
 
 
 @router.post(
@@ -119,6 +121,7 @@ def cancel_plan(plan: CallersPlan, principal: Caller, jobs: Jobs) -> PlanCancell
 )
 def list_run_plans(  # noqa: PLR0913 — each filter is its own query parameter
     run: CallersRun,
+    principal: Caller,
     plans: Plans,
     status: Status | None = None,
     decision: Decision | None = None,
@@ -127,8 +130,8 @@ def list_run_plans(  # noqa: PLR0913 — each filter is its own query parameter
     limit: Limit = Limits.PAGE_SIZE_DEFAULT,
 ) -> RemediationList:
     """Every plan of the run's scenarios, newest first, filtered by `status`, `decision` or `risk_level`."""
-    return plans.list_remediation_plans_of_session(
-        run.entity_id, run.session_id, status, decision, risk_level, offset, limit
+    return plans.list_remediation_plans(
+        principal, run.entity_id, run.session_id, status, decision, risk_level, offset, limit
     )
 
 
@@ -150,6 +153,6 @@ def list_entity_plans(  # noqa: PLR0913 — each filter is its own query paramet
 ) -> RemediationList:
     """Every plan of the entity, newest first, filtered as a run's list. The entity must be the caller's
     (X-Entity-Id), else 403."""
-    return plans.list_remediation_plans_of_entity(
-        principal, listed_entity_id, status, decision, risk_level, offset, limit
+    return plans.list_remediation_plans(
+        principal, listed_entity_id, None, status, decision, risk_level, offset, limit
     )

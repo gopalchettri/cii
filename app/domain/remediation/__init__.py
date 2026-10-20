@@ -1,1 +1,1 @@
-"""Remediation steps (Step 16): control references, the scheduler, the snapshot and the planner."""
+"""Remediation steps: the request rules, a hand-written scenario, one plan version and its schedule."""

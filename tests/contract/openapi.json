@@ -456,7 +456,63 @@
     "title": "BidirectionalService",
     "type": "object"
    },
+   "ControlAssessmentView": {
+    "description": "One scenario control against the register: where it stands and whether the plan recommends it.",
+    "properties": {
+     "control_code": {
+      "title": "Control Code",
+      "type": "string"
+     },
+     "control_id": {
+      "title": "Control Id",
+      "type": "integer"
+     },
+     "control_name": {
+      "title": "Control Name",
+      "type": "string"
+     },
+     "domain": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Domain"
+     },
+     "implementation_status": {
+      "$ref": "#/components/schemas/ImplementationStatus"
+     },
+     "match": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Match"
+     },
+     "recommended": {
+      "title": "Recommended",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "control_id",
+     "control_code",
+     "control_name",
+     "implementation_status",
+     "recommended"
+    ],
+    "title": "ControlAssessmentView",
+    "type": "object"
+   },
    "ControlCoverage": {
+    "description": "Set by code from the controls' implementation status.",
     "enum": [
      "gaps",
      "covered"
@@ -1224,6 +1280,16 @@
     },
     "title": "HTTPValidationError",
     "type": "object"
+   },
+   "ImplementationStatus": {
+    "description": "Where one scenario control stands against the register, decided by code.",
+    "enum": [
+     "implemented",
+     "partially_implemented",
+     "missing"
+    ],
+    "title": "ImplementationStatus",
+    "type": "string"
    },
    "IntelHealthOut": {
     "properties": {
@@ -2526,6 +2592,10 @@
       ],
       "title": "Domain"
      },
+     "implementation_status": {
+      "$ref": "#/components/schemas/ImplementationStatus",
+      "default": "missing"
+     },
      "priority": {
       "$ref": "#/components/schemas/ActionPriority"
      }
@@ -3107,6 +3177,14 @@
      },
      "applicable_to_all_subsystems": {
       "$ref": "#/components/schemas/YesNo"
+     },
+     "control_assessment": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/ControlAssessmentView"
+      },
+      "title": "Control Assessment",
+      "type": "array"
      },
      "control_coverage": {
       "$ref": "#/components/schemas/ControlCoverage"

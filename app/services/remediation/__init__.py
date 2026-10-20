@@ -1,1 +1,1 @@
-"""Remediation plans (Step 16, BLUEPRINT M11): requests, the control top-up, decisions and reads."""
+"""Remediation plans: requests, regenerates, reviews and reads."""

@@ -64,6 +64,8 @@ MAX_PUBLIC_METHODS, MAX_CLASS_LINES, MAX_FUNCTION_LINES, MAX_FILE_LINES = 7, 150
 LONG_FILE_FOLDERS = (
     "app/domain/scenario/",
     "app/models/scenario/",
+    "app/domain/remediation/",
+    "app/models/remediation/",
     "app/services/",
     "app/data_access/",
     "app/container.py",

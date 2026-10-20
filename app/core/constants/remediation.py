@@ -109,7 +109,6 @@ class RemediationMessage(StrEnum):
     PLAN_EXISTS = "Scenario '{scenario_id}' already has a plan ({remediation_id}): regenerate it instead."
     PLAN_NOT_FOUND = "Remediation plan '{remediation_id}' does not exist."
     PLAN_OTHER_ENTITY = "Remediation plan '{remediation_id}' belongs to another entity."
-    VERSION_GONE = "Version {version} of remediation plan '{remediation_id}' no longer exists."
     VERSION_NOT_FOUND = "Remediation plan '{remediation_id}' has no version {version}."
     NO_DONE_VERSION = "Remediation plan '{remediation_id}' has no finished version to decide yet."
     NOT_COMPLETE = (

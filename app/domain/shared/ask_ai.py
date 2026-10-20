@@ -16,10 +16,19 @@ ChatPrompt = tuple[str, str]
 _AnswerReader = Callable[[dict[str, Any]], tuple[Any, list[str]]]
 
 
-def ask_ai_and_check(chat: ChatModel, task: AiTask, prompt: ChatPrompt, read_answer: _AnswerReader) -> Any:
+def ask_ai_and_check(
+    chat: ChatModel,
+    task: AiTask,
+    prompt: ChatPrompt,
+    read_answer: _AnswerReader,
+    first_answer_check: Callable[[dict[str, Any]], list[str]] | None = None,
+) -> Any:
     """What a checked answer means. An answer with problems is asked again once with them; raises
-    UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off."""
-    answer = chat.ask_for_checked_json(task, *prompt, lambda candidate: read_answer(candidate)[1])
+    UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
+    `first_answer_check` also judges a usable first answer (see ChatModel.ask_for_checked_json)."""
+    answer = chat.ask_for_checked_json(
+        task, *prompt, lambda candidate: read_answer(candidate)[1], first_answer_check=first_answer_check
+    )
     meaning, _ = read_answer(answer)
     return meaning
 

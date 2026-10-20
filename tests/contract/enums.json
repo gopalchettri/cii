@@ -333,6 +333,11 @@
   "TENANT_ID": "X-Tenant-Id",
   "USER_ID": "X-User-Id"
  },
+ "ImplementationStatus": {
+  "IMPLEMENTED": "implemented",
+  "MISSING": "missing",
+  "PARTIALLY_IMPLEMENTED": "partially_implemented"
+ },
  "IntelKind": {
   "ADVISORY": "advisory",
   "EXPLOIT_SCORE": "exploit_score",
@@ -457,27 +462,19 @@
  },
  "PlanWarning": {
   "ACTION_ID_REPEATED": "{action}.action_id {action_id!r} is already used by remediation_action_plan[{position}] \u2014 this action cannot be named as a prerequisite",
-  "ALL_COVERED_BUT_GAPS": "every library-mapped control is already in the register (matched by library id) but control_coverage says 'gaps' \u2014 only the free-text register entries could justify that verdict",
-  "CONTROL_IN_REGISTER": "recommended control {code!r} is already in the register (matched by library id) and was removed from the plan",
+  "CONTROL_IN_REGISTER": "recommended control {code!r} is already implemented per the register and was removed from the plan",
   "CONTROL_LISTED_TWICE": "recommended control {code!r} is listed more than once \u2014 the repeat was removed",
   "CONTROL_NOT_IMPLEMENTED": "recommended control {code} is not implemented by any action",
-  "CONTROL_NOT_IN_LIBRARY": "recommended control {code!r} matched no library control and was removed from the plan",
-  "COVERED_WITHOUT_LIBRARY": "control_coverage says 'covered' but the scenario has no library-mapped controls \u2014 there was nothing to cover; the verdict is unverifiable",
-  "COVERED_WITH_CONTROLS": "controls_to_be_implemented.control_coverage says 'covered' but controls is non-empty",
+  "CONTROL_NOT_IN_LIBRARY": "recommended control {code!r} is not a control of this scenario and was removed from the plan",
+  "CONTROL_UNMATCHED": "control {reference!r} matches no active library control \u2014 it covers no scenario control",
   "DEPENDENCY_NOT_EARLIER": "{action}.depends_on {reference!r} is not an earlier action \u2014 ignored",
-  "DEPENDENCY_PROSE_EXTRA": "{action}.dependencies mentions {named} but depends_on does not include it",
-  "DEPENDENCY_PROSE_NONE": "{action}.dependencies says None but it waits for {ids}",
   "DURATION_CAPPED": "{action}.duration_days {days} exceeds {limit} \u2014 capped",
   "DURATION_REPAIRED": "{action}.duration_days {value} is not a whole number of days of at least 1 \u2014 scheduled as 1 day",
-  "IDS_OUT_OF_SEQUENCE": "action ids are not A1..A{count} in order: {ids}",
-  "IMPLEMENTS_UNKNOWN": "{action}.implements_controls names {code!r}, which is not a control of this plan",
-  "LESS_URGENT_PREREQUISITE": "{prerequisite} ({prerequisite_priority}) is a prerequisite of {action} ({priority}) but is less urgent than the work it blocks",
+  "GAP_NOT_ADDRESSED": "scenario control {code} is {status} but the plan does not recommend it \u2014 this gap stays open",
+  "IMPLEMENTS_UNKNOWN": "{action}.implements_controls names {code!r}, which is not a recommended control of this plan \u2014 removed",
   "NO_WINDOW": "no mitigation window supplied \u2014 the {total}-day schedule is not bounded by a register deadline",
-  "OUT_OF_ORDER": "{action} is listed after work that starts later (day {latest}) although it can start on day {start} \u2014 the sequence is out of order",
   "PAST_CALENDAR": "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} days fit, so the dates at and beyond {last} are clamped and no longer reflect the durations",
-  "PAST_WINDOW": "the plan finishes {end}, {days} days after the mitigation window closes ({deadline})",
-  "STATED_DAYS": "action_plan states {stated} days but the computed critical path is {total} days",
-  "URGENCY_NOT_REFLECTED": "risk_level is {level} but no recommended control or action carries Critical/High priority \u2014 the plan's urgency does not reflect the register's scored verdict"
+  "PAST_WINDOW": "the plan finishes {end}, {days} days after the mitigation window closes ({deadline})"
  },
  "PromotionOutcome": {
   "CURATOR_REJECTED": "curator_rejected",
@@ -513,10 +510,6 @@
   "NEAREST_CONTROL": "NEAREST_CONTROL",
   "PLAN_CHECK": "PLAN_CHECK",
   "VALIDATION_EXCEPTION": "VALIDATION_EXCEPTION"
- },
- "RiskLevel": {
-  "CRITICAL": "Critical",
-  "HIGH": "High"
  },
  "Route": {
   "STANDALONE": "standalone",
@@ -579,16 +572,6 @@
   "ACTIVE": "active",
   "BUILDING": "building",
   "SUPERSEDED": "superseded"
- },
- "SnapshotWarning": {
-  "CONTROL_NO_LONGER_MAPPED": "control {code} was mapped to the scenario for version {version} but is not mapped any more",
-  "CONTROL_RETIRED": "mapped control {code} is no longer active in the library \u2014 left out of the plan's input",
-  "NOT_CALIBRATED": "risk_assessment carries no risk level and no final risk rating \u2014 the plan is NOT risk-calibrated",
-  "RATING_MISMATCH": "final_risk_rating {final} does not equal likelihood x impact ({likelihood}x{impact}={product}); register values taken as-is",
-  "REGISTER_CONTROL_RETIRED": "register control {code} is retired in the library \u2014 sent to the AI by its name and domain",
-  "REGISTER_ID_UNKNOWN": "register control id {control_id} matches no active library control \u2014 left out of the plan's input",
-  "REGISTER_REF_CHANGED": "register control {reference} no longer names one library control (its id and code now name two rows) \u2014 kept as text",
-  "WINDOW_OVER": "mitigation window ended {end} \u2014 already in the past at plan creation"
  },
  "SqlOperationStatus": {
   "DONE": "done",

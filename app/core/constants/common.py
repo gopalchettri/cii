@@ -266,7 +266,6 @@ class LogEvent(StrEnum):
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
-    REMEDIATION_STORED_VALUE_UNKNOWN = "remediation.stored_value_unknown"  # read back as a safe default
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"

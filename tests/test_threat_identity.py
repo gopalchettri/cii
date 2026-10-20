@@ -6,35 +6,11 @@ from typing import Any
 
 import pytest
 
-from app.core.constants import ConflictReason, LibraryRowKind, LibraryStatus, StrideCategory
+from app.core.constants import ConflictReason, LibraryStatus
 from app.core.exceptions import Invalid
-from app.domain.remediation.threat_identity import resolve_threat
-from app.models.library.library import (
-    LibraryActor,
-    LibraryThreat,
-    LibraryThreatType,
-    PendingLibraryRow,
-    RejectedLibraryThreat,
-    ThreatLibrary,
-)
+from app.domain.remediation.manual import resolve_threat
 from app.models.remediation.requests import ManualScenario
-
-CREW = LibraryActor(3, "Organised crime group")
-TAMPERING, ELEVATION = StrideCategory.TAMPERING, StrideCategory.ELEVATION_OF_PRIVILEGE
-LIBRARY = ThreatLibrary(
-    threats=(LibraryThreat(10, "Firmware tampering", 1, "Malware", (TAMPERING, ELEVATION), (CREW,)),),
-    actors=(CREW,),
-    types=(
-        LibraryThreatType(1, "Malware", TAMPERING, (CREW,)),
-        LibraryThreatType(2, "Phishing", StrideCategory.SPOOFING),
-    ),
-    category_ids=((1, "Spoofing"), (2, "Tampering")),
-    pending=(
-        PendingLibraryRow(LibraryRowKind.TYPE, 5, "Supply chain", None),
-        PendingLibraryRow(LibraryRowKind.THREAT, 20, "Vendor implant", 5),
-    ),
-    curator_rejected=(RejectedLibraryThreat(30, "Rogue USB", 1),),
-)
+from tests.plan_job_fakes import ELEVATION, TAMPERING, THREATS
 
 
 def _flat(part: str, ref: dict[str, Any]) -> dict[str, Any]:
@@ -57,7 +33,7 @@ def _resolved(threat_type: dict[str, Any], threat: dict[str, Any], **fields: Any
         }
         | fields
     )
-    return resolve_threat(LIBRARY, scenario)
+    return resolve_threat(THREATS, scenario)
 
 
 def _refused(threat_type: dict[str, Any], threat: dict[str, Any], **fields: Any) -> Invalid:
@@ -68,26 +44,30 @@ def _refused(threat_type: dict[str, Any], threat: dict[str, Any], **fields: Any)
 
 def test_a_live_threat_takes_its_first_category() -> None:
     identity = _resolved({"name": "malware"}, {"id": 10, "name": "Firmware Tampering"})
-    found = (identity.category, identity.type_id, identity.catalogue_id, identity.status)
+    found = (identity["category"], identity["type_id"], identity["catalogue_id"], identity["status"])
     assert found == (TAMPERING, 1, 10, LibraryStatus.ACTIVE)
-    assert identity.threat_name == "Firmware tampering"
+    assert identity["threat_name"] == "Firmware tampering"
 
 
 def test_pending_rejected_and_new_wordings() -> None:
     pending = _resolved({"name": "Supply chain"}, {"name": "vendor implant"})
-    assert (pending.type_id, pending.catalogue_id, pending.status, pending.category) == (
+    assert (pending["type_id"], pending["catalogue_id"], pending["status"], pending["category"]) == (
         5,
         20,
         LibraryStatus.PENDING,
         None,
     )
     rejected = _resolved({"id": 1}, {"name": "Rogue USB"})
-    found = (rejected.catalogue_id, rejected.status, rejected.type_id)
+    found = (rejected["catalogue_id"], rejected["status"], rejected["type_id"])
     assert found == (None, LibraryStatus.CURATOR_REJECTED, 1)
     new_threat = _resolved({"id": 1}, {"name": "Logic bomb"})
-    assert (new_threat.status, new_threat.category, new_threat.type_name) == (None, TAMPERING, "Malware")
+    assert (new_threat["status"], new_threat["category"], new_threat["type_name"]) == (
+        None,
+        TAMPERING,
+        "Malware",
+    )
     new_type = _resolved({"name": "Insider sabotage"}, {"name": "Logic bomb"})
-    assert (new_type.type_id, new_type.category) == (None, None)
+    assert (new_type["type_id"], new_type["category"]) == (None, None)
 
 
 def test_ids_and_names_must_agree_and_a_threat_keeps_its_type() -> None:
@@ -106,9 +86,9 @@ def test_ids_and_names_must_agree_and_a_threat_keeps_its_type() -> None:
 
 def test_the_category_given_must_be_stride_and_one_the_threat_is_filed_under() -> None:
     by_id = _resolved({"name": "Malware"}, {"name": "Logic bomb"}, threat_category={"id": 2})
-    assert by_id.category == TAMPERING
+    assert by_id["category"] == TAMPERING
     filed = _resolved({"name": "Malware"}, {"id": 10}, threat_category={"name": "elevation of privilege"})
-    assert filed.category == ELEVATION
+    assert filed["category"] == ELEVATION
     not_filed = _refused({"name": "Malware"}, {"id": 10}, threat_category={"name": "Spoofing"})
     assert "not 'Spoofing'" in (not_filed.errors or [])[0]["message"]
     both = _refused(

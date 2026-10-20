@@ -1,11 +1,9 @@
-"""Remediation plans: the AI's answer contract (`PlanDraft`, v1's
-TreatmentPlanGenerated under the approved prompt) and what the API shows of a plan record."""
+"""Remediation plans: the AI's answer contract (`PlanDraft`) and what the API shows of a plan record."""
 
-from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Annotated, Any, ClassVar
 
-from pydantic import AfterValidator, BaseModel
+from pydantic import AfterValidator, BaseModel, BeforeValidator
 
 from app.core.constants import (
     ActionPriority,
@@ -13,16 +11,16 @@ from app.core.constants import (
     ControlCoverage,
     ControlType,
     Decision,
-    LibraryStatus,
+    ImplementationStatus,
     RemediationProgress,
     Status,
-    StrideCategory,
     YesNo,
 )
 from app.models.jobs.views import RetryNotice, retry_notice_of
 
 
 def _given(value: str) -> str:
+    """Blank text is refused."""
     if not value.strip():
         raise ValueError(AnswerProblem.TEXT_REQUIRED)
     return value
@@ -30,6 +28,11 @@ def _given(value: str) -> str:
 
 #: Text the plan cannot do without: an empty one is a broken answer (asked again once).
 Given = Annotated[str, AfterValidator(_given)]
+
+
+def _the_controls(value: Any) -> Any:
+    """The answer's {control_coverage, controls} read as its controls: code sets the coverage."""
+    return value.get("controls", value) if isinstance(value, dict) else value
 
 
 class DraftControl(BaseModel):
@@ -40,14 +43,9 @@ class DraftControl(BaseModel):
     control_code: Given  # a library_mapped code, verbatim; code stamps the library id
 
 
-class DraftControls(BaseModel):
-    control_coverage: ControlCoverage
-    controls: list[DraftControl]
-
-
 class DraftAction(BaseModel):
     """One action as the AI writes it: judgement only (what, who, how urgent, how long, what it waits for).
-    Dates and timelines are code's (app/domain/remediation/scheduler.py)."""
+    Dates and timelines are code's (app/domain/remediation/schedule.py)."""
 
     action_id: str
     action: Given
@@ -65,49 +63,11 @@ class PlanDraft(BaseModel):
     again once, then the version fails `generation_failed`."""
 
     title: Given
-    controls_to_be_implemented: DraftControls
+    controls_to_be_implemented: Annotated[list[DraftControl], BeforeValidator(_the_controls)]
     remediation_action_plan: list[DraftAction]
     action_plan: Given
     mitigation_owner: Given
     applicable_to_all_subsystems: YesNo
-
-
-@dataclass(frozen=True)
-class ActionSchedule:
-    """The scheduler's arithmetic for one plan, by action POSITION, never by the AI's ids (a repeated id could
-    otherwise make an action its own prerequisite or overwrite another's finish): what the checks read."""
-
-    action_ids: tuple[str, ...]  # as the AI wrote them
-    names: tuple[str, ...]  # what a warning calls each action: its id, else its position
-    prerequisites: tuple[tuple[int, ...], ...]  # earlier positions only
-    starts: tuple[int, ...]  # days from the plan's start
-    total: int  # the critical path's length in days
-    planned_end: date | None  # inclusive; None without a mitigation window
-    deadline: date | None  # the window's last day
-
-
-@dataclass(frozen=True)
-class ThreatIdentity:
-    """A hand-written scenario's threat as the library knows it (BLUEPRINT M05 Rule L2). `status` None: the
-    wording is new and is proposed to the library (Rule L4) before the scenario is saved."""
-
-    category: StrideCategory | None
-    type_id: int | None  # None: a new type
-    type_name: str
-    catalogue_id: int | None  # None: a new threat, or a wording a curator rejected
-    threat_name: str
-    status: LibraryStatus | None
-    category_id: int | None = None  # the category's library id (the results' threat_category_id)
-
-
-@dataclass(frozen=True)
-class FinishedPlan:
-    """One plan version's result (BLUEPRINT M11 R6-R7): the plan as stored and shown, every warning in its
-    fixed order, and the prompt that wrote it."""
-
-    plan: dict[str, Any]
-    warnings: tuple[str, ...]
-    prompt_version: str
 
 
 class PlanRequested(BaseModel):
@@ -169,6 +129,7 @@ class RemediationStatus(BaseModel):
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "RemediationStatus":
+        """The status of a stored record."""
         status, decision = Status(record["status"]), Decision(record["decision"])
         job = record.get("job") or {}
         return cls(
@@ -203,3 +164,231 @@ def _overall(status: Status, decision: Decision) -> RemediationProgress:
     if decision == Decision.PENDING:
         return RemediationProgress.AWAITING_REVIEW
     return RemediationProgress.ACCEPTED if decision == Decision.ACCEPTED else RemediationProgress.REJECTED
+
+
+def version_status(record: dict[str, Any], item: dict[str, Any]) -> Status:
+    """A version's status: the latest version's lives at the top of the record, an older one's on its item."""
+    latest = item["version"] == record["job"]["epoch"]
+    return Status(record["status"] if latest else item["status"])
+
+
+class PlanControlView(BaseModel):
+    control_id: int
+    control_code: str
+    control_name: str
+    control_type: ControlType
+    domain: str | None = None
+    description: str
+    priority: ActionPriority
+    implementation_status: ImplementationStatus = ImplementationStatus.MISSING
+
+
+class PlanActionView(BaseModel):
+    action_id: str
+    action: str
+    owner: str
+    priority: ActionPriority
+    dependencies: str
+    depends_on: list[str]
+    duration_days: int
+    start_date: date | None = None  # null without a mitigation window
+    end_date: date | None = None
+    timeline: str
+    implements_controls: list[str]
+    success_criteria: str
+
+
+class ControlAssessmentView(BaseModel):
+    """One scenario control against the register: where it stands and whether the plan recommends it."""
+
+    control_id: int
+    control_code: str
+    control_name: str
+    domain: str | None = None
+    match: str | None = None
+    implementation_status: ImplementationStatus
+    recommended: bool
+
+
+class PlanView(BaseModel):
+    title: str
+    treatment_strategy: str
+    control_coverage: ControlCoverage
+    controls_to_be_implemented: list[PlanControlView]
+    actions: list[PlanActionView]
+    action_plan: str
+    mitigation_owner: str
+    applicable_to_all_subsystems: YesNo
+    critical_path: list[str]
+    mitigation_timeline: str | None = None
+    mitigation_timeline_days: int | None = None
+    mitigation_end_date_planned: date | None = None
+    risk_identification_date: datetime | None = None
+    risk_owner: str | None = None
+    impacted_business_division: str | None = None
+    prompt_version: str
+    control_assessment: list[ControlAssessmentView] = []
+
+    @classmethod
+    def from_stored(cls, plan: dict[str, Any], prompt_version: str) -> "PlanView":
+        """The stored plan keeps its {control_coverage, controls} table; the API shows it flat."""
+        table = plan["controls_to_be_implemented"]
+        shown = {
+            "control_coverage": table["control_coverage"],
+            "controls_to_be_implemented": table["controls"],
+            "actions": plan["remediation_action_plan"],
+            "prompt_version": prompt_version,
+        }
+        return cls.model_validate(plan | shown)
+
+
+class VersionView(BaseModel):
+    version: int
+    status: Status
+    decision: Decision
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    review_comment: str | None = None
+    requested_by: str | None = None
+    requested_at: datetime
+    completed_at: datetime | None = None
+    error: dict[str, str] | None = None
+    plan: PlanView | None = None
+    warnings: list[str]
+
+    @classmethod
+    def from_item(cls, item: dict[str, Any], record: dict[str, Any]) -> "VersionView":
+        """One stored version; the latest version's status and error live at the top of the record."""
+        latest = item["version"] == record["job"]["epoch"]
+        plan = item.get("plan")
+        return cls.model_validate(
+            item
+            | {
+                "status": version_status(record, item),
+                "error": record["job"].get("error") if latest else item.get("error"),
+                "plan": None if plan is None else PlanView.from_stored(plan, item["prompt_version"]),
+            }
+        )
+
+
+class ScenarioSummary(BaseModel):
+    """The planned scenario as its reviewer reads it beside the plan."""
+
+    scenario_id: str
+    title: str | None = None
+    statement: str | None = None
+    risk_statement: str | None = None
+    category: str | None = None
+    threat: dict[str, Any] | None = None
+    actors: list[dict[str, Any]] = []
+    controls: list[dict[str, Any]] = []
+
+    @classmethod
+    def from_record(cls, scenario: dict[str, Any]) -> "ScenarioSummary":
+        """The summary of a stored scenario."""
+        content = scenario.get("content") or {}
+        return cls(
+            scenario_id=scenario["_id"],
+            **{
+                key: content.get(key)
+                for key in ("title", "statement", "risk_statement", "category", "threat")
+            },
+            actors=[
+                {key: actor.get(key) for key in ("name", "role")} for actor in content.get("actors") or []
+            ],
+            controls=(scenario.get("controls") or {}).get("items") or [],
+        )
+
+
+class RemediationResult(RemediationStatus):
+    """#16: the status, then the shown version (the accepted one, else the newest done one, as in v1 where
+    approving an old version made it the active one) with its plan and warnings, the scenario and the register
+    echo; `versions` only when the history is asked for."""
+
+    shown_version: int | None = None
+    plan: PlanView | None = None
+    warnings: list[str] = []
+    scenario: ScenarioSummary | None = None
+    # Not `register`: that name is pydantic's own (ABCMeta.register) and a field must not shadow it.
+    register_data: dict[str, Any] = {}
+    versions: list[VersionView] | None = None
+
+    @classmethod
+    def from_records(
+        cls, record: dict[str, Any], scenario: dict[str, Any] | None, include_history: bool
+    ) -> "RemediationResult":
+        """The result of a stored record and its scenario."""
+        item = shown_item(record)
+        shown = None if item is None else VersionView.from_item(item, record)
+        versions = [VersionView.from_item(v, record) for v in record["versions"]] if include_history else None
+        return cls(
+            **RemediationStatus.from_record(record).model_dump(),
+            shown_version=None if shown is None else shown.version,
+            plan=None if shown is None else shown.plan,
+            warnings=[] if shown is None else shown.warnings,
+            scenario=None if scenario is None else ScenarioSummary.from_record(scenario),
+            register_data=record.get("register") or {},
+            versions=versions,
+        )
+
+
+def shown_item(record: dict[str, Any]) -> dict[str, Any] | None:
+    """The version shown: the accepted one, else the newest done one; None while no version is done."""
+    done = [item for item in record["versions"] if version_status(record, item) == Status.DONE]
+    accepted = [item for item in done if item["version"] == record.get("accepted_version")]
+    return (accepted or done[-1:] or [None])[0]
+
+
+class RemediationSummary(BaseModel):
+    """One plan in a list (#17)."""
+
+    remediation_id: str
+    scenario_id: str
+    session_id: str
+    asset_id: int | None = None
+    source: str | None = None
+    title: str | None = None
+    risk_level: str | None = None
+    latest_version: int
+    latest_status: Status
+    accepted_version: int | None = None
+    decision: Decision
+    created_at: datetime
+    updated_at: datetime
+
+    #: What a list reads of each record: never a version.
+    RECORD_FIELDS: ClassVar[dict[str, int]] = dict.fromkeys(
+        (
+            "scenario_id",
+            "session_id",
+            "asset_id",
+            "source",
+            "title",
+            "risk_level",
+            "job.epoch",
+            "status",
+            "accepted_version",
+            "decision",
+            "created_at",
+            "updated_at",
+        ),
+        1,
+    )
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "RemediationSummary":
+        """The list item of a stored record."""
+        fields = {key: record.get(key) for key in cls.model_fields if key in record}
+        return cls.model_validate(
+            fields
+            | {
+                "remediation_id": record["_id"],
+                "latest_version": record["job"]["epoch"],
+                "latest_status": record["status"],
+            }
+        )
+
+
+class RemediationList(BaseModel):
+    items: list[RemediationSummary]
+    total: int

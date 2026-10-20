@@ -6,7 +6,7 @@ import dataclasses
 from typing import Any
 
 from app.core.constants import AiTask, AttackerCheck, LibraryStatus, StrideCategory
-from app.domain.remediation.manual_actors import manual_attacker
+from app.domain.remediation.manual import pick_manual_attacker
 from app.domain.scenario.plan import actor_pick, choose_actor, merge_two_threats, relevance_gate_prompt
 from app.models.scenario.plan import ActorPick, PlannedThreat
 from tests.fakes import items_in
@@ -111,8 +111,8 @@ def test_a_hand_written_threat_takes_its_linked_actors_else_its_types_else_the_w
 
     def acting(**threat: Any) -> tuple[str, bool]:
         content = {"threat": threat | {"type": "Theft", "name": "Login"}, "statement": "A crew phishes."}
-        actors, closest = manual_attacker(snapshot, content)
-        return actors[0].name, closest
+        (acting_actor,) = pick_manual_attacker(snapshot, {"content": content})
+        return acting_actor["name"], acting_actor["closest"]
 
     active = LibraryStatus.ACTIVE
     assert acting(library_id=LOG_WIPE.catalogue_id, library_status=active) == (INSIDER.name, False)

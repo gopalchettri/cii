@@ -35,7 +35,8 @@ WHY_APPLIES = "Vendor firmware sessions make this asset's control logic a place 
 
 class FakeChatModel:
     """ChatModel's planner surface. Per task, queued answers are used first, then the task's responder; a
-    rejected first answer is re-asked once, as the real model is (ask_for_checked_json)."""
+    rejected first answer is re-asked once, and a usable first answer is kept when the re-ask is not, as the
+    real model does (ask_for_checked_json)."""
 
     def __init__(self, max_prompt_chars: int = 60_000) -> None:
         self._input_limit = max_prompt_chars
@@ -56,11 +57,22 @@ class FakeChatModel:
         system_prompt: str,
         user_prompt: str,
         check_answer: Callable[[dict[str, Any]], list[str]],
+        first_answer_check: Callable[[dict[str, Any]], list[str]] | None = None,
     ) -> dict[str, Any]:
-        for _attempt in (1, 2):
+        first = self._answer(task, user_prompt)
+        usable = None if check_answer(first) else first
+        if usable is not None and (first_answer_check is None or not first_answer_check(usable)):
+            return usable
+        try:
             answer = self._answer(task, user_prompt)
-            if not check_answer(answer):
-                return answer
+        except (UnreadableAiAnswer, TruncatedAiAnswer):
+            if usable is None:
+                raise
+            return usable
+        if not check_answer(answer):
+            return answer
+        if usable is not None:
+            return usable
         raise UnreadableAiAnswer(f"{task}: {check_answer(answer)[:3]}")
 
     def _answer(self, task: AiTask, user_prompt: str) -> dict[str, Any]:

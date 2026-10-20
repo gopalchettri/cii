@@ -103,26 +103,37 @@ class ChatModel:
         self._max_input_chars = min(profile.max_input_chars for _, profile in models)
 
     def ask_for_checked_json(
-        self, task: AiTask, system_prompt: str, user_prompt: str, check_answer: AnswerChecker
+        self,
+        task: AiTask,
+        system_prompt: str,
+        user_prompt: str,
+        check_answer: AnswerChecker,
+        first_answer_check: AnswerChecker | None = None,
     ) -> dict[str, Any]:
         """A JSON answer `check_answer` accepts. A rejected first answer is asked again once, in the same
-        conversation, with its problems (§9); a second rejection raises UnreadableAiAnswer."""
-        return self._ask_until_checked(task, build_conversation(system_prompt, user_prompt), check_answer)
-
-    def _ask_until_checked(
-        self, task: AiTask, messages: list[dict[str, str]], check_answer: AnswerChecker
-    ) -> dict[str, Any]:
+        conversation, with its problems (§9); a second rejection raises UnreadableAiAnswer. A usable first
+        answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable."""
+        messages = build_conversation(system_prompt, user_prompt)
         answer, reply = self._ask_and_read_answer(task, messages)
         problems = _find_answer_problems(answer, check_answer)
-        if answer is not None and not problems:
+        usable = answer if answer is not None and not problems else None
+        if usable is not None:
+            problems = first_answer_check(usable) if first_answer_check is not None else []
+            if not problems:
+                return usable
+        correction = _with_correction_turn(messages, reply, problems, self._max_input_chars)
+        try:
+            answer, _ = self._ask_and_read_answer(task, correction)
+        except (UnreadableAiAnswer, TruncatedAiAnswer):
+            if usable is None:
+                raise
+            return usable
+        retry_problems = _find_answer_problems(answer, check_answer)
+        if answer is not None and not retry_problems:
             return answer
-        answer, _ = self._ask_and_read_answer(
-            task, _with_correction_turn(messages, reply, problems, self._max_input_chars)
-        )
-        problems = _find_answer_problems(answer, check_answer)
-        if answer is not None and not problems:
-            return answer
-        summary = "; ".join(problems[:3])
+        if usable is not None:
+            return usable
+        summary = "; ".join(retry_problems[:3])
         raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_REJECTED.format(task=task, problems=summary))
 
     @property

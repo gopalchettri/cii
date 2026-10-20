@@ -29,7 +29,7 @@ from debug_tools import set_debug_value  # noqa: E402  (scripts/ is on the path:
 from e2e_client import CALLED, FAILED, Api  # noqa: E402
 
 from app.core.constants import Header  # noqa: E402
-from app.models.remediation.examples import PLAN_REQUEST_EXAMPLES  # noqa: E402
+from app.models.remediation.requests import PLAN_REQUEST_EXAMPLES  # noqa: E402
 
 #: Operations left out on purpose, not "not called": a source Legal has not approved is never approved here.
 SKIPPED: set[tuple[str, str]] = set()

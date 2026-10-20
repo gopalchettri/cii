@@ -38,6 +38,7 @@ from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepo
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import rerank_gate_for
+from app.domain.scenario.controls import ControlMapper
 from app.domain.scenario.plan import ThreatFinder
 from app.realtime.publisher import (
     publish_mapping_status,
@@ -59,7 +60,6 @@ from app.services.service_mapper.service_mapper_service import ServiceMapperServ
 from app.worker.celery_app import send_admin_job, send_job
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from app.worker.external_intelligence.sources.source_catalogue import SourceCatalogue
-from app.worker.remediation.plan_inputs import PlanInputs
 from app.worker.remediation.remediation_plan_job import RemediationPlanJob
 from app.worker.scenario.controls_job import ControlsJob
 from app.worker.scenario.plan_job import PlanJob
@@ -419,16 +419,16 @@ def get_controls_job() -> ControlsJob:
 
 @singleton
 def get_remediation_plan_job() -> RemediationPlanJob:
-    inputs = PlanInputs(
-        search=get_library_search(),
-        rerank=get_rerank_model(),
-        threats=get_threat_repository(),
-        scenarios=get_threat_scenario_repository(),
-        sessions=get_threat_scenario_session_repository(),
-        remediations=get_remediation_repository(),
-        audit=get_audit_repository(),
+    return RemediationPlanJob(
+        get_remediation_repository(),
+        get_threat_scenario_repository(),
+        get_threat_scenario_session_repository(),
+        get_threat_repository(),
+        get_audit_repository(),
+        get_library_search(),
+        ControlMapper(get_rerank_model()),
+        get_chat_model(),
     )
-    return RemediationPlanJob(get_remediation_repository(), get_chat_model(), inputs, get_audit_repository())
 
 
 # --- start-up

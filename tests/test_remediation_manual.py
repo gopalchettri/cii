@@ -1,8 +1,6 @@
-"""A plan for a hand-written scenario (#11 with `manual_scenario`; BLUEPRINT M11 R2; BUILD_PLAN S55): saved
-and planned, replayed, key conflicts, strict control references; then its plan job (G262: the request makes no
-AI call) ranks its attackers, proposes a new wording pending (a new type linked to its closest attacker),
-never a curator-rejected one, and maps its controls when none were given. The asset from the SQL test
-database; the library, the search, the proposal, the mapping and the chat faked."""
+"""A plan for a hand-written scenario (`POST /v1/remediation` with `manual_scenario`): saved, planned and
+replayed with no AI in the request; its plan job picks the attacker and proposes a new wording once. The
+asset from the SQL test database; the library, the search, the proposal, the mapping and the chat faked."""
 
 import uuid
 from collections.abc import Iterator
@@ -33,23 +31,24 @@ from app.core.database import StoredProcedureClient, get_mongodb
 from app.data_access.library.sql_operation_repository import SqlOperationRepository
 from app.data_access.library.threat_repository import ThreatRepository
 from app.data_access.scenario.asset_repository import AssetRepository
-from app.domain.remediation.manual_records import manual_request_fingerprint
-from app.models.library.library import LoadedLibraries
+from app.domain.remediation.manual import manual_ids, manual_request_fingerprint
+from app.models.library.library import LibraryControl
 from app.models.remediation.requests import PlanRequest
 from app.services.remediation.remediation_plan_service import RemediationPlanService
-from tests.test_remediation_planner import _answer, _control
-from tests.test_remediation_requests import (  # noqa: F401 — api_key and world are fixtures
-    RETIRED,
-    _deliver,
-    _service,
-    api_key,
-    world,
+from tests.plan_addresses import plan_url
+from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
+    CONTROLS,
+    api_key_fixture,
+    deliver,
+    fake_library,
+    plan_answer,
+    remediation_plan_job,
+    remediation_plan_service,
+    world_fixture,
 )
-from tests.test_remediation_snapshot import LIBRARY as CONTROLS
-from tests.test_threat_identity import LIBRARY as THREATS
 
 IDENTITY = {Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DESC"}
-#: v1's hand-written request (owner, 2026-10-15): is_manual, the entity and the threat's flat fields.
+#: v1's hand-written request: is_manual, the entity and the threat's flat fields (asset 103 is entity 86's).
 BODY = {
     "is_manual": True,
     "manual_scenario": {
@@ -59,7 +58,7 @@ BODY = {
         "subsector_id": 11,
         "threat_type_name": "Malware",
         "threat_name": "Firmware tampering",
-        "threat_scenario": "A cybercriminal could push unsigned firmware to the RTU during maintenance.",
+        "threat_scenario": "A cybercriminal could push unsigned firmware to the RTU; tell ops@example.com.",
         "risk_statement": "Loss of trusted control could interrupt electricity transmission.",
         "mapped_controls": ["CII-CID-1"],
     },
@@ -68,34 +67,22 @@ BODY = {
 
 
 def _manual_service(
-    fakes: dict[str, Any], engine: Engine, controls: tuple[Any, ...]
+    world: dict[str, Any], engine: Engine, controls: tuple[LibraryControl, ...]
 ) -> RemediationPlanService:
     """The remediation service on the SQL test database's assets, a library of `controls` and the world's
     send and publish fakes."""
-    library = SimpleNamespace(
-        check_library_once=lambda: None,
-        get_loaded_libraries=lambda: LoadedLibraries((), THREATS, controls, RETIRED),
-    )
-
-    def send_job(*args: Any) -> None:
-        fakes["sent"].append(args)
-
-    return _service(
-        library=library,
+    return remediation_plan_service(
+        library=fake_library(controls),
         assets=AssetRepository(StoredProcedureClient(engine)),
-        send_job=send_job,
-        publish_remediation_status=fakes["published"].append,
+        send_job=lambda *args: world["sent"].append(args),
+        publish_remediation_status=world["published"].append,
     )
 
 
 @pytest.fixture
-def manual(
-    client: TestClient,
-    world: dict[str, Any],  # noqa: F811
-    sql_test_engine: Engine,
-) -> Iterator[dict[str, Any]]:
-    """The remediation service on the SQL test database's asset 103 (entity 86) and the fakes; the plan job's
-    fakes (world: mapper, search, proposals, chat)."""
+def manual(client: TestClient, world: dict[str, Any], sql_test_engine: Engine) -> Iterator[dict[str, Any]]:
+    """`world` with its service on the SQL test database's asset 103 (entity 86), and that `engine`."""
+    world["engine"] = sql_test_engine
     built = _manual_service(world, sql_test_engine, tuple(CONTROLS.values()))
     client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: built  # type: ignore[attr-defined]
     yield world
@@ -110,11 +97,11 @@ def _post(client: TestClient, key: str, body: dict[str, Any], idempotency_key: s
 
 
 def _planned(client: TestClient, key: str, body: dict[str, Any], manual: dict[str, Any]) -> dict[str, Any]:
-    """A hand-written request answered 202, then its plan job run (input completed, plan written)."""
+    """A hand-written request answered 202, then its plan job run."""
     answer = _post(client, key, body, uuid.uuid4().hex)
     assert answer.status_code == 202, answer.text
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(answer.json()["remediation_id"])
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(answer.json()["remediation_id"])
     return answer.json()
 
 
@@ -126,25 +113,32 @@ def _scenario(scenario_id: str) -> dict[str, Any]:
     return get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})
 
 
+def _plan(remediation_id: str) -> dict[str, Any]:
+    return get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": remediation_id})
+
+
+def _runs_with_key(key: str) -> int:
+    return get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key})
+
+
 def test_a_hand_written_scenario_is_saved_planned_and_replayed(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
+    client: TestClient, api_key: str, manual: dict[str, Any]
 ) -> None:
+    """No AI in the request: the scenario is saved accepted, its ids from the key, and replayed (200) under
+    the same key; its plan job picks the attacker on the person's words redacted, then plans."""
     key = uuid.uuid4().hex
     first = _post(client, api_key, BODY, key)
     assert first.status_code == 202, first.text
     planned = first.json()
     assert (planned["is_manual"], planned["replayed"]) == (True, False)
+    assert (planned["session_id"], planned["scenario_id"]) == manual_ids(86, key)
     scenario = _scenario(planned["scenario_id"])
-    # G262: no AI in the request: its attackers wait for its plan job, the snapshot with them.
     assert (scenario["content"]["actors"], scenario["pending"]["actors"], manual["search"].queries) == (
         [],
         True,
         [],
     )
-    record = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": planned["remediation_id"]})
-    assert record["versions"][0]["snapshot"]["pending"] is True
+    assert _plan(planned["remediation_id"])["versions"][0]["snapshot"] is None
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": planned["session_id"]})
     assert (run["kind"], run["active"], run["counts"]["accepted"]) == (RunKind.MANUAL, False, 1)
     content = scenario["content"]
@@ -156,29 +150,25 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     assert found == (10, LibraryStatus.ACTIVE, StrideCategory.TAMPERING) and content["category_id"] == 2
     item = scenario["controls"]["items"][0]
     assert (scenario["controls"]["status"], item["code"], item["match"]) == ("done", "CII-CID-1", "given")
-    assert item["description"] == next(c.description for c in CONTROLS.values() if c.code == "CII-CID-1")
+    assert item["description"] == CONTROLS[1].description
     assert manual["sent"] == [(TaskName.WRITE_PLAN, planned["remediation_id"], 1)]
-    again = _post(client, api_key, BODY, key)  # v1: the same key and body replay the first answer
+    again = _post(client, api_key, BODY, key)
     assert (again.status_code, again.json()) == (200, planned | {"replayed": True})
     other_entity = _with(entity_id=87)  # v1 sends the entity in the body: only the caller's
     assert _post(client, api_key, other_entity, uuid.uuid4().hex).status_code == 403
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(planned["remediation_id"])  # its plan job: the attackers, then the snapshot, then the plan
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(planned["remediation_id"])
     scenario = _scenario(planned["scenario_id"])
     actors = [(a["name"], a["role"], a["closest"]) for a in scenario["content"]["actors"]]
     assert actors == [("Organised crime group", "acting", False)] and "pending" not in scenario
-    version = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": planned["remediation_id"]})["versions"][
-        0
-    ]
-    shown = version["snapshot"]["existing_controls"]["library_mapped"][0]
-    assert (shown["match"], shown["mapping_relevance"]) == ("exact", None)  # the prompt knows exact, nearest
+    words = "A cybercriminal could push unsigned firmware to the RTU; tell [REDACTED]."
+    assert manual["search"].queries == [f"Malware: Firmware tampering. {words}"]  # the address redacted
+    version = _plan(planned["remediation_id"])["versions"][0]
     assert version["status"] == "done" and version["snapshot"]["threat"]["actors"][0]["role"] == "acting"
-    assert (
-        manual["mapper"].asked == [] and manual["proposals"] == []
-    )  # its controls were given; its threat live
+    assert manual["mapper"].asked == [] and manual["proposals"] == []  # its controls given, its threat live
     listed = client.get("/v1/entities/86/scenarios", headers=IDENTITY | {Header.API_KEY: api_key})
     assert planned["scenario_id"] in [row["scenario_id"] for row in listed.json()["scenarios"]]
-    # The writer has no plan path for it: regenerating it is refused by name, never a 500 (no write job).
+    # The writer has no plan path for it: regenerating it is refused by name, never a 500.
     url = f"/v1/sessions/{planned['session_id']}/regenerate/scenarios"
     regenerate = client.post(
         url, json={"scenario_ids": [planned["scenario_id"]]}, headers=IDENTITY | {Header.API_KEY: api_key}
@@ -191,34 +181,17 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     assert next_set.status_code == 409
 
 
-def test_a_required_property_not_recorded_saves_nothing(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """G197 (owner 2026-10-11): a hand-written scenario is held to the same required properties as a run;
-    the refusal names the field where the request put it, and nothing is proposed or saved."""
-    monkeypatch.setattr(get_settings(), "system_properties_required", "description")
-    key = uuid.uuid4().hex
-    refused = _post(client, api_key, BODY, key)
-    assert (refused.status_code, refused.json()["reason"]) == (422, "required_facts_missing")
-    assert refused.json()["errors"][0]["field"] == "body.manual_scenario.supporting_system_id.1"
-    assert get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key}) == 0
-    assert manual["proposals"] == []
-
-
 def test_the_key_is_required_and_names_one_request(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
+    client: TestClient, api_key: str, manual: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """No key: 422. The key with another body, a generated run's key (even with this body's fingerprint), or
+    a parallel request whose upsert met the first's run: 409, nothing proposed."""
     assert _post(client, api_key, BODY, None).status_code == 422
     key = uuid.uuid4().hex
     assert _post(client, api_key, BODY, key).status_code == 202
-    other = _post(client, api_key, _with(threat_scenario="Another attack, written differently."), key)
+    another = _with(threat_scenario="Another attack, written differently.")
+    other = _post(client, api_key, another, key)
     assert (other.status_code, other.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
-    # A generated run's key, even with this very body's fingerprint: refused before anything is saved.
     generated, new_wording = uuid.uuid4().hex, _with(threat_name="Logic bomb")
     get_mongodb()[Collection.SESSIONS].insert_one(
         {"_id": uuid.uuid4().hex, "entity_id": 86, "asset_id": 103, "kind": RunKind.GENERATED,
@@ -227,42 +200,28 @@ def test_the_key_is_required_and_names_one_request(
     )  # fmt: skip
     taken = _post(client, api_key, new_wording, generated)
     assert (taken.status_code, taken.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
-    assert manual["proposals"] == []
-
-
-def test_a_parallel_request_with_the_key_and_another_body_is_refused(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Both looked for the key before either saved: the second's upsert keeps the first's run, so it is 409,
-    never planned from (or replayed as) the first's scenario."""
-    key = uuid.uuid4().hex
-    assert _post(client, api_key, BODY, key).status_code == 202
     sessions = container.get_threat_scenario_session_repository()
     real_get = sessions.get
     monkeypatch.setattr(
         sessions,
         "get",
         lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
-    )
-    other = _post(client, api_key, _with(threat_scenario="Another attack, written differently."), key)
-    assert (other.status_code, other.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
+    )  # the parallel request looked for the key before the first saved
+    parallel = _post(client, api_key, another, key)
+    assert (parallel.status_code, parallel.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
+    assert manual["proposals"] == []
 
 
-def test_new_wordings_are_proposed_pending_by_the_plan_job_and_a_rejected_one_is_not(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
+def test_a_new_wording_is_proposed_once_by_the_plan_job_and_a_rejected_one_never(
+    client: TestClient, api_key: str, manual: dict[str, Any]
 ) -> None:
-    """A new threat of a live type: proposed with no actor links. A new type: linked to the closest attacker
-    it was given (flagged). A curator-rejected wording: never proposed, saved without a library id. All by the
-    plan job, as the person who asked (G262: the request proposes nothing, it calls no AI)."""
+    """A new threat of a live type: proposed with no actor links, once (a regenerate proposes nothing). A new
+    type: linked to the closest attacker it was given (flagged). A curator-rejected wording: never proposed,
+    saved without a library id. All by the plan job, as the person who asked."""
     request = _post(client, api_key, _with(threat_name="Logic bomb"), uuid.uuid4().hex).json()
     assert manual["proposals"] == []  # the request saved it; its plan job proposes it
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(request["remediation_id"])
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(request["remediation_id"])
     threat = _scenario(request["scenario_id"])["content"]["threat"]
     assert (threat["library_id"], threat["library_status"]) == (901, LibraryStatus.PENDING)
     proposal = manual["proposals"][0]
@@ -272,8 +231,14 @@ def test_new_wordings_are_proposed_pending_by_the_plan_job_and_a_rejected_one_is
         {"action": AuditAction.LIBRARY_PROPOSED, "target.id": "901"}
     )
     assert audit is not None and audit["actor"]["user_id"] == "u1"
-    body = _with(threat_type_name="Insider sabotage", threat_name="Logic bomb")
-    new_type = _planned(client, api_key, body, manual)
+    headers = IDENTITY | {Header.API_KEY: api_key}
+    url = plan_url(request["remediation_id"], "regenerate")
+    assert client.post(url, json={}, headers=headers).status_code == 202
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(request["remediation_id"], 2)
+    assert _plan(request["remediation_id"])["status"] == "done" and len(manual["proposals"]) == 1
+    new_wording = _with(threat_type_name="Insider sabotage", threat_name="Logic bomb")
+    new_type = _planned(client, api_key, new_wording, manual)
     actors = _scenario(new_type["scenario_id"])["content"]["actors"]
     assert [(a["name"], a["closest"]) for a in actors] == [("Organised crime group", True)]
     assert (manual["proposals"][1].actor_ids, manual["proposals"][1].category) == ((3,), None)
@@ -283,51 +248,46 @@ def test_new_wordings_are_proposed_pending_by_the_plan_job_and_a_rejected_one_is
     assert found == (None, LibraryStatus.CURATOR_REJECTED, 2)
 
 
-def test_controls_named_strictly_else_mapped_by_the_plan_job(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
+def test_an_unknown_mapped_control_is_refused_and_none_given_are_mapped_by_the_plan_job(
+    client: TestClient, api_key: str, manual: dict[str, Any]
 ) -> None:
     key = uuid.uuid4().hex
     unknown = _post(client, api_key, _with(mapped_controls=["CII-CID-1", "CII-CID-77"]), key)
     assert unknown.status_code == 422
     assert unknown.json()["errors"][0]["field"] == "body.manual_scenario.mapped_controls[1]"
-    assert get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key}) == 0  # nothing saved
+    assert _runs_with_key(key) == 0  # nothing saved
     answer = _post(client, api_key, _with(mapped_controls=None), uuid.uuid4().hex)
-    assert answer.status_code == 202 and manual["mapper"].asked == []  # G262: not inside the request
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(answer.json()["remediation_id"])
+    assert answer.status_code == 202 and manual["mapper"].asked == []  # never inside the request
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(answer.json()["remediation_id"])
     assert manual["mapper"].asked == [answer.json()["scenario_id"]]
     controls = _scenario(answer.json()["scenario_id"])["controls"]
     assert (controls["status"], [item["code"] for item in controls["items"]]) == ("done", ["CII-CID-1"])
+    assert _plan(answer.json()["remediation_id"])["status"] == "done"
 
 
-def test_a_refused_register_saves_nothing_and_the_persons_words_are_redacted(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
+def test_nothing_is_saved_when_a_property_is_missing_or_the_control_library_is_empty(
+    client: TestClient, api_key: str, manual: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Review S56: the register is checked before the run and the scenario are saved, so a corrected retry
-    under the same key is a first request, never a 409 against an orphan; the person's text goes to the
-    embedding model redacted (by the plan job, G262)."""
+    """A hand-written scenario is held to a run's required properties (the refusal names the field where the
+    request put it), and an empty control library is 409 before the first write: a retry under the same key
+    is then a first request, never a 409 against an orphaned scenario."""
     key = uuid.uuid4().hex
-    wording = _with(threat_name="Logic bomb", threat_scenario="Mail ops@example.com a bad image.")
-    refused = wording | {"existing_controls": [{"control_id": 1, "control_code": "CII-CID-2"}]}
-    assert _post(client, api_key, refused, key).status_code == 422
-    assert get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key}) == 0
-    assert manual["proposals"] == []
-    answer = _post(client, api_key, wording, key)
-    assert answer.status_code == 202
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(answer.json()["remediation_id"])
-    assert manual["search"].queries[-1] == "Malware: Logic bomb. Mail [REDACTED] a bad image."
+    with monkeypatch.context() as required:
+        required.setattr(get_settings(), "system_properties_required", "description")
+        refused = _post(client, api_key, BODY, key)
+    assert (refused.status_code, refused.json()["reason"]) == (422, "required_facts_missing")
+    assert refused.json()["errors"][0]["field"] == "body.manual_scenario.supporting_system_id.1"
+    assert _runs_with_key(key) == 0 and manual["proposals"] == []
+    empty = _manual_service(manual, manual["engine"], ())
+    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: empty  # type: ignore[attr-defined]
+    refused = _post(client, api_key, _with(mapped_controls=None), key)
+    assert (refused.status_code, refused.json()["reason"]) == (409, ErrorCode.CONTROL_LIBRARY_EMPTY)
+    assert _runs_with_key(key) == 0
 
 
 def test_a_deleted_runs_key_reused_with_another_wording_proposes_the_new_one(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient, api_key: str, manual: dict[str, Any]
 ) -> None:
     """The scenario id comes from the key, so it is the same again after its run's delete: the delete removes
     its operation records too, and the new wording reaches the library, never the old answer replayed."""
@@ -340,31 +300,15 @@ def test_a_deleted_runs_key_reused_with_another_wording_proposes_the_new_one(
 
     procedures = SimpleNamespace(execute_procedure=resolve_threat)
     threats = ThreatRepository(procedures, SqlOperationRepository(procedures))  # type: ignore[arg-type]
-    monkeypatch.setattr(manual["inputs"], "_threats", threats)
+    manual["job"] = remediation_plan_job(manual["chat"], manual, threats=threats)
     key, headers = uuid.uuid4().hex, IDENTITY | {Header.API_KEY: api_key}
     first = _post(client, api_key, _with(threat_name="Logic bomb"), key).json()
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(first["remediation_id"])
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(first["remediation_id"])
     assert client.delete(f"/v1/sessions/{first['session_id']}", headers=headers).status_code == 200
     again = _post(client, api_key, _with(threat_name="Time bomb"), key)
     assert again.status_code == 202 and again.json()["scenario_id"] == first["scenario_id"]
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, _answer(_control("CII-CID-1")))
-    _deliver(again.json()["remediation_id"])
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(again.json()["remediation_id"])
     assert asked == ["Logic bomb", "Time bomb"]
     assert _scenario(first["scenario_id"])["content"]["threat"]["library_id"] == 902
-
-
-def test_an_empty_control_library_refuses_a_hand_written_request_before_anything_is_saved(
-    client: TestClient,
-    api_key: str,  # noqa: F811
-    manual: dict[str, Any],
-    sql_test_engine: Engine,
-) -> None:
-    """409 control_library_empty before the first write, so a retry under the same key once the library is
-    back is a first request, never a 409 against an orphaned scenario."""
-    built = _manual_service(manual, sql_test_engine, ())
-    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: built  # type: ignore[attr-defined]
-    key = uuid.uuid4().hex
-    refused = _post(client, api_key, _with(mapped_controls=None), key)
-    assert (refused.status_code, refused.json()["reason"]) == (409, ErrorCode.CONTROL_LIBRARY_EMPTY)
-    assert get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key}) == 0

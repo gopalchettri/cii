@@ -33,8 +33,7 @@ from app.data_access.library.threat_repository import ThreatRepository
 from app.models.library.curation import LibraryDecisions
 from app.models.library.library import ThreatLibrary, ThreatProposal
 from app.services.library.threat_library_service import ThreatLibraryService
-from app.worker.remediation.plan_inputs import _propose_manual_threat
-from tests.plan_job_fakes import fake_plan_inputs
+from app.worker.remediation.remediation_plan_job import _propose_manual_threat
 from tests.service_builders import threat_scenario_service
 from tests.sql_fakes import AnswerLostClient
 
@@ -122,8 +121,7 @@ def test_the_plan_jobs_lost_proposal_is_replayed_once_and_audited_once(
     client: TestClient, sql_test_engine: Engine
 ) -> None:
     lost = AnswerLostClient(StoredProcedureClient(sql_test_engine))
-    inputs, _ = fake_plan_inputs()
-    inputs._threats = _threats(lost)  # noqa: SLF001 — the real repository on the lost-answer client
+    threats, audit = _threats(lost), container.get_audit_repository()  # the real repository, its answer lost
     scenario_id, threat_name = uuid.uuid4().hex, _name("threat")
     content = {
         "category": "Tampering",
@@ -131,10 +129,10 @@ def test_the_plan_jobs_lost_proposal_is_replayed_once_and_audited_once(
     }
     by = {"user_id": "user-1", "client_id": "client-1"}
     with pytest.raises(OutcomeUnknown) as raised:
-        _propose_manual_threat(inputs._threats, inputs._audit, scenario_id, content, (), by)  # noqa: SLF001
+        _propose_manual_threat(threats, audit, scenario_id, content, (), by)
     assert raised.value.details == {"operation_id": f"propose:{scenario_id}"}
-    replayed = _propose_manual_threat(inputs._threats, inputs._audit, scenario_id, content, (), by)  # noqa: SLF001 — the job retried
-    again = _propose_manual_threat(inputs._threats, inputs._audit, scenario_id, content, (), by)  # noqa: SLF001 — and retried once more
+    replayed = _propose_manual_threat(threats, audit, scenario_id, content, (), by)  # the job retried
+    again = _propose_manual_threat(threats, audit, scenario_id, content, (), by)  # and retried once more
     assert replayed == again and replayed["content.threat.library_status"] == LibraryStatus.PENDING
     assert len(lost.calls) == 2  # the lost call and its replay; the last answer came from the record
     assert _rows_named(sql_test_engine, threat_name) == 1

@@ -1,12 +1,10 @@
-"""Request bodies of the remediation API: a plan request (both kinds of scenario) and its register data. Every
-register field is optional and `""` means "not given"; an unknown field is refused (422), never ignored. The
-review and regenerate bodies are reviews.py."""
+"""Request bodies of the remediation API: a plan request with its register data, a review and a regenerate."""
 
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     AfterValidator,
@@ -14,14 +12,14 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    JsonValue,
     StringConstraints,
     WithJsonSchema,
     field_validator,
     model_validator,
 )
 
-from app.core.constants import Limits, Remediation, RemediationMessage, Review, YesNo
-from app.models.remediation.examples import PLAN_REQUEST_EXAMPLES
+from app.core.constants import Decision, Limits, Remediation, RemediationMessage, Review, YesNo
 from app.models.scenario.views import SqlId, StartRunRequest
 
 #: What a library control code looks like ("CII-CID-202"): groups joined by separators, with a digit. It only
@@ -42,13 +40,12 @@ _Score = Annotated[
 ]
 #: A register score: exact (a decimal, never a float), 0 or more, at most 15 digits, 4 after the point.
 # ponytail: a JSON number arrives as a float, so a score written with more than 15 significant digits may be
-# rounded before this check (v1 read the raw digits); a register sending such scores sends them as strings.
+# rounded before this check; a register sending such scores sends them as strings.
 Rating = Annotated[_Score | None, Blank, WithJsonSchema({"type": ["number", "null"], "minimum": 0})]
 
 
 def _calendar_date(value: Any) -> Any:
-    """A date, or the date part of a date-time AS WRITTEN: the register sends "2026-09-18T15:38:19.853", and
-    the caller's 1 October stays 1 October (applying an offset first could date the window a day early)."""
+    """A date, or the date part of a date-time as written (no offset applied, so the day never shifts)."""
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, str):
@@ -72,6 +69,7 @@ _Justification = Annotated[
 _ThreatName = Annotated[Annotated[str, Field(max_length=Remediation.THREAT_NAME_MAX_CHARS)] | None, Blank]
 _TypeName = Annotated[Annotated[str, Field(max_length=Remediation.TYPE_NAME_MAX_CHARS)] | None, Blank]
 _RecordId = Annotated[Annotated[str, Field(max_length=Review.MAX_ID_CHARS)] | None, Blank]
+_Comment = Annotated[Annotated[str, Field(max_length=Remediation.COMMENT_MAX_CHARS)] | None, Blank]
 
 
 class ControlRef(BaseModel):
@@ -87,6 +85,7 @@ class ControlRef(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def accept_a_plain_string(cls, value: Any) -> Any:
+        """A plain string becomes a reference: the name, and the code when it looks like one."""
         if not isinstance(value, str):
             return value
         text = value.strip()
@@ -99,6 +98,7 @@ class ControlRef(BaseModel):
 
     @model_validator(mode="after")
     def check_it_names_a_control(self) -> "ControlRef":
+        """An entry that names no control is refused."""
         if self.control_id is None and not self.control_code and not self.control_name:
             raise ValueError(RemediationMessage.CONTROL_REF_EMPTY)
         return self
@@ -121,81 +121,24 @@ def _drop_blank_entries(entries: Any) -> Any:
 
 
 def _first_of_each(entries: list[ControlRef]) -> list[ControlRef]:
-    """The register's baseline: a control listed twice covers what it covered once, so the repeat is
-    dropped."""
+    """A control listed twice names what it named once, so the repeat is dropped."""
     kept: dict[tuple[str, Any], ControlRef] = {}
     for entry in entries:
         kept.setdefault(entry.key(), entry)
     return list(kept.values())
 
 
-def _each_once(entries: list[ControlRef]) -> list[ControlRef]:
-    """A hand-written scenario's controls become its controls: a repeat is refused, never silently merged."""
-    seen: set[tuple[str, Any]] = set()
-    for entry in entries:
-        if entry.key() in seen:
-            raise ValueError(RemediationMessage.CONTROL_NAMED_TWICE.format(key=entry.key()[0]))
-        seen.add(entry.key())
-    return entries
-
-
-_ControlRefs = Annotated[list[ControlRef], BeforeValidator(_drop_blank_entries)]
 RegisterControls = Annotated[
-    _ControlRefs, AfterValidator(_first_of_each), Field(max_length=Remediation.MAX_CONTROL_REFS)
+    list[ControlRef],
+    BeforeValidator(_drop_blank_entries),
+    AfterValidator(_first_of_each),
+    Field(max_length=Remediation.MAX_CONTROL_REFS),
 ]
-ScenarioControls = Annotated[
-    _ControlRefs, AfterValidator(_each_once), Field(max_length=Remediation.MAX_CONTROL_REFS)
-]
-
-
-class RegisterData(BaseModel):
-    """The register's risk data the platform sends with a plan request (v1 TreatmentPlanBody): echoed into the
-    plan, never invented by the AI; the risk owner's name never reaches the AI."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    existing_controls: Annotated[RegisterControls | None, Blank] = None
-    likelihood_rating: Rating = None
-    impact_rating: Rating = None
-    final_risk_rating: Rating = None  # taken as-is, never re-derived
-    risk_level: _Name = None  # Critical, High, Medium, Low, or the register's own
-    risk_identification_date: Annotated[datetime | None, Blank] = None
-    risk_owner: _Name = None
-    impacted_business_division: _Name = None
-    existing_controls_all_subsystems: Annotated[YesNo | None, Blank] = None
-    existing_controls_all_subsystems_justification: _Justification = None
-    mitigation_start_date: CalendarDate = None
-    mitigation_end_date: CalendarDate = None
-
-    @field_validator("risk_identification_date")
-    @classmethod
-    def in_utc(cls, value: datetime | None) -> datetime | None:
-        """An offset is applied (an instant, unlike the window's calendar dates); a naive time is taken as
-        UTC."""
-        if value is None:
-            return None
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-    @model_validator(mode="after")
-    def check_the_window(self) -> "RegisterData":
-        start, end = self.mitigation_start_date, self.mitigation_end_date
-        if (start is None) != (end is None):
-            raise ValueError(RemediationMessage.WINDOW_PAIR)
-        if start is not None and end is not None and end < start:
-            raise ValueError(RemediationMessage.WINDOW_ORDER)
-        return self
-
-    def register(self) -> dict[str, Any]:
-        """The register half as stored (BLUEPRINT §12.2): ratings as exact decimal strings, dates as ISO
-        text."""
-        stored = self.model_dump(mode="json", include=set(RegisterData.model_fields))
-        for rating in ("likelihood_rating", "impact_rating", "final_risk_rating"):
-            value = getattr(self, rating)
-            stored[rating] = None if value is None else str(value)
-        return stored
+ScenarioControls = RegisterControls
 
 
 def _has_letters(name: str | None) -> str | None:
+    """A name made of punctuation or spaces alone is refused."""
     if name is not None and not _PUNCTUATION_OR_SPACE.sub("", name):
         raise ValueError(RemediationMessage.NAME_WITHOUT_LETTERS)
     return name
@@ -244,6 +187,7 @@ class ManualScenario(StartRunRequest):
 
     @model_validator(mode="after")
     def check_the_threat_is_named(self) -> "ManualScenario":
+        """The type and the threat are each named by id or name."""
         if self.threat_type_id is None and not self.threat_type_name:
             raise ValueError(RemediationMessage.THREAT_TYPE_REQUIRED)
         if self.threat_id is None and not self.threat_name:
@@ -252,25 +196,86 @@ class ManualScenario(StartRunRequest):
 
     @property
     def threat_category(self) -> LibraryRef | None:
+        """The category as named, or None when it is not named."""
         if self.threat_category_id is None and not self.threat_category_name:
             return None
         return LibraryRef(self.threat_category_id, self.threat_category_name)
 
     @property
     def threat_type(self) -> LibraryRef:
+        """The threat type as named."""
         return LibraryRef(self.threat_type_id, self.threat_type_name)
 
     @property
     def threat(self) -> LibraryRef:
+        """The threat as named."""
         return LibraryRef(self.threat_id, self.threat_name)
 
 
-class PlanRequest(RegisterData):
+#: The register's data, as the platform sends it with either kind.
+_REGISTER_EXAMPLE: dict[str, Any] = {
+    "existing_controls": [{"control_code": "CII-CID-202"}, "User Awareness"],
+    "likelihood_rating": 4,
+    "impact_rating": 5,
+    "final_risk_rating": 20,
+    "risk_level": "Critical",
+    "risk_identification_date": "2026-09-15T09:30:00Z",
+    "risk_owner": "Head of OT Operations",
+    "impacted_business_division": "Power Generation Operations",
+    "existing_controls_all_subsystems": "No",
+    "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
+    "mitigation_start_date": "2026-10-01",
+    "mitigation_end_date": "2026-12-31",
+}
+
+#: The two published bodies of `POST /v1/remediation` (Swagger's example picker), one per kind of scenario.
+PLAN_REQUEST_EXAMPLES: list[JsonValue] = [
+    # A generated scenario: the run's id and the accepted scenario's id (from GET /v1/sessions/{id}/results).
+    {
+        "is_manual": False,
+        "session_id": "<session_id>",
+        "scenario_id": "<accepted scenario_id>",
+        **_REGISTER_EXAMPLE,
+    },
+    # A hand-written scenario (send an Idempotency-Key header with it): TSG saves it, accepts it and plans it.
+    {
+        "is_manual": True,
+        "manual_scenario": {
+            "asset_id": 1166,
+            "entity_id": 1,
+            "supporting_system_id": [2301, 2302],
+            "threat_category_name": "Tampering",
+            "threat_type_name": "Malware/Ransomware",
+            "threat_name": "Ransomware encrypts the historian server",
+            "threat_scenario": "An attacker phishes an engineer, moves to the historian and encrypts it.",
+            "risk_statement": "Operators lose process history and plant reporting stops for days.",
+            "mapped_controls": [{"control_code": "CII-CID-213"}],
+        },
+        **_REGISTER_EXAMPLE,
+    },
+]
+#: The request fields that name the scenario; every other PlanRequest field is the register's.
+_SCENARIO_FIELDS = {"is_manual", "session_id", "scenario_id", "manual_scenario"}
+
+
+class PlanRequest(BaseModel):
     """Body of `POST /v1/remediation`: v1's ONE request for both kinds of scenario (owner, 2026-10-15), each
     kind sending its own half (mixing them is a 422), and the register's data."""
 
-    model_config = ConfigDict(json_schema_extra={"examples": PLAN_REQUEST_EXAMPLES})
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": PLAN_REQUEST_EXAMPLES})
 
+    existing_controls: Annotated[RegisterControls | None, Blank] = None
+    likelihood_rating: Rating = None
+    impact_rating: Rating = None
+    final_risk_rating: Rating = None  # taken as-is, never re-derived
+    risk_level: _Name = None  # Critical, High, Medium, Low, or the register's own
+    risk_identification_date: Annotated[datetime | None, Blank] = None
+    risk_owner: _Name = None
+    impacted_business_division: _Name = None
+    existing_controls_all_subsystems: Annotated[YesNo | None, Blank] = None
+    existing_controls_all_subsystems_justification: _Justification = None
+    mitigation_start_date: CalendarDate = None
+    mitigation_end_date: CalendarDate = None
     is_manual: bool = Field(
         description="false: the scenario already exists in TSG (send session_id + scenario_id). true: a "
         "person wrote it (send manual_scenario and an Idempotency-Key header); TSG saves it and plans it."
@@ -281,9 +286,28 @@ class PlanRequest(RegisterData):
         None, description="is_manual=true only: the scenario a person wrote."
     )
 
+    @field_validator("risk_identification_date")
+    @classmethod
+    def in_utc(cls, value: datetime | None) -> datetime | None:
+        """An offset is applied (an instant, unlike the window's calendar dates); a naive time is taken as
+        UTC."""
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def check_the_window(self) -> "PlanRequest":
+        """The mitigation window's two dates come together, in order."""
+        start, end = self.mitigation_start_date, self.mitigation_end_date
+        if (start is None) != (end is None):
+            raise ValueError(RemediationMessage.WINDOW_PAIR)
+        if start is not None and end is not None and end < start:
+            raise ValueError(RemediationMessage.WINDOW_ORDER)
+        return self
+
     @model_validator(mode="after")
     def check_one_kind(self) -> "PlanRequest":
-        """v1's `_one_kind`: each kind sends its own half and never the other's."""
+        """Each kind sends its own half and never the other's."""
         if self.is_manual:
             if self.manual_scenario is None:
                 raise ValueError(RemediationMessage.MANUAL_NEEDS_SCENARIO)
@@ -295,3 +319,35 @@ class PlanRequest(RegisterData):
             if self.manual_scenario is not None:
                 raise ValueError(RemediationMessage.GENERATED_SENDS_NO_SCENARIO)
         return self
+
+    def register(self) -> dict[str, Any]:
+        """The register half as stored: ratings as exact decimal strings, dates as ISO text."""
+        stored = self.model_dump(mode="json", exclude=_SCENARIO_FIELDS)
+        for rating in ("likelihood_rating", "impact_rating", "final_risk_rating"):
+            value = getattr(self, rating)
+            stored[rating] = None if value is None else str(value)
+        return stored
+
+
+class ReviewRequest(BaseModel):
+    """v1's one review call (owner, 2026-10-15): accept or reject a version."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"decision": "accepted"}, {"decision": "rejected", "version": 2}]},
+    )
+
+    version: Annotated[int, Field(gt=0)] | None = Field(
+        None, description="The version to decide; leave it out for the newest finished one."
+    )
+    comment: _Comment = Field(None, description="Why (stored with the decision; up to 2,000 characters).")
+    decision: Literal[Decision.ACCEPTED, Decision.REJECTED] = Field(
+        description="accepted or rejected. Accepting a version makes it THE plan: an earlier accepted "
+        "version goes back to pending."
+    )
+
+
+class RegenerateRequest(BaseModel):
+    """Nothing: the latest version's register data is reused; any field → 422."""
+
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{}]})

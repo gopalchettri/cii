@@ -1,14 +1,15 @@
-"""What may be done to a remediation plan (BLUEPRINT M11): which scenario gets a plan, who may read or change
-one, when a new version may be made (at most the configured number in total), and the records a
-request writes. Pure: the services read and write; these decide, or raise the answer."""
+"""What may be done to a remediation plan and the records a request or a decision writes; pure, no IO."""
 
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
 from app.core.constants import (
     ConflictReason,
     Decision,
+    ErrorCode,
+    ErrorMessage,
     RemediationMessage,
     ScenarioStatus,
     SessionMessage,
@@ -16,15 +17,12 @@ from app.core.constants import (
 )
 from app.core.exceptions import Conflict, Forbidden, NotFound
 from app.models.admin.api_clients import Principal
-from app.models.remediation.plan import RemediationStatus
-from app.models.remediation.requests import RegisterData
-
-#: The latest version's statuses a new version may follow; one queued or running is resumed on purpose (G214).
-_REGENERABLE = (Status.DONE, Status.FAILED, Status.CANCELLED)
+from app.models.library.library import LibraryControl
+from app.models.remediation.plan import RemediationStatus, version_status
 
 
 def still_accepted(scenario: dict[str, Any] | None) -> bool:
-    """Only an accepted, written scenario is planned; once un-accepted its plan is read-only (G-J)."""
+    """Whether the scenario is written and accepted: only then is it planned or its plan changed."""
     return (
         scenario is not None
         and scenario["status"] == ScenarioStatus.DONE
@@ -35,8 +33,8 @@ def still_accepted(scenario: dict[str, Any] | None) -> bool:
 def check_plannable_scenario(
     scenario: dict[str, Any] | None, session_id: str, scenario_id: str, entity_id: int
 ) -> dict[str, Any]:
-    """The scenario a plan is requested for: 404 unknown or in another run (v1: "scenario not found in this
-    session"), 403 another entity's, 409 not accepted."""
+    """The scenario a plan is requested for: 404 unknown or in another run, 403 another entity's, 409 not
+    accepted."""
     if scenario is None:
         raise NotFound(RemediationMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id))
     if scenario["session_id"] != session_id:
@@ -51,27 +49,24 @@ def check_plannable_scenario(
     return scenario
 
 
-def check_plan_owner(read: dict[str, Any] | None, entity_id: int, remediation_id: str) -> dict[str, Any]:
-    """The plan a regenerate or a decision changes: 404 unknown, 403 another entity's."""
+def check_plan_changeable(
+    scenario: dict[str, Any] | None, read: dict[str, Any] | None, entity_id: int, remediation_id: str
+) -> dict[str, Any]:
+    """The plan a regenerate or a decision changes: 404 unknown, 403 another entity's, 409 read-only."""
     if read is None:
         raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))
     if read["entity_id"] != entity_id:
         raise Forbidden(RemediationMessage.PLAN_OTHER_ENTITY.format(remediation_id=remediation_id))
-    return read
-
-
-def check_plan_changeable(scenario: dict[str, Any] | None, read: dict[str, Any]) -> None:
-    """A plan whose scenario is no longer accepted stays readable but takes no change (G-J)."""
     if not still_accepted(scenario):
         message = RemediationMessage.PLAN_READ_ONLY.format(scenario_id=read["scenario_id"])
         raise Conflict(message, reason=ConflictReason.SCENARIO_NOT_ACCEPTED)
+    return read
 
 
 def check_regenerable(read: dict[str, Any], remediation_id: str, max_version_count: int) -> int:
-    """The new version's number: 409 while the latest is still being written, or when the plan already has
-    `max_version_count` versions (REGENERATIONS_MAX_VERSION_COUNT)."""
+    """The new version's number: 409 while the latest is being written or the version limit is reached."""
     latest = read["job"]["epoch"]
-    if read["status"] not in _REGENERABLE:
+    if read["status"] not in (Status.DONE, Status.FAILED, Status.CANCELLED):
         raise version_in_progress(remediation_id, latest)
     if latest >= max_version_count:
         message = RemediationMessage.VERSION_LIMIT_REACHED.format(
@@ -96,7 +91,7 @@ def plan_exists(scenario_id: str, remediation_id: str | None) -> Conflict:
 
 
 def check_own_entity(entity_id: int, caller_entity_id: int) -> None:
-    """An entity's plans are listed for that entity's callers only (403)."""
+    """403 unless the entity is the caller's own."""
     if entity_id != caller_entity_id:
         raise Forbidden(SessionMessage.ENTITY_MISMATCH)
 
@@ -113,17 +108,20 @@ def check_plan_of_scenario(
     return status
 
 
-def new_plan_record(  # noqa: PLR0913 — one record, whole
+def check_control_library(library: Sequence[LibraryControl]) -> None:
+    """409 while the control library is empty: no control could ever be kept."""
+    if not library:
+        raise Conflict(ErrorMessage.CONTROL_LIBRARY_EMPTY, reason=ErrorCode.CONTROL_LIBRARY_EMPTY)
+
+
+def new_plan_record(
     principal: Principal,
-    register: RegisterData,
+    register: dict[str, Any],
     scenario: dict[str, Any],
-    snapshot: dict[str, Any],
     job: dict[str, Any],
     now: datetime,
 ) -> dict[str, Any]:
-    """A queued plan with version 1 and its whole job (BLUEPRINT §12.2): the claim takes a queued job only
-    when job.due_at has come, and `decision_seq` starts at 0 (a decision filters on it: a missing one never
-    matches)."""
+    """A queued plan with version 1, its whole job and decision_seq 0."""
     content = scenario.get("content") or {}
     return {
         "_id": uuid.uuid4().hex,
@@ -133,12 +131,12 @@ def new_plan_record(  # noqa: PLR0913 — one record, whole
         "asset_id": scenario["asset_id"],
         "source": scenario["source"],
         "title": content.get("title") or (content.get("threat") or {}).get("name"),
-        "register": register.register(),
-        "versions": [new_version(1, principal, snapshot, now)],
+        "register": register,
+        "versions": [new_version(1, principal, now)],
         "accepted_version": None,
         "decision": Decision.PENDING,
         "decision_seq": 0,
-        "risk_level": register.risk_level,
+        "risk_level": register["risk_level"],
         "status": Status.QUEUED,
         "active": True,
         "job": job,
@@ -147,12 +145,12 @@ def new_plan_record(  # noqa: PLR0913 — one record, whole
     }
 
 
-def new_version(number: int, principal: Principal, snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
-    """One version as requested: its snapshot, no plan yet, undecided; who asked, from which system."""
+def new_version(number: int, principal: Principal, now: datetime) -> dict[str, Any]:
+    """One version as requested: no snapshot or plan yet, undecided, with who asked from which client."""
     return {
         "version": number,
         "status": Status.QUEUED,
-        "snapshot": snapshot,
+        "snapshot": None,
         "plan": None,
         "warnings": [],
         "prompt_version": None,
@@ -166,4 +164,76 @@ def new_version(number: int, principal: Principal, snapshot: dict[str, Any], now
         "requested_by_client": principal.client_id,
         "requested_at": now,
         "completed_at": None,
+    }
+
+
+def newest_done_version(read: dict[str, Any]) -> int | None:
+    """The highest version number whose status is done, or None."""
+    return max(
+        (item["version"] for item in read["versions"] if version_status(read, item) == Status.DONE),
+        default=None,
+    )
+
+
+def decidable_version(read: dict[str, Any], asked: int | None, remediation_id: str) -> int:
+    """The version to decide (asked, else the newest done): 409 none done, 404 unknown, 409 not done."""
+    version = asked if asked is not None else newest_done_version(read)
+    if version is None:
+        message = RemediationMessage.NO_DONE_VERSION.format(remediation_id=remediation_id)
+        raise Conflict(message, reason=ConflictReason.NOT_COMPLETE)
+    item = next((item for item in read["versions"] if item["version"] == version), None)
+    if item is None:
+        message = RemediationMessage.VERSION_NOT_FOUND.format(remediation_id=remediation_id, version=version)
+        raise NotFound(message, reason=ConflictReason.VERSION_NOT_FOUND)
+    if (status := version_status(read, item)) != Status.DONE:
+        message = RemediationMessage.NOT_COMPLETE.format(
+            version=version, remediation_id=remediation_id, status=status
+        )
+        raise Conflict(message, reason=ConflictReason.NOT_COMPLETE)
+    return version
+
+
+def _record_decision(
+    accepted_version: int | None, decisions: Mapping[int, str], done: set[int], latest: int
+) -> Decision:
+    """The record's decision: accepted while a version is, pending while the latest or a done one waits, else
+    rejected."""
+    if accepted_version is not None:
+        return Decision.ACCEPTED
+    waiting = {latest} | done
+    return Decision.PENDING if any(decisions[v] == Decision.PENDING for v in waiting) else Decision.REJECTED
+
+
+def decision_change(
+    read: dict[str, Any],
+    version: int,
+    decision: Decision,
+    decided_by: dict[str, str],
+    comment: str | None,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """The one change a decision makes as plain values, or None for a repeat; at most one version accepted."""
+    decisions = {item["version"]: item["decision"] for item in read["versions"]}
+    accepted = read.get("accepted_version")
+    repeat = accepted == version if decision == Decision.ACCEPTED else decisions[version] == Decision.REJECTED
+    if repeat:
+        return None
+    stamp = {**decided_by, "decided_at": now, "review_comment": comment}
+    decisions[version] = decision
+    back_to_pending = None
+    if decision == Decision.ACCEPTED:
+        if accepted is not None:
+            back_to_pending = accepted
+            decisions[accepted] = Decision.PENDING
+        accepted = version
+    elif accepted == version:
+        accepted = None
+    done = {item["version"] for item in read["versions"] if version_status(read, item) == Status.DONE}
+    return {
+        "version": version,
+        "decision": decision,
+        "stamp": stamp,
+        "back_to_pending": back_to_pending,
+        "accepted_version": accepted,
+        "record_decision": _record_decision(accepted, decisions, done, read["job"]["epoch"]),
     }

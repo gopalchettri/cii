@@ -1,6 +1,7 @@
 """tsg_scenarios: the guarded save, the counts aggregate, the duplicate check's read, the guarded decision and
 each written scenario's controls lease. It never touches tsg_sessions."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -254,10 +255,13 @@ class ThreatScenarioRepository(MongoRepository):
         ]
         return int(self.bulk_write_skipping_duplicates(updates, ordered=False).get("nModified", 0))
 
-    def update_manual_scenario_findings(self, scenario_id: str, findings: dict[str, Any]) -> None:
-        """A hand-written tsg_scenarios record's plan-job findings (attackers, library ids) saved and its
-        `pending` mark removed, in one write."""
-        self.collection.update_one({"_id": scenario_id}, {"$set": findings, "$unset": {"pending": ""}})
+    def update_manual_scenario_findings(
+        self, scenario_id: str, findings: dict[str, Any], fields: Iterable[str]
+    ) -> Record | None:
+        """Saves a hand-written tsg_scenarios record's plan-job findings (attackers, library ids) and removes
+        its `pending` mark in one write; the record as changed (only `fields`), or None once it is gone."""
+        changes = {"$set": findings, "$unset": {"pending": ""}}
+        return self.update_and_get(changes, fields=fields, _id=scenario_id)
 
     def claim_scenario_controls(self, session_id: str, task_id: str) -> Record | None:
         """tsg_scenarios: the session's oldest scenario whose controls wait, now running for `task_id`."""
