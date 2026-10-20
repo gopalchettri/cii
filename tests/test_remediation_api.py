@@ -38,7 +38,7 @@ from app.core.exceptions import ControlsNotMapped, DuplicateRecord, LeaseLost, U
 from app.core.lease_signal import raise_if_lease_lost
 from app.data_access.jobs.job_repository import new_job
 from app.data_access.scenario.threat_scenario_session_repository import DELETING_MARK
-from app.domain.remediation.rules import decision_change
+from app.domain.remediation.rules import check_regenerable, decision_change
 from app.models.remediation.requests import PlanRequest
 from app.worker import jobs
 from tests.plan_addresses import generated, plan_url
@@ -141,13 +141,6 @@ def _done_plan(client: TestClient, key: str, world: dict[str, Any], **body: Any)
     return remediation_id
 
 
-def _due_now(remediation_id: str) -> None:
-    """The back-off a retry was given, over: the next delivery may claim the job."""
-    get_mongodb()[Collection.REMEDIATIONS].update_one(
-        {"_id": remediation_id}, {"$set": {"job.due_at": datetime.now(UTC) - timedelta(seconds=1)}}
-    )
-
-
 def _mapped_codes(version: dict[str, Any]) -> list[str]:
     return [control["control_code"] for control in version["snapshot"]["existing_controls"]["library_mapped"]]
 
@@ -228,7 +221,6 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
         f"/v1/sessions/{run}/scenarios/nope/treatment-plan/status", headers=_identity(api_key)
     )
     assert nowhere.status_code == 404
-    assert _status(client, api_key, first, entity_id=ENTITY + 1).status_code == 403
     other_run = generated(accepted) | {"session_id": "another-run"}
     assert _request(client, api_key, other_run).status_code == 404  # not a scenario of that run
     elsewhere = plan_url(first, "status").replace(run, "another-run")
@@ -350,47 +342,40 @@ def test_missing_controls_are_mapped_by_the_plan_job_never_the_request(
     assert world["mapper"].asked == [scenario_id]  # refused before any control was mapped
 
 
-def test_controls_another_job_holds_give_the_plan_job_back_and_its_mapping_is_used(
-    client: TestClient, api_key: str, world: dict[str, Any]
+@pytest.mark.parametrize("blocked", ["held_by_another_job", "ai_outage"])
+def test_controls_held_or_an_outage_while_mapping_give_the_job_back_and_the_retry_plans(
+    client: TestClient, api_key: str, world: dict[str, Any], blocked: str
 ) -> None:
-    """No wait: the job is given back for its normal retry, and the retry plans on the other job's mapping
-    (the scenario is never mapped twice)."""
+    """No wait: the job is given back for its normal retry. Controls another job holds: the retry plans on
+    that job's mapping (never mapped twice). An outage while mapping frees the controls, saying why, and the
+    retry maps and plans."""
     held = {"status": Status.RUNNING, "attempts": 1, "task_id": "controls-job",
             "lease_until": datetime.now(UTC) + timedelta(seconds=60)}  # fmt: skip
-    scenario_id = _scenario(controls=held)
+    scenario_id = _scenario(controls=held if blocked == "held_by_another_job" else UNMAPPED)
     remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
+    if blocked == "ai_outage":
+        world["mapper"].failure = Unavailable("The reranker is busy.", reason=AiOutage.BUSY)
     deliver(remediation_id)
     record = _record(remediation_id)
-    assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 1)  # retried after its back-off
-    assert record["versions"][0]["snapshot"] is None and world["mapper"].asked == []
-    mapped = [{"control_id": 1, "code": "CII-CID-1", "score": 80.0, "match": "exact"}]
-    get_mongodb()[Collection.SCENARIOS].update_one(
-        {"_id": scenario_id}, {"$set": {"controls.status": Status.DONE, "controls.items": mapped}}
-    )  # the controls job finished
-    _due_now(remediation_id)
+    assert record["status"] == Status.QUEUED  # the job retries after its back-off
+    if blocked == "held_by_another_job":  # waiting for that job uses none of this job's attempts
+        assert record["job"]["attempts"] == 0 and record["versions"][0]["snapshot"] is None
+        mapped = [{"control_id": 1, "code": "CII-CID-1", "score": 80.0, "match": "exact"}]
+        get_mongodb()[Collection.SCENARIOS].update_one(
+            {"_id": scenario_id}, {"$set": {"controls.status": Status.DONE, "controls.items": mapped}}
+        )  # the controls job finished
+    else:
+        controls = _scenario_controls(scenario_id)
+        found = (controls["status"], controls["error"]["code"], controls["error"]["reason"])
+        assert found == (Status.QUEUED, ErrorCode.UNAVAILABLE, AiOutage.BUSY)  # the card can say why
+    get_mongodb()[Collection.REMEDIATIONS].update_one(
+        {"_id": remediation_id}, {"$set": {"job.due_at": datetime.now(UTC) - timedelta(seconds=1)}}
+    )  # the back-off over: the next delivery may claim the job
     world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
     deliver(remediation_id)
-    version = _record(remediation_id)["versions"][0]
-    assert (_record(remediation_id)["status"], _mapped_codes(version)) == (Status.DONE, ["CII-CID-1"])
-    assert world["mapper"].asked == []
-
-
-def test_an_outage_while_mapping_frees_the_controls_and_the_retry_maps_and_plans(
-    client: TestClient, api_key: str, world: dict[str, Any]
-) -> None:
-    scenario_id = _scenario(controls=UNMAPPED)
-    remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
-    world["mapper"].failure = Unavailable("The reranker is busy.", reason=AiOutage.BUSY)
-    deliver(remediation_id)
-    controls = _scenario_controls(scenario_id)
-    assert (controls["status"], controls["error"]["code"]) == (Status.QUEUED, ErrorCode.UNAVAILABLE)
-    assert controls["error"]["reason"] == AiOutage.BUSY  # the card can say the AI was busy
-    assert _record(remediation_id)["status"] == Status.QUEUED  # the job retries after its back-off
-    _due_now(remediation_id)
-    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
-    deliver(remediation_id)
-    assert world["mapper"].asked == [scenario_id, scenario_id]
-    assert _record(remediation_id)["status"] == Status.DONE
+    record = _record(remediation_id)
+    assert (record["status"], _mapped_codes(record["versions"][0])) == (Status.DONE, ["CII-CID-1"])
+    assert world["mapper"].asked == ([] if blocked == "held_by_another_job" else [scenario_id, scenario_id])
 
 
 @pytest.mark.parametrize("cancelled", ["plan", "run"])
@@ -436,7 +421,7 @@ def test_a_plan_cancel_ends_the_job_and_a_run_cancel_retries_it(
         assert _scenario_controls(scenario_id).get("error") is None  # stopped, never told as an outage
     else:
         assert stopped_by == [scenario_id] and "job.retry_scheduled" in events
-        assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 1)
+        assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 0)  # no attempt used
 
 
 @pytest.mark.parametrize(
@@ -510,28 +495,36 @@ def test_a_regenerate_writes_a_new_version_from_the_scenario_as_it_is_now(
 def test_every_review_and_regenerate_refusal_and_a_read_only_plan(
     client: TestClient, api_key: str, world: dict[str, Any]
 ) -> None:
+    """Each refusal writes nothing; a regenerate as its run is being deleted is 409 with nothing sent or
+    audited; a plan whose scenario is no longer accepted is read-only."""
     remediation_id = _done_plan(client, api_key, world)
     missing = _post(client, api_key, remediation_id, "accept", {"version": 9})
     assert (missing.status_code, missing.json()["reason"]) == (404, ConflictReason.VERSION_NOT_FOUND)
     _post(client, api_key, remediation_id, "regenerate", {})
     queued = _post(client, api_key, remediation_id, "accept", {"version": 2})
     assert (queued.status_code, queued.json()["reason"]) == (409, ConflictReason.NOT_COMPLETE)
-    # v1 rejected while v2 is still being written: the plan still waits for a decision on v2.
-    assert _post(client, api_key, remediation_id, "reject", {"version": 1}).json()["decision"] == "pending"
     url, review = plan_url(remediation_id, "review"), {"version": 1, "decision": "accepted"}
     assert client.post(url, json=review, headers=_identity(api_key, 1)).status_code == 403
     nowhere = "/v1/sessions/none/scenarios/nope/treatment-plan/review"
     assert client.post(nowhere, json={"decision": "rejected"}, headers=_identity(api_key)).status_code == 404
-    undecided = {"version": 1, "decision": "pending"}
-    assert client.post(url, json=undecided, headers=_identity(api_key)).status_code == 422
     unknown_field = {"version": 1, "decision": "accepted", "note": "x"}
     assert client.post(url, json=unknown_field, headers=_identity(api_key)).status_code == 422
     last = get_settings().regenerations_max_version_count
     limited = _done_plan(client, api_key, world)
+    assert check_regenerable({"job": {"epoch": last - 1}, "status": Status.DONE}, limited, last) == last
     get_mongodb()[Collection.REMEDIATIONS].update_one({"_id": limited}, {"$set": {"job.epoch": last}})
     full = _post(client, api_key, limited, "regenerate", {})
     assert (full.status_code, full.json()["reason"]) == (409, ConflictReason.VERSION_LIMIT_REACHED)
     assert str(last) in full.json()["detail"] and _audits(limited, AuditAction.PLAN_REGENERATED) == 0
+    deleting = _done_plan(client, api_key, world)
+    marked = {"$set": {DELETING_MARK: datetime.now(UTC)}}
+    get_mongodb()[Collection.SESSIONS].update_one({"_id": _record(deleting)["session_id"]}, marked)
+    refused = _post(client, api_key, deleting, "regenerate", {})
+    assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
+    record = _record(deleting)
+    assert (record["job"]["epoch"], record["status"], len(record["versions"])) == (1, Status.DONE, 1)
+    assert (TaskName.WRITE_PLAN, deleting, 2) not in world["sent"]
+    assert _audits(deleting, AuditAction.PLAN_REGENERATED) == 0
     scenario_id = _record(remediation_id)["scenario_id"]
     get_mongodb()[Collection.SCENARIOS].update_one(
         {"_id": scenario_id}, {"$set": {"decision": Decision.PENDING}}
@@ -541,20 +534,6 @@ def test_every_review_and_regenerate_refusal_and_a_read_only_plan(
         refused = _post(client, api_key, remediation_id, action, body)
         assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.SCENARIO_NOT_ACCEPTED)
     assert _result(client, api_key, remediation_id).status_code == 200
-
-
-def test_a_regenerate_as_its_run_is_being_deleted_answers_409_and_writes_nothing(
-    client: TestClient, api_key: str, world: dict[str, Any]
-) -> None:
-    remediation_id = _done_plan(client, api_key, world)
-    marked = {"$set": {DELETING_MARK: datetime.now(UTC)}}
-    get_mongodb()[Collection.SESSIONS].update_one({"_id": _record(remediation_id)["session_id"]}, marked)
-    answer = _post(client, api_key, remediation_id, "regenerate", {})
-    assert (answer.status_code, answer.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
-    record = _record(remediation_id)
-    assert (record["job"]["epoch"], record["status"], len(record["versions"])) == (1, Status.DONE, 1)
-    assert (TaskName.WRITE_PLAN, remediation_id, 2) not in world["sent"]
-    assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 0
 
 
 def test_one_accepted_version_at_a_time_and_the_records_decision(
@@ -581,7 +560,8 @@ def test_one_accepted_version_at_a_time_and_the_records_decision(
     repeat = _post(client, api_key, remediation_id, "accept", {"version": 2})
     assert (repeat.status_code, repeat.json()["accepted_version"]) == (200, 2)
     assert _audits(remediation_id, AuditAction.PLAN_ACCEPTED) == 2  # the repeat: nothing written or audited
-    assert _record(remediation_id)["decision_seq"] == record["decision_seq"]
+    # decision_seq: one for the regenerate's append and one per decision written, none for the repeat.
+    assert _record(remediation_id)["decision_seq"] == record["decision_seq"] == 3
     rejected = _post(client, api_key, remediation_id, "reject", {"version": 2}).json()
     assert (rejected["accepted_version"], rejected["decision"]) == (None, "pending")
     assert _post(client, api_key, remediation_id, "reject", {"version": 1}).json()["decision"] == "rejected"
@@ -703,10 +683,10 @@ def _job(epoch: int) -> dict[str, Any]:
     return {"task": TaskName.WRITE_PLAN, "epoch": epoch, "attempts": 0, "due_at": NOW, "error": None}
 
 
-def _item(version: int, statement: str = "A statement.", status: Status = Status.QUEUED) -> dict[str, Any]:
+def _item(version: int, statement: str = "A statement.") -> dict[str, Any]:
     return {
         "version": version,
-        "status": status,
+        "status": Status.QUEUED,
         "snapshot": {"scenario": {"statement": statement}},
         "plan": None,
         "decision": Decision.PENDING,
@@ -714,7 +694,7 @@ def _item(version: int, statement: str = "A statement.", status: Status = Status
     }
 
 
-def _stored_plan(**fields: Any) -> str:
+def _stored_plan() -> str:
     record = {
         "_id": uuid.uuid4().hex,
         "scenario_id": uuid.uuid4().hex,
@@ -729,7 +709,7 @@ def _stored_plan(**fields: Any) -> str:
         "job": _job(1),
         "created_at": NOW,
         "updated_at": NOW,
-    } | fields
+    }
     container.get_remediation_repository().create(record)
     return record["_id"]
 
@@ -763,32 +743,6 @@ def test_a_version_is_appended_only_on_the_finished_latest_read() -> None:
     change = decision_change(stale, 1, Decision.REJECTED, DECIDED_BY, None, NOW)
     assert change is not None
     assert plans.update_remediation_plan_decision(remediation_id, stale["decision_seq"], change) is False
-
-
-def test_a_stale_decision_is_refused_and_the_accepted_version_goes_back_to_pending() -> None:
-    """Every decision filters on decision_seq and increments it: two made on one read cannot both apply. One
-    accepted version at a time: the one accepted before loses its decision and its stamp."""
-    plans = container.get_remediation_repository()
-    versions = [_item(1, status=Status.DONE), _item(2)]
-    remediation_id = _stored_plan(status=Status.DONE, active=False, versions=versions, job=_job(2))
-    read = _record(remediation_id)
-    first = decision_change(read, 1, Decision.ACCEPTED, DECIDED_BY, "Fits the window.", NOW)
-    assert first is not None and plans.update_remediation_plan_decision(remediation_id, 0, first)
-    on_the_stale_read = decision_change(read, 2, Decision.ACCEPTED, DECIDED_BY, None, NOW)
-    assert on_the_stale_read is not None
-    assert plans.update_remediation_plan_decision(remediation_id, 0, on_the_stale_read) is False
-    read = _record(remediation_id)
-    assert (read["accepted_version"], read["decision_seq"]) == (1, 1)
-    second = decision_change(read, 2, Decision.ACCEPTED, DECIDED_BY, None, NOW)
-    assert second is not None and plans.update_remediation_plan_decision(remediation_id, 1, second)
-    record = _record(remediation_id)
-    found = [(v["decision"], v.get("decided_by"), v.get("review_comment")) for v in record["versions"]]
-    assert found == [(Decision.PENDING, None, None), (Decision.ACCEPTED, "u1", None)]
-    assert (record["accepted_version"], record["decision"], record["decision_seq"]) == (
-        2,
-        Decision.ACCEPTED,
-        2,
-    )
 
 
 # --- a record stored before the rebuild

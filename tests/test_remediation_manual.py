@@ -165,6 +165,14 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     assert manual["search"].queries == [f"Malware: Firmware tampering. {words}"]  # the address redacted
     version = _plan(planned["remediation_id"])["versions"][0]
     assert version["status"] == "done" and version["snapshot"]["threat"]["actors"][0]["role"] == "acting"
+    given = (
+        version["snapshot"]["existing_controls"]["library_mapped"][0],
+        version["plan"]["control_assessment"][0],
+    )
+    assert [row["match"] for row in given] == ["given", "given"]  # as the scenario shows it
+    assert (
+        '"match":"exact"' in manual["chat"].asked(AiTask.REMEDIATION_PLAN)[-1]
+    )  # the AI knows exact, nearest
     assert manual["mapper"].asked == [] and manual["proposals"] == []  # its controls given, its threat live
     listed = client.get("/v1/entities/86/scenarios", headers=IDENTITY | {Header.API_KEY: api_key})
     assert planned["scenario_id"] in [row["scenario_id"] for row in listed.json()["scenarios"]]
@@ -252,9 +260,9 @@ def test_an_unknown_mapped_control_is_refused_and_none_given_are_mapped_by_the_p
     client: TestClient, api_key: str, manual: dict[str, Any]
 ) -> None:
     key = uuid.uuid4().hex
-    unknown = _post(client, api_key, _with(mapped_controls=["CII-CID-1", "CII-CID-77"]), key)
-    assert unknown.status_code == 422
-    assert unknown.json()["errors"][0]["field"] == "body.manual_scenario.mapped_controls[1]"
+    unknown = _post(client, api_key, _with(mapped_controls=["CII-CID-1", "cii-cid-1", "CII-CID-77"]), key)
+    assert unknown.status_code == 422  # a repeat is no fault, and the 422 names the entry's own place
+    assert unknown.json()["errors"][0]["field"] == "body.manual_scenario.mapped_controls[2]"
     assert _runs_with_key(key) == 0  # nothing saved
     answer = _post(client, api_key, _with(mapped_controls=None), uuid.uuid4().hex)
     assert answer.status_code == 202 and manual["mapper"].asked == []  # never inside the request

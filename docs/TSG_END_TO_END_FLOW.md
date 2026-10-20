@@ -3524,9 +3524,9 @@ one scenario, and the version cap bounds the cost of asking for rewrites.
 flowchart LR
     RQ["POST /v1/remediation<br/>accepted scenario, or a hand-written one"] --> SV["Save plan request<br/>tsg_remediations, version 1"]
     SV --> JB["tsg_write_plan<br/>(queue tsg_scenarios)"]
-    JB --> IN["Complete inputs<br/>attacker and threat proposal for a hand-written scenario,<br/>map controls if none usable yet"]
-    IN --> AIP["Plan writer (AI)<br/>one call"]
-    AIP --> FIX["Code fixes the plan<br/>library controls only, dates,<br/>critical path, warnings"]
+    JB --> IN["Build the input<br/>attacker and threat proposal for a hand-written scenario,<br/>map controls if none usable yet,<br/>classify each control: implemented / partial / missing"]
+    IN --> AIP["Plan writer (AI)<br/>one call, one re-ask for a gap"]
+    AIP --> FIX["Code fixes the plan<br/>gaps only, coverage, control_assessment,<br/>dates, critical path, warnings"]
     FIX --> VD["Version done, or failed:<br/>generation_failed, invalid_plan"]
     VD --> RV["Review a done version: accept or reject<br/>regenerate after done, failed or cancelled, up to 10 versions"]
 ```
@@ -3539,11 +3539,20 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
 2. **Job:** `tsg_write_plan` (leased; the version number is its epoch). It completes the inputs. For a
    hand-written scenario it ranks the attackers and proposes a new threat wording to the curators
    (`tsg_ResolveThreat`). If the scenario has no usable mapped controls (none, or only retired ones), it maps
-   them, or waits up to 120 s for the job already mapping them, then retries.
-3. **AI:** one call, `remediation_plan` (temperature 0). An unusable answer is asked again once; still
-   unusable, the version fails `generation_failed` (a plan with no action fails `invalid_plan`).
-4. **Code fixes the plan:** strategy "Mitigate", recommended controls only from the library mapping and not
-   already in the register, schedule dates and the critical path, urgency and coverage warnings.
+   them; when another job is mapping them, the plan job is given back and tries again (no attempt used). It
+   then classifies each scenario control against the register (D18): `implemented` (named in
+   `existing_controls` by id, code, name or a "CODE · Name" label, and `existing_controls_all_subsystems` Yes),
+   `partially_implemented` (named, No or empty) or `missing`, and stores the input as the version's snapshot.
+3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-2`): only missing (implement) and
+   partially implemented (improve) controls. A first answer that leaves a required gap out or lists an
+   implemented control is asked again once; still wrong, the plan is kept with `GAP_NOT_ADDRESSED`. An unusable
+   answer is asked again once; still unusable, the version fails `generation_failed` (a plan with no action
+   fails `invalid_plan`).
+4. **Code fixes the plan:** strategy "Mitigate"; recommended controls only the scenario's gaps, stamped from the
+   library; implemented controls removed from the controls and from every `implements_controls`;
+   `control_coverage` set by code ("covered" only when every control is implemented); `control_assessment` lists
+   every scenario control with its status; schedule dates and the critical path. Example: 5 mapped controls,
+   3 in the register with Yes → 2 recommended; with No or empty → 3 to improve and 2 to implement.
 5. **Later:** `GET .../treatment-plan` (and `/status`), `POST .../review` (accept or reject a version),
    `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10), `.../cancel`; live updates on
    `.../treatment-plan/events`. The prefix is `/v1/sessions/{sid}/scenarios/{scid}/treatment-plan`. Lists:

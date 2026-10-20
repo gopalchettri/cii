@@ -1,7 +1,7 @@
 """What may be done to a remediation plan and the records a request or a decision writes; pure, no IO."""
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -193,17 +193,6 @@ def decidable_version(read: dict[str, Any], asked: int | None, remediation_id: s
     return version
 
 
-def _record_decision(
-    accepted_version: int | None, decisions: Mapping[int, str], done: set[int], latest: int
-) -> Decision:
-    """The record's decision: accepted while a version is, pending while the latest or a done one waits, else
-    rejected."""
-    if accepted_version is not None:
-        return Decision.ACCEPTED
-    waiting = {latest} | done
-    return Decision.PENDING if any(decisions[v] == Decision.PENDING for v in waiting) else Decision.REJECTED
-
-
 def decision_change(
     read: dict[str, Any],
     version: int,
@@ -218,7 +207,6 @@ def decision_change(
     repeat = accepted == version if decision == Decision.ACCEPTED else decisions[version] == Decision.REJECTED
     if repeat:
         return None
-    stamp = {**decided_by, "decided_at": now, "review_comment": comment}
     decisions[version] = decision
     back_to_pending = None
     if decision == Decision.ACCEPTED:
@@ -229,11 +217,17 @@ def decision_change(
     elif accepted == version:
         accepted = None
     done = {item["version"] for item in read["versions"] if version_status(read, item) == Status.DONE}
+    if accepted is not None:
+        record_decision = Decision.ACCEPTED
+    elif any(decisions[v] == Decision.PENDING for v in done | {read["job"]["epoch"]}):
+        record_decision = Decision.PENDING  # the latest or a done version still waits
+    else:
+        record_decision = Decision.REJECTED
     return {
         "version": version,
         "decision": decision,
-        "stamp": stamp,
+        "stamp": {**decided_by, "decided_at": now, "review_comment": comment},
         "back_to_pending": back_to_pending,
         "accepted_version": accepted,
-        "record_decision": _record_decision(accepted, decisions, done, read["job"]["epoch"]),
+        "record_decision": record_decision,
     }

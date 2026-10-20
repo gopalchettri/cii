@@ -231,6 +231,9 @@ def test_an_unknown_register_ref_and_a_retired_mapped_control_warn_once_each() -
     assert "CII-CID-9" in retired and retired.endswith(
         "matches no active library control — it covers no scenario control"
     )
+    snapshot = build_snapshot(SCENARIO, CONTEXT, stored, library_mapped, warnings)
+    _, written, _ = _written(_answer("CII-CID-1"), snapshot=snapshot)
+    assert written[:2] == warnings  # the version's warnings start with them
 
 
 @pytest.mark.parametrize(
@@ -304,14 +307,18 @@ def test_the_owners_example_five_mapped_three_in_the_register(
 
 
 def test_the_snapshot_keys_and_what_the_ai_never_sees() -> None:
-    """Today's key order and numbers; the AI never reads the register echo, the warnings or any id."""
+    """Today's key order and numbers; the register's free text redacted; the AI never reads the register echo,
+    the warnings or any id."""
+    address = "ops.lead@grid.example.com"
     snapshot = _snapshot(
         likelihood_rating="4.47",
         impact_rating="4.47",
         final_risk_rating="20.00",
         risk_identification_date="2026-09-15T09:30:00Z",
+        risk_level=f"High, ask {address}",
+        impacted_business_division=f"Grid Operations, {address}",
         existing_controls_all_subsystems=None,
-        existing_controls_all_subsystems_justification="SCADA server only",
+        existing_controls_all_subsystems_justification=f"SCADA server only, ask {address}",
     )
     assert list(snapshot) == [
         "asset",
@@ -331,9 +338,12 @@ def test_the_snapshot_keys_and_what_the_ai_never_sees() -> None:
         "applied_to_all_subsystems",
         "applied_to_all_subsystems_justification",
     ]
-    assert existing["applied_to_all_subsystems_justification"] == "SCADA server only"
+    assert existing["applied_to_all_subsystems_justification"] == "SCADA server only, ask [REDACTED]"
     risk = snapshot["risk_assessment"]
-    assert (risk["likelihood_rating"], risk["final_risk_rating"], risk["risk_level"]) == (4.47, 20, "High")
+    found = (risk["likelihood_rating"], risk["final_risk_rating"], risk["risk_level"])
+    assert found == (4.47, 20, "High, ask [REDACTED]")
+    division = (risk["impacted_business_division"], snapshot["register"]["impacted_business_division"])
+    assert division == ("Grid Operations, [REDACTED]",) * 2
     assert type(risk["final_risk_rating"]) is int and risk["assessment_window"]["total_days"] == 78
     assert list(snapshot["register"]) == [
         "risk_identification_date",
@@ -346,6 +356,7 @@ def test_the_snapshot_keys_and_what_the_ai_never_sees() -> None:
     shown = json.loads(user.removeprefix(_CONTEXT_OPENING))
     assert list(shown)[-1] == "treatment_strategy" and "register" not in shown and "warnings" not in shown
     assert '"control_id"' not in user and '"alias"' not in user and "Head of Grid Operations" not in user
+    assert address not in user
     statuses = [item["implementation_status"] for item in shown["existing_controls"]["library_mapped"]]
     assert statuses == [PARTIAL, MISSING, MISSING]
 
@@ -357,32 +368,23 @@ def test_the_prompt_is_the_approved_text() -> None:
     assert CHAT_TEMPERATURES[AiTask.REMEDIATION_PLAN] == 0.0
 
 
-def _words(size: int) -> str:
-    """Ordinary prose of exactly `size` characters (one long run of letters would read as a secret)."""
-    return ("the grid could stop " * (size // 20 + 1))[:size]
-
-
-@pytest.mark.parametrize(("size", "cut"), [(1_999, False), (2_000, False), (2_001, True)])
-def test_free_text_is_cut_visibly_at_2000_and_redacted_first(size: int, cut: bool) -> None:
-    clipped = clip(_words(size))
-    assert clipped is not None and clipped.endswith(MARK) is cut
-    assert len(clipped) == (Remediation.TEXT_MAX_CHARS + len(MARK) if cut else size)
-    assert clip(clipped) == clipped
+@pytest.mark.parametrize("size", [2_000, 2_001, 4_000, 4_001])
+def test_free_text_is_redacted_and_cut_at_2000_and_a_statement_at_4000(size: int) -> None:
+    """Redacted first, then cut visibly; a statement and a risk reach the plan whole up to 4000."""
+    # Ordinary prose: one long run of letters would read as a secret.
+    text = ("the grid could stop " * (size // 20 + 1))[:size]
+    free, statement = Remediation.TEXT_MAX_CHARS, Remediation.STATEMENT_MAX_CHARS
+    clipped = clip(text)
+    assert clipped == (text if size <= free else text[:free] + MARK) and clip(clipped) == clipped
     assert clip("Mail ops.lead@grid.example.com now") == "Mail [REDACTED] now" and clip(None) is None
-
-
-@pytest.mark.parametrize(("size", "cut"), [(4_000, False), (4_001, True)])
-def test_a_statement_and_a_risk_reach_the_plan_whole_up_to_4000(size: int, cut: bool) -> None:
-    text = _words(size)
     content = SCENARIO["content"] | {
         "title": "Ask ops.lead@grid.example.com",
         "statement": text,
         "risk_statement": text,
     }
     shown = _snapshot(scenario=SCENARIO | {"content": content})["scenario"]
-    for value in (shown["statement"], shown["risk_statement"]):
-        assert value == (text[: Remediation.STATEMENT_MAX_CHARS] + MARK if cut else text)
-    assert shown["title"] == "Ask [REDACTED]"
+    whole = text if size <= statement else text[:statement] + MARK
+    assert (shown["title"], shown["statement"], shown["risk_statement"]) == ("Ask [REDACTED]", whole, whole)
 
 
 # --- code's finish
@@ -456,14 +458,16 @@ def test_actions_name_only_recommended_codes_and_every_one_is_delivered() -> Non
 
 
 @pytest.mark.parametrize(
-    ("answer", "problems", "expected"),
+    ("register", "answer", "problems", "expected"),
     [
         (
+            {},
             _answer("CII-CID-5"),
             [RemediationMessage.GAP_REQUIRED.format(code="CII-CID-6", status=MISSING)],
             [PlanWarning.GAP_NOT_ADDRESSED.format(code="CII-CID-6", status=MISSING)],
         ),
         (
+            {},
             _answer("CII-CID-5", "CII-CID-1", implements=["CII-CID-5"]),
             [
                 RemediationMessage.IMPLEMENTED_LISTED.format(code="CII-CID-1"),
@@ -474,17 +478,34 @@ def test_actions_name_only_recommended_codes_and_every_one_is_delivered() -> Non
                 PlanWarning.GAP_NOT_ADDRESSED.format(code="CII-CID-6", status=MISSING),
             ],
         ),
+        (
+            {},
+            _answer("CII-CID-5", "CII-CID-6", implements=["CII-CID-5", "CII-CID-6", "CII-CID-1"]),
+            [RemediationMessage.IMPLEMENTED_LISTED.format(code="CII-CID-1")],
+            [PlanWarning.IMPLEMENTS_UNKNOWN.format(action="A1", code="CII-CID-1")],
+        ),
+        (
+            {"existing_controls_all_subsystems": "No"},
+            _answer("CII-CID-5", "CII-CID-6"),
+            [RemediationMessage.GAP_REQUIRED.format(code="CII-CID-1", status=PARTIAL)],
+            [PlanWarning.GAP_NOT_ADDRESSED.format(code="CII-CID-1", status=PARTIAL)],
+        ),
     ],
-    ids=["gap-left-out", "implemented-listed"],
+    ids=["gap-left-out", "implemented-listed", "implemented-in-an-action", "partial-left-out"],
 )
 def test_a_gap_answer_is_re_asked_once_then_kept_with_its_warnings(
-    monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any], problems: list[str], expected: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    register: dict[str, Any],
+    answer: dict[str, Any],
+    problems: list[str],
+    expected: list[str],
 ) -> None:
     """The re-ask lists what the first answer got wrong; the same answer again is kept, the gap left open."""
     chat, sent = _real_chat(monkeypatch, json.dumps(answer), json.dumps(answer))
-    plan, warnings = write_plan(chat, _snapshot())
+    plan, warnings = write_plan(chat, _snapshot(**register))
     assert len(sent) == 2 and all(problem in sent[1][-1]["content"] for problem in problems)
-    assert _recommended(plan) == ["CII-CID-5"] and sorted(warnings) == sorted(expected)
+    assert _recommended(plan) == [code for code in _recommended(answer) if code != "CII-CID-1"]
+    assert sorted(warnings) == sorted(expected)
 
 
 def test_a_nearest_gap_may_be_left_out_with_no_re_ask() -> None:
@@ -499,32 +520,39 @@ def test_a_nearest_gap_may_be_left_out_with_no_re_ask() -> None:
     )
 
 
-def test_a_broken_re_ask_keeps_the_first_usable_plan() -> None:
-    plan, warnings, chat = _written(_answer("CII-CID-5"), _answer(applicable_to_all_subsystems="Maybe"))
+@pytest.mark.parametrize(
+    "re_asked",
+    [
+        _answer(applicable_to_all_subsystems="Maybe"),
+        _answer("CII-CID-5", "CII-CID-6", remediation_action_plan=[]),
+    ],
+    ids=["misshapen", "no-action"],
+)
+def test_a_broken_re_ask_keeps_the_first_usable_plan(re_asked: dict[str, Any]) -> None:
+    plan, warnings, chat = _written(_answer("CII-CID-5"), re_asked)
     assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 2 and _recommended(plan) == ["CII-CID-5"]
     assert warnings == [PlanWarning.GAP_NOT_ADDRESSED.format(code="CII-CID-6", status=MISSING)]
 
 
 @pytest.mark.parametrize(
-    ("answers", "code"),
+    ("answers", "error", "code"),
     [
-        ((_answer(applicable_to_all_subsystems="Maybe"),) * 2, ErrorCode.GENERATION_FAILED),
-        ((truncated(),), ErrorCode.GENERATION_FAILED),
-        ((_answer("CII-CID-5", "CII-CID-6", remediation_action_plan=[]),), ErrorCode.INVALID_PLAN),
+        ((_answer(applicable_to_all_subsystems="Maybe"),) * 2, JobFailed, ErrorCode.GENERATION_FAILED),
+        ((truncated(),), JobFailed, ErrorCode.GENERATION_FAILED),
+        ((_answer("CII-CID-5", "CII-CID-6", remediation_action_plan=[]),), JobFailed, ErrorCode.INVALID_PLAN),
+        ((Unavailable(),), Unavailable, ErrorCode.UNAVAILABLE),
     ],
-    ids=["unusable-twice", "truncated", "no-action"],
+    ids=["unusable-twice", "truncated", "no-action", "outage"],
 )
-def test_an_unusable_answer_or_a_plan_without_action_fails(answers: tuple[Any, ...], code: ErrorCode) -> None:
-    with pytest.raises(JobFailed) as failed:
+def test_an_unusable_answer_or_a_plan_without_action_fails_and_an_outage_is_raised(
+    answers: tuple[Any, ...], error: type[JobFailed | Unavailable], code: ErrorCode
+) -> None:
+    """A failure is final (the job fails with its code); an outage is raised for the job to retry."""
+    with pytest.raises(error) as failed:
         _written(*answers)
     assert failed.value.code == code
     if code == ErrorCode.GENERATION_FAILED:
-        assert failed.value.message.startswith("The AI could not write a usable remediation plan")
-
-
-def test_an_outage_is_raised_for_the_job_to_retry() -> None:
-    with pytest.raises(Unavailable):
-        _written(Unavailable())
+        assert str(failed.value).startswith("The AI could not write a usable remediation plan")
 
 
 # --- the chat model's one re-ask

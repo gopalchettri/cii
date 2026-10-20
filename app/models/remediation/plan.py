@@ -44,8 +44,7 @@ class DraftControl(BaseModel):
 
 
 class DraftAction(BaseModel):
-    """One action as the AI writes it: judgement only (what, who, how urgent, how long, what it waits for).
-    Dates and timelines are code's (app/domain/remediation/schedule.py)."""
+    """One action as the AI writes it: what, who, how urgent, how long, what it waits for (code dates it)."""
 
     action_id: str
     action: Given
@@ -59,8 +58,7 @@ class DraftAction(BaseModel):
 
 
 class PlanDraft(BaseModel):
-    """The plan AI's answer (approved prompt); a broken one is asked
-    again once, then the version fails `generation_failed`."""
+    """The plan AI's answer; a broken one is asked again once, then the version fails `generation_failed`."""
 
     title: Given
     controls_to_be_implemented: Annotated[list[DraftControl], BeforeValidator(_the_controls)]
@@ -153,8 +151,7 @@ class RemediationStatus(BaseModel):
 
 
 def _overall(status: Status, decision: Decision) -> RemediationProgress:
-    """The first that applies: the latest version failed, is being written, or waits for review; then the
-    record's decision."""
+    """First that applies: the latest version failed, is being written or awaits review; else the decision."""
     if status == Status.FAILED:
         return RemediationProgress.FAILED
     if status == Status.CANCELLED:
@@ -283,22 +280,6 @@ class ScenarioSummary(BaseModel):
     actors: list[dict[str, Any]] = []
     controls: list[dict[str, Any]] = []
 
-    @classmethod
-    def from_record(cls, scenario: dict[str, Any]) -> "ScenarioSummary":
-        """The summary of a stored scenario."""
-        content = scenario.get("content") or {}
-        return cls(
-            scenario_id=scenario["_id"],
-            **{
-                key: content.get(key)
-                for key in ("title", "statement", "risk_statement", "category", "threat")
-            },
-            actors=[
-                {key: actor.get(key) for key in ("name", "role")} for actor in content.get("actors") or []
-            ],
-            controls=(scenario.get("controls") or {}).get("items") or [],
-        )
-
 
 class RemediationResult(RemediationStatus):
     """#16: the status, then the shown version (the accepted one, else the newest done one, as in v1 where
@@ -321,12 +302,26 @@ class RemediationResult(RemediationStatus):
         item = shown_item(record)
         shown = None if item is None else VersionView.from_item(item, record)
         versions = [VersionView.from_item(v, record) for v in record["versions"]] if include_history else None
+        summary = None
+        if scenario is not None:
+            content = scenario.get("content") or {}
+            summary = ScenarioSummary(
+                scenario_id=scenario["_id"],
+                **{
+                    key: content.get(key)
+                    for key in ("title", "statement", "risk_statement", "category", "threat")
+                },
+                actors=[
+                    {key: actor.get(key) for key in ("name", "role")} for actor in content.get("actors") or []
+                ],
+                controls=(scenario.get("controls") or {}).get("items") or [],
+            )
         return cls(
             **RemediationStatus.from_record(record).model_dump(),
             shown_version=None if shown is None else shown.version,
             plan=None if shown is None else shown.plan,
             warnings=[] if shown is None else shown.warnings,
-            scenario=None if scenario is None else ScenarioSummary.from_record(scenario),
+            scenario=summary,
             register_data=record.get("register") or {},
             versions=versions,
         )

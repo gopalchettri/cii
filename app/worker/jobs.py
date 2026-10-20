@@ -36,6 +36,7 @@ from app.core.exceptions import (
     AppError,
     JobFailed,
     LeaseLost,
+    WaitingForAnotherJob,
 )
 from app.core.lease_signal import lease_lost_signal
 from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields
@@ -237,8 +238,10 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
     """A store or AI outage: give the job back and retry after the next back-off delay, or, on the last
     attempt, fail it with the outage message. Raises Celery's Retry; returns True after failing the job, False
     when it is no longer this delivery's (cancelled meanwhile: nothing to retry or fail)."""
-    if lease.attempts < Lease.MAX_ATTEMPTS:
-        delay = Lease.RETRY_DELAYS_SECONDS[min(lease.attempts, len(Lease.RETRY_DELAYS_SECONDS)) - 1]
+    # ponytail: a wait uses no attempt and the longest back-off (about one control lease), whoever waits
+    waiting, backoff = isinstance(exc, WaitingForAnotherJob), Lease.RETRY_DELAYS_SECONDS
+    if waiting or lease.attempts < Lease.MAX_ATTEMPTS:
+        delay = backoff[-1] if waiting else backoff[min(lease.attempts, len(backoff)) - 1]
         # If MongoDB is down too, giving it back fails and the record stays running with a live lease: the
         # retry finds it still owned and exits, and the reaper re-queues it once the lease runs out.
         given_back = True
@@ -252,6 +255,7 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
                         "job.lease_until": None,
                         "job.retry": _retry_notice(lease, exc, due_at),
                     }
+                    | ({"job.attempts": lease.attempts - 1} if waiting else {})
                 )
             except LeaseLost:
                 given_back = False

@@ -21,7 +21,13 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.exceptions import TEMPORARY_ERRORS, ControlsNotMapped, JobFailed, LeaseLost, Unavailable
+from app.core.exceptions import (
+    TEMPORARY_ERRORS,
+    ControlsNotMapped,
+    JobFailed,
+    LeaseLost,
+    WaitingForAnotherJob,
+)
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.jobs.job_repository import JobLease
 from app.data_access.library.threat_repository import ThreatRepository
@@ -94,11 +100,25 @@ class RemediationPlanJob:
 
     def _save_snapshot(self, lease: JobLease) -> dict[str, Any]:
         """The version's input from the scenario now and the stored register, saved on the version."""
-        scenario = self._scenario(lease)
+        scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=lease.record["scenario_id"])
+        if scenario is None:  # deleted with its run (and its plan with it)
+            raise LeaseLost(lease.record_id)
         stored_context = self._sessions.get_scenario_session_context(scenario["session_id"])
         context, library = FrozenContext.from_record(stored_context), self._search.snapshot()
-        if (scenario.get("pending") or {}).get("actors"):
-            scenario = self._attackers(lease, scenario, library)
+        pending = scenario.get("pending") or {}
+        if pending.get("actors"):  # hand-written: its attackers saved (and a new wording's library ids)
+            actors = pick_manual_attacker(library, scenario)
+            changes: dict[str, Any] = {"content.actors": actors}
+            if pending.get("proposal"):
+                actor_ids = tuple(actor["id"] for actor in actors)
+                changes |= _propose_manual_threat(
+                    self._threats, self._audit, scenario["_id"], scenario["content"], actor_ids, pending["by"]
+                )
+            scenario = self._scenarios.update_manual_scenario_findings(
+                scenario["_id"], changes, PLANNED_SCENARIO_FIELDS
+            )
+            if scenario is None:  # deleted with its run meanwhile
+                raise LeaseLost(lease.record_id)
         controls = library.library.control_library
         by_id = {row.control_id: row for row in controls}
         items = self._mapped_items(lease, scenario, context, library, by_id)
@@ -107,32 +127,6 @@ class RemediationPlanJob:
         snapshot = build_snapshot(scenario, context, register, library_mapped, warnings)
         self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot})
         return snapshot
-
-    def _scenario(self, lease: JobLease) -> dict[str, Any]:
-        """The planned scenario; LeaseLost once it is deleted with its run (and its plan with it)."""
-        scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=lease.record["scenario_id"])
-        if scenario is None:
-            raise LeaseLost(lease.record_id)
-        return scenario
-
-    def _attackers(
-        self, lease: JobLease, scenario: dict[str, Any], library: LibrarySnapshot
-    ) -> dict[str, Any]:
-        """Saves a hand-written scenario's attackers (and a new wording's library ids); returns it updated."""
-        content, pending = scenario["content"], scenario["pending"]
-        actors = pick_manual_attacker(library, scenario)
-        changes: dict[str, Any] = {"content.actors": actors}
-        if pending.get("proposal"):
-            actor_ids = tuple(actor["id"] for actor in actors)
-            changes |= _propose_manual_threat(
-                self._threats, self._audit, scenario["_id"], content, actor_ids, pending["by"]
-            )
-        updated = self._scenarios.update_manual_scenario_findings(
-            scenario["_id"], changes, PLANNED_SCENARIO_FIELDS
-        )
-        if updated is None:  # deleted with its run meanwhile
-            raise LeaseLost(lease.record_id)
-        return updated
 
     def _mapped_items(
         self,
@@ -153,8 +147,8 @@ class RemediationPlanJob:
         mapped = self._scenarios.get(
             ["controls.status", "controls.items"], _id=scenario_id, controls_mapped=True
         )
-        if mapped is None or not active_mapped_controls(mapped, by_id):
-            raise _controls_being_mapped()
+        if mapped is None or not active_mapped_controls(mapped, by_id):  # given back: no attempt used
+            raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED)
         return mapped["controls"]["items"]
 
     def _map(
@@ -173,43 +167,33 @@ class RemediationPlanJob:
             self._settle(claimed)
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
-            self._give_back(claimed, task_id, exc)
+            # A generated scenario's queued again, a hand-written one's failed; a stopped job keeps no error.
+            outcome = Status.FAILED if claimed.get("source") == RunKind.MANUAL else Status.QUEUED
+            freed_error: dict[str, str] | None = None
+            if isinstance(exc, TEMPORARY_ERRORS):
+                freed_error = outage_error(exc)
+            elif not isinstance(exc, LeaseLost):
+                freed_error = job_error_of(exc)
+            self._scenarios.update_scenario_controls(
+                scenario_id, task_id, attempts, outcome, error=freed_error
+            )
+            self._settle(claimed)
             if isinstance(exc, LeaseLost) and str(exc) == scenario_id:  # its control lease, not the job's
-                raise _controls_being_mapped() from exc
+                raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED) from exc
             raise
         record = controls_record(mapping, library)
         if not self._scenarios.update_scenario_controls(
             scenario_id, task_id, attempts, Status.DONE, mapping=record
         ):  # its claim was taken over meanwhile
-            raise _controls_being_mapped()
+            raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED)
         self._settle(claimed, time.perf_counter() - started)
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=True)
         return record["items"]
-
-    def _give_back(self, claimed: dict[str, Any], task_id: str, exc: Exception) -> None:
-        """Frees the claimed controls: a generated scenario's queued again, a hand-written one's failed."""
-        outcome = Status.FAILED if claimed.get("source") == RunKind.MANUAL else Status.QUEUED
-        self._scenarios.update_scenario_controls(
-            claimed["_id"], task_id, claimed["controls"]["attempts"], outcome, error=_freed_error(exc)
-        )
-        self._settle(claimed)
 
     def _settle(self, claimed: dict[str, Any], seconds: float = 0.0) -> None:
         """Updates the run's counts and tells its watchers after a scenario's controls changed state."""
         self._sessions.update_scenario_session_counts(claimed["session_id"], seconds)
         publish_session_status(claimed["session_id"])
-
-
-def _freed_error(exc: Exception) -> dict[str, str] | None:
-    """The error freed controls keep: the outage, nothing for a stopped job, else the fault's own."""
-    if isinstance(exc, TEMPORARY_ERRORS):
-        return outage_error(exc)
-    return None if isinstance(exc, LeaseLost) else job_error_of(exc)
-
-
-def _controls_being_mapped() -> Unavailable:
-    """The plan job given back for its normal retry while the scenario's controls are not mapped yet."""
-    return Unavailable(RemediationMessage.CONTROLS_BEING_MAPPED)
 
 
 class _ControlsLease:

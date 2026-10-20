@@ -5,7 +5,6 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -69,30 +68,21 @@ def resolve_control_refs(
     found: dict[int, LibraryControl] = {}
     unresolved: list[tuple[int, ControlRef]] = []
     for position, ref in enumerate(refs):
-        row = _row_named_by(ref, by_id, by_code, by_name)
+        # By id (decisive), else code, else name, else the code heading a "CODE · Name" label.
+        if ref.control_id is not None:
+            row = by_id.get(ref.control_id)
+        else:
+            row = by_code.get(ref.control_code.casefold()) if ref.control_code else None
+            if row is None and ref.control_name:
+                row = by_name.get(name_match_key(ref.control_name))
+                head = re.match(Remediation.LABEL_CODE_PATTERN, ref.control_name)
+                if row is None and head is not None:
+                    row = by_code.get(head.group().casefold())
         if row is None:
             unresolved.append((position, ref))
         else:
             found.setdefault(row.control_id, row)
     return list(found.values()), unresolved
-
-
-def _row_named_by(
-    ref: ControlRef,
-    by_id: Mapping[int, LibraryControl],
-    by_code: Mapping[str, LibraryControl],
-    by_name: Mapping[str, LibraryControl],
-) -> LibraryControl | None:
-    """The row by id (decisive), else code, else name, else the code heading a "CODE · Name" label."""
-    if ref.control_id is not None:
-        return by_id.get(ref.control_id)
-    row = by_code.get(ref.control_code.casefold()) if ref.control_code else None
-    if row is None and ref.control_name:
-        row = by_name.get(name_match_key(ref.control_name))
-        head = re.match(Remediation.LABEL_CODE_PATTERN, ref.control_name)
-        if row is None and head is not None:
-            row = by_code.get(head.group().casefold())
-    return row
 
 
 def describe_ref(ref: ControlRef) -> str:
@@ -122,7 +112,7 @@ def assess_controls(
     refs = [ControlRef.model_validate(entry) for entry in register.get("existing_controls") or []]
     named, unresolved = resolve_control_refs(refs, controls)
     warnings = [PlanWarning.CONTROL_UNMATCHED.format(reference=describe_ref(ref)) for _, ref in unresolved]
-    in_register = {_twin_key(row) for row in named}
+    in_register = {name_match_key(describe_control(row)) for row in named}  # IT and OT twins share this key
     everywhere = register.get("existing_controls_all_subsystems") == YesNo.YES
     by_id = {row.control_id: row for row in controls}
     library_mapped = []
@@ -132,7 +122,7 @@ def assess_controls(
             warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=item.get("code")))
             continue
         status = ImplementationStatus.MISSING
-        if _twin_key(row) in in_register:
+        if name_match_key(describe_control(row)) in in_register:
             status = (
                 ImplementationStatus.IMPLEMENTED if everywhere else ImplementationStatus.PARTIALLY_IMPLEMENTED
             )
@@ -145,17 +135,11 @@ def assess_controls(
                 "control_name": row.name,
                 "control_description": clip(row.description),
                 "mapping_relevance": None if item.get("score") is None else round(item["score"]),
-                # A control the person named for a hand-written scenario met their own bar: an exact match.
-                "match": ControlMatch.EXACT if item.get("match") == ControlMatch.GIVEN else item.get("match"),
+                "match": item.get("match"),
                 "implementation_status": status,
             }
         )
     return library_mapped, warnings
-
-
-def _twin_key(row: LibraryControl) -> str:
-    """IT and OT copies of one control share this key, so naming either names both."""
-    return name_match_key(describe_control(row))
 
 
 def build_snapshot(
@@ -167,6 +151,8 @@ def build_snapshot(
 ) -> dict[str, Any]:
     """The version's frozen input; its keys and their order are part of the stored record."""
     content = scenario.get("content") or {}
+    identified = register.get("risk_identification_date")
+    identified_at = datetime.fromisoformat(identified).isoformat() if identified else None
     return {
         "asset": clip(context.asset["name"]),
         "asset_context": _capped(facts_safe_for_prompt(context.asset_context)),
@@ -184,7 +170,12 @@ def build_snapshot(
         },
         "risk_assessment": _assessment(register),
         "treatment_strategy": Remediation.STRATEGY,
-        "register": _echo(register),
+        # The facts code copies into the plan and the AI never sees (the risk owner is a person).
+        "register": {
+            "risk_identification_date": identified_at,
+            "risk_owner": clip(register.get("risk_owner")),
+            "impacted_business_division": clip(register.get("impacted_business_division")),
+        },
         "warnings": list(warnings),
     }
 
@@ -240,16 +231,6 @@ def _number(text: str | None) -> int | float | None:
     return int(value) if value == value.to_integral_value() else float(value)
 
 
-def _echo(register: dict[str, Any]) -> dict[str, Any]:
-    """The facts code copies into the plan and the AI never sees (the risk owner is a person)."""
-    identified = register.get("risk_identification_date")
-    return {
-        "risk_identification_date": datetime.fromisoformat(identified).isoformat() if identified else None,
-        "risk_owner": clip(register.get("risk_owner")),
-        "impacted_business_division": clip(register.get("impacted_business_division")),
-    }
-
-
 def _capped(value: Any) -> Any:
     """Every text inside a facts block cut by `clip` (facts_safe_for_prompt already redacted it)."""
     if isinstance(value, str):
@@ -264,6 +245,12 @@ def _capped(value: Any) -> Any:
 def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
     """(system, user): the approved rules, and the snapshot as data without the echo, warnings or ids."""
     shown = {key: value for key, value in snapshot.items() if key not in _NOT_SHOWN}
+    # The prompt knows "exact" and "nearest": a control the person named for a hand-written scenario is exact.
+    mapped = [
+        row | {"match": ControlMatch.EXACT} if row["match"] == ControlMatch.GIVEN else row
+        for row in shown["existing_controls"]["library_mapped"]
+    ]
+    shown["existing_controls"] = shown["existing_controls"] | {"library_mapped": mapped}
     context = json.dumps(drop_database_ids(shown), ensure_ascii=False, separators=(",", ":"))
     return PLAN_SYSTEM_PROMPT, _CONTEXT_PREFIX + context
 
@@ -271,18 +258,22 @@ def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
 def write_plan(chat: ChatModel, snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """The finished plan and the version's warnings; JobFailed when the AI gives no usable plan."""
     mapped = snapshot["existing_controls"]["library_mapped"]
+    first: list[dict[str, Any]] = []  # a usable first answer: kept when the re-ask drops every action
+
+    def check_first_answer(answer: dict[str, Any]) -> list[str]:
+        first.append(answer)
+        return _gap_problems(mapped, answer)
+
     try:
         draft: PlanDraft = ask_ai_and_check(
-            chat,
-            AiTask.REMEDIATION_PLAN,
-            plan_prompt(snapshot),
-            _read_answer,
-            first_answer_check=partial(_gap_problems, mapped),
+            chat, AiTask.REMEDIATION_PLAN, plan_prompt(snapshot), _read_answer, check_first_answer
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         reason = shorten_text(str(exc), Remediation.REASON_MAX_CHARS)
         message = RemediationMessage.PLAN_UNUSABLE.format(reason=reason)
         raise JobFailed(ErrorCode.GENERATION_FAILED, message) from exc
+    if first and not draft.remediation_action_plan:
+        draft = PlanDraft.model_validate(first[0])
     plan, warnings = _finish(draft, snapshot)
     return plan, [*snapshot["warnings"], *warnings, *schedule_plan(plan, snapshot)]
 

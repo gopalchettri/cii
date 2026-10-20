@@ -89,6 +89,10 @@ class Unavailable(AppError):
     default_retry_after = Limits.RETRY_AFTER_SECONDS
 
 
+class WaitingForAnotherJob(Unavailable):
+    """Another job holds what this job needs: given back to try again later, using none of its attempts."""
+
+
 class OutcomeUnknown(Unavailable):
     """A SQL Server call was sent but its answer was lost (a timeout, a broken link): it may have applied.
     Retried through its operation record (tsg_sql_operations), which replays the same parameters."""

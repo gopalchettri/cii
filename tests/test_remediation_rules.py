@@ -294,22 +294,12 @@ def _read(
     }
 
 
-def _shown(record: dict[str, Any]) -> int | None:
-    item = shown_item(record)
-    return None if item is None else item["version"]
-
-
 def test_the_accepted_version_is_shown_else_the_newest_done() -> None:
-    record = _read(Status.DONE, Status.DONE, Status.QUEUED)
-    assert _shown(record) == 2
-    assert _shown(record | {"accepted_version": 1}) == 1
-    assert _shown(_read(Status.DONE, Status.DONE)) == 2
-    assert _shown(_read(Status.FAILED)) is None
-
-
-def test_only_the_shown_version_is_built_without_the_history() -> None:
-    """A result builds its shown version alone; the others only when the history is asked for (a malformed
-    older plan proves it is never read)."""
+    """A result builds that version alone; the others only when the history is asked for (a malformed older
+    plan proves it is never read)."""
+    newest = _read(Status.DONE, Status.DONE, Status.QUEUED)
+    reads = (newest, newest | {"accepted_version": 1}, _read(Status.DONE, Status.DONE), _read(Status.FAILED))
+    assert [(shown_item(read) or {}).get("version") for read in reads] == [2, 1, 2, None]
     item = {"status": Status.DONE, "decision": Decision.PENDING, "requested_at": NOW, "plan": None,
             "warnings": [], "prompt_version": None}  # fmt: skip
     record = {

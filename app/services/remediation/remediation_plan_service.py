@@ -216,12 +216,10 @@ class RemediationPlanService:
         """The plan's status body read now; None when MongoDB cannot say (the next published change follows
         anyway); NotFound once the plan is gone (deleted with its run)."""
         try:
-            status = self._status(_id=remediation_id)
+            status = self._status_now(remediation_id)
         except MONGO_UNAVAILABLE_ERRORS:
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO, exc_info=True)
             return None
-        if status is None:
-            raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))
         return status.model_dump(mode="json")
 
     def _create_manual_remediation_plan(
@@ -232,7 +230,12 @@ class RemediationPlanService:
         manual = check_manual_request(principal, body, key)
         assert key is not None  # check_manual_request refused a missing one
         fingerprint = manual_request_fingerprint(body)
-        scenario = self._earlier_scenario(principal, key, fingerprint)
+        scenario: dict[str, Any] | None = None
+        earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
+        if earlier is not None:  # the key was used before: the same request again, else 409
+            check_same_manual_request(earlier, fingerprint)
+            scenario_id = manual_ids(principal.entity_id, key)[1]
+            scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
         if scenario is not None and (replayed := self._replayed(scenario["_id"])) is not None:
             return replayed, False
         saved_before = scenario is not None  # an earlier call saved it, then stopped
@@ -250,7 +253,7 @@ class RemediationPlanService:
     def _plan_scenario(
         self, principal: Principal, register: dict[str, Any], scenario: dict[str, Any]
     ) -> PlanStarted:
-        """One plan per scenario (the unique index decides), inserted with version 1 queued, the job sent."""
+        """One plan per scenario (the unique index decides): version 1 queued, its job sent and audited."""
         check_control_library(self._library.get_loaded_libraries().control_library)
         now = datetime.now(UTC)
         record = new_plan_record(principal, register, scenario, new_job(TaskName.WRITE_PLAN, 1, now), now)
@@ -267,7 +270,16 @@ class RemediationPlanService:
         if self._sessions.is_being_deleted(record["session_id"]):
             self._remediations.delete(_id=record["_id"])
             raise run_being_deleted(record["session_id"])
-        self._announce(principal, record)
+        self._send_job(TaskName.WRITE_PLAN, record["_id"], record["job"]["epoch"])  # a lost send is re-sent
+        register = dict(record["register"])  # audited with the risk owner masked
+        if register.get("risk_owner"):
+            register["risk_owner"] = REDACTED
+        after = {"scenario_id": record["scenario_id"], "version": 1, "register": register}
+        target = audit_target(AuditTarget.REMEDIATION, record["_id"])
+        self._audit.create_audit_record(
+            AuditAction.PLAN_REQUESTED, caller_actor(principal), target, after=after
+        )
+        self._publish_remediation_status(record["_id"])
         return PlanStarted(
             remediation_id=record["_id"],
             session_id=record["session_id"],
@@ -276,21 +288,6 @@ class RemediationPlanService:
             status=Status.QUEUED,
             is_manual=record["source"] == RunKind.MANUAL,
         )
-
-    def _announce(self, principal: Principal, record: dict[str, Any]) -> None:
-        """Sends the job (a failed send is re-sent by the reaper), audits it with the risk owner masked, and
-        tells the watchers."""
-        self._send_job(TaskName.WRITE_PLAN, record["_id"], record["job"]["epoch"])
-        register = dict(record["register"])
-        if register.get("risk_owner"):
-            register["risk_owner"] = REDACTED
-        self._audit.create_audit_record(
-            AuditAction.PLAN_REQUESTED,
-            caller_actor(principal),
-            audit_target(AuditTarget.REMEDIATION, record["_id"]),
-            after={"scenario_id": record["scenario_id"], "version": 1, "register": register},
-        )
-        self._publish_remediation_status(record["_id"])
 
     def _save_manual_scenario(
         self, principal: Principal, manual: ManualScenario, key: str, request_hash: str
@@ -327,15 +324,6 @@ class RemediationPlanService:
         self._sessions.update_scenario_session_counts(ids[0])
         return scenario
 
-    def _earlier_scenario(self, principal: Principal, key: str, fingerprint: str) -> dict[str, Any] | None:
-        """The scenario an earlier request with this key saved; 409 when the key named another request."""
-        earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
-        if earlier is None:
-            return None
-        check_same_manual_request(earlier, fingerprint)
-        scenario_id = manual_ids(principal.entity_id, key)[1]
-        return self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
-
     def _replayed(self, scenario_id: str) -> PlanStarted | None:
         """The answer a hand-written request's first call gave, read back from its plan; None without one."""
         status = self._status(scenario_id=scenario_id)
@@ -365,7 +353,7 @@ class RemediationPlanService:
         return None if record is None else RemediationStatus.from_record(record)
 
     def _status_now(self, remediation_id: str) -> RemediationStatus:
-        """The plan's status read after a decision; 404 when it was deleted with its run just now."""
+        """The plan's status read now; 404 once it is gone (deleted with its run)."""
         status = self._status(_id=remediation_id)
         if status is None:
             raise NotFound(RemediationMessage.PLAN_NOT_FOUND.format(remediation_id=remediation_id))

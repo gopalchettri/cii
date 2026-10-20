@@ -101,9 +101,7 @@ class RemediationRepository(MongoRepository):
                         "cancelled": "$$REMOVE",
                         "updated_at": now,
                         "decision": _DECISION_WITH_A_NEW_VERSION,
-                        "decision_seq": {
-                            "$add": ["$decision_seq", 1]
-                        },  # a decision on the older read retries
+                        "decision_seq": {"$add": ["$decision_seq", 1]},  # an older read's decision retries
                     }
                 }
             ],

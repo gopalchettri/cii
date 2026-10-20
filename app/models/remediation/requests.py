@@ -70,6 +70,8 @@ _ThreatName = Annotated[Annotated[str, Field(max_length=Remediation.THREAT_NAME_
 _TypeName = Annotated[Annotated[str, Field(max_length=Remediation.TYPE_NAME_MAX_CHARS)] | None, Blank]
 _RecordId = Annotated[Annotated[str, Field(max_length=Review.MAX_ID_CHARS)] | None, Blank]
 _Comment = Annotated[Annotated[str, Field(max_length=Remediation.COMMENT_MAX_CHARS)] | None, Blank]
+#: A library row's id: blank means not given.
+_LibraryId = Annotated[Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)] | None, Blank]
 
 
 class ControlRef(BaseModel):
@@ -78,7 +80,7 @@ class ControlRef(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    control_id: Annotated[Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)] | None, Blank] = None
+    control_id: _LibraryId = None
     control_code: _Code = None
     control_name: _ControlText = None
 
@@ -104,8 +106,7 @@ class ControlRef(BaseModel):
         return self
 
     def key(self) -> tuple[str, Any]:
-        """The strongest key this entry carries (id, then code, then name; text compared case-blind): two
-        entries with the same strongest key name one control."""
+        """The strongest key it carries (id, code, then case-blind name): one key names one control."""
         if self.control_id is not None:
             return "control_id", self.control_id
         if self.control_code:
@@ -134,7 +135,10 @@ RegisterControls = Annotated[
     AfterValidator(_first_of_each),
     Field(max_length=Remediation.MAX_CONTROL_REFS),
 ]
-ScenarioControls = RegisterControls
+#: Repeats kept, so a 422 names the entry's place in the request; resolving them keeps each library row once.
+ScenarioControls = Annotated[
+    list[ControlRef], BeforeValidator(_drop_blank_entries), Field(max_length=Remediation.MAX_CONTROL_REFS)
+]
 
 
 def _has_letters(name: str | None) -> str | None:
@@ -152,8 +156,6 @@ class LibraryRef:
     name: str | None
 
 
-#: A library row's id in a hand-written scenario: blank means not given.
-_LibraryId = Annotated[Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)] | None, Blank]
 #: A library row's name: blank means not given; punctuation or spaces alone → 422 (never a nameless row).
 _CategoryName = Annotated[_Name, AfterValidator(_has_letters)]
 _TypeNameText = Annotated[_TypeName, AfterValidator(_has_letters)]
@@ -289,8 +291,7 @@ class PlanRequest(BaseModel):
     @field_validator("risk_identification_date")
     @classmethod
     def in_utc(cls, value: datetime | None) -> datetime | None:
-        """An offset is applied (an instant, unlike the window's calendar dates); a naive time is taken as
-        UTC."""
+        """An offset is applied (an instant, unlike the window's dates); a naive time is taken as UTC."""
         if value is None:
             return None
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

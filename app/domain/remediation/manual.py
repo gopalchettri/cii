@@ -1,10 +1,9 @@
-"""A hand-written scenario: its request checks, its run and scenario records, its threat and controls as the
-library knows them, and the attacker its plan job picks."""
+"""A hand-written scenario: request checks, run and scenario records, library threat, controls, attacker."""
 
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -223,8 +222,7 @@ def given_controls(controls: Sequence[LibraryControl], now: datetime) -> dict[st
 
 
 def pick_manual_attacker(search_snapshot: LibrarySnapshot, scenario: dict[str, Any]) -> list[dict[str, Any]]:
-    """The acting attacker as stored: the best-ranked of the threat's linked actors, else its type's, else the
-    library's (flagged closest), ranked on the scenario's redacted words."""
+    """The stored acting attacker: best of the threat's actors, else its type's, else the library's."""
     content, library = scenario["content"], search_snapshot.library.threat_library
     threat = content.get("threat") or {}
     by_threat = {row.catalogue_id: row.linked_actors for row in library.threats}
@@ -257,19 +255,30 @@ class _Known:
 def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> dict[str, Any]:
     """The scenario's category, type and threat as the library knows them; every fault in one 422."""
     errors: Errors = []
-    types = _types(library)
+    types, threats = _library_rows(library)
     threat_type = _named(types, scenario.threat_type, "threat_type", errors)
-    threat = _named(_threats(library), scenario.threat, "threat", errors)
+    threat = _named(threats, scenario.threat, "threat", errors)
     in_library = threat is not None and threat.status != LibraryStatus.CURATOR_REJECTED
     reason: ConflictReason | None = None
     if threat is not None and in_library:  # threat names are unique across the library: its type decides
-        threat_type, reason = _type_of_threat(types, threat, threat_type, scenario, errors)
+        type_id = threat.type_id
+        library_type = next((row for row in types if row.row_id == type_id), None)
+        if threat_type is None or threat_type.row_id != type_id:
+            shown = library_type.name if library_type else str(type_id)
+            message = RemediationMessage.TYPE_MISMATCH.format(threat=threat.name, library_type=shown)
+            part = "threat_type_id" if scenario.threat_type_id is not None else "threat_type_name"
+            errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.{part}", "message": message})
+            reason = ConflictReason.TYPE_MISMATCH
+        threat_type = library_type
     category = _category(library, scenario.threat_category, threat, threat_type, errors)
     if errors:
         raise Invalid(RemediationMessage.THREAT_REFS_INVALID, errors=errors, reason=reason)
+    folded = category.casefold() if category is not None else None
     return {
         "category": category,
-        "category_id": _category_id(library, category),
+        "category_id": next(
+            (row_id for row_id, name in library.category_ids if name.casefold() == folded), None
+        ),
         "type_name": threat_type.name if threat_type else str(scenario.threat_type.name),
         "type_id": threat_type.row_id if threat_type else None,
         "threat_name": threat.name if threat is not None else str(scenario.threat.name),
@@ -278,67 +287,35 @@ def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> dict[str
     }
 
 
-def _type_of_threat(
-    types: Sequence[_Known],
-    threat: _Known,
-    named_type: _Known | None,
-    scenario: ManualScenario,
-    errors: Errors,
-) -> tuple[_Known | None, ConflictReason | None]:
-    """The library's type of a known threat, and TYPE_MISMATCH when the scenario named another."""
-    library_type = _first(types, lambda row: row.row_id == threat.type_id)
-    if named_type is not None and named_type.row_id == threat.type_id:
-        return library_type, None
-    shown = library_type.name if library_type else str(threat.type_id)
-    message = RemediationMessage.TYPE_MISMATCH.format(threat=threat.name, library_type=shown)
-    part = "threat_type_id" if scenario.threat_type_id is not None else "threat_type_name"
-    errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.{part}", "message": message})
-    return library_type, ConflictReason.TYPE_MISMATCH
-
-
-def _category_id(library: ThreatLibrary, category: StrideCategory | None) -> int | None:
-    """The category's library id, or None."""
-    if category is None:
-        return None
-    return next(
-        (row_id for row_id, name in library.category_ids if name.casefold() == category.casefold()), None
-    )
-
-
-def _types(library: ThreatLibrary) -> list[_Known]:
-    """Live types, then pending ones."""
-    live = [_Known(t.type_id, t.name, LibraryStatus.ACTIVE, category=t.category) for t in library.types]
-    pending = [
-        _Known(row.row_id, row.name, LibraryStatus.PENDING)
-        for row in library.pending
-        if row.kind == LibraryRowKind.TYPE
-    ]
-    return live + pending
-
-
-def _threats(library: ThreatLibrary) -> list[_Known]:
-    """Live, then pending, then curator-rejected: a name found twice is the earlier kind's."""
-    live = [
+def _library_rows(library: ThreatLibrary) -> tuple[list[_Known], list[_Known]]:
+    """Types (live, pending) and threats (live, pending, curator-rejected); a name twice is the earlier's."""
+    types = [_Known(t.type_id, t.name, LibraryStatus.ACTIVE, category=t.category) for t in library.types]
+    threats = [
         _Known(t.catalogue_id, t.name, LibraryStatus.ACTIVE, t.type_id, t.categories) for t in library.threats
     ]
-    pending = [
-        _Known(row.row_id, row.name, LibraryStatus.PENDING, row.type_id)
-        for row in library.pending
-        if row.kind == LibraryRowKind.THREAT
-    ]
-    rejected = [
+    for row in library.pending:
+        if row.kind == LibraryRowKind.TYPE:
+            types.append(_Known(row.row_id, row.name, LibraryStatus.PENDING))
+        elif row.kind == LibraryRowKind.THREAT:
+            threats.append(_Known(row.row_id, row.name, LibraryStatus.PENDING, row.type_id))
+    threats += [
         _Known(row.catalogue_id, row.name, LibraryStatus.CURATOR_REJECTED, row.type_id)
         for row in library.curator_rejected
     ]
-    return live + pending + rejected
+    return types, threats
 
 
 def _named(rows: Sequence[_Known], ref: LibraryRef, part: str, errors: Errors) -> _Known | None:
     """The row `ref` names, None for a new name; an unknown id or an id and name that disagree is an error."""
-    named = _first(rows, lambda row: _key(row.name) == _key(ref.name)) if ref.name else None
+    named: _Known | None = None
+    if ref.name:  # names compared normalised, any library code left out
+        wanted = name_match_key(threat_name_without_code(ref.name))
+        named = next(
+            (row for row in rows if name_match_key(threat_name_without_code(row.name)) == wanted), None
+        )
     if ref.id is None:
         return named
-    by_id = _first(rows, lambda row: row.row_id == ref.id)
+    by_id = next((row for row in rows if row.row_id == ref.id), None)
     if by_id is None:
         message = RemediationMessage.UNKNOWN_ID.format(id=ref.id)
         errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.{part}_id", "message": message})
@@ -378,13 +355,3 @@ def _category(
         )
         errors.append({"field": field, "message": message})
     return category
-
-
-def _first(rows: Sequence[_Known], wanted: Callable[[_Known], bool]) -> _Known | None:
-    """The first row `wanted` accepts, or None."""
-    return next((row for row in rows if wanted(row)), None)
-
-
-def _key(name: str | None) -> str:
-    """A name as the library compares it: normalised, its library code left out."""
-    return name_match_key(threat_name_without_code(name or ""))
