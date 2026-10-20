@@ -18,7 +18,7 @@ from structlog.testing import capture_logs
 
 from app import ai
 from app.ai.common import UnusableAiAnswer
-from app.core.constants import AiLimits, AiTask, EmbeddingCorpus, ErrorCode
+from app.core.constants import AI_OUTAGE_MESSAGES, AiLimits, AiOutage, AiTask, EmbeddingCorpus, ErrorCode
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
@@ -57,15 +57,38 @@ def test_provider_outage_becomes_unavailable(monkeypatch: pytest.MonkeyPatch) ->
     _no_waiting(monkeypatch)
 
     def busy_provider(**_: object) -> None:
-        raise litellm.RateLimitError(message="busy", llm_provider="openai", model="test-chat")
+        raise litellm.RateLimitError(message="queue full at gw-7", llm_provider="openai", model="test-chat")
 
     monkeypatch.setattr(litellm, "completion", busy_provider)
     with capture_logs() as logs, pytest.raises(Unavailable):
         _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     # S29 review (G125): the outage's kind is logged (a rate limit told from a timeout), never its text.
     outage = next(entry for entry in logs if entry["event"] == "ai.call_unavailable")
-    assert (outage["error"], outage["status"], outage["model"]) == ("RateLimitError", 429, "test-chat")
-    assert "busy" not in str(outage)
+    logged = (outage["error"], outage["status"], outage["model"], outage["reason"])
+    assert logged == ("RateLimitError", 429, "test-chat", AiOutage.BUSY)
+    assert "gw-7" not in str(outage)
+
+
+@pytest.mark.parametrize(
+    ("error", "outage"),
+    [
+        (litellm.InternalServerError("down", llm_provider="openai", model="m"), AiOutage.DOWN),
+        (litellm.BadGatewayError("bad gateway", llm_provider="openai", model="m"), AiOutage.DOWN),
+        (litellm.APIConnectionError("refused", llm_provider="openai", model="m"), AiOutage.UNREACHABLE),
+        (litellm.RateLimitError("busy", llm_provider="openai", model="m"), AiOutage.BUSY),
+        (litellm.ServiceUnavailableError("overloaded", llm_provider="openai", model="m"), AiOutage.BUSY),
+        (litellm.Timeout("no answer in time", model="m", llm_provider="openai"), AiOutage.TIMED_OUT),
+    ],
+)
+def test_each_ai_outage_tells_the_ui_which_it_was(error: Exception, outage: AiOutage) -> None:
+    """Down, unreachable, busy or timed out: its own reason and message (litellm's Timeout is also a lost
+    connection, so a timeout must never read "unreachable")."""
+    with (
+        pytest.raises(Unavailable) as raised,
+        ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"),
+    ):
+        raise error
+    assert (raised.value.reason, raised.value.detail) == (outage, AI_OUTAGE_MESSAGES[outage])
 
 
 def test_fenced_json_answer_is_read_and_the_call_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:

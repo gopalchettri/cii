@@ -18,10 +18,12 @@ import structlog
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.config import get_settings
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
     FINAL_FINDINGS,
     FINDING_SEVERITIES,
     STORY_FINDING_SEVERITIES,
     ActorRole,
+    AiOutage,
     AiTask,
     AnswerProblem,
     ContextProperties,
@@ -428,6 +430,9 @@ def evidence_problem(threat: dict[str, Any]) -> Unavailable | None:
     once searched, whatever it kept: nothing citable is written without evidence (path_style)."""
     search = threat.get("intel_search")
     if search is None or search.get("failure") is not None or search.get("snapshot_id") is None:
+        outage = (search or {}).get("outage")
+        if outage and outage in AiOutage:  # the AI did not answer the search: the UI is told which outage
+            return Unavailable(AI_OUTAGE_MESSAGES[AiOutage(outage)], reason=outage)
         failure = (search or {}).get("failure") or EvidenceSearchFailure.NO_SNAPSHOT
         return Unavailable(ErrorMessage.EVIDENCE_SEARCH_UNAVAILABLE.format(reason=failure))
     return None

@@ -22,6 +22,8 @@ from structlog.testing import capture_logs
 from app import container
 from app.core import metrics, readiness
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AiOutage,
     AiTask,
     Collection,
     ErrorCode,
@@ -39,7 +41,11 @@ from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
 from app.data_access.jobs.job_repository import JobLease, JobRepository, ended_job_fields
 from app.data_access.library.sql_operation_repository import SqlOperationRepository
+from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
+from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.domain.scenario.results import build_board
 from app.domain.shared.parallel import raise_most_retryable
+from app.models.scenario.views import session_status_from_record
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
 from app.worker.celery_app import BrokerUnavailable, count_waiting_messages
 
@@ -168,6 +174,43 @@ def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(publishe
     assert published == [record_id, record_id]  # running, then queued again
 
 
+def test_an_ai_outage_leaves_a_retry_notice_until_the_stage_hands_over(
+    published: list[str], sent: list[tuple]
+) -> None:
+    """The status tells the UI why a stage waits and which try comes when (owner 2026-10-20); the attempt
+    that moves the job on clears it."""
+    record_id = _insert_job()
+
+    def busy(_lease: JobLease) -> None:
+        raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY)
+
+    with pytest.raises(RetryRequested):
+        jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, busy)
+    job = _records().find_one({"_id": record_id})["job"]
+    assert job["retry"] == {
+        "reason": AiOutage.BUSY,
+        "message": AI_OUTAGE_MESSAGES[AiOutage.BUSY],
+        "attempt": 1,
+        "max_attempts": Lease.MAX_ATTEMPTS,
+        "retry_at": job["due_at"],
+    }
+    # Read as the status endpoint and its live updates read it: through the status fields.
+    sessions = ThreatScenarioSessionRepository(scenarios=ThreatScenarioRepository())
+    notice = build_board(session_status_from_record(sessions.get("status", _id=record_id))).progress.retrying
+    assert notice is not None and (notice.reason, notice.attempt) == (AiOutage.BUSY, 1)
+    _records().update_one(
+        {"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}}
+    )  # its back-off ended
+    jobs.run_leased_job(
+        _task("task-2"),
+        Collection.SESSIONS,
+        record_id,
+        1,
+        lambda lease: jobs.hand_over(lease, TaskName.WRITE_SCENARIOS),
+    )
+    assert _records().find_one({"_id": record_id})["job"]["retry"] is None
+
+
 def test_a_job_meeting_a_young_pending_sql_operation_is_retried_not_failed(published: list[str]) -> None:
     """A SQL Server write an earlier attempt left pending only means waiting: the job backs off until the
     record is older than SqlOperations.PENDING_SECONDS and its replay may run."""
@@ -207,6 +250,23 @@ def test_the_last_attempt_fails_the_job_with_the_outage_message(published: list[
     record = _records().find_one({"_id": record_id})
     assert record["status"] == Status.FAILED
     assert record["job"]["error"] == {"code": ErrorCode.UNAVAILABLE, "message": ErrorMessage.AI_UNREACHABLE}
+
+
+def test_the_last_attempt_the_ai_timed_out_names_the_outage_and_leaves_no_notice(
+    published: list[str],
+) -> None:
+    waiting = {"reason": AiOutage.TIMED_OUT, "attempt": Lease.MAX_ATTEMPTS - 1}
+    record_id = _insert_job(attempts=Lease.MAX_ATTEMPTS - 1, retry=waiting)
+    timed_out = AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT]
+
+    def work(_lease: JobLease) -> None:
+        raise Unavailable(timed_out, reason=AiOutage.TIMED_OUT)
+
+    with pytest.raises(Unavailable):
+        jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, work)
+    job = _records().find_one({"_id": record_id})["job"]
+    assert job["error"] == {"code": ErrorCode.UNAVAILABLE, "message": timed_out, "reason": AiOutage.TIMED_OUT}
+    assert job["retry"] is None
 
 
 def test_an_unexpected_error_fails_the_job_and_a_success_finishes_it(published: list[str]) -> None:

@@ -62,6 +62,7 @@ SESSION_STATUS_FIELDS: dict[str, int] = {
     "last_action": 1,
     "job.error": 1,
     "job.attempts": 1,
+    "job.retry": 1,
     "updated_at": 1,
     "kind": 1,
     "user_id": 1,

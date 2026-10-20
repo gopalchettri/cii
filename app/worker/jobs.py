@@ -18,7 +18,17 @@ import structlog
 from celery import Task
 from celery.exceptions import Ignore
 
-from app.core.constants import Collection, ErrorCode, ErrorMessage, Lease, LogEvent, Status, TaskName
+from app.ai.common import outage_reason
+from app.core.constants import (
+    AiOutage,
+    Collection,
+    ErrorCode,
+    ErrorMessage,
+    Lease,
+    LogEvent,
+    Status,
+    TaskName,
+)
 from app.core.database import get_mongodb
 from app.core.exceptions import (
     MONGO_UNAVAILABLE_ERRORS,
@@ -53,6 +63,7 @@ def hand_over(lease: JobLease, next_task: TaskName, changes: dict[str, Any] | No
             "job.due_at": datetime.now(UTC),
             "job.attempts": 0,
             "job.lease_until": None,
+            "job.retry": None,
         }
     )
     send_job(next_task, lease.record_id, lease.epoch)
@@ -118,11 +129,14 @@ def job_error_of(exc: Exception) -> dict[str, str]:
     return {"code": ErrorCode.INTERNAL_ERROR, "message": type(exc).__name__}
 
 
-def _fail_if_still_owned(lease: JobLease, code: ErrorCode, message: str) -> bool:
+def _fail_if_still_owned(
+    lease: JobLease, code: ErrorCode, message: str, reason: AiOutage | None = None
+) -> bool:
     """False when the job is no longer this delivery's (nothing written). Best effort: if MongoDB is down too,
     the record stays running and the reaper settles it later (True: still this delivery's as far as known)."""
+    error = {"code": code, "message": message} | ({"reason": reason} if reason else {})
     try:
-        lease.update_job(failed_job_fields(lease.collection, {"code": code, "message": message}))
+        lease.update_job(failed_job_fields(lease.collection, error))
     except LeaseLost:
         return False
     except MONGO_UNAVAILABLE_ERRORS:
@@ -222,20 +236,43 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
         with contextlib.suppress(*MONGO_UNAVAILABLE_ERRORS):
             due_at = datetime.now(UTC) + timedelta(seconds=delay)
             try:
-                lease.update_job({"status": Status.QUEUED, "job.due_at": due_at, "job.lease_until": None})
+                lease.update_job(
+                    {
+                        "status": Status.QUEUED,
+                        "job.due_at": due_at,
+                        "job.lease_until": None,
+                        "job.retry": _retry_notice(lease, exc, due_at),
+                    }
+                )
             except LeaseLost:
                 given_back = False
         if not given_back:
             return False
         log.warning(
-            LogEvent.JOB_RETRY_SCHEDULED, record_id=lease.record_id, delay_seconds=delay, error=str(exc)
+            LogEvent.JOB_RETRY_SCHEDULED,
+            record_id=lease.record_id,
+            delay_seconds=delay,
+            error=str(exc),
+            reason=outage_reason(exc),
         )
         publish(lease.record_id)
         raise _retry_later(task, exc, delay) from exc
-    if not _fail_if_still_owned(lease, ErrorCode.UNAVAILABLE, describe_outage(exc)):
+    if not _fail_if_still_owned(lease, ErrorCode.UNAVAILABLE, describe_outage(exc), outage_reason(exc)):
         return False
     publish(lease.record_id)
     return True
+
+
+def _retry_notice(lease: JobLease, exc: Exception, retry_at: datetime) -> dict[str, Any]:
+    """What the status shows until the stage ends (a RetryNotice but its stage): why it waits, which try comes
+    when."""
+    return {
+        "reason": outage_reason(exc),
+        "message": describe_outage(exc),
+        "attempt": lease.attempts,
+        "max_attempts": Lease.MAX_ATTEMPTS,
+        "retry_at": retry_at,
+    }
 
 
 def _retry_later(task: Task, exc: Exception, delay: int) -> Exception:

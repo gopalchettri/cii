@@ -7,6 +7,7 @@ from typing import Any
 
 import structlog
 
+from app.ai.common import outage_reason
 from app.core.constants import (
     AuditAction,
     AuditTarget,
@@ -76,7 +77,7 @@ class EvidenceAtWrite:
             )
             fault = clipped_text(redact(f"{type(exc).__name__}: {exc}"), IntelLimits.FAILURE_REASON_CHARS)
             for key in keys:
-                self._threats[key]["intel_search"] = {"failure": fault}
+                self._threats[key]["intel_search"] = {"failure": fault, "outage": outage_reason(exc)}
             return
         for key, fields in found.items():
             self._threats[key].update(fields)

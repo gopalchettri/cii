@@ -17,6 +17,12 @@
   "EMBEDDINGS_BUILD": "embeddings_build",
   "INTEL_REFRESH": "intel_refresh"
  },
+ "AiOutage": {
+  "BUSY": "ai_busy",
+  "DOWN": "ai_down",
+  "TIMED_OUT": "ai_timed_out",
+  "UNREACHABLE": "ai_unreachable"
+ },
  "AiOutcome": {
   "ERROR": "error",
   "OK": "ok",

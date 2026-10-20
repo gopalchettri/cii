@@ -15,7 +15,7 @@ from contextlib import contextmanager
 import structlog
 from redis import Redis
 
-from app.core.constants import AiLimits, ErrorMessage, LogEvent
+from app.core.constants import AiLimits, AiOutage, ErrorMessage, LogEvent
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
 
@@ -96,7 +96,7 @@ class AiSlots:
             raise_if_lease_lost()
             if time.monotonic() + pause > deadline:
                 log.warning(LogEvent.AI_SLOTS_BUSY, cap=self._cap, waited_seconds=round(wait, 1))
-                raise Unavailable(ErrorMessage.AI_BUSY.format(seconds=round(wait)))
+                raise Unavailable(ErrorMessage.AI_BUSY.format(seconds=round(wait)), reason=AiOutage.BUSY)
             # Jittered, so the threads that found every slot busy together do not all poll again together.
             time.sleep(pause * random.uniform(0.5, 1.0))  # noqa: S311 — timing jitter, not a secret
             pause = min(pause * 2, AiLimits.SLOT_MAX_PAUSE_SECONDS)

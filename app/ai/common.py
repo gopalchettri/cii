@@ -14,8 +14,17 @@ import structlog
 
 from app.core import metrics
 from app.core.config import Settings
-from app.core.constants import LITELLM_MODEL_PREFIX, AiLimits, AiOutcome, ErrorCode, ErrorMessage, LogEvent
-from app.core.exceptions import JobFailed, LeaseLost, Unavailable
+from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    LITELLM_MODEL_PREFIX,
+    AiLimits,
+    AiOutage,
+    AiOutcome,
+    ErrorCode,
+    ErrorMessage,
+    LogEvent,
+)
+from app.core.exceptions import AppError, JobFailed, LeaseLost, Unavailable
 
 log = structlog.get_logger(__name__)
 
@@ -29,6 +38,24 @@ AI_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
     litellm.InternalServerError,
     litellm.BadGatewayError,
 )
+
+
+def ai_outage_of(error: Exception) -> AiOutage:
+    """Which outage a provider error is. A timeout is tested first: litellm's Timeout is a lost connection."""
+    if isinstance(error, litellm.Timeout):
+        return AiOutage.TIMED_OUT
+    if isinstance(error, litellm.APIConnectionError):
+        return AiOutage.UNREACHABLE
+    if isinstance(error, (litellm.RateLimitError, litellm.ServiceUnavailableError)):
+        return AiOutage.BUSY
+    return AiOutage.DOWN  # InternalServerError, BadGatewayError: it answered, with a server error
+
+
+def outage_reason(error: Exception) -> AiOutage | None:
+    """Which AI outage an error carries (an Unavailable's reason); None for any other error or outage (a
+    store, a SQL write still in progress)."""
+    reason = error.reason if isinstance(error, AppError) else None
+    return AiOutage(reason) if reason and reason in AiOutage else None
 
 
 #: Provider answers no retry can change: a refused or revoked key, no permission, a model the gateway does not
@@ -147,6 +174,24 @@ def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
     return call()  # the last try: its outage reaches the caller
 
 
+def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
+    """A provider outage, counted and logged, as the Unavailable that tells the UI which outage it was."""
+    metrics.AI_CALLS.labels(task, model, AiOutcome.UNAVAILABLE).inc()
+    # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it is
+    # logged: the class, the HTTP status and the reason only, never the message (it may hold the gateway URL).
+    outage = ai_outage_of(error)
+    status = getattr(error, "status_code", None)
+    log.warning(
+        LogEvent.AI_CALL_UNAVAILABLE,
+        task=task,
+        model=model,
+        error=type(error).__name__,
+        status=status,
+        reason=outage,
+    )
+    return Unavailable(AI_OUTAGE_MESSAGES[outage], reason=outage)
+
+
 @contextmanager
 def count_and_convert_ai_errors(
     task: str, model: str, unreadable_errors: tuple[type[Exception], ...] = ()
@@ -162,17 +207,7 @@ def count_and_convert_ai_errors(
     except Unavailable:
         raise  # no provider answered: counted already, or no slot was free (app/ai/slots.py)
     except AI_UNAVAILABLE_ERRORS as exc:
-        metrics.AI_CALLS.labels(task, model, AiOutcome.UNAVAILABLE).inc()
-        # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it
-        # is logged: the class and the HTTP status only, never the message (it may hold the gateway URL).
-        log.warning(
-            LogEvent.AI_CALL_UNAVAILABLE,
-            task=task,
-            model=model,
-            error=type(exc).__name__,
-            status=getattr(exc, "status_code", None),
-        )
-        raise Unavailable(ErrorMessage.AI_UNREACHABLE) from exc
+        raise _counted_outage(task, model, exc) from exc
     except AI_CONFIGURATION_ERRORS as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.ERROR).inc()
         status = getattr(exc, "status_code", None)

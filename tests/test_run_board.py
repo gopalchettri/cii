@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.core.constants import BoardMessage, ControlMatch, RunActionKind, RunKind, Status, Step
+from app.core.constants import AiOutage, BoardMessage, ControlMatch, RunActionKind, RunKind, Status, Step
 from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
@@ -150,6 +150,38 @@ def test_times_reasons_and_numbers_say_what_happened() -> None:
 def test_the_status_reads_nothing_of_the_plan_or_the_systems() -> None:
     """The status is read on every run check and live update: never the plan nor the context's systems."""
     assert not [key for key in SESSION_STATUS_FIELDS if key.startswith(("plan", "context.systems"))]
+
+
+#: The notice a stage given back after an AI timeout carries (app/worker/jobs.py _retry_or_fail).
+_RETRY = {
+    "reason": AiOutage.TIMED_OUT,
+    "message": "The AI service timed out: it did not answer in time.",
+    "attempt": 2,
+    "max_attempts": 5,
+    "retry_at": datetime(2026, 10, 20, 14, 3, 51, tzinfo=UTC),
+}
+
+
+@pytest.mark.parametrize("status", [Status.QUEUED, Status.RUNNING])
+def test_a_stage_waiting_out_an_ai_outage_says_why_which_try_and_when(status: Status) -> None:
+    threats = build_board(_run(status=status, job={"attempts": 2, "retry": _RETRY})).progress.retrying
+    assert threats is not None and threats.model_dump() == {"stage": Step.THREATS, **_RETRY}
+    writing = build_board(_run(**_written(status, **_SET), job={"retry": _RETRY})).progress.retrying
+    assert writing is not None and writing.stage == Step.SCENARIOS
+
+
+@pytest.mark.parametrize("status", [Status.DONE, Status.FAILED, Status.CANCELLED])
+def test_a_run_that_ended_never_shows_a_retry_notice(status: Status) -> None:
+    assert build_board(_run(status=status, job={"retry": _RETRY})).progress.retrying is None
+
+
+def test_a_run_the_ai_failed_names_the_outage_any_other_failure_none() -> None:
+    timed_out = {"code": "unavailable", "message": _RETRY["message"], "reason": AiOutage.TIMED_OUT}
+    assert (
+        build_board(_run(status=Status.FAILED, job={"error": timed_out})).progress.error_reason
+        == "ai_timed_out"
+    )
+    assert build_board(_run(status=Status.FAILED, job=_FAILED)).progress.error_reason is None
 
 
 def test_a_failed_run_says_why_and_a_failed_mapping_names_its_count() -> None:

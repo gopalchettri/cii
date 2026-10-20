@@ -12,6 +12,8 @@ import pytest
 
 from app import container
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AiOutage,
     AiTask,
     AuditAction,
     Collection,
@@ -130,6 +132,28 @@ def test_an_evidence_outage_holds_the_paths_back_and_a_later_try_writes_them_wit
     for scenario in stored:
         assert scenario["content"]["evidence_mode"] == EvidenceMode.SOURCE_DOCUMENTED
         assert scenario["content"]["evidence"][0]["supports"]  # the claim its marker supports
+
+
+@pytest.mark.parametrize("where", ["in the search", "around the search"])
+def test_an_ai_outage_in_the_evidence_search_reaches_the_job_as_that_outage(
+    intel: Intel, story_chat: Any, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """Owner 2026-10-20: with intelligence on, an AI down while the evidence is searched is told as "ai_down"
+    (the retry notice and the failed run read it), not as a reasonless evidence-search outage."""
+    if where == "in the search":  # the embedding or reranker call the finder makes
+        intel.finder.down, intel.finder.outage = True, AiOutage.DOWN
+    else:  # the batch search as a whole
+
+        def ai_down(*args: Any, **kwargs: Any) -> Any:
+            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
+
+        monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", ai_down)
+    record_id = _queued_run(["Threat 1", "Threat 2"])
+    lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
+    with pytest.raises(Unavailable) as error:
+        _write_batch(lease)
+    assert (error.value.reason, error.value.detail) == (AiOutage.DOWN, AI_OUTAGE_MESSAGES[AiOutage.DOWN])
+    assert _scenarios_of(record_id) == [] and not story_chat.asked(AiTask.WRITE_SCENARIO)
 
 
 def test_a_search_that_breaks_names_its_own_reason_never_a_missing_snapshot(

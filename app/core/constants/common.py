@@ -114,6 +114,24 @@ class AiOutcome(StrEnum):
     ERROR = "error"  # anything else: a refused key, a bad request, a local model that would not load
 
 
+class AiOutage(StrEnum):
+    """Why the AI service did not answer: the `reason` of a retry notice and of a stage that failed for it."""
+
+    DOWN = "ai_down"  # it answered with a server error (HTTP 500, 502)
+    UNREACHABLE = "ai_unreachable"  # no connection: refused, DNS, proxy or TLS
+    BUSY = "ai_busy"  # too many requests (HTTP 429), overloaded (HTTP 503), or no local AI slot free
+    TIMED_OUT = "ai_timed_out"  # no answer within the time limit
+
+
+#: What the UI is told for each outage: a retry notice's message, then the failed stage's.
+AI_OUTAGE_MESSAGES: Final = {
+    AiOutage.DOWN: "The AI service is down: it answered with a server error.",
+    AiOutage.UNREACHABLE: "The AI service cannot be reached: no connection could be made.",
+    AiOutage.BUSY: "The AI service is busy: overloaded or too many requests right now.",
+    AiOutage.TIMED_OUT: "The AI service timed out: it did not answer in time.",
+}
+
+
 class AiTask(StrEnum):
     SERVICE_MAPPER = "service_mapper"
     """Why an AI model is called (metrics label and tsg_ai_calls field)."""

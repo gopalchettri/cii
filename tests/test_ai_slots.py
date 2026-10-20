@@ -11,7 +11,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.ai import slots
 from app.ai.slots import AiSlots
-from app.core.constants import AiLimits
+from app.core.constants import AiLimits, AiOutage
 from app.core.database import get_redis_client
 from app.core.exceptions import LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
@@ -51,10 +51,11 @@ def test_no_free_slot_within_the_wait_is_unavailable() -> None:
     impatient = AiSlots(get_redis_client(), cap=1, wait_seconds=0.2)
     with (
         busy.hold_slot(hold_seconds=60),
-        pytest.raises(Unavailable, match="AI slot"),
+        pytest.raises(Unavailable, match="AI slot") as raised,
         impatient.hold_slot(hold_seconds=60),
     ):
         pass
+    assert raised.value.reason == AiOutage.BUSY
     with impatient.hold_slot(hold_seconds=60):  # freed when the first call ended
         pass
 

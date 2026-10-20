@@ -7,7 +7,9 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app.core.constants import Decision, RemediationProgress, Status
+from app.core.constants import AiOutage, Decision, RemediationProgress, Status
+from app.core.database import get_mongodb
+from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.models.remediation.examples import PLAN_REQUEST_EXAMPLES
 from app.models.remediation.plan import PlanDraft, RemediationStatus
 from app.models.remediation.requests import PlanRequest, RegisterData
@@ -225,3 +227,34 @@ def test_overall_progress_takes_the_first_that_applies(
     }
     shown = RemediationStatus.from_record(record)
     assert (shown.progress.overall, shown.latest_version) == (overall, 2)
+
+
+@pytest.mark.parametrize(
+    ("status", "shown"), [(Status.QUEUED, True), (Status.DONE, False), (Status.FAILED, False)]
+)
+def test_a_plan_waiting_out_an_ai_outage_says_so_while_it_generates_only(status: Status, shown: bool) -> None:
+    retry = {
+        "reason": AiOutage.BUSY,
+        "message": "The AI service is busy: overloaded or too many requests right now.",
+        "attempt": 1,
+        "max_attempts": 5,
+        "retry_at": datetime.now(UTC),
+    }
+    record = {
+        "_id": "r1",
+        "entity_id": 135,
+        "scenario_id": "s1",
+        "session_id": "run1",
+        "status": status,
+        "decision": Decision.PENDING,
+        "job": {"epoch": 1, "error": None, "retry": retry},
+        "updated_at": datetime.now(UTC),
+    }
+    # Read as the status endpoint and its live updates read it: through the status fields.
+    plans = get_mongodb()["test_remediation_status"]
+    plans.replace_one({"_id": record["_id"]}, record, upsert=True)
+    stored = RemediationRepository(plans).get("status", _id=record["_id"])
+    assert stored is not None
+    notice = RemediationStatus.from_record(stored).progress.retrying
+    assert (notice is not None) is shown
+    assert notice is None or (notice.stage, notice.reason, notice.attempt) == (None, AiOutage.BUSY, 1)

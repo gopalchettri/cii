@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from app.ai import TruncatedAiAnswer, UnreadableAiAnswer
-from app.core.constants import AiTask, ErrorMessage
+from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, AiTask
 from app.core.exceptions import Unavailable
 
 #: An answer: a JSON object, an exception to raise, or a function of the user prompt giving either.
@@ -108,8 +108,8 @@ class FakeEmbeddings:
         return self._vectors(texts)
 
     def embed_search_queries(self, texts: list[str]) -> np.ndarray:
-        if self.queries_down:
-            raise Unavailable(ErrorMessage.AI_UNREACHABLE)
+        if self.queries_down:  # as the embedding gateway raises a lost connection
+            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.UNREACHABLE], reason=AiOutage.UNREACHABLE)
         self.calls.append("query")
         return self._vectors(texts)
 

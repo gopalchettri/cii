@@ -278,6 +278,17 @@
     "title": "AdminJobStarted",
     "type": "object"
    },
+   "AiOutage": {
+    "description": "Why the AI service did not answer: the `reason` of a retry notice and of a stage that failed for it.",
+    "enum": [
+     "ai_down",
+     "ai_unreachable",
+     "ai_busy",
+     "ai_timed_out"
+    ],
+    "title": "AiOutage",
+    "type": "string"
+   },
    "ApiClientList": {
     "properties": {
      "items": {
@@ -3631,6 +3642,58 @@
     "title": "RemediationSummary",
     "type": "object"
    },
+   "RetryNotice": {
+    "description": "A stage waiting to try again after an outage; null once the stage succeeds, ends or fails.",
+    "properties": {
+     "attempt": {
+      "title": "Attempt",
+      "type": "integer"
+     },
+     "max_attempts": {
+      "title": "Max Attempts",
+      "type": "integer"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AiOutage"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "retry_at": {
+      "format": "date-time",
+      "title": "Retry At",
+      "type": "string"
+     },
+     "stage": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stage"
+     }
+    },
+    "required": [
+     "reason",
+     "message",
+     "attempt",
+     "max_attempts",
+     "retry_at"
+    ],
+    "title": "RetryNotice",
+    "type": "object"
+   },
    "ReviewFlag": {
     "description": "What a reviewer should look at on a card, in order of listing.",
     "enum": [
@@ -5389,6 +5452,16 @@
      "overall": {
       "$ref": "#/components/schemas/RemediationProgress"
      },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "review": {
       "$ref": "#/components/schemas/Decision"
      }
@@ -5412,6 +5485,16 @@
       },
       "title": "Error Message",
       "type": "object"
+     },
+     "error_reason": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AiOutage"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "last_next_set": {
       "anyOf": [
@@ -5439,6 +5522,16 @@
      },
      "overall": {
       "$ref": "#/components/schemas/RunOverall"
+     },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "scenario_count": {
       "$ref": "#/components/schemas/ScenarioCount"

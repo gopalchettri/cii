@@ -1,11 +1,23 @@
 """The bodies of the job controls (G214): the list of an organisation's work in progress, and what a delete
-removed or a plan cancel stopped. A run's cancel answers with its status body (models/scenario/views.py)."""
+removed or a plan cancel stopped; and the retry notice a run's and a plan's status show. A run's cancel
+answers with its status body (models/scenario/views.py)."""
 
 from datetime import datetime
 
 from pydantic import BaseModel
 
-from app.core.constants import JobKind, Status
+from app.core.constants import AiOutage, JobKind, Status
+
+
+class RetryNotice(BaseModel):
+    """A stage waiting to try again after an outage; null once the stage succeeds, ends or fails."""
+
+    stage: str | None = None  # threats or scenarios on a run; None on a remediation plan
+    reason: AiOutage | None  # ai_down, ai_unreachable, ai_busy, ai_timed_out; None: a store outage
+    message: str  # what to tell the user
+    attempt: int  # the try that failed
+    max_attempts: int  # the job fails after this many
+    retry_at: datetime  # when the next try starts
 
 
 class JobProgress(BaseModel):

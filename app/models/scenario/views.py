@@ -8,6 +8,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validat
 
 from app.core.constants import (
     ActionStatus,
+    AiOutage,
     ControlMatchStatus,
     Generation,
     GroundingStatus,
@@ -32,6 +33,7 @@ from app.core.constants import (
     ValidationStatus,
 )
 from app.models.external_intelligence.evidence_view import EvidenceView
+from app.models.jobs.views import RetryNotice
 from app.models.scenario.controls import ControlView
 
 #: A SQL Server INT id: a number above 2,147,483,647 is refused here (422), not inside the procedure (500).
@@ -88,6 +90,7 @@ class SessionStatus(BaseModel):
     user_id: str | None = None
     asset_name: str | None = None
     attempts: int = 0  # the job's tries so far: 0 = its stage has not started yet
+    retry: dict[str, Any] | None = None  # the outage its stage waits out: RetryNotice's fields but the stage
     timings: dict[str, float] = Field(default_factory=dict)  # threats_s, scenarios_s, controls_s
     last_next_set: dict[str, Any] | None = None  # {outcome, requested, delivered}
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
@@ -116,6 +119,7 @@ def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
         user_id=record.get("user_id"),
         asset_name=((record.get("context") or {}).get("asset") or {}).get("name"),
         attempts=job.get("attempts") or 0,
+        retry=job.get("retry"),
         timings=record.get("timings") or {},
         last_next_set=record.get("last_next_set"),
         last_regen=record.get("last_regen"),
@@ -226,6 +230,8 @@ class Progress(BaseModel):
     overall: RunOverall
     timings: StageTimings
     error_message: dict[str, str]  # {} when all is well; else {stage: why}
+    error_reason: AiOutage | None = None  # the run failed as the AI was down, unreachable, busy, timed out
+    retrying: RetryNotice | None = None  # a stage waiting to try again after an outage; only while active
     last_next_set: dict[str, Any] | None
     last_regen: dict[str, Any] | None
     scenario_count: ScenarioCount

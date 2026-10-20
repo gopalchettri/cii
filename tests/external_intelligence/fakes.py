@@ -9,6 +9,7 @@ from typing import Any
 from app import container
 from app.core.config import get_settings
 from app.core.constants import (
+    AiOutage,
     EvidenceDecision,
     EvidenceFact,
     EvidenceSearchFailure,
@@ -47,6 +48,7 @@ class FakeFinder:
     def __init__(self) -> None:
         self.calls: list[tuple[Sequence[EvidenceRequest], bool]] = []
         self.down = False
+        self.outage: AiOutage | None = None  # with `down`: the AI outage that stopped the search
         self.raises = False
         self.evidence: tuple[Evidence, ...] = (TECHNIQUE,)
 
@@ -75,8 +77,17 @@ class FakeFinder:
     ) -> EvidenceResult:
         failure = EvidenceSearchFailure.UNAVAILABLE if self.down else None
         considered = () if self.down else (Considered("T0839", 91.0, EvidenceDecision.USED),)
+        outage = self.outage if self.down else None
         search = EvidenceSearchRecord(
-            request.text, tuple(sorted(request.asset_types)), SNAPSHOT, 1.0, considered, stale, failure
+            request.text,
+            tuple(sorted(request.asset_types)),
+            SNAPSHOT,
+            1.0,
+            considered,
+            stale,
+            failure,
+            "",
+            outage,
         )
         return EvidenceResult(() if self.down else evidence, search)
 

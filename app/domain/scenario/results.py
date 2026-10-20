@@ -8,6 +8,7 @@ from app.core.constants import (
     CONTROLS_EXHAUSTED,
     ROUTE_WORDS,
     SCOPE_ASSET_KEY,
+    AiOutage,
     BoardMessage,
     ControlMatch,
     ControlMatchStatus,
@@ -35,6 +36,7 @@ from app.core.constants import (
 )
 from app.domain.scenario.plan import attacker_unsupported
 from app.models.external_intelligence.evidence_view import cited_evidence
+from app.models.jobs.views import RetryNotice
 from app.models.scenario.controls import control_view
 from app.models.scenario.views import (
     ActorView,
@@ -86,6 +88,8 @@ def build_board(run: SessionStatus) -> RunBoard:
             controls=_stage_seconds(run, "controls_s", controls),
         ),
         error_message=_stage_errors(run, controls),
+        error_reason=_failed_reason(run),
+        retrying=_retry_notice(run),
         last_next_set=_action_summary(run, RunActionKind.NEXT_SET, run.last_next_set),
         last_regen=_action_summary(run, RunActionKind.REGENERATE, run.last_regen),
         scenario_count=_scenario_count(run, threats),
@@ -109,6 +113,19 @@ def _job_stages(run: SessionStatus) -> tuple[StageState, StageState]:
     if run.status == Status.QUEUED and run.attempts == 0:
         return StageState.PENDING, StageState.PENDING
     return _STAGE_STATE[run.status], StageState.PENDING
+
+
+def _failed_reason(run: SessionStatus) -> AiOutage | None:
+    """Which AI outage failed the run; None for any other failure."""
+    reason = (run.error or {}).get("reason") if run.status == Status.FAILED else None
+    return AiOutage(reason) if reason and reason in AiOutage else None
+
+
+def _retry_notice(run: SessionStatus) -> RetryNotice | None:
+    """The outage the run's stage waits out, while the run is queued or running only."""
+    if not run.retry or run.status not in (Status.QUEUED, Status.RUNNING):
+        return None
+    return RetryNotice(stage=run.step, **run.retry)
 
 
 def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:

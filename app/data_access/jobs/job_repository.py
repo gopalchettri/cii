@@ -37,12 +37,14 @@ def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[st
 
 
 def ended_job_fields(status: Status, now: datetime | None = None) -> dict[str, Any]:
-    """A job's last fields on every path that ends one: `active` false frees the asset, the lease ends."""
+    """A job's last fields on every path that ends one: `active` false frees the asset, the lease ends, and
+    no retry notice is left."""
     return {
         "status": status,
         "active": False,
         "finished_at": now or datetime.now(UTC),
         "job.lease_until": None,
+        "job.retry": None,
     }
 
 

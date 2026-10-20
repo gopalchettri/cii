@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.core.constants import (
+    AiOutage,
     Applicability,
     EvidenceDecision,
     EvidenceRole,
@@ -97,13 +98,15 @@ class EvidenceSearchRecord:
     # Rerank scores are 0-100 ranking scores whose scale differs per model and the threshold is cut on them:
     # the audit row is only readable next to the model that gave the scores.
     rerank_model: str = ""
+    outage: AiOutage | None = None  # the AI outage that stopped the search: what the held-back path tells
 
     def as_doc(self) -> dict[str, Any]:
-        """The audit as stored, its tuples as lists."""
-        return asdict(self) | {
+        """The audit as stored, its tuples as lists; `outage` only when the AI stopped the search."""
+        doc = asdict(self) | {
             "asset_types": list(self.asset_types),
             "considered": [c.as_doc() for c in self.considered],
         }
+        return doc if self.outage else {key: value for key, value in doc.items() if key != "outage"}
 
 
 @dataclass(frozen=True)

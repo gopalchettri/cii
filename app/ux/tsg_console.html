@@ -779,6 +779,8 @@ $(function () {
   }
   // progress.error_message as one line: {} when all is well, else {stage: why} (also a partial result's reason).
   function runErrors(s) { var m = prog(s).error_message || {}; return Object.keys(m).map(function (k) { return k + ": " + m[k]; }).join(" · "); }
+  // progress.retrying: a stage waiting out an AI or store outage (reason ai_down, ai_unreachable, ai_busy, ai_timed_out).
+  function retryText(n) { return n.message + " Retrying automatically: try " + (n.attempt + 1) + " of " + n.max_attempts + " at " + fmtTime(n.retry_at) + "."; }
   // last_next_set {outcome, requested, delivered, reason, remaining, epoch} / last_regen {outcome, requested, replaced, epoch}, or "".
   function lastText(x, key) { return x ? x.outcome + " · " + (x[key] != null ? x[key] : "?") + " of " + (x.requested != null ? x.requested : "?") + " " + key : ""; }
 
@@ -889,6 +891,7 @@ $(function () {
       var st = p[key] || "PENDING", why = em[key];
       var d = st === "PENDING" ? idle : st === "ERROR" ? why || "Failed" : detail + (why ? " · " + why : "");
       if (tm[key] != null) d += " · took " + Number(tm[key]).toFixed(1) + " s";
+      if (p.retrying && p.retrying.stage === key) return { t: t, s: "wait", d: retryText(p.retrying) };
       return { t: t, s: RAIL[st] || "idle", d: d };
     }
     steps.push(stage("threats", "2 · Identify threats & freeze plan", "Waiting",
@@ -945,6 +948,7 @@ $(function () {
       row("Status", (s.session_status || "-") + " · " + overallText(p.overall)) +
       (p.last_next_set ? row("Last next set", lastText(p.last_next_set, "delivered")) : "") +
       (p.last_regen ? row("Last regenerate", lastText(p.last_regen, "replaced")) : "") +
+      (p.retrying ? row("Retrying · " + (p.retrying.reason || "outage"), retryText(p.retrying)) : "") +
       Object.keys(em).map(function (k) { return row("Note · " + k, em[k]); }).join(""));
   }
 
@@ -1784,6 +1788,7 @@ $(function () {
       (p.shown_version ? '<span class="badge">Showing v' + esc(p.shown_version) + "</span>" : "") +
       (p.register_data && p.register_data.risk_level ? plLevelBadge(p.register_data.risk_level, "Risk: ") : "") + "</div>";
     if (RUNNING(p.latest_status)) h += '<div class="callout info">' + plSpin() + " Version " + esc(p.latest_version) + " is " + esc(p.latest_status) + " &mdash; this updates automatically.</div>";
+    if ((p.progress || {}).retrying) h += '<div class="callout warn"><code>' + esc(p.progress.retrying.reason || "outage") + "</code> " + esc(retryText(p.progress.retrying)) + "</div>";
     if (p.latest_status === "failed" && p.error) h += '<div class="callout err"><b>Version ' + esc(p.latest_version) + " failed &mdash; <code>" + esc(p.error.code) + "</code>.</b> " + esc(p.error.message) + "</div>";
     if (sc.statement) h += '<div class="section-title">Scenario</div><p class="clamp" style="margin:0">' + esc(sc.statement) + "</p>";
     if (p.plan) h += plContent(p.plan);

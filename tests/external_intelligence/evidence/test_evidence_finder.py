@@ -5,6 +5,8 @@ import re
 from typing import Any
 
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AiOutage,
     Applicability,
     AssetType,
     EvidenceDecision,
@@ -196,6 +198,7 @@ def test_an_embedding_outage_leaves_every_request_without_evidence_and_says_why(
         [request_of(), request_of("Threat: other")], stale=False, approved=ALL_SOURCES
     )
     assert all(r.evidence == () and r.search.failure == EvidenceSearchFailure.UNAVAILABLE for r in results)
+    assert all(r.search.outage == AiOutage.UNREACHABLE for r in results)  # the gateway's own outage
     assert (summary.threats_searched, summary.threats_with_evidence) == (2, 0)
 
 
@@ -212,6 +215,26 @@ def test_a_rerank_outage_costs_only_the_request_it_hit() -> None:
     )[0]
     assert refs(first) == {"T1"} and second.evidence == ()
     assert second.search.failure == EvidenceSearchFailure.UNAVAILABLE
+
+
+def test_an_ai_outage_in_the_search_tells_which_and_the_held_path_says_so() -> None:
+    """Owner 2026-10-20: the UI learns the AI timed out (or was down, unreachable, busy), never only that the
+    evidence search could not be made."""
+
+    class TimedOutFor(ScoredBy):
+        def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+            if "phishing" in query:
+                raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
+            return super().score_relevance(query, documents)
+
+    finder, _ = finder_of([technique_doc("T1")], TimedOutFor())
+    found, lost = finder.find_evidence(
+        [request_of(), request_of("Threat: phishing ransomware")], stale=False, approved=ALL_SOURCES
+    )[0]
+    assert lost.search.outage == AiOutage.TIMED_OUT and "outage" not in found.search.as_doc()
+    problem = evidence_problem({"intel_search": lost.search.as_doc()})
+    assert problem is not None
+    assert (problem.reason, problem.detail) == (AiOutage.TIMED_OUT, AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT])
 
 
 def test_all_requests_of_a_batch_are_embedded_in_one_call() -> None:
