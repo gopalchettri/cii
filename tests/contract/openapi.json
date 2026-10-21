@@ -2199,27 +2199,6 @@
     "title": "MappingListItem",
     "type": "object"
    },
-   "MappingPrompts": {
-    "properties": {
-     "system_prompt": {
-      "title": "System Prompt",
-      "type": "string"
-     },
-     "user_prompts": {
-      "items": {
-       "type": "string"
-      },
-      "title": "User Prompts",
-      "type": "array"
-     }
-    },
-    "required": [
-     "system_prompt",
-     "user_prompts"
-    ],
-    "title": "MappingPrompts",
-    "type": "object"
-   },
    "MappingReview": {
     "enum": [
      "pending",
@@ -2301,16 +2280,6 @@
       "title": "Mapping Id",
       "type": "string"
      },
-     "prompts": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/MappingPrompts"
-       },
-       {
-        "type": "null"
-       }
-      ]
-     },
      "retrying": {
       "anyOf": [
        {
@@ -2323,9 +2292,6 @@
      },
      "review": {
       "$ref": "#/components/schemas/MappingReview"
-     },
-     "selected_service": {
-      "$ref": "#/components/schemas/SelectedService"
      },
      "status": {
       "$ref": "#/components/schemas/Status"
@@ -2351,7 +2317,6 @@
      "status",
      "generation",
      "review",
-     "selected_service",
      "upstream_services",
      "downstream_services",
      "bidirectional_services",

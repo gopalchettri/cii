@@ -1464,13 +1464,7 @@ $(function () {
       return new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, rows: rows.map(function (r) {
         return new D.TableRow({ children: [cell(r[0], true, 28), cell(r[1], false, 72)] }); }) });
     };
-    // Text exactly as written: one paragraph per line, blank lines kept, in a fixed-width font.
-    var mono = function (text) {
-      return String(text || "").split("\n").map(function (line) {
-        return new D.Paragraph({ children: [run(line, { font: "Consolas", size: 16 })], spacing: { after: 0 } });
-      });
-    };
-    return { run: run, P: P, paras: paras, H: H, table: table, terms: terms, mono: mono };
+    return { run: run, P: P, paras: paras, H: H, table: table, terms: terms };
   }
   // A file name Windows and macOS accept.
   function safeName(text) { return String(text).replace(/[\\/:*?"<>|]+/g, " ").trim(); }
@@ -2085,7 +2079,7 @@ $(function () {
     return flags.filter(function (v) { return v == null; }).length;
   }
   function smRender(m) {
-    var s = m.selected_service || {}, sum = m.summary || {}, running = m.status === "queued" || m.status === "running";
+    var sum = m.summary || {}, running = m.status === "queued" || m.status === "running";
     var open = !running && m.review === "pending", pending = smPending(m);
     var dd = function (k, v) { return "<dt>" + esc(k) + "</dt><dd>" + v + "</dd>"; };
     var reviewCls = { accepted: "green", rejected: "red" }[m.review] || "amber";
@@ -2094,10 +2088,6 @@ $(function () {
       dd("Mapping id", '<span class="mono">' + esc(m.mapping_id) + "</span>") +
       dd("Status", '<span class="badge ' + statusCls + '">' + esc(m.status) + (running ? ' <span class="spin"></span>' : "") + "</span> generation " + esc(m.generation)) +
       dd("Review", '<span class="badge ' + reviewCls + '">' + esc(m.review) + "</span>" + (open && pending ? ' <span class="muted">' + pending + " relationship(s) still need a decision</span>" : "")) +
-      dd("Service", "<b>" + esc(s.service_name) + "</b>" + (s.service_id ? ' <span class="faint">#' + esc(s.service_id) + "</span>" : "")) +
-      dd("Sector", esc([s.sector, s.subsector].filter(Boolean).join(" / "))) +
-      dd("Entities", esc((s.entity_names || []).join(", "))) +
-      (s.operational_context ? dd("Operational context", esc(s.operational_context)) : "") +
       dd("Summary", esc(sum.unique_services || 0) + " services · " + esc(sum.upstream_count || 0) + " of " + esc(sum.max_upstream) +
          " upstream · " + esc(sum.downstream_count || 0) + " of " + esc(sum.max_downstream) + " downstream") +
       dd("Updated", esc(fmtTime(m.updated_at))) + "</dl>";
@@ -2106,7 +2096,7 @@ $(function () {
     html += '<div class="row" style="margin-top:12px">' +
       (open ? '<button class="btn success" data-sm="accept">Accept mapping</button><button class="btn danger" data-sm="reject">Reject mapping</button>' : "") +
       (running ? "" : '<button class="btn" data-sm="regenerate">Regenerate</button>') +
-      (m.status === "done" ? '<button class="btn" data-sm="export" title="This mapping, its inputs and its services, as a Word document">Export to Word</button>' : "") +
+      (m.status === "done" ? '<button class="btn" data-sm="export" title="This mapping and its services, as a Word document">Export to Word</button>' : "") +
       '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';
     var body = smOneWay("Upstream: services it depends on", m.upstream_services, "upstream", open) +
       smOneWay("Downstream: services that depend on it", m.downstream_services, "downstream", open) + smBoth(m.bidirectional_services, open);
@@ -2115,17 +2105,7 @@ $(function () {
     sm.view = m;
   }
 
-  // ---------- Export to Word: one mapping, the inputs it was made from and its upstream and downstream services ----------
-  var SM_PROMPT_PARTS = [
-    ["System prompt", "The fixed rules the AI follows, the same for every mapping (app/domain/service_mapper/prompts/generate.txt)."],
-    ["User prompt", "This mapping's data as one JSON object, made of the parts below."],
-    ["selected_service", "The input parameters above."],
-    ["sector_taxonomy", "Every sector and subsector in the onboarding catalog."],
-    ["upstream_count, downstream_count", "How many services to return in each direction."],
-    ["candidate_services", "Catalog services found by searching for this service, its upstream needs and its downstream users: " +
-                           "one per sector first, then the rest, until the prompt reaches its size limit."],
-    ["already_selected", "Only in call 2, which is made when a direction came back short: the services already found, so none is repeated."]];
-  function smIndentedJson(text) { try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; } }
+  // ---------- Export to Word: one mapping and its upstream and downstream services ----------
   function smDecisionWord(v) { return v === true ? "Accepted" : v === false ? "Rejected" : "Pending"; }
   // One direction's rows: its one-way services, then the both-direction ones read from that side.
   function smDocxRows(m, dir) {
@@ -2139,7 +2119,7 @@ $(function () {
     });
   }
   function smDocx(D, m) {
-    var k = docxParts(D), s = m.selected_service || {}, title = "Service map: " + s.service_name;
+    var k = docxParts(D), title = "Service map: " + m.mapping_id;
     var direction = function (heading, dir) {
       var rows = smDocxRows(m, dir);
       return [k.H(heading + " (" + rows.length + ")", D.HeadingLevel.HEADING_1),
@@ -2150,22 +2130,8 @@ $(function () {
       new D.Paragraph({ text: title, heading: D.HeadingLevel.TITLE }),
       k.H("Mapping", D.HeadingLevel.HEADING_1),
       k.terms([["Mapping id", m.mapping_id], ["Status", m.status], ["Generation", m.generation], ["Review", m.review],
-               ["Created", fmtTime(m.created_at)], ["Updated", fmtTime(m.updated_at)], ["Exported", new Date().toLocaleString()]]),
-      k.H("Input parameters", D.HeadingLevel.HEADING_1),
-      k.terms([["Service name", s.service_name], ["Service description", s.service_description], ["Sector", s.sector],
-               ["Subsector", s.subsector], ["Entity names", (s.entity_names || []).join(", ")]])
+               ["Created", fmtTime(m.created_at)], ["Updated", fmtTime(m.updated_at)], ["Exported", new Date().toLocaleString()]])
     ].concat(direction("Upstream: services it depends on", "upstream"), direction("Downstream: services that depend on it", "downstream"));
-    body.push(k.H("AI prompts", D.HeadingLevel.HEADING_1, true), k.H("How the prompt is built", D.HeadingLevel.HEADING_2), k.terms(SM_PROMPT_PARTS));
-    if (!m.prompts) body.push(k.P("Not recorded: this generation ran before prompts were kept. Regenerate the mapping to record them."));
-    else {
-      body.push(k.H("System prompt", D.HeadingLevel.HEADING_2));
-      body = body.concat(k.mono(m.prompts.system_prompt));
-      m.prompts.user_prompts.forEach(function (prompt, i) {
-        body.push(k.H("User prompt, call " + (i + 1) + (i ? " (top-up for a short direction)" : " (first ask)"), D.HeadingLevel.HEADING_2),
-                  k.P("Shown indented for reading; the AI received the same JSON on one line.", { italics: true, color: "555555" }));
-        body = body.concat(k.mono(smIndentedJson(prompt)));
-      });
-    }
     // The mapping id on every page, so a printed or forwarded page can be traced back.
     var header = new D.Header({ children: [k.P("Mapping " + m.mapping_id, { size: 18, color: "555555" })] });
     return new D.Document({ creator: "TSG Console", title: title, styles: { default: { document: { run: { font: "Calibri", size: 22 } } } },
@@ -2174,8 +2140,7 @@ $(function () {
   function smExportDocx($b, m) {
     busy($b, true);
     loadDocx().then(function (D) {
-      var name = "Service map - " + safeName((m.selected_service || {}).service_name || "service") + " - " + safeName(m.mapping_id) +
-                 " - " + new Date().toISOString().slice(0, 10) + ".docx";
+      var name = "Service map - " + safeName(m.mapping_id) + " - " + new Date().toISOString().slice(0, 10) + ".docx";
       return saveDocx(D, smDocx(D, m), name).then(function () { toast("Word document ready", "Mapping " + m.mapping_id + " exported", "ok"); });
     }).catch(function (e) {
       toast("Could not build the Word document", window.docx ? e.message : "Could not load the Word library; check the internet connection.", "err");
@@ -2230,7 +2195,7 @@ $(function () {
         return;
       }
       withBusy($b, api("POST", root + "/decision", { action: act }, { quiet: true, expected: [409] }))
-        .done(function (m) { toast("Mapping " + m.review, m.selected_service.service_name); smRender(m); })
+        .done(function (m) { toast("Mapping " + m.review, m.mapping_id); smRender(m); })
         .fail(function (e) {
           var n = ((e.details || {}).pending || []).length;
           if (e.reason === "relationships_pending") toast("Decide every relationship first", n + " relationship(s) are still pending.", "warn");

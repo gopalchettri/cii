@@ -189,13 +189,11 @@ def test_a_short_direction_gets_one_more_ai_call_that_adds_no_duplicates() -> No
         },
     ]
     prompts: list[dict[str, Any]] = []
-    sent: list[tuple[str, str]] = []
 
     class Chat:
         max_prompt_chars = 200_000
 
-        def ask_for_checked_json(self, _task, system, prompt, check):
-            sent.append((system, prompt))
+        def ask_for_checked_json(self, _task, _system, prompt, check):
             prompts.append(json.loads(prompt))
             answer = answers.pop(0)
             assert check(answer) == []
@@ -215,9 +213,6 @@ def test_a_short_direction_gets_one_more_ai_call_that_adds_no_duplicates() -> No
         "Grid Balancing Service",
         "Water Treatment Service",
     ]
-    system = (Path(generate.__file__).parent / "prompts" / "generate.txt").read_text(encoding="utf-8")
-    assert result["prompts"] == {"system_prompt": system, "user_prompts": [prompt for _, prompt in sent]}
-    assert all(sent_system == system for sent_system, _ in sent)
 
 
 def test_the_prompt_reads_the_counts_and_writes_none_itself() -> None:

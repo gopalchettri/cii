@@ -129,23 +129,15 @@ class MappingSummary(BaseModel):
     max_downstream: int
 
 
-class MappingPrompts(BaseModel):
-    system_prompt: str
-    user_prompts: list[str]  # one per AI call whose answer the generation used: the first, then any top-up
-
-
 class MappingView(BaseModel):
     mapping_id: str
     status: Status
     generation: int
     review: MappingReview
-    selected_service: SelectedService
     upstream_services: list[DependencyService]
     downstream_services: list[DependencyService]
     bidirectional_services: list[BidirectionalService]
     summary: MappingSummary
-    # The exact prompts sent to the AI; None until a generation finishes, and for ones made before they were kept.
-    prompts: MappingPrompts | None = None
     error: MappingError | None = None
     retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
     created_at: datetime
