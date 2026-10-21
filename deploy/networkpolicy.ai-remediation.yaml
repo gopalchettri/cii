@@ -18,7 +18,8 @@ spec:
     - from: [{ podSelector: { matchLabels: { tsg-observability: "true" } } }]
       ports: [{ port: 9100, protocol: TCP }]
 
-# Out, and nothing else: DNS, the proxy (AI gateway, intelligence feeds), Redis, SQL Server, MongoDB.
+# Out, and nothing else: DNS, the proxy (intelligence feeds), the AI gateway directly (G264), Redis, SQL Server,
+# MongoDB.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -37,6 +38,8 @@ spec:
         - { port: 5353, protocol: TCP }
     - to: [{ ipBlock: { cidr: 10.61.192.2/32 } }]
       ports: [{ port: 8080, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.231.255.253/32 } }]  # the AI gateway, called directly (G264)
+      ports: [{ port: 443, protocol: TCP }]
     - to: [{ ipBlock: { cidr: 10.228.146.4/32 } }]
       ports: [{ port: 6379, protocol: TCP }]
     - to: [{ ipBlock: { cidr: 10.228.146.2/32 } }]

@@ -26,7 +26,8 @@ spec:
 
 # Out, and nothing else (v1's addresses):
 #   DNS    openshift-dns, port 53 and 5353 (where OpenShift's DNS pods really listen)
-#   proxy  10.61.192.2:8080   the AI gateway (llmapi.govai.ae) and the intelligence feeds
+#   proxy  10.61.192.2:8080   the intelligence feeds (every outside URL)
+#   AI     10.231.255.253:443 the AI gateway (llmapi.govai.ae), called directly: CII_AI_BYPASS_PROXY=true (G264)
 #   Redis  10.228.146.4:6379  queues, live updates, caches: blocked, a worker starts but never receives a job
 #   SQL    10.228.146.2:1444  the library and the asset facts
 #   Mongo  10.228.146.3:27018 every run, scenario, plan and job
@@ -48,6 +49,8 @@ spec:
         - { port: 5353, protocol: TCP }
     - to: [{ ipBlock: { cidr: 10.61.192.2/32 } }]
       ports: [{ port: 8080, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.231.255.253/32 } }]  # the AI gateway, called directly (G264)
+      ports: [{ port: 443, protocol: TCP }]
     - to: [{ ipBlock: { cidr: 10.228.146.4/32 } }]
       ports: [{ port: 6379, protocol: TCP }]
     - to: [{ ipBlock: { cidr: 10.228.146.2/32 } }]
