@@ -2978,7 +2978,9 @@ Where each line comes from:
    asset itself takes the asset's code. `COMPATIBLE_ASSET_TYPES` maps IT to {IT, IT\OT} and OT to
    {OT, IT\OT}. A control fits when its `AssetType` is in that set. A control with no `AssetType`, or with a
    value that is not IT, OT or IT\OT, always fits (`asset_type_fits`, `app/core/asset_types.py`).
-2. **AI controls.** `is_about_ai` checks the threat's type and name against `Controls.AI_THREAT_WORDS`
+2. **AI controls.** `is_about_ai` checks the threat's type and name, and the scenario text (D22), against
+   `Controls.AI_THREAT_WORDS`; the names of the real-world attackers the cited evidence names ("the Anthropic
+   AI-orchestrated Campaign", `REAL_WORLD_USER`) never count
    (AI, GenAI, LLM, ML, "artificial intelligence", "machine learning", "large language model"). When it is
    false, no control of domain `Controls.AI_DOMAIN` ("Artificial Intelligence & Autonomous Technologies")
    takes part.
@@ -3565,7 +3567,7 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
      already identified.
 
    It stores the input as the version's snapshot.
-3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-3`). It checks every identified
+3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-4`). It checks every identified
    control for relevance only: `retained`, `replaced` by one of the alternatives, or `flagged_for_review`. It
    writes only the not implemented (implement) and partially implemented (extend) controls that passed, each
    action with its supporting systems, and the parts of the risk no control covers. It sees the window's

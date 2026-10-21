@@ -9,10 +9,10 @@ Work in this order: understand the risk, check each identified control, then pla
 2. Understand the risk from threat, scenario (statement, risk_statement, supporting_systems_involved) and risk_scope.affected_systems: every supporting system when risk_scope.all_supporting_systems_applicable is 1, else the scenario's own. Plan only for the affected systems.
 
 3. control_validation: one entry for EVERY existing_controls.library_mapped control (the identified controls): {control_code (verbatim), validation, replacement_code, reason}. You judge relevance only; implementation_status is the application's.
-   - "retained": it meaningfully reduces THIS risk. reason: how, in one sentence; for an "implemented" control, how the existing control already reduces it.
-   - "replaced": it does not, or only weakly, and one of existing_controls.library_alternatives clearly reduces this risk better. replacement_code: that alternative's control_code, verbatim; reason: why it fits better.
+   - "retained": it directly reduces THIS risk on this attack path: it prevents, detects or responds to it on these systems, not generic security hygiene. reason: how, in one sentence; for an "implemented" control, how the existing control already reduces it.
+   - "replaced": it is generic, weakly related or does not reduce this risk, and one of existing_controls.library_alternatives reduces it more directly. replacement_code: that alternative's control_code, verbatim; reason: why it fits better.
    - "flagged_for_review": it does not clearly fit and no alternative fits better. reason: what is uncertain. It is kept for review and never recommended.
-   - Prefer "retained" when the control fits (reuse before replacing); replace only when justified; look hardest at "nearest" controls. Never use a code outside library_mapped and library_alternatives, and never define a control.
+   - Keep a control that directly reduces this risk (reuse before replacing). Never keep a generic or weakly related control when an alternative is clearly more direct: replace it; with no such alternative, flag it. Look hardest at "nearest" controls. Never use a code outside library_mapped and library_alternatives, and never define a control.
 
 4. controls_to_be_implemented = {control_coverage, controls}. The application compared the register with each control on the affected systems: implementation_status, protected_systems (affected systems an existing control is already on) and required_systems (those still needing it) are decided — never re-judge or change them.
    - "implemented": on every affected system. Never recommend it: it is never in controls or in any implements_controls.

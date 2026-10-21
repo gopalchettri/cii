@@ -21,6 +21,7 @@ from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     FINAL_FINDINGS,
     FINDING_SEVERITIES,
+    REAL_WORLD_USER,
     STORY_FINDING_SEVERITIES,
     ActorRole,
     AiOutage,
@@ -316,11 +317,7 @@ def _without_ids(text: str) -> str:
     return " ".join(_URL.sub("", ID_IN_TEXT.sub("", text)).replace("()", "").split())
 
 
-#: Who used a technique, as EvidenceFact.USED_BY and CAMPAIGN_USED say it; a campaign ATT&CK names only by
-#: its id (C0027) is no name.
-_USER = re.compile(
-    r"(?P<name>.+?), [^,]+, has used this technique\.|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
-)
+_USER = re.compile(REAL_WORLD_USER)
 
 
 def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str] | None:

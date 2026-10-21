@@ -40,7 +40,48 @@ _ACCESS = LibraryControl(
 def test_a_threat_is_about_ai_only_when_its_type_or_name_says_so(
     threat: dict[str, str], about_ai: bool
 ) -> None:
-    assert is_about_ai(threat) is about_ai
+    assert is_about_ai({"threat": threat}) is about_ai
+
+
+_API_THREAT = {"type": "Web/API Exploitation", "name": "Unauthorized API or record access"}
+_CITED = {
+    "facts": [
+        "The Anthropic AI-orchestrated Campaign used this technique.",
+        "APT41, a group, has used this technique.",
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("statement", "evidence", "about_ai"),
+    [
+        ("The chatbot API forwards questions to a large language model with incident records.", [], True),
+        ("The attacker abuses the operators' AI assistant to close incidents.", [], True),
+        (
+            "In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique.",
+            [_CITED],
+            False,
+        ),
+        ("In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique.", [], True),
+        ("APT41 (AI-assisted, say its reports) is not named in the facts this way.", [_CITED], True),
+        ("An attacker floods the public API with crafted requests.", [_CITED], False),
+    ],
+    ids=[
+        "llm-in-text",
+        "ai-in-text",
+        "cited-campaign-never-counts",
+        "uncited-name-counts",
+        "only-the-name-goes",
+        "no-ai",
+    ],
+)
+def test_the_scenario_text_counts_but_a_cited_attackers_name_never(
+    statement: str, evidence: list[dict[str, list[str]]], about_ai: bool
+) -> None:
+    """A non-AI threat type whose scenario is about an LLM or AI is about AI; "AI" in the name of a real-world
+    campaign the evidence cites is not."""
+    content = {"threat": _API_THREAT, "statement": statement, "evidence": evidence}
+    assert is_about_ai(content) is about_ai
 
 
 def test_the_search_leaves_out_ai_controls_only_when_asked() -> None:

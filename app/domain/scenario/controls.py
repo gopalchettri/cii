@@ -10,6 +10,7 @@ from app.ai import RerankModel
 from app.core.config import get_settings
 from app.core.constants import (
     EMBEDDING_SOURCE_TABLE,
+    REAL_WORLD_USER,
     ControlMatch,
     ControlMessage,
     Controls,
@@ -30,6 +31,7 @@ from app.search.snapshot import LibrarySnapshot
 from app.search.texts import describe_control
 
 _ABOUT_AI = re.compile(Controls.AI_THREAT_WORDS)
+_REAL_WORLD_USER = re.compile(REAL_WORLD_USER)
 _Scored = list[tuple[LibraryControl, float]]
 
 
@@ -87,7 +89,7 @@ class ControlMapper:
             context.asset.get("category_code"), (system.get("category_code") for system in systems)
         )
         query = control_query(content, context, systems)
-        about_ai = is_about_ai(content.get("threat") or {})
+        about_ai = is_about_ai(content)
         found, other_type = _compatible_else_nearest(snapshot, query.text, rule, allowed, about_ai)
         candidates = [control for control, _ in found]
         scores = self._rerank.score_relevance(
@@ -109,9 +111,16 @@ def _compatible_else_nearest(
     return nearest, ControlMessage.OTHER_TYPE.format(types=types)
 
 
-def is_about_ai(threat: dict[str, Any]) -> bool:
-    """Whether a card's threat is about AI, by its type and name: only such a card may get an AI control."""
-    return bool(_ABOUT_AI.search(f"{threat.get('type') or ''} {threat.get('name') or ''}"))
+def is_about_ai(content: dict[str, Any]) -> bool:
+    """Whether a card is about AI, by its threat's type and name or its scenario text: only such a card may
+    get an AI control. The real-world attackers its evidence names (an "AI-orchestrated Campaign") never
+    count."""
+    threat, statement = content.get("threat") or {}, content.get("statement") or ""
+    for entry in content.get("evidence") or []:
+        for fact in entry.get("facts") or []:
+            if user := _REAL_WORLD_USER.fullmatch(str(fact)):
+                statement = statement.replace(user["name"] or user["campaign"], "")
+    return bool(_ABOUT_AI.search(f"{threat.get('type') or ''} {threat.get('name') or ''} {statement}"))
 
 
 def _scenario_systems(content: dict[str, Any], context: FrozenContext) -> list[dict[str, Any]]:

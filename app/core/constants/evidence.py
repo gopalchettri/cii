@@ -164,6 +164,11 @@ class VersionWords(StrEnum):
 
 
 #: Lower bound of a 0-10 score and its word, highest first; a score under the last bound says nothing.
+#: Who used a technique, as EvidenceFact.USED_BY and CAMPAIGN_USED say it; a campaign ATT&CK names only by
+#: its id (C0027) is no name.
+REAL_WORLD_USER: Final = (
+    r"(?P<name>.+?), [^,]+, has used this technique\.|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
+)
 SEVERITY_BANDS: Final = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
 
 #: How a source names the kind of actor behind a technique.
