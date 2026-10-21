@@ -457,7 +457,7 @@
     "type": "object"
    },
    "ControlAssessmentView": {
-    "description": "One scenario control against the register: where it stands on the affected systems and whether the\nplan recommends it.",
+    "description": "One control the plan weighed (identified for the scenario, or the library alternative replacing one):\nits check against the risk, where it stands on the affected systems and whether the plan recommends it.",
     "properties": {
      "control_code": {
       "title": "Control Code",
@@ -508,6 +508,25 @@
       "title": "Recommended",
       "type": "boolean"
      },
+     "replaced_by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Replaced By"
+     },
+     "replaces": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Replaces",
+      "type": "array"
+     },
      "required_systems": {
       "default": [],
       "items": {
@@ -515,6 +534,27 @@
       },
       "title": "Required Systems",
       "type": "array"
+     },
+     "validation": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ControlValidation"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "validation_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Validation Reason"
      }
     },
     "required": [
@@ -599,6 +639,16 @@
      "compensating"
     ],
     "title": "ControlType",
+    "type": "string"
+   },
+   "ControlValidation": {
+    "description": "What the plan's check of an identified control against the scenario's risk decided (owner,\n2026-10-21).",
+    "enum": [
+     "retained",
+     "replaced",
+     "flagged_for_review"
+    ],
+    "title": "ControlValidation",
     "type": "string"
    },
    "ControlView": {
@@ -1209,6 +1259,16 @@
     ],
     "title": "EvidenceView",
     "type": "object"
+   },
+   "GapKind": {
+    "description": "An unresolved gap of a plan, reported apart from its controls.",
+    "enum": [
+     "flagged_control",
+     "no_validated_control",
+     "uncovered_risk"
+    ],
+    "title": "GapKind",
+    "type": "string"
    },
    "GivenUpPath": {
     "description": "A planned path the writer gave up, and why.",
@@ -2540,6 +2600,14 @@
       "title": "Success Criteria",
       "type": "string"
      },
+     "supporting_systems": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/SystemRef"
+      },
+      "title": "Supporting Systems",
+      "type": "array"
+     },
      "timeline": {
       "title": "Timeline",
       "type": "string"
@@ -3346,6 +3414,14 @@
      "treatment_strategy": {
       "title": "Treatment Strategy",
       "type": "string"
+     },
+     "unresolved_gaps": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/UnresolvedGapView"
+      },
+      "title": "Unresolved Gaps",
+      "type": "array"
      }
     },
     "required": [
@@ -5507,6 +5583,35 @@
     ],
     "title": "ThreatSource",
     "type": "string"
+   },
+   "UnresolvedGapView": {
+    "description": "A gap the plan could not close with a checked library control, reported apart from its controls.",
+    "properties": {
+     "control_code": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Control Code"
+     },
+     "detail": {
+      "title": "Detail",
+      "type": "string"
+     },
+     "kind": {
+      "$ref": "#/components/schemas/GapKind"
+     }
+    },
+    "required": [
+     "kind",
+     "detail"
+    ],
+    "title": "UnresolvedGapView",
+    "type": "object"
    },
    "ValidationError": {
     "properties": {

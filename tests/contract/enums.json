@@ -193,6 +193,11 @@
   "DETECTIVE": "detective",
   "PREVENTIVE": "preventive"
  },
+ "ControlValidation": {
+  "FLAGGED_FOR_REVIEW": "flagged_for_review",
+  "REPLACED": "replaced",
+  "RETAINED": "retained"
+ },
  "Decision": {
   "ACCEPTED": "accepted",
   "PENDING": "pending",
@@ -319,6 +324,11 @@
   "BLOCKER": "blocker",
   "NOTE": "note",
   "WARNING": "warning"
+ },
+ "GapKind": {
+  "FLAGGED_CONTROL": "flagged_control",
+  "NO_VALIDATED_CONTROL": "no_validated_control",
+  "UNCOVERED_RISK": "uncovered_risk"
  },
  "GroundingStatus": {
   "UNVERIFIED": "unverified",
@@ -457,6 +467,8 @@
   "AFTER": ", after {ids} complete",
   "DATED": "{start} \u2192 {end} ({span}{after})",
   "DAYS": "{days} day",
+  "GAP_FLAGGED": "{code} {name}: its relevance to this risk is unverified and no library control fits better",
+  "GAP_NONE_VALIDATED": "No identified or alternative library control was confirmed relevant to this risk.",
   "PLAN_DATED": "{start} \u2192 {end} ({total}, critical path {chain})",
   "PLAN_UNDATED": "{total} in total (critical path {chain})",
   "REMEDIATION_TITLE": "{domains} Remediation",
@@ -465,10 +477,12 @@
  },
  "PlanWarning": {
   "ACTION_ID_REPEATED": "{action}.action_id {action_id!r} is already used by remediation_action_plan[{position}] \u2014 this action cannot be named as a prerequisite",
+  "ACTION_SYSTEM_UNKNOWN": "{action} names '{system}', not a supporting system the risk affects: left out",
   "CONTROL_IN_REGISTER": "recommended control {code!r} is already implemented per the register and was removed from the plan",
   "CONTROL_LISTED_TWICE": "recommended control {code!r} is listed more than once \u2014 the repeat was removed",
   "CONTROL_NOT_IMPLEMENTED": "recommended control {code} is not implemented by any action",
   "CONTROL_NOT_IN_LIBRARY": "recommended control {code!r} is not a control of this scenario and was removed from the plan",
+  "CONTROL_NOT_VALIDATED": "control {code} is {validation}, not retained: it is not recommended",
   "CONTROL_UNMATCHED": "control {reference!r} matches no active library control \u2014 it covers no scenario control",
   "DEPENDENCY_NOT_EARLIER": "{action}.depends_on {reference!r} is not an earlier action \u2014 ignored",
   "DURATION_CAPPED": "{action}.duration_days {days} exceeds {limit} \u2014 capped",
@@ -477,7 +491,9 @@
   "IMPLEMENTS_UNKNOWN": "{action}.implements_controls names {code!r}, which is not a recommended control of this plan \u2014 removed",
   "NO_WINDOW": "no mitigation window supplied \u2014 the {total}-day schedule is not bounded by a register deadline",
   "PAST_CALENDAR": "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} fit, so the dates at and beyond {last} are clamped and no longer reflect the durations",
-  "PAST_WINDOW": "the plan finishes {end}, {days} after the mitigation window closes ({deadline})"
+  "PAST_WINDOW": "the plan finishes {end}, {days} after the mitigation window closes ({deadline})",
+  "REPLACEMENT_REFUSED": "scenario control {code}'s replacement {replacement} is not a library alternative: {code} is flagged for review",
+  "VALIDATION_NOT_GIVEN": "scenario control {code} was given no relevance check: it is flagged for review"
  },
  "PromotionOutcome": {
   "CURATOR_REJECTED": "curator_rejected",

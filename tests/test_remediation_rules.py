@@ -216,6 +216,7 @@ ACTION: dict[str, Any] = {
 }
 ANSWER: dict[str, Any] = {
     "title": "Vendor access hardening",
+    "control_validation": [{"control_code": "CII-CID-202", "validation": "retained", "reason": "It fits."}],
     "controls_to_be_implemented": {"control_coverage": "covered", "controls": [CONTROL]},
     "remediation_action_plan": [ACTION],
     "action_plan": "A1 runs first.",
@@ -237,6 +238,11 @@ def test_the_ai_contract_refuses_blank_text() -> None:
         ANSWER | {"remediation_action_plan": [ACTION | {"priority": "Urgent"}]},
         ANSWER | {"remediation_action_plan": [ACTION | {"depends_on": "A0"}]},
         ANSWER | {"controls_to_be_implemented": {"control_coverage": "gaps"}},
+        {key: value for key, value in ANSWER.items() if key != "control_validation"},
+        ANSWER
+        | {"control_validation": [{"control_code": "CII-CID-202", "validation": "kept", "reason": "x"}]},
+        ANSWER
+        | {"control_validation": [{"control_code": "CII-CID-202", "validation": "retained", "reason": " "}]},
     ]
     for answer in broken:
         with pytest.raises(ValidationError):

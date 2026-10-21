@@ -2,6 +2,7 @@
 and risk statements, scored by the reranker and kept by the threshold rule; never written by an AI."""
 
 import re
+from collections.abc import Collection
 from dataclasses import replace
 from typing import Any
 
@@ -45,15 +46,49 @@ class ControlMapper:
         topped up with the nearest to MIN_CONTROLS; none strong, the NEAREST_CONTROLS nearest, flagged. No
         control of the scenario's type: the nearest of any type, flagged. ControlsNotMapped only when the
         library is empty; an outage is raised."""
-        content = scenario["content"]
         if not snapshot.library.control_library:
             raise ControlsNotMapped(ErrorCode.CONTROL_LIBRARY_EMPTY, ErrorMessage.CONTROL_LIBRARY_EMPTY)
+        rule = _control_rule()
+        scored, query, other_type, about_ai = self._scored_candidates(scenario, context, snapshot, rule)
+        mapping = select_controls(scored, rule, query.text)
+        if other_type:  # never a strong set of another type: the nearest only, flagged as such
+            nearest = mapping.items[: min(rule.nearest, rule.most)]
+            mapping = replace(mapping, items=nearest, warning=other_type, left_out=0)
+        return replace(
+            mapping, query_shortened=query.shortened, mitigations=query.mitigations, ai_controls=about_ai
+        )
+
+    def find_alternatives(
+        self,
+        scenario: dict[str, Any],
+        context: FrozenContext,
+        snapshot: LibrarySnapshot,
+        identified: Collection[int],
+        count: int,
+    ) -> _Scored:
+        """The `count` best-scored library controls for the scenario that are not `identified` nor one's twin:
+        what a remediation plan may put in place of an identified control that does not fit its risk."""
+        if not snapshot.library.control_library:
+            return []
+        scored, _, _, _ = self._scored_candidates(scenario, context, snapshot, _control_rule())
+        taken = {
+            name_match_key(describe_control(control))
+            for control in snapshot.library.control_library
+            if control.control_id in identified
+        }
+        ranked = _without_twins(sorted(scored, key=lambda pair: (-pair[1], pair[0].control_id)))
+        return [pair for pair in ranked if name_match_key(describe_control(pair[0])) not in taken][:count]
+
+    def _scored_candidates(
+        self, scenario: dict[str, Any], context: FrozenContext, snapshot: LibrarySnapshot, rule: ControlRule
+    ) -> tuple[_Scored, ControlQuery, str | None, bool]:
+        """(the shortlist the reranker scored 0-100, the query it was searched by, the other-type warning,
+        whether the threat is about AI): the scenario's own place decides the asset types searched."""
+        content = scenario["content"]
         systems = _scenario_systems(content, context)
-        # The scenario's own place decides: its systems' category codes, the asset's when it is on the asset.
         allowed = place_asset_types(
             context.asset.get("category_code"), (system.get("category_code") for system in systems)
         )
-        rule = _control_rule()
         query = control_query(content, context, systems)
         about_ai = is_about_ai(content.get("threat") or {})
         found, other_type = _compatible_else_nearest(snapshot, query.text, rule, allowed, about_ai)
@@ -61,13 +96,7 @@ class ControlMapper:
         scores = self._rerank.score_relevance(
             query.text, [describe_control(control) for control in candidates]
         )
-        mapping = select_controls(list(zip(candidates, scores, strict=True)), rule, query.text)
-        if other_type:  # never a strong set of another type: the nearest only, flagged as such
-            nearest = mapping.items[: min(rule.nearest, rule.most)]
-            mapping = replace(mapping, items=nearest, warning=other_type, left_out=0)
-        return replace(
-            mapping, query_shortened=query.shortened, mitigations=query.mitigations, ai_controls=about_ai
-        )
+        return list(zip(candidates, scores, strict=True)), query, other_type, about_ai
 
 
 def _compatible_else_nearest(

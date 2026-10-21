@@ -8,6 +8,8 @@ class Remediation:
     TEXT_MAX_CHARS: Final = 2_000  # one free-text value in a plan's snapshot
     TRUNCATED_MARK: Final = " [truncated]"  # what follows a cut value, so a cut is never silent
     MAX_CONTROL_REFS: Final = 50  # register controls, or a hand-written scenario's controls
+    ALTERNATIVES: Final = 5  # library controls offered to replace an identified control that does not fit
+    ALTERNATIVE_MATCH: Final = "alternative"  # an alternative's match, beside exact, nearest and given
     MAX_ACTION_DAYS: Final = 3_650  # one action's duration; above it is capped with a warning
     STATEMENT_MAX_CHARS: Final = 4_000  # a hand-written scenario or risk statement
     NAME_MAX_CHARS: Final = 200  # risk owner, business division, a category name
@@ -60,6 +62,25 @@ class ImplementationStatus(StrEnum):
     PARTIALLY_IMPLEMENTED = "partially_implemented"  # on some affected systems
     NOT_IMPLEMENTED = "not_implemented"  # on none of them, or not in the register
     UNVERIFIED = "unverified"  # a fallback whose relevance the AI could not confirm: kept for review
+
+
+class ControlValidation(StrEnum):
+    """What the plan's check of an identified control against the scenario's risk decided (owner,
+    2026-10-21)."""
+
+    RETAINED = "retained"  # it reduces this risk: kept
+    REPLACED = "replaced"  # a library alternative fits clearly better and takes its place
+    FLAGGED_FOR_REVIEW = (
+        "flagged_for_review"  # not confirmed relevant, nothing better: kept unverified, never recommended
+    )
+
+
+class GapKind(StrEnum):
+    """An unresolved gap of a plan, reported apart from its controls."""
+
+    FLAGGED_CONTROL = "flagged_control"  # an identified control kept for review
+    NO_VALIDATED_CONTROL = "no_validated_control"  # no control was confirmed relevant to the risk
+    UNCOVERED_RISK = "uncovered_risk"  # a part of the risk no checked control reduces (the AI's)
 
 
 #: The name a status had before 2026-10-21, as older stored plans hold it.
@@ -169,6 +190,14 @@ class RemediationMessage(StrEnum):
     PLAN_WITHOUT_ACTION = "The AI's remediation plan has no action, so there is nothing to schedule or do."
     # The re-ask's problems: what the AI's first answer got wrong about the gaps.
     GAP_REQUIRED = "controls_to_be_implemented must include {code}: it is {status} for this scenario"
+    VALIDATION_MISSING = (
+        "control_validation must give one entry for {code}: retained, replaced or flagged_for_review"
+    )
+    REPLACEMENT_REQUIRED = "{code} is replaced: give its replacement_code, one of library_alternatives"
+    REPLACEMENT_UNKNOWN = "{code} is replaced by {replacement}, which is not one of library_alternatives"
+    NOT_VALIDATED_LISTED = (
+        "{code} is {validation}: remove it from controls_to_be_implemented and from every implements_controls"
+    )
     IMPLEMENTED_LISTED = (
         "{code} is already implemented: remove it from controls_to_be_implemented and from every "
         "implements_controls"
@@ -225,6 +254,13 @@ class PlanWarning(StrEnum):
         "removed"
     )
     CONTROL_NOT_IMPLEMENTED = "recommended control {code} is not implemented by any action"
+    CONTROL_NOT_VALIDATED = "control {code} is {validation}, not retained: it is not recommended"
+    VALIDATION_NOT_GIVEN = "scenario control {code} was given no relevance check: it is flagged for review"
+    REPLACEMENT_REFUSED = (
+        "scenario control {code}'s replacement {replacement} is not a library alternative: {code} is "
+        "flagged for review"
+    )
+    ACTION_SYSTEM_UNKNOWN = "{action} names '{system}', not a supporting system the risk affects: left out"
 
 
 class PlanText(StrEnum):
@@ -239,3 +275,6 @@ class PlanText(StrEnum):
     # The plan's title, from the library domains of the controls it recommends, or verifies when covered.
     REMEDIATION_TITLE = "{domains} Remediation"
     VERIFICATION_TITLE = "{domains} Verification"
+    # The unresolved gaps code reports.
+    GAP_FLAGGED = "{code} {name}: its relevance to this risk is unverified and no library control fits better"
+    GAP_NONE_VALIDATED = "No identified or alternative library control was confirmed relevant to this risk."

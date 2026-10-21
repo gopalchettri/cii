@@ -44,6 +44,7 @@ from app.models.remediation.requests import PlanRequest
 from app.worker import jobs
 from tests.plan_addresses import generated, plan_url
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
+    CONTROLS,
     SCENARIO_CONTENT,
     api_key_fixture,
     deliver,
@@ -189,6 +190,8 @@ def test_a_plan_is_requested_written_and_its_status_read(
          "domain": "Integrity", "match": "exact", "implementation_status": "not_implemented",
          "recommended": True,
          "protected_systems": [],
+         "validation": "retained", "validation_reason": "It reduces the firmware tampering risk.",
+         "replaced_by": None, "replaces": [],
          "required_systems": [{"supporting_system_id": 321, "name": "SCADA server"},
                               {"supporting_system_id": 322, "name": "Historian"}]}
     ]  # fmt: skip
@@ -275,6 +278,37 @@ def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_
         [s["name"] for s in assessed["required_systems"]],
     )
     assert names == (["SCADA server"], ["Historian"])
+
+
+def test_an_identified_control_replaced_by_a_library_alternative_shows_both_through_the_api(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """The plan job offers the scenario's next-best library controls as alternatives; the AI replaces
+    CII-CID-1 with CII-CID-5; the result recommends 5 and traces 1 replaced by 5."""
+    world["mapper"].alternatives = [(CONTROLS[5], 66.0)]
+    answer = _request(client, api_key, generated(_scenario()))
+    assert answer.status_code == 202, answer.text
+    replacing = plan_answer("CII-CID-5")
+    replacing["control_validation"] = [
+        {
+            "control_code": "CII-CID-1",
+            "validation": "replaced",
+            "replacement_code": "CII-CID-5",
+            "reason": "Fits better.",
+        }
+    ]
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, replacing)
+    remediation_id = answer.json()["remediation_id"]
+    deliver(remediation_id)
+    snapshot = _record(remediation_id)["versions"][0]["snapshot"]
+    assert [row["control_code"] for row in snapshot["existing_controls"]["library_alternatives"]] == [
+        "CII-CID-5"
+    ]
+    plan = _result(client, api_key, remediation_id).json()["plan"]
+    assert [control["control_code"] for control in plan["controls_to_be_implemented"]] == ["CII-CID-5"]
+    rows = {row["control_code"]: row for row in plan["control_assessment"]}
+    assert (rows["CII-CID-1"]["validation"], rows["CII-CID-1"]["replaced_by"]) == ("replaced", "CII-CID-5")
+    assert (rows["CII-CID-5"]["match"], rows["CII-CID-5"]["replaces"]) == ("alternative", ["CII-CID-1"])
 
 
 def test_a_request_made_at_the_same_moment_gets_409_with_the_winner(

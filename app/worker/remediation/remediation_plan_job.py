@@ -37,6 +37,7 @@ from app.data_access.scenario.threat_scenario_session_repository import ThreatSc
 from app.domain.remediation.manual import pick_manual_attacker
 from app.domain.remediation.plan import (
     active_mapped_controls,
+    assess_alternatives,
     assess_controls,
     build_snapshot,
     risk_scope,
@@ -131,7 +132,14 @@ class RemediationPlanJob:
         register = lease.record["register"]
         systems, affected = risk_scope(scenario, context, register)
         library_mapped, warnings = assess_controls(items, register, controls, systems, affected)
-        snapshot = build_snapshot(scenario, context, register, library_mapped, warnings, affected)
+        identified = [item["control_id"] for item in items]
+        found = self._mapper.find_alternatives(
+            scenario, context, library, identified, Remediation.ALTERNATIVES
+        )
+        alternatives = assess_alternatives(found, register, controls, systems, affected)
+        snapshot = build_snapshot(
+            scenario, context, register, library_mapped, warnings, affected, alternatives
+        )
         self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot})
         return snapshot
 

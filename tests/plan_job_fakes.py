@@ -100,15 +100,29 @@ def _plan_action(action_id: str, depends_on: tuple[str, ...], codes: tuple[str, 
         "depends_on": list(depends_on),
         "duration_days": 10,
         "implements_controls": list(codes),
+        "supporting_systems": ["SCADA server"],
         "success_criteria": "Shown by the firmware policy and a signing test.",
     }
 
 
+#: The plan AI's check of every control the tests map (CII-CID-1 to 9): each one retained.
+RETAINED_ALL = [
+    {
+        "control_code": f"CII-CID-{n}",
+        "validation": "retained",
+        "reason": "It reduces the firmware tampering risk.",
+    }
+    for n in range(1, 10)
+]
+
+
 def plan_answer(*codes: str, **fields: Any) -> dict[str, Any]:
-    """A plan answer recommending `codes`: A1 (10 days) implements them, A2 (10 days) waits for A1."""
+    """A plan answer recommending `codes`, every mapped control retained: A1 (10 days) implements them, A2
+    (10 days) waits for A1."""
     actions = [_plan_action("A1", (), codes), _plan_action("A2", ("A1",), ())]
     return {
         "title": "Firmware Integrity Hardening",
+        "control_validation": RETAINED_ALL,
         "controls_to_be_implemented": {
             "control_coverage": "gaps",
             "controls": [plan_control(code) for code in codes],
@@ -116,7 +130,7 @@ def plan_answer(*codes: str, **fields: Any) -> dict[str, Any]:
         "remediation_action_plan": actions,
         "action_plan": "A1, then A2 validates it.",
         "mitigation_owner": "OT Security",
-        "applicable_to_all_subsystems": "Yes",
+        "uncovered_risks": [],
     } | fields
 
 
@@ -128,6 +142,9 @@ class FakeMapper:
         self.release: threading.Event | None = None  # set: each mapping waits for it, as a busy AI makes it
         self.control = (1, "CII-CID-1")  # the library control (id, code) each mapping answers
         self.failure: Exception | None = None  # raised by the next mapping (an outage), then cleared
+        self.alternatives: list[
+            tuple[Any, float]
+        ] = []  # what find_alternatives offers (library controls, scores)
 
     def map_controls(self, scenario: dict[str, Any], context: Any, snapshot: Any) -> ControlMapping:
         self.asked.append(scenario["_id"])
@@ -139,6 +156,11 @@ class FakeMapper:
         control_id, code = self.control
         control = MappedControl(control_id, code, "A control", None, "OT", 1, 87.4, ControlMatch.EXACT)
         return ControlMapping(items=(control,), query="the scenario and its risk")
+
+    def find_alternatives(
+        self, scenario: dict[str, Any], context: Any, snapshot: Any, identified: Any, count: int
+    ) -> list[tuple[Any, float]]:
+        return self.alternatives[:count]
 
 
 class FakeSearch:

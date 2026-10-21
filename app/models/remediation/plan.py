@@ -11,7 +11,9 @@ from app.core.constants import (
     AnswerProblem,
     ControlCoverage,
     ControlType,
+    ControlValidation,
     Decision,
+    GapKind,
     ImplementationStatus,
     RemediationProgress,
     Status,
@@ -55,18 +57,30 @@ class DraftAction(BaseModel):
     depends_on: list[str]
     duration_days: int  # repaired by the scheduler when below 1 or above Remediation.MAX_ACTION_DAYS
     implements_controls: list[str]
+    supporting_systems: list[str] = []  # the affected systems it works on, by name; code checks them
     success_criteria: Given
+
+
+class DraftValidation(BaseModel):
+    """The AI's check of one identified control against this scenario's risk."""
+
+    control_code: Given  # a library_mapped code, verbatim
+    validation: ControlValidation
+    replacement_code: str | None = None  # "replaced": a library_alternatives code, verbatim
+    reason: Given  # why; for an implemented control, how the existing control already reduces this risk
 
 
 class PlanDraft(BaseModel):
     """The plan AI's answer; a broken one is asked again once, then the version fails `generation_failed`."""
 
     title: Given
+    control_validation: list[DraftValidation]
     controls_to_be_implemented: Annotated[list[DraftControl], BeforeValidator(_the_controls)]
     remediation_action_plan: list[DraftAction]
     action_plan: Given
     mitigation_owner: Given
-    applicable_to_all_subsystems: YesNo
+    uncovered_risks: list[str] = []  # parts of the risk no checked control reduces
+    applicable_to_all_subsystems: YesNo | None = None  # no longer asked: code sets it from the risk flag
 
 
 class PlanRequested(BaseModel):
@@ -209,22 +223,35 @@ class PlanActionView(BaseModel):
     end_date: date | None = None
     timeline: str
     implements_controls: list[str]
+    supporting_systems: list[SystemRef] = []  # the affected systems it works on
     success_criteria: str
 
 
 class ControlAssessmentView(BaseModel):
-    """One scenario control against the register: where it stands on the affected systems and whether the
-    plan recommends it."""
+    """One control the plan weighed (identified for the scenario, or the library alternative replacing one):
+    its check against the risk, where it stands on the affected systems and whether the plan recommends it."""
 
     control_id: int
     control_code: str
     control_name: str
     domain: str | None = None
-    match: str | None = None
+    match: str | None = None  # exact, nearest or given (identified), alternative (a replacement)
     implementation_status: StatusShown
     recommended: bool
     protected_systems: list[SystemRef] = []  # the affected systems an existing control is already on
     required_systems: list[SystemRef] = []  # the affected systems it is still needed on
+    validation: ControlValidation | None = None  # an identified control's check: retained, replaced, flagged
+    validation_reason: str | None = None  # why; for an implemented one, how it already reduces the risk
+    replaced_by: str | None = None  # the alternative's code, when replaced
+    replaces: list[str] = []  # an alternative's: the identified controls it replaces
+
+
+class UnresolvedGapView(BaseModel):
+    """A gap the plan could not close with a checked library control, reported apart from its controls."""
+
+    kind: GapKind
+    control_code: str | None = None
+    detail: str
 
 
 class PlanView(BaseModel):
@@ -245,6 +272,7 @@ class PlanView(BaseModel):
     impacted_business_division: str | None = None
     prompt_version: str
     control_assessment: list[ControlAssessmentView] = []
+    unresolved_gaps: list[UnresolvedGapView] = []
 
     @classmethod
     def from_stored(cls, plan: dict[str, Any], prompt_version: str) -> "PlanView":

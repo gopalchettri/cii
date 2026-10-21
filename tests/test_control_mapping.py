@@ -754,3 +754,28 @@ def test_a_run_deleted_while_it_is_mapped_ends_its_delivery_quietly(
 
     monkeypatch.setattr(controls_job, "publish_session_status", publish_then_delete)
     assert _deliver(record_id, "task-1") == 1 and mapping_run["sent"] == []
+
+
+def test_alternatives_are_the_next_best_fitting_controls_never_an_identified_one_or_its_twin() -> None:
+    """What a remediation plan may put in place of an identified control: the best-scored controls that fit
+    the scenario's place, best first, at most `count`, none identified and none an identified one's twin."""
+    controls = (
+        *_CONTROLS,
+        LibraryControl(
+            4, "C-OT-2", "OT", "BCDR", "Offline backup", "Keep an offline backup copy"
+        ),  # C-IT's twin
+        LibraryControl(5, "C-OT-3", "OT", "Network", "Network segmentation", "Separate the OT network"),
+        LibraryControl(6, "C-OT-4", "OT", "Access", "Access review", "Review who can reach the PLC"),
+    )
+    rerank = _ScoresByText(
+        {
+            "Backup of controller logic": 91.0,
+            "Offline backup": 80.0,
+            "Network segmentation": 70.0,
+            "Access review": 40.0,
+        }
+    )
+    mapper = ControlMapper(rerank)  # type: ignore[arg-type]
+    found = mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, _snapshot(*controls), identified=[2, 1], count=2)
+    assert [(control.code, score) for control, score in found] == [("C-OT-3", 70.0), ("C-OT-4", 40.0)]
+    assert mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, _snapshot(), identified=[], count=2) == []
