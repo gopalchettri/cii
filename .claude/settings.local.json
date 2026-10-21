@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk -F: '{print $1\": \"$2}')",
+      "Bash(awk -F: 'NR>1{print prev\" \\(\"$1-p\" lines\\)\"} {prev=$2; p=$1}')"
+    ]
+  }
+}

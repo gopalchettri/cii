@@ -15,5 +15,6 @@
       "grafana": "https://set-the-uat-host-in-vscode-settings.invalid/grafana/",
       "flower": "https://set-the-uat-host-in-vscode-settings.invalid/flower/"
     }
-  }
+  },
+  "python.terminal.useEnvFile": true
 }
