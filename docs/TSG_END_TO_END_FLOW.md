@@ -2984,9 +2984,9 @@ Where each line comes from:
    takes part.
 3. **Search.** `_compatible_else_nearest` calls `LibrarySnapshot.find_controls([query], CONTROL_CANDIDATES,
    allowed, ai_controls=…)` (`app/search/snapshot.py`). This is the hybrid control index (§5): the filter
-   is a mask applied before the top-k cut. If no control fits, it searches again with no filter and sets
-   the `OTHER_TYPE` warning. That second search passes no `ai_controls`, so in this fallback an AI-domain
-   control can come back for a threat that is not about AI.
+   is a mask applied before the top-k cut. If no control fits, it searches again without the asset-type
+   filter (still leaving AI-domain controls out for a threat that is not about AI) and sets the `OTHER_TYPE`
+   warning.
 4. **Rerank.** `RerankModel.score_relevance` (`app/ai/rerank.py`) scores each candidate's text
    (`describe_control`: "name: description") against the query, 0-100.
 5. **Select.** `select_controls`:
@@ -2997,7 +2997,9 @@ Where each line comes from:
    - `left_out_over_max`: the strong ones that `MAX_CONTROLS` cut;
    - **fallback:** when fewer than `MIN_CONTROLS` are strong, the best below the threshold fill up to
      `MIN_CONTROLS`, as `match` `nearest`, `tier` `fallback`;
-   - in the other-type case only the first `MIN_CONTROLS` are kept, with `left_out_over_max` 0;
+   - in the other-type case none is strong, whatever its score: the first `NEAREST_CONTROLS` are kept as
+     `nearest`, each `rationale` naming its other asset type, with `left_out_over_max` 0 and the shortfall
+     counted against `NEAREST_CONTROLS`;
    - `rank` runs 1..n with no gaps.
 6. **Reasons and warnings** (`ControlMessage`, `app/core/constants/planning.py`):
    - strong `rationale`: "Score {score:.0f} is at or above the threshold of {cutoff:g}: strong."
@@ -3554,8 +3556,11 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
      `existing_controls_all_supporting_system_applicable` is 1, else on its own `supporting_system_ids`, each of
      which must be one of the asset's systems (else 422, checked before anything is saved, a hand-written
      scenario included). Existing controls match by id, code, name or a "CODE · Name" label.
-   - **Status:** `implemented` (on every affected system), `partially_implemented` (on some), `not_implemented`
-     (on none, or not in the register).
+   - **Of its type** (D21): a control counts only on the affected systems of its asset type (an IT control on
+     the IT systems, an OT one on the OT systems, IT\OT or untyped on all; a system of no recorded category
+     takes every control; none fits, every affected system).
+   - **Status:** `implemented` (on every one of those systems), `partially_implemented` (on some),
+     `not_implemented` (on none, or not in the register).
    - **Alternatives:** one more library search, with the mapping's search and reranker, for 5 controls not
      already identified.
 

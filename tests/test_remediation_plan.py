@@ -134,7 +134,8 @@ def _assessed(
     items: Any, stored: dict[str, Any], scenario: dict[str, Any] = SCENARIO
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """assess_controls over LIBRARY and CONTEXT's systems, with the risk scope the register gives."""
-    return assess_controls(list(items), stored, LIBRARY, *risk_scope(scenario, CONTEXT, stored))
+    scope = risk_scope(scenario, CONTEXT, stored)
+    return assess_controls(list(items), stored, LIBRARY, *scope, CONTEXT.system_categories())
 
 
 #: A partially implemented control's description: it extends what is in place.
@@ -235,6 +236,17 @@ def test_control_refs_resolve_by_id_then_code_then_normalised_name() -> None:
         assert [row.control_id for row in twins] == [2]
 
 
+def test_a_name_two_different_controls_share_resolves_to_neither() -> None:
+    """Not twins (another description): a reference by their shared name is unresolved, so it marks neither
+    in place; their code or id still says which."""
+    same_name = (
+        LibraryControl(41, "C-41", "IT", None, "Access review", "Quarterly review of user access"),
+        LibraryControl(42, "C-42", "IT", None, "Access review", "Review of firewall access rules"),
+    )
+    rows, unresolved = resolve_control_refs(_refs({"control_name": "Access review"}, "C-42"), same_name)
+    assert [row.control_id for row in rows] == [42] and [position for position, _ in unresolved] == [0]
+
+
 @pytest.mark.parametrize(
     "label", ["CII-CID-3 · Email filtering", "CII-CID-3 — Email filtering", "CII-CID-3: Email filtering"]
 )
@@ -325,10 +337,12 @@ def test_implementation_status_follows_the_systems_and_a_twin_counts_once(
 def test_a_register_stored_before_the_flag_reads_its_yes_no() -> None:
     """A plan regenerated from a register saved before 2026-10-21 has only its Yes/No flag."""
     older = {"existing_controls": ["CII-CID-1"], "existing_controls_all_subsystems": "Yes"}
-    library_mapped, _ = assess_controls([_item(1)], older, LIBRARY, *risk_scope(SCENARIO, CONTEXT, older))
+    scope, categories = risk_scope(SCENARIO, CONTEXT, older), CONTEXT.system_categories()
+    library_mapped, _ = assess_controls([_item(1)], older, LIBRARY, *scope, categories)
     assert library_mapped[0]["implementation_status"] == IMPLEMENTED
     said_no = older | {"existing_controls_all_subsystems": "No"}
-    library_mapped, _ = assess_controls([_item(1)], said_no, LIBRARY, *risk_scope(SCENARIO, CONTEXT, said_no))
+    scope = risk_scope(SCENARIO, CONTEXT, said_no)
+    library_mapped, _ = assess_controls([_item(1)], said_no, LIBRARY, *scope, categories)
     assert library_mapped[0]["implementation_status"] == NOT_IMPLEMENTED  # no systems named: on none
 
 
@@ -361,8 +375,49 @@ def test_the_risk_is_on_every_system_of_the_asset_or_the_scenarios_own(
     stored = _register(existing_controls=[{"control_code": "CII-CID-5"}], **register)
     systems, found = risk_scope(scenario, context, stored)
     assert found == affected
-    (row,), _ = assess_controls([_item(5)], stored, LIBRARY, systems, found)
+    (row,), _ = assess_controls([_item(5)], stored, LIBRARY, systems, found, context.system_categories())
     assert (row["implementation_status"], row["protected_systems"]) == (IMPLEMENTED, affected)
+
+
+#: Asset 103 with a third, IT system beside its two OT ones; and the same with that one's category unknown.
+MIXED = dataclasses.replace(
+    CONTEXT,
+    asset_systems=[
+        {"id": 321, "name": "SCADA server", "category_code": "OT"},
+        {"id": 322, "name": "Historian", "category_code": "OT"},
+        {"id": 324, "name": "Engineering workstation", "category_code": "IT"},
+    ],
+)
+UNKNOWN = dataclasses.replace(
+    MIXED, asset_systems=[*MIXED.asset_systems[:2], {"id": 324, "name": "Engineering workstation"}]
+)
+
+
+@pytest.mark.parametrize(
+    ("context", "control_id", "needed"),
+    [
+        (MIXED, 1, [SCADA, HISTORIAN]),
+        (MIXED, 3, [WORKSTATION]),
+        (MIXED, 4, [SCADA, HISTORIAN, WORKSTATION]),
+        (UNKNOWN, 1, [SCADA, HISTORIAN, WORKSTATION]),
+        (CONTEXT, 3, [SCADA, HISTORIAN]),
+    ],
+    ids=["ot-on-ot", "it-on-it", "untyped-on-all", "unknown-category-takes-all", "none-fits-all-affected"],
+)
+def test_a_control_counts_only_on_systems_of_its_asset_type(
+    context: FrozenContext, control_id: int, needed: list[dict[str, Any]]
+) -> None:
+    """The risk on every system: an OT control is still needed on the OT systems only, an IT one on the IT
+    one, an untyped one on all; a system of unknown category takes every control; when none fits (a control
+    named by hand), every affected system. A register control on every system is then implemented."""
+    stored = _register()
+    systems, affected = risk_scope(SCENARIO, context, stored)
+    categories = context.system_categories()
+    (row,), _ = assess_controls([_item(control_id)], stored, LIBRARY, systems, affected, categories)
+    assert (row["implementation_status"], row["required_systems"]) == (NOT_IMPLEMENTED, needed)
+    on_all = _register(existing_controls=[{"control_id": control_id}])
+    (row,), _ = assess_controls([_item(control_id)], on_all, LIBRARY, systems, affected, categories)
+    assert (row["implementation_status"], row["protected_systems"]) == (IMPLEMENTED, needed)
 
 
 FIVE = ["CII-CID-1", "CII-CID-3", "CII-CID-4", "CII-CID-5", "CII-CID-6"]

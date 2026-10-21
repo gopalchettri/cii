@@ -1425,16 +1425,17 @@ def freeze_context(request: StartRunRequest, rows: AssetContextRows) -> FrozenCo
 
 
 def _asset_systems(asked: list[int], rows_by_id: dict[int, Row]) -> list[dict[str, Any]]:
-    """Every system linked to the asset, once, as {id, name}: the asked ones in request order, then the
-    others by id; a name an earlier one already has gets its id, so a name the AI gives back finds one
-    system. Nothing else of the others is kept, and nothing about them refuses a run."""
+    """Every system linked to the asset, once, as {id, name, category_code}: the asked ones in request order,
+    then the others by id; a name an earlier one already has gets its id, so a name the AI gives back finds
+    one system. Nothing else of the others is kept, and nothing about them refuses a run."""
     linked: list[dict[str, Any]] = []
     seen: set[str] = set()
     for system_id in [*asked, *sorted(set(rows_by_id) - set(asked))]:
         name = _display_name(rows_by_id[system_id]["name"] or "")
         name = name or ContextProperties.UNNAMED_SYSTEM.format(id=system_id)
+        unique = f"{name} ({system_id})" if name_match_key(name) in seen else name
         linked.append(
-            {"id": system_id, "name": f"{name} ({system_id})" if name_match_key(name) in seen else name}
+            {"id": system_id, "name": unique, "category_code": rows_by_id[system_id]["category_code"]}
         )
         seen.add(name_match_key(name))
     return linked

@@ -32,14 +32,21 @@ class FrozenContext:
     asset_context: dict[str, Any]  # every other column of the asset row: the facts the prompts get
     systems: list[dict[str, Any]]  # aliased SYS1..n in request order: id, alias, name, category_code + facts
     missing_facts: list[str] = field(default_factory=list)  # facts no system records: information only
-    asset_systems: list[dict[str, Any]] = field(default_factory=list)  # id, name of every linked system
+    asset_systems: list[dict[str, Any]] = field(default_factory=list)  # id, name, category of each linked
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)
 
     def linked_systems(self) -> list[dict[str, Any]]:
-        """Every supporting system of the asset as {id, name}; a run stored without them: its own."""
-        return self.asset_systems or [{"id": system["id"], "name": system["name"]} for system in self.systems]
+        """Every supporting system of the asset as {id, name, category_code}; an older run: its own."""
+        own = [
+            {"id": s["id"], "name": s["name"], "category_code": s.get("category_code")} for s in self.systems
+        ]
+        return self.asset_systems or own
+
+    def system_categories(self) -> dict[int, str | None]:
+        """Each supporting system's category code (IT, OT ...), the run's own as frozen; None when unknown."""
+        return {system["id"]: system.get("category_code") for system in [*self.asset_systems, *self.systems]}
 
     def own_and_organisation_facts(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """(this asset's own facts, the organisation's): a column named entity_... describes the whole

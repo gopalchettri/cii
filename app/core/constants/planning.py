@@ -244,6 +244,10 @@ class ControlMessage(StrEnum):
         "No control of asset type(s) {types} exists; the nearest control(s) of another type are kept: check "
         "that they fit."
     )
+    OTHER_TYPE_REASON = (
+        "Score {score:.0f}, asset type {asset_type}: another type than the scenario's, one of the {nearest} "
+        "nearest kept: check that it fits."
+    )
 
 
 class ControlMatch(StrEnum):

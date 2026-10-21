@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
+from app.core.asset_types import asset_type_fits
 from app.core.constants import (
     AiTask,
     ControlCoverage,
@@ -27,6 +28,7 @@ from app.core.constants import (
 from app.core.exceptions import JobFailed
 from app.core.redaction import redact
 from app.domain.remediation.schedule import schedule_plan
+from app.domain.scenario.library_rules import compatible_asset_types
 from app.domain.scenario.plan import raw_system_facts
 from app.domain.shared.ask_ai import ChatPrompt, answer_item_problems, ask_ai_and_check
 from app.domain.shared.names import name_match_key, shorten_text
@@ -84,15 +86,25 @@ def clip(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | Non
     return cleaned if len(cleaned) <= limit else cleaned[:limit] + Remediation.TRUNCATED_MARK
 
 
+def _by_name(controls: Sequence[LibraryControl]) -> dict[str, LibraryControl | None]:
+    """Each control by its name: IT/OT twins (same name and description) by the lowest id; a name two
+    different controls share by None, so only a code or id says which."""
+    by_name: dict[str, LibraryControl | None] = {}
+    for control in sorted(controls, key=lambda control: control.control_id):
+        key, text = name_match_key(control.name), name_match_key(describe_control(control))
+        first = by_name.setdefault(key, control)
+        if first is not None and name_match_key(describe_control(first)) != text:
+            by_name[key] = None
+    return by_name
+
+
 def resolve_control_refs(
     refs: Sequence[ControlRef], controls: Sequence[LibraryControl]
 ) -> tuple[list[LibraryControl], list[tuple[int, ControlRef]]]:
     """The library rows `refs` name, once each in first-named order; the refs naming none, with positions."""
     by_id = {row.control_id: row for row in controls}
     by_code = {row.code.casefold(): row for row in controls}
-    by_name: dict[str, LibraryControl] = {}
-    for control in sorted(controls, key=lambda control: control.control_id):  # IT/OT twins: the lowest id
-        by_name.setdefault(name_match_key(control.name), control)
+    by_name = _by_name(controls)
     found: dict[int, LibraryControl] = {}
     unresolved: list[tuple[int, ControlRef]] = []
     for position, ref in enumerate(refs):
@@ -173,9 +185,11 @@ def assess_controls(
     controls: Sequence[LibraryControl],
     systems: list[dict[str, Any]],
     affected: list[dict[str, Any]],
+    categories: Mapping[int, str | None],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Each mapped control with its library details, the affected systems an existing control is already on
-    and those it is still needed on, and its status from them; the unmatched warnings."""
+    """Each mapped control with its library details, the affected systems of its asset type (`categories`:
+    each system's) an existing control is already on and those it is still needed on, and its status from
+    them; the unmatched warnings."""
     protected, warnings = _protected_systems(register, controls, [s["supporting_system_id"] for s in systems])
     by_id = {row.control_id: row for row in controls}
     library_mapped = []
@@ -185,7 +199,7 @@ def assess_controls(
             warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=item.get("code")))
             continue
         on = protected.get(name_match_key(describe_control(row)), set())
-        library_mapped.append(_assessed_row(row, item, affected, on))
+        library_mapped.append(_assessed_row(row, item, _of_its_type(row, affected, categories), on))
     return library_mapped, warnings
 
 
@@ -195,6 +209,7 @@ def assess_alternatives(
     controls: Sequence[LibraryControl],
     systems: list[dict[str, Any]],
     affected: list[dict[str, Any]],
+    categories: Mapping[int, str | None],
 ) -> list[dict[str, Any]]:
     """The library alternatives found for the scenario, assessed like its identified controls (the register's
     warnings are already the identified controls')."""
@@ -207,7 +222,22 @@ def assess_alternatives(
         }
         for control, score in found
     ]
-    return assess_controls(offered, register, controls, systems, affected)[0]
+    return assess_controls(offered, register, controls, systems, affected, categories)[0]
+
+
+def _of_its_type(
+    row: LibraryControl, affected: list[dict[str, Any]], categories: Mapping[int, str | None]
+) -> list[dict[str, Any]]:
+    r"""The affected systems a control applies to: an IT control the IT systems, an OT one the OT systems,
+    an IT\OT or untyped one all. None fits (a control named by hand): every affected system."""
+    fitting = [s for s in affected if _applies(row.asset_type, categories.get(s["supporting_system_id"]))]
+    return fitting or affected
+
+
+def _applies(asset_type: str | None, category: str | None) -> bool:
+    """Whether a control of `asset_type` applies to a system of `category`: any, when none is recorded."""
+    allowed = compatible_asset_types(None, [category])
+    return not allowed or asset_type_fits(asset_type, allowed)
 
 
 def _assessed_row(

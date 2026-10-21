@@ -66,3 +66,12 @@ def test_a_non_ai_card_never_gets_an_ai_control_even_when_it_scores_best_and_an_
     mapping = ControlMapper(rerank).map_controls(ai_card, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
     assert [item.code for item in mapping.items] == ["C-AI", "C-ACC"]
     assert controls_record(mapping, snapshot)["made_with"]["ai_controls"] is True
+
+
+def test_no_control_of_the_cards_type_keeps_another_types_nearest_but_never_an_ai_one() -> None:
+    """An OT card whose library has no OT control but an AI one: another type's nearest, never the AI one."""
+    it_control = LibraryControl(6, "C-IT", "IT", "Endpoint Security", "Application Allowlisting", "Programs")
+    rerank = _ScoresByText({"Sensitive OT Data Protection in AI": 90.0, "Application Allowlisting": 60.0})
+    snapshot = _snapshot(_AI_CONTROL, it_control)
+    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
+    assert [item.code for item in mapping.items] == ["C-IT"] and mapping.warning is not None

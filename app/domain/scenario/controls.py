@@ -50,10 +50,7 @@ class ControlMapper:
             raise ControlsNotMapped(ErrorCode.CONTROL_LIBRARY_EMPTY, ErrorMessage.CONTROL_LIBRARY_EMPTY)
         rule = _control_rule()
         scored, query, other_type, about_ai = self._scored_candidates(scenario, context, snapshot, rule)
-        mapping = select_controls(scored, rule, query.text)
-        if other_type:  # never a strong set of another type: the nearest only, flagged as such
-            nearest = mapping.items[: min(rule.nearest, rule.most)]
-            mapping = replace(mapping, items=nearest, warning=other_type, left_out=0)
+        mapping = select_controls(scored, rule, query.text, other_type)
         return replace(
             mapping, query_shortened=query.shortened, mitigations=query.mitigations, ai_controls=about_ai
         )
@@ -108,7 +105,7 @@ def _compatible_else_nearest(
     if found:
         return found, None
     types = ", ".join(sorted(allowed)) or "none recorded"
-    (nearest,) = snapshot.find_controls([query], rule.candidates)
+    (nearest,) = snapshot.find_controls([query], rule.candidates, ai_controls=about_ai)
     return nearest, ControlMessage.OTHER_TYPE.format(types=types)
 
 
@@ -169,20 +166,24 @@ def _control_rule() -> ControlRule:
     )
 
 
-def select_controls(scored: _Scored, rule: ControlRule, query: str) -> ControlMapping:
+def select_controls(
+    scored: _Scored, rule: ControlRule, query: str, other_type: str | None = None
+) -> ControlMapping:
     """Best first, twins folded: every control at or above the threshold ("strong", at most MAX_CONTROLS);
     fewer than MIN_CONTROLS strong, the nearest below it added as "fallback" up to it; none strong, the
-    NEAREST_CONTROLS nearest. `scored`: 0-100 scores."""
+    NEAREST_CONTROLS nearest. `other_type`: the shortlist is of another asset type (that warning), so none is
+    strong, whatever its score. `scored`: 0-100 scores."""
     unique = _without_twins(sorted(scored, key=lambda pair: (-pair[1], pair[0].control_id)))
-    strong = [(control, score) for control, score in unique if score >= rule.cutoff]
+    strong = [] if other_type else [(control, score) for control, score in unique if score >= rule.cutoff]
     kept = strong[: rule.most]
     target = min(rule.least if kept else rule.nearest, rule.most)
-    below = [(control, score) for control, score in unique if score < rule.cutoff]
+    below = unique if other_type else [(control, score) for control, score in unique if score < rule.cutoff]
     fallback = below[: max(target - len(kept), 0)]
     chosen = [_mapped(c, s, ControlMatch.EXACT, rule, bool(kept)) for c, s in kept]
-    chosen += [_mapped(c, s, ControlMatch.NEAREST, rule, bool(kept)) for c, s in fallback]
+    chosen += [_mapped(c, s, ControlMatch.NEAREST, rule, bool(kept), other_type) for c, s in fallback]
     items = tuple(replace(item, rank=rank) for rank, item in enumerate(chosen, 1))
-    warning = None if kept else ControlMessage.NEAREST_ONLY.format(cutoff=rule.cutoff, nearest=target)
+    nearest_only = ControlMessage.NEAREST_ONLY.format(cutoff=rule.cutoff, nearest=target)
+    warning = other_type or (None if kept else nearest_only)
     short = ControlMessage.SHORTFALL.format(kept=len(items), least=target) if len(items) < target else None
     return ControlMapping(items, query, warning, short, len(strong) - len(kept))
 
@@ -200,10 +201,21 @@ def _without_twins(ordered: _Scored) -> _Scored:
 
 
 def _mapped(
-    control: LibraryControl, score: float, match: ControlMatch, rule: ControlRule, any_strong: bool
+    control: LibraryControl,
+    score: float,
+    match: ControlMatch,
+    rule: ControlRule,
+    any_strong: bool,
+    other_type: str | None = None,
 ) -> MappedControl:
-    """A kept control with its score and why it was kept: strong, a top-up to the minimum, or a nearest."""
-    if match is ControlMatch.EXACT:
+    """A kept control with its score and why it was kept: strong, a top-up to the minimum, a nearest, or a
+    nearest of another asset type."""
+    if other_type:
+        asset_type = control.asset_type or "none recorded"
+        reason = ControlMessage.OTHER_TYPE_REASON.format(
+            score=score, asset_type=asset_type, nearest=rule.nearest
+        )
+    elif match is ControlMatch.EXACT:
         reason = ControlMessage.STRONG_REASON.format(score=score, cutoff=rule.cutoff)
     elif any_strong:
         reason = ControlMessage.FALLBACK_REASON.format(score=score, cutoff=rule.cutoff, least=rule.least)

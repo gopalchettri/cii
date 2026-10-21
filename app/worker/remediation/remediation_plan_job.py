@@ -131,12 +131,13 @@ class RemediationPlanJob:
         items = self._mapped_items(lease, scenario, context, library, by_id)
         register = lease.record["register"]
         systems, affected = risk_scope(scenario, context, register)
-        library_mapped, warnings = assess_controls(items, register, controls, systems, affected)
+        categories = context.system_categories()
+        library_mapped, warnings = assess_controls(items, register, controls, systems, affected, categories)
         identified = [item["control_id"] for item in items]
         found = self._mapper.find_alternatives(
             scenario, context, library, identified, Remediation.ALTERNATIVES
         )
-        alternatives = assess_alternatives(found, register, controls, systems, affected)
+        alternatives = assess_alternatives(found, register, controls, systems, affected, categories)
         snapshot = build_snapshot(
             scenario, context, register, library_mapped, warnings, affected, alternatives
         )

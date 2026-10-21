@@ -104,11 +104,11 @@ def test_every_linked_system_is_kept_by_its_id_and_name_alone() -> None:
     context = _freeze(_rows(None, _system_row(1568), *unsent, _system_row(1567), _system_row(1500)))
     assert [system["id"] for system in context.systems] == [1567, 1568]
     assert context.asset_systems == [
-        {"id": 1567, "name": "System 1567"},
-        {"id": 1568, "name": "System 1568"},
-        {"id": 1500, "name": "System 1500"},
-        {"id": 1570, "name": "Supporting system 1570"},
-        {"id": 1601, "name": "System 1567 (1601)"},
+        {"id": 1567, "name": "System 1567", "category_code": "IT"},
+        {"id": 1568, "name": "System 1568", "category_code": "IT"},
+        {"id": 1500, "name": "System 1500", "category_code": "IT"},
+        {"id": 1570, "name": "Supporting system 1570", "category_code": "IT"},
+        {"id": 1601, "name": "System 1567 (1601)", "category_code": "IT"},
     ]
     assert NEW_FACT not in _texts(context)
     older = {key: value for key, value in context.to_record().items() if key != "asset_systems"}

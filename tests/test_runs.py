@@ -155,8 +155,8 @@ def test_a_start_keeps_every_linked_system_by_id_and_name_and_only_the_sent_ones
     context = _run(response.json()["session_id"])["context"]
     assert [(system["alias"], system["id"]) for system in context["systems"]] == [("SYS1", 321)]
     assert context["asset_systems"] == [
-        {"id": 321, "name": "SCADA master station"},
-        {"id": 322, "name": "Process historian"},
+        {"id": 321, "name": "SCADA master station", "category_code": "OT"},
+        {"id": 322, "name": "Process historian", "category_code": "IT"},
     ]
 
 

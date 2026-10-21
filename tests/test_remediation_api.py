@@ -286,18 +286,23 @@ def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_
 def test_an_existing_control_on_an_asset_system_the_run_was_not_started_on_counts(
     client: TestClient, api_key: str, world: dict[str, Any]
 ) -> None:
-    """The asset has an engineering workstation (324) the run was not started on: a control there is the
-    asset's, so accepted, and with the risk on every system it is partial; 999 is still refused."""
-    systems = [{"id": s["id"], "name": s["name"]} for s in CONTEXT.systems]
-    wide = dataclasses.replace(
-        CONTEXT, asset_systems=[*systems, {"id": 324, "name": "Engineering workstation"}]
-    )
+    """The asset has an OT engineering workstation (324) and an IT billing server (325) the run was not
+    started on: a control on 324 is the asset's, so accepted, and with the risk on every system it is partial,
+    still needed on the other OT systems but never on the IT server (an OT control); 999 is still refused."""
+    systems = [
+        {"id": s["id"], "name": s["name"], "category_code": s["category_code"]} for s in CONTEXT.systems
+    ]
+    others = [
+        {"id": 324, "name": "Engineering workstation", "category_code": "OT"},
+        {"id": 325, "name": "Billing server", "category_code": "IT"},
+    ]
+    wide = dataclasses.replace(CONTEXT, asset_systems=[*systems, *others])
     scenario_id, by_system = _scenario(_run(wide)), {"existing_controls_all_supporting_system_applicable": 0}
     wrong = [{"control_code": "CII-CID-1", "supporting_system_ids": [324, 999]}]
     refused = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=wrong))
     assert refused.status_code == 422, refused.text
     assert [error["message"] for error in refused.json()["errors"]] == [
-        RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322, 324")
+        RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322, 324, 325")
     ]
     on_workstation = [{"control_code": "CII-CID-1", "supporting_system_ids": [324]}]
     answer = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=on_workstation))

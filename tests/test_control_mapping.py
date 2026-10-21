@@ -276,7 +276,13 @@ def test_an_empty_library_fails_and_no_control_of_the_type_keeps_the_nearest_of_
     mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
     assert [item.control_id for item in mapping.items] == [1, 2]
     expected = ControlMessage.OTHER_TYPE.format(types=r"IT\OT, OT")
-    assert mapping.warning == expected and mapping.left_out == 0
+    assert mapping.warning == expected and mapping.left_out == 0 and mapping.shortfall is None
+    # whatever their score, another type's controls are never strong: nearest, said so, counted after the cut
+    assert {item.match for item in mapping.items} == {ControlMatch.NEAREST}
+    assert mapping.items[0].rationale.startswith("Score 90, asset type IT: another type than the scenario's")
+    monkeypatch.setattr(get_settings(), "nearest_controls", 3)
+    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
+    assert mapping.shortfall == ControlMessage.SHORTFALL.format(kept=2, least=3)
 
 
 def test_a_reranker_outage_is_raised_and_a_long_query_is_cut() -> None:
