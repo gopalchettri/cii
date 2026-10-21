@@ -30,15 +30,17 @@ class ScenarioOutputSettings(BaseSettings):
 
     # A scenario's controls, in five steps: the CONTROL_CANDIDATES closest library controls that fit the asset
     # type are found; the reranker scores each 0-100; every one at or above CONTROL_SIMILARITY_THRESHOLD is
-    # kept as "strong" (the owner's 0.50 is 50); never more than MAX_CONTROLS; none reaching it: the nearest
-    # are kept as "fallback" up to MIN_CONTROLS. Never zero (owner 2026-10-13, G227).
+    # kept as "strong" (the owner's 0.50 is 50); never more than MAX_CONTROLS; fewer than MIN_CONTROLS strong:
+    # the nearest top them up to it; none strong: the NEAREST_CONTROLS nearest are kept as "fallback". Never
+    # zero (owner 2026-10-13, G227; 3 / 5 / 3, owner 2026-10-21).
     control_similarity_threshold: float = Field(
         default=50.0, ge=0, le=100, validation_alias="CONTROL_SIMILARITY_THRESHOLD"
     )
     # No value in code (owner 2026-10-15, G249): read only from the env file; missing, the app does not start.
     control_candidates: int = Field(ge=1, validation_alias="CONTROL_CANDIDATES")
-    min_controls: int = Field(default=1, ge=1, validation_alias="MIN_CONTROLS")
-    max_controls: int = Field(default=10, ge=1, validation_alias="MAX_CONTROLS")
+    min_controls: int = Field(default=3, ge=1, validation_alias="MIN_CONTROLS")
+    max_controls: int = Field(default=5, ge=1, validation_alias="MAX_CONTROLS")
+    nearest_controls: int = Field(default=3, ge=1, validation_alias="NEAREST_CONTROLS")
     # Words the writer is asked for, "min-max": the max is a hard limit, the min a target; code never cuts.
     threat_scenario_word_limit: str = Field(default="150-200", validation_alias="THREAT_SCENARIO_WORD_LIMIT")
     risk_statement_word_limit: str = Field(default="100-150", validation_alias="RISK_STATEMENT_WORD_LIMIT")
@@ -54,10 +56,14 @@ class ScenarioOutputSettings(BaseSettings):
 
     @model_validator(mode="after")
     def refuse_output_limits_that_cannot_work(self) -> "ScenarioOutputSettings":
-        if not self.control_candidates >= self.max_controls >= self.min_controls:
+        most = self.max_controls
+        if not (self.control_candidates >= most >= self.min_controls and most >= self.nearest_controls):
             raise ValueError(
                 ErrorMessage.CONTROL_COUNT_INVALID.format(
-                    candidates=self.control_candidates, most=self.max_controls, least=self.min_controls
+                    candidates=self.control_candidates,
+                    most=most,
+                    least=self.min_controls,
+                    nearest=self.nearest_controls,
                 )
             )
         if 0 < (value := self.control_similarity_threshold) < 1:

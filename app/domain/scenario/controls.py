@@ -41,9 +41,10 @@ class ControlMapper:
     def map_controls(
         self, scenario: dict[str, Any], context: FrozenContext, snapshot: LibrarySnapshot
     ) -> ControlMapping:
-        """Every fitting control at or above CONTROL_SIMILARITY_THRESHOLD, best first, at most MAX_CONTROLS;
-        else the nearest up to MIN_CONTROLS, flagged. No control of the scenario's type: the nearest of any
-        type, flagged. ControlsNotMapped only when the library is empty; an outage is raised."""
+        """Every fitting control at or above CONTROL_SIMILARITY_THRESHOLD, best first, at most MAX_CONTROLS,
+        topped up with the nearest to MIN_CONTROLS; none strong, the NEAREST_CONTROLS nearest, flagged. No
+        control of the scenario's type: the nearest of any type, flagged. ControlsNotMapped only when the
+        library is empty; an outage is raised."""
         content = scenario["content"]
         if not snapshot.library.control_library:
             raise ControlsNotMapped(ErrorCode.CONTROL_LIBRARY_EMPTY, ErrorMessage.CONTROL_LIBRARY_EMPTY)
@@ -62,7 +63,8 @@ class ControlMapper:
         )
         mapping = select_controls(list(zip(candidates, scores, strict=True)), rule, query.text)
         if other_type:  # never a strong set of another type: the nearest only, flagged as such
-            mapping = replace(mapping, items=mapping.items[: rule.least], warning=other_type, left_out=0)
+            nearest = mapping.items[: min(rule.nearest, rule.most)]
+            mapping = replace(mapping, items=nearest, warning=other_type, left_out=0)
         return replace(
             mapping, query_shortened=query.shortened, mitigations=query.mitigations, ai_controls=about_ai
         )
@@ -114,6 +116,7 @@ def controls_record(mapping: ControlMapping, snapshot: LibrarySnapshot) -> dict[
             "candidates": settings.control_candidates,
             "min_controls": settings.min_controls,
             "max_controls": settings.max_controls,
+            "nearest_controls": settings.nearest_controls,
             "query_shortened": list(mapping.query_shortened),
             "mitigations": list(mapping.mitigations),
             "ai_controls": mapping.ai_controls,
@@ -125,33 +128,33 @@ def controls_record(mapping: ControlMapping, snapshot: LibrarySnapshot) -> dict[
 
 
 def _control_rule() -> ControlRule:
-    """The rule the settings give: CONTROL_SIMILARITY_THRESHOLD, CONTROL_CANDIDATES, MIN_/MAX_CONTROLS."""
+    """The rule the settings give: CONTROL_SIMILARITY_THRESHOLD, CONTROL_CANDIDATES, MIN_, MAX_ and
+    NEAREST_CONTROLS."""
     settings = get_settings()
     return ControlRule(
         settings.control_similarity_threshold,
         settings.control_candidates,
         settings.min_controls,
         settings.max_controls,
+        settings.nearest_controls,
     )
 
 
 def select_controls(scored: _Scored, rule: ControlRule, query: str) -> ControlMapping:
-    """Best first, twins folded: every control at or above the threshold ("strong", at most MAX_CONTROLS),
-    and fewer than MIN_CONTROLS strong, the nearest below it added as "fallback". `scored`: 0-100 scores."""
+    """Best first, twins folded: every control at or above the threshold ("strong", at most MAX_CONTROLS);
+    fewer than MIN_CONTROLS strong, the nearest below it added as "fallback" up to it; none strong, the
+    NEAREST_CONTROLS nearest. `scored`: 0-100 scores."""
     unique = _without_twins(sorted(scored, key=lambda pair: (-pair[1], pair[0].control_id)))
     strong = [(control, score) for control, score in unique if score >= rule.cutoff]
     kept = strong[: rule.most]
-    room = max(min(rule.least, rule.most) - len(kept), 0)
-    fallback = [(control, score) for control, score in unique if score < rule.cutoff][:room]
-    chosen = [_mapped(c, s, ControlMatch.EXACT, rule) for c, s in kept]
-    chosen += [_mapped(c, s, ControlMatch.NEAREST, rule) for c, s in fallback]
+    target = min(rule.least if kept else rule.nearest, rule.most)
+    below = [(control, score) for control, score in unique if score < rule.cutoff]
+    fallback = below[: max(target - len(kept), 0)]
+    chosen = [_mapped(c, s, ControlMatch.EXACT, rule, bool(kept)) for c, s in kept]
+    chosen += [_mapped(c, s, ControlMatch.NEAREST, rule, bool(kept)) for c, s in fallback]
     items = tuple(replace(item, rank=rank) for rank, item in enumerate(chosen, 1))
-    warning = None if kept else ControlMessage.NEAREST_ONLY.format(cutoff=rule.cutoff, least=rule.least)
-    short = (
-        ControlMessage.SHORTFALL.format(kept=len(items), least=rule.least)
-        if len(items) < rule.least
-        else None
-    )
+    warning = None if kept else ControlMessage.NEAREST_ONLY.format(cutoff=rule.cutoff, nearest=target)
+    short = ControlMessage.SHORTFALL.format(kept=len(items), least=target) if len(items) < target else None
     return ControlMapping(items, query, warning, short, len(strong) - len(kept))
 
 
@@ -167,13 +170,16 @@ def _without_twins(ordered: _Scored) -> _Scored:
     return unique
 
 
-def _mapped(control: LibraryControl, score: float, match: ControlMatch, rule: ControlRule) -> MappedControl:
-    """A kept control with its score and why it was kept."""
-    reason = (
-        ControlMessage.STRONG_REASON.format(score=score, cutoff=rule.cutoff)
-        if match is ControlMatch.EXACT
-        else ControlMessage.FALLBACK_REASON.format(score=score, cutoff=rule.cutoff, least=rule.least)
-    )
+def _mapped(
+    control: LibraryControl, score: float, match: ControlMatch, rule: ControlRule, any_strong: bool
+) -> MappedControl:
+    """A kept control with its score and why it was kept: strong, a top-up to the minimum, or a nearest."""
+    if match is ControlMatch.EXACT:
+        reason = ControlMessage.STRONG_REASON.format(score=score, cutoff=rule.cutoff)
+    elif any_strong:
+        reason = ControlMessage.FALLBACK_REASON.format(score=score, cutoff=rule.cutoff, least=rule.least)
+    else:
+        reason = ControlMessage.NEAREST_REASON.format(score=score, cutoff=rule.cutoff, nearest=rule.nearest)
     fields = (control.control_id, control.code, control.name, control.domain, control.asset_type)
     return MappedControl(*fields, 0, score, match, control.description, reason)
 

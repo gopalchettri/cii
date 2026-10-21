@@ -41,12 +41,13 @@ class MappedControl:
 @dataclass(frozen=True)
 class ControlRule:
     """How a scenario's controls are chosen: candidates found, the 0-100 strong threshold, at least `least`
-    (never zero: the nearest as fallback) and at most `most`."""
+    and at most `most`; when none is strong, the `nearest` closest instead (never zero)."""
 
     cutoff: float  # CONTROL_SIMILARITY_THRESHOLD: strong at or above it
     candidates: int  # CONTROL_CANDIDATES: library controls found and scored for one scenario
-    least: int  # MIN_CONTROLS (at least 1)
+    least: int  # MIN_CONTROLS: some strong but fewer, the nearest fill up to it
     most: int  # MAX_CONTROLS
+    nearest: int  # NEAREST_CONTROLS: none strong, this many of the nearest are kept
 
 
 @dataclass(frozen=True)

@@ -227,13 +227,17 @@ class Controls:
 
 class ControlMessage(StrEnum):
     NEAREST_ONLY = (
-        "No control reached the control similarity threshold of {cutoff:g}; the nearest compatible "
-        "controls are kept, up to the minimum of {least}."
+        "No control reached the control similarity threshold of {cutoff:g}; the {nearest} nearest compatible "
+        "controls are kept (NEAREST_CONTROLS)."
     )
     STRONG_REASON = "Score {score:.0f} is at or above the threshold of {cutoff:g}: strong."
     FALLBACK_REASON = (
         "Score {score:.0f} is below the threshold of {cutoff:g}: fallback, among the nearest kept to reach "
         "the minimum of {least}."
+    )
+    NEAREST_REASON = (
+        "Score {score:.0f} is below the threshold of {cutoff:g}: fallback, one of the {nearest} nearest kept "
+        "because no control reached it."
     )
     SHORTFALL = "{kept} control(s) kept: the minimum is {least}, but only {kept} compatible control(s) exist."
     OTHER_TYPE = (

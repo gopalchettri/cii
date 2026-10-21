@@ -101,7 +101,7 @@ class ErrorMessage(StrEnum):
     )
     CONTROL_COUNT_INVALID = (
         "CONTROL_CANDIDATES ({candidates}) must be at least MAX_CONTROLS ({most}), and MAX_CONTROLS at least "
-        "MIN_CONTROLS ({least})."
+        "MIN_CONTROLS ({least}) and NEAREST_CONTROLS ({nearest})."
     )
     CONTROL_THRESHOLD_AS_FRACTION = (
         "{setting}={value} reads as {value} on the 0-100 scale, which keeps almost every control: write "
