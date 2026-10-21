@@ -467,7 +467,7 @@
   "AFTER": ", after {ids} complete",
   "DATED": "{start} \u2192 {end} ({span}{after})",
   "DAYS": "{days} day",
-  "GAP_FLAGGED": "{code} {name}: its relevance to this risk is unverified and no library control fits better",
+  "GAP_FLAGGED": "{code} {name}: its relevance to this risk is unverified, and none of the library alternatives offered fits better: review it, or search the library for a better control",
   "GAP_NONE_VALIDATED": "No identified or alternative library control was confirmed relevant to this risk.",
   "PLAN_DATED": "{start} \u2192 {end} ({total}, critical path {chain})",
   "PLAN_UNDATED": "{total} in total (critical path {chain})",

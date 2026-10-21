@@ -277,5 +277,8 @@ class PlanText(StrEnum):
     REMEDIATION_TITLE = "{domains} Remediation"
     VERIFICATION_TITLE = "{domains} Verification"
     # The unresolved gaps code reports.
-    GAP_FLAGGED = "{code} {name}: its relevance to this risk is unverified and no library control fits better"
+    GAP_FLAGGED = (
+        "{code} {name}: its relevance to this risk is unverified, and none of the library alternatives "
+        "offered fits better: review it, or search the library for a better control"
+    )
     GAP_NONE_VALIDATED = "No identified or alternative library control was confirmed relevant to this risk."
