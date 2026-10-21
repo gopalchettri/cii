@@ -15,6 +15,7 @@ from app.core.constants import (
     ControlMatch,
     ErrorCode,
     ImplementationStatus,
+    PlanText,
     PlanWarning,
     Remediation,
     RemediationMessage,
@@ -46,6 +47,9 @@ _NOT_SHOWN = ("register", "warnings")
 _RATINGS = ("likelihood_rating", "impact_rating", "final_risk_rating")
 _STAMPED = ("control_id", "control_code", "control_name", "domain", "implementation_status")
 _ASSESSED = ("control_id", "control_code", "control_name", "domain", "match", "implementation_status")
+_CODE_FACT = re.compile(Remediation.ACTION_PLAN_CLAIM_PATTERN, re.IGNORECASE)
+_EXTENDS = re.compile(Remediation.EXTENDS_PATTERN, re.IGNORECASE)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
 def clip(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | None:
@@ -245,6 +249,9 @@ def _capped(value: Any) -> Any:
 def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
     """(system, user): the approved rules, and the snapshot as data without the echo, warnings or ids."""
     shown = {key: value for key, value in snapshot.items() if key not in _NOT_SHOWN}
+    # The window is code's to compare with the schedule: an AI that never sees it can state no fit or length.
+    risk = {key: value for key, value in shown["risk_assessment"].items() if key != "assessment_window"}
+    shown["risk_assessment"] = risk
     # The prompt knows "exact" and "nearest": a control the person named for a hand-written scenario is exact.
     mapped = [
         row | {"match": ControlMatch.EXACT} if row["match"] == ControlMatch.GIVEN else row
@@ -262,7 +269,7 @@ def write_plan(chat: ChatModel, snapshot: dict[str, Any]) -> tuple[dict[str, Any
 
     def check_first_answer(answer: dict[str, Any]) -> list[str]:
         first.append(answer)
-        return _gap_problems(mapped, answer)
+        return _gap_problems(mapped, answer) + _prose_problems(mapped, answer)
 
     try:
         draft: PlanDraft = ask_ai_and_check(
@@ -311,19 +318,51 @@ def _gap_problems(mapped: list[dict[str, Any]], answer: dict[str, Any]) -> list[
     return problems
 
 
+def _prose_problems(mapped: list[dict[str, Any]], answer: dict[str, Any]) -> list[str]:
+    """A shape-valid first answer's prose faults: code's facts in action_plan, a partial control described as
+    new or a missing one as extended, an interim action when covered."""
+    draft = PlanDraft.model_validate(answer)
+    claims = dict.fromkeys(match.group(0) for match in _CODE_FACT.finditer(draft.action_plan))
+    problems = [RemediationMessage.CODE_FACT_IN_ACTION_PLAN.format(claim=claim) for claim in claims]
+    status_of = {row["control_code"].strip().casefold(): row["implementation_status"] for row in mapped}
+    for control in draft.controls_to_be_implemented:
+        status, extends = (
+            status_of.get(control.control_code.strip().casefold()),
+            _EXTENDS.search(control.description),
+        )
+        if status == ImplementationStatus.PARTIALLY_IMPLEMENTED and not extends:
+            problems.append(RemediationMessage.PARTIAL_NOT_EXTENDED.format(code=control.control_code))
+        elif status == ImplementationStatus.MISSING and extends:
+            problems.append(RemediationMessage.MISSING_EXTENDED.format(code=control.control_code))
+    if mapped and all(row["implementation_status"] == ImplementationStatus.IMPLEMENTED for row in mapped):
+        problems += [
+            RemediationMessage.INTERIM_WHEN_COVERED.format(action=action.action_id)
+            for action in draft.remediation_action_plan
+            if action.action.strip().casefold().startswith("interim")
+        ]
+    return problems
+
+
 def _finish(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """The plan as stored, before its schedule: controls kept and stamped, coverage and assessment code's."""
     plan = draft.model_dump(mode="json")
     if not plan["remediation_action_plan"]:
         raise JobFailed(ErrorCode.INVALID_PLAN, RemediationMessage.PLAN_WITHOUT_ACTION)
+    # A claim of code's the re-ask left is dropped with its sentence: the schedule and the library are code's.
+    # ponytail: whole sentences go; a paragraph of nothing but such sentences comes back empty.
+    sentences = _SENTENCE_END.split(plan["action_plan"].strip())
+    plan["action_plan"] = " ".join(sentence for sentence in sentences if not _CODE_FACT.search(sentence))
     mapped = snapshot["existing_controls"]["library_mapped"]
     controls, warnings = _kept_controls(plan["controls_to_be_implemented"], mapped)
     recommended = [control["control_code"] for control in controls]
     every_one_implemented = all(
         row["implementation_status"] == ImplementationStatus.IMPLEMENTED for row in mapped
     )
-    coverage = ControlCoverage.COVERED if mapped and every_one_implemented else ControlCoverage.GAPS
+    covered = bool(mapped) and every_one_implemented
+    coverage = ControlCoverage.COVERED if covered else ControlCoverage.GAPS
+    named = mapped if covered else [row for row in mapped if row["control_code"] in recommended]
     plan |= {
+        "title": _title(named, covered) or plan["title"],
         "controls_to_be_implemented": {"control_coverage": coverage, "controls": controls},
         # Code's keys last, so nothing the AI wrote can stand in for the strategy or the register's facts.
         "treatment_strategy": Remediation.STRATEGY,
@@ -339,6 +378,16 @@ def _finish(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any],
         if _required_gap(row) and row["control_code"] not in recommended
     ]
     return plan, warnings + _delivery_warnings(plan["remediation_action_plan"], recommended)
+
+
+def _title(controls: list[dict[str, Any]], covered: bool) -> str | None:
+    """The plan's name from the library domains of the controls it recommends (verifies, when covered), in
+    mapping order; None when none has a domain, and the AI's name stays."""
+    domains = list(dict.fromkeys(row["domain"] for row in controls if row.get("domain")))
+    if not domains:
+        return None
+    joined = domains[0] if len(domains) == 1 else ", ".join(domains[:-1]) + " and " + domains[-1]
+    return (PlanText.VERIFICATION_TITLE if covered else PlanText.REMEDIATION_TITLE).format(domains=joined)
 
 
 def _kept_controls(

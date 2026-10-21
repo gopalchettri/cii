@@ -456,9 +456,11 @@
   "AFTER": ", after {ids} complete",
   "DATED": "{start} \u2192 {end} ({span}{after})",
   "DAYS": "{days} day",
-  "PLAN_DATED": "{start} \u2192 {end} ({total} days, critical path {chain})",
-  "PLAN_UNDATED": "{total} days in total (critical path {chain})",
-  "UNDATED": "{span}{after}"
+  "PLAN_DATED": "{start} \u2192 {end} ({total}, critical path {chain})",
+  "PLAN_UNDATED": "{total} in total (critical path {chain})",
+  "REMEDIATION_TITLE": "{domains} Remediation",
+  "UNDATED": "{span}{after}",
+  "VERIFICATION_TITLE": "{domains} Verification"
  },
  "PlanWarning": {
   "ACTION_ID_REPEATED": "{action}.action_id {action_id!r} is already used by remediation_action_plan[{position}] \u2014 this action cannot be named as a prerequisite",
@@ -473,8 +475,8 @@
   "GAP_NOT_ADDRESSED": "scenario control {code} is {status} but the plan does not recommend it \u2014 this gap stays open",
   "IMPLEMENTS_UNKNOWN": "{action}.implements_controls names {code!r}, which is not a recommended control of this plan \u2014 removed",
   "NO_WINDOW": "no mitigation window supplied \u2014 the {total}-day schedule is not bounded by a register deadline",
-  "PAST_CALENDAR": "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} days fit, so the dates at and beyond {last} are clamped and no longer reflect the durations",
-  "PAST_WINDOW": "the plan finishes {end}, {days} days after the mitigation window closes ({deadline})"
+  "PAST_CALENDAR": "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} fit, so the dates at and beyond {last} are clamped and no longer reflect the durations",
+  "PAST_WINDOW": "the plan finishes {end}, {days} after the mitigation window closes ({deadline})"
  },
  "PromotionOutcome": {
   "CURATOR_REJECTED": "curator_rejected",

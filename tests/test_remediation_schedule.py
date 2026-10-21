@@ -111,8 +111,22 @@ def test_a_plan_past_its_window_says_by_how_many_days() -> None:
     """110 days from 1 October end on 18 January, 18 days after the window closes."""
     plan = _plan(_act("A1", 50), _act("A2", 60, ("A1",)))
     warnings = schedule_plan(plan, _snapshot())
-    assert warnings == [PlanWarning.PAST_WINDOW.format(end="2027-01-18", days=18, deadline="2026-12-31")]
-    assert plan["mitigation_end_date_planned"] == "2027-01-18"
+    late = PlanWarning.PAST_WINDOW.format(end="2027-01-18", days="18 days", deadline="2026-12-31")
+    assert warnings == [late] and plan["mitigation_end_date_planned"] == "2027-01-18"
+
+
+def test_one_day_is_said_as_one_day_in_every_plan_text() -> None:
+    """The live hand-written plan read "1 days after the mitigation window closes": one spelling for all."""
+    late = _plan(_act("A1", 93))
+    assert schedule_plan(late, _snapshot()) == [
+        "the plan finishes 2027-01-01, 1 day after the mitigation window closes (2026-12-31)"
+    ]
+    assert late["mitigation_timeline"] == "2026-10-01 → 2027-01-01 (93 days, critical path A1)"
+    single = _plan(_act("A1", 1))
+    schedule_plan(single, _snapshot())
+    assert single["mitigation_timeline"] == "2026-10-01 → 2026-10-01 (1 day, critical path A1)"
+    schedule_plan(undated := _plan(_act("A1", 1)), _snapshot(window=None))
+    assert undated["mitigation_timeline"] == "1 day in total (critical path A1)"
 
 
 def test_dates_past_the_calendar_are_clamped_with_a_warning() -> None:
@@ -122,6 +136,9 @@ def test_dates_past_the_calendar_are_clamped_with_a_warning() -> None:
     warnings = schedule_plan(plan, _snapshot(window=window))
     assert plan["remediation_action_plan"][1]["end_date"] == date.max.isoformat()
     clamped = PlanWarning.PAST_CALENDAR.format(
-        total=7300, anchor=anchor.isoformat(), fit=(date.max - anchor).days + 1, last=date.max.isoformat()
+        total=7300,
+        anchor=anchor.isoformat(),
+        fit=f"{(date.max - anchor).days + 1} days",
+        last=date.max.isoformat(),
     )
     assert clamped in warnings

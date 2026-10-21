@@ -1814,19 +1814,31 @@ $(function () {
     openModal("Remediation plan — " + title, h, btns);
     $("#mBody").scrollTop(top);
   }
-  // PlanView (app/models/remediation_views.py): the stored plan flattened by PlanView.from_stored.
+  // implementation_status, decided by code from the register: what a control needs from this plan.
+  function plStatusBadge(v) {
+    var shown = { implemented: ["green", "Implemented"], partially_implemented: ["amber", "Improve"], missing: ["red", "Implement"] }[v];
+    return shown ? '<span class="badge ' + shown[0] + '">' + shown[1] + "</span>" : plDash(v);
+  }
+  // PlanView (app/models/remediation/plan.py): the stored plan flattened by PlanView.from_stored.
   function plContent(pl) {
-    var ctl = pl.controls_to_be_implemented || [], acts = pl.actions || [];
+    var ctl = pl.controls_to_be_implemented || [], acts = pl.actions || [], assessed = pl.control_assessment || [];
     var cov = { gaps: '<span class="badge amber">Gaps to close</span>', covered: '<span class="badge green">Covered by existing controls</span>' }[pl.control_coverage] || "";
     var codes = function (x) { return [].concat(x || []).join(", "); };
     var h = '<div class="section-title">Plan &middot; ' + esc(pl.treatment_strategy || "") + "</div>" + (pl.title ? '<h4 class="pd-h">' + esc(pl.title) + "</h4>" : "") +
             (pl.action_plan ? '<p style="margin:0">' + esc(pl.action_plan) + "</p>" : "");
     h += '<div class="section-title">Controls to implement ' + cov + "</div>" + (ctl.length
-      ? plTable(["Code", "Control", "Type", "Priority", "Description"], ctl.map(function (c) {
+      ? plTable(["Code", "Control", "Status", "Type", "Priority", "Description"], ctl.map(function (c) {
           return ['<span class="mono">' + plDash(c.control_code) + "</span>", "<b>" + plDash(c.control_name) + "</b>" + (c.domain ? '<div class="pd-sub">' + esc(c.domain) + "</div>" : ""),
-                  plDash(c.control_type), plLevelBadge(c.priority), plDash(c.description)];
+                  plStatusBadge(c.implementation_status), plDash(c.control_type), plLevelBadge(c.priority), plDash(c.description)];
         }), "pd-tbl")
       : '<p class="muted" style="margin:0">' + (pl.control_coverage === "covered" ? "No new controls needed." : "No controls listed.") + "</p>");
+    if (assessed.length) {   // an older plan has no assessment
+      h += '<div class="section-title">Mapped controls against the register (decided by code)</div>' +
+        plTable(["Code", "Control", "Match", "Status", "In this plan"], assessed.map(function (c) {
+          return ['<span class="mono">' + plDash(c.control_code) + "</span>", "<b>" + plDash(c.control_name) + "</b>" + (c.domain ? '<div class="pd-sub">' + esc(c.domain) + "</div>" : ""),
+                  plDash(c.match), plStatusBadge(c.implementation_status), c.recommended ? "Recommended" : '<span class="faint">Not recommended</span>'];
+        }), "pd-tbl");
+    }
     h += '<div class="section-title">Actions (dates computed by code, stage 6.9)</div>' + (acts.length
       ? plTable(["ID", "Action", "Owner", "Priority", "Depends on", "Schedule", "Implements", "Success criteria"], acts.map(function (a) {
           return ['<span class="mono">' + plDash(a.action_id) + "</span>", plDash(a.action), plDash(a.owner), plLevelBadge(a.priority),

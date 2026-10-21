@@ -24,6 +24,20 @@ class Remediation:
     PROMPT_VERSION: Final = "remediation-2"  # stored on every plan version the prompt writes
     #: The code at the head of a control label ("CID-0477 · Social Engineering"): what the label names.
     LABEL_CODE_PATTERN: Final = r"[^\s·•|:—–]+"
+    #: What only code may state in a plan's action_plan: the schedule (a time span, a date, the critical path,
+    #: parallel or sequential work, the window, a deadline: code's, from depends_on and duration_days) and the
+    #: library (the AI sees only the mapped controls). A maintenance, change or outage window is operations.
+    ACTION_PLAN_CLAIM_PATTERN: Final = (
+        r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen"
+        r"|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)"
+        r"(?:\s*-\s*|\s+)(?:calendar\s+|working\s+|business\s+)?(?:day|week|month)s?\b"
+        r"|\b\d{4}-\d{2}-\d{2}\b|\bcritical[\s-]+path\b|\bdeadlines?\b"
+        r"|\b(?<!maintenance\s)(?<!change\s)(?<!outage\s)windows?\b"
+        r"|\b(?:parallel|concurrent(?:ly)?|simultaneous(?:ly)?|sequential(?:ly)?|in\s+sequence)\b"
+        r"|\blibrar(?:y|ies)\b"
+    )
+    #: How a recommended control's description says it grows a control already in place.
+    EXTENDS_PATTERN: Final = r"\b(?:extend|expand|broaden)"
 
 
 class YesNo(StrEnum):
@@ -145,6 +159,18 @@ class RemediationMessage(StrEnum):
         "{code} is already implemented: remove it from controls_to_be_implemented and from every "
         "implements_controls"
     )
+    CODE_FACT_IN_ACTION_PLAN = (
+        "action_plan states '{claim}': restate no schedule (order, parallel work, days, dates, critical "
+        "path, window or deadline) and say nothing of the library — the application owns both"
+    )
+    PARTIAL_NOT_EXTENDED = (
+        "{code} is partially implemented: describe what to extend and where, never a new deployment"
+    )
+    MISSING_EXTENDED = "{code} is missing (in no register entry): describe implementing it, not extending it"
+    INTERIM_WHEN_COVERED = (
+        "{action} is an interim action, but every control is implemented: when covered, actions only verify, "
+        "test or evidence the implemented controls"
+    )
 
 
 class PlanWarning(StrEnum):
@@ -173,13 +199,13 @@ class PlanWarning(StrEnum):
         "action cannot be named as a prerequisite"
     )
     PAST_CALENDAR = (
-        "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} days fit, "
+        "the {total}-day schedule runs past the last representable date: from {anchor} only {fit} fit, "
         "so the dates at and beyond {last} are clamped and no longer reflect the durations"
     )
     NO_WINDOW = (
         "no mitigation window supplied — the {total}-day schedule is not bounded by a register deadline"
     )
-    PAST_WINDOW = "the plan finishes {end}, {days} days after the mitigation window closes ({deadline})"
+    PAST_WINDOW = "the plan finishes {end}, {days} after the mitigation window closes ({deadline})"
     IMPLEMENTS_UNKNOWN = (
         "{action}.implements_controls names {code!r}, which is not a recommended control of this plan — "
         "removed"
@@ -190,9 +216,12 @@ class PlanWarning(StrEnum):
 class PlanText(StrEnum):
     """The timeline sentences code writes onto a plan (dates are code's, never the AI's)."""
 
-    DAYS = "{days} day"
+    DAYS = "{days} day"  # code adds the "s": "1 day", "2 days"
     AFTER = ", after {ids} complete"
     DATED = "{start} → {end} ({span}{after})"
     UNDATED = "{span}{after}"
-    PLAN_DATED = "{start} → {end} ({total} days, critical path {chain})"
-    PLAN_UNDATED = "{total} days in total (critical path {chain})"
+    PLAN_DATED = "{start} → {end} ({total}, critical path {chain})"
+    PLAN_UNDATED = "{total} in total (critical path {chain})"
+    # The plan's title, from the library domains of the controls it recommends, or verifies when covered.
+    REMEDIATION_TITLE = "{domains} Remediation"
+    VERIFICATION_TITLE = "{domains} Verification"

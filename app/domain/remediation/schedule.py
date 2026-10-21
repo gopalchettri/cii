@@ -66,7 +66,7 @@ def _date_actions(
         days, ids = action["duration_days"], action["depends_on"]
         finish.append(start + days)
         via.append(max(positions, key=lambda p: finish[p]) if positions else None)
-        span = PlanText.DAYS.format(days=days) + ("s" if days != 1 else "")
+        span = _spell_days(days)
         after = ""
         if ids:
             listed = ids[0] if len(ids) == 1 else ", ".join(ids[:-1]) + f" and {ids[-1]}"
@@ -99,26 +99,31 @@ def _date_plan(
     plan["mitigation_timeline_days"] = total
     if anchor is None or not window:
         plan["mitigation_end_date_planned"] = None
-        plan["mitigation_timeline"] = PlanText.PLAN_UNDATED.format(total=total, chain=chain)
+        plan["mitigation_timeline"] = PlanText.PLAN_UNDATED.format(total=_spell_days(total), chain=chain)
         return [PlanWarning.NO_WINDOW.format(total=total)]
     planned_end = _shift(anchor, total - 1)
     end = planned_end.isoformat()
     plan["mitigation_end_date_planned"] = end
     plan["mitigation_timeline"] = PlanText.PLAN_DATED.format(
-        start=anchor.isoformat(), end=end, total=total, chain=chain
+        start=anchor.isoformat(), end=end, total=_spell_days(total), chain=chain
     )
     warnings = []
     fit = (date.max - anchor).days + 1
     if total > fit:
-        last = date.max.isoformat()
+        last, anchored = date.max.isoformat(), anchor.isoformat()
         warnings.append(
-            PlanWarning.PAST_CALENDAR.format(total=total, anchor=anchor.isoformat(), fit=fit, last=last)
+            PlanWarning.PAST_CALENDAR.format(total=total, anchor=anchored, fit=_spell_days(fit), last=last)
         )
     deadline = date.fromisoformat(window["timeline_end_date"])
     if planned_end > deadline:
-        days = (planned_end - deadline).days
-        warnings.append(PlanWarning.PAST_WINDOW.format(end=end, days=days, deadline=deadline.isoformat()))
+        late = _spell_days((planned_end - deadline).days)
+        warnings.append(PlanWarning.PAST_WINDOW.format(end=end, days=late, deadline=deadline.isoformat()))
     return warnings
+
+
+def _spell_days(days: int) -> str:
+    """A count of days as every plan text says it: "1 day", "2 days"."""
+    return PlanText.DAYS.format(days=days) + ("s" if days != 1 else "")
 
 
 def _shift(anchor: date, offset: int) -> date:

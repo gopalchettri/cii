@@ -3544,14 +3544,20 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    `existing_controls` by id, code, name or a "CODE · Name" label, and `existing_controls_all_subsystems` Yes),
    `partially_implemented` (named, No or empty) or `missing`, and stores the input as the version's snapshot.
 3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-2`): only missing (implement) and
-   partially implemented (improve) controls. A first answer that leaves a required gap out or lists an
-   implemented control is asked again once; still wrong, the plan is kept with `GAP_NOT_ADDRESSED`. An unusable
+   partially implemented (improve) controls; it never sees the mitigation window. A first answer that leaves a
+   required gap out, lists an implemented control, restates the schedule in `action_plan` (order, parallel work,
+   days, dates, critical path, window or deadline) or mentions the library, describes a partial control as new or
+   a missing one as extended, or (every control implemented) has an interim action is asked again once; a gap
+   still left out
+   keeps the plan with `GAP_NOT_ADDRESSED`. An unusable
    answer is asked again once; still unusable, the version fails `generation_failed` (a plan with no action
    fails `invalid_plan`).
 4. **Code fixes the plan:** strategy "Mitigate"; recommended controls only the scenario's gaps, stamped from the
    library; implemented controls removed from the controls and from every `implements_controls`;
    `control_coverage` set by code ("covered" only when every control is implemented); `control_assessment` lists
-   every scenario control with its status; schedule dates and the critical path. Example: 5 mapped controls,
+   every scenario control with its status; an `action_plan` sentence still stating the schedule or the library is
+   dropped; the title is code's, "<domains> Remediation" (covered: "Verification") from the controls' domains;
+   schedule dates and the critical path. Example: 5 mapped controls,
    3 in the register with Yes → 2 recommended; with No or empty → 3 to improve and 2 to implement.
 5. **Later:** `GET .../treatment-plan` (and `/status`), `POST .../review` (accept or reject a version),
    `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10), `.../cancel`; live updates on
