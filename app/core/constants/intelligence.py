@@ -7,12 +7,12 @@ from typing import Final
 class IntelSource(StrEnum):
     """The approved source set."""
 
-    CISA_KEV = "cisa_kev"
-    FIRST_EPSS = "first_epss"
-    ATTACK_ENTERPRISE = "mitre_attack_enterprise"  # IT
-    ATTACK_ICS = "mitre_attack_ics"  # OT
-    CISA_ICS = "cisa_ics_advisories"  # OT: CSAF advisories with affected products and versions
-    NIST_NVD = "nist_nvd"  # CVE detail: CPE applicability, version ranges, CVSS, CWE
+    CISA_KEV = "cisa_kev" # Kind of record:: vulnerability (exploited in real attacks). For::	IT assets
+    FIRST_EPSS = "first_epss" # Kindof record:: exploit score, joined to a KEV CVE. For::	IT assets
+    ATTACK_ENTERPRISE = "mitre_attack_enterprise"  # Kind of record:: technique or sub-technique. For::	IT assets
+    ATTACK_ICS = "mitre_attack_ics"  # Kind of record:: technique or sub-technique. For::	OT assets
+    CISA_ICS = "cisa_ics_advisories"  #  Kind of record:: advisory (product, affected versions, fixes, mitigations). For::	OT assets
+    NIST_NVD = "nist_nvd"  # Kind of record::CVE detail: CPE applicability, version ranges, CVSS, CWE
 
 
 class IntelKind(StrEnum):
@@ -115,7 +115,7 @@ class IntelUrl:
     ATTACK_ICS: Final = (
         "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/ics-attack/ics-attack.json"
     )
-    NVD_API: Final = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    NVD_API: Final = "https://services.nvd.nist.gov/rest/json/cves/2.0" 
     ICS_CSAF: Final = "https://raw.githubusercontent.com/cisagov/CSAF/develop/csaf_files/OT/white/"
     ICS_CHANGES: Final = ICS_CSAF + "changes.csv"  # "<year>/<file>.json","<change time>", newest first
     TERMS_NVD: Final = "https://nvd.nist.gov/developers/terms-of-use"

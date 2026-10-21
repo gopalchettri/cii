@@ -1,6 +1,5 @@
 {
  "AiLimits.SLOTS_KEY": "tsg:ai_slots",
- "ApiKey.PREFIX": "tsg_",
  "ContextProperties.__doc__": "The columns of dbo.tsg_GetAssetContext: every one but these is a fact of the asset or a system.",
  "Problem.AUTH_CHALLENGE": "ApiKey realm=\"tsg\", header=\"X-API-Key\"",
  "Realtime.CHANNEL_PATTERN": "tsg:events:*",

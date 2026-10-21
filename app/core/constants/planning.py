@@ -108,16 +108,20 @@ class Search:
 class ContextProperties:
     """The columns of dbo.tsg_GetAssetContext: every one but these is a fact of the asset or a system."""
 
-    HEAD: Final = ("id", "name", "category_code")  # every asset and system row must return them
-    OPTION_COLUMNS: Final = ("code", "name")  # a dropdown name's columns (part 5) ...
-    OPTION_KEYS: Final = ("value", "id")  # ... and the number its facts hold, under either name
-    ALWAYS_USED: Final = (*HEAD, "alias")  # never a required fact: always there
-    ORGANISATION_PREFIX: Final = "entity_"  # an asset column about the whole organisation, not this asset
-    ORGANISATION_BRIEF_KEY: Final = (
+    # every asset and system row must return them
+    HEAD: Final[tuple[str, ...]] = ("id", "name", "category_code")
+    OPTION_COLUMNS: Final[tuple[str, ...]] = ("code", "name")  # a dropdown name's columns (part 5) ...
+    # ... and the number its facts hold, under either name
+    OPTION_KEYS: Final[tuple[str, ...]] = ("value", "id")
+    ALWAYS_USED: Final[tuple[str, ...]] = (*HEAD, "alias")  # never a required fact: always there
+    # an asset column about the whole organisation, not this asset
+    ORGANISATION_PREFIX: Final[str] = "entity_"
+    ORGANISATION_BRIEF_KEY: Final[str] = (
         "organisation_background_not_this_asset"  # the brief's key for those facts
     )
-    COUNTRY_KEY: Final = "country"  # THREAT_CONTEXT_COUNTRY, read while external intelligence is on
-    REQUEST_FIELDS: Final = {  # the request field a refusal names for the facts the request decides
+    COUNTRY_KEY: Final[str] = "country"  # THREAT_CONTEXT_COUNTRY, read while external intelligence is on
+    # the request field a refusal names for the facts the request decides
+    REQUEST_FIELDS: Final[dict[str, str]] = {
         "sector": "sector_id",
         "sub_sector": "subsector_id",
         "critical_service": "service_id",

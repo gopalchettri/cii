@@ -220,7 +220,7 @@ class Audit:
 
 
 class ApiKey:
-    PREFIX: Final = "tsg_"
+    PREFIX: Final = "ciip_"
     RANDOM_BYTES: Final = 32
     SHOWN_PREFIX_LENGTH: Final = 8
 
