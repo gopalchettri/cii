@@ -1420,7 +1420,24 @@ def freeze_context(request: StartRunRequest, rows: AssetContextRows) -> FrozenCo
     ]
     asset = _head_columns(rows.asset)
     check_required(request, {"name": asset["name"], **asset_facts}, systems)
-    return FrozenContext(asset, asset_facts, systems, _missing_facts(systems))
+    linked = _asset_systems(request.supporting_system_ids, systems_by_id)
+    return FrozenContext(asset, asset_facts, systems, _missing_facts(systems), linked)
+
+
+def _asset_systems(asked: list[int], rows_by_id: dict[int, Row]) -> list[dict[str, Any]]:
+    """Every system linked to the asset, once, as {id, name}: the asked ones in request order, then the
+    others by id; a name an earlier one already has gets its id, so a name the AI gives back finds one
+    system. Nothing else of the others is kept, and nothing about them refuses a run."""
+    linked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for system_id in [*asked, *sorted(set(rows_by_id) - set(asked))]:
+        name = _display_name(rows_by_id[system_id]["name"] or "")
+        name = name or ContextProperties.UNNAMED_SYSTEM.format(id=system_id)
+        linked.append(
+            {"id": system_id, "name": f"{name} ({system_id})" if name_match_key(name) in seen else name}
+        )
+        seen.add(name_match_key(name))
+    return linked
 
 
 def _display_name(value: Any) -> Any:

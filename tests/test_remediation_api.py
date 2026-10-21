@@ -2,6 +2,7 @@
 read; every refusal and race; the store's guarded writes; a record stored before the rebuild. The library,
 the mapping, the search and the chat faked (tests/plan_job_fakes.py)."""
 
+import dataclasses
 import threading
 import time
 import uuid
@@ -41,6 +42,7 @@ from app.data_access.jobs.job_repository import new_job
 from app.data_access.scenario.threat_scenario_session_repository import DELETING_MARK
 from app.domain.remediation.rules import check_regenerable, decision_change
 from app.models.remediation.requests import PlanRequest
+from app.models.scenario.asset_context import FrozenContext
 from app.worker import jobs
 from tests.plan_addresses import generated, plan_url
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
@@ -73,12 +75,12 @@ def _identity(api_key: str, entity_id: int = ENTITY) -> dict[str, str]:
     }
 
 
-def _run() -> str:
+def _run(context: FrozenContext = CONTEXT) -> str:
     """A run of ENTITY with its frozen asset context."""
     run_id = uuid.uuid4().hex
     get_mongodb()[Collection.SESSIONS].insert_one(
         {"_id": run_id, "entity_id": ENTITY, "asset_id": 1179, "status": Status.DONE,
-         "updated_at": datetime.now(UTC), "context": CONTEXT.to_record()}
+         "updated_at": datetime.now(UTC), "context": context.to_record()}
     )  # fmt: skip
     return run_id
 
@@ -246,8 +248,9 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
 def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_set_its_status(
     client: TestClient, api_key: str, world: dict[str, Any]
 ) -> None:
-    """Existing controls not on all systems name theirs, each one of the run's (321, 322): 999 is refused
-    before anything is saved; on the SCADA server alone, the risk on both, it is partially implemented."""
+    """A run stored before its asset's systems were kept: existing controls not on all systems name theirs,
+    each one of the run's (321, 322): 999 is refused before anything is saved; on the SCADA server alone,
+    the risk on both, it is partially implemented."""
     by_system = {"existing_controls_all_supporting_system_applicable": 0}
     scenario_id = _scenario()
     wrong = [{"control_code": "CII-CID-1", "supporting_system_ids": [321, 999]}]
@@ -256,7 +259,7 @@ def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_
     assert refused.json()["errors"] == [
         {
             "field": "body.existing_controls[0].supporting_system_ids",
-            "message": RemediationMessage.SYSTEM_NOT_IN_RUN.format(system_id=999, known="321, 322"),
+            "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322"),
         }
     ]
     assert not get_mongodb()[Collection.REMEDIATIONS].count_documents({"scenario_id": scenario_id})
@@ -278,6 +281,38 @@ def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_
         [s["name"] for s in assessed["required_systems"]],
     )
     assert names == (["SCADA server"], ["Historian"])
+
+
+def test_an_existing_control_on_an_asset_system_the_run_was_not_started_on_counts(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """The asset has an engineering workstation (324) the run was not started on: a control there is the
+    asset's, so accepted, and with the risk on every system it is partial; 999 is still refused."""
+    systems = [{"id": s["id"], "name": s["name"]} for s in CONTEXT.systems]
+    wide = dataclasses.replace(
+        CONTEXT, asset_systems=[*systems, {"id": 324, "name": "Engineering workstation"}]
+    )
+    scenario_id, by_system = _scenario(_run(wide)), {"existing_controls_all_supporting_system_applicable": 0}
+    wrong = [{"control_code": "CII-CID-1", "supporting_system_ids": [324, 999]}]
+    refused = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=wrong))
+    assert refused.status_code == 422, refused.text
+    assert [error["message"] for error in refused.json()["errors"]] == [
+        RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322, 324")
+    ]
+    on_workstation = [{"control_code": "CII-CID-1", "supporting_system_ids": [324]}]
+    answer = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=on_workstation))
+    assert answer.status_code == 202, answer.text
+    extending = plan_answer("CII-CID-1")
+    extending["controls_to_be_implemented"]["controls"][0]["description"] = "Extends signed firmware."
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, extending)
+    deliver(answer.json()["remediation_id"])
+    plan = _result(client, api_key, answer.json()["remediation_id"]).json()["plan"]
+    (assessed,) = plan["control_assessment"]
+    names = [[s["name"] for s in assessed[key]] for key in ("protected_systems", "required_systems")]
+    assert (assessed["implementation_status"], names) == (
+        "partially_implemented",
+        [["Engineering workstation"], ["SCADA server", "Historian"]],
+    )
 
 
 def test_an_identified_control_replaced_by_a_library_alternative_shows_both_through_the_api(

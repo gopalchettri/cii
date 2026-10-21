@@ -2972,7 +2972,7 @@
     ],
     "properties": {
      "all_supporting_systems_applicable": {
-      "description": "1: the risk applies to all supporting systems; 0: only to the scenario's own systems.",
+      "description": "1: the risk applies to every supporting system linked to the asset; 0: only to the scenario's own systems.",
       "maximum": 1.0,
       "minimum": 0.0,
       "title": "All Supporting Systems Applicable",
@@ -3017,7 +3017,7 @@
       "title": "Existing Controls All Subsystems Justification"
      },
      "existing_controls_all_supporting_system_applicable": {
-      "description": "1: the existing controls are on all supporting systems; 0: each existing control lists the supporting systems it is on (supporting_system_ids).",
+      "description": "1: the existing controls are on every supporting system linked to the asset; 0: each existing control lists the asset's supporting systems it is on (supporting_system_ids).",
       "maximum": 1.0,
       "minimum": 0.0,
       "title": "Existing Controls All Supporting System Applicable",
@@ -5375,7 +5375,7 @@
     "type": "object"
    },
    "SystemRef": {
-    "description": "A supporting system of the scenario's run.",
+    "description": "A supporting system of the scenario's asset.",
     "properties": {
      "name": {
       "title": "Name",

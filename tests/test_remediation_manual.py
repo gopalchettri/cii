@@ -22,6 +22,7 @@ from app.core.constants import (
     ErrorCode,
     Header,
     LibraryStatus,
+    RemediationMessage,
     ResolveOutcome,
     RunKind,
     StrideCategory,
@@ -121,6 +122,40 @@ def _plan(remediation_id: str) -> dict[str, Any]:
 
 def _runs_with_key(key: str) -> int:
     return get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key})
+
+
+def _on(*system_ids: int) -> dict[str, Any]:
+    """BODY sending the SCADA master station (321) alone, CII-CID-1 in the register on `system_ids`."""
+    return _with(supporting_system_id=[321]) | {
+        "existing_controls_all_supporting_system_applicable": 0,
+        "existing_controls": [{"control_code": "CII-CID-1", "supporting_system_ids": list(system_ids)}],
+    }
+
+
+def test_existing_controls_name_the_assets_systems_and_a_refusal_saves_nothing(
+    client: TestClient, api_key: str, manual: dict[str, Any]
+) -> None:
+    """Asset 103 has the SCADA master station (321) and the Process historian (322): a control on 323 (not
+    the asset's) is a 422 that saves nothing, so the same key then works; one on the historian, which the
+    request did not send, is accepted, and the risk on every system covers both of them."""
+    key = uuid.uuid4().hex
+    refused = _post(client, api_key, _on(323), key)
+    assert refused.status_code == 422, refused.text
+    assert [error["message"] for error in refused.json()["errors"]] == [
+        RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=323, known="321, 322")
+    ]
+    assert _runs_with_key(key) == 0
+    answer = _post(client, api_key, _on(322), key)
+    assert answer.status_code == 202, answer.text
+    extending = plan_answer("CII-CID-1")
+    extending["controls_to_be_implemented"]["controls"][0]["description"] = "Extends signed firmware."
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, extending)
+    deliver(answer.json()["remediation_id"])
+    snapshot = _plan(answer.json()["remediation_id"])["versions"][0]["snapshot"]
+    assert [system["name"] for system in snapshot["risk_scope"]["affected_systems"]] == [
+        "SCADA master station",
+        "Process historian",
+    ]
 
 
 def test_a_hand_written_scenario_is_saved_planned_and_replayed(

@@ -143,6 +143,23 @@ def test_a_required_property_not_recorded_refuses_the_start_and_names_each_gap(
     assert get_mongodb()[Collection.SESSIONS].count_documents({"entity_id": 86, "asset_id": 103}) == 0
 
 
+def test_a_start_keeps_every_linked_system_by_id_and_name_and_only_the_sent_ones_facts(
+    client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sent: the SCADA master station alone. The run keeps its facts as SYS1 and, of the asset's other system,
+    only the id and name: the Process historian records no description, but a required one never refuses a
+    system that was not sent."""
+    monkeypatch.setattr(get_settings(), "system_properties_required", "description")
+    response = _start(client, api_key, {**START, "supporting_system_id": [321]})
+    assert response.status_code == 202, response.text
+    context = _run(response.json()["session_id"])["context"]
+    assert [(system["alias"], system["id"]) for system in context["systems"]] == [("SYS1", 321)]
+    assert context["asset_systems"] == [
+        {"id": 321, "name": "SCADA master station"},
+        {"id": 322, "name": "Process historian"},
+    ]
+
+
 def test_a_run_stores_exactly_the_procedures_columns(
     client: TestClient, api_key: str, sql_test_engine: Engine
 ) -> None:

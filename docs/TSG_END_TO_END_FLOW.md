@@ -644,7 +644,8 @@ already holds, and every number above can be checked against a stored record.
    ```
 
    - Every value is a bound parameter, never pasted into the SQL text. `@SystemIDs` is the system list as
-     JSON text (`json.dumps`). An id that was not sent is `NULL`.
+     JSON text (`json.dumps`); the procedure keeps the parameter but no longer filters on it (D20). An id
+     that was not sent is `NULL`.
    - The five result sets become `AssetContextRows` (`app/models/scenario/asset_context.py`): `asset` (its
      row, or none), `services`, `sector` (its row, or none), `systems`, `options`.
    - Errors: no connection or a deadlock is 503 (`Unavailable`); a lost answer is 503 (`OutcomeUnknown`); a
@@ -658,7 +659,7 @@ already holds, and every number above can be checked against a stored record.
    | 1 | asset | `id`, `name`, `category_code` (always needed); facts `cii_asset_description` (`e.description`), `critical_service`, `sector`, `sub_sector`, `asset_type` (`e.type`) | One row, only when the entity owns the asset (a `ctm_scan_entity_bu` row with `group_id = @EntityID`) |
    | 2 | services | `id`, `name`, `linked` | The service sent, else every service the entity links to the asset; not deleted |
    | 3 | sector | `id`, `name`, `parent_id`, `parent_name` | The sub-sector sent, else the sector sent; not deleted |
-   | 4 | systems | `id`, `name`, `category_code` (always needed); facts `category_name`, `description` | Systems in `@SystemIDs`, linked to the asset (`ctm_scan_entity_supporting_system`), not deleted, and only when the entity owns the asset |
+   | 4 | systems | `id`, `name`, `category_code` (always needed); facts `category_name`, `description` | Every system linked to the asset (`ctm_scan_entity_supporting_system`), sent or not (D20), not deleted, and only when the entity owns the asset. A multi-select value that is not a JSON list reads as no answer (`ISJSON`) |
    | 5 | dropdown names | `code`, `value`, `name` | Options of the codes `priority`, `acc-channel`, `hosting-location`, `network-connectivity`, `dr-drill`, `managed-by`, `technology-used`, `database-platforms`, `targeted-users`, `saas-platforms`, `pub-c-platforms`. `value` is the option's value, except for `priority`, which returns the option's id because its values repeat |
 
    - **Commented out in part 1:** `data_handled`, `asset_priority`, `can_service_continue_without_asset`,
@@ -709,8 +710,8 @@ already holds, and every number above can be checked against a stored record.
         (year 1900 or earlier, SQL Server's "never", becomes `null`), binary becomes `null`.
    7. **Systems, in request order** (`_frozen_system`): each requested id, in the order sent, becomes
       `{id, alias, name, category_code, …facts}` with the alias `SYS1`, `SYS2` … (`ThreatFinding.SYSTEM_ALIAS`).
-      SQL's row order does not matter. The asset keeps `{id, name, category_code}` (`_head_columns`). Names
-      have runs of spaces collapsed.
+      SQL's row order does not matter, and a linked system that was not sent is not one of them. The asset
+      keeps `{id, name, category_code}` (`_head_columns`). Names have runs of spaces collapsed.
    8. **Required facts** (`check_required`): the required names are those in `ASSET_PROPERTIES_REQUIRED` and
       `SYSTEM_PROPERTIES_REQUIRED` (comma-separated column names, empty by default), plus `name`, which is
       always required (`_ALWAYS_REQUIRED`).
@@ -723,8 +724,13 @@ already holds, and every number above can be checked against a stored record.
    9. **Missing facts** (`_missing_facts`): the system columns other than `id`, `name`, `category_code` and
       `alias` that not one system records (as `facts_safe_for_prompt` judges), sorted. This is information
       only: it is stored in the context and in the `run.started` audit row, and it never refuses a start.
-   - The result is a `FrozenContext`, stored as `{asset, asset_context, systems, missing_facts}`
-     (`FrozenContext.to_record`). No later step reads SQL Server for the asset again.
+   10. **The asset's systems** (`_asset_systems`, D20): every system linked to the asset as `{id, name}`, each
+      once, the sent ones first in request order, then the others by id; a blank name reads
+      "Supporting system {id}", and a name an earlier system already has gets its id ("Historian (1600)"). Nothing else of a system that was not sent is kept, sent to the AI or able
+      to refuse the start. Only remediation plans read them (§13).
+   - The result is a `FrozenContext`, stored as `{asset, asset_context, systems, missing_facts,
+     asset_systems}` (`FrozenContext.to_record`). No later step reads SQL Server for the asset again: a
+     system linked after the start needs a new run.
 
 #### Saving the session and starting the work
 
@@ -3540,12 +3546,14 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    hand-written scenario it ranks the attackers and proposes a new threat wording to the curators
    (`tsg_ResolveThreat`). If the scenario has no usable mapped controls (none, or only retired ones), it maps
    them; when another job is mapping them, the plan job is given back and tries again (no attempt used). It
-   then works out where the risk is and where each control already stands (D19):
-   - **Affected systems:** every system of the run when `all_supporting_systems_applicable` is 1, else the
-     scenario's own.
-   - **Where an existing control is:** on every system when `existing_controls_all_supporting_system_applicable`
-     is 1, else on its own `supporting_system_ids`. Existing controls match by id, code, name or a "CODE · Name"
-     label.
+   then works out where the risk is and where each control already stands (D19, D20):
+   - **Affected systems:** every supporting system linked to the asset when `all_supporting_systems_applicable`
+     is 1 (the run's `asset_systems`, as of its start; a run stored before D20: its own systems), else the
+     scenario's own (the run's when it names none).
+   - **Where an existing control is:** on every system of the asset when
+     `existing_controls_all_supporting_system_applicable` is 1, else on its own `supporting_system_ids`, each of
+     which must be one of the asset's systems (else 422, checked before anything is saved, a hand-written
+     scenario included). Existing controls match by id, code, name or a "CODE · Name" label.
    - **Status:** `implemented` (on every affected system), `partially_implemented` (on some), `not_implemented`
      (on none, or not in the register).
    - **Alternatives:** one more library search, with the mapping's search and reranker, for 5 controls not

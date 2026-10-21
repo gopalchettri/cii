@@ -115,12 +115,12 @@ def check_control_library(library: Sequence[LibraryControl]) -> None:
 
 
 def check_register_systems(register: dict[str, Any], system_ids: Sequence[int]) -> None:
-    """422 naming each existing control's supporting_system_ids entry that is not a system of the run."""
+    """422 naming each existing control's supporting_system_ids entry that is not a system of the asset."""
     known = set(system_ids)
     errors = [
         {
             "field": f"body.existing_controls[{position}].supporting_system_ids",
-            "message": RemediationMessage.SYSTEM_NOT_IN_RUN.format(
+            "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(
                 system_id=system_id, known=", ".join(map(str, system_ids))
             ),
         }

@@ -136,13 +136,14 @@ def active_mapped_controls(
 def risk_scope(
     scenario: dict[str, Any], context: FrozenContext, register: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(the run's supporting systems, the ones the risk affects) as {supporting_system_id, name}: every one
-    when all_supporting_systems_applicable is 1, else the scenario's own (every one when it names none)."""
-    systems = [{"supporting_system_id": system["id"], "name": system["name"]} for system in context.systems]
+    """(the asset's supporting systems, the ones the risk affects) as {supporting_system_id, name}: every
+    one when all_supporting_systems_applicable is 1, else the scenario's own (the run's if it names none)."""
+    systems = [{"supporting_system_id": s["id"], "name": s["name"]} for s in context.linked_systems()]
     if register.get("all_supporting_systems_applicable") == 1:
         return systems, systems
-    own = {system["id"] for system in (scenario.get("content") or {}).get("systems") or []}
-    return systems, [system for system in systems if system["supporting_system_id"] in own] or systems
+    run = {system["id"] for system in context.systems}
+    own = {system["id"] for system in (scenario.get("content") or {}).get("systems") or []} & run or run
+    return systems, [system for system in systems if system["supporting_system_id"] in own]
 
 
 def _protected_systems(

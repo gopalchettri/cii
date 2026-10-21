@@ -53,6 +53,10 @@ def test_the_asset_context_proves_ownership_and_carries_every_category(
     asset, services, sector, systems, options = sets
     assert asset[0]["category_code"] == "OT"
     assert {(s["id"], s["category_code"]) for s in systems} == {(321, "OT"), (322, "IT")}  # 323: not linked
+    one_sent = procedures.execute_procedure(
+        StoredProcedure.GET_ASSET_CONTEXT, EntityID=86, AssetID=103, SystemIDs="[321]", SubsectorID=11
+    )
+    assert sorted(s["id"] for s in one_sent[3]) == [321, 322]  # every system linked to the asset, sent or not
     assert services == [{"id": 1, "name": "Electricity transmission", "linked": True}]
     assert (sector[0]["name"], sector[0]["parent_name"]) == ("Electricity", "Energy")
     # The platform saves an option's value (SCADA = 1, its id is 7); priority alone by id (its values repeat)
@@ -100,6 +104,39 @@ def test_the_asset_context_proves_ownership_and_carries_every_category(
     assert (deleted[1], deleted[2]) == ([], [])
     row = deleted[0][0]
     assert (row["critical_service"], row["sector"], row["sub_sector"]) == (None,) * 3
+
+
+def test_a_malformed_multi_select_value_on_a_linked_system_reads_as_no_answer(
+    sql_test_engine: Engine,
+) -> None:
+    """With technology_used shown (as the procedure's header invites), a value that is not a JSON list on a
+    system the request did not send never stops the asset's runs: it reads as no answer. The shown fact and
+    the bad value are one transaction, rolled back."""
+    source = (REPO / "scripts" / "sql" / "tsg_GetAssetContext.sql").read_text(encoding="utf-8")
+    shown = source.replace("--, Technology.technology_used", ", Technology.technology_used")
+    assert shown != source
+    connection = sql_test_engine.raw_connection()
+    driver = connection.driver_connection
+    assert driver is not None
+    driver.autocommit = False  # the engine autocommits; this test's changes must not outlive it
+    try:
+        cursor = connection.cursor()
+        cursor.execute(shown[shown.index("CREATE OR ALTER PROCEDURE") : shown.rindex("GO")])
+        cursor.execute(
+            "UPDATE dbo.onboarding_supporting_systems SET technology_used = N'not json' WHERE id = 322"
+        )
+        cursor.execute(
+            "EXEC dbo.tsg_GetAssetContext @EntityID = 86, @AssetID = 103, @SystemIDs = N'[321]', "
+            "@SubsectorID = 11"
+        )
+        for _ in range(3):  # the asset, services and sector come first
+            cursor.nextset()
+        systems = {row.id: row.technology_used for row in cursor.fetchall()}
+        assert sorted(systems) == [321, 322] and systems[322] is None
+    finally:
+        connection.rollback()
+        driver.autocommit = True
+        connection.close()
 
 
 def test_the_threat_library_lists_the_pending_and_the_rejected_too(procedures: StoredProcedureClient) -> None:

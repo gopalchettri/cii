@@ -1,12 +1,13 @@
 -- =====================================================================================================================
 -- dbo.tsg_GetAssetContext: what TSG knows about one asset and its supporting systems when a run starts.
--- Read-only. Called by app/data_access/sql.py once per run.
+-- Read-only. Called by app/data_access/scenario/asset_repository.py once per run start and per hand-written plan.
 -- =====================================================================================================================
 --
 -- HOW TO USE THIS FILE (owner 2026-10-11)
 -- ---------------------------------------
--- Every column of PART 1 (the asset) and PART 4 (each supporting system) is a FACT that every step uses: threat
--- finding, scenario writing, control mapping and remediation. Nothing else reaches the AI.
+-- Every column of PART 1 (the asset) and PART 4 (each supporting system the request sent) is a FACT that every step
+-- uses: threat finding, scenario writing, control mapping and remediation. Of the asset's other linked systems the
+-- app keeps only the id and name (a remediation plan's "every supporting system"). Nothing else reaches the AI.
 --
 --   * To HIDE a fact:   put -- at the start of its line.            Example:   --, e.location
 --   * To SHOW it again: remove the -- you added.                     Example:     , e.location
@@ -19,14 +20,16 @@
 --                         "sector_id": 183, "subsector_id": 199, "service_id": 1624 }
 --   The app calls:      EXEC dbo.tsg_GetAssetContext @EntityID = 127, @AssetID = 1206,
 --                            @SystemIDs = N'[1567,1568,1569]', @ServiceID = 1624, @SectorID = 183, @SubsectorID = 199
---   Result:             sector = Transport (183), sub_sector = Aviation (199), critical_service = service 1624's name
+--   Result:             sector = Transport (183), sub_sector = Aviation (199), critical_service = service 1624's name;
+--                       PART 4 = every system linked to asset 1206: the run keeps the facts of 1567..1569, and only
+--                       the id and name of any other
 --
 -- WHERE TO EDIT
 --   PART 0  LOOKUPS                   DO NOT EDIT     works out the service, sector and organisation values PART 1 uses
 --   PART 1  ASSET FACTS               SHOW / HIDE HERE   one line per asset fact
 --   PART 2  SERVICES                  DO NOT EDIT     checks the service sent in the request (404 when unknown/deleted)
 --   PART 3  SECTOR                    DO NOT EDIT     checks the sector sent in the request (404 / 422)
---   PART 4  SUPPORTING SYSTEM FACTS   SHOW / HIDE HERE   one line per system fact
+--   PART 4  SUPPORTING SYSTEM FACTS   SHOW / HIDE HERE   one line per system fact; every system linked to the asset
 --   PART 5  DROPDOWN NAMES            DO NOT EDIT     lets the app turn saved dropdown values into their names
 --
 -- RULES
@@ -42,14 +45,14 @@
 --   * Keep entity_technology_context the LAST asset line: when the asset's text is too long, it is cut from the end.
 --   * Never name a fact alias, criticality, category_id, type_id, catalogue_id, actor_id or control_id: those names
 --     are never shown to the AI, so a run stops with "reserved names" (rename it: e.g. AS asset_criticality).
---   * The asset and every supporting system need a name: a run on one without a name is refused (422).
+--   * The asset and every supporting system sent need a name: a run on one without a name is refused (422).
 --   * Whoever edits this file decides what reaches the AI: a sensitive column added here is sent to it.
 --   * Each fact sits on its own line and starts with a comma, so -- in front hides exactly that one fact.
 -- =====================================================================================================================
 CREATE OR ALTER PROCEDURE dbo.tsg_GetAssetContext
     @EntityID  INT,                  -- the organisation asking (it must own the asset)
     @AssetID   INT,                  -- the asset
-    @SystemIDs NVARCHAR(MAX),        -- JSON list of the supporting systems sent, e.g. N'[321,322]'
+    @SystemIDs NVARCHAR(MAX),        -- the supporting systems sent, e.g. N'[321,322]'; not read: PART 4 returns every linked one
     @ServiceID   INT = NULL,         -- service_id sent, if any, e.g. 1624
     @SectorID    INT = NULL,         -- sector_id sent, if any, e.g. 183 (Transport)
     @SubsectorID INT = NULL          -- subsector_id sent, if any, e.g. 199 (Aviation)
@@ -151,6 +154,10 @@ BEGIN
 
     -- -----------------------------------------------------------------------------------------------------------------
 -- PART 4: SUPPORTING SYSTEM FACTS                                                     >>> SHOW / HIDE HERE <<<
+-- Every supporting system linked to the asset (not deleted), whichever the request sent, and only when the
+-- organisation owns the asset. The app keeps every fact of the systems sent, and only the id and name of the others
+-- (a remediation plan's "every supporting system"). Do not filter on @SystemIDs.
+-- A multi-select value that is not a JSON list reads as no answer (ISJSON), so one bad value never stops a run.
 -- -----------------------------------------------------------------------------------------------------------------
 
 SELECT
@@ -202,35 +209,35 @@ LEFT JOIN dbo.ctm_scan_category AS c
 
 OUTER APPLY (
     SELECT STRING_AGG(ov.name, ', ') AS technology_used
-    FROM OPENJSON(ss.technology_used) j
+    FROM OPENJSON(CASE WHEN ISJSON(ss.technology_used) = 1 THEN ss.technology_used END) j
     JOIN dbo.option_value ov
         ON ov.id = TRY_CAST(j.value AS INT)
 ) Technology
 
 OUTER APPLY (
     SELECT STRING_AGG(ov.name, ', ') AS database_platforms
-    FROM OPENJSON(ss.database_platforms) j
+    FROM OPENJSON(CASE WHEN ISJSON(ss.database_platforms) = 1 THEN ss.database_platforms END) j
     JOIN dbo.option_value ov
         ON ov.id = TRY_CAST(j.value AS INT)
 ) DatabasePlatforms
 
 OUTER APPLY (
     SELECT STRING_AGG(ov.name, ', ') AS targeted_users
-    FROM OPENJSON(ss.targeted_users) j
+    FROM OPENJSON(CASE WHEN ISJSON(ss.targeted_users) = 1 THEN ss.targeted_users END) j
     JOIN dbo.option_value ov
         ON ov.id = TRY_CAST(j.value AS INT)
 ) TargetedUsers
 
 OUTER APPLY (
     SELECT STRING_AGG(ov.name, ', ') AS saas_platform_list
-    FROM OPENJSON(ss.saas_platform_list) j
+    FROM OPENJSON(CASE WHEN ISJSON(ss.saas_platform_list) = 1 THEN ss.saas_platform_list END) j
     JOIN dbo.option_value ov
         ON ov.id = TRY_CAST(j.value AS INT)
 ) SaaSPlatforms
 
 OUTER APPLY (
     SELECT STRING_AGG(ov.name, ', ') AS public_cloud_platforms
-    FROM OPENJSON(ss.public_cloud_platforms) j
+    FROM OPENJSON(CASE WHEN ISJSON(ss.public_cloud_platforms) = 1 THEN ss.public_cloud_platforms END) j
     JOIN dbo.option_value ov
         ON ov.id = TRY_CAST(j.value AS INT)
 ) PublicCloudPlatforms
@@ -253,13 +260,6 @@ LEFT JOIN dbo.option_value ManagedBy
     ON ManagedBy.id = TRY_CAST(ss.managed_by AS INT)
 
 WHERE ss.is_deleted = 0
-  AND ss.id IN (
-        --SELECT CAST([value] AS INT)
-        -- FROM OPENJSON(@SystemIDs)
-        SELECT CAST(j.[value] AS INT) 
-        FROM OPENJSON(@SystemIDs) as j
-        
-      )
   AND EXISTS (
         SELECT 1
         FROM dbo.ctm_scan_entity_bu AS bu

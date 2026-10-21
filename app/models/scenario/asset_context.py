@@ -1,6 +1,7 @@
 """The asset context of a run: tsg_GetAssetContext's five result sets, and the context frozen from them on the
 run, which every later step reads and never changes. Which facts a run has is the procedure's
-choice: every column of its asset and supporting-system rows, nothing else."""
+choice: every column of its asset row and of the supporting systems sent; of the asset's other systems,
+only their id and name."""
 
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
@@ -17,7 +18,7 @@ class AssetContextRows:
     asset: Row | None  # None: the entity does not own the asset
     services: list[Row]  # the asked service, else every service linked to the asset; each with `linked`
     sector: Row | None  # the asked (sub-)sector with its parent's id and name
-    systems: list[Row]  # the asked supporting systems that are linked to the asset and not deleted
+    systems: list[Row]  # every linked, not deleted system of the asset, the asked ones among them
     options: list[Row]  # {code, value or id, name}: the dropdown names, keyed as the procedure returns them
 
 
@@ -31,9 +32,14 @@ class FrozenContext:
     asset_context: dict[str, Any]  # every other column of the asset row: the facts the prompts get
     systems: list[dict[str, Any]]  # aliased SYS1..n in request order: id, alias, name, category_code + facts
     missing_facts: list[str] = field(default_factory=list)  # facts no system records: information only
+    asset_systems: list[dict[str, Any]] = field(default_factory=list)  # id, name of every linked system
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)
+
+    def linked_systems(self) -> list[dict[str, Any]]:
+        """Every supporting system of the asset as {id, name}; a run stored without them: its own."""
+        return self.asset_systems or [{"id": system["id"], "name": system["name"]} for system in self.systems]
 
     def own_and_organisation_facts(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """(this asset's own facts, the organisation's): a column named entity_... describes the whole

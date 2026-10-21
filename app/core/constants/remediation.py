@@ -142,10 +142,11 @@ class RemediationMessage(StrEnum):
         "existing_controls[{position}] ({control}) sends no supporting_system_ids: each existing control "
         "lists the supporting systems it is on when existing_controls_all_supporting_system_applicable is 0."
     )
-    SYSTEM_NOT_IN_RUN = (
-        "{system_id} is not a supporting system of this scenario's run (its systems: {known})."
+    SYSTEM_NOT_OF_ASSET = (
+        "{system_id} is not a supporting system of this scenario's asset (its systems when its run "
+        "started: {known})."
     )
-    REGISTER_SYSTEMS_INVALID = "An existing control names a supporting system the run does not have."
+    REGISTER_SYSTEMS_INVALID = "An existing control names a supporting system its asset does not have."
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
     REFERENCES_INVALID = "Some control references cannot be resolved."

@@ -264,11 +264,12 @@ class PlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": PLAN_REQUEST_EXAMPLES})
 
     all_supporting_systems_applicable: _Flag = Field(
-        description="1: the risk applies to all supporting systems; 0: only to the scenario's own systems."
+        description="1: the risk applies to every supporting system linked to the asset; 0: only to the "
+        "scenario's own systems."
     )
     existing_controls_all_supporting_system_applicable: _Flag = Field(
-        description="1: the existing controls are on all supporting systems; 0: each existing control lists "
-        "the supporting systems it is on (supporting_system_ids)."
+        description="1: the existing controls are on every supporting system linked to the asset; 0: each "
+        "existing control lists the asset's supporting systems it is on (supporting_system_ids)."
     )
     existing_controls: Annotated[RegisterControls | None, Blank] = None
     likelihood_rating: Rating = None

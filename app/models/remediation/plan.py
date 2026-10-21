@@ -193,7 +193,7 @@ StatusShown = Annotated[ImplementationStatus, BeforeValidator(_renamed_status)]
 
 
 class SystemRef(BaseModel):
-    """A supporting system of the scenario's run."""
+    """A supporting system of the scenario's asset."""
 
     supporting_system_id: int
     name: str

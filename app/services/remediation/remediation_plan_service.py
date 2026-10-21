@@ -69,6 +69,7 @@ from app.models.remediation.plan import (
     RemediationSummary,
 )
 from app.models.remediation.requests import ManualScenario, PlanRequest, ReviewRequest
+from app.models.scenario.asset_context import FrozenContext
 from app.search.library_cache import LibraryCache
 
 log = structlog.get_logger(__name__)
@@ -241,7 +242,7 @@ class RemediationPlanService:
             return replayed, False
         saved_before = scenario is not None  # an earlier call saved it, then stopped
         if scenario is None:
-            scenario = self._save_manual_scenario(principal, manual, key, fingerprint)
+            scenario = self._save_manual_scenario(principal, manual, body.register(), key, fingerprint)
         try:
             started = self._plan_scenario(principal, body.register(), scenario)
             return started.model_copy(update={"replayed": saved_before}), True
@@ -292,18 +293,24 @@ class RemediationPlanService:
         )
 
     def _check_register_systems(self, register: dict[str, Any], session_id: str) -> None:
-        """422 for an existing control on a system the run does not have; the run is read only when one names
-        its systems."""
+        """422 for an existing control on a system its asset does not have; the run is read only when one
+        names its systems."""
         if any(entry.get("supporting_system_ids") for entry in register.get("existing_controls") or []):
-            context = self._sessions.get_scenario_session_context(session_id)
-            check_register_systems(register, [system["id"] for system in context.get("systems") or []])
+            context = FrozenContext.from_record(self._sessions.get_scenario_session_context(session_id))
+            check_register_systems(register, [system["id"] for system in context.linked_systems()])
 
     def _save_manual_scenario(
-        self, principal: Principal, manual: ManualScenario, key: str, request_hash: str
+        self,
+        principal: Principal,
+        manual: ManualScenario,
+        register: dict[str, Any],
+        key: str,
+        request_hash: str,
     ) -> dict[str, Any]:
         """Saves the scenario (accepted by its writer) and its run; everything a 422 or 409 could refuse is
         checked before the first write, and no AI is called."""
         context = freeze_context(manual, self._assets.get_asset_context(principal.entity_id, manual))
+        check_register_systems(register, [system["id"] for system in context.linked_systems()])
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()
         check_actor_library(loaded.threat_library.actors)

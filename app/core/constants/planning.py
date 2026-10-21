@@ -120,6 +120,7 @@ class ContextProperties:
         "organisation_background_not_this_asset"  # the brief's key for those facts
     )
     COUNTRY_KEY: Final[str] = "country"  # THREAT_CONTEXT_COUNTRY, read while external intelligence is on
+    UNNAMED_SYSTEM: Final[str] = "Supporting system {id}"  # a linked system not sent, saved without a name
     # the request field a refusal names for the facts the request decides
     REQUEST_FIELDS: Final[dict[str, str]] = {
         "sector": "sector_id",

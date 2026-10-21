@@ -93,6 +93,28 @@ def test_a_column_removed_from_the_procedure_reaches_no_step() -> None:
     assert "critical_service" not in context.asset_context  # one place for each fact, no copy left behind
 
 
+def test_every_linked_system_is_kept_by_its_id_and_name_alone() -> None:
+    """The procedure returns every system linked to the asset: the run keeps the facts of the ones sent and of
+    the others only their id and name (sent first, then by id, each once); an unsent one never refuses."""
+    unsent = [
+        _system_row(1570, name="  ", recovery_notes=NEW_FACT),
+        _system_row(1500, recovery_notes=NEW_FACT),
+        _system_row(1601, name="System  1567"),  # a sent system's name, spaced apart
+    ]
+    context = _freeze(_rows(None, _system_row(1568), *unsent, _system_row(1567), _system_row(1500)))
+    assert [system["id"] for system in context.systems] == [1567, 1568]
+    assert context.asset_systems == [
+        {"id": 1567, "name": "System 1567"},
+        {"id": 1568, "name": "System 1568"},
+        {"id": 1500, "name": "System 1500"},
+        {"id": 1570, "name": "Supporting system 1570"},
+        {"id": 1601, "name": "System 1567 (1601)"},
+    ]
+    assert NEW_FACT not in _texts(context)
+    older = {key: value for key, value in context.to_record().items() if key != "asset_systems"}
+    assert FrozenContext.from_record(older).linked_systems() == context.asset_systems[:2]  # its own only
+
+
 def test_a_column_added_to_the_procedure_reaches_every_step() -> None:
     """No app change: a new system column and a new asset column are facts of the run, in the landscape, the
     control query, the brief and the snapshot."""

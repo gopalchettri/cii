@@ -1,5 +1,6 @@
 """One plan version: refs, implementation status, snapshot, prompt, the checked AI answer, code's finish."""
 
+import dataclasses
 import hashlib
 import json
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ from app.models.ai.profiles import ChatModelProfile
 from app.models.library.library import LibraryControl
 from app.models.remediation.plan import PlanView
 from app.models.remediation.requests import ControlRef, PlanRequest
+from app.models.scenario.asset_context import FrozenContext
 from tests.fakes import FakeChatModel, truncated
 from tests.plan_job_fakes import RETAINED_ALL
 from tests.planner_samples import CONTEXT
@@ -328,6 +330,39 @@ def test_a_register_stored_before_the_flag_reads_its_yes_no() -> None:
     said_no = older | {"existing_controls_all_subsystems": "No"}
     library_mapped, _ = assess_controls([_item(1)], said_no, LIBRARY, *risk_scope(SCENARIO, CONTEXT, said_no))
     assert library_mapped[0]["implementation_status"] == NOT_IMPLEMENTED  # no systems named: on none
+
+
+WORKSTATION = {"supporting_system_id": 324, "name": "Engineering workstation"}
+#: Asset 103 with a third system the run was not started on.
+WIDE = dataclasses.replace(
+    CONTEXT,
+    asset_systems=[
+        {"id": s["supporting_system_id"], "name": s["name"]} for s in (SCADA, HISTORIAN, WORKSTATION)
+    ],
+)
+UNNAMED = {**SCENARIO, "content": {**SCENARIO["content"], "systems": []}}
+
+
+@pytest.mark.parametrize(
+    ("context", "register", "scenario", "affected"),
+    [
+        (WIDE, {}, SCENARIO, [SCADA, HISTORIAN, WORKSTATION]),
+        (WIDE, RISK_ON_SCADA, SCENARIO, [SCADA]),
+        (WIDE, RISK_ON_SCADA, UNNAMED, [SCADA, HISTORIAN]),
+        (CONTEXT, {}, SCENARIO, [SCADA, HISTORIAN]),
+    ],
+    ids=["every-system-of-the-asset", "the-scenarios-own", "none-named-the-runs", "run-stored-before"],
+)
+def test_the_risk_is_on_every_system_of_the_asset_or_the_scenarios_own(
+    context: FrozenContext, register: dict[str, int], scenario: dict[str, Any], affected: list[dict[str, Any]]
+) -> None:
+    """Flag 1: every system linked to the asset; 0: the scenario's own, the run's when it names none, never
+    the asset's others. A register control on all systems is then on every affected one."""
+    stored = _register(existing_controls=[{"control_code": "CII-CID-5"}], **register)
+    systems, found = risk_scope(scenario, context, stored)
+    assert found == affected
+    (row,), _ = assess_controls([_item(5)], stored, LIBRARY, systems, found)
+    assert (row["implementation_status"], row["protected_systems"]) == (IMPLEMENTED, affected)
 
 
 FIVE = ["CII-CID-1", "CII-CID-3", "CII-CID-4", "CII-CID-5", "CII-CID-6"]
