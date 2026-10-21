@@ -18,8 +18,13 @@ def plan_url(remediation_id: str, action: str = "") -> str:
     return f"{base}/{action}" if action else base
 
 
+#: The two flags every plan request sends (owner, 2026-10-21): here the risk and the existing controls on all
+#: supporting systems; a test about the systems sends its own.
+FLAGS = {"all_supporting_systems_applicable": 1, "existing_controls_all_supporting_system_applicable": 1}
+
+
 def generated(scenario_id: str, **fields: Any) -> dict[str, Any]:
     """The is_manual=false request for a stored scenario (its run read from it; unknown: no run)."""
     found = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id}, {"session_id": 1})
     run = found["session_id"] if found else "no-run"
-    return {"is_manual": False, "session_id": run, "scenario_id": scenario_id, **fields}
+    return {"is_manual": False, "session_id": run, "scenario_id": scenario_id, **FLAGS, **fields}

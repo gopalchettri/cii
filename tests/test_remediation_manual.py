@@ -51,6 +51,8 @@ IDENTITY = {Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DES
 #: v1's hand-written request: is_manual, the entity and the threat's flat fields (asset 103 is entity 86's).
 BODY = {
     "is_manual": True,
+    "all_supporting_systems_applicable": 1,
+    "existing_controls_all_supporting_system_applicable": 1,
     "manual_scenario": {
         "asset_id": 103,
         "entity_id": 86,

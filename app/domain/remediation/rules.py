@@ -15,7 +15,7 @@ from app.core.constants import (
     SessionMessage,
     Status,
 )
-from app.core.exceptions import Conflict, Forbidden, NotFound
+from app.core.exceptions import Conflict, Forbidden, Invalid, NotFound
 from app.models.admin.api_clients import Principal
 from app.models.library.library import LibraryControl
 from app.models.remediation.plan import RemediationStatus, version_status
@@ -112,6 +112,24 @@ def check_control_library(library: Sequence[LibraryControl]) -> None:
     """409 while the control library is empty: no control could ever be kept."""
     if not library:
         raise Conflict(ErrorMessage.CONTROL_LIBRARY_EMPTY, reason=ErrorCode.CONTROL_LIBRARY_EMPTY)
+
+
+def check_register_systems(register: dict[str, Any], system_ids: Sequence[int]) -> None:
+    """422 naming each existing control's supporting_system_ids entry that is not a system of the run."""
+    known = set(system_ids)
+    errors = [
+        {
+            "field": f"body.existing_controls[{position}].supporting_system_ids",
+            "message": RemediationMessage.SYSTEM_NOT_IN_RUN.format(
+                system_id=system_id, known=", ".join(map(str, system_ids))
+            ),
+        }
+        for position, entry in enumerate(register.get("existing_controls") or [])
+        for system_id in entry.get("supporting_system_ids") or []
+        if system_id not in known
+    ]
+    if errors:
+        raise Invalid(RemediationMessage.REGISTER_SYSTEMS_INVALID, errors=errors)
 
 
 def new_plan_record(

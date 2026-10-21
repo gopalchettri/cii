@@ -335,8 +335,9 @@
  },
  "ImplementationStatus": {
   "IMPLEMENTED": "implemented",
-  "MISSING": "missing",
-  "PARTIALLY_IMPLEMENTED": "partially_implemented"
+  "NOT_IMPLEMENTED": "not_implemented",
+  "PARTIALLY_IMPLEMENTED": "partially_implemented",
+  "UNVERIFIED": "unverified"
  },
  "IntelKind": {
   "ADVISORY": "advisory",

@@ -48,16 +48,22 @@ class YesNo(StrEnum):
 class ControlCoverage(StrEnum):
     """Set by code from the controls' implementation status."""
 
-    GAPS = "gaps"  # some scenario control is missing or partially implemented
+    GAPS = "gaps"  # some scenario control is not, or only partially, implemented
     COVERED = "covered"  # every scenario control is implemented
 
 
 class ImplementationStatus(StrEnum):
-    """Where one scenario control stands against the register, decided by code."""
+    """Where one scenario control stands against the register on the systems the risk affects, decided by
+    code (owner, 2026-10-21)."""
 
-    IMPLEMENTED = "implemented"  # in the register, on every subsystem (existing_controls_all_subsystems Yes)
-    PARTIALLY_IMPLEMENTED = "partially_implemented"  # in the register, not on every subsystem (No or empty)
-    MISSING = "missing"  # not in the register
+    IMPLEMENTED = "implemented"  # an existing control is on every affected system
+    PARTIALLY_IMPLEMENTED = "partially_implemented"  # on some affected systems
+    NOT_IMPLEMENTED = "not_implemented"  # on none of them, or not in the register
+    UNVERIFIED = "unverified"  # a fallback whose relevance the AI could not confirm: kept for review
+
+
+#: The name a status had before 2026-10-21, as older stored plans hold it.
+LEGACY_STATUS_NAMES: Final = {"missing": ImplementationStatus.NOT_IMPLEMENTED}
 
 
 class ControlType(StrEnum):
@@ -111,6 +117,14 @@ class RemediationMessage(StrEnum):
     CONTROL_REF_EMPTY = (
         "A control entry must name the control: send control_id, control_code or control_name."
     )
+    SYSTEMS_REQUIRED = (
+        "existing_controls[{position}] ({control}) sends no supporting_system_ids: each existing control "
+        "lists the supporting systems it is on when existing_controls_all_supporting_system_applicable is 0."
+    )
+    SYSTEM_NOT_IN_RUN = (
+        "{system_id} is not a supporting system of this scenario's run (its systems: {known})."
+    )
+    REGISTER_SYSTEMS_INVALID = "An existing control names a supporting system the run does not have."
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
     REFERENCES_INVALID = "Some control references cannot be resolved."
@@ -166,7 +180,7 @@ class RemediationMessage(StrEnum):
     PARTIAL_NOT_EXTENDED = (
         "{code} is partially implemented: describe what to extend and where, never a new deployment"
     )
-    MISSING_EXTENDED = "{code} is missing (in no register entry): describe implementing it, not extending it"
+    MISSING_EXTENDED = "{code} is on no affected system yet: describe implementing it, not extending it"
     INTERIM_WHEN_COVERED = (
         "{action} is an interim action, but every control is implemented: when covered, actions only verify, "
         "test or evidence the implemented controls"

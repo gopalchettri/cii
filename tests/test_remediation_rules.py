@@ -28,7 +28,8 @@ from app.models.remediation.requests import (
 )
 
 NOW = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
-GENERATED: dict[str, Any] = {"is_manual": False, "session_id": "r1", "scenario_id": "s1"}
+FLAGS = {"all_supporting_systems_applicable": 1, "existing_controls_all_supporting_system_applicable": 1}
+GENERATED: dict[str, Any] = {"is_manual": False, "session_id": "r1", "scenario_id": "s1", **FLAGS}
 MANUAL: dict[str, Any] = {
     "asset_id": 103,
     "entity_id": 7,
@@ -38,12 +39,14 @@ MANUAL: dict[str, Any] = {
     "threat_scenario": "An insider could upload altered logic to the PLC.",
     "risk_statement": "Loss of trusted control could stop the substation.",
 }
-HAND_WRITTEN: dict[str, Any] = {"is_manual": True, "manual_scenario": MANUAL}
+HAND_WRITTEN: dict[str, Any] = {"is_manual": True, "manual_scenario": MANUAL, **FLAGS}
+#: The register fields a form may leave blank: all but the two mandatory flags.
 REGISTER_FIELDS = set(PlanRequest.model_fields) - {
     "is_manual",
     "session_id",
     "scenario_id",
     "manual_scenario",
+    *FLAGS,
 }
 BY = {"decided_by": "u1", "decided_by_client": "c1"}
 
@@ -55,7 +58,8 @@ def _register(**fields: Any) -> PlanRequest:
 
 def test_blank_register_fields_mean_not_given() -> None:
     """The platform's form sends "" for an empty field; it is never a 422."""
-    assert _register(**dict.fromkeys(REGISTER_FIELDS, " ")).register() == dict.fromkeys(REGISTER_FIELDS)
+    stored = _register(**dict.fromkeys(REGISTER_FIELDS, " ")).register()
+    assert stored == dict.fromkeys(REGISTER_FIELDS) | FLAGS
 
 
 def test_ratings_are_exact_decimals_stored_as_text() -> None:
@@ -121,9 +125,9 @@ def test_register_controls_take_plain_strings_drop_blanks_and_keep_the_first_of_
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        ({"is_manual": True}, RemediationMessage.MANUAL_NEEDS_SCENARIO),
+        ({"is_manual": True, **FLAGS}, RemediationMessage.MANUAL_NEEDS_SCENARIO),
         (HAND_WRITTEN | {"scenario_id": "s1"}, RemediationMessage.MANUAL_SENDS_NO_IDS),
-        ({"is_manual": False, "scenario_id": "s1"}, RemediationMessage.GENERATED_NEEDS_IDS),
+        ({"is_manual": False, "scenario_id": "s1", **FLAGS}, RemediationMessage.GENERATED_NEEDS_IDS),
         (GENERATED | {"manual_scenario": MANUAL}, RemediationMessage.GENERATED_SENDS_NO_SCENARIO),
     ],
 )
@@ -367,3 +371,50 @@ def test_the_decided_version_defaults_to_the_newest_done_and_must_be_done() -> N
         with pytest.raises(Conflict) as refused:
             decidable_version(undecidable, asked, "r1")
         assert refused.value.reason == ConflictReason.NOT_COMPLETE
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {},  # both mandatory
+        {"all_supporting_systems_applicable": 1},
+        {"existing_controls_all_supporting_system_applicable": 1},
+        FLAGS | {"all_supporting_systems_applicable": 2},
+        FLAGS | {"all_supporting_systems_applicable": "1"},  # an integer, never text
+        FLAGS | {"all_supporting_systems_applicable": True},
+        FLAGS | {"all_supporting_systems_applicable": 1.0},
+        FLAGS | {"existing_controls_all_supporting_system_applicable": ""},
+    ],
+    ids=["neither", "no-existing-flag", "no-risk-flag", "two", "text", "boolean", "float", "blank"],
+)
+def test_the_two_flags_are_mandatory_integers_0_or_1(flags: dict[str, Any]) -> None:
+    body = {"is_manual": False, "session_id": "r1", "scenario_id": "s1"} | flags
+    with pytest.raises(ValidationError):
+        PlanRequest.model_validate(body)
+
+
+def test_existing_controls_name_their_systems_when_not_on_all_and_a_repeat_adds_its_systems() -> None:
+    """Flag 0: every existing control lists supporting_system_ids (422 naming the one that does not);
+    flag 1: none is needed; one control listed twice is one entry with both lists' systems."""
+    by_system = GENERATED | {"existing_controls_all_supporting_system_applicable": 0}
+    with pytest.raises(ValidationError) as missing:
+        PlanRequest.model_validate(
+            by_system
+            | {
+                "existing_controls": [
+                    {"control_code": "CII-CID-1", "supporting_system_ids": [321]},
+                    "Backup policy",
+                ]
+            }
+        )
+    expected = RemediationMessage.SYSTEMS_REQUIRED.format(position=1, control="Backup policy")
+    assert expected in str(missing.value)
+    assert _register(existing_controls=["CII-CID-1"]).existing_controls is not None  # flag 1: no ids needed
+    twice = [
+        {"control_code": "CII-CID-1", "supporting_system_ids": [321]},
+        {"control_code": "cii-cid-1", "supporting_system_ids": [322, 321]},
+    ]
+    request = PlanRequest.model_validate(by_system | {"existing_controls": twice})
+    assert request.existing_controls is not None
+    assert [entry.supporting_system_ids for entry in request.existing_controls] == [[321, 322]]
+    assert request.register()["existing_controls"][0]["supporting_system_ids"] == [321, 322]

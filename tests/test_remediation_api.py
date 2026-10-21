@@ -28,6 +28,7 @@ from app.core.constants import (
     Header,
     PlanWarning,
     Remediation,
+    RemediationMessage,
     RunKind,
     ScenarioStatus,
     Status,
@@ -181,12 +182,17 @@ def test_a_plan_is_requested_written_and_its_status_read(
     assert (plan["control_coverage"], control["control_id"], control["implementation_status"]) == (
         "gaps",
         1,
-        "missing",
+        "not_implemented",
     )
     assert plan["control_assessment"] == [
         {"control_id": 1, "control_code": "CII-CID-1", "control_name": "Firmware integrity verification",
-         "domain": "Integrity", "match": "exact", "implementation_status": "missing", "recommended": True}
+         "domain": "Integrity", "match": "exact", "implementation_status": "not_implemented",
+         "recommended": True,
+         "protected_systems": [],
+         "required_systems": [{"supporting_system_id": 321, "name": "SCADA server"},
+                              {"supporting_system_id": 322, "name": "Historian"}]}
     ]  # fmt: skip
+    assert control["required_systems"] == plan["control_assessment"][0]["required_systems"]
     assert _settled("done") == done_before + 1
     completed = {"target.id": remediation_id, "action": AuditAction.PLAN_COMPLETED}
     assert get_mongodb()[Collection.AUDIT].find_one(completed)["after"] == {"version": 1, "warnings": 1}
@@ -232,6 +238,43 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     refused = _request(client, api_key, generated(_scenario()))
     assert (refused.status_code, refused.json()["reason"]) == (409, ErrorCode.CONTROL_LIBRARY_EMPTY)
     assert world["sent"] == [(TaskName.WRITE_PLAN, first, 1)]  # nothing sent for the refused one
+
+
+def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_set_its_status(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """Existing controls not on all systems name theirs, each one of the run's (321, 322): 999 is refused
+    before anything is saved; on the SCADA server alone, the risk on both, it is partially implemented."""
+    by_system = {"existing_controls_all_supporting_system_applicable": 0}
+    scenario_id = _scenario()
+    wrong = [{"control_code": "CII-CID-1", "supporting_system_ids": [321, 999]}]
+    refused = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=wrong))
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["errors"] == [
+        {
+            "field": "body.existing_controls[0].supporting_system_ids",
+            "message": RemediationMessage.SYSTEM_NOT_IN_RUN.format(system_id=999, known="321, 322"),
+        }
+    ]
+    assert not get_mongodb()[Collection.REMEDIATIONS].count_documents({"scenario_id": scenario_id})
+    on_scada = [{"control_code": "CII-CID-1", "supporting_system_ids": [321]}]
+    answer = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=on_scada))
+    assert answer.status_code == 202, answer.text
+    extending = plan_answer("CII-CID-1")
+    extending["controls_to_be_implemented"]["controls"][0]["description"] = (
+        "Extends signed firmware to the Historian."
+    )
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, extending)
+    deliver(answer.json()["remediation_id"])
+    (assessed,) = _result(client, api_key, answer.json()["remediation_id"]).json()["plan"][
+        "control_assessment"
+    ]
+    assert assessed["implementation_status"] == "partially_implemented"
+    names = (
+        [s["name"] for s in assessed["protected_systems"]],
+        [s["name"] for s in assessed["required_systems"]],
+    )
+    assert names == (["SCADA server"], ["Historian"])
 
 
 def test_a_request_made_at_the_same_moment_gets_409_with_the_winner(
@@ -822,7 +865,7 @@ def test_a_plan_stored_before_the_rebuild_reads_and_its_pending_version_is_writt
         "queued",
         [],
     )
-    assert shown["plan"]["controls_to_be_implemented"][0]["implementation_status"] == "missing"
+    assert shown["plan"]["controls_to_be_implemented"][0]["implementation_status"] == "not_implemented"
     world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
     deliver(remediation_id, 2)
     record = _record(remediation_id)

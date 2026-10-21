@@ -457,7 +457,7 @@
     "type": "object"
    },
    "ControlAssessmentView": {
-    "description": "One scenario control against the register: where it stands and whether the plan recommends it.",
+    "description": "One scenario control against the register: where it stands on the affected systems and whether the\nplan recommends it.",
     "properties": {
      "control_code": {
       "title": "Control Code",
@@ -496,9 +496,25 @@
       ],
       "title": "Match"
      },
+     "protected_systems": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/SystemRef"
+      },
+      "title": "Protected Systems",
+      "type": "array"
+     },
      "recommended": {
       "title": "Recommended",
       "type": "boolean"
+     },
+     "required_systems": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/SystemRef"
+      },
+      "title": "Required Systems",
+      "type": "array"
      }
     },
     "required": [
@@ -1282,11 +1298,12 @@
     "type": "object"
    },
    "ImplementationStatus": {
-    "description": "Where one scenario control stands against the register, decided by code.",
+    "description": "Where one scenario control stands against the register on the systems the risk affects, decided by\ncode (owner, 2026-10-21).",
     "enum": [
      "implemented",
      "partially_implemented",
-     "missing"
+     "not_implemented",
+     "unverified"
     ],
     "title": "ImplementationStatus",
     "type": "string"
@@ -2594,10 +2611,18 @@
      },
      "implementation_status": {
       "$ref": "#/components/schemas/ImplementationStatus",
-      "default": "missing"
+      "default": "not_implemented"
      },
      "priority": {
       "$ref": "#/components/schemas/ActionPriority"
+     },
+     "required_systems": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/SystemRef"
+      },
+      "title": "Required Systems",
+      "type": "array"
      }
     },
     "required": [
@@ -2775,14 +2800,15 @@
     "description": "Body of `POST /v1/remediation`: v1's ONE request for both kinds of scenario (owner, 2026-10-15), each\nkind sending its own half (mixing them is a 422), and the register's data.",
     "examples": [
      {
+      "all_supporting_systems_applicable": 1,
       "existing_controls": [
        {
         "control_code": "CII-CID-202"
        },
        "User Awareness"
       ],
-      "existing_controls_all_subsystems": "No",
       "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
+      "existing_controls_all_supporting_system_applicable": 1,
       "final_risk_rating": 20,
       "impact_rating": 5,
       "impacted_business_division": "Power Generation Operations",
@@ -2797,14 +2823,24 @@
       "session_id": "<session_id>"
      },
      {
+      "all_supporting_systems_applicable": 0,
       "existing_controls": [
        {
-        "control_code": "CII-CID-202"
+        "control_code": "CII-CID-202",
+        "supporting_system_ids": [
+         2301
+        ]
        },
-       "User Awareness"
+       {
+        "control_name": "User Awareness",
+        "supporting_system_ids": [
+         2301,
+         2302
+        ]
+       }
       ],
-      "existing_controls_all_subsystems": "No",
       "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
+      "existing_controls_all_supporting_system_applicable": 0,
       "final_risk_rating": 20,
       "impact_rating": 5,
       "impacted_business_division": "Power Generation Operations",
@@ -2836,11 +2872,18 @@
      }
     ],
     "properties": {
+     "all_supporting_systems_applicable": {
+      "description": "1: the risk applies to all supporting systems; 0: only to the scenario's own systems.",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "All Supporting Systems Applicable",
+      "type": "integer"
+     },
      "existing_controls": {
       "anyOf": [
        {
         "items": {
-         "$ref": "#/components/schemas/ControlRef"
+         "$ref": "#/components/schemas/RegisterControlRef"
         },
         "maxItems": 50,
         "type": "array"
@@ -2859,7 +2902,8 @@
        {
         "type": "null"
        }
-      ]
+      ],
+      "description": "Kept for older callers and not used: existing_controls_all_supporting_system_applicable decides."
      },
      "existing_controls_all_subsystems_justification": {
       "anyOf": [
@@ -2872,6 +2916,13 @@
        }
       ],
       "title": "Existing Controls All Subsystems Justification"
+     },
+     "existing_controls_all_supporting_system_applicable": {
+      "description": "1: the existing controls are on all supporting systems; 0: each existing control lists the supporting systems it is on (supporting_system_ids).",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Existing Controls All Supporting System Applicable",
+      "type": "integer"
      },
      "final_risk_rating": {
       "minimum": 0.0,
@@ -3013,6 +3064,8 @@
      }
     },
     "required": [
+     "all_supporting_systems_applicable",
+     "existing_controls_all_supporting_system_applicable",
      "is_manual"
     ],
     "title": "PlanRequest",
@@ -3176,7 +3229,14 @@
       "type": "array"
      },
      "applicable_to_all_subsystems": {
-      "$ref": "#/components/schemas/YesNo"
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/YesNo"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "control_assessment": {
       "default": [],
@@ -3296,7 +3356,6 @@
      "actions",
      "action_plan",
      "mitigation_owner",
-     "applicable_to_all_subsystems",
      "critical_path",
      "prompt_version"
     ],
@@ -3388,6 +3447,67 @@
     ],
     "properties": {},
     "title": "RegenerateRequest",
+    "type": "object"
+   },
+   "RegisterControlRef": {
+    "additionalProperties": false,
+    "description": "An existing control in the register: the control, and the supporting systems it is on (required when\nexisting_controls_all_supporting_system_applicable is 0).",
+    "properties": {
+     "control_code": {
+      "anyOf": [
+       {
+        "maxLength": 100,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Control Code"
+     },
+     "control_id": {
+      "anyOf": [
+       {
+        "exclusiveMinimum": 0.0,
+        "maximum": 2147483647.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Control Id"
+     },
+     "control_name": {
+      "anyOf": [
+       {
+        "maxLength": 500,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Control Name"
+     },
+     "supporting_system_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "exclusiveMinimum": 0.0,
+         "maximum": 2147483647.0,
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Supporting System Ids"
+     }
+    },
+    "title": "RegisterControlRef",
     "type": "object"
    },
    "RejectResult": {
@@ -5145,6 +5265,25 @@
      "is_entry_point"
     ],
     "title": "SystemInvolved",
+    "type": "object"
+   },
+   "SystemRef": {
+    "description": "A supporting system of the scenario's run.",
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "supporting_system_id": {
+      "title": "Supporting System Id",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "supporting_system_id",
+     "name"
+    ],
+    "title": "SystemRef",
     "type": "object"
    },
    "TargetProblem": {

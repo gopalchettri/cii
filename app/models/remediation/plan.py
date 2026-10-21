@@ -6,6 +6,7 @@ from typing import Annotated, Any, ClassVar
 from pydantic import AfterValidator, BaseModel, BeforeValidator
 
 from app.core.constants import (
+    LEGACY_STATUS_NAMES,
     ActionPriority,
     AnswerProblem,
     ControlCoverage,
@@ -169,6 +170,21 @@ def version_status(record: dict[str, Any], item: dict[str, Any]) -> Status:
     return Status(record["status"] if latest else item["status"])
 
 
+def _renamed_status(value: Any) -> Any:
+    """An older stored plan's status under its current name ("missing" is "not_implemented")."""
+    return LEGACY_STATUS_NAMES.get(value, value) if isinstance(value, str) else value
+
+
+StatusShown = Annotated[ImplementationStatus, BeforeValidator(_renamed_status)]
+
+
+class SystemRef(BaseModel):
+    """A supporting system of the scenario's run."""
+
+    supporting_system_id: int
+    name: str
+
+
 class PlanControlView(BaseModel):
     control_id: int
     control_code: str
@@ -177,7 +193,8 @@ class PlanControlView(BaseModel):
     domain: str | None = None
     description: str
     priority: ActionPriority
-    implementation_status: ImplementationStatus = ImplementationStatus.MISSING
+    implementation_status: StatusShown = ImplementationStatus.NOT_IMPLEMENTED
+    required_systems: list[SystemRef] = []  # the affected systems it is still needed on
 
 
 class PlanActionView(BaseModel):
@@ -196,15 +213,18 @@ class PlanActionView(BaseModel):
 
 
 class ControlAssessmentView(BaseModel):
-    """One scenario control against the register: where it stands and whether the plan recommends it."""
+    """One scenario control against the register: where it stands on the affected systems and whether the
+    plan recommends it."""
 
     control_id: int
     control_code: str
     control_name: str
     domain: str | None = None
     match: str | None = None
-    implementation_status: ImplementationStatus
+    implementation_status: StatusShown
     recommended: bool
+    protected_systems: list[SystemRef] = []  # the affected systems an existing control is already on
+    required_systems: list[SystemRef] = []  # the affected systems it is still needed on
 
 
 class PlanView(BaseModel):
@@ -215,7 +235,7 @@ class PlanView(BaseModel):
     actions: list[PlanActionView]
     action_plan: str
     mitigation_owner: str
-    applicable_to_all_subsystems: YesNo
+    applicable_to_all_subsystems: YesNo | None = None  # kept for v1's callers: Yes when the risk is on all
     critical_path: list[str]
     mitigation_timeline: str | None = None
     mitigation_timeline_days: int | None = None

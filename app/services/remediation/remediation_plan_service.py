@@ -49,6 +49,7 @@ from app.domain.remediation.rules import (
     check_plan_of_scenario,
     check_plannable_scenario,
     check_regenerable,
+    check_register_systems,
     decidable_version,
     decision_change,
     new_plan_record,
@@ -255,6 +256,7 @@ class RemediationPlanService:
     ) -> PlanStarted:
         """One plan per scenario (the unique index decides): version 1 queued, its job sent and audited."""
         check_control_library(self._library.get_loaded_libraries().control_library)
+        self._check_register_systems(register, scenario["session_id"])
         now = datetime.now(UTC)
         record = new_plan_record(principal, register, scenario, new_job(TaskName.WRITE_PLAN, 1, now), now)
         try:
@@ -288,6 +290,13 @@ class RemediationPlanService:
             status=Status.QUEUED,
             is_manual=record["source"] == RunKind.MANUAL,
         )
+
+    def _check_register_systems(self, register: dict[str, Any], session_id: str) -> None:
+        """422 for an existing control on a system the run does not have; the run is read only when one names
+        its systems."""
+        if any(entry.get("supporting_system_ids") for entry in register.get("existing_controls") or []):
+            context = self._sessions.get_scenario_session_context(session_id)
+            check_register_systems(register, [system["id"] for system in context.get("systems") or []])
 
     def _save_manual_scenario(
         self, principal: Principal, manual: ManualScenario, key: str, request_hash: str

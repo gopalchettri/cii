@@ -35,7 +35,13 @@ from app.data_access.remediation.remediation_repository import PLANNED_SCENARIO_
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.remediation.manual import pick_manual_attacker
-from app.domain.remediation.plan import active_mapped_controls, assess_controls, build_snapshot, write_plan
+from app.domain.remediation.plan import (
+    active_mapped_controls,
+    assess_controls,
+    build_snapshot,
+    risk_scope,
+    write_plan,
+)
 from app.domain.scenario.controls import ControlMapper, controls_record
 from app.domain.shared.audit import audit_target
 from app.models.library.library import LibraryControl, ThreatProposal
@@ -123,8 +129,9 @@ class RemediationPlanJob:
         by_id = {row.control_id: row for row in controls}
         items = self._mapped_items(lease, scenario, context, library, by_id)
         register = lease.record["register"]
-        library_mapped, warnings = assess_controls(items, register, controls)
-        snapshot = build_snapshot(scenario, context, register, library_mapped, warnings)
+        systems, affected = risk_scope(scenario, context, register)
+        library_mapped, warnings = assess_controls(items, register, controls, systems, affected)
+        snapshot = build_snapshot(scenario, context, register, library_mapped, warnings, affected)
         self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot})
         return snapshot
 
