@@ -467,7 +467,7 @@ def test_the_snapshot_keys_and_what_the_ai_never_sees() -> None:
 def test_the_prompt_is_the_approved_text() -> None:
     system, _ = plan_prompt(_snapshot())
     assert hashlib.sha256(system.encode("utf-8")).hexdigest() == _APPROVED_SYSTEM_PROMPT_SHA256
-    assert Remediation.PROMPT_VERSION == "remediation-2"
+    assert Remediation.PROMPT_VERSION == "remediation-3"
     assert CHAT_TEMPERATURES[AiTask.REMEDIATION_PLAN] == 0.0
 
 
@@ -746,6 +746,15 @@ def test_a_broken_re_ask_keeps_the_first_usable_plan(re_asked: dict[str, Any]) -
     plan, warnings, chat = _written(_answer("CII-CID-5"), re_asked)
     assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 2 and _recommended(plan) == ["CII-CID-5"]
     assert warnings == [PlanWarning.GAP_NOT_ADDRESSED.format(code="CII-CID-6", status=NOT_IMPLEMENTED)]
+
+
+def test_an_answer_without_its_summary_is_re_asked_then_fails() -> None:
+    left_out = {key: text for key, text in _answer("CII-CID-5", "CII-CID-6").items() if key != "action_plan"}
+    plan, _, chat = _written(left_out, _answer("CII-CID-5", "CII-CID-6"))
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 2 and plan["action_plan"]
+    with pytest.raises(JobFailed) as failed:
+        _written(left_out, left_out)
+    assert failed.value.code == ErrorCode.GENERATION_FAILED
 
 
 @pytest.mark.parametrize(

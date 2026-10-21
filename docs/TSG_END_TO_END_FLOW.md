@@ -3524,9 +3524,9 @@ one scenario, and the version cap bounds the cost of asking for rewrites.
 flowchart LR
     RQ["POST /v1/remediation<br/>accepted scenario, or a hand-written one"] --> SV["Save plan request<br/>tsg_remediations, version 1"]
     SV --> JB["tsg_write_plan<br/>(queue tsg_scenarios)"]
-    JB --> IN["Build the input<br/>attacker and threat proposal for a hand-written scenario,<br/>map controls if none usable yet,<br/>classify each control: implemented / partial / missing"]
-    IN --> AIP["Plan writer (AI)<br/>one call, one re-ask for a gap"]
-    AIP --> FIX["Code fixes the plan<br/>gaps only, coverage, control_assessment,<br/>dates, critical path, warnings"]
+    JB --> IN["Build the input<br/>attacker and threat proposal for a hand-written scenario,<br/>map controls if none usable yet, affected systems,<br/>status per system, 5 library alternatives"]
+    IN --> AIP["Plan writer (AI)<br/>checks each control: retained / replaced / flagged,<br/>one call, one re-ask for a fault"]
+    AIP --> FIX["Code fixes the plan<br/>gaps only, coverage, control_assessment, systems,<br/>unresolved gaps, dates, critical path, warnings"]
     FIX --> VD["Version done, or failed:<br/>generation_failed, invalid_plan"]
     VD --> RV["Review a done version: accept or reject<br/>regenerate after done, failed or cancelled, up to 10 versions"]
 ```
@@ -3540,25 +3540,44 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    hand-written scenario it ranks the attackers and proposes a new threat wording to the curators
    (`tsg_ResolveThreat`). If the scenario has no usable mapped controls (none, or only retired ones), it maps
    them; when another job is mapping them, the plan job is given back and tries again (no attempt used). It
-   then classifies each scenario control against the register (D18): `implemented` (named in
-   `existing_controls` by id, code, name or a "CODE · Name" label, and `existing_controls_all_subsystems` Yes),
-   `partially_implemented` (named, No or empty) or `missing`, and stores the input as the version's snapshot.
-3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-2`): only missing (implement) and
-   partially implemented (improve) controls; it never sees the mitigation window. A first answer that leaves a
-   required gap out, lists an implemented control, restates the schedule in `action_plan` (order, parallel work,
-   days, dates, critical path, window or deadline) or mentions the library, describes a partial control as new or
-   a missing one as extended, or (every control implemented) has an interim action is asked again once; a gap
-   still left out
-   keeps the plan with `GAP_NOT_ADDRESSED`. An unusable
-   answer is asked again once; still unusable, the version fails `generation_failed` (a plan with no action
-   fails `invalid_plan`).
-4. **Code fixes the plan:** strategy "Mitigate"; recommended controls only the scenario's gaps, stamped from the
-   library; implemented controls removed from the controls and from every `implements_controls`;
-   `control_coverage` set by code ("covered" only when every control is implemented); `control_assessment` lists
-   every scenario control with its status; an `action_plan` sentence still stating the schedule or the library is
-   dropped; the title is code's, "<domains> Remediation" (covered: "Verification") from the controls' domains;
-   schedule dates and the critical path. Example: 5 mapped controls,
-   3 in the register with Yes → 2 recommended; with No or empty → 3 to improve and 2 to implement.
+   then works out where the risk is and where each control already stands (D19):
+   - **Affected systems:** every system of the run when `all_supporting_systems_applicable` is 1, else the
+     scenario's own.
+   - **Where an existing control is:** on every system when `existing_controls_all_supporting_system_applicable`
+     is 1, else on its own `supporting_system_ids`. Existing controls match by id, code, name or a "CODE · Name"
+     label.
+   - **Status:** `implemented` (on every affected system), `partially_implemented` (on some), `not_implemented`
+     (on none, or not in the register).
+   - **Alternatives:** one more library search, with the mapping's search and reranker, for 5 controls not
+     already identified.
+
+   It stores the input as the version's snapshot.
+3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-3`). It checks every identified
+   control for relevance only: `retained`, `replaced` by one of the alternatives, or `flagged_for_review`. It
+   writes only the not implemented (implement) and partially implemented (extend) controls that passed, each
+   action with its supporting systems, and the parts of the risk no control covers. It sees the window's
+   `total_days` when the request gives one. A first answer is asked again once when it:
+   - leaves a check or a required gap out, or replaces with a code outside the alternatives;
+   - lists an implemented control;
+   - restates the schedule in `action_plan` (order, parallel work, days, dates, critical path, window or
+     deadline) or mentions the library;
+   - describes a partial control as new or a missing one as extended;
+   - (every control implemented) has an interim action.
+
+   A check still left out or refused flags that control; a gap still left out keeps the plan with
+   `GAP_NOT_ADDRESSED`. An unusable answer (`action_plan` left out included) is asked again once; still
+   unusable, the version fails `generation_failed` (a plan with no action fails `invalid_plan`).
+4. **Code fixes the plan:** strategy "Mitigate"; recommended controls only the checked gaps, stamped from the
+   library, each with the systems it is still needed on; a flagged control is `unverified` and never
+   recommended; implemented controls removed from the controls and from every `implements_controls`;
+   `control_coverage` set by code ("covered" only when every checked control is implemented);
+   `control_assessment` lists every identified control and chosen replacement with its status, check, reason
+   and systems; `unresolved_gaps` lists flagged controls, one `no_validated_control` entry when no identified control or
+   replacement passed the check, and the AI's uncovered risks (the systems a control still needs are on its
+   `required_systems`); an `action_plan` sentence still stating the schedule or the library is dropped; the title is code's,
+   "<domains> Remediation" (covered: "Verification") from the controls' domains; schedule dates and the critical
+   path. Example: affected systems A, B and C, DoS protection in the register on A only →
+   `partially_implemented`, already on A, still needed on B and C.
 5. **Later:** `GET .../treatment-plan` (and `/status`), `POST .../review` (accept or reject a version),
    `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10), `.../cancel`; live updates on
    `.../treatment-plan/events`. The prefix is `/v1/sessions/{sid}/scenarios/{scid}/treatment-plan`. Lists:
