@@ -33,7 +33,7 @@ from app.domain.remediation.plan import describe_ref, resolve_control_refs
 from app.domain.shared.names import name_match_key, threat_name_without_code
 from app.models.admin.api_clients import Principal
 from app.models.library.library import LibraryActor, LibraryControl, ThreatLibrary
-from app.models.remediation.requests import LibraryRef, ManualScenario, PlanRequest
+from app.models.remediation.requests import ManualScenario, PlanRequest
 from app.models.scenario.asset_context import FrozenContext
 from app.search.snapshot import LibrarySnapshot, linked_actors_by_type
 
@@ -256,8 +256,8 @@ def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> dict[str
     """The scenario's category, type and threat as the library knows them; every fault in one 422."""
     errors: Errors = []
     types, threats = _library_rows(library)
-    threat_type = _named(types, scenario.threat_type, "threat_type", errors)
-    threat = _named(threats, scenario.threat, "threat", errors)
+    threat_type = _named(types, scenario.threat_type_id, scenario.threat_type_name, "threat_type", errors)
+    threat = _named(threats, scenario.threat_id, scenario.threat_name, "threat", errors)
     in_library = threat is not None and threat.status != LibraryStatus.CURATOR_REJECTED
     reason: ConflictReason | None = None
     if threat is not None and in_library:  # threat names are unique across the library: its type decides
@@ -270,7 +270,8 @@ def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> dict[str
             errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.{part}", "message": message})
             reason = ConflictReason.TYPE_MISMATCH
         threat_type = library_type
-    category = _category(library, scenario.threat_category, threat, threat_type, errors)
+    named_category = (scenario.threat_category_id, scenario.threat_category_name)
+    category = _category(library, named_category, threat, threat_type, errors)
     if errors:
         raise Invalid(RemediationMessage.THREAT_REFS_INVALID, errors=errors, reason=reason)
     folded = category.casefold() if category is not None else None
@@ -279,9 +280,9 @@ def resolve_threat(library: ThreatLibrary, scenario: ManualScenario) -> dict[str
         "category_id": next(
             (row_id for row_id, name in library.category_ids if name.casefold() == folded), None
         ),
-        "type_name": threat_type.name if threat_type else str(scenario.threat_type.name),
+        "type_name": threat_type.name if threat_type else str(scenario.threat_type_name),
         "type_id": threat_type.row_id if threat_type else None,
-        "threat_name": threat.name if threat is not None else str(scenario.threat.name),
+        "threat_name": threat.name if threat is not None else str(scenario.threat_name),
         "catalogue_id": threat.row_id if threat is not None and in_library else None,
         "status": threat.status if threat is not None else None,
     }
@@ -305,49 +306,53 @@ def _library_rows(library: ThreatLibrary) -> tuple[list[_Known], list[_Known]]:
     return types, threats
 
 
-def _named(rows: Sequence[_Known], ref: LibraryRef, part: str, errors: Errors) -> _Known | None:
-    """The row `ref` names, None for a new name; an unknown id or an id and name that disagree is an error."""
+def _named(
+    rows: Sequence[_Known], row_id: int | None, name: str | None, part: str, errors: Errors
+) -> _Known | None:
+    """The row the scenario names by id, name or both; None for a new name. An unknown id, or an id and a
+    name that disagree, is an error."""
     named: _Known | None = None
-    if ref.name:  # names compared normalised, any library code left out
-        wanted = name_match_key(threat_name_without_code(ref.name))
+    if name:  # names compared normalised, any library code left out
+        wanted = name_match_key(threat_name_without_code(name))
         named = next(
             (row for row in rows if name_match_key(threat_name_without_code(row.name)) == wanted), None
         )
-    if ref.id is None:
+    if row_id is None:
         return named
-    by_id = next((row for row in rows if row.row_id == ref.id), None)
+    by_id = next((row for row in rows if row.row_id == row_id), None)
     if by_id is None:
-        message = RemediationMessage.UNKNOWN_ID.format(id=ref.id)
+        message = RemediationMessage.UNKNOWN_ID.format(id=row_id)
         errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.{part}_id", "message": message})
         return None
-    if ref.name and named is not by_id:
-        message = RemediationMessage.ID_NAME_DISAGREE.format(
-            id=ref.id, library_name=by_id.name, name=ref.name
-        )
+    if name and named is not by_id:
+        message = RemediationMessage.ID_NAME_DISAGREE.format(id=row_id, library_name=by_id.name, name=name)
         errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.{part}_name", "message": message})
     return by_id
 
 
 def _category(
     library: ThreatLibrary,
-    ref: LibraryRef | None,
+    given: tuple[int | None, str | None],
     threat: _Known | None,
     threat_type: _Known | None,
     errors: Errors,
 ) -> StrideCategory | None:
     """The STRIDE category given (one the threat is filed under), else the threat's first, else the type's."""
     filed = threat.categories if threat is not None else ()
-    if ref is None:
+    given_id, given_name = given
+    if given_id is None and not given_name:
         return filed[0] if filed else (threat_type.category if threat_type else None)
-    name = dict(library.category_ids).get(ref.id, "") if ref.id is not None else str(ref.name)
+    name = dict(library.category_ids).get(given_id, "") if given_id is not None else str(given_name)
     category = next((c for c in StrideCategory if c.value.casefold() == name.casefold()), None)
-    part = "threat_category_id" if ref.id is not None else "threat_category_name"
+    part = "threat_category_id" if given_id is not None else "threat_category_name"
     field = f"{ManualScenario.FIELD_PREFIX}.{part}"
-    if ref.id is not None and ref.name and name and ref.name.casefold() != name.casefold():  # both must agree
-        message = RemediationMessage.ID_NAME_DISAGREE.format(id=ref.id, library_name=name, name=ref.name)
+    if (
+        given_id is not None and given_name and name and given_name.casefold() != name.casefold()
+    ):  # both agree
+        message = RemediationMessage.ID_NAME_DISAGREE.format(id=given_id, library_name=name, name=given_name)
         errors.append({"field": f"{ManualScenario.FIELD_PREFIX}.threat_category_name", "message": message})
     elif category is None:
-        message = RemediationMessage.CATEGORY_UNKNOWN.format(name=name or ref.id)
+        message = RemediationMessage.CATEGORY_UNKNOWN.format(name=name or given_id)
         errors.append({"field": field, "message": message})
     elif threat is not None and filed and category not in filed:
         message = RemediationMessage.CATEGORY_NOT_OF_THREAT.format(

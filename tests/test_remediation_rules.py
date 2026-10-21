@@ -142,8 +142,8 @@ def test_a_hand_written_scenario_names_its_library_rows_and_has_no_title() -> No
     every name within its column; any register label is accepted and echoed."""
     assert _register(risk_level="Severe").risk_level == "Severe"
     manual = PlanRequest.model_validate(HAND_WRITTEN).manual_scenario
-    assert manual is not None and (manual.threat_type.name, manual.threat.id) == ("Malicious code", 5)
-    assert manual.threat_category is None and manual.entity_id == 7
+    assert manual is not None and (manual.threat_type_name, manual.threat_id) == ("Malicious code", 5)
+    assert (manual.threat_category_id, manual.threat_category_name, manual.entity_id) == (None, None, 7)
     no_entity = {key: value for key, value in MANUAL.items() if key != "entity_id"}
     for wrong in (
         {"scenario_id": "s1", "session_id": "r1"},  # is_manual is required

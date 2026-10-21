@@ -242,6 +242,9 @@ def test_the_deploy_script_rolls_and_recognises_every_v2_deployment() -> None:
         in_file = [d["metadata"]["name"] for d in _objects(APP_FILES[namespace], kind="Deployment")]
         assert sorted(rollout[variable]) == sorted(in_file), namespace
     assert rollout["App"][-1] == "api"  # every queue has its worker before an API pod can be ready
+    # ai-remediation's workers roll before ai-threatgen's, so the API is the last rollout of the whole run:
+    # a new API may queue work only a new worker can do (D18).
+    assert list(rollout) == ["Extra", "App"]
     in_files = {d["metadata"]["name"] for d in _objects(*MONITORING_FILES, kind="Deployment")}
     assert set(_script_names("Monitoring")[""]) == in_files
 

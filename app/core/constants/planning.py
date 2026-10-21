@@ -218,7 +218,6 @@ class Controls:
     )
     MAX_ATTEMPTS: Final = 5  # then failed for good; the sweep retries only a failure with attempts left
     LEASE_SECONDS: Final = 120  # one scenario's mapping, and a run's delivery, renewed while it runs
-    PLAN_WAIT_POLL_SECONDS: Final = 5  # a plan job waits for another job's mapping, checking this often
     RETRY_FAILED_AFTER_SECONDS: Final = 1_800
     SWEEP_EVERY_SECONDS: Final = 300
     RESEND_QUEUED_AFTER_SECONDS: Final = 600  # a queued mapping no worker took: its message was lost

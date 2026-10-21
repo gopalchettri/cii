@@ -1,7 +1,6 @@
 """Request bodies of the remediation API: a plan request with its register data, a review and a regenerate."""
 
 import re
-from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, ClassVar, Literal
@@ -161,14 +160,6 @@ def _has_letters(name: str | None) -> str | None:
     return name
 
 
-@dataclass(frozen=True)
-class LibraryRef:
-    """A library category, type or threat as a hand-written scenario names it (id, name or both)."""
-
-    id: int | None
-    name: str | None
-
-
 #: A library row's name: blank means not given; punctuation or spaces alone → 422 (never a nameless row).
 _CategoryName = Annotated[_Name, AfterValidator(_has_letters)]
 _TypeNameText = Annotated[_TypeName, AfterValidator(_has_letters)]
@@ -208,23 +199,6 @@ class ManualScenario(StartRunRequest):
         if self.threat_id is None and not self.threat_name:
             raise ValueError(RemediationMessage.THREAT_REQUIRED)
         return self
-
-    @property
-    def threat_category(self) -> LibraryRef | None:
-        """The category as named, or None when it is not named."""
-        if self.threat_category_id is None and not self.threat_category_name:
-            return None
-        return LibraryRef(self.threat_category_id, self.threat_category_name)
-
-    @property
-    def threat_type(self) -> LibraryRef:
-        """The threat type as named."""
-        return LibraryRef(self.threat_type_id, self.threat_type_name)
-
-    @property
-    def threat(self) -> LibraryRef:
-        """The threat as named."""
-        return LibraryRef(self.threat_id, self.threat_name)
 
 
 #: The register's data, as the platform sends it with either kind.

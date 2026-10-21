@@ -52,11 +52,13 @@ $Hosts = [ordered]@{ $App = $ApiHost; $Extra = $MonitoringHost }
 # Every app file carries these two lines until this script puts the real image and the settings fingerprint in.
 $ImagePlaceholder = 'quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT'
 $FingerprintPlaceholder = 'tsg/settings-fingerprint: none'
-# v2's app Deployments per project, in rollout order: the workers and beat first (an API pod is ready only when
-# every queue has a live worker), the API last. One at a time: only one extra pod is ever starting.
+# v2's app Deployments in rollout order: every worker of both projects first (ai-remediation's, then
+# ai-threatgen's and its beat), the API last of the whole run. A new API may queue work only a new worker can
+# do (D18: a plan version stored without its snapshot), and an API pod is ready only when every queue has a
+# live worker. One at a time: only one extra pod is ever starting.
 $Rollout = [ordered]@{
-    $App   = @('worker-threats', 'worker-scenarios', 'worker-service-mapper', 'worker-maintenance', 'beat', 'api')
     $Extra = @('worker-threats', 'worker-scenarios', 'worker-service-mapper')
+    $App   = @('worker-threats', 'worker-scenarios', 'worker-service-mapper', 'worker-maintenance', 'beat', 'api')
 }
 # v2's monitoring programs (deploy\observability.yaml, deploy\flower.yaml): v1 has some under the same names.
 $Monitoring = @('prometheus', 'alertmanager', 'loki', 'alloy', 'grafana', 'redis-exporter', 'kube-state-metrics', 'flower')

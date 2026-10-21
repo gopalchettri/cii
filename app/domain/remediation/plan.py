@@ -352,8 +352,11 @@ def _capped(value: Any) -> Any:
 def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
     """(system, user): the approved rules, and the snapshot as data without the echo, warnings or ids."""
     shown = {key: value for key, value in snapshot.items() if key not in _NOT_SHOWN}
-    # The window is code's to compare with the schedule: an AI that never sees it can state no fit or length.
+    # The register's window, when it gave one, as the days the AI plans to fit (owner, 2026-10-21); its dates
+    # stay code's, which schedules them and warns past the window. No window: the AI estimates freely.
     risk = {key: value for key, value in shown["risk_assessment"].items() if key != "assessment_window"}
+    if window := shown["risk_assessment"].get("assessment_window"):
+        risk["assessment_window"] = {"total_days": window["total_days"]}
     shown["risk_assessment"] = risk
     # The prompt knows "exact" and "nearest": a control the person named for a hand-written scenario is exact.
     # Systems are named by their names alone: their ids are the API's, never the model's.
