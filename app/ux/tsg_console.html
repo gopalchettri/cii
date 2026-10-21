@@ -1445,7 +1445,8 @@ $(function () {
     return !st ? "No controls (not a written scenario)" : st === "queued" || st === "running" ? "Still being mapped"
          : st === "failed" ? "Control mapping failed" : "No matching library controls";
   }
-  function scnDocx(D, list) {
+  // The building blocks both Word exports use: runs, paragraphs, headings and full-width tables.
+  function docxParts(D) {
     var run = function (text, o) { return new D.TextRun($.extend({ text: String(text == null ? "" : text) }, o || {})); };
     var P = function (text, o, para) { return new D.Paragraph($.extend({ children: [run(text, o)], spacing: { after: 80 } }, para || {})); };
     var paras = function (text) { return String(text || "—").split(/\n+/).map(function (t) { return P(t); }); };
@@ -1463,6 +1464,22 @@ $(function () {
       return new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, rows: rows.map(function (r) {
         return new D.TableRow({ children: [cell(r[0], true, 28), cell(r[1], false, 72)] }); }) });
     };
+    return { run: run, P: P, paras: paras, H: H, table: table, terms: terms };
+  }
+  // A file name Windows and macOS accept.
+  function safeName(text) { return String(text).replace(/[\\/:*?"<>|]+/g, " ").trim(); }
+  // Packs the document and hands it to the browser as a download.
+  function saveDocx(D, doc, filename) {
+    return D.Packer.toBlob(doc).then(function (blob) {
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+    });
+  }
+  function scnDocx(D, list) {
+    var k = docxParts(D), run = k.run, P = k.P, paras = k.paras, H = k.H, table = k.table, terms = k.terms;
     var evidence = function (e) {
       var out = [P("[" + e.n + "] " + (e.title || ""), { bold: true }, { spacing: { before: 120, after: 40 } })];
       if (e.source) out.push(P("Source: " + e.source));
@@ -1518,12 +1535,7 @@ $(function () {
     busy($b, true);
     loadDocx().then(function (D) {
       var out = scnDocx(D, list);
-      return D.Packer.toBlob(out.doc).then(function (blob) {
-        var a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "Threat scenarios - " + out.asset.replace(/[\\/:*?"<>|]+/g, " ").trim() + " - " + new Date().toISOString().slice(0, 10) + ".docx";
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+      return saveDocx(D, out.doc, "Threat scenarios - " + safeName(out.asset) + " - " + new Date().toISOString().slice(0, 10) + ".docx").then(function () {
         toast("Word document ready", list.length + (list.length === 1 ? " scenario" : " scenarios") + " exported", "ok");
       });
     }).catch(function (e) {
@@ -2072,11 +2084,60 @@ $(function () {
     if (m.retrying) html += '<div class="callout warn"><code>' + esc(m.retrying.reason || "outage") + "</code> " + esc(retryText(m.retrying)) + "</div>";
     html += '<div class="row" style="margin-top:12px">' +
       (open ? '<button class="btn success" data-sm="accept">Accept mapping</button><button class="btn danger" data-sm="reject">Reject mapping</button>' : "") +
-      (running ? "" : '<button class="btn" data-sm="regenerate">Regenerate</button>') + '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';
+      (running ? "" : '<button class="btn" data-sm="regenerate">Regenerate</button>') +
+      (m.status === "done" ? '<button class="btn" data-sm="export" title="This mapping, its inputs and its services, as a Word document">Export to Word</button>' : "") +
+      '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';
     var body = smOneWay("Upstream: services it depends on", m.upstream_services, "upstream", open) +
       smOneWay("Downstream: services that depend on it", m.downstream_services, "downstream", open) + smBoth(m.bidirectional_services, open);
     html += body || (running ? '<div class="empty">Finding dependencies...</div>' : '<div class="empty">No dependencies in this generation.</div>');
     $("#smOut").html(html);
+    sm.view = m;
+  }
+
+  // ---------- Export to Word: one mapping, the inputs it was made from and its upstream and downstream services ----------
+  function smDecisionWord(v) { return v === true ? "Accepted" : v === false ? "Rejected" : "Pending"; }
+  // One direction's rows: its one-way services, then the both-direction ones read from that side.
+  function smDocxRows(m, dir) {
+    var oneWay = m[dir + "_services"].map(function (d) { return { service: d, rel: d, both: false }; });
+    var both = m.bidirectional_services.map(function (d) { return { service: d, rel: d[dir], both: true }; });
+    return oneWay.concat(both).map(function (x, i) {
+      var d = x.service, rel = x.rel;
+      return [String(i + 1), d.service_name + (x.both ? " (both directions)" : ""), [d.sector, d.subsector].filter(Boolean).join(" / ") || "—",
+              rel.dependency_reason + (rel.applicability ? " Applicability: " + rel.applicability : ""),
+              d.ai_suggested ? "AI" : "Catalog", smDecisionWord(rel.isAccepted)];
+    });
+  }
+  function smDocx(D, m) {
+    var k = docxParts(D), s = m.selected_service || {}, title = "Service map: " + s.service_name;
+    var direction = function (heading, dir) {
+      var rows = smDocxRows(m, dir);
+      return [k.H(heading + " (" + rows.length + ")", D.HeadingLevel.HEADING_1),
+              rows.length ? k.table(["No.", "Service", "Sector / Subsector", "Why", "Source", "Decision"], rows, [6, 22, 18, 36, 8, 10])
+                          : k.P("None in this generation.")];
+    };
+    var body = [
+      new D.Paragraph({ text: title, heading: D.HeadingLevel.TITLE }),
+      k.H("Mapping", D.HeadingLevel.HEADING_1),
+      k.terms([["Mapping id", m.mapping_id], ["Status", m.status], ["Generation", m.generation], ["Review", m.review],
+               ["Created", fmtTime(m.created_at)], ["Updated", fmtTime(m.updated_at)], ["Exported", new Date().toLocaleString()]]),
+      k.H("Input parameters", D.HeadingLevel.HEADING_1),
+      k.terms([["Service name", s.service_name], ["Service description", s.service_description], ["Sector", s.sector],
+               ["Subsector", s.subsector], ["Entity names", (s.entity_names || []).join(", ")]])
+    ].concat(direction("Upstream: services it depends on", "upstream"), direction("Downstream: services that depend on it", "downstream"));
+    // The mapping id on every page, so a printed or forwarded page can be traced back.
+    var header = new D.Header({ children: [k.P("Mapping " + m.mapping_id, { size: 18, color: "555555" })] });
+    return new D.Document({ creator: "TSG Console", title: title, styles: { default: { document: { run: { font: "Calibri", size: 22 } } } },
+                            sections: [{ headers: { default: header }, children: body }] });
+  }
+  function smExportDocx($b, m) {
+    busy($b, true);
+    loadDocx().then(function (D) {
+      var name = "Service map - " + safeName((m.selected_service || {}).service_name || "service") + " - " + safeName(m.mapping_id) +
+                 " - " + new Date().toISOString().slice(0, 10) + ".docx";
+      return saveDocx(D, smDocx(D, m), name).then(function () { toast("Word document ready", "Mapping " + m.mapping_id + " exported", "ok"); });
+    }).catch(function (e) {
+      toast("Could not build the Word document", window.docx ? e.message : "Could not load the Word library; check the internet connection.", "err");
+    }).then(function () { busy($b, false); });
   }
   function smOpen(id) {
     clearTimeout(sm.timer);
@@ -2120,6 +2181,7 @@ $(function () {
     .on("click", "[data-sm]", function () {
       var $b = $(this), act = $b.attr("data-sm"), root = "/v1/service-mapper/" + encodeURIComponent(sm.id);
       if (act === "refresh") { withBusy($b, smOpen(sm.id)); return; }
+      if (act === "export") { smExportDocx($b, sm.view); return; }
       if (act === "regenerate") {
         withBusy($b, api("POST", root + "/regenerate", undefined, { headers: { "Idempotency-Key": uuid() } }))
           .done(function () { toast("Regenerating", "A new generation is queued."); smOpen(sm.id); });
