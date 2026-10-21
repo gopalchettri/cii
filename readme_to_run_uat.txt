@@ -83,16 +83,36 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #    http://localhost:8000/docs    -> API documentation
 #    503 on /ready: the body says which store or queue is missing - start that worker / fix that store.
 #
-#    PROBLEM: worker log shows  ai.call_unavailable / ProxyError 503 / ERR_CONNECT_FAIL 110 /
-#             "connect_tcp.started host='10.61.192.2' port=8080"  -> the AI call went through the corporate proxy.
+#    PROBLEM: worker log shows  ai.call_unavailable / ProxyError 503 / ERR_CONNECT_FAIL 110 / ai_timed_out, or at
+#             start  ai.gateway_route host=llmapi.govai.ae route=proxy  -> the AI calls go through the corporate proxy.
 #    FIX 1: .env must have CII_AI_BYPASS_PROXY=true (step 6). Fix it, Ctrl+C every window, start again.
 #    FIX 2: still failing? test direct access from this machine:
 #             nslookup llmapi.govai.ae
 #             Test-NetConnection llmapi.govai.ae -Port 443
 #             curl.exe -v https://llmapi.govai.ae/health
 #    FIX 3: direct access fails too -> ask the network team to open this machine -> llmapi.govai.ae:443
-#           (the OpenShift pods use a hosts entry  10.231.255.253 llmapi.govai.ae  plus the proxy).
+#           (the OpenShift pods use a hosts entry  10.231.255.253 llmapi.govai.ae  and call it directly: it is on
+#           their NO_PROXY - see "OPENSHIFT: every AI call times out" below).
 #    A run still retrying picks the fix up by itself; one already "failed" (5 tries) needs a new run.
+#
+#    OPENSHIFT: every AI call times out ("The AI service timed out") - D23, 2026-10-21
+#    Why: the pods send outside calls to the corporate proxy (HTTPS_PROXY=http://10.61.192.2:8080), which cannot
+#         reach the AI gateway. llmapi.govai.ae must be on the pods' NO_PROXY so the calls go to it directly.
+#    1. See what runs (changes nothing):
+#         oc -n ai-threatgen get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
+#         oc -n ai-remediation get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
+#    2. Test from inside the API pod (use its name from step 1; changes nothing):
+#         oc -n ai-threatgen exec deploy/<api> -- sh -c 'echo "NO_PROXY=$NO_PROXY"; curl -s -m 30 -o /dev/null -w "via proxy: %{http_code}\n" https://llmapi.govai.ae/health/liveliness; curl -s -m 30 --noproxy llmapi.govai.ae -o /dev/null -w "direct: %{http_code}\n" https://llmapi.govai.ae/health/liveliness'
+#       "via proxy: 000" and "direct: 200" = this problem.
+#    3. Unblock now: on EVERY app deployment of BOTH projects (API, every worker, beat; not flower):
+#         oc -n <project> set env deploy/<name> NO_PROXY=localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae no_proxy=localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae
+#       Each one restarts its pods; wait until all are Running:  oc -n <project> get pods -w
+#    4. Check: step 2 again (NO_PROXY lists llmapi.govai.ae, both curls 200); one run or plan finishes.
+#    5. For good: deploy from this repository (deploy\build-image.ps1, then deploy\deploy-uat.ps1 -AppImage <image>):
+#       deploy\deploy.yaml and deploy\deploy.ai-remediation.yaml list the gateway on NO_PROXY, and the gate
+#       (scripts\gen_openshift_config.py --gate) refuses a gateway missing from it.
+#    6. Check: a worker's start shows  ai.gateway_route host=llmapi.govai.ae route=direct
+#         oc -n ai-threatgen logs deploy/worker-scenarios | findstr ai.gateway_route
 
 # 10. Create an API key (admin key = CII_ADMIN_API_KEY from .env). It is shown ONCE - copy it.
 curl.exe -X POST http://localhost:8000/v1/tsg/api-clients -H "X-Admin-Key: <CII_ADMIN_API_KEY>" -H "Content-Type: application/json" -d "{\"name\":\"uat-test\",\"description\":\"uat\"}"

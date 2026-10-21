@@ -10,12 +10,16 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import httpcore
+import httpx
 import pytest
 from pydantic import SecretStr
+from structlog.testing import capture_logs
 
 import app.ai  # noqa: F401  # caps the library loggers on import
-from app.ai.common import apply_proxy_settings
+from app.ai.common import apply_proxy_settings, merged_no_proxy
 from app.core.config import Settings, get_settings
+from app.core.constants import LogEvent
 
 GATEWAY = "https://llmapi.example:443/v1"
 COMPANY_PROXY = "http://proxy.test:8080"  # what Windows' own proxy setting (Internet Options) names
@@ -137,6 +141,65 @@ def test_importing_the_ai_layer_never_copies_the_env_file_into_the_environment(t
     )
     in_environment, proxy_kinds = json.loads(fresh.stdout.strip().splitlines()[-1])
     assert in_environment == [] and "cii_ai_bypass" not in proxy_kinds
+
+
+POD_PROXY = "http://10.61.192.2:8080"  # what the UAT pods' HTTPS_PROXY names
+POD_NO_PROXY = "localhost,127.0.0.1,.svc,.cluster.local"
+
+
+def _route(url: str) -> str:
+    """The route the HTTP client litellm builds (httpx, reading the environment) gives `url`."""
+    pool = httpx.Client()._transport_for_url(httpx.URL(url))._pool  # type: ignore[attr-defined]
+    return "proxy" if isinstance(pool, httpcore.HTTPProxy) else "direct"
+
+
+@pytest.mark.parametrize(("bypass", "gateway"), [(True, "direct"), (False, "proxy")])
+def test_the_http_client_sends_the_gateway_direct_and_everything_else_as_the_pod_says(
+    monkeypatch: pytest.MonkeyPatch, bypass: bool, gateway: str
+) -> None:
+    """UAT, 2026-10-21: the corporate proxy never answers for the gateway. With the bypass the client the AI
+    calls use goes direct to it; the pod's own NO_PROXY entries stay direct; an intel feed takes the proxy."""
+    monkeypatch.setenv("HTTPS_PROXY", POD_PROXY)
+    monkeypatch.setenv("NO_PROXY", POD_NO_PROXY)
+    apply_proxy_settings(_settings(bypass))
+    assert _route(GATEWAY) == gateway
+    assert _route("https://redis.tsg.svc") == _route("https://localhost") == "direct"
+    assert _route("https://www.cisa.gov") == "proxy"
+
+
+@pytest.mark.parametrize(
+    ("environment", "merged"),
+    [
+        ({"NO_PROXY": POD_NO_PROXY, "no_proxy": ""}, f"{POD_NO_PROXY},llmapi.example"),
+        ({"NO_PROXY": "a, b", "no_proxy": "b,c"}, "a,b,c,llmapi.example"),
+        ({"NO_PROXY": "llmapi.example"}, "llmapi.example"),
+        ({}, "llmapi.example"),
+    ],
+    ids=["pod-uppercase-only", "both-spellings", "already-listed", "none"],
+)
+def test_both_spellings_are_merged_so_the_gateway_never_hides_the_pods_entries(
+    environment: dict[str, str], merged: str
+) -> None:
+    """Linux has NO_PROXY and no_proxy apart, and Python reads the lowercase one alone: the gateway written
+    into it alone hid the pod's localhost, .svc and .cluster.local (Windows has one variable, so this is
+    checked on the merge itself)."""
+    assert merged_no_proxy(environment, {"llmapi.example"}) == merged
+
+
+def test_each_gateway_route_is_logged_once_without_the_proxy_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://tsg:secret@proxy.test:8080")
+    with capture_logs() as logs:
+        apply_proxy_settings(_settings(True))
+    routes = {
+        e["host"]: (e["route"], e.get("proxy")) for e in logs if e["event"] == LogEvent.AI_GATEWAY_ROUTE
+    }
+    assert routes == {
+        "llmapi.example": ("direct", None),
+        "other-provider.example": ("proxy", "proxy.test:8080"),
+    }
+    assert "secret" not in str(logs)
 
 
 def test_the_openai_client_cannot_log_the_ai_key() -> None:

@@ -4,7 +4,7 @@ header, the retries and how each call's outcome is counted."""
 import os
 import time
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -116,27 +116,55 @@ def apply_proxy_settings(settings: Settings) -> None:
        calls unless step 2 skips it. Empty: the HTTP(S)_PROXY variables already set, else, when step 2 runs,
        Windows' own proxy setting (_keep_windows_proxy).
     2. CII_AI_BYPASS_PROXY=true (v1's TSG_LITELLM_BYPASS_PROXY): the host of every LiteLLM gateway model
-       (litellm_proxy/...) goes on NO_PROXY, so those calls go direct; every other host keeps the proxy."""
+       (litellm_proxy/...) goes on NO_PROXY, so those calls go direct; every other host keeps the proxy.
+    The pods list the gateway on NO_PROXY themselves (deploy/*.yaml, D23); this keeps the app right without.
+    Then each AI gateway's route is logged (ai.gateway_route), so a call sent to the proxy shows."""
     if proxy := settings.proxy_url.get_secret_value():
         _set_proxy_variables({"http": proxy, "https": proxy})
     elif settings.ai_bypass_proxy:
         _keep_windows_proxy()
     if settings.ai_bypass_proxy:
-        _put_the_gateway_on_no_proxy(settings)
+        hosts = {host for kind, host in _gateways(settings) if kind == LITELLM_MODEL_PREFIX}
+        os.environ["NO_PROXY"] = os.environ["no_proxy"] = merged_no_proxy(os.environ, hosts)
+    _log_gateway_routes(settings)
 
 
-def _put_the_gateway_on_no_proxy(settings: Settings) -> None:
+def _gateways(settings: Settings) -> set[tuple[str, str]]:
+    """(LITELLM_MODEL_PREFIX or "", host) of every AI model's base URL: which hosts the AI calls go to."""
     models = (
         (settings.chat_model, settings.chat_base_url),
         (settings.chat_fallback_model, settings.chat_base_url),
         (settings.embedding_model, settings.embedding_base_url),
         (settings.rerank_model, settings.rerank_base_url),
     )
-    urls = {url for model, url in models if url and model.startswith(LITELLM_MODEL_PREFIX)}
-    hosts = {urlsplit(url if "//" in url else f"//{url}").hostname for url in urls}
-    for name in ("NO_PROXY", "no_proxy"):
-        listed = [entry for entry in os.environ.get(name, "").split(",") if entry]
-        os.environ[name] = ",".join(listed + sorted(host for host in hosts - set(listed) if host))
+    return {
+        (LITELLM_MODEL_PREFIX if model.startswith(LITELLM_MODEL_PREFIX) else "", host)
+        for model, url in models
+        if model and url and (host := urlsplit(url if "//" in url else f"//{url}").hostname)
+    }
+
+
+def merged_no_proxy(environment: Mapping[str, str], hosts: Iterable[str]) -> str:
+    """One NO_PROXY list from both spellings and `hosts`, each entry once. Linux has two variables and Python
+    reads the lowercase one alone, so writing the gateway into it alone hid the pod's own entries."""
+    listed = [
+        entry.strip() for name in ("NO_PROXY", "no_proxy") for entry in environment.get(name, "").split(",")
+    ]
+    return ",".join(dict.fromkeys(entry for entry in [*listed, *sorted(hosts)] if entry))
+
+
+def _log_gateway_routes(settings: Settings) -> None:
+    """One line per AI gateway host: direct, or through which proxy (its host and port only: a proxy address
+    can carry a password), as the HTTP clients will decide from this process's environment."""
+    proxies = urllib.request.getproxies()
+    for host in sorted({host for _, host in _gateways(settings)}):
+        proxy = urlsplit(proxies.get("https", ""))
+        if not proxy.hostname or urllib.request.proxy_bypass(host):
+            log.info(LogEvent.AI_GATEWAY_ROUTE, host=host, route="direct")
+        else:
+            log.info(
+                LogEvent.AI_GATEWAY_ROUTE, host=host, route="proxy", proxy=f"{proxy.hostname}:{proxy.port}"
+            )
 
 
 _PROXY_VARIABLES: Final = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")

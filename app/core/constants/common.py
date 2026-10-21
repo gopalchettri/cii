@@ -231,6 +231,7 @@ class LogEvent(StrEnum):
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
     AI_CALL_UNAVAILABLE = "ai.call_unavailable"
+    AI_GATEWAY_ROUTE = "ai.gateway_route"
     AI_SLOTS_BUSY = "ai.slots_busy"
     AI_SLOT_FREE_FAILED = "ai.slot_free_failed"
     LIBRARY_RELOADED = "library.reloaded"

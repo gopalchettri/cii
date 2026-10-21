@@ -119,7 +119,7 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
             {"secretRef": {"name": "tsg-secrets"}},
         ]
         # Only the proxy is written inline: every setting (CII_AI_BYPASS_PROXY too) comes from the env file.
-        assert {e["name"] for e in container["env"]} == {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}
+        assert {e["name"] for e in container["env"]} == {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "no_proxy"}
         for amounts in container["resources"].values():
             assert set(amounts) == {"cpu", "memory"}, name
         assert container["livenessProbe"], name
@@ -357,6 +357,55 @@ def test_the_pods_may_reach_the_ai_gateway_directly_and_the_proxy_for_the_feeds(
         for deployment in _objects(app_file, kind="Deployment"):
             for alias in deployment["spec"]["template"]["spec"]["hostAliases"]:
                 assert (alias["ip"], "443") in allowed, (namespace, deployment["metadata"]["name"])
+
+
+GATEWAY_SETTINGS = {
+    "CII_CHAT_MODEL": "litellm_proxy/kimi-k2.5",
+    "CII_CHAT_BASE_URL": "https://llmapi.govai.ae",
+    "CII_EMBEDDING_MODEL": "litellm_proxy/qwen3-embedding-8b-mig",
+    "CII_EMBEDDING_BASE_URL": "https://llmapi.govai.ae",
+    "CII_RERANK_MODEL": "litellm_proxy/qwen3-reranker-8b-mig",
+    "CII_RERANK_BASE_URL": "https://llmapi.govai.ae",
+}
+
+
+def test_every_app_pod_lists_its_pinned_ai_gateway_on_both_no_proxy_spellings() -> None:
+    """D23 (UAT, 2026-10-21): through the corporate proxy every AI call timed out; the pods list the gateway
+    on NO_PROXY and no_proxy themselves, so every tool in the pod goes direct, the app's own bypass aside."""
+    for deployment in _app_deployments():
+        hosts = {
+            name
+            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]
+            for name in alias["hostnames"]
+        }
+        env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
+        assert env["NO_PROXY"] == env["no_proxy"], deployment["metadata"]["name"]
+        assert hosts <= set(env["NO_PROXY"].split(",")), deployment["metadata"]["name"]
+
+
+def test_the_gate_refuses_an_ai_gateway_the_pods_cannot_call_directly() -> None:
+    generator = _generator()
+    good = _uat_values() | GATEWAY_SETTINGS
+    assert generator.gateway_problems(good) == []
+    for url in ("http://llmapi.govai.ae", "https://llmapi.govai.ae:8443"):
+        problems = generator.gateway_problems(good | {"CII_CHAT_BASE_URL": url})
+        assert problems == [
+            "CII_CHAT_BASE_URL: the AI gateway must be https on port 443, the port the egress rules open"
+        ]
+    moved = generator.gateway_problems(good | {"CII_EMBEDDING_BASE_URL": "https://llm.other.ae"})
+    pods = len(_app_deployments())
+    assert len(moved) == 3 * pods  # each pod: not pinned, not on NO_PROXY, not on no_proxy
+    assert all(problem.startswith("CII_EMBEDDING_BASE_URL: llm.other.ae is not ") for problem in moved)
+    not_the_gateway = {"CII_CHAT_MODEL": "openai/gpt"}  # not a LiteLLM gateway model: nothing to check
+    assert generator.gateway_problems(good | not_the_gateway) == []
+
+
+def test_the_deploy_gate_runs_the_gateway_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    generator, path = _generator(), tmp_path / ".env.uat"
+    values = _uat_values() | GATEWAY_SETTINGS | {"CII_CHAT_BASE_URL": "http://llmapi.govai.ae"}
+    path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
+    assert generator.main([str(path), "--gate"]) == 1
+    assert "GATE FAILED  CII_CHAT_BASE_URL: the AI gateway must be https" in capsys.readouterr().out
 
 
 def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:

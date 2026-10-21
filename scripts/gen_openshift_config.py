@@ -15,8 +15,10 @@ ever printed: the YAML goes straight to `oc apply`, the Secret's values base64-e
 from this computer's environment), so a setting that would stop every pod at start-up (a missing required
 line, a "*" CORS origin, a short admin key, no evidence threshold) is found before anything is changed. It
 also checks that each store the settings name is an address the egress rules (deploy/networkpolicy.yaml,
-deploy/networkpolicy.ai-remediation.yaml) let the pods reach. --monitoring adds what deploy/observability.ps1
-needs. Prints GATE OK, or each problem by setting name and exits 1.
+deploy/networkpolicy.ai-remediation.yaml) let the pods reach, and that each AI gateway is https on port 443,
+pinned (hostAliases) and on NO_PROXY and no_proxy in every app pod (deploy/deploy.yaml,
+deploy/deploy.ai-remediation.yaml): through the corporate proxy it times out (UAT, 2026-10-21). --monitoring
+adds what deploy/observability.ps1 needs. Prints GATE OK, or each problem by setting name and exits 1.
 
 --fingerprint prints a short digest of both maps: deploy/deploy-uat.ps1 puts it on every app pod, so the pods
 roll when a setting changed and stay as they are when none did."""
@@ -37,11 +39,21 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))  # `app` from this checkout, never another installed copy
 
 from app.core.config import Settings  # noqa: E402
+from app.core.constants import LITELLM_MODEL_PREFIX  # noqa: E402
 
 #: The egress rules of each project the app's pods run in.
 NETWORK_RULES = (
     REPO / "deploy" / "networkpolicy.yaml",
     REPO / "deploy" / "networkpolicy.ai-remediation.yaml",
+)
+#: The app's pods, in each project.
+APP_MANIFESTS = (REPO / "deploy" / "deploy.yaml", REPO / "deploy" / "deploy.ai-remediation.yaml")
+#: Each AI model and the base URL its calls go to.
+GATEWAYS = (
+    ("chat_model", "chat_base_url"),
+    ("chat_fallback_model", "chat_base_url"),
+    ("embedding_model", "embedding_base_url"),
+    ("rerank_model", "rerank_base_url"),
 )
 CONFIG_MAP, SECRET = "tsg-config", "tsg-secrets"  # the names deploy/*.yaml read with envFrom
 LABELS = {"app.kubernetes.io/part-of": "tsg"}
@@ -159,6 +171,46 @@ def store_problems(environment: dict[str, str], rule_files: tuple[Path, ...] = N
     return problems
 
 
+def gateway_problems(environment: dict[str, str], app_files: tuple[Path, ...] = APP_MANIFESTS) -> list[str]:
+    """Each LiteLLM gateway (litellm_proxy/ models) the app pods could not call directly: not https on 443
+    (the only port the egress rules open to it), or in a pod without its host pinned (hostAliases) or on
+    NO_PROXY and no_proxy, whose calls then go to the corporate proxy, which cannot reach it."""
+    gateways: dict[str, str] = {}
+    for model, url in GATEWAYS:
+        address = environment.get(env_name(url), "")
+        if environment.get(env_name(model), "").startswith(LITELLM_MODEL_PREFIX) and address:
+            gateways.setdefault(address, env_name(url))
+    problems = []
+    for address, key in gateways.items():
+        parts = urlsplit(address if "//" in address else f"https://{address}")
+        if parts.scheme != "https" or parts.port not in (None, 443):
+            problems.append(
+                f"{key}: the AI gateway must be https on port 443, the port the egress rules open"
+            )
+        for path in app_files:
+            problems += [f"{key}: {parts.hostname} {gap}" for gap in _gateway_gaps(str(parts.hostname), path)]
+    return problems
+
+
+def _gateway_gaps(host: str, path: Path) -> list[str]:
+    """What a manifest's app pods lack to call `host` directly, one line per pod and gap."""
+    where = path.relative_to(REPO).as_posix()
+    gaps = []
+    for item in yaml.safe_load_all(path.read_text(encoding="utf-8")):
+        if (item or {}).get("kind") != "Deployment":
+            continue
+        name, pod = item["metadata"]["name"], item["spec"]["template"]["spec"]
+        if host not in {name for alias in pod.get("hostAliases", []) for name in alias["hostnames"]}:
+            gaps.append(f"is not pinned (hostAliases) in {where} {name}")
+        for container in pod["containers"]:
+            env = {variable["name"]: variable.get("value", "") for variable in container.get("env", [])}
+            for variable in ("NO_PROXY", "no_proxy"):
+                entries = [entry.strip() for entry in env.get(variable, "").split(",")]
+                if not any(host == e or (e.startswith(".") and host.endswith(e)) for e in entries):
+                    gaps.append(f"is not on {variable} in {where} {name}: its AI calls would go to the proxy")
+    return gaps
+
+
 def addresses(url: str) -> list[tuple[str, str]]:
     """Every host and port a connection string names (MongoDB may list several), without its password."""
     if not url:
@@ -204,11 +256,15 @@ def main(argv: list[str]) -> int:
         print(hashlib.sha256(text.encode()).hexdigest()[:16] if args.fingerprint else text, end="")
         return 0
     problems = settings_problems(config | secret) + store_problems(config | secret)
+    problems += gateway_problems(config | secret)
     problems += monitoring_problems(values) if args.monitoring else []
     for problem in problems:
         print(f"GATE FAILED  {problem}")
     if not problems:
-        print("GATE OK: the pods' settings load, and every store is one the network rules allow.")
+        print(
+            "GATE OK: the pods' settings load, every store is one the network rules allow, and every AI "
+            "gateway is called directly."
+        )
     return 1 if problems else 0
 
 

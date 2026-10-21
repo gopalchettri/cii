@@ -48,7 +48,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
@@ -100,7 +101,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
@@ -152,7 +154,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }

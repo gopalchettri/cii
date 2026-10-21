@@ -52,7 +52,7 @@ spec:
               podAffinityTerm:
                 topologyKey: kubernetes.io/hostname
                 labelSelector: { matchLabels: { app.kubernetes.io/name: api } }
-      # Cluster DNS cannot resolve the AI gateway: pinned here; called directly (CII_AI_BYPASS_PROXY=true, G264).
+      # Cluster DNS cannot resolve the AI gateway: pinned here; called directly: it is on NO_PROXY (D23).
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       # uvicorn waits up to 30 s for open requests; the 5 s pause lets the router drop the pod first.
@@ -68,10 +68,11 @@ spec:
           envFrom:
             - configMapRef: { name: tsg-config }
             - secretRef: { name: tsg-secrets }
-          env: # the corporate proxy: the way out to the intelligence feeds (the AI gateway skips it, G264)
+          env: # the corporate proxy: the way out to the intelligence feeds; the AI gateway is on NO_PROXY (D23)
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: http, containerPort: 8000 }]
           # Ready = every store answers and every queue has a live worker (each check waits at most 5 s).
           readinessProbe:
@@ -138,7 +139,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
@@ -190,7 +192,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
@@ -242,7 +245,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
@@ -297,7 +301,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           ports: [{ name: metrics, containerPort: 9100 }]
           livenessProbe:
             exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
@@ -347,7 +352,8 @@ spec:
           env:
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
           # Beat has no ping: alive = it saved its schedule in the last 6 minutes (it saves every ~3).
           livenessProbe:
             exec: { command: [sh, -c, "find /tmp/beat -name 'schedule*' -newermt '-360 seconds' | grep -q ."] }
