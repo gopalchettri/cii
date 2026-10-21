@@ -67,6 +67,7 @@ def mapping_view(record: dict) -> MappingView:
         downstream_services=downstream,
         bidirectional_services=bidirectional,
         summary=MappingSummary.model_validate(summary),
+        prompts=result.get("prompts"),
         error=record.get("job", {}).get("error") if record["status"] == Status.FAILED else None,
         retrying=retry_notice_of(record["status"], record.get("job", {}).get("retry")),
         created_at=record["created_at"],

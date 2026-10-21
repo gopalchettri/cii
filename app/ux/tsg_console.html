@@ -1464,7 +1464,13 @@ $(function () {
       return new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, rows: rows.map(function (r) {
         return new D.TableRow({ children: [cell(r[0], true, 28), cell(r[1], false, 72)] }); }) });
     };
-    return { run: run, P: P, paras: paras, H: H, table: table, terms: terms };
+    // Text exactly as written: one paragraph per line, blank lines kept, in a fixed-width font.
+    var mono = function (text) {
+      return String(text || "").split("\n").map(function (line) {
+        return new D.Paragraph({ children: [run(line, { font: "Consolas", size: 16 })], spacing: { after: 0 } });
+      });
+    };
+    return { run: run, P: P, paras: paras, H: H, table: table, terms: terms, mono: mono };
   }
   // A file name Windows and macOS accept.
   function safeName(text) { return String(text).replace(/[\\/:*?"<>|]+/g, " ").trim(); }
@@ -2095,6 +2101,16 @@ $(function () {
   }
 
   // ---------- Export to Word: one mapping, the inputs it was made from and its upstream and downstream services ----------
+  var SM_PROMPT_PARTS = [
+    ["System prompt", "The fixed rules the AI follows, the same for every mapping (app/domain/service_mapper/prompts/generate.txt)."],
+    ["User prompt", "This mapping's data as one JSON object, made of the parts below."],
+    ["selected_service", "The input parameters above."],
+    ["sector_taxonomy", "Every sector and subsector in the onboarding catalog."],
+    ["upstream_count, downstream_count", "How many services to return in each direction."],
+    ["candidate_services", "Catalog services found by searching for this service, its upstream needs and its downstream users: " +
+                           "one per sector first, then the rest, until the prompt reaches its size limit."],
+    ["already_selected", "Only in call 2, which is made when a direction came back short: the services already found, so none is repeated."]];
+  function smIndentedJson(text) { try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; } }
   function smDecisionWord(v) { return v === true ? "Accepted" : v === false ? "Rejected" : "Pending"; }
   // One direction's rows: its one-way services, then the both-direction ones read from that side.
   function smDocxRows(m, dir) {
@@ -2124,6 +2140,17 @@ $(function () {
       k.terms([["Service name", s.service_name], ["Service description", s.service_description], ["Sector", s.sector],
                ["Subsector", s.subsector], ["Entity names", (s.entity_names || []).join(", ")]])
     ].concat(direction("Upstream: services it depends on", "upstream"), direction("Downstream: services that depend on it", "downstream"));
+    body.push(k.H("AI prompts", D.HeadingLevel.HEADING_1, true), k.H("How the prompt is built", D.HeadingLevel.HEADING_2), k.terms(SM_PROMPT_PARTS));
+    if (!m.prompts) body.push(k.P("Not recorded: this generation ran before prompts were kept. Regenerate the mapping to record them."));
+    else {
+      body.push(k.H("System prompt", D.HeadingLevel.HEADING_2));
+      body = body.concat(k.mono(m.prompts.system_prompt));
+      m.prompts.user_prompts.forEach(function (prompt, i) {
+        body.push(k.H("User prompt, call " + (i + 1) + (i ? " (top-up for a short direction)" : " (first ask)"), D.HeadingLevel.HEADING_2),
+                  k.P("Shown indented for reading; the AI received the same JSON on one line.", { italics: true, color: "555555" }));
+        body = body.concat(k.mono(smIndentedJson(prompt)));
+      });
+    }
     // The mapping id on every page, so a printed or forwarded page can be traced back.
     var header = new D.Header({ children: [k.P("Mapping " + m.mapping_id, { size: 18, color: "555555" })] });
     return new D.Document({ creator: "TSG Console", title: title, styles: { default: { document: { run: { font: "Calibri", size: 22 } } } },

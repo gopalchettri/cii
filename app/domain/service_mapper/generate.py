@@ -25,27 +25,33 @@ def generate_result(
     generation: tuple[str, int],
     counts: tuple[int, int],
 ) -> dict:
-    """The reconciled dependencies of (mapping_id, generation); a short direction gets one more AI call."""
-    answer = generate_answer(chat, search, request, catalog, counts)
+    """The reconciled dependencies of (mapping_id, generation) and the prompts sent; a short direction gets
+    one more AI call."""
+    answer, first_prompt = generate_answer(chat, search, request, catalog, counts)
     result = reconcile(*generation, request, answer, catalog, *counts)
     short = (
         counts[0] - result["summary"]["upstream_count"],
         counts[1] - result["summary"]["downstream_count"],
     )
     if not any(short):
-        return result
+        return result | _prompts(first_prompt)
     chosen = [item["service_name"] for item in result["dependencies"]]
     try:
-        more = generate_answer(chat, search, request, catalog, short, chosen)
+        more, more_prompt = generate_answer(chat, search, request, catalog, short, chosen)
     except UnreadableAiAnswer:
-        return result  # fewer than the count is fine
+        return result | _prompts(first_prompt)  # fewer than the count is fine
     combined = answer.model_copy(
         update={
             "upstream_services": [*answer.upstream_services, *more.upstream_services],
             "downstream_services": [*answer.downstream_services, *more.downstream_services],
         }
     )
-    return reconcile(*generation, request, combined, catalog, *counts)
+    return reconcile(*generation, request, combined, catalog, *counts) | _prompts(first_prompt, more_prompt)
+
+
+def _prompts(*user_prompts: str) -> dict[str, Any]:
+    """The exact system and user prompts of the AI calls whose answers a generation used."""
+    return {"prompts": {"system_prompt": _SYSTEM, "user_prompts": list(user_prompts)}}
 
 
 def generate_answer(
@@ -55,8 +61,9 @@ def generate_answer(
     catalog: CatalogSnapshot,
     counts: tuple[int, int],
     already_selected: list[str] | None = None,
-) -> GeneratedAnswer:
-    """AI creates both directions, including out-of-catalog services when they are defensible."""
+) -> tuple[GeneratedAnswer, str]:
+    """AI creates both directions, including out-of-catalog services when they are defensible; returns the
+    answer and the user prompt sent."""
     candidates = search.candidates(catalog, _queries(request))
     prompt, included = _user_prompt(
         chat.max_prompt_chars, request, catalog, candidates, counts, already_selected
@@ -79,7 +86,7 @@ def generate_answer(
         ][:10]
 
     answer = chat.ask_for_checked_json(AiTask.SERVICE_MAPPER, _SYSTEM, prompt, check)
-    return GeneratedAnswer.model_validate(answer)
+    return GeneratedAnswer.model_validate(answer), prompt
 
 
 def _queries(request: CreateMappingRequest) -> list[str]:
