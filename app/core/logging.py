@@ -2,6 +2,7 @@
 Every line is one JSON object, Celery's and the libraries' too, so their errors reach the error views."""
 
 import logging
+import logging.handlers
 import os
 import sys
 from collections.abc import MutableMapping
@@ -18,6 +19,11 @@ _OUR_LOGGERS: Final = ("app", "http")
 
 #: uvicorn's own loggers, sent to ours: "Exception in ASGI application" must not stay plain text.
 _UVICORN_LOGGERS: Final = ("uvicorn", "uvicorn.error")
+
+#: A laptop log file rolls over at this size; this many old copies are kept (<role>.log.1 …), so each role
+#: uses at most 200 MB.
+_LOG_FILE_MAX_BYTES: Final = 50 * 1024 * 1024
+_LOG_FILE_OLD_COPIES: Final = 3
 
 
 def mask_secret_values(_logger: Any, _name: str, event: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
@@ -80,8 +86,11 @@ def _also_write_to(path: Path, level: str) -> None:
     if any(getattr(handler, "baseFilename", None) == os.path.abspath(path) for handler in root.handlers):
         return  # start-up ran twice in this process (tests): one file handler, never duplicated lines
     path.parent.mkdir(parents=True, exist_ok=True)
-    # ponytail: never rotated (laptop only); delete the folder when it grows. Pods log to stdout instead.
-    handler = logging.FileHandler(path, encoding="utf-8")
+    # One writer per file (each process has its own role), so rolling over is safe; Alloy reads only the
+    # current <role>.log, never the old copies. Pods log to stdout instead.
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=_LOG_FILE_MAX_BYTES, backupCount=_LOG_FILE_OLD_COPIES, encoding="utf-8"
+    )
     handler.setFormatter(_json_formatter())
     handler.setLevel(level)
     root.addHandler(handler)

@@ -155,6 +155,30 @@ def test_a_library_error_with_a_traceback_is_one_json_line_with_its_level(tmp_pa
             handler.close()
 
 
+def test_a_laptop_log_file_rolls_over_and_keeps_three_old_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before: never rotated, so logs/*.log grew for ever (owner, 2026-10-23: cap them)."""
+    monkeypatch.setattr("app.core.logging._LOG_FILE_MAX_BYTES", 300)
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        configure_logging(_settings(log_dir=str(tmp_path)), "api")
+        for line in range(40):
+            logging.getLogger("app.test").warning("line %d", line)
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "api.log",
+            "api.log.1",
+            "api.log.2",
+            "api.log.3",
+        ]
+        assert all(path.stat().st_size <= 300 for path in tmp_path.iterdir())
+    finally:
+        for handler in set(root.handlers) - set(before):
+            root.removeHandler(handler)
+            handler.close()
+
+
 def test_a_deployment_that_forgets_cii_env_gets_production_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: CII_ENV defaulted to dev, so a UAT or production Secret without it ran with no checks."""
     monkeypatch.delenv("CII_ENV", raising=False)
