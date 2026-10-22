@@ -149,10 +149,55 @@ def test_every_dropped_item_is_named_with_why_for_the_re_ask() -> None:
     problems = answer_problems(_request(), _answer(), _catalog())
     assert problems == [
         'upstream_services: "Water Treatment Service" is listed twice',
-        'upstream_services: "Electricity" is too vague: name the specific service in at least two words',
+        'upstream_services: "Electricity" is too vague: name the specific service in at least two words '
+        "(a new name is fine when no catalog service provides it)",
         'upstream_services: "Power Generation System" is the selected service itself',
         '"Water Treatment Service" is in both lists: keep it only in its strongest direction',
-        '"Grid Balancing Service" needs a sector from sector_taxonomy',
+        '"Grid Balancing Service" needs a sector from catalog',
+    ]
+
+
+def test_a_sector_name_is_not_taken_as_a_service() -> None:
+    answer = GeneratedAnswer.model_validate(
+        {
+            "operational_context": "The plant generates electricity for delivery to the grid.",
+            "upstream_services": [_item("Water", "A sector name is not the name of a service.")],
+            "downstream_services": [],
+        }
+    )
+    assert answer_problems(_request(), answer, _catalog()) == [
+        'upstream_services: "Water" is a sector or subsector name, not a service: name the service'
+    ]
+
+
+def test_a_new_service_like_a_catalog_one_is_asked_to_use_it_and_a_merely_related_one_is_not() -> None:
+    """Owner 2026-10-22: a service already in the database is never identified anew by the AI."""
+    water = SectorAssociation(10, "Energy", 12, "Water")
+    media = SectorAssociation(30, "ICT", 31, "Media")
+    catalog = CatalogSnapshot(
+        "duplicates",
+        ("Energy", "ICT"),
+        (water, media),
+        (
+            CatalogService(3, "Water Production & Transmission", "", (water,), (), "", ""),
+            CatalogService(5, "Broadcasting and Public Media Operations", "", (media,), (), "", ""),
+        ),
+    )
+    reason = "It supplies the cooling water the plant cannot run without."
+    answer = GeneratedAnswer.model_validate(
+        {
+            "operational_context": "The plant generates electricity for delivery to the grid.",
+            "upstream_services": [
+                _item("Water Supply and Distribution", reason, "Energy", "Water"),
+                _item("Telecommunications Network Services", reason, "ICT", "Media"),
+            ],
+            "downstream_services": [],
+        }
+    )
+    assert answer_problems(_request(), answer, catalog) == [
+        '"Water Supply and Distribution" is new, but catalog Energy / Water already has '
+        '"Water Production & Transmission": use the one that provides it, '
+        'or keep "Water Supply and Distribution" only if none does'
     ]
 
 
@@ -250,11 +295,39 @@ def test_the_prompt_sends_names_never_a_catalog_id_and_not_the_selected_service(
     generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
     sent = chat.prompts[0]
     assert "catalog_service_id" not in json.dumps(sent)
-    assert [candidate["service_name"] for candidate in sent["candidate_services"]] == [
-        "Water Treatment Service"
+    assert sent["catalog"] == [  # every sector and subsector with its services, the selected one left out
+        {
+            "sector": "Water",
+            "subsector": None,
+            "services": [
+                {"service_name": "Water Treatment Service", "description": "Supplies treated cooling water."}
+            ],
+        },
+        {"sector": "Energy", "subsector": "Power", "services": []},  # empty groups last
     ]
-    assert set(sent["candidate_services"][0]) == {"service_name", "description", "sectors"}
-    assert sent["sector_taxonomy"] == {"Energy": ["Power"], "Water": []}
+
+
+def test_a_catalog_too_large_for_the_prompt_keeps_the_most_similar_services() -> None:
+    water = SectorAssociation(20, "Water", None, None)
+    services = tuple(
+        CatalogService(
+            number, f"Water Service {number}", "Treats and supplies water. " * 9, (water,), (), "", ""
+        )
+        for number in range(1, 41)
+    )
+    catalog = CatalogSnapshot("large", ("Water",), (water,), services)
+    ranked = list(reversed(services))
+
+    class Search:
+        def candidates(self, _catalog, _queries):
+            return ranked
+
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    chat.max_prompt_chars = 20_000
+    generate_result(chat, Search(), _request(), catalog, ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    sent = [service["service_name"] for service in chat.prompts[0]["catalog"][0]["services"]]
+    assert 0 < len(sent) < len(services)
+    assert sent == [service.service_name for service in ranked[: len(sent)]]
 
 
 def test_the_prompt_names_every_input_key_and_answer_field_and_writes_no_number() -> None:
@@ -263,7 +336,7 @@ def test_the_prompt_names_every_input_key_and_answer_field_and_writes_no_number(
     generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
     keys = {
         *chat.prompts[0],
-        "sectors",
+        *chat.prompts[0]["catalog"][0],
         "known_upstream",
         "known_downstream",
         "entity_names",
@@ -272,7 +345,7 @@ def test_the_prompt_names_every_input_key_and_answer_field_and_writes_no_number(
     }
     assert [key for key in sorted(keys) if key not in generate._SYSTEM] == []
     assert not re.search(r"\d", generate._SYSTEM)
-    assert len(generate._SYSTEM) < 3_500
+    assert len(generate._SYSTEM) < 3_800
 
 
 def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
@@ -331,9 +404,7 @@ def test_shared_catalog_alias_is_not_misreported_as_an_out_of_catalog_service() 
     answer = GeneratedAnswer.model_validate(
         {
             "operational_context": "The selected service generates electricity for grid delivery.",
-            "upstream_services": [
-                _item("PMS", "It provides monitoring directly to the generation process.")
-            ],
+            "upstream_services": [_item("PMS", "It provides monitoring directly to the generation process.")],
             "downstream_services": [],
         }
     )

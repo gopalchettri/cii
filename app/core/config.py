@@ -200,6 +200,11 @@ class Settings(ScenarioOutputSettings):
     service_mapper_downstream_total_count: int = Field(
         default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
     )
+    # What the AI checks first for every upstream list (comma-separated), sent to it as data.
+    service_mapper_upstream_checks: str = Field(
+        default="electricity, water, telecommunications, ICT hosting, payments, identity",
+        validation_alias="SERVICE_MAPPER_UPSTREAM_CHECKS",
+    )
 
     # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for both: a control
     # kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, ScenarioOutputSettings); an AI-proposed threat that
@@ -264,6 +269,10 @@ class Settings(ScenarioOutputSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def service_mapper_upstream_check_list(self) -> list[str]:
+        return _names(self.service_mapper_upstream_checks)
 
     @property
     def required_asset_properties(self) -> frozenset[str]:

@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.ai.chat import ChatModel
+from app.core.config import get_settings
 from app.core.constants import AiTask
 from app.domain.service_mapper.reconcile import answer_problems, reconcile
 from app.domain.shared.names import as_json, is_same_name, shorten_text
@@ -37,15 +38,27 @@ def generate_answer(
     catalog: CatalogSnapshot,
     counts: tuple[int, int],
 ) -> GeneratedAnswer:
-    """AI creates both directions, out-of-catalog services included when defensible. The AI sees names only,
-    never a catalog ID; a first answer with items reconcile would drop is asked again once with why."""
-    candidates = [
-        service
-        for service in search.candidates(catalog, _queries(request))
-        if not is_same_name(service.service_name, request.service_name)
-        and not is_same_name(request.service_name, service.service_name)
-    ]
-    prompt = _user_prompt(chat.max_prompt_chars, request, catalog, candidates, counts)
+    """AI creates both directions from every catalog service grouped by sector and subsector, adding a new
+    service only where none provides it. The AI sees names only, never a catalog ID; a first answer with items
+    reconcile would drop is asked again once with why."""
+    rank = {
+        service.service_id: place
+        for place, service in enumerate(search.candidates(catalog, _queries(request)))
+    }
+    services = sorted(
+        (service for service in catalog.services if not _is_selected(service, request)),
+        key=lambda service: rank.get(service.service_id, len(rank)),
+    )
+    budget = min(int(chat.max_prompt_chars * 0.55), chat.max_prompt_chars - len(_SYSTEM) - 4_000)
+    prompt = _user_prompt(request, catalog, services, counts)
+    if len(_SYSTEM) + len(prompt) > budget:
+        # ponytail: a catalog too large for one prompt keeps its services most similar to the selected one.
+        prompt = _user_prompt(request, catalog, [], counts)
+        for kept in range(1, len(services) + 1):
+            longer = _user_prompt(request, catalog, services[:kept], counts)
+            if len(_SYSTEM) + len(longer) > budget:
+                break
+            prompt = longer
 
     def check(answer: dict[str, Any]) -> list[str]:
         try:
@@ -61,6 +74,12 @@ def generate_answer(
     return GeneratedAnswer.model_validate(answer)
 
 
+def _is_selected(service: CatalogService, request: CreateMappingRequest) -> bool:
+    return is_same_name(service.service_name, request.service_name) or is_same_name(
+        request.service_name, service.service_name
+    )
+
+
 def _queries(request: CreateMappingRequest) -> list[str]:
     role = f"{request.service_name}. {request.service_description}. {request.sector} / {request.subsector}"
     return [
@@ -71,54 +90,46 @@ def _queries(request: CreateMappingRequest) -> list[str]:
 
 
 def _user_prompt(
-    max_chars: int,
     request: CreateMappingRequest,
     catalog: CatalogSnapshot,
-    candidates: list[CatalogService],
+    services: list[CatalogService],
     counts: tuple[int, int],
 ) -> str:
-    taxonomy: dict[str, list[str]] = {}
-    for group in catalog.sector_groups:
-        subsectors = taxonomy.setdefault(group.sector_name, [])
-        if group.subsector_name:
-            subsectors.append(group.subsector_name)
-    base: dict[str, Any] = {
-        "selected_service": request.model_dump(),
-        "sector_taxonomy": taxonomy,
-        "upstream_count": counts[0],
-        "downstream_count": counts[1],
-        "candidate_services": [],
-    }
-    budget = min(int(max_chars * 0.55), max_chars - len(_SYSTEM) - 4_000)
-    for service in _balanced(candidates):
-        entry = _candidate_entry(service)
-        proposed = as_json(base | {"candidate_services": [*base["candidate_services"], entry]})
-        if len(_SYSTEM) + len(proposed) > budget:
-            break
-        base["candidate_services"].append(entry)
-    return as_json(base)
+    return as_json(
+        {
+            "upstream_checks": get_settings().service_mapper_upstream_check_list,
+            "selected_service": request.model_dump(),
+            "upstream_count": counts[0],
+            "downstream_count": counts[1],
+            "catalog": _catalog_groups(catalog, services),
+        }
+    )
 
 
-def _balanced(candidates: list[CatalogService]) -> list[CatalogService]:
-    first: list[CatalogService] = []
-    seen: set[str] = set()
-    for service in candidates:
-        sector = service.primary_sector.sector_name if service.primary_sector else ""
-        if sector not in seen:
-            first.append(service)
-            seen.add(sector)
-    ids = {service.service_id for service in first}
-    return [*first, *(service for service in candidates if service.service_id not in ids)]
+def _catalog_groups(catalog: CatalogSnapshot, services: list[CatalogService]) -> list[dict[str, Any]]:
+    """Every sector and subsector of the taxonomy with the given services linked to it, in the order of the
+    services (most relevant first), empty groups last; a sector-level group (subsector null) is listed only
+    when it has services or the sector has no subsectors."""
+    groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+    for service in services:
+        for group in service.sectors:
+            groups.setdefault((group.sector_name, group.subsector_name), []).append(_service_entry(service))
+    for group in sorted(
+        catalog.sector_groups, key=lambda group: (group.sector_name, group.subsector_name or "")
+    ):
+        groups.setdefault((group.sector_name, group.subsector_name), [])
+    with_subsectors = {sector for sector, subsector in groups if subsector}
+    return [
+        {"sector": sector, "subsector": subsector, "services": entries}
+        for (sector, subsector), entries in groups.items()
+        if subsector or entries or sector not in with_subsectors
+    ]
 
 
-def _candidate_entry(service: CatalogService) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "service_name": service.service_name,
-        "description": shorten_text(service.description, 240),
-        "sectors": [
-            {"sector": group.sector_name, "subsector": group.subsector_name} for group in service.sectors
-        ],
-    }
+def _service_entry(service: CatalogService) -> dict[str, Any]:
+    entry: dict[str, Any] = {"service_name": service.service_name}
+    if service.description and service.description.casefold() != service.service_name.casefold():
+        entry["description"] = shorten_text(service.description, 240)
     if service.upstream_context:
         entry["known_upstream"] = shorten_text(service.upstream_context, 240)
     if service.downstream_context:
