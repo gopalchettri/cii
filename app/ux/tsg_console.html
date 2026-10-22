@@ -2066,19 +2066,8 @@ $(function () {
           smButtons(d.dependency_id, open) + "</td></tr>";
       }).join("") + "</table>";
   }
-  function smBoth(items, open) {
-    if (!items.length) return "";
-    var side = function (d, dir) { return smWhy(d[dir]) + "<div>" + smDecision(d[dir].isAccepted) + "</div>"; };
-    return '<div class="section-title">Both directions (' + items.length + ')</div><table class="tbl">' +
-      "<tr><th>Service</th><th>Upstream: our service needs it</th><th>Downstream: it relies on our service</th></tr>" +
-      items.map(function (d) {
-        return "<tr><td>" + smService(d) + smButtons(d.dependency_id, open) + "</td><td>" + side(d, "upstream") + "</td><td>" + side(d, "downstream") + "</td></tr>";
-      }).join("") +
-      "</table>";
-  }
   function smPending(m) {
     var flags = m.upstream_services.concat(m.downstream_services).map(function (d) { return d.isAccepted; });
-    m.bidirectional_services.forEach(function (d) { flags.push(d.upstream.isAccepted, d.downstream.isAccepted); });
     return flags.filter(function (v) { return v == null; }).length;
   }
   function smRender(m) {
@@ -2100,7 +2089,7 @@ $(function () {
       (m.status === "done" ? '<button class="btn" data-sm="export" title="This mapping and its services, as a Word document">Export to Word</button>' : "") +
       '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';
     var body = smOneWay("Upstream: services it depends on", m.upstream_services, open) +
-      smOneWay("Downstream: services that depend on it", m.downstream_services, open) + smBoth(m.bidirectional_services, open);
+      smOneWay("Downstream: services that depend on it", m.downstream_services, open);
     html += body || (running ? '<div class="empty">Finding dependencies...</div>' : '<div class="empty">No dependencies in this generation.</div>');
     $("#smOut").html(html);
     sm.view = m;
@@ -2108,15 +2097,12 @@ $(function () {
 
   // ---------- Export to Word: one mapping and its upstream and downstream services ----------
   function smDecisionWord(v) { return v === true ? "Accepted" : v === false ? "Rejected" : "Pending"; }
-  // One direction's rows: its one-way services, then the both-direction ones read from that side.
+  // One direction's rows.
   function smDocxRows(m, dir) {
-    var oneWay = m[dir + "_services"].map(function (d) { return { service: d, rel: d, both: false }; });
-    var both = m.bidirectional_services.map(function (d) { return { service: d, rel: d[dir], both: true }; });
-    return oneWay.concat(both).map(function (x, i) {
-      var d = x.service, rel = x.rel;
-      return [String(i + 1), d.service_name + (x.both ? " (both directions)" : ""), [d.sector, d.subsector].filter(Boolean).join(" / ") || "—",
-              rel.dependency_reason + (rel.applicability ? " Applicability: " + rel.applicability : ""),
-              d.ai_suggested ? "AI" : "Catalog", smDecisionWord(rel.isAccepted)];
+    return m[dir + "_services"].map(function (d, i) {
+      return [String(i + 1), d.service_name, [d.sector, d.subsector].filter(Boolean).join(" / ") || "—",
+              d.dependency_reason + (d.applicability ? " Applicability: " + d.applicability : ""),
+              d.ai_suggested ? "AI" : "Catalog", smDecisionWord(d.isAccepted)];
     });
   }
   function smDocx(D, m) {

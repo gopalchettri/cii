@@ -1,114 +1,48 @@
-# Service Mapper — Problem, Plan and Solution
+# Service Mapper
 
-Status: **Planned** (not built yet).
+Finds the direct upstream and downstream services of one selected service in Dubai's critical infrastructure,
+for a reviewer to accept or reject relationship by relationship.
 
-## 1. The problem
+- **Upstream:** the selected service directly needs its output, capability or availability to operate.
+- **Downstream:** it directly needs the selected service's output, capability or availability to operate.
 
-A user gives a service name (which may be new and exist in no table), its sector, its subsector and one or more
-entities. Example: "Online Payment Service", Finance, Payments, DEWA.
+## Flow
 
-We must identify possible service-to-service dependencies in both directions, always from the selected service's point of view:
+1. `POST /v1/service-mapper` freezes the request (service name, description, sector, subsector, entity names) and
+   the per-direction counts from `.env` (`SERVICE_MAPPER_UPSTREAM/DOWNSTREAM_TOTAL_COUNT`), then queues a job on
+   `tsg_servicemapper`.
+2. The worker reads the SQL onboarding catalog (`app/worker/service_mapper/catalog_provider.py`) and retrieves up
+   to 80 candidate services by hybrid search (`app/search/service_mapper.py`); the selected service itself is left
+   out.
+3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `prompts/generate.txt` and a JSON user
+   message with the selected service, the sector taxonomy, the counts and the candidates that fit the budget.
+   **No catalog ID ever reaches the AI**: candidates are named, and the answer names services.
+4. The schema is checked (`GeneratedAnswer`). If any item would be dropped, the AI is asked again once in the
+   same conversation, with the reasons. Drops are: an ambiguous name, the selected service, a one-word unmatched
+   name, a duplicate, a service in both lists, or a new service without a taxonomy sector. An unusable re-ask
+   keeps the first answer.
+5. `reconcile.py` maps each name to its catalog service (exact name, then a name form; services that share a name
+   are told apart by sector and subsector), drops what is left of the above, keeps each service in one direction,
+   caps each list at its count and stores the generation.
+6. A reviewer accepts or rejects each relationship (`POST .../dependencies/decision`); regenerate starts a new
+   generation with every relationship pending.
 
-- **Upstream** = a service that the selected service *needs*.
-- **Downstream** = a service that *needs or relies on* the selected service.
+## Rules (owner, 2026-10-22)
 
-```
-Identity Service  ->  Online Payment Service  ->  Customer Application
-   (upstream)             (selected)                 (downstream)
-```
+- Services are Dubai-level: operated in or for the Emirate of Dubai. Generic global capabilities, other
+  emirates' or countries' services, vendor products, single sites and internal functions are out.
+- A service sits in one direction only. The API has `upstream_services` and `downstream_services`, and no
+  `bidirectional_services`.
+- The counts are a maximum. A list the AI keeps short stays short; nothing is padded.
+- The answer per item is `service_name, sector, subsector, dependency_reason, applicability`. Entity scope goes
+  in `applicability`, and an inferred link says so in its reason.
 
-Hard parts:
+## Differences from the supplied prompt
 
-1. The service may be new, so a database lookup cannot answer it. The LLM must reason it out.
-2. `onboarding_services` is reference only. It may be empty or irrelevant, so correctness cannot depend on it.
-3. LLMs commonly flip direction, invent services, or list the service as its own dependency.
-4. There can be several entities, and a dependency may apply to only some of them.
+The owner's original prompt is kept as supplied in [SERVICE_MAPPER_DEPENDENCY_PROMPT.md](../SERVICE_MAPPER_DEPENDENCY_PROMPT.md). The runtime prompt
+keeps its direction, directness, evidence and no-fabrication rules, and differs in these ways:
 
-## 2. Design decisions
-
-- Synchronous `POST /v1/service-map`. Nothing is persisted. No Celery job.
-- Any database read goes through a stored procedure.
-- Reference names are optional hints, fail-open, and never a constraint.
-- The LLM does the reasoning. Code validates the answer.
-
-## 3. The solution, step by step
-
-**Step 1 - Take the request.**
-
-```json
-{"service_name": "Online Payment Service", "sector": "Finance", "subsector": "Payments", "entities": ["DEWA"]}
-```
-
-Inputs are checked for length and empty values. They are free text, so they are treated as data (via
-`engine/shared/prompt_redaction.py`) and never as instructions.
-
-**Step 2 - Fetch optional hints.** Stored procedure `tsg_GetServiceReference(@Sector, @Subsector)` returns up to
-about 40 service names from the same sector/subsector (matched by name, not ID). Empty result, no match or
-failure means we continue with no hints. A failure is logged through a `LogEvent`, not hidden.
-
-**Step 3 - Build the prompt.** It holds the upstream/downstream definitions with the Online Payment example, the
-selected service, sector, subsector and entities, and the hint names marked: "Reference names may be irrelevant;
-use one only if it truly fits, otherwise ignore it. Do not invent a dependency just to use a reference name."
-It asks for real operational dependencies (power, identity, data, network, payment, dispatch), at most 8 per
-side, and allows an empty list when none is plausible. Temperature is low.
-
-**Step 4 - Ask the LLM for structured JSON.** Per item (pydantic, `extra="forbid"`):
-
-| Field | Meaning |
-|---|---|
-| `name` | dependent service name |
-| `sector` | best-guess sector |
-| `reason` | one-line why |
-| `relation` | `selected_needs_this` or `this_needs_selected` |
-| `confidence` | high / medium / low |
-| `applies_to_entities` | subset of the input entities |
-
-`relation` makes the model state the direction in its own words so code can verify it.
-
-**Step 5 - Check the answer in code** (via `ask_ai_and_check`; one re-ask with the problem list):
-
-- Upstream items must have `selected_needs_this`; downstream items `this_needs_selected`. This catches flipped direction.
-- The selected service cannot be its own dependency (normalized-name compare).
-- No duplicates within a list. The same service in both lists is accepted only when relations differ and reasons are given.
-- Reason is non-empty and names the other service.
-- `applies_to_entities` must be a subset of the input entities (empty defaults to all).
-- Per-side cap. Truncated or unreadable answers use the existing `TruncatedAiAnswer` / `UnreadableAiAnswer`.
-- A second failure returns a clear error.
-
-**Step 6 - Finish.** Code (not the AI) sets `in_reference` by normalized-name match to the hints and sorts by
-confidence. The response is labelled "possible dependencies".
-
-```json
-{
-  "upstream":   [{"name": "Identity Service", "reason": "Payment needs identity to verify the payer", "confidence": "high", "in_reference": false}],
-  "downstream": [{"name": "Customer Application", "reason": "The app relies on payment to charge users", "confidence": "high", "in_reference": false}]
-}
-```
-
-## 4. Files (layering enforced by `tests/test_code_conventions.py`)
-
-- `scripts/sql/tsg_GetServiceReference.sql`, `scripts/sql/grants.sql`, `tests/sql/schema.sql`, `tests/sql/seed.sql`
-- `app/models/service_map.py` - request, AI contract, response
-- `app/data_access/service_map_reference.py` - wraps the procedure (model on `asset_context.py`)
-- `app/engine/service_map/{prompts,mapper,checks}.py` - model on `app/engine/remediation/planner.py`
-- `app/services/service_map/mapper_service.py` - singleton, `@traced`, `record_audit`, fail-open hint fetch
-- `app/api/routers/service_map.py`, registered in `create_app()` in `app/main.py`
-- `app/core/constants/service_map.py`; extend `AiTask`, `CHAT_TEMPERATURES`, `StoredProcedure`, `AuditAction`, `LogEvent`, `ErrorMessage`
-- `tests/test_service_map.py` (uses `FakeChatModel`), a procedure case in `tests/test_sql_procedures.py`
-- `docs/BLUEPRINT.md` entry
-
-## 5. Tests
-
-No reference data (empty or procedure error) still returns a map; irrelevant reference ignored; flipped relation
-triggers a re-ask; self-reference and duplicates rejected; multi-entity subset check; two bad answers give a clear
-error; hostile `service_name` treated as data.
-
-## 6. Verification
-
-```
-.venv\Scripts\python -m pytest tests/test_service_map.py tests/test_sql_procedures.py tests/test_code_conventions.py
-ruff check .
-mypy app
-```
-
-Manual: POST with "Online Payment Service" / Finance / Payments / [DEWA], with and without reference rows.
+- The sectors and subsectors come from the SQL catalog taxonomy, not a fixed list.
+- `confidence`, `verification_status`, `evidence`, `applies_to_entities` and `dependency_type` are not asked for.
+- Reciprocal pairs are not allowed: one direction only.
+- The Dubai scope is added.

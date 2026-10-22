@@ -4,7 +4,7 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -14,29 +14,33 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app import container
+from app.ai.chat import TruncatedAiAnswer
 from app.core.constants import (
     AiOutage,
     AuditAction,
     Collection,
     MapperDecisionFailure,
+    MapperMessage,
     MappingOverall,
     Status,
     TaskName,
 )
 from app.core.database import get_mongodb
+from app.core.exceptions import JobFailed
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
 from app.domain.service_mapper import generate
 from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.generate import generate_result
-from app.domain.service_mapper.reconcile import reconcile
+from app.domain.service_mapper.reconcile import answer_problems, reconcile
 from app.domain.service_mapper.views import approved_relationships, pending_relationships
 from app.models.admin.api_clients import Principal
-from app.models.service_mapper.catalog import CatalogRows, CatalogService, CatalogSnapshot
+from app.models.service_mapper.catalog import CatalogRows, CatalogService, CatalogSnapshot, SectorAssociation
 from app.models.service_mapper.contract import CreateMappingRequest, DependencyDecisionRequest
-from app.models.service_mapper.generation import GeneratedAnswer
+from app.models.service_mapper.generation import GeneratedAnswer, ProposedDependency
 from app.search.service_mapper import ServiceCandidateSearch
 from app.services.service_mapper.service_mapper_service import ServiceMapperService
+from app.worker.service_mapper.job import ServiceMapperJob
 from tests.conftest import ADMIN
 
 
@@ -96,55 +100,39 @@ def _catalog():
     )
 
 
+def _item(name: str, reason: str, sector: str | None = None, subsector: str | None = None) -> dict[str, Any]:
+    return {"service_name": name, "sector": sector, "subsector": subsector, "dependency_reason": reason}
+
+
 def _answer() -> GeneratedAnswer:
     reason = "It directly supplies treated cooling water needed by the generation process."
     return GeneratedAnswer.model_validate(
         {
             "operational_context": "The plant converts primary energy into electricity for grid delivery.",
             "upstream_services": [
-                {
-                    "service_name": "Water Treatment Service",
-                    "catalog_service_id": 2,
-                    "dependency_reason": reason,
-                },
-                {
-                    "service_name": "Water Treatment Service",
-                    "catalog_service_id": 2,
-                    "dependency_reason": reason,
-                },
-                {
-                    "service_name": "Fuel Logistics Service",
-                    "catalog_service_id": None,
-                    "dependency_reason": "It delivers fuel directly to the plant for generation.",
-                },
-                {
-                    "service_name": "Invented Master",
-                    "catalog_service_id": 999,
-                    "dependency_reason": "This fabricated catalog identifier must be rejected.",
-                },
-                {
-                    "service_name": "Power Generation System",
-                    "catalog_service_id": 1,
-                    "dependency_reason": "The selected service cannot depend directly on itself.",
-                },
+                _item("Water Treatment Service", reason),
+                _item("Water Treatment Service", reason),
+                _item(
+                    "Fuel Logistics Service",
+                    "It delivers fuel directly to the plant for generation.",
+                    "Energy",
+                ),
+                _item("Electricity", "A one-word resource is too vague to present as a service."),
+                _item("Power Generation System", "The selected service cannot depend directly on itself."),
             ],
             "downstream_services": [
-                {
-                    "service_name": "Water Treatment Service",
-                    "catalog_service_id": 2,
-                    "dependency_reason": "It directly consumes plant electricity to run water pumps.",
-                },
-                {
-                    "service_name": "Grid Balancing Service",
-                    "catalog_service_id": None,
-                    "dependency_reason": "It directly takes the plant's generation output for balancing.",
-                },
+                _item(
+                    "Water Treatment Service", "It directly consumes plant electricity to run water pumps."
+                ),
+                _item(
+                    "Grid Balancing Service", "It directly takes the plant's generation output for balancing."
+                ),
             ],
         }
     )
 
 
-def test_reconciliation_deduplicates_cross_sector_links_and_rejects_fabricated_ids() -> None:
+def test_reconciliation_deduplicates_and_drops_the_selected_service_and_vague_names() -> None:
     result = reconcile("mapping", 1, _request(), _answer(), _catalog(), 2, 2)
     assert result["selected_service"]["service_id"] == 1
     assert result["summary"]["upstream_count"] == 2
@@ -153,8 +141,51 @@ def test_reconciliation_deduplicates_cross_sector_links_and_rejects_fabricated_i
     water = next(item for item in result["dependencies"] if item["service_id"] == 2)
     assert water["sector"] == "Water" and water["ai_suggested"] is False
     assert set(water["relations"]) == {"upstream"}  # in both lists at the same rank: upstream wins the tie
-    assert all(item["service_id"] != 999 for item in result["dependencies"])
+    assert all(item["service_name"] != "Electricity" for item in result["dependencies"])
     assert len({item["dependency_id"] for item in result["dependencies"]}) == 3
+
+
+def test_every_dropped_item_is_named_with_why_for_the_re_ask() -> None:
+    problems = answer_problems(_request(), _answer(), _catalog())
+    assert problems == [
+        'upstream_services: "Water Treatment Service" is listed twice',
+        'upstream_services: "Electricity" is too vague: name the specific service in at least two words',
+        'upstream_services: "Power Generation System" is the selected service itself',
+        '"Water Treatment Service" is in both lists: keep it only in its strongest direction',
+        '"Grid Balancing Service" needs a sector from sector_taxonomy',
+    ]
+
+
+def test_two_catalog_services_with_one_name_are_told_apart_by_sector() -> None:
+    def grid(service_id: int, sector: str) -> CatalogService:
+        return CatalogService(
+            service_id,
+            "Grid Control Service",
+            "",
+            (SectorAssociation(service_id, sector, None, None),),
+            (),
+            "",
+            "",
+        )
+
+    catalog = CatalogSnapshot("same-name", ("Energy", "Water"), (), (grid(5, "Energy"), grid(6, "Water")))
+    reason = "It dispatches the plant's output to the grid directly."
+
+    def kept(sector: str | None) -> list[int | None]:
+        answer = GeneratedAnswer.model_validate(
+            {
+                "operational_context": "The plant generates electricity for delivery to the grid.",
+                "upstream_services": [],
+                "downstream_services": [_item("Grid Control Service", reason, sector)],
+            }
+        )
+        return [
+            item["service_id"]
+            for item in reconcile("m", 1, _request(), answer, catalog, 5, 5)["dependencies"]
+        ]
+
+    assert kept("Water") == [6]
+    assert kept(None) == []  # a shared name without its sector is never guessed
 
 
 def test_a_service_in_both_lists_is_kept_only_where_the_ai_ranked_it_higher() -> None:
@@ -166,64 +197,105 @@ def test_a_service_in_both_lists_is_kept_only_where_the_ai_ranked_it_higher() ->
     assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (1, 2)
 
 
-def test_a_short_direction_gets_one_more_ai_call_that_adds_no_duplicates() -> None:
-    def item(name: str) -> dict[str, Any]:
-        return {"service_name": name, "dependency_reason": f"{name} is a direct operational dependency here."}
+class _Chat:
+    """The AI gateway's re-ask: a first answer the checks fault is asked again once with its problems."""
 
-    context = "The plant converts primary energy into electricity for grid delivery."
-    answers = [
-        {
-            "operational_context": context,
-            "upstream_services": [item("Water Treatment Service")],
-            "downstream_services": [item("Grid Balancing Service")],
-        },
-        {
-            "operational_context": context,
-            "upstream_services": [item("Water Treatment Service"), item("Fuel Logistics Service")],
-            "downstream_services": [item("Grid Balancing Service")],
-        },
+    max_prompt_chars = 200_000
+
+    def __init__(self, *answers: dict[str, Any]) -> None:
+        self.answers = list(answers)
+        self.prompts: list[dict[str, Any]] = []
+        self.problems: list[str] = []
+
+    def ask_for_checked_json(self, _task, _system, prompt, check, first_answer_check):
+        self.prompts.append(json.loads(prompt))
+        first = self.answers.pop(0)
+        assert check(first) == []
+        self.problems = first_answer_check(first)
+        return self.answers.pop(0) if self.problems else first
+
+
+class _Search:
+    def candidates(self, catalog, _queries):
+        return list(catalog.services)
+
+
+def test_a_short_answer_with_nothing_dropped_makes_one_ai_call() -> None:
+    reason = "It directly supplies treated cooling water needed by the generation process."
+    short = {
+        "operational_context": "The plant converts primary energy into electricity for grid delivery.",
+        "upstream_services": [_item("Water Treatment Service", reason)],
+        "downstream_services": [],
+    }
+    chat = _Chat(short)
+    result = generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
+    assert len(chat.prompts) == 1 and chat.problems == []
+    assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (1, 0)
+
+
+def test_a_first_answer_with_dropped_items_is_asked_again_with_why() -> None:
+    fixed = _answer().model_dump()
+    fixed["upstream_services"] = fixed["upstream_services"][:1] + fixed["upstream_services"][2:3]
+    fixed["downstream_services"] = fixed["downstream_services"][1:]
+    fixed["downstream_services"][0]["sector"] = "Energy"
+    chat = _Chat(_answer().model_dump(), fixed)
+    result = generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
+    assert len(chat.problems) == 5
+    assert answer_problems(_request(), GeneratedAnswer.model_validate(fixed), _catalog()) == []
+    assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (2, 1)
+
+
+def test_the_prompt_sends_names_never_a_catalog_id_and_not_the_selected_service() -> None:
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    sent = chat.prompts[0]
+    assert "catalog_service_id" not in json.dumps(sent)
+    assert [candidate["service_name"] for candidate in sent["candidate_services"]] == [
+        "Water Treatment Service"
     ]
-    prompts: list[dict[str, Any]] = []
+    assert set(sent["candidate_services"][0]) == {"service_name", "description", "sectors"}
+    assert sent["sector_taxonomy"] == {"Energy": ["Power"], "Water": []}
 
+
+def test_the_prompt_names_every_input_key_and_answer_field_and_writes_no_number() -> None:
+    """The system prompt and the code cannot drift apart: each key it is sent or answers is named in it."""
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    keys = {
+        *chat.prompts[0],
+        "sectors",
+        "known_upstream",
+        "known_downstream",
+        "entity_names",
+        *GeneratedAnswer.model_fields,
+        *ProposedDependency.model_fields,
+    }
+    assert [key for key in sorted(keys) if key not in generate._SYSTEM] == []
+    assert not re.search(r"\d", generate._SYSTEM)
+    assert len(generate._SYSTEM) < 3_500
+
+
+def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
     class Chat:
         max_prompt_chars = 200_000
 
-        def ask_for_checked_json(self, _task, _system, prompt, check):
-            prompts.append(json.loads(prompt))
-            answer = answers.pop(0)
-            assert check(answer) == []
-            return answer
+        def ask_for_checked_json(self, *_args):
+            raise TruncatedAiAnswer("cut off at the length limit")
 
-    class Search:
-        def candidates(self, _catalog, _queries):
-            return []
+    class Catalog:
+        def snapshot(self) -> CatalogSnapshot:
+            return _catalog()
 
-    result = generate_result(Chat(), Search(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
-    assert [(p["upstream_count"], p["downstream_count"]) for p in prompts] == [(2, 1), (1, 0)]
-    assert "already_selected" not in prompts[0]
-    assert sorted(prompts[1]["already_selected"]) == ["Grid Balancing Service", "Water Treatment Service"]
-    assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (2, 1)
-    assert sorted(item["service_name"] for item in result["dependencies"]) == [
-        "Fuel Logistics Service",
-        "Grid Balancing Service",
-        "Water Treatment Service",
-    ]
-
-
-def test_the_prompt_reads_the_counts_and_writes_none_itself() -> None:
-    prompt = (Path(generate.__file__).parent / "prompts" / "generate.txt").read_text(encoding="utf-8")
-    assert "upstream_count" in prompt and "downstream_count" in prompt and "already_selected" in prompt
-    assert not re.search(r"\d", prompt)
+    job = ServiceMapperJob(None, None, Catalog(), _Search(), Chat())  # type: ignore[arg-type]
+    record = {"request": _request().model_dump(), "limits": {"max_upstream": 2, "max_downstream": 2}}
+    with pytest.raises(JobFailed) as failed:
+        job.generate(SimpleNamespace(record=record, record_id="mapping", epoch=1))  # type: ignore[arg-type]
+    assert failed.value.message == MapperMessage.AI_ANSWER_TOO_LONG
 
 
 def test_empty_catalog_still_keeps_defensible_ai_services() -> None:
     empty = build_catalog(CatalogRows([], [], [], [], [], []))
     answer = _answer().model_dump()
-    answer["upstream_services"] = [
-        item for item in answer["upstream_services"] if item["service_name"] != "Invented Master"
-    ]
-    for item in (*answer["upstream_services"], *answer["downstream_services"]):
-        item["catalog_service_id"] = None
     result = reconcile("mapping", 1, _request(), GeneratedAnswer.model_validate(answer), empty, 2, 2)
     assert {item["service_name"] for item in result["dependencies"]} == {
         "Water Treatment Service",
@@ -260,11 +332,7 @@ def test_shared_catalog_alias_is_not_misreported_as_an_out_of_catalog_service() 
         {
             "operational_context": "The selected service generates electricity for grid delivery.",
             "upstream_services": [
-                {
-                    "service_name": "PMS",
-                    "catalog_service_id": None,
-                    "dependency_reason": "It provides monitoring directly to the generation process.",
-                }
+                _item("PMS", "It provides monitoring directly to the generation process.")
             ],
             "downstream_services": [],
         }
@@ -375,6 +443,7 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
         assert relation["accepted_by"] == "reviewer-1" and relation["accepted_datetime"]
         assert decided.json()["downstream_services"][0]["isAccepted"] is None
         assert decided.json()["failed"] == []
+        assert "bidirectional_services" not in decided.json()  # one direction per service
         reversal = client.post(path, json={"accept": None, "reject": [water_id]}, headers=headers)
         assert reversal.status_code == 200, reversal.text
         assert [failure["reason"] for failure in reversal.json()["failed"]] == ["decision_final"]

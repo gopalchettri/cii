@@ -20,8 +20,8 @@ def reconcile(
     max_downstream: int,
 ) -> dict:
     selected_id = _selected_id(request, catalog)
-    upstream = _resolve_list(answer.upstream_services, catalog, request.service_name, selected_id)
-    downstream = _resolve_list(answer.downstream_services, catalog, request.service_name, selected_id)
+    upstream, _ = _resolve_list(answer.upstream_services, catalog, request.service_name, selected_id)
+    downstream, _ = _resolve_list(answer.downstream_services, catalog, request.service_name, selected_id)
     upstream, downstream = _one_direction(upstream, downstream)
     upstream = upstream[:max_upstream]
     downstream = downstream[:max_downstream]
@@ -44,6 +44,34 @@ def reconcile(
     }
 
 
+def answer_problems(
+    request: CreateMappingRequest, answer: GeneratedAnswer, catalog: CatalogSnapshot
+) -> list[str]:
+    """What reconcile would drop or leave without a sector, for the AI's one corrective re-ask."""
+    selected_id = _selected_id(request, catalog)
+    upstream, upstream_dropped = _resolve_list(
+        answer.upstream_services, catalog, request.service_name, selected_id
+    )
+    downstream, downstream_dropped = _resolve_list(
+        answer.downstream_services, catalog, request.service_name, selected_id
+    )
+    in_both = {item.identity for item in upstream} & {item.identity for item in downstream}
+    return [
+        *(f"upstream_services: {problem}" for problem in upstream_dropped),
+        *(f"downstream_services: {problem}" for problem in downstream_dropped),
+        *(
+            f'"{item.service_name}" is in both lists: keep it only in its strongest direction'
+            for item in upstream
+            if item.identity in in_both
+        ),
+        *(
+            f'"{item.service_name}" needs a sector from sector_taxonomy'
+            for item in (*upstream, *downstream)
+            if item.ai_suggested and item.sector is None and catalog.sector_names
+        ),
+    ]
+
+
 def _selected_id(request: CreateMappingRequest, catalog: CatalogSnapshot) -> int | None:
     sector, subsector = name_match_key(request.sector), name_match_key(request.subsector)
     matches = [
@@ -64,36 +92,32 @@ def _resolve_list(
     catalog: CatalogSnapshot,
     selected_name: str,
     selected_id: int | None,
-) -> list[ResolvedDependency]:
-    by_id = {service.service_id: service for service in catalog.services}
+) -> tuple[list[ResolvedDependency], list[str]]:
+    """The kept dependencies in the AI's order, and why each other proposal was dropped."""
     by_name: dict[str, list[CatalogService]] = defaultdict(list)
     for service in catalog.services:
         by_name[name_match_key(service.service_name)].append(service)
     kept: dict[str, ResolvedDependency] = {}
+    dropped: list[str] = []
     for rank, proposal in enumerate(proposals):
-        name_matches = by_name.get(name_match_key(proposal.service_name), [])
-        if proposal.catalog_service_id is None and len(name_matches) > 1:
-            continue  # ambiguous master name requires an explicit, verified ID
-        alias_matches = [
-            candidate
-            for candidate in catalog.services
-            if is_same_name(candidate.service_name, proposal.service_name)
-        ]
-        if proposal.catalog_service_id is None and len(alias_matches) > 1:
-            continue  # a shared short form must not become an invented out-of-catalog service
-        matched_service = _match_service(proposal, by_id, by_name, catalog.services)
-        if proposal.catalog_service_id is not None and matched_service is None:
-            continue  # a fabricated or mismatched catalog ID is never presented as a master service
-        if matched_service is not None and matched_service.service_id == selected_id:
-            continue
-        if is_same_name(proposal.service_name, selected_name) or is_same_name(
-            selected_name, proposal.service_name
+        name = f'"{proposal.service_name}"'
+        matches = _catalog_matches(proposal, by_name, catalog.services)
+        if len(matches) > 1:  # a shared name never becomes a guessed or invented service
+            dropped.append(
+                f"{name} names several catalog services: copy the sector and subsector of the one meant"
+            )
+        elif (matches and matches[0].service_id == selected_id) or (
+            is_same_name(proposal.service_name, selected_name)
+            or is_same_name(selected_name, proposal.service_name)
         ):
-            continue
-        resolved = _resolve_one(proposal, matched_service, catalog, rank)
-        if resolved is not None and resolved.identity not in kept:
+            dropped.append(f"{name} is the selected service itself")
+        elif (resolved := _resolve_one(proposal, matches[0] if matches else None, catalog, rank)) is None:
+            dropped.append(f"{name} is too vague: name the specific service in at least two words")
+        elif resolved.identity in kept:
+            dropped.append(f"{name} is listed twice")
+        else:
             kept[resolved.identity] = resolved
-    return list(kept.values())
+    return list(kept.values()), dropped
 
 
 def _one_direction(
@@ -108,22 +132,29 @@ def _one_direction(
     )
 
 
-def _match_service(
+def _catalog_matches(
     proposal: ProposedDependency,
-    by_id: dict[int, CatalogService],
     by_name: dict[str, list[CatalogService]],
     services: tuple[CatalogService, ...],
-) -> CatalogService | None:
-    if proposal.catalog_service_id is not None:
-        service = by_id.get(proposal.catalog_service_id)
-        return service if service and is_same_name(service.service_name, proposal.service_name) else None
-    matches = by_name.get(name_match_key(proposal.service_name), [])
-    if len(matches) == 1:
-        return matches[0]
-    if matches:
-        return None  # duplicate names need a verified ID
-    aliases = [service for service in services if is_same_name(service.service_name, proposal.service_name)]
-    return aliases[0] if len(aliases) == 1 else None
+) -> list[CatalogService]:
+    """The catalog services a proposal names, by exact name or else by a name form ("PGS"); several sharing it
+    are narrowed to the one in the proposal's sector and subsector."""
+    matches = by_name.get(name_match_key(proposal.service_name)) or [
+        service for service in services if is_same_name(service.service_name, proposal.service_name)
+    ]
+    if len(matches) < 2:
+        return matches
+    sector, subsector = name_match_key(proposal.sector or ""), name_match_key(proposal.subsector or "")
+    narrowed = [
+        service
+        for service in matches
+        if any(
+            name_match_key(group.sector_name) == sector
+            and name_match_key(group.subsector_name or "") == subsector
+            for group in service.sectors
+        )
+    ]
+    return narrowed if len(narrowed) == 1 else matches
 
 
 def _resolve_one(

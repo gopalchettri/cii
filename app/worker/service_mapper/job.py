@@ -1,6 +1,6 @@
 """Generate one Service Mapper round under the existing fenced MongoDB job lease."""
 
-from app.ai.chat import ChatModel, UnreadableAiAnswer
+from app.ai.chat import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.constants import ErrorCode, MapperMessage
 from app.core.exceptions import JobFailed
 from app.data_access.jobs.job_repository import JobLease
@@ -45,4 +45,6 @@ class ServiceMapperJob:
             )
         except UnreadableAiAnswer as exc:
             raise JobFailed(ErrorCode.INTERNAL_ERROR, MapperMessage.AI_ANSWER_INVALID) from exc
+        except TruncatedAiAnswer as exc:
+            raise JobFailed(ErrorCode.INTERNAL_ERROR, MapperMessage.AI_ANSWER_TOO_LONG) from exc
         self._mappings.finish_generation(lease, result)

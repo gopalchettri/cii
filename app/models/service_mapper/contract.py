@@ -125,25 +125,6 @@ class DependencyService(BaseModel):
     accepted_by: str | None = None
 
 
-class DirectionalDependency(BaseModel):
-    dependency_reason: str
-    applicability: str | None
-    isAccepted: bool | None = None
-    accepted_datetime: datetime | None = None
-    accepted_by: str | None = None
-
-
-class BidirectionalService(BaseModel):
-    dependency_id: str
-    service_id: int | None
-    service_name: str
-    sector: str | None
-    subsector: str | None
-    ai_suggested: bool
-    upstream: DirectionalDependency
-    downstream: DirectionalDependency
-
-
 class MappingSummary(BaseModel):
     unique_services: int
     upstream_count: int
@@ -158,7 +139,6 @@ class MappingView(BaseModel):
     generation: int
     upstream_services: list[DependencyService]
     downstream_services: list[DependencyService]
-    bidirectional_services: list[BidirectionalService]
     summary: MappingSummary
     error: MappingError | None = None
     retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when

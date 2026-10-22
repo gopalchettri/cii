@@ -253,6 +253,10 @@ class MappingOverall(StrEnum):
 
 class MapperMessage(StrEnum):
     AI_ANSWER_INVALID = "The AI answer did not satisfy the Service Mapper output contract."
+    AI_ANSWER_TOO_LONG = (
+        "The AI answer was too long for the model; lower SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT or "
+        "SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT."
+    )
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another mapping input."
     MAPPING_NOT_READY = "The mapping has not finished generating."
     DEPENDENCY_NOT_FOUND = "No such dependency in the current generation."

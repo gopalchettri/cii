@@ -11,7 +11,6 @@ class ProposedDependency(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     service_name: str = Field(min_length=2, max_length=255)
-    catalog_service_id: int | None = Field(default=None, gt=0)
     sector: str | None = Field(default=None, max_length=255)
     subsector: str | None = Field(default=None, max_length=255)
     dependency_reason: str = Field(min_length=20, max_length=800)

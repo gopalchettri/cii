@@ -3,9 +3,7 @@
 from app.core.constants import MappingOverall, Status
 from app.models.jobs.views import retry_notice_of
 from app.models.service_mapper.contract import (
-    BidirectionalService,
     DependencyService,
-    DirectionalDependency,
     MappingListItem,
     MappingProgress,
     MappingStatus,
@@ -39,32 +37,17 @@ def approved_relationships(record: dict) -> list[tuple[dict, str]]:
 
 def mapping_view(record: dict) -> MappingView:
     result = record.get("result") or {}
-    upstream: list[DependencyService] = []
-    downstream: list[DependencyService] = []
-    bidirectional: list[BidirectionalService] = []
+    by_direction: dict[str, list[DependencyService]] = {"upstream": [], "downstream": []}
     for dependency in result.get("dependencies", []):
-        common = _common(dependency)
-        relations = dependency["relations"]
-        if "upstream" in relations and "downstream" in relations:
-            bidirectional.append(
-                BidirectionalService(
-                    **common,
-                    upstream=DirectionalDependency.model_validate(relations["upstream"]),
-                    downstream=DirectionalDependency.model_validate(relations["downstream"]),
-                )
-            )
-        elif "upstream" in relations:
-            upstream.append(DependencyService(**common, **relations["upstream"]))
-        elif "downstream" in relations:
-            downstream.append(DependencyService(**common, **relations["downstream"]))
+        for direction, relation in dependency["relations"].items():  # one, or both in an older record
+            by_direction[direction].append(DependencyService(**_common(dependency), **relation))
     summary = result.get("summary") or _empty_summary(record.get("limits") or {})
     return MappingView(
         mapping_id=record["_id"],
         status=record["status"],
         generation=record["generation"],
-        upstream_services=upstream,
-        downstream_services=downstream,
-        bidirectional_services=bidirectional,
+        upstream_services=by_direction["upstream"],
+        downstream_services=by_direction["downstream"],
         summary=MappingSummary.model_validate(summary),
         error=record.get("job", {}).get("error") if record["status"] == Status.FAILED else None,
         retrying=retry_notice_of(record["status"], record.get("job", {}).get("retry")),

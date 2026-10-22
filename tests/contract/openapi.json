@@ -389,73 +389,6 @@
     "title": "ApiClientOut",
     "type": "object"
    },
-   "BidirectionalService": {
-    "properties": {
-     "ai_suggested": {
-      "title": "Ai Suggested",
-      "type": "boolean"
-     },
-     "dependency_id": {
-      "title": "Dependency Id",
-      "type": "string"
-     },
-     "downstream": {
-      "$ref": "#/components/schemas/DirectionalDependency"
-     },
-     "sector": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Sector"
-     },
-     "service_id": {
-      "anyOf": [
-       {
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Service Id"
-     },
-     "service_name": {
-      "title": "Service Name",
-      "type": "string"
-     },
-     "subsector": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Subsector"
-     },
-     "upstream": {
-      "$ref": "#/components/schemas/DirectionalDependency"
-     }
-    },
-    "required": [
-     "dependency_id",
-     "service_id",
-     "service_name",
-     "sector",
-     "subsector",
-     "ai_suggested",
-     "upstream",
-     "downstream"
-    ],
-    "title": "BidirectionalService",
-    "type": "object"
-   },
    "ControlAssessmentView": {
     "description": "One control the plan weighed (identified for the scenario, or the library alternative replacing one):\nits check against the risk, where it stands on the affected systems and whether the plan recommends it.",
     "properties": {
@@ -912,13 +845,6 @@
    },
    "DependencyDecisionsResult": {
     "properties": {
-     "bidirectional_services": {
-      "items": {
-       "$ref": "#/components/schemas/BidirectionalService"
-      },
-      "title": "Bidirectional Services",
-      "type": "array"
-     },
      "created_at": {
       "format": "date-time",
       "title": "Created At",
@@ -992,7 +918,6 @@
      "generation",
      "upstream_services",
      "downstream_services",
-     "bidirectional_services",
      "summary",
      "created_at",
      "updated_at"
@@ -1108,65 +1033,6 @@
      "ai_suggested"
     ],
     "title": "DependencyService",
-    "type": "object"
-   },
-   "DirectionalDependency": {
-    "properties": {
-     "accepted_by": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Accepted By"
-     },
-     "accepted_datetime": {
-      "anyOf": [
-       {
-        "format": "date-time",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Accepted Datetime"
-     },
-     "applicability": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Applicability"
-     },
-     "dependency_reason": {
-      "title": "Dependency Reason",
-      "type": "string"
-     },
-     "isAccepted": {
-      "anyOf": [
-       {
-        "type": "boolean"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Isaccepted"
-     }
-    },
-    "required": [
-     "dependency_reason",
-     "applicability"
-    ],
-    "title": "DirectionalDependency",
     "type": "object"
    },
    "EmbeddingsBuildResult": {
@@ -2433,13 +2299,6 @@
    },
    "MappingView": {
     "properties": {
-     "bidirectional_services": {
-      "items": {
-       "$ref": "#/components/schemas/BidirectionalService"
-      },
-      "title": "Bidirectional Services",
-      "type": "array"
-     },
      "created_at": {
       "format": "date-time",
       "title": "Created At",
@@ -2505,7 +2364,6 @@
      "generation",
      "upstream_services",
      "downstream_services",
-     "bidirectional_services",
      "summary",
      "created_at",
      "updated_at"

@@ -194,7 +194,7 @@ def service_mapper(api: Api, args: argparse.Namespace) -> None:
     if done.get("status") != "done":
         FAILED.append("service mapper: generation did not complete")
         return
-    lists = ("upstream_services", "downstream_services", "bidirectional_services")
+    lists = ("upstream_services", "downstream_services")
     ids = [item["dependency_id"] for name in lists for item in done.get(name, [])]
     # Every relationship in one call; with none, an unknown id comes back in `failed`.
     body = {"accept": ids or ["missing"], "reject": [""]}
