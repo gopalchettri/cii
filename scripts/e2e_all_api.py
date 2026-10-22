@@ -143,9 +143,26 @@ def promote_and_reject(api: Api, run: str, written: list[dict[str, Any]]) -> Non
     api.call("POST", "/v1/tsg/library/decisions", (200,) if ours else (200, 422), admin=True, body=body)
 
 
+def manual_plan_request(args: argparse.Namespace) -> dict[str, Any]:
+    """The published hand-written example on this run's asset: the systems it names (no real asset has them)
+    become the first --systems, in the scenario and in every existing control alike."""
+    manual = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[1]))
+    on_asset = dict(zip(manual["manual_scenario"]["supporting_system_id"], args.systems, strict=False))
+    manual["manual_scenario"] |= {
+        "asset_id": args.asset,
+        "entity_id": args.entity,
+        "supporting_system_id": list(on_asset.values()),
+    }
+    del manual["manual_scenario"]["mapped_controls"]  # the example's control code is not in every library
+    for control in manual["existing_controls"]:
+        if isinstance(control, dict) and (named := control.get("supporting_system_ids")):
+            control["supporting_system_ids"] = [on_asset[system] for system in named]
+    return manual
+
+
 def plans(api: Api, args: argparse.Namespace, run: str, scenario: str) -> None:
     """A generated plan reviewed, regenerated and cancelled; a manual one requested; both registers read."""
-    generated, manual = (json.loads(json.dumps(example)) for example in PLAN_REQUEST_EXAMPLES)
+    generated = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[0]))
     ids = {"session_id": run, "scenario_id": scenario}
     api.call("POST", "/v1/remediation", (202,), idempotent=True, body=generated | ids)
     plan_settled = lambda body: body.get("progress", {}).get("overall") != "generating"  # noqa: E731
@@ -157,11 +174,7 @@ def plans(api: Api, args: argparse.Namespace, run: str, scenario: str) -> None:
     api.call("POST", PLAN + "/cancel", (200, 409), **ids)  # 409: version 2 finished first
     api.call("GET", RUN + "/treatment-plans", session_id=run)
     api.call("GET", "/v1/entities/{listed_entity_id}/treatment-plans", listed_entity_id=args.entity)
-    systems = args.systems[:2]
-    manual["manual_scenario"] |= {"asset_id": args.asset, "entity_id": args.entity}
-    manual["manual_scenario"]["supporting_system_id"] = systems
-    del manual["manual_scenario"]["mapped_controls"]  # the example's control code is not in every library
-    api.call("POST", "/v1/remediation", (202,), idempotent=True, body=manual)
+    api.call("POST", "/v1/remediation", (202,), idempotent=True, body=manual_plan_request(args))
 
 
 def service_mapper(api: Api, args: argparse.Namespace) -> None:
