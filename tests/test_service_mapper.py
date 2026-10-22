@@ -11,20 +11,19 @@ from uuid import uuid4
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app import container
 from app.core.constants import (
     AiOutage,
     AuditAction,
     Collection,
-    MapperAction,
-    MapperConflict,
-    MapperDirection,
+    MapperDecisionFailure,
+    MappingOverall,
     Status,
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import Conflict
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
 from app.domain.service_mapper import generate
@@ -34,11 +33,7 @@ from app.domain.service_mapper.reconcile import reconcile
 from app.domain.service_mapper.views import approved_relationships, pending_relationships
 from app.models.admin.api_clients import Principal
 from app.models.service_mapper.catalog import CatalogRows, CatalogService, CatalogSnapshot
-from app.models.service_mapper.contract import (
-    CreateMappingRequest,
-    DependencyDecisionRequest,
-    MappingDecisionRequest,
-)
+from app.models.service_mapper.contract import CreateMappingRequest, DependencyDecisionRequest
 from app.models.service_mapper.generation import GeneratedAnswer
 from app.search.service_mapper import ServiceCandidateSearch
 from app.services.service_mapper.service_mapper_service import ServiceMapperService
@@ -351,6 +346,11 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
         assert replayed.json() == created.json()
         assert len(sent) == 1
         assert client.get(f"/v1/service-mapper/{mapping_id}", headers=headers).json()["status"] == "queued"
+        status_path = f"/v1/service-mapper/{mapping_id}/status"
+        status = client.get(status_path, headers=headers)
+        assert status.status_code == 200 and status.json()["progress"]["overall"] == "generating"
+        assert client.get(status_path, headers=headers | {"X-Entity-Id": "87"}).status_code == 403
+        assert client.get(f"/v1/service-mapper/{uuid4().hex}/status", headers=headers).status_code == 404
         listed = client.get("/v1/entities/86/services", headers=headers)
         assert listed.status_code == 200 and listed.json()["services"][0]["service_id"] == 2
         assert client.get("/v1/entities/87/services", headers=headers).status_code == 403
@@ -367,15 +367,22 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
             {"$set": {"status": Status.DONE, "result": result, "updated_at": datetime.now(UTC)}},
         )
         water = next(item for item in result["dependencies"] if item["service_id"] == 2)
-        path = f"/v1/service-mapper/{mapping_id}/dependencies/{water['dependency_id']}/decision"
-        decided = client.post(path, json={"direction": "upstream", "action": "accept"}, headers=headers)
+        path, water_id = f"/v1/service-mapper/{mapping_id}/dependencies/decision", water["dependency_id"]
+        decided = client.post(path, json={"accept": [water_id], "reject": [""]}, headers=headers)
         assert decided.status_code == 200, decided.text
         relation = decided.json()["upstream_services"][0]
         assert relation["isAccepted"] is True
         assert relation["accepted_by"] == "reviewer-1" and relation["accepted_datetime"]
         assert decided.json()["downstream_services"][0]["isAccepted"] is None
-        reversal = client.post(path, json={"direction": "upstream", "action": "reject"}, headers=headers)
-        assert reversal.status_code == 409
+        assert decided.json()["failed"] == []
+        reversal = client.post(path, json={"accept": None, "reject": [water_id]}, headers=headers)
+        assert reversal.status_code == 200, reversal.text
+        assert [failure["reason"] for failure in reversal.json()["failed"]] == ["decision_final"]
+        assert reversal.json()["upstream_services"][0]["isAccepted"] is True  # unchanged
+        assert client.post(path, json={"accept": [""], "reject": [""]}, headers=headers).status_code == 422
+        whole_path = f"/v1/service-mapper/{mapping_id}/decision"  # no review of the whole mapping any more
+        whole = client.post(whole_path, json={"action": "accept"}, headers=headers)
+        assert whole.status_code in (404, 405)
         regenerated = client.post(
             f"/v1/service-mapper/{mapping_id}/regenerate",
             headers=headers | {"Idempotency-Key": "regen-a"},
@@ -418,16 +425,9 @@ def _finished_mapping() -> tuple[ServiceMapperService, str, list[dict[str, str]]
 
 
 def _decide(mapper: ServiceMapperService, mapping_id: str, relation: dict[str, str], accept: bool = True):
-    body = DependencyDecisionRequest(
-        direction=MapperDirection(relation["direction"]),
-        action=MapperAction.ACCEPT if accept else MapperAction.REJECT,
-    )
-    return mapper.decide_dependency(PRINCIPAL, mapping_id, relation["dependency_id"], body)
-
-
-def _decide_mapping(mapper: ServiceMapperService, mapping_id: str, accept: bool = True):
-    action = MapperAction.ACCEPT if accept else MapperAction.REJECT
-    return mapper.decide_mapping(PRINCIPAL, mapping_id, MappingDecisionRequest(action=action))
+    ids = [relation["dependency_id"]]
+    body = DependencyDecisionRequest(accept=ids) if accept else DependencyDecisionRequest(reject=ids)
+    return mapper.decide_dependencies(PRINCIPAL, mapping_id, body)
 
 
 def _record(mapping_id: str) -> dict:
@@ -468,84 +468,104 @@ def test_a_mapping_waiting_out_an_ai_outage_says_so_and_a_failed_one_names_the_o
     assert status.error.reason == view.error.reason == AiOutage.DOWN
 
 
-def test_a_mapping_is_accepted_only_once_every_relationship_has_its_own_decision(
+def test_the_status_says_where_the_generation_is_and_counts_the_decisions(empty_test_database: None) -> None:
+    mapper, mapping_id, relations = _finished_mapping()
+
+    def shown() -> tuple[MappingOverall, tuple[int, int, int, int]]:
+        status = mapper.get_service_mapping_status(PRINCIPAL, mapping_id)
+        counts = status.progress.relationships
+        return status.progress.overall, (counts.total, counts.accepted, counts.rejected, counts.pending)
+
+    assert shown() == (MappingOverall.DONE, (3, 0, 0, 3))
+    _decide(mapper, mapping_id, relations[0])
+    _decide(mapper, mapping_id, relations[1], accept=False)
+    assert shown() == (MappingOverall.DONE, (3, 1, 1, 1))
+    status = mapper.get_service_mapping_status(PRINCIPAL, mapping_id)
+    assert (status.entity_id, status.user_id) == (86, "reviewer")
+    mappings = get_mongodb()[Collection.SERVICE_MAPPINGS]
+    mappings.update_one({"_id": mapping_id}, {"$set": {"status": Status.QUEUED, "result": None}})
+    assert shown() == (MappingOverall.GENERATING, (0, 0, 0, 0))
+    mappings.update_one({"_id": mapping_id}, {"$set": {"status": Status.FAILED}})
+    assert shown()[0] == MappingOverall.FAILED
+
+
+def test_an_accepted_relationship_is_approved_at_once_and_its_decision_is_final(
     empty_test_database: None,
 ) -> None:
     mapper, mapping_id, relations = _finished_mapping()
     assert len(relations) == 3  # water and fuel upstream, grid balancing downstream
-    with pytest.raises(Conflict) as refused:
-        _decide_mapping(mapper, mapping_id)
-    assert refused.value.reason == MapperConflict.RELATIONSHIPS_PENDING
-    assert refused.value.details == {"pending": relations}
-    for relation in relations[:-1]:
-        _decide(mapper, mapping_id, relation)
-    with pytest.raises(Conflict) as still:
-        _decide_mapping(mapper, mapping_id)
-    assert still.value.details == {"pending": relations[-1:]}
-    _decide(mapper, mapping_id, relations[-1], accept=False)
-    assert _decide_mapping(mapper, mapping_id).review == "accepted"
-    audit = get_mongodb()[Collection.AUDIT].find_one(
-        {"target.id": mapping_id, "action": AuditAction.MAPPING_REVIEWED}
-    )
-    assert audit["details"]["relationships_accepted"] == len(relations) - 1
-    assert audit["details"]["relationships_rejected"] == 1
-    record = _record(mapping_id)
-    assert len(approved_relationships(record)) == len(relations) - 1  # the rejected one never counts
-    assert _decide(mapper, mapping_id, relations[0]).review == "accepted"  # the same decision: no change
-    with pytest.raises(Conflict) as frozen:
-        _decide(mapper, mapping_id, relations[0], accept=False)
-    assert frozen.value.reason == MapperConflict.DECISION_FINAL
-
-
-def test_a_rejected_mapping_approves_no_relationship_and_freezes_the_rest(empty_test_database: None) -> None:
-    mapper, mapping_id, relations = _finished_mapping()
+    assert approved_relationships(_record(mapping_id)) == []  # nothing decided yet
     _decide(mapper, mapping_id, relations[0])
-    assert _decide_mapping(mapper, mapping_id, accept=False).review == "rejected"  # pending ones may stay
-    with pytest.raises(Conflict) as frozen:
-        _decide(mapper, mapping_id, relations[1])
-    assert frozen.value.reason == MapperConflict.DECISION_FINAL
-    assert approved_relationships(_record(mapping_id)) == []  # even the relationship accepted earlier
+    _decide(mapper, mapping_id, relations[1], accept=False)
+    approved = approved_relationships(_record(mapping_id))
+    assert [(dependency["dependency_id"], direction) for dependency, direction in approved] == [
+        (relations[0]["dependency_id"], relations[0]["direction"])
+    ]  # the rejected one never counts, the pending one not yet
+    assert pending_relationships(_record(mapping_id)["result"]) == relations[2:]
+    assert _decide(mapper, mapping_id, relations[2]).failed == []  # still decidable: nothing freezes them
+    assert len(approved_relationships(_record(mapping_id))) == 2
+    assert _decide(mapper, mapping_id, relations[0]).failed == []  # the same decision: no change
+    reversal = _decide(mapper, mapping_id, relations[0], accept=False)
+    assert [failure.reason for failure in reversal.failed] == [MapperDecisionFailure.DECISION_FINAL]
 
 
-def test_the_accept_update_itself_refuses_a_pending_relationship(empty_test_database: None) -> None:
-    mapper, mapping_id, relations = _finished_mapping()
-    for relation in relations:
-        _decide(mapper, mapping_id, relation)
-    record = _record(mapping_id)
-    path = f"result.dependencies.$[d].relations.{relations[0]['direction']}.isAccepted"
-    get_mongodb()[Collection.SERVICE_MAPPINGS].update_one(  # undone behind the counter's back
-        {"_id": mapping_id},
-        {"$set": {path: None}},
-        array_filters=[{"d.dependency_id": relations[0]["dependency_id"]}],
-    )
-    accepted = MappingRepository().decide_mapping(
-        mapping_id, record["generation"], record["decision_seq"], True, "reviewer", datetime.now(UTC)
-    )
-    assert accepted is False and _record(mapping_id)["review"] == "pending"
-
-
-def test_accepting_while_the_last_relationship_is_decided_never_accepts_a_pending_one(
-    empty_test_database: None,
+@pytest.mark.parametrize(
+    ("body", "accept", "reject"),
+    [
+        ({"accept": ["a", "b"], "reject": [""]}, ["a", "b"], []),
+        ({"accept": [""], "reject": ["c"]}, [], ["c"]),
+        ({"accept": None, "reject": [" c ", "c"]}, [], ["c"]),
+        ({"reject": ["c"]}, [], ["c"]),
+    ],
+)
+def test_a_decision_request_drops_nulls_blanks_and_repeats(
+    body: dict[str, Any], accept: list[str], reject: list[str]
 ) -> None:
-    for _round in range(5):
-        mapper, mapping_id, relations = _finished_mapping()
-        for relation in relations[:-1]:
-            _decide(mapper, mapping_id, relation)
+    request = DependencyDecisionRequest.model_validate(body)
+    assert (request.accept, request.reject) == (accept, reject)
 
-        def accept_mapping(mapper: ServiceMapperService = mapper, mapping_id: str = mapping_id) -> str:
-            try:
-                return _decide_mapping(mapper, mapping_id).review
-            except Conflict as refused:
-                return str(refused.reason)
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            last = pool.submit(_decide, mapper, mapping_id, relations[-1])
-            outcome = pool.submit(accept_mapping).result()
-            last.result()
-        record = _record(mapping_id)
-        assert pending_relationships(record["result"]) == []
-        assert outcome in {"accepted", MapperConflict.RELATIONSHIPS_PENDING}
-        assert record["review"] == ("accepted" if outcome == "accepted" else "pending")
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"accept": None, "reject": None},
+        {"accept": [""], "reject": ["  "]},
+        {"accept": ["a"], "reject": ["a"]},  # both accepted and rejected
+        {"accept": ["a"], "colour": "blue"},
+        {"accept": [f"id-{n}" for n in range(201)]},
+        {"accept": ["x" * 65]},
+    ],
+)
+def test_a_decision_request_with_nothing_to_decide_or_a_contradiction_is_refused(
+    body: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError):
+        DependencyDecisionRequest.model_validate(body)
+
+
+def test_one_call_saves_every_valid_decision_together_and_names_the_rest(empty_test_database: None) -> None:
+    mapper, mapping_id, relations = _finished_mapping()
+    water, fuel, grid = (relation["dependency_id"] for relation in relations)
+    _decide(mapper, mapping_id, relations[2])  # grid balancing accepted earlier: rejecting it now is refused
+    seq = _record(mapping_id)["decision_seq"]
+    body = DependencyDecisionRequest(accept=[water, "missing"], reject=[fuel, grid])
+    result = mapper.decide_dependencies(PRINCIPAL, mapping_id, body)
+    assert [(failure.dependency_id, failure.reason) for failure in result.failed] == [
+        ("missing", MapperDecisionFailure.DEPENDENCY_NOT_FOUND),
+        (grid, MapperDecisionFailure.DECISION_FINAL),
+    ]
+    record = _record(mapping_id)
+    assert record["decision_seq"] == seq + 1  # water and fuel saved in one update
+    decided = {
+        item["dependency_id"]: [relation["isAccepted"] for relation in item["relations"].values()]
+        for item in record["result"]["dependencies"]
+    }
+    assert decided == {water: [True], fuel: [False], grid: [True]}
+    reviewed = {"target.id": mapping_id, "action": AuditAction.DEPENDENCY_REVIEWED}
+    audits = list(get_mongodb()[Collection.AUDIT].find(reviewed).sort("at", 1))
+    assert len(audits) == 2  # one per call: the earlier grid decision, then this one
+    assert (audits[-1]["details"]["accepted"], audits[-1]["details"]["rejected"]) == ([water], [fuel])
 
 
 def test_two_reviewers_deciding_different_relationships_at_once_both_land(empty_test_database: None) -> None:
@@ -561,16 +581,15 @@ def test_regeneration_archives_the_decisions_and_starts_every_relationship_pendi
     mapper, mapping_id, relations = _finished_mapping()
     for relation in relations:
         _decide(mapper, mapping_id, relation)
-    _decide_mapping(mapper, mapping_id)
     started, _ = mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid4().hex)
     assert started.generation == 2
     archived = get_mongodb()[Collection.SERVICE_MAPPING_HISTORY].find_one({"_id": f"{mapping_id}:1"})
-    assert archived["review"] == "accepted" and pending_relationships(archived["result"]) == []
+    assert pending_relationships(archived["result"]) == [] and "review" not in archived
     result = reconcile(mapping_id, 2, _request(), _answer(), _catalog(), 20, 20)  # what the worker saves
     get_mongodb()[Collection.SERVICE_MAPPINGS].update_one(
         {"_id": mapping_id}, {"$set": {"status": Status.DONE, "result": result}}
     )
     fresh = _record(mapping_id)
-    assert fresh["review"] == "pending" and len(pending_relationships(fresh["result"])) == len(relations)
+    assert len(pending_relationships(fresh["result"])) == len(relations)
     assert not {r["dependency_id"] for r in relations} & {d["dependency_id"] for d in result["dependencies"]}
     assert approved_relationships(fresh) == []

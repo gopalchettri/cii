@@ -175,26 +175,20 @@ def service_mapper(api: Api, args: argparse.Namespace) -> None:
     }
     mapping = api.call("POST", "/v1/service-mapper", (202,), idempotent=True, body=body)["mapping_id"]
     api.call("GET", "/v1/service-mapper")
+    api.call("GET", MAPPING + "/status", mapping_id=mapping)
     api.first_event(MAPPING + "/events", mapping_id=mapping)
     done = wait(api, MAPPING, job_settled, 20, mapping_id=mapping) or {}
     if done.get("status") != "done":
         FAILED.append("service mapper: generation did not complete")
         return
-    directions = (("upstream_services", ("upstream",)), ("downstream_services", ("downstream",)))
-    directions += (("bidirectional_services", ("upstream", "downstream")),)
-    relationships = [(i["dependency_id"], d) for f, ds in directions for i in done.get(f, []) for d in ds]
-    if relationships:  # the mapping is accepted only once every relationship has its own decision
-        api.call("POST", MAPPING + "/decision", (409,), body={"action": "accept"}, mapping_id=mapping)
-    for dependency_id, direction in relationships or [("missing", "upstream")]:
-        api.call(
-            "POST",
-            MAPPING + "/dependencies/{dependency_id}/decision",
-            (200,) if relationships else (404,),
-            body={"direction": direction, "action": "accept"},
-            mapping_id=mapping,
-            dependency_id=dependency_id,
-        )
-    api.call("POST", MAPPING + "/decision", body={"action": "accept"}, mapping_id=mapping)
+    lists = ("upstream_services", "downstream_services", "bidirectional_services")
+    ids = [item["dependency_id"] for name in lists for item in done.get(name, [])]
+    # Every relationship in one call; with none, an unknown id comes back in `failed`.
+    body = {"accept": ids or ["missing"], "reject": [""]}
+    decided = api.call("POST", MAPPING + "/dependencies/decision", body=body, mapping_id=mapping) or {}
+    reasons = [failure["reason"] for failure in decided.get("failed", [])]
+    if reasons != ([] if ids else ["dependency_not_found"]):
+        FAILED.append(f"service mapper: relationship decisions not saved: {reasons}")
     api.call("POST", MAPPING + "/regenerate", (202,), idempotent=True, mapping_id=mapping)
     wait(api, MAPPING, job_settled, 20, mapping_id=mapping)
 

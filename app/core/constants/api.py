@@ -174,7 +174,6 @@ class AuditAction(StrEnum):
     RUN_STARTED = "run.started"
     MAPPING_STARTED = "mapping.started"
     MAPPING_REGENERATED = "mapping.regenerated"
-    MAPPING_REVIEWED = "mapping.reviewed"
     DEPENDENCY_REVIEWED = "mapping.dependency_reviewed"
     RUN_NEXT_SET = "run.next_set"
     RUN_REGENERATED = "run.regenerated"
@@ -230,24 +229,26 @@ class ApiClientMessage(StrEnum):
     NOT_FOUND = "API client '{client_id}' does not exist."
 
 
-class MapperDirection(StrEnum):
-    """From the selected service: upstream = it needs this service, downstream = this one relies on it."""
-
-    UPSTREAM = "upstream"
-    DOWNSTREAM = "downstream"
-
-
-class MapperAction(StrEnum):
-    ACCEPT = "accept"
-    REJECT = "reject"
-
-
 class MapperConflict(StrEnum):
     """The `reason` of a service mapper 409."""
 
     GENERATION_IN_PROGRESS = "generation_in_progress"
+
+
+class MapperDecisionFailure(StrEnum):
+    """Why one id of a relationship decision was not saved (the others still are)."""
+
+    DEPENDENCY_NOT_FOUND = "dependency_not_found"
     DECISION_FINAL = "decision_final"
-    RELATIONSHIPS_PENDING = "relationships_pending"  # accept needs a decision on every relationship
+
+
+class MappingOverall(StrEnum):
+    """Where a mapping's generation is (progress.overall)."""
+
+    FAILED = "failed"  # the generation failed: `error` says why
+    CANCELLED = "cancelled"
+    GENERATING = "generating"  # queued or running: wait
+    DONE = "done"  # its relationships can be decided (progress.relationships counts them)
 
 
 class MapperMessage(StrEnum):
@@ -255,7 +256,9 @@ class MapperMessage(StrEnum):
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another mapping input."
     MAPPING_NOT_READY = "The mapping has not finished generating."
     DEPENDENCY_NOT_FOUND = "No such dependency in the current generation."
-    DIRECTION_NOT_PRESENT = "This dependency has no relationship in the requested direction."
+    NOTHING_TO_DECIDE = "Name at least one dependency_id in accept or reject."
+    ACCEPTED_AND_REJECTED = "A dependency_id cannot be both accepted and rejected: {ids}."
+    TOO_MANY_DECISIONS = "At most {limit} dependency ids per request."
     REQUIRED_VALUE_BLANK = "A required value cannot be blank."
     ENTITY_NAME_INVALID = "Each entity name must contain 1 to 255 characters."
     ENTITY_NAMES_REPEATED = "Entity names must be unique."
@@ -265,9 +268,8 @@ class MapperMessage(StrEnum):
     MAPPING_NOT_FOUND = "No such mapping."
     ROUND_RUNNING = "A round is already running for this mapping."
     DECISION_FINAL = "This recommendation was already decided differently; decisions are final."
-    RELATIONSHIPS_PENDING = "Decide every upstream and downstream relationship before accepting the mapping."
-    MAPPING_DECIDED = "The mapping is already decided; its relationships cannot change."
 
 
 class MapperLimits:
     CANDIDATE_POOL: Final = 80
+    MAX_DECISIONS: Final = 200  # ids per relationship decision: both directions at their largest count (100)

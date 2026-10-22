@@ -1,4 +1,4 @@
-"""Authenticated Service Mapper creation, polling, listing, regeneration and review APIs."""
+"""Authenticated Service Mapper creation, polling, listing, regeneration and relationship decision APIs."""
 
 from collections.abc import AsyncIterator
 from functools import partial
@@ -15,12 +15,12 @@ from app.core.constants import ApiTag, Event, Header, Limits, Review
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
     DependencyDecisionRequest,
+    DependencyDecisionsResult,
     EntityServices,
     MappingAccepted,
-    MappingDecisionRequest,
     MappingList,
+    MappingStatus,
     MappingView,
-    StatusEvent,
 )
 from app.realtime.publisher import mapping_channel
 from app.services.admin.admin_service import AdminService
@@ -31,7 +31,6 @@ router = APIRouter(tags=[ApiTag.SERVICE_MAPPER])
 Mapper = Annotated[ServiceMapperService, Depends(get_service_mapper_service)]
 Clients = Annotated[AdminService, Depends(get_admin_service)]
 MappingId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
-DependencyId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
 IdempotencyKey = Annotated[
     str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
 ]
@@ -67,12 +66,19 @@ def get_mapping(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> Map
     return mapper.get_service_mapping(principal, mapping_id)
 
 
+@router.get("/v1/service-mapper/{mapping_id}/status", response_model=MappingStatus)
+def get_mapping_status(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> MappingStatus:
+    """Poll until `progress.overall` is no longer `generating`: `done` (decide the relationships;
+    `progress.relationships` counts them), `failed` (`error` says why) or `cancelled`."""
+    return mapper.get_service_mapping_status(principal, mapping_id)
+
+
 @router.get("/v1/entities/{listed_entity_id}/services", response_model=EntityServices)
 def list_entity_services(listed_entity_id: int, principal: Caller, mapper: Mapper) -> EntityServices:
     return mapper.list_entity_services(principal, listed_entity_id)
 
 
-def mapping_events(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> StatusEvent:
+def mapping_events(mapping_id: MappingId, principal: Caller, mapper: Mapper) -> MappingStatus:
     """Check ownership before opening the stream, so errors remain ordinary HTTP responses."""
     return mapper.get_service_mapping_status(principal, mapping_id)
 
@@ -84,7 +90,7 @@ async def stream_mapping_events(
     principal: Caller,
     mapper: Mapper,
     clients: Clients,
-    _validated: Annotated[StatusEvent, Depends(mapping_events)],
+    _validated: Annotated[MappingStatus, Depends(mapping_events)],
 ) -> AsyncIterator[ServerSentEvent]:
     reads = partial(mapper.get_service_mapping_live_status, principal, mapping_id)
     allowed = partial(api_key_still_active, clients, request)
@@ -112,25 +118,16 @@ def regenerate_mapping(
     return accepted
 
 
-@router.post("/v1/service-mapper/{mapping_id}/decision", response_model=MappingView)
-def decide_mapping(
-    mapping_id: MappingId,
-    body: MappingDecisionRequest,
-    principal: Caller,
-    mapper: Mapper,
-) -> MappingView:
-    return mapper.decide_mapping(principal, mapping_id, body)
-
-
 @router.post(
-    "/v1/service-mapper/{mapping_id}/dependencies/{dependency_id}/decision",
-    response_model=MappingView,
+    "/v1/service-mapper/{mapping_id}/dependencies/decision",
+    response_model=DependencyDecisionsResult,
 )
-def decide_dependency(
+def decide_dependencies(
     mapping_id: MappingId,
-    dependency_id: DependencyId,
     body: DependencyDecisionRequest,
     principal: Caller,
     mapper: Mapper,
-) -> MappingView:
-    return mapper.decide_dependency(principal, mapping_id, dependency_id, body)
+) -> DependencyDecisionsResult:
+    """Send `{"accept": [dependency_id, ...], "reject": [...]}`; either list may be null or empty. The valid
+    ids are saved together; `failed` lists each id that was not, and why."""
+    return mapper.decide_dependencies(principal, mapping_id, body)

@@ -1,14 +1,17 @@
 """Turn one persisted generation into the minimal public JSON shape."""
 
-from app.core.constants import Status
+from app.core.constants import MappingOverall, Status
 from app.models.jobs.views import retry_notice_of
 from app.models.service_mapper.contract import (
     BidirectionalService,
     DependencyService,
     DirectionalDependency,
     MappingListItem,
+    MappingProgress,
+    MappingStatus,
     MappingSummary,
     MappingView,
+    RelationshipCounts,
     SelectedService,
 )
 
@@ -24,10 +27,8 @@ def pending_relationships(result: dict) -> list[dict[str, str]]:
 
 
 def approved_relationships(record: dict) -> list[tuple[dict, str]]:
-    """The (dependency, direction) pairs an approved dependency graph may use: none unless the mapping is
-    accepted, then only the relationships a reviewer accepted. Every graph consumer reads through this."""
-    if record.get("review") != "accepted":
-        return []
+    """The (dependency, direction) pairs an approved dependency graph may use: the current generation's
+    relationships a reviewer accepted. Every graph consumer reads through this."""
     return [
         (dependency, direction)
         for dependency in (record.get("result") or {}).get("dependencies", [])
@@ -61,7 +62,6 @@ def mapping_view(record: dict) -> MappingView:
         mapping_id=record["_id"],
         status=record["status"],
         generation=record["generation"],
-        review=record["review"],
         upstream_services=upstream,
         downstream_services=downstream,
         bidirectional_services=bidirectional,
@@ -71,6 +71,38 @@ def mapping_view(record: dict) -> MappingView:
         created_at=record["created_at"],
         updated_at=record["updated_at"],
     )
+
+
+def mapping_status(record: dict) -> MappingStatus:
+    """The mapping's status: where its generation is, and how many relationships are decided."""
+    flags = [
+        relation["isAccepted"]
+        for dependency in (record.get("result") or {}).get("dependencies", [])
+        for relation in dependency["relations"].values()
+    ]
+    status, job = record["status"], record.get("job", {})
+    counts = RelationshipCounts(
+        total=len(flags), accepted=flags.count(True), rejected=flags.count(False), pending=flags.count(None)
+    )
+    return MappingStatus(
+        mapping_id=record["_id"],
+        entity_id=record["entity_id"],
+        user_id=record.get("created_by"),
+        status=status,
+        generation=record["generation"],
+        progress=MappingProgress(overall=_overall(status), relationships=counts),
+        retrying=retry_notice_of(status, job.get("retry")),
+        error=job.get("error") if status == Status.FAILED else None,
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+    )
+
+
+def _overall(status: str) -> MappingOverall:
+    """Queued and running read as generating; done, failed and cancelled as themselves."""
+    if status in (Status.QUEUED, Status.RUNNING):
+        return MappingOverall.GENERATING
+    return MappingOverall(status)
 
 
 def _empty_summary(limits: dict) -> dict:
@@ -89,7 +121,6 @@ def mapping_list_item(record: dict) -> MappingListItem:
         mapping_id=record["_id"],
         status=record["status"],
         generation=record["generation"],
-        review=record["review"],
         selected_service=_selected(record),
         created_at=record["created_at"],
         updated_at=record["updated_at"],

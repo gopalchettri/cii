@@ -28,7 +28,12 @@ from app.core.database import get_mongodb, get_redis_client
 from app.main import create_app
 from app.realtime import event_hub
 from app.realtime.event_hub import RESYNC, EventHub, _offer
-from app.realtime.publisher import publish_remediation_status, publish_session_status, session_channel
+from app.realtime.publisher import (
+    publish_mapping_status,
+    publish_remediation_status,
+    publish_session_status,
+    session_channel,
+)
 from tests.plan_addresses import plan_url
 
 
@@ -184,6 +189,52 @@ def test_a_plan_stream_gets_its_status_at_once_and_each_published_change(
             assert (name, status["latest_status"]) == (Event.REMEDIATION_UPDATED, changed)
     unknown = f"/v1/sessions/run/scenarios/{uuid.uuid4().hex}/treatment-plan/events"
     for refused, expected in ((plan_url(_insert_plan(99), "events"), 403), (unknown, 404)):
+        answer = httpx.get(f"{server_url}{refused}", headers=identity, timeout=10)
+        assert answer.status_code == expected
+
+
+def _insert_mapping(entity_id: int) -> str:
+    mapping_id, now = uuid.uuid4().hex, datetime.now(UTC)
+    get_mongodb()[Collection.SERVICE_MAPPINGS].insert_one(
+        {"_id": mapping_id, "tenant_id": "DESC", "entity_id": entity_id, "created_by": "u1",
+         "status": Status.QUEUED, "generation": 1, "job": {"epoch": 1, "error": None}, "result": None,
+         "created_at": now, "updated_at": now}
+    )  # fmt: skip
+    return mapping_id
+
+
+def test_a_mapping_stream_gets_its_status_at_once_and_each_published_change(
+    server_url: str, identity: dict[str, str]
+) -> None:
+    """The body of GET /v1/service-mapper/{id}/status, on the mapping's own channel, as for runs and plans."""
+    mapping_id = _insert_mapping(86)
+    url = f"{server_url}/v1/service-mapper/{mapping_id}/events"
+    one_pending = {"dependencies": [{"relations": {"upstream": {"isAccepted": None}}}]}
+    with httpx.Client(timeout=15) as client, client.stream("GET", url, headers=identity) as response:
+        assert response.status_code == 200
+        events = _events(response)
+        name, status = next(events)
+        assert (name, status["mapping_id"], status["progress"]["overall"]) == (
+            Event.MAPPING_UPDATED,
+            mapping_id,
+            "generating",
+        )
+        for changes, overall, total in (
+            ({"status": Status.RUNNING}, "generating", 0),
+            ({"status": Status.DONE, "result": one_pending}, "done", 1),
+        ):
+            get_mongodb()[Collection.SERVICE_MAPPINGS].update_one({"_id": mapping_id}, {"$set": changes})
+            name, status = _next_after_publishing(events, partial(publish_mapping_status, mapping_id))
+            assert (name, status["status"], status["progress"]["overall"]) == (
+                Event.MAPPING_UPDATED,
+                changes["status"],
+                overall,
+            )
+            counts = status["progress"]["relationships"]
+            assert counts["total"] == counts["pending"] == total
+        assert "review" not in status
+    unknown = f"/v1/service-mapper/{uuid.uuid4().hex}/events"
+    for refused, expected in ((f"/v1/service-mapper/{_insert_mapping(99)}/events", 403), (unknown, 404)):
         answer = httpx.get(f"{server_url}{refused}", headers=identity, timeout=10)
         assert answer.status_code == expected
 

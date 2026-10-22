@@ -1,18 +1,20 @@
 """Public Service Mapper request and response contract."""
 
 from datetime import datetime
-from enum import StrEnum
+from typing import Annotated, Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.constants import AiOutage, MapperAction, MapperDirection, MapperMessage, Status
+from app.core.constants import (
+    AiOutage,
+    MapperDecisionFailure,
+    MapperLimits,
+    MapperMessage,
+    MappingOverall,
+    Review,
+    Status,
+)
 from app.models.jobs.views import RetryNotice
-
-
-class MappingReview(StrEnum):
-    PENDING = "pending"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
 
 
 class CreateMappingRequest(BaseModel):
@@ -80,12 +82,33 @@ class MappingError(BaseModel):
     reason: AiOutage | None = None
 
 
-class StatusEvent(BaseModel):
+class RelationshipCounts(BaseModel):
+    """The current generation's relationships, one per direction: 0 while it is generating."""
+
+    total: int
+    accepted: int
+    rejected: int
+    pending: int
+
+
+class MappingProgress(BaseModel):
+    overall: MappingOverall
+    relationships: RelationshipCounts
+
+
+class MappingStatus(BaseModel):
+    """GET .../status, and every mapping.updated event (one model, so they can never differ)."""
+
     mapping_id: str
+    entity_id: int
+    user_id: str | None
     status: Status
     generation: int
+    progress: MappingProgress
     retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
     error: MappingError | None = None  # once failed
+    created_at: datetime
+    updated_at: datetime
 
 
 class DependencyService(BaseModel):
@@ -133,7 +156,6 @@ class MappingView(BaseModel):
     mapping_id: str
     status: Status
     generation: int
-    review: MappingReview
     upstream_services: list[DependencyService]
     downstream_services: list[DependencyService]
     bidirectional_services: list[BidirectionalService]
@@ -148,7 +170,6 @@ class MappingListItem(BaseModel):
     mapping_id: str
     status: Status
     generation: int
-    review: MappingReview
     selected_service: SelectedService
     created_at: datetime
     updated_at: datetime
@@ -159,12 +180,43 @@ class MappingList(BaseModel):
     total: int
 
 
-class MappingDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    action: MapperAction
+_DependencyId = Annotated[str, Field(max_length=Review.MAX_ID_CHARS)]
 
 
 class DependencyDecisionRequest(BaseModel):
+    """The relationships to decide, by dependency_id; either list may be null, empty or hold only blanks."""
+
     model_config = ConfigDict(extra="forbid")
-    direction: MapperDirection
-    action: MapperAction
+    accept: list[_DependencyId] = Field(default_factory=list, max_length=MapperLimits.MAX_DECISIONS)
+    reject: list[_DependencyId] = Field(default_factory=list, max_length=MapperLimits.MAX_DECISIONS)
+
+    @field_validator("accept", "reject", mode="before")
+    @classmethod
+    def null_is_empty(cls, values: Any) -> Any:
+        return [] if values is None else values
+
+    @field_validator("accept", "reject")
+    @classmethod
+    def drop_blanks_and_repeats(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @model_validator(mode="after")
+    def check_the_ids(self) -> "DependencyDecisionRequest":
+        """At least one id, none in both lists, at most MapperLimits.MAX_DECISIONS in all."""
+        if not self.accept and not self.reject:
+            raise ValueError(MapperMessage.NOTHING_TO_DECIDE)
+        if both := sorted(set(self.accept) & set(self.reject)):
+            raise ValueError(MapperMessage.ACCEPTED_AND_REJECTED.format(ids=", ".join(both)))
+        if len(self.accept) + len(self.reject) > MapperLimits.MAX_DECISIONS:
+            raise ValueError(MapperMessage.TOO_MANY_DECISIONS.format(limit=MapperLimits.MAX_DECISIONS))
+        return self
+
+
+class DecisionFailure(BaseModel):
+    dependency_id: str
+    reason: MapperDecisionFailure
+    message: str
+
+
+class DependencyDecisionsResult(MappingView):
+    failed: list[DecisionFailure] = []  # the ids not saved, and why; every other id was

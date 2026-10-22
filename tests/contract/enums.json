@@ -92,7 +92,6 @@
   "LIBRARY_PROMOTED": "library.promoted",
   "LIBRARY_PROPOSED": "library.proposed",
   "MAPPING_REGENERATED": "mapping.regenerated",
-  "MAPPING_REVIEWED": "mapping.reviewed",
   "MAPPING_STARTED": "mapping.started",
   "PLAN_ACCEPTED": "plan.accepted",
   "PLAN_CANCELLED": "plan.cancelled",
@@ -416,18 +415,18 @@
   "CURATOR_REJECTED": "curator_rejected",
   "PENDING": "pending"
  },
- "MapperAction": {
-  "ACCEPT": "accept",
-  "REJECT": "reject"
- },
  "MapperConflict": {
-  "DECISION_FINAL": "decision_final",
-  "GENERATION_IN_PROGRESS": "generation_in_progress",
-  "RELATIONSHIPS_PENDING": "relationships_pending"
+  "GENERATION_IN_PROGRESS": "generation_in_progress"
  },
- "MapperDirection": {
-  "DOWNSTREAM": "downstream",
-  "UPSTREAM": "upstream"
+ "MapperDecisionFailure": {
+  "DECISION_FINAL": "decision_final",
+  "DEPENDENCY_NOT_FOUND": "dependency_not_found"
+ },
+ "MappingOverall": {
+  "CANCELLED": "cancelled",
+  "DONE": "done",
+  "FAILED": "failed",
+  "GENERATING": "generating"
  },
  "PathProblem": {
   "ATTACKER_RETIRED": "its acting attacker is no longer active in the library",

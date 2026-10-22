@@ -465,8 +465,8 @@
     <!-- ---------- service mapper ---------- -->
     <section class="pane" id="pane-mapper">
       <div class="callout info">Describe a service: TSG suggests the services it depends on (<b>upstream</b>) and the services that
-        depend on it (<b>downstream</b>), from the onboarding catalog and the AI (<code>POST /v1/service-mapper</code>). Review each
-        relationship, then accept the mapping: it can be accepted only once every relationship has a decision.</div>
+        depend on it (<b>downstream</b>), from the onboarding catalog and the AI (<code>POST /v1/service-mapper</code>). Accept or
+        reject each relationship: an accepted one counts as approved, and a decision is final.</div>
       <div class="section-title">Describe the service</div>
       <div class="grid">
         <div class="field"><label for="smName">Service name</label><input id="smName" type="text"></div>
@@ -2046,9 +2046,10 @@ $(function () {
     return v === true ? '<span class="badge green">accepted</span>'
       : v === false ? '<span class="badge red">rejected</span>' : '<span class="badge amber">pending</span>';
   }
-  function smButtons(depId, direction, open) {
+  // One id decides its dependency in every direction it has (POST .../dependencies/decision).
+  function smButtons(depId, open) {
     if (!open) return "";
-    var a = ' data-dep="' + attr(depId) + '" data-dir="' + direction + '"';
+    var a = ' data-dep="' + attr(depId) + '"';
     return ' <span class="actions" style="display:inline-flex;gap:5px"><button class="btn sm success"' + a + ' data-act="accept">Accept</button>' +
       '<button class="btn sm danger"' + a + ' data-act="reject">Reject</button></span>';
   }
@@ -2057,20 +2058,22 @@ $(function () {
     return "<b>" + esc(d.service_name) + "</b>" + (d.ai_suggested ? ' <span class="badge cyan">AI</span>' : "") +
       '<div class="faint">' + esc([d.sector, d.subsector].filter(Boolean).join(" / ")) + "</div>";
   }
-  function smOneWay(title, items, direction, open) {
+  function smOneWay(title, items, open) {
     if (!items.length) return "";
     return '<div class="section-title">' + esc(title) + " (" + items.length + ')</div><table class="tbl">' +
       "<tr><th>Service</th><th>Why</th><th>Decision</th></tr>" + items.map(function (d) {
         return "<tr><td>" + smService(d) + "</td><td>" + smWhy(d) + "</td><td>" + smDecision(d.isAccepted) +
-          smButtons(d.dependency_id, direction, open) + "</td></tr>";
+          smButtons(d.dependency_id, open) + "</td></tr>";
       }).join("") + "</table>";
   }
   function smBoth(items, open) {
     if (!items.length) return "";
-    var side = function (d, dir) { return smWhy(d[dir]) + "<div>" + smDecision(d[dir].isAccepted) + smButtons(d.dependency_id, dir, open) + "</div>"; };
+    var side = function (d, dir) { return smWhy(d[dir]) + "<div>" + smDecision(d[dir].isAccepted) + "</div>"; };
     return '<div class="section-title">Both directions (' + items.length + ')</div><table class="tbl">' +
       "<tr><th>Service</th><th>Upstream: our service needs it</th><th>Downstream: it relies on our service</th></tr>" +
-      items.map(function (d) { return "<tr><td>" + smService(d) + "</td><td>" + side(d, "upstream") + "</td><td>" + side(d, "downstream") + "</td></tr>"; }).join("") +
+      items.map(function (d) {
+        return "<tr><td>" + smService(d) + smButtons(d.dependency_id, open) + "</td><td>" + side(d, "upstream") + "</td><td>" + side(d, "downstream") + "</td></tr>";
+      }).join("") +
       "</table>";
   }
   function smPending(m) {
@@ -2080,26 +2083,24 @@ $(function () {
   }
   function smRender(m) {
     var sum = m.summary || {}, running = m.status === "queued" || m.status === "running";
-    var open = !running && m.review === "pending", pending = smPending(m);
+    var open = m.status === "done", pending = smPending(m);
     var dd = function (k, v) { return "<dt>" + esc(k) + "</dt><dd>" + v + "</dd>"; };
-    var reviewCls = { accepted: "green", rejected: "red" }[m.review] || "amber";
     var statusCls = { done: "green", failed: "red", cancelled: "red" }[m.status] || "blue";
     var html = '<div class="section-title">Mapping</div><dl class="kv">' +
       dd("Mapping id", '<span class="mono">' + esc(m.mapping_id) + "</span>") +
-      dd("Status", '<span class="badge ' + statusCls + '">' + esc(m.status) + (running ? ' <span class="spin"></span>' : "") + "</span> generation " + esc(m.generation)) +
-      dd("Review", '<span class="badge ' + reviewCls + '">' + esc(m.review) + "</span>" + (open && pending ? ' <span class="muted">' + pending + " relationship(s) still need a decision</span>" : "")) +
+      dd("Status", '<span class="badge ' + statusCls + '">' + esc(m.status) + (running ? ' <span class="spin"></span>' : "") + "</span> generation " + esc(m.generation) +
+         (open && pending ? ' <span class="muted">' + pending + " relationship(s) still need a decision</span>" : "")) +
       dd("Summary", esc(sum.unique_services || 0) + " services · " + esc(sum.upstream_count || 0) + " of " + esc(sum.max_upstream) +
          " upstream · " + esc(sum.downstream_count || 0) + " of " + esc(sum.max_downstream) + " downstream") +
       dd("Updated", esc(fmtTime(m.updated_at))) + "</dl>";
     if (m.error) html += '<div class="callout err"><b>' + esc(m.error.reason || m.error.code) + "</b> " + esc(m.error.message) + "</div>";
     if (m.retrying) html += '<div class="callout warn"><code>' + esc(m.retrying.reason || "outage") + "</code> " + esc(retryText(m.retrying)) + "</div>";
     html += '<div class="row" style="margin-top:12px">' +
-      (open ? '<button class="btn success" data-sm="accept">Accept mapping</button><button class="btn danger" data-sm="reject">Reject mapping</button>' : "") +
       (running ? "" : '<button class="btn" data-sm="regenerate">Regenerate</button>') +
       (m.status === "done" ? '<button class="btn" data-sm="export" title="This mapping and its services, as a Word document">Export to Word</button>' : "") +
       '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';
-    var body = smOneWay("Upstream: services it depends on", m.upstream_services, "upstream", open) +
-      smOneWay("Downstream: services that depend on it", m.downstream_services, "downstream", open) + smBoth(m.bidirectional_services, open);
+    var body = smOneWay("Upstream: services it depends on", m.upstream_services, open) +
+      smOneWay("Downstream: services that depend on it", m.downstream_services, open) + smBoth(m.bidirectional_services, open);
     html += body || (running ? '<div class="empty">Finding dependencies...</div>' : '<div class="empty">No dependencies in this generation.</div>');
     $("#smOut").html(html);
     sm.view = m;
@@ -2129,7 +2130,7 @@ $(function () {
     var body = [
       new D.Paragraph({ text: title, heading: D.HeadingLevel.TITLE }),
       k.H("Mapping", D.HeadingLevel.HEADING_1),
-      k.terms([["Mapping id", m.mapping_id], ["Status", m.status], ["Generation", m.generation], ["Review", m.review],
+      k.terms([["Mapping id", m.mapping_id], ["Status", m.status], ["Generation", m.generation],
                ["Created", fmtTime(m.created_at)], ["Updated", fmtTime(m.updated_at)], ["Exported", new Date().toLocaleString()]])
     ].concat(direction("Upstream: services it depends on", "upstream"), direction("Downstream: services that depend on it", "downstream"));
     // The mapping id on every page, so a printed or forwarded page can be traced back.
@@ -2172,9 +2173,9 @@ $(function () {
     withBusy($(this), api("GET", "/v1/service-mapper?limit=20")).done(function (r) {
       var items = (r && r.items) || [];
       $("#smList").html('<div class="section-title">Recent mappings (' + esc(r.total) + ")</div>" + (items.length ? '<table class="tbl">' +
-        "<tr><th>Service</th><th>Status</th><th>Review</th><th>Generation</th><th>Updated</th></tr>" + items.map(function (i) {
+        "<tr><th>Service</th><th>Status</th><th>Generation</th><th>Updated</th></tr>" + items.map(function (i) {
           return '<tr style="cursor:pointer" data-open="' + attr(i.mapping_id) + '"><td><b>' + esc((i.selected_service || {}).service_name) +
-            '</b><div class="faint mono">' + esc(i.mapping_id) + "</div></td><td>" + esc(i.status) + "</td><td>" + esc(i.review) + "</td><td>" +
+            '</b><div class="faint mono">' + esc(i.mapping_id) + "</div></td><td>" + esc(i.status) + "</td><td>" +
             esc(i.generation) + "</td><td>" + esc(fmtTime(i.updated_at)) + "</td></tr>";
         }).join("") + "</table>" : '<div class="empty">No mappings yet.</div>'));
     });
@@ -2182,8 +2183,12 @@ $(function () {
   $("#smList").on("click", "[data-open]", function () { smOpen($(this).attr("data-open")); });
   $("#smOut")
     .on("click", "[data-dep]", function () {
-      var $b = $(this), path = "/v1/service-mapper/" + encodeURIComponent(sm.id) + "/dependencies/" + encodeURIComponent($b.attr("data-dep")) + "/decision";
-      withBusy($b, api("POST", path, { direction: $b.attr("data-dir"), action: $b.attr("data-act") })).done(smRender);
+      var $b = $(this), path = "/v1/service-mapper/" + encodeURIComponent(sm.id) + "/dependencies/decision", body = {};
+      body[$b.attr("data-act")] = [$b.attr("data-dep")];
+      withBusy($b, api("POST", path, body)).done(function (m) {
+        smRender(m);
+        (m.failed || []).forEach(function (f) { toast("Not saved: " + f.reason, f.message, "warn"); });
+      });
     })
     .on("click", "[data-sm]", function () {
       var $b = $(this), act = $b.attr("data-sm"), root = "/v1/service-mapper/" + encodeURIComponent(sm.id);
@@ -2192,15 +2197,7 @@ $(function () {
       if (act === "regenerate") {
         withBusy($b, api("POST", root + "/regenerate", undefined, { headers: { "Idempotency-Key": uuid() } }))
           .done(function () { toast("Regenerating", "A new generation is queued."); smOpen(sm.id); });
-        return;
       }
-      withBusy($b, api("POST", root + "/decision", { action: act }, { quiet: true, expected: [409] }))
-        .done(function (m) { toast("Mapping " + m.review, m.mapping_id); smRender(m); })
-        .fail(function (e) {
-          var n = ((e.details || {}).pending || []).length;
-          if (e.reason === "relationships_pending") toast("Decide every relationship first", n + " relationship(s) are still pending.", "warn");
-          else toast(e.reason || e.code || "Request failed", e.message, "err");
-        });
     });
 
   // ==================== start ====================

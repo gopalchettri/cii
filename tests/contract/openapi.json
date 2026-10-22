@@ -832,6 +832,28 @@
     "title": "Decision",
     "type": "string"
    },
+   "DecisionFailure": {
+    "properties": {
+     "dependency_id": {
+      "title": "Dependency Id",
+      "type": "string"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "reason": {
+      "$ref": "#/components/schemas/MapperDecisionFailure"
+     }
+    },
+    "required": [
+     "dependency_id",
+     "reason",
+     "message"
+    ],
+    "title": "DecisionFailure",
+    "type": "object"
+   },
    "DecisionOutcome": {
     "description": "tsg_DecidePendingThreats's answer for one id.",
     "enum": [
@@ -864,19 +886,118 @@
    },
    "DependencyDecisionRequest": {
     "additionalProperties": false,
+    "description": "The relationships to decide, by dependency_id; either list may be null, empty or hold only blanks.",
     "properties": {
-     "action": {
-      "$ref": "#/components/schemas/MapperAction"
+     "accept": {
+      "items": {
+       "maxLength": 64,
+       "type": "string"
+      },
+      "maxItems": 200,
+      "title": "Accept",
+      "type": "array"
      },
-     "direction": {
-      "$ref": "#/components/schemas/MapperDirection"
+     "reject": {
+      "items": {
+       "maxLength": 64,
+       "type": "string"
+      },
+      "maxItems": 200,
+      "title": "Reject",
+      "type": "array"
+     }
+    },
+    "title": "DependencyDecisionRequest",
+    "type": "object"
+   },
+   "DependencyDecisionsResult": {
+    "properties": {
+     "bidirectional_services": {
+      "items": {
+       "$ref": "#/components/schemas/BidirectionalService"
+      },
+      "title": "Bidirectional Services",
+      "type": "array"
+     },
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "downstream_services": {
+      "items": {
+       "$ref": "#/components/schemas/DependencyService"
+      },
+      "title": "Downstream Services",
+      "type": "array"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/MappingError"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "failed": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/DecisionFailure"
+      },
+      "title": "Failed",
+      "type": "array"
+     },
+     "generation": {
+      "title": "Generation",
+      "type": "integer"
+     },
+     "mapping_id": {
+      "title": "Mapping Id",
+      "type": "string"
+     },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "$ref": "#/components/schemas/Status"
+     },
+     "summary": {
+      "$ref": "#/components/schemas/MappingSummary"
+     },
+     "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+     },
+     "upstream_services": {
+      "items": {
+       "$ref": "#/components/schemas/DependencyService"
+      },
+      "title": "Upstream Services",
+      "type": "array"
      }
     },
     "required": [
-     "direction",
-     "action"
+     "mapping_id",
+     "status",
+     "generation",
+     "upstream_services",
+     "downstream_services",
+     "bidirectional_services",
+     "summary",
+     "created_at",
+     "updated_at"
     ],
-    "title": "DependencyDecisionRequest",
+    "title": "DependencyDecisionsResult",
     "type": "object"
    },
    "DependencyService": {
@@ -2056,21 +2177,13 @@
     "title": "ManualScenario",
     "type": "object"
    },
-   "MapperAction": {
+   "MapperDecisionFailure": {
+    "description": "Why one id of a relationship decision was not saved (the others still are).",
     "enum": [
-     "accept",
-     "reject"
+     "dependency_not_found",
+     "decision_final"
     ],
-    "title": "MapperAction",
-    "type": "string"
-   },
-   "MapperDirection": {
-    "description": "From the selected service: upstream = it needs this service, downstream = this one relies on it.",
-    "enum": [
-     "upstream",
-     "downstream"
-    ],
-    "title": "MapperDirection",
+    "title": "MapperDecisionFailure",
     "type": "string"
    },
    "MappingAccepted": {
@@ -2093,19 +2206,6 @@
      "generation"
     ],
     "title": "MappingAccepted",
-    "type": "object"
-   },
-   "MappingDecisionRequest": {
-    "additionalProperties": false,
-    "properties": {
-     "action": {
-      "$ref": "#/components/schemas/MapperAction"
-     }
-    },
-    "required": [
-     "action"
-    ],
-    "title": "MappingDecisionRequest",
     "type": "object"
    },
    "MappingError": {
@@ -2172,9 +2272,6 @@
       "title": "Mapping Id",
       "type": "string"
      },
-     "review": {
-      "$ref": "#/components/schemas/MappingReview"
-     },
      "selected_service": {
       "$ref": "#/components/schemas/SelectedService"
      },
@@ -2191,7 +2288,6 @@
      "mapping_id",
      "status",
      "generation",
-     "review",
      "selected_service",
      "created_at",
      "updated_at"
@@ -2199,14 +2295,108 @@
     "title": "MappingListItem",
     "type": "object"
    },
-   "MappingReview": {
+   "MappingOverall": {
+    "description": "Where a mapping's generation is (progress.overall).",
     "enum": [
-     "pending",
-     "accepted",
-     "rejected"
+     "failed",
+     "cancelled",
+     "generating",
+     "done"
     ],
-    "title": "MappingReview",
+    "title": "MappingOverall",
     "type": "string"
+   },
+   "MappingProgress": {
+    "properties": {
+     "overall": {
+      "$ref": "#/components/schemas/MappingOverall"
+     },
+     "relationships": {
+      "$ref": "#/components/schemas/RelationshipCounts"
+     }
+    },
+    "required": [
+     "overall",
+     "relationships"
+    ],
+    "title": "MappingProgress",
+    "type": "object"
+   },
+   "MappingStatus": {
+    "description": "GET .../status, and every mapping.updated event (one model, so they can never differ).",
+    "properties": {
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/MappingError"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "generation": {
+      "title": "Generation",
+      "type": "integer"
+     },
+     "mapping_id": {
+      "title": "Mapping Id",
+      "type": "string"
+     },
+     "progress": {
+      "$ref": "#/components/schemas/MappingProgress"
+     },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "$ref": "#/components/schemas/Status"
+     },
+     "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+     },
+     "user_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Id"
+     }
+    },
+    "required": [
+     "mapping_id",
+     "entity_id",
+     "user_id",
+     "status",
+     "generation",
+     "progress",
+     "created_at",
+     "updated_at"
+    ],
+    "title": "MappingStatus",
+    "type": "object"
    },
    "MappingSummary": {
     "properties": {
@@ -2290,9 +2480,6 @@
        }
       ]
      },
-     "review": {
-      "$ref": "#/components/schemas/MappingReview"
-     },
      "status": {
       "$ref": "#/components/schemas/Status"
      },
@@ -2316,7 +2503,6 @@
      "mapping_id",
      "status",
      "generation",
-     "review",
      "upstream_services",
      "downstream_services",
      "bidirectional_services",
@@ -3604,6 +3790,35 @@
      "skipped"
     ],
     "title": "RejectResult",
+    "type": "object"
+   },
+   "RelationshipCounts": {
+    "description": "The current generation's relationships, one per direction: 0 while it is generating.",
+    "properties": {
+     "accepted": {
+      "title": "Accepted",
+      "type": "integer"
+     },
+     "pending": {
+      "title": "Pending",
+      "type": "integer"
+     },
+     "rejected": {
+      "title": "Rejected",
+      "type": "integer"
+     },
+     "total": {
+      "title": "Total",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "total",
+     "accepted",
+     "rejected",
+     "pending"
+    ],
+    "title": "RelationshipCounts",
     "type": "object"
    },
    "RemediationList": {
@@ -7173,9 +7388,10 @@
     ]
    }
   },
-  "/v1/service-mapper/{mapping_id}/decision": {
+  "/v1/service-mapper/{mapping_id}/dependencies/decision": {
    "post": {
-    "operationId": "decide_mapping_v1_service_mapper__mapping_id__decision_post",
+    "description": "Send `{\"accept\": [dependency_id, ...], \"reject\": [...]}`; either list may be null or empty. The valid\nids are saved together; `failed` lists each id that was not, and why.",
+    "operationId": "decide_dependencies_v1_service_mapper__mapping_id__dependencies_decision_post",
     "parameters": [
      {
       "in": "path",
@@ -7184,137 +7400,6 @@
       "schema": {
        "maxLength": 64,
        "title": "Mapping Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-API-Key",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Api-Key"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-User-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 256,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-User-Id"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-Entity-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "exclusiveMinimum": 0,
-         "maximum": 2147483647,
-         "type": "integer"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Entity-Id"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-Tenant-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 256,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Tenant-Id"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/MappingDecisionRequest"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/MappingView"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Decide Mapping",
-    "tags": [
-     "11. Service mapper"
-    ]
-   }
-  },
-  "/v1/service-mapper/{mapping_id}/dependencies/{dependency_id}/decision": {
-   "post": {
-    "operationId": "decide_dependency_v1_service_mapper__mapping_id__dependencies__dependency_id__decision_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "mapping_id",
-      "required": true,
-      "schema": {
-       "maxLength": 64,
-       "title": "Mapping Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "path",
-      "name": "dependency_id",
-      "required": true,
-      "schema": {
-       "maxLength": 64,
-       "title": "Dependency Id",
        "type": "string"
       }
      },
@@ -7402,7 +7487,7 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/MappingView"
+         "$ref": "#/components/schemas/DependencyDecisionsResult"
         }
        }
       },
@@ -7419,7 +7504,7 @@
       "description": "Validation Error"
      }
     },
-    "summary": "Decide Dependency",
+    "summary": "Decide Dependencies",
     "tags": [
      "11. Service mapper"
     ]
@@ -7674,6 +7759,118 @@
      }
     },
     "summary": "Regenerate Mapping",
+    "tags": [
+     "11. Service mapper"
+    ]
+   }
+  },
+  "/v1/service-mapper/{mapping_id}/status": {
+   "get": {
+    "description": "Poll until `progress.overall` is no longer `generating`: `done` (decide the relationships;\n`progress.relationships` counts them), `failed` (`error` says why) or `cancelled`.",
+    "operationId": "get_mapping_status_v1_service_mapper__mapping_id__status_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "mapping_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Mapping Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MappingStatus"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Mapping Status",
     "tags": [
      "11. Service mapper"
     ]

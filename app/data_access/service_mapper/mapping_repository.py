@@ -1,4 +1,4 @@
-"""MongoDB Service Mapper records, guarded generations and authoritative review stamps."""
+"""MongoDB Service Mapper records, guarded generations and authoritative relationship decisions."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -36,16 +36,13 @@ class MappingRepository(MongoRepository):
         limits: dict[str, int],
         now: datetime,
     ) -> bool:
-        """CAS: a review or another regeneration since the read makes this attempt retry."""
+        """CAS: a decision or another regeneration since the read makes this attempt retry."""
         changes: dict[str, Any] = {
             "generation": seen_generation + 1,
             "status": Status.QUEUED,
             "active": True,
             "job": next_job,
             "result": None,
-            "review": "pending",
-            "reviewed_at": None,
-            "reviewed_by": None,
             "updated_at": now,
             "finished_at": None,
             "pending_archive": frozen,
@@ -73,85 +70,39 @@ class MappingRepository(MongoRepository):
     def finish_generation(self, lease: JobLease, result: dict[str, Any]) -> None:
         lease.update_job({"result": result, **ended_job_fields(Status.DONE)})
 
-    def decide_mapping(
+    def decide_dependencies(
         self,
         mapping_id: str,
         generation: int,
         seen_seq: int,
-        accepted: bool,
+        changes: list[tuple[str, str, bool]],
         by: str,
         at: datetime,
     ) -> bool:
-        decided = self.collection.update_one(
-            {
-                "_id": mapping_id,
-                "generation": generation,
-                "decision_seq": seen_seq,
-                "status": Status.DONE,
-                **(_NOTHING_PENDING if accepted else {}),
-            },
-            {
-                "$set": {
-                    "review": "accepted" if accepted else "rejected",
-                    "reviewed_at": at,
-                    "reviewed_by": by,
-                    "updated_at": at,
-                },
-                "$inc": {"decision_seq": 1},
-            },
-        )
-        return bool(decided.modified_count)
-
-    def decide_dependency(
-        self,
-        mapping_id: str,
-        generation: int,
-        seen_seq: int,
-        dependency_id: str,
-        direction: str,
-        accepted: bool,
-        by: str,
-        at: datetime,
-    ) -> bool:
-        prefix = f"result.dependencies.$[d].relations.{direction}"
-        decided = self.collection.update_one(
-            {
-                "_id": mapping_id,
-                "generation": generation,
-                "decision_seq": seen_seq,
-                "status": Status.DONE,
-                "review": "pending",  # a decided mapping freezes its relationships
-                "result.dependencies.dependency_id": dependency_id,
-            },
-            {
-                "$set": {
-                    f"{prefix}.isAccepted": accepted,
-                    f"{prefix}.accepted_datetime": at if accepted else None,
-                    f"{prefix}.accepted_by": by if accepted else None,
-                    f"{prefix}.reviewed_datetime": at,
-                    f"{prefix}.reviewed_by": by,
-                    "updated_at": at,
-                },
-                "$inc": {"decision_seq": 1},
-            },
-            array_filters=[{"d.dependency_id": dependency_id}],
-        )
-        return bool(decided.modified_count)
-
-
-#: Accepting a mapping also requires, in the same update, that no relationship is still undecided.
-_NOTHING_PENDING = {
-    "result.dependencies": {
-        "$not": {
-            "$elemMatch": {
-                "$or": [
-                    {"relations.upstream.isAccepted": {"$type": "null"}},
-                    {"relations.downstream.isAccepted": {"$type": "null"}},
-                ]
+        """Saves every (dependency_id, direction, accepted) in one update; CAS on generation, decision_seq."""
+        ids = dict.fromkeys(dependency_id for dependency_id, _direction, _accepted in changes)
+        slots = {dependency_id: f"d{i}" for i, dependency_id in enumerate(ids)}
+        fields: dict[str, Any] = {"updated_at": at}
+        for dependency_id, direction, accepted in changes:
+            prefix = f"result.dependencies.$[{slots[dependency_id]}].relations.{direction}"
+            fields |= {
+                f"{prefix}.isAccepted": accepted,
+                f"{prefix}.accepted_datetime": at if accepted else None,
+                f"{prefix}.accepted_by": by if accepted else None,
+                f"{prefix}.reviewed_datetime": at,
+                f"{prefix}.reviewed_by": by,
             }
-        }
-    }
-}
+        decided = self.collection.update_one(
+            {
+                "_id": mapping_id,
+                "generation": generation,
+                "decision_seq": seen_seq,
+                "status": Status.DONE,
+            },
+            {"$set": fields, "$inc": {"decision_seq": 1}},
+            array_filters=[{f"{slot}.dependency_id": dependency_id} for dependency_id, slot in slots.items()],
+        )
+        return bool(decided.modified_count)
 
 
 class MappingHistoryRepository(MongoRepository):
@@ -172,7 +123,6 @@ class MappingHistoryRepository(MongoRepository):
                 "tenant_id": mapping["tenant_id"],
                 "entity_id": mapping["entity_id"],
                 "status": mapping["status"],
-                "review": mapping["review"],
                 "result": mapping.get("result"),
                 "error": mapping.get("error"),
                 "archived_at": datetime.now(UTC),

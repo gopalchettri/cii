@@ -1,4 +1,4 @@
-"""Service Mapper lifecycle: scoped creation, regeneration, history and authoritative reviews."""
+"""Service Mapper lifecycle: scoped creation, regeneration, history and relationship decisions."""
 
 import hashlib
 import json
@@ -10,8 +10,8 @@ from app.core.config import Settings
 from app.core.constants import (
     AuditAction,
     AuditTarget,
-    MapperAction,
     MapperConflict,
+    MapperDecisionFailure,
     MapperMessage,
     Status,
     TaskName,
@@ -22,20 +22,20 @@ from app.data_access.jobs.job_repository import new_job
 from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
 from app.domain.service_mapper.catalog import build_catalog
-from app.domain.service_mapper.views import mapping_list_item, mapping_view, pending_relationships
+from app.domain.service_mapper.views import mapping_list_item, mapping_status, mapping_view
 from app.domain.shared.audit import audit_target, caller_actor
 from app.models.admin.api_clients import Principal
-from app.models.jobs.views import retry_notice_of
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
+    DecisionFailure,
     DependencyDecisionRequest,
+    DependencyDecisionsResult,
     EntityServices,
     MappingAccepted,
-    MappingDecisionRequest,
     MappingList,
+    MappingStatus,
     MappingView,
     ServiceRef,
-    StatusEvent,
 )
 
 
@@ -86,16 +86,8 @@ class ServiceMapperService:
         self._archive_pending(record)
         return mapping_view(record)
 
-    def get_service_mapping_status(self, principal: Principal, mapping_id: str) -> StatusEvent:
-        record = self._owned(principal, mapping_id)
-        job, status = record.get("job") or {}, record["status"]
-        return StatusEvent(
-            mapping_id=mapping_id,
-            status=status,
-            generation=record["generation"],
-            retrying=retry_notice_of(status, job.get("retry")),
-            error=job.get("error") if status == Status.FAILED else None,
-        )
+    def get_service_mapping_status(self, principal: Principal, mapping_id: str) -> MappingStatus:
+        return mapping_status(self._owned(principal, mapping_id))
 
     def get_service_mapping_live_status(
         self,
@@ -184,81 +176,40 @@ class ServiceMapperService:
                 return started, True
         raise Conflict(MapperMessage.ROUND_RUNNING, reason=MapperConflict.GENERATION_IN_PROGRESS)
 
-    def decide_mapping(
+    def decide_dependencies(
         self,
         principal: Principal,
         mapping_id: str,
-        body: MappingDecisionRequest,
-    ) -> MappingView:
-        desired = body.action == MapperAction.ACCEPT
-        for _attempt in range(3):
-            record = self._owned(principal, mapping_id)
-            self._check_decidable(record)
-            if record["review"] != "pending":
-                if (record["review"] == "accepted") == desired:
-                    return mapping_view(record)
-                raise Conflict(MapperMessage.DECISION_FINAL, reason=MapperConflict.DECISION_FINAL)
-            if desired and (pending := pending_relationships(record["result"])):
-                raise Conflict(
-                    MapperMessage.RELATIONSHIPS_PENDING,
-                    reason=MapperConflict.RELATIONSHIPS_PENDING,
-                    details={"pending": pending},
-                )
-            if self._mappings.decide_mapping(
-                mapping_id,
-                record["generation"],
-                record["decision_seq"],
-                desired,
-                principal.user_id,
-                datetime.now(UTC),
-            ):
-                self._record_change(
-                    AuditAction.MAPPING_REVIEWED,
-                    principal,
-                    mapping_id,
-                    {"generation": record["generation"], "accepted": desired}
-                    | _decision_counts(record["result"]),
-                )
-                return self.get_service_mapping(principal, mapping_id)
-        raise Conflict(MapperMessage.ROUND_RUNNING, reason=MapperConflict.GENERATION_IN_PROGRESS)
-
-    def decide_dependency(
-        self,
-        principal: Principal,
-        mapping_id: str,
-        dependency_id: str,
         body: DependencyDecisionRequest,
-    ) -> MappingView:
-        desired = body.action == MapperAction.ACCEPT
+    ) -> DependencyDecisionsResult:
+        """Saves every valid accept and reject together; `failed` names each id not saved, and why."""
+        desired = dict.fromkeys(body.accept, True) | dict.fromkeys(body.reject, False)
         for _attempt in range(3):
             record = self._owned(principal, mapping_id)
             self._check_decidable(record)
-            relation = _relation(record, dependency_id, body.direction.value)
-            if relation["isAccepted"] == desired:
-                return mapping_view(record)
-            _refuse_change(record, relation)
-            if self._mappings.decide_dependency(
+            changes, failed = _sort_decisions(record, desired)
+            if not changes:
+                return _decisions_result(mapping_view(record), failed)
+            if self._mappings.decide_dependencies(
                 mapping_id,
                 record["generation"],
                 record["decision_seq"],
-                dependency_id,
-                body.direction.value,
-                desired,
+                changes,
                 principal.user_id,
                 datetime.now(UTC),
             ):
+                saved = {dependency_id: accepted for dependency_id, _direction, accepted in changes}
                 self._record_change(
                     AuditAction.DEPENDENCY_REVIEWED,
                     principal,
                     mapping_id,
                     {
                         "generation": record["generation"],
-                        "dependency_id": dependency_id,
-                        "direction": body.direction.value,
-                        "accepted": desired,
+                        "accepted": [key for key, accepted in saved.items() if accepted],
+                        "rejected": [key for key, accepted in saved.items() if not accepted],
                     },
                 )
-                return self.get_service_mapping(principal, mapping_id)
+                return _decisions_result(self.get_service_mapping(principal, mapping_id), failed)
         raise Conflict(MapperMessage.ROUND_RUNNING, reason=MapperConflict.GENERATION_IN_PROGRESS)
 
     def _owned(self, principal: Principal, mapping_id: str) -> dict:
@@ -315,7 +266,7 @@ class ServiceMapperService:
 def _new_record(
     mapping_id: str, principal: Principal, request: dict, fingerprint: str, key_hash: str | None, limits: dict
 ) -> dict:
-    """A new mapping's first record: generation 1 queued, nothing reviewed."""
+    """A new mapping's first record: generation 1 queued, nothing decided."""
     now = datetime.now(UTC)
     return {
         "_id": mapping_id,
@@ -329,7 +280,6 @@ def _new_record(
         "regen_keys": {},
         "decision_seq": 0,
         "generation": 1,
-        "review": "pending",
         "result": None,
         "status": Status.QUEUED,
         "active": True,
@@ -344,33 +294,43 @@ def _key_hash(value: str | None) -> str | None:
     return hashlib.sha256(value.encode()).hexdigest() if value else None
 
 
-def _relation(record: dict, dependency_id: str, direction: str) -> dict:
-    """One relationship of the current generation: 404 for an unknown dependency, 409 for no such one."""
-    dependency = next(
-        (item for item in record["result"]["dependencies"] if item["dependency_id"] == dependency_id), None
-    )
-    if dependency is None:
-        raise NotFound(MapperMessage.DEPENDENCY_NOT_FOUND)
-    relation = dependency["relations"].get(direction)
-    if relation is None:
-        raise Conflict(MapperMessage.DIRECTION_NOT_PRESENT)
-    return relation
+def _sort_decisions(
+    record: dict, desired: dict[str, bool]
+) -> tuple[list[tuple[str, str, bool]], list[DecisionFailure]]:
+    """(the changes to save as (dependency_id, direction, accepted), the ids refused). Each id decides its
+    dependency in every direction it has; one already decided the same way is neither."""
+    by_id = {item["dependency_id"]: item for item in record["result"]["dependencies"]}
+    changes: list[tuple[str, str, bool]] = []
+    failed: list[DecisionFailure] = []
+    for dependency_id, accepted in desired.items():
+        dependency = by_id.get(dependency_id)
+        if dependency is None:
+            failed.append(_failure(dependency_id, MapperDecisionFailure.DEPENDENCY_NOT_FOUND))
+            continue
+        relations = dependency["relations"]
+        if any(relation["isAccepted"] not in (None, accepted) for relation in relations.values()):
+            failed.append(_failure(dependency_id, MapperDecisionFailure.DECISION_FINAL))
+            continue
+        changes += [
+            (dependency_id, direction, accepted)
+            for direction, relation in relations.items()
+            if relation["isAccepted"] is None
+        ]
+    return changes, failed
 
 
-def _refuse_change(record: dict, relation: dict) -> None:
-    """409 once the mapping is decided (its relationships freeze) or the relationship has another decision."""
-    if record["review"] != "pending":
-        raise Conflict(MapperMessage.MAPPING_DECIDED, reason=MapperConflict.DECISION_FINAL)
-    if relation["isAccepted"] is not None:
-        raise Conflict(MapperMessage.DECISION_FINAL, reason=MapperConflict.DECISION_FINAL)
+_FAILURE_MESSAGES = {
+    MapperDecisionFailure.DEPENDENCY_NOT_FOUND: MapperMessage.DEPENDENCY_NOT_FOUND,
+    MapperDecisionFailure.DECISION_FINAL: MapperMessage.DECISION_FINAL,
+}
 
 
-def _decision_counts(result: dict) -> dict[str, int]:
-    """How many relationships of the generation a reviewer accepted and rejected (for the audit)."""
-    flags = [
-        relation["isAccepted"] for item in result["dependencies"] for relation in item["relations"].values()
-    ]
-    return {"relationships_accepted": flags.count(True), "relationships_rejected": flags.count(False)}
+def _failure(dependency_id: str, reason: MapperDecisionFailure) -> DecisionFailure:
+    return DecisionFailure(dependency_id=dependency_id, reason=reason, message=_FAILURE_MESSAGES[reason])
+
+
+def _decisions_result(view: MappingView, failed: list[DecisionFailure]) -> DependencyDecisionsResult:
+    return DependencyDecisionsResult(**view.model_dump(), failed=failed)
 
 
 def _frozen(record: dict) -> dict:
@@ -380,7 +340,6 @@ def _frozen(record: dict) -> dict:
         "tenant_id": record["tenant_id"],
         "entity_id": record["entity_id"],
         "status": record["status"],
-        "review": record["review"],
         "result": record.get("result"),
         "error": record.get("job", {}).get("error"),
     }
