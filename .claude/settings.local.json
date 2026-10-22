@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(awk -F: '{print $1\": \"$2}')",
-      "Bash(awk -F: 'NR>1{print prev\" \\(\"$1-p\" lines\\)\"} {prev=$2; p=$1}')"
+      "Bash(awk -F: 'NR>1{print prev\" \\(\"$1-p\" lines\\)\"} {prev=$2; p=$1}')",
+      "PowerShell(foreach \\($f in 'app/domain/service_mapper/prompts/generate.txt','app/domain/service_mapper/generate.py','app/domain/service_mapper/reconcile.py','app/domain/service_mapper/views.py','app/models/service_mapper/contract.py','app/worker/service_mapper/job.py','app/ux/tsg_console.html','scripts/e2e_all_api.py','docs/service_mapper/SERVICE_MAPPER.md','docs/API_DEVELOPER_HANDBOOK.md','tests/test_service_mapper.py','tests/contract/openapi.json','app/core/constants/planning.py'\\) { $b = [IO.File]::ReadAllBytes\\(\\(Resolve-Path $f\\)\\); $crlf = 0; for \\($i=1; $i -lt $b.Length; $i++\\) { if \\($b[$i] -eq 10 -and $b[$i-1] -eq 13\\) { $crlf++ } }; \"$f crlf=$crlf\" })"
     ]
   }
 }
