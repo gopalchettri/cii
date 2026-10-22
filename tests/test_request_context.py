@@ -12,7 +12,7 @@ from app import container
 from app.api import middleware
 from app.api.middleware import _bind_request_context
 from app.core.config import get_settings
-from app.core.constants import Header, LogEvent
+from app.core.constants import ErrorCode, Header, LogEvent
 from app.core.logging import mask_secret_values
 from app.main import create_app
 
@@ -95,8 +95,8 @@ class _RecordedLines:
     def __init__(self) -> None:
         self.lines: list[dict] = []
 
-    def __getattr__(self, _level: str) -> Callable[..., None]:
-        return lambda event, **fields: self.lines.append({"event": event, **fields})
+    def __getattr__(self, level: str) -> Callable[..., None]:
+        return lambda event, **fields: self.lines.append({"event": event, "level": level, **fields})
 
 
 def test_the_access_line_names_the_calling_system(
@@ -118,6 +118,27 @@ def test_the_access_line_names_the_calling_system(
         (404, client["client_id"]),
         (401, None),
     ]
+
+
+def test_a_failed_call_s_access_line_says_where_and_what_it_answered(
+    app_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner, 2026-10-23: every call traceable. The access line names the real path (with its ids) and repeats
+    an error answer in full, at warning (caller's mistake) or error (ours); a success stays at info."""
+    recorded = _RecordedLines()
+    monkeypatch.setattr(middleware, "log", recorded)
+    app_client.get("/health")
+    ready = app_client.get("/ready")  # 503 here (no worker): on purpose, so never an error line
+    app_client.get("/test-only/crash")
+    app_client.post("/test-only/echo", json=[1])
+    access = [line for line in recorded.lines if line["event"] == LogEvent.HTTP_REQUEST]
+    assert [(line["level"], line["path"], line["status"], line.get("code")) for line in access] == [
+        ("info", "/health", 200, None),
+        ("info", "/ready", ready.status_code, None),
+        ("error", "/test-only/crash", 500, ErrorCode.INTERNAL_ERROR),
+        ("warning", "/test-only/echo", 422, ErrorCode.VALIDATION_ERROR),
+    ]
+    assert access[2]["detail"] and access[3]["errors"][0]["field"] == "body"
 
 
 def test_an_unexpected_error_reaches_a_browser_with_cors_and_the_request_id(

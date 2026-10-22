@@ -227,6 +227,7 @@ def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
     # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it is
     # logged: the class, the HTTP status and the reason only, never the message (it may hold the gateway URL).
     outage = ai_outage_of(error)
+    metrics.AI_OUTAGES.labels(task, outage).inc()
     status = getattr(error, "status_code", None)
     log.warning(
         LogEvent.AI_CALL_UNAVAILABLE,

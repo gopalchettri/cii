@@ -86,13 +86,16 @@ def test_provider_outage_becomes_unavailable(monkeypatch: pytest.MonkeyPatch) ->
 )
 def test_each_ai_outage_tells_the_ui_which_it_was(error: Exception, outage: AiOutage) -> None:
     """Down, unreachable, busy or timed out: its own reason and message (litellm's Timeout is also a lost
-    connection, so a timeout must never read "unreachable")."""
+    connection, so a timeout must never read "unreachable"), and counted by that reason for the dashboard."""
+    labels = {"task": AiTask.RELEVANCE_GATE, "reason": outage}
+    before = REGISTRY.get_sample_value("tsg_ai_outages_total", labels) or 0
     with (
         pytest.raises(Unavailable) as raised,
         ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"),
     ):
         raise error
     assert (raised.value.reason, raised.value.detail) == (outage, AI_OUTAGE_MESSAGES[outage])
+    assert REGISTRY.get_sample_value("tsg_ai_outages_total", labels) == before + 1
 
 
 def test_an_unmapped_server_error_is_retried_and_a_client_error_is_not(

@@ -17,8 +17,15 @@ JOB_SECONDS = Histogram(
     "tsg_job_seconds", "Background job duration", ["task"], buckets=(1, 5, 15, 30, 60, 120, 300, 600, 1800)
 )
 AI_CALLS = Counter("tsg_ai_calls_total", "AI calls by outcome", ["task", "model", "outcome"])
+AI_OUTAGES = Counter("tsg_ai_outages_total", "AI calls with no answer, by reason", ["task", "reason"])
 AI_TOKENS = Counter("tsg_ai_tokens_total", "AI tokens", ["task", "model", "direction"])
-AI_SECONDS = Histogram("tsg_ai_call_seconds", "AI call duration", ["task", "model"])
+#: Up to the longest AI timeout (90-120 s, app/ai/profiles.py): the default buckets stop at 10 s.
+AI_SECONDS = Histogram(
+    "tsg_ai_call_seconds",
+    "AI call duration",
+    ["task", "model"],
+    buckets=(1, 2, 5, 10, 20, 30, 60, 90, 120, 180),
+)
 DEPENDENCY_UP = Gauge("tsg_dependency_up", "1 when the dependency answered the last check", ["name"])
 WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbeat", ["queue"])
 #: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress): every pod reports the same

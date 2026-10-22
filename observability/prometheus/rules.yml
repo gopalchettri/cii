@@ -1,6 +1,7 @@
 # TSG alerts (docs/BLUEPRINT.md §22.3). Every expression uses a metric that exists today: tests/test_observability.py
 # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
-# Planned with their metrics: AiSlotsSaturated (M04 tsg_ai_slots_in_use), IntelStale (M12).
+# summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
+# Grafana Alerting. Planned with its metric: IntelStale (M12).
 # No alert channel yet (D-05): firing alerts show in Grafana (home dashboard, Alerting) and at /alertmanager.
 
 groups:
@@ -16,6 +17,18 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: More than 2 % of API answers are server errors (5xx).
+          description: Open the TSG dashboard, table "API calls that went wrong", to see which calls and why.
+
+      # 500 = an error nobody expected (a bug); an outage answers 503 and is reported by its own alert.
+      - alert: ApiCrashing
+        expr: sum(increase(tsg_http_requests_total{status="500"}[10m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: The API hit an unexpected error (a bug) on {{ $value | printf "%.0f" }} calls in 10 minutes.
+          description: >-
+            Open the TSG dashboard, table "Errors and exceptions": click the request id for the whole story and
+            the traceback.
 
       - alert: ApiLatencyHigh
         expr: >
@@ -24,7 +37,8 @@ groups:
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: 95 % of API requests should finish within 1 s; they have not for 10 minutes.
+          summary: The API is slow; 95 % of calls should finish within 1 s and have not for 10 minutes.
+          description: Open the TSG dashboard, "What is slow", to see which pages; check the stores' tiles too.
 
   - name: tsg-jobs
     rules:
@@ -33,11 +47,12 @@ groups:
       # run. The timer jobs are left out: a failed reaper pass or index build simply runs again on its timer
       # (ReaperNotRunning watches the reaper; library.indexes_build_failed lines show a failing build).
       - alert: JobsFailing
-        expr: sum(increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_build_library_indexes"}[15m])) > 0
+        expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_build_library_indexes"}[15m])) > 0
         for: 1m
         labels: { severity: warning }
         annotations:
-          summary: A background job failed for good in the last 15 minutes.
+          summary: "{{ $labels.task }} jobs failed for good in the last 15 minutes."
+          description: Open the TSG dashboard, table "Failed jobs", for why; click the run id for its whole story.
 
       # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
       # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
@@ -46,15 +61,17 @@ groups:
         for: 5m
         labels: { severity: critical }
         annotations:
-          summary: The reaper has not run for 15 minutes; check Celery beat (stuck jobs are not repaired).
+          summary: The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired.
+          description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
       # Queue lists in Redis are named <Worker.BROKER_KEY_PREFIX><queue>, i.e. tsg:tsg_threats.
       - alert: QueueBacklog
-        expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios)"}) > 50
+        expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios|servicemapper)"}) > 50
         for: 15m
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.key }} has held more than 50 waiting jobs for 15 minutes."
+          description: The workers cannot keep up. Check that its worker is WORKING; add a worker if it is.
 
       # redis-exporter answers even when it cannot reach Redis; then queue lengths vanish and QueueBacklog
       # can never fire. Say so instead of staying silent.
@@ -63,14 +80,16 @@ groups:
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: redis-exporter cannot reach Redis, so queue lengths are unknown (check the broker URL).
+          summary: The monitoring cannot read Redis, so the number of waiting jobs is unknown.
+          description: Check redis-exporter's broker address (CII_REDIS_CELERY_BROKER_URL) and that Redis is up.
 
       - alert: NoWorker
         expr: max by (queue) (tsg_workers_online) == 0
         for: 2m
         labels: { severity: critical }
         annotations:
-          summary: No live worker on queue {{ $labels.queue }}; its jobs wait.
+          summary: No worker is taking {{ $labels.queue }} jobs; they wait until one starts.
+          description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
 
   - name: tsg-dependencies
     rules:
@@ -80,25 +99,43 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: MongoDB does not answer the API.
+          description: Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL.
       - alert: SqlDown
         expr: min(tsg_dependency_up{name="sql"}) == 0
         for: 3m
         labels: { severity: critical }
         annotations:
           summary: SQL Server does not answer the API.
+          description: Asset and library data cannot be read. Check the SQL Server and its connection settings.
       - alert: RedisDown
         expr: min(tsg_dependency_up{name="redis"}) == 0
         for: 3m
         labels: { severity: critical }
         annotations:
           summary: Redis does not answer the API.
+          description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
       - alert: AiErrorRateHigh
         expr: sum(rate(tsg_ai_calls_total{outcome!="ok"}[10m])) / sum(rate(tsg_ai_calls_total[10m])) > 0.10
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: More than 10 % of AI calls fail (unavailable or unreadable answer).
+          summary: More than 10 % of AI calls fail (no answer, or an answer that could not be used).
+          description: Open the TSG dashboard, "Why the AI did not answer"; see docs/UAT_LLM_TIMEOUT_RUNBOOK.md.
+
+      # By reason, so the alert itself says which outage it is (each has its own cure).
+      - alert: AiNotAnswering
+        expr: sum by (reason) (increase(tsg_ai_outages_total[10m])) >= 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: >-
+            The AI service {{ if eq $labels.reason "ai_timed_out" }}timed out{{ else if eq $labels.reason
+            "ai_busy" }}was busy{{ else if eq $labels.reason "ai_unreachable" }}could not be reached{{ else
+            }}answered with a server error{{ end }} {{ $value | printf "%.0f" }} times in 10 minutes.
+          description: >-
+            Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md).
+            Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team.
 
       # Every worker reports the same total, read from Redis at each scrape (app/ai/slots.py); a cap of 0
       # means no limit, so no alert. Calls then wait for a slot, and jobs slow down or give back.
@@ -108,6 +145,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
+          description: Jobs slow down. Raise CII_MAX_CONCURRENT_AI_CALLS if the AI gateway can take more.
 
   - name: tsg-audit
     rules:
@@ -117,6 +155,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: Audit records could not be written to tsg_audit (the actions still happened).
+          description: Check MongoDB; the "Errors and exceptions" table shows each audit.write_failed line.
 
   - name: tsg-library
     rules:
@@ -126,6 +165,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served).
+          description: Check SQL Server; the "Errors and exceptions" table shows each library.check_failed line.
 
   - name: tsg-platform
     rules:
@@ -135,6 +175,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: Prometheus cannot read {{ $labels.job }} at {{ $labels.instance }}.
+          description: That program is stopped or unreachable; its numbers on the dashboard are missing.
 
       # A component with no running pod has no scrape target, so TargetDown cannot see it: these can.
       - alert: ApiNotRunning
@@ -143,6 +184,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: No API instance is running and answering.
+          description: "Nobody can use the app. Laptop: .\\run.ps1 start. UAT: check the api pods."
 
       - alert: WorkerNotRunning
         expr: absent(up{job="worker"} == 1)
@@ -150,6 +192,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: No worker process is running and answering.
+          description: "No background job runs. Laptop: .\\run.ps1 start. UAT: check the worker pods."
 
       - alert: PodNotStarting
         expr: >
@@ -159,7 +202,8 @@ groups:
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "{{ $labels.pod }} has not started for 10 minutes (oc describe pod {{ $labels.pod }})."
+          summary: "{{ $labels.pod }} has not started for 10 minutes."
+          description: "oc describe pod {{ $labels.pod }} says why (image, setting, or not enough room)."
 
       - alert: PodRestarting
         expr: increase(kube_pod_container_status_restarts_total[30m]) > 2
@@ -167,6 +211,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.pod }} restarted more than twice in 30 minutes."
+          description: "oc logs --previous {{ $labels.pod }} shows why it stopped."
 
       # last_terminated_reason stays 1 until the next termination: joined with a recent restart, so the
       # alert clears 10 minutes after an OOM instead of firing for ever.
@@ -178,3 +223,4 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.pod }} ran out of memory and was restarted."
+          description: Raise its memory limit in deploy/, or find what used the memory (the "What is slow" row).

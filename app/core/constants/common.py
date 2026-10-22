@@ -263,6 +263,8 @@ class LogEvent(StrEnum):
     JOB_LEASE_RENEW_FAILED = "job.lease_renew_failed"
     JOB_RETRY_SCHEDULED = "job.retry_scheduled"
     JOB_FAILED = "job.failed"
+    JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
+    JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback
     JOB_TOO_LONG = "job.too_long"
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"

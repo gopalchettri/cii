@@ -1,32 +1,27 @@
 {
   "uid": "tsg",
-  "title": "TSG — everything in one place",
-  "description": "Home of TSG monitoring: alerts, API, jobs and queues, AI, stores and logs (UAT and laptop).",
+  "title": "TSG — is everything working?",
+  "description": "Home of TSG monitoring for operations, support and developers (UAT and laptop).",
   "tags": [
     "tsg"
   ],
   "timezone": "browser",
   "editable": false,
-  "refresh": "1m",
+  "graphTooltip": 1,
+  "refresh": "30s",
   "time": {
     "from": "now-6h",
     "to": "now"
   },
   "schemaVersion": 41,
-  "version": 1,
+  "version": 2,
   "links": [
     {
-      "title": "Alerts and silences",
+      "title": "All alerts, with what to do",
       "type": "link",
       "icon": "bell",
       "url": "/grafana/alerting/groups?alertmanager=Alertmanager",
-      "tooltip": "Alertmanager's alerts in Grafana"
-    },
-    {
-      "title": "Explore metrics and logs",
-      "type": "link",
-      "icon": "info",
-      "url": "/grafana/explore"
+      "tooltip": "Each firing alert's full message and what to do; silence one here"
     },
     {
       "title": "Flower (jobs)",
@@ -42,98 +37,70 @@
       "icon": "external link",
       "url": "http://localhost:5555/flower/",
       "targetBlank": true
+    },
+    {
+      "title": "Explore (developers)",
+      "type": "link",
+      "icon": "info",
+      "url": "/grafana/explore",
+      "tooltip": "Free queries on metrics and logs"
     }
   ],
   "templating": {
     "list": [
       {
-        "name": "search",
-        "label": "Search logs for",
+        "name": "id",
+        "label": "Find a run, request or job id",
         "type": "textbox",
         "query": "",
         "current": {
           "text": "",
           "value": ""
         },
-        "hide": 0
+        "hide": 0,
+        "description": "Paste a request id (from an error message), a run id or a job id. 'Follow one run or request' then shows its whole story."
       }
     ]
   },
   "panels": [
     {
       "id": 1,
+      "type": "text",
+      "title": "How to use this page",
+      "description": "Read me first.",
+      "options": {
+        "mode": "markdown",
+        "content": "**Green = working. Red = look now.** Times follow the picker at the top right. Nothing to type: click.\n\n| You are | Start here |\n|---|---|\n| **Operations** | The tiles under *Is everything working?* Any red tile or line in *What is wrong right now* says what to do (click it). |\n| **Support** | A user quotes a **request id** (from an error message) or a **run id**: paste it in *Find a run, request or job id* at the top, then open *Follow one run or request*. Or click any blue id on this page. |\n| **Developers** | *Errors and exceptions* lists every bug with its traceback (click a row, then the request or run id for the whole story). *What is slow* shows where time goes. |"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
       "type": "row",
-      "title": "Overview — is everything working?",
+      "title": "Is everything working?",
+      "description": "Operations: one look tells whether every part is up.",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 7
       },
       "panels": []
     },
     {
-      "id": 2,
-      "type": "table",
-      "title": "Firing alerts",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 1
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "ALERTS{alertstate=\"firing\"}",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "noValue": "Nothing firing"
-        },
-        "overrides": []
-      },
-      "description": "Every alert firing now (rules: observability/prometheus/rules.yml). Empty = all good. Details under Alerts and silences (link at the top); to mute one, use /alertmanager/.",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "Value": true,
-              "__name__": true,
-              "alertstate": true
-            }
-          }
-        }
-      ]
-    },
-    {
       "id": 3,
       "type": "stat",
-      "title": "Stores (as the API sees them)",
+      "title": "Overall",
+      "description": "ALL GOOD when no alert is on; else how many problems, listed just below (also those just noticed and still being checked).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 12,
-        "y": 1
       },
       "targets": [
         {
@@ -142,24 +109,32 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "min by (name) (tsg_dependency_up)",
-          "legendFormat": "{{name}}"
+          "expr": "count(ALERTS) or vector(0)",
+          "legendFormat": "Problems",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "decimals": 0,
+          "unit": "suffix: PROBLEMS",
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [
             {
               "type": "value",
               "options": {
                 "0": {
-                  "text": "DOWN",
-                  "color": "red",
+                  "text": "ALL GOOD",
+                  "color": "green",
                   "index": 0
                 },
                 "1": {
-                  "text": "UP",
-                  "color": "green",
+                  "text": "1 PROBLEM",
+                  "color": "red",
                   "index": 1
                 }
               }
@@ -169,26 +144,23 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               },
               {
-                "color": "green",
+                "color": "red",
                 "value": 1
               }
             ]
-          },
-          "color": {
-            "mode": "thresholds"
           }
         },
         "overrides": []
       },
-      "description": "MongoDB, SQL Server and Redis: UP when every API pod reached it at its last check.",
       "options": {
         "colorMode": "background",
         "graphMode": "none",
-        "textMode": "value_and_name",
+        "textMode": "value",
+        "justifyMode": "center",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -196,21 +168,22 @@
           "fields": "",
           "values": false
         }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 5,
+        "x": 0,
+        "y": 8
       }
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Live workers per queue",
+      "title": "Parts of the system",
+      "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios, map controls and plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute. AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 1
       },
       "targets": [
         {
@@ -219,12 +192,151 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (queue) (tsg_workers_online)",
-          "legendFormat": "{{queue}}"
+          "expr": "max(up{job=\"api\"}) or vector(0)",
+          "legendFormat": "API",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_threats\"}), 1) or vector(-1)",
+          "legendFormat": "Worker: find threats",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_scenarios\"}), 1) or vector(-1)",
+          "legendFormat": "Worker: write scenarios",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_servicemapper\"}), 1) or vector(-1)",
+          "legendFormat": "Worker: map services",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_maintenance\"}), 1) or vector(-1)",
+          "legendFormat": "Worker: maintenance",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(increase(tsg_jobs_total{task=\"tsg_reap\",outcome=\"success\"}[5m])) > 0) * 0 + 1 or vector(0)",
+          "legendFormat": "Scheduler (beat)",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(tsg_dependency_up{name=\"mongo\"}) or vector(-1)",
+          "legendFormat": "MongoDB",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(tsg_dependency_up{name=\"sql\"}) or vector(-1)",
+          "legendFormat": "SQL Server",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(tsg_dependency_up{name=\"redis\"}) or vector(-1)",
+          "legendFormat": "Redis",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "J",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
+          "legendFormat": "AI service",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "K",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(up{job=~\"loki|alloy\"}) or vector(0)",
+          "legendFormat": "Log collection",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "L",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(up{job=\"alertmanager\"}) or vector(0)",
+          "legendFormat": "Alerting",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -238,17 +350,57 @@
               }
             ]
           },
-          "color": {
-            "mode": "thresholds"
-          }
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "UNKNOWN",
+                  "color": "text",
+                  "index": 0
+                },
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 1
+                },
+                "1": {
+                  "text": "WORKING",
+                  "color": "green",
+                  "index": 2
+                },
+                "2": {
+                  "text": "SOME ERRORS",
+                  "color": "orange",
+                  "index": 3
+                },
+                "3": {
+                  "text": "IDLE",
+                  "color": "blue",
+                  "index": 4
+                },
+                "4": {
+                  "text": "NOT ANSWERING",
+                  "color": "red",
+                  "index": 5
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
-      "description": "Workers with a heartbeat in the last minute. 0 = that queue's jobs wait.",
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "value_and_name",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 18
+        },
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -256,34 +408,537 @@
           "fields": "",
           "values": false
         }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 19,
+        "x": 5,
+        "y": 8
       }
     },
     {
       "id": 5,
+      "type": "table",
+      "title": "What is wrong right now",
+      "description": "Every problem now, in plain words. Just noticed = seen, still being checked for a few minutes; Confirmed = real. Click a problem for its full message and what to do. Empty = nothing wrong.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "ALERTS",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Nothing wrong",
+          "custom": {
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "alertname"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Problem"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Api5xxHigh": {
+                        "text": "Many API calls fail with server errors",
+                        "index": 0
+                      },
+                      "ApiCrashing": {
+                        "text": "The API hit a bug",
+                        "index": 1
+                      },
+                      "ApiLatencyHigh": {
+                        "text": "The API is slow",
+                        "index": 2
+                      },
+                      "JobsFailing": {
+                        "text": "Jobs are failing",
+                        "index": 3
+                      },
+                      "ReaperNotRunning": {
+                        "text": "The scheduler stopped: stuck jobs are not repaired",
+                        "index": 4
+                      },
+                      "QueueBacklog": {
+                        "text": "Too many jobs are waiting",
+                        "index": 5
+                      },
+                      "QueueDepthUnknown": {
+                        "text": "Monitoring cannot read the queues",
+                        "index": 6
+                      },
+                      "NoWorker": {
+                        "text": "A worker is missing: its jobs wait",
+                        "index": 7
+                      },
+                      "MongoDown": {
+                        "text": "MongoDB is down",
+                        "index": 8
+                      },
+                      "SqlDown": {
+                        "text": "SQL Server is down",
+                        "index": 9
+                      },
+                      "RedisDown": {
+                        "text": "Redis is down",
+                        "index": 10
+                      },
+                      "AiErrorRateHigh": {
+                        "text": "Many AI calls fail",
+                        "index": 11
+                      },
+                      "AiNotAnswering": {
+                        "text": "The AI service is not answering",
+                        "index": 12
+                      },
+                      "AiSlotsSaturated": {
+                        "text": "The AI is at full capacity: calls wait",
+                        "index": 13
+                      },
+                      "AuditWriteFailing": {
+                        "text": "Audit records are not saved",
+                        "index": 14
+                      },
+                      "LibraryCheckFailing": {
+                        "text": "Library changes are not picked up",
+                        "index": 15
+                      },
+                      "TargetDown": {
+                        "text": "Monitoring cannot reach a program",
+                        "index": 16
+                      },
+                      "ApiNotRunning": {
+                        "text": "The API is not running",
+                        "index": 17
+                      },
+                      "WorkerNotRunning": {
+                        "text": "No worker is running",
+                        "index": 18
+                      },
+                      "PodNotStarting": {
+                        "text": "A pod does not start",
+                        "index": 19
+                      },
+                      "PodRestarting": {
+                        "text": "A pod keeps restarting",
+                        "index": 20
+                      },
+                      "PodOOMKilled": {
+                        "text": "A pod ran out of memory",
+                        "index": 21
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 380
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Full message and what to do",
+                    "url": "/grafana/alerting/groups?alertmanager=Alertmanager"
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "severity"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "How bad"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": {
+                        "text": "Critical",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "warning": {
+                        "text": "Warning",
+                        "color": "orange",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "alertstate"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "State"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "pending": {
+                        "text": "Just noticed",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "firing": {
+                        "text": "Confirmed",
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Queue"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Why"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ai_down": {
+                        "text": "AI answered with a server error",
+                        "index": 0
+                      },
+                      "ai_unreachable": {
+                        "text": "AI could not be reached",
+                        "index": 1
+                      },
+                      "ai_busy": {
+                        "text": "AI was busy",
+                        "index": 2
+                      },
+                      "ai_timed_out": {
+                        "text": "AI timed out",
+                        "index": 3
+                      },
+                      "abandoned": {
+                        "text": "Its worker died mid-job",
+                        "index": 4
+                      },
+                      "never_started": {
+                        "text": "No worker ever picked it up",
+                        "index": 5
+                      },
+                      "lease_expired": {
+                        "text": "Its worker stopped; sent again",
+                        "index": 6
+                      },
+                      "never_picked_up": {
+                        "text": "Its message was lost; sent again",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "job"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Program"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Store"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "key"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Queue list"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "instance"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Address"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pod"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Pod"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true
+            },
+            "indexByName": {
+              "alertstate": 0,
+              "severity": 1,
+              "alertname": 2
+            }
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      }
+    },
+    {
+      "id": 6,
       "type": "row",
-      "title": "API",
+      "title": "Problems in the chosen time",
+      "description": "Everyone: what went wrong in the time picked at the top right. Click a number for the list.",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 21
       },
       "panels": []
     },
     {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Requests per second, by status",
+      "id": 7,
+      "type": "stat",
+      "title": "Failed jobs",
+      "description": "Background jobs that ended in failure (a user sees a failed run). Click to see them.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 10
       },
       "targets": [
         {
@@ -292,30 +947,70 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (status) (rate(tsg_http_requests_total[5m]))",
-          "legendFormat": "{{status}}"
+          "expr": "round(sum(increase(tsg_jobs_total{outcome=\"failure\"}[$__range]))) or vector(0)",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show the failed jobs",
+              "url": "/grafana/d/tsg/tsg?${__url_time_range}&viewPanel=panel-42"
+            }
+          ]
         },
         "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 22
       }
     },
     {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Server errors (share of answers that are 5xx)",
+      "id": 8,
+      "type": "stat",
+      "title": "Retried jobs",
+      "description": "Jobs that met an outage (AI or a store) and will try again by themselves. Click to see them.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 10
       },
       "targets": [
         {
@@ -324,32 +1019,3853 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(tsg_http_requests_total{status=~\"5..\", route!~\"/health|/ready|/metrics\"}[5m])) / clamp_min(sum(rate(tsg_http_requests_total{route!~\"/health|/ready|/metrics\"}[5m])), 1e-9)",
-          "legendFormat": "5xx share"
+          "expr": "round(sum(increase(tsg_jobs_total{outcome=\"retry\"}[$__range]))) or vector(0)",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show the warnings",
+              "url": "/grafana/d/tsg/tsg?${__url_time_range}&viewPanel=panel-41"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 22
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Stuck jobs",
+      "description": "Jobs whose worker stopped or whose message was lost, sent again by the reaper. Click to see them.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|too_long)\"` [$__range])) or vector(0)",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show the warnings",
+              "url": "/grafana/d/tsg/tsg?${__url_time_range}&viewPanel=panel-41"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 22
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "AI no answer",
+      "description": "AI calls that got no answer after their retries (down, unreachable, busy, timed out). Click to see them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum(increase(tsg_ai_outages_total[$__range]))) or vector(0)",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Why the AI did not answer",
+              "url": "/grafana/d/tsg/tsg?${__url_time_range}&viewPanel=panel-44"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 22
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "API errors",
+      "description": "API calls answered 5xx (health probes left out). Click to see them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum(increase(tsg_http_requests_total{status=~\"5..\",route!~\"/health|/ready|/metrics\"}[$__range]))) or vector(0)",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show the failed API calls",
+              "url": "/grafana/d/tsg/tsg?${__url_time_range}&viewPanel=panel-43"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 22
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Errors logged",
+      "description": "Log lines at error level: bugs and failures, each with its details. Click to see them.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum(count_over_time({app=\"tsg\", level=~\"error|critical\"} [$__range])) or vector(0)",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Show the errors",
+              "url": "/grafana/d/tsg/tsg?${__url_time_range}&viewPanel=panel-40"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 22
+      }
+    },
+    {
+      "id": 40,
+      "type": "table",
+      "title": "Errors and exceptions",
+      "description": "Every error-level line, newest first: bugs (with their traceback) and failures. 'Details' is the last line of the traceback or the error message. Click a run or request id for its whole story.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+          "queryType": "range",
+          "maxLines": 500
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No errors",
+          "custom": {
+            "filterable": true,
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "When"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "component"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Where"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "What happened"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ai.call_unavailable": {
+                        "text": "The AI did not answer",
+                        "index": 0
+                      },
+                      "ai.call_refused": {
+                        "text": "The AI refused the key or model name",
+                        "index": 1
+                      },
+                      "ai.call_record_failed": {
+                        "text": "A copy of an AI call was not saved",
+                        "index": 2
+                      },
+                      "ai.slots_busy": {
+                        "text": "AI full: a call waited too long",
+                        "index": 3
+                      },
+                      "ai.slot_free_failed": {
+                        "text": "An AI slot was not freed",
+                        "index": 4
+                      },
+                      "dependency.unavailable": {
+                        "text": "A database did not answer",
+                        "index": 5
+                      },
+                      "http.unhandled_error": {
+                        "text": "Bug: the API crashed on a call",
+                        "index": 6
+                      },
+                      "http.app_error": {
+                        "text": "The API answered with a server error",
+                        "index": 7
+                      },
+                      "http.request": {
+                        "text": "An API call failed",
+                        "index": 8
+                      },
+                      "job.failed": {
+                        "text": "A job failed",
+                        "index": 9
+                      },
+                      "job.unexpected_error": {
+                        "text": "Bug: a job crashed",
+                        "index": 10
+                      },
+                      "job.failure_not_saved": {
+                        "text": "A failed job was not saved (MongoDB down)",
+                        "index": 11
+                      },
+                      "job.retry_scheduled": {
+                        "text": "A job will be tried again",
+                        "index": 12
+                      },
+                      "job.lease_lost": {
+                        "text": "A job was taken over (its worker stalled)",
+                        "index": 13
+                      },
+                      "job.lease_renew_failed": {
+                        "text": "A job could not renew its lease",
+                        "index": 14
+                      },
+                      "job.too_long": {
+                        "text": "A job ran too long and was stopped",
+                        "index": 15
+                      },
+                      "job.send_failed": {
+                        "text": "A job could not be queued",
+                        "index": 16
+                      },
+                      "job.queue_size_unknown": {
+                        "text": "A queue's length could not be read",
+                        "index": 17
+                      },
+                      "job.reap_failed": {
+                        "text": "A stuck job could not be repaired",
+                        "index": 18
+                      },
+                      "job.requeued": {
+                        "text": "A stuck job was sent again",
+                        "index": 19
+                      },
+                      "worker.none_online": {
+                        "text": "No worker on a queue",
+                        "index": 20
+                      },
+                      "worker.count_unknown": {
+                        "text": "The workers could not be counted",
+                        "index": 21
+                      },
+                      "worker.heartbeat_failed": {
+                        "text": "A worker could not say it is alive",
+                        "index": 22
+                      },
+                      "event.publish_failed": {
+                        "text": "A live update was not sent",
+                        "index": 23
+                      },
+                      "event.hub_reconnecting": {
+                        "text": "Live updates are reconnecting",
+                        "index": 24
+                      },
+                      "event.hub_failed": {
+                        "text": "Live updates stopped",
+                        "index": 25
+                      },
+                      "audit.write_failed": {
+                        "text": "An audit record was not saved",
+                        "index": 26
+                      },
+                      "library.check_failed": {
+                        "text": "The library could not be read from SQL Server",
+                        "index": 27
+                      },
+                      "library.indexes_build_failed": {
+                        "text": "The library search could not be built",
+                        "index": 28
+                      },
+                      "writer.path_failed": {
+                        "text": "A scenario could not be written",
+                        "index": 29
+                      },
+                      "writer.path_abandoned": {
+                        "text": "A scenario was given up",
+                        "index": 30
+                      },
+                      "writer.regenerate_failed": {
+                        "text": "A scenario could not be regenerated",
+                        "index": 31
+                      },
+                      "writer.outage_settled": {
+                        "text": "Some scenarios failed in an outage",
+                        "index": 32
+                      },
+                      "writer.plan_check_not_made": {
+                        "text": "A scenario's plan check was skipped",
+                        "index": 33
+                      },
+                      "controls.map_failed": {
+                        "text": "Controls could not be mapped",
+                        "index": 34
+                      },
+                      "controls.not_mapped": {
+                        "text": "No controls were mapped",
+                        "index": 35
+                      },
+                      "planner.threats_not_judged": {
+                        "text": "Some threats were not judged by the AI",
+                        "index": 36
+                      },
+                      "external_intelligence.source_failed": {
+                        "text": "A threat-intelligence source failed",
+                        "index": 37
+                      },
+                      "external_intelligence.snapshot_build_failed": {
+                        "text": "Threat intelligence could not be rebuilt",
+                        "index": 38
+                      },
+                      "external_intelligence.evidence_search_failed": {
+                        "text": "The evidence search failed",
+                        "index": 39
+                      },
+                      "mongodb.validator_not_applied": {
+                        "text": "A MongoDB rule was not applied",
+                        "index": 40
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^Task (\\w+)\\[.*\\] raised unexpected.*",
+                      "result": {
+                        "text": "A job ended with an error ($1)",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 300
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      },
+                      "service_mapper": {
+                        "text": "Map services",
+                        "index": 9
+                      },
+                      "relevance_gate": {
+                        "text": "Check threat relevance",
+                        "index": 10
+                      },
+                      "gap_fill": {
+                        "text": "Fill threat gaps",
+                        "index": 11
+                      },
+                      "write_scenario": {
+                        "text": "Write a scenario",
+                        "index": 12
+                      },
+                      "plan_check": {
+                        "text": "Check a scenario's plan",
+                        "index": 13
+                      },
+                      "remediation_plan": {
+                        "text": "Write remediation plan",
+                        "index": 14
+                      },
+                      "embed": {
+                        "text": "Make search vectors",
+                        "index": 15
+                      },
+                      "rerank": {
+                        "text": "Rank search results",
+                        "index": 16
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "record_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Run"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Everything about this run",
+                    "url": "/grafana/d/tsg/tsg?var-id=${__value.raw}&${__url_time_range}&viewPanel=panel-60"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "request_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Request"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Everything about this request",
+                    "url": "/grafana/d/tsg/tsg?var-id=${__value.raw}&${__url_time_range}&viewPanel=panel-60"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "details"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Details (click a row for everything)"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "labels",
+            "format": "auto",
+            "replace": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "Time": true,
+              "component": true,
+              "event": true,
+              "task": true,
+              "record_id": true,
+              "request_id": true,
+              "details": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "component": 1,
+              "event": 2,
+              "task": 3,
+              "record_id": 4,
+              "request_id": 5,
+              "details": 6
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      }
+    },
+    {
+      "id": 41,
+      "type": "table",
+      "title": "Warnings: things that went wrong and were handled",
+      "description": "Retries, outages, stuck jobs repaired, a worker missing for a moment ... newest first. Usually fixed by themselves; many of the same kind is a problem.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+          "queryType": "range",
+          "maxLines": 500
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No warnings",
+          "custom": {
+            "filterable": true,
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "When"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "component"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Where"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "What happened"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ai.call_unavailable": {
+                        "text": "The AI did not answer",
+                        "index": 0
+                      },
+                      "ai.call_refused": {
+                        "text": "The AI refused the key or model name",
+                        "index": 1
+                      },
+                      "ai.call_record_failed": {
+                        "text": "A copy of an AI call was not saved",
+                        "index": 2
+                      },
+                      "ai.slots_busy": {
+                        "text": "AI full: a call waited too long",
+                        "index": 3
+                      },
+                      "ai.slot_free_failed": {
+                        "text": "An AI slot was not freed",
+                        "index": 4
+                      },
+                      "dependency.unavailable": {
+                        "text": "A database did not answer",
+                        "index": 5
+                      },
+                      "http.unhandled_error": {
+                        "text": "Bug: the API crashed on a call",
+                        "index": 6
+                      },
+                      "http.app_error": {
+                        "text": "The API answered with a server error",
+                        "index": 7
+                      },
+                      "http.request": {
+                        "text": "An API call failed",
+                        "index": 8
+                      },
+                      "job.failed": {
+                        "text": "A job failed",
+                        "index": 9
+                      },
+                      "job.unexpected_error": {
+                        "text": "Bug: a job crashed",
+                        "index": 10
+                      },
+                      "job.failure_not_saved": {
+                        "text": "A failed job was not saved (MongoDB down)",
+                        "index": 11
+                      },
+                      "job.retry_scheduled": {
+                        "text": "A job will be tried again",
+                        "index": 12
+                      },
+                      "job.lease_lost": {
+                        "text": "A job was taken over (its worker stalled)",
+                        "index": 13
+                      },
+                      "job.lease_renew_failed": {
+                        "text": "A job could not renew its lease",
+                        "index": 14
+                      },
+                      "job.too_long": {
+                        "text": "A job ran too long and was stopped",
+                        "index": 15
+                      },
+                      "job.send_failed": {
+                        "text": "A job could not be queued",
+                        "index": 16
+                      },
+                      "job.queue_size_unknown": {
+                        "text": "A queue's length could not be read",
+                        "index": 17
+                      },
+                      "job.reap_failed": {
+                        "text": "A stuck job could not be repaired",
+                        "index": 18
+                      },
+                      "job.requeued": {
+                        "text": "A stuck job was sent again",
+                        "index": 19
+                      },
+                      "worker.none_online": {
+                        "text": "No worker on a queue",
+                        "index": 20
+                      },
+                      "worker.count_unknown": {
+                        "text": "The workers could not be counted",
+                        "index": 21
+                      },
+                      "worker.heartbeat_failed": {
+                        "text": "A worker could not say it is alive",
+                        "index": 22
+                      },
+                      "event.publish_failed": {
+                        "text": "A live update was not sent",
+                        "index": 23
+                      },
+                      "event.hub_reconnecting": {
+                        "text": "Live updates are reconnecting",
+                        "index": 24
+                      },
+                      "event.hub_failed": {
+                        "text": "Live updates stopped",
+                        "index": 25
+                      },
+                      "audit.write_failed": {
+                        "text": "An audit record was not saved",
+                        "index": 26
+                      },
+                      "library.check_failed": {
+                        "text": "The library could not be read from SQL Server",
+                        "index": 27
+                      },
+                      "library.indexes_build_failed": {
+                        "text": "The library search could not be built",
+                        "index": 28
+                      },
+                      "writer.path_failed": {
+                        "text": "A scenario could not be written",
+                        "index": 29
+                      },
+                      "writer.path_abandoned": {
+                        "text": "A scenario was given up",
+                        "index": 30
+                      },
+                      "writer.regenerate_failed": {
+                        "text": "A scenario could not be regenerated",
+                        "index": 31
+                      },
+                      "writer.outage_settled": {
+                        "text": "Some scenarios failed in an outage",
+                        "index": 32
+                      },
+                      "writer.plan_check_not_made": {
+                        "text": "A scenario's plan check was skipped",
+                        "index": 33
+                      },
+                      "controls.map_failed": {
+                        "text": "Controls could not be mapped",
+                        "index": 34
+                      },
+                      "controls.not_mapped": {
+                        "text": "No controls were mapped",
+                        "index": 35
+                      },
+                      "planner.threats_not_judged": {
+                        "text": "Some threats were not judged by the AI",
+                        "index": 36
+                      },
+                      "external_intelligence.source_failed": {
+                        "text": "A threat-intelligence source failed",
+                        "index": 37
+                      },
+                      "external_intelligence.snapshot_build_failed": {
+                        "text": "Threat intelligence could not be rebuilt",
+                        "index": 38
+                      },
+                      "external_intelligence.evidence_search_failed": {
+                        "text": "The evidence search failed",
+                        "index": 39
+                      },
+                      "mongodb.validator_not_applied": {
+                        "text": "A MongoDB rule was not applied",
+                        "index": 40
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^Task (\\w+)\\[.*\\] raised unexpected.*",
+                      "result": {
+                        "text": "A job ended with an error ($1)",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 300
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      },
+                      "service_mapper": {
+                        "text": "Map services",
+                        "index": 9
+                      },
+                      "relevance_gate": {
+                        "text": "Check threat relevance",
+                        "index": 10
+                      },
+                      "gap_fill": {
+                        "text": "Fill threat gaps",
+                        "index": 11
+                      },
+                      "write_scenario": {
+                        "text": "Write a scenario",
+                        "index": 12
+                      },
+                      "plan_check": {
+                        "text": "Check a scenario's plan",
+                        "index": 13
+                      },
+                      "remediation_plan": {
+                        "text": "Write remediation plan",
+                        "index": 14
+                      },
+                      "embed": {
+                        "text": "Make search vectors",
+                        "index": 15
+                      },
+                      "rerank": {
+                        "text": "Rank search results",
+                        "index": 16
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "record_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Run"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Everything about this run",
+                    "url": "/grafana/d/tsg/tsg?var-id=${__value.raw}&${__url_time_range}&viewPanel=panel-60"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "request_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Request"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Everything about this request",
+                    "url": "/grafana/d/tsg/tsg?var-id=${__value.raw}&${__url_time_range}&viewPanel=panel-60"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "details"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Details (click a row for everything)"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "labels",
+            "format": "auto",
+            "replace": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "Time": true,
+              "component": true,
+              "event": true,
+              "task": true,
+              "record_id": true,
+              "request_id": true,
+              "details": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "component": 1,
+              "event": 2,
+              "task": 3,
+              "record_id": 4,
+              "request_id": 5,
+              "details": 6
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      }
+    },
+    {
+      "id": 42,
+      "type": "table",
+      "title": "Failed jobs",
+      "description": "Every job that failed for good, newest first, and why. Click the run id for its whole story.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{app=\"tsg\"} |= `\"event\": \"job.failed\"` | json",
+          "queryType": "range",
+          "maxLines": 500
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No job failed",
+          "custom": {
+            "filterable": true,
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "When"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 190
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "record_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Run"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Everything about this run",
+                    "url": "/grafana/d/tsg/tsg?var-id=${__value.raw}&${__url_time_range}&viewPanel=panel-60"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "code"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Why"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "unavailable": {
+                        "text": "A service did not answer (outage)",
+                        "index": 0
+                      },
+                      "internal_error": {
+                        "text": "Bug: unexpected error",
+                        "index": 1
+                      },
+                      "job_abandoned": {
+                        "text": "Its worker stopped",
+                        "index": 2
+                      },
+                      "plan_refused": {
+                        "text": "The asset cannot be planned",
+                        "index": 3
+                      },
+                      "generation_failed": {
+                        "text": "The AI's answer was unusable",
+                        "index": 4
+                      },
+                      "ai_misconfigured": {
+                        "text": "AI key or model name refused",
+                        "index": 5
+                      },
+                      "ai_answer_unusable": {
+                        "text": "The AI's answer was unusable",
+                        "index": 6
+                      },
+                      "invalid_plan": {
+                        "text": "The plan is invalid",
+                        "index": 7
+                      },
+                      "actor_library_empty": {
+                        "text": "No attacker in the library",
+                        "index": 8
+                      },
+                      "control_library_empty": {
+                        "text": "No controls in the library",
+                        "index": 9
+                      },
+                      "library_record_retired": {
+                        "text": "A library record was retired",
+                        "index": 10
+                      },
+                      "scenario_blocked": {
+                        "text": "The scenario broke a rule",
+                        "index": 11
+                      },
+                      "setup_error": {
+                        "text": "The server is set up wrongly",
+                        "index": 12
+                      },
+                      "validation_error": {
+                        "text": "Wrong input from the caller",
+                        "index": 13
+                      },
+                      "unauthorized": {
+                        "text": "Missing or wrong API key",
+                        "index": 14
+                      },
+                      "forbidden": {
+                        "text": "Not allowed",
+                        "index": 15
+                      },
+                      "not_found": {
+                        "text": "Not found",
+                        "index": 16
+                      },
+                      "conflict": {
+                        "text": "Conflict: already exists or busy",
+                        "index": 17
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 250
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "More"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ai_down": {
+                        "text": "AI answered with a server error",
+                        "index": 0
+                      },
+                      "ai_unreachable": {
+                        "text": "AI could not be reached",
+                        "index": 1
+                      },
+                      "ai_busy": {
+                        "text": "AI was busy",
+                        "index": 2
+                      },
+                      "ai_timed_out": {
+                        "text": "AI timed out",
+                        "index": 3
+                      },
+                      "abandoned": {
+                        "text": "Its worker died mid-job",
+                        "index": 4
+                      },
+                      "never_started": {
+                        "text": "No worker ever picked it up",
+                        "index": 5
+                      },
+                      "lease_expired": {
+                        "text": "Its worker stopped; sent again",
+                        "index": 6
+                      },
+                      "never_picked_up": {
+                        "text": "Its message was lost; sent again",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 220
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "message"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Message"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "labels",
+            "format": "auto",
+            "replace": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "Time": true,
+              "task": true,
+              "record_id": true,
+              "code": true,
+              "reason": true,
+              "message": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "task": 1,
+              "record_id": 2,
+              "code": 3,
+              "reason": 4,
+              "message": 5
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      }
+    },
+    {
+      "id": 43,
+      "type": "table",
+      "title": "API calls that went wrong",
+      "description": "Every API call answered 4xx (the caller's mistake) or 5xx (ours), newest first, with what it answered. Click the request id for its whole story.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{app=\"tsg\", component=\"api\"} |= `\"event\": \"http.request\"` | json | status >= 400 | route!~\"/health|/ready|/metrics\"",
+          "queryType": "range",
+          "maxLines": 500
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Every API call worked",
+          "custom": {
+            "filterable": true,
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "When"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "method"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Call"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "path"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Path"
+              },
+              {
+                "id": "custom.width",
+                "value": 260
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Status"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "orange",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "code"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Error"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "unavailable": {
+                        "text": "A service did not answer (outage)",
+                        "index": 0
+                      },
+                      "internal_error": {
+                        "text": "Bug: unexpected error",
+                        "index": 1
+                      },
+                      "job_abandoned": {
+                        "text": "Its worker stopped",
+                        "index": 2
+                      },
+                      "plan_refused": {
+                        "text": "The asset cannot be planned",
+                        "index": 3
+                      },
+                      "generation_failed": {
+                        "text": "The AI's answer was unusable",
+                        "index": 4
+                      },
+                      "ai_misconfigured": {
+                        "text": "AI key or model name refused",
+                        "index": 5
+                      },
+                      "ai_answer_unusable": {
+                        "text": "The AI's answer was unusable",
+                        "index": 6
+                      },
+                      "invalid_plan": {
+                        "text": "The plan is invalid",
+                        "index": 7
+                      },
+                      "actor_library_empty": {
+                        "text": "No attacker in the library",
+                        "index": 8
+                      },
+                      "control_library_empty": {
+                        "text": "No controls in the library",
+                        "index": 9
+                      },
+                      "library_record_retired": {
+                        "text": "A library record was retired",
+                        "index": 10
+                      },
+                      "scenario_blocked": {
+                        "text": "The scenario broke a rule",
+                        "index": 11
+                      },
+                      "setup_error": {
+                        "text": "The server is set up wrongly",
+                        "index": 12
+                      },
+                      "validation_error": {
+                        "text": "Wrong input from the caller",
+                        "index": 13
+                      },
+                      "unauthorized": {
+                        "text": "Missing or wrong API key",
+                        "index": 14
+                      },
+                      "forbidden": {
+                        "text": "Not allowed",
+                        "index": 15
+                      },
+                      "not_found": {
+                        "text": "Not found",
+                        "index": 16
+                      },
+                      "conflict": {
+                        "text": "Conflict: already exists or busy",
+                        "index": 17
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 200
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "detail"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Answer"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "request_id"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Request"
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Everything about this request",
+                    "url": "/grafana/d/tsg/tsg?var-id=${__value.raw}&${__url_time_range}&viewPanel=panel-60"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "labels",
+            "format": "auto",
+            "replace": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "Time": true,
+              "method": true,
+              "path": true,
+              "status": true,
+              "code": true,
+              "detail": true,
+              "request_id": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "method": 1,
+              "path": 2,
+              "status": 3,
+              "code": 4,
+              "detail": 5,
+              "request_id": 6
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      }
+    },
+    {
+      "id": 44,
+      "type": "stat",
+      "title": "Why the AI did not answer",
+      "description": "AI calls with no answer in the chosen time, by reason. Timed out or busy: the AI gateway is overloaded. Could not be reached: network, proxy or address. Server error: the gateway is broken.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum by (reason) (increase(tsg_ai_outages_total[$__range])))",
+          "legendFormat": "{{reason}}",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "The AI answered every call",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ai_down"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AI answered with a server error"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ai_unreachable"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AI could not be reached"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ai_busy"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AI was busy"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ai_timed_out"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AI timed out"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "horizontal",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 50
+      }
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Which AI steps had no answer",
+      "description": "The same no-answers by the step that asked the AI and the reason.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum by (task, reason) (increase(tsg_ai_outages_total[$__range]))) > 0",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "None"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AI step"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "service_mapper": {
+                        "text": "Map services",
+                        "index": 0
+                      },
+                      "relevance_gate": {
+                        "text": "Check threat relevance",
+                        "index": 1
+                      },
+                      "gap_fill": {
+                        "text": "Fill threat gaps",
+                        "index": 2
+                      },
+                      "write_scenario": {
+                        "text": "Write a scenario",
+                        "index": 3
+                      },
+                      "plan_check": {
+                        "text": "Check a scenario's plan",
+                        "index": 4
+                      },
+                      "remediation_plan": {
+                        "text": "Write remediation plan",
+                        "index": 5
+                      },
+                      "embed": {
+                        "text": "Make search vectors",
+                        "index": 6
+                      },
+                      "rerank": {
+                        "text": "Rank search results",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Why"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ai_down": {
+                        "text": "AI answered with a server error",
+                        "index": 0
+                      },
+                      "ai_unreachable": {
+                        "text": "AI could not be reached",
+                        "index": 1
+                      },
+                      "ai_busy": {
+                        "text": "AI was busy",
+                        "index": 2
+                      },
+                      "ai_timed_out": {
+                        "text": "AI timed out",
+                        "index": 3
+                      },
+                      "abandoned": {
+                        "text": "Its worker died mid-job",
+                        "index": 4
+                      },
+                      "never_started": {
+                        "text": "No worker ever picked it up",
+                        "index": 5
+                      },
+                      "lease_expired": {
+                        "text": "Its worker stopped; sent again",
+                        "index": 6
+                      },
+                      "never_picked_up": {
+                        "text": "Its message was lost; sent again",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Calls"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 50
+      }
+    },
+    {
+      "id": 45,
+      "type": "table",
+      "title": "Why jobs failed",
+      "description": "Failed jobs in the chosen time, by job type and reason.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum by (task, code, reason) (count_over_time({app=\"tsg\"} |= `\"event\": \"job.failed\"` | json [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No job failed"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "code"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Why"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "unavailable": {
+                        "text": "A service did not answer (outage)",
+                        "index": 0
+                      },
+                      "internal_error": {
+                        "text": "Bug: unexpected error",
+                        "index": 1
+                      },
+                      "job_abandoned": {
+                        "text": "Its worker stopped",
+                        "index": 2
+                      },
+                      "plan_refused": {
+                        "text": "The asset cannot be planned",
+                        "index": 3
+                      },
+                      "generation_failed": {
+                        "text": "The AI's answer was unusable",
+                        "index": 4
+                      },
+                      "ai_misconfigured": {
+                        "text": "AI key or model name refused",
+                        "index": 5
+                      },
+                      "ai_answer_unusable": {
+                        "text": "The AI's answer was unusable",
+                        "index": 6
+                      },
+                      "invalid_plan": {
+                        "text": "The plan is invalid",
+                        "index": 7
+                      },
+                      "actor_library_empty": {
+                        "text": "No attacker in the library",
+                        "index": 8
+                      },
+                      "control_library_empty": {
+                        "text": "No controls in the library",
+                        "index": 9
+                      },
+                      "library_record_retired": {
+                        "text": "A library record was retired",
+                        "index": 10
+                      },
+                      "scenario_blocked": {
+                        "text": "The scenario broke a rule",
+                        "index": 11
+                      },
+                      "setup_error": {
+                        "text": "The server is set up wrongly",
+                        "index": 12
+                      },
+                      "validation_error": {
+                        "text": "Wrong input from the caller",
+                        "index": 13
+                      },
+                      "unauthorized": {
+                        "text": "Missing or wrong API key",
+                        "index": 14
+                      },
+                      "forbidden": {
+                        "text": "Not allowed",
+                        "index": 15
+                      },
+                      "not_found": {
+                        "text": "Not found",
+                        "index": 16
+                      },
+                      "conflict": {
+                        "text": "Conflict: already exists or busy",
+                        "index": 17
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "More"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ai_down": {
+                        "text": "AI answered with a server error",
+                        "index": 0
+                      },
+                      "ai_unreachable": {
+                        "text": "AI could not be reached",
+                        "index": 1
+                      },
+                      "ai_busy": {
+                        "text": "AI was busy",
+                        "index": 2
+                      },
+                      "ai_timed_out": {
+                        "text": "AI timed out",
+                        "index": 3
+                      },
+                      "abandoned": {
+                        "text": "Its worker died mid-job",
+                        "index": 4
+                      },
+                      "never_started": {
+                        "text": "No worker ever picked it up",
+                        "index": 5
+                      },
+                      "lease_expired": {
+                        "text": "Its worker stopped; sent again",
+                        "index": 6
+                      },
+                      "never_picked_up": {
+                        "text": "Its message was lost; sent again",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Jobs"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Value #A",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 50
+      }
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "What the workers are doing",
+      "description": "Operations and developers: the Celery workers' jobs, now and over time.",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Jobs running now",
+      "description": "Jobs each worker is running at this moment (from Flower). 0 everywhere and jobs waiting = stuck.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (worker) (flower_worker_number_of_currently_executing_tasks)",
+          "legendFormat": "{{worker}}",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "noValue": "No worker seen by Flower",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 58
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Jobs waiting in each queue",
+      "description": "Jobs sent but not yet picked up by a worker. Growing for long = the workers cannot keep up (or are down).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (queue) (label_replace(redis_key_size{key=~\"tsg:tsg_.*\"}, \"queue\", \"$1\", \"key\", \"tsg:(.*)\"))",
+          "legendFormat": "{{queue}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "Nothing yet"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 6,
+        "y": 58
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Jobs finished, by result",
+      "description": "Jobs ended per 5 minutes (the every-minute reaper left out): done, tried again after an outage, failed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "noValue": "Nothing yet"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Done"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "retry"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Tried again"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failure"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Failed"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 15,
+        "y": 58
+      }
+    },
+    {
+      "id": 18,
+      "type": "table",
+      "title": "Report card per job type",
+      "description": "For each kind of job in the chosen time: how many were done, tried again and failed, and how long 95 % of them took.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum by (task) (increase(tsg_jobs_total{outcome=\"success\"}[$__range])))",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum by (task) (increase(tsg_jobs_total{outcome=\"retry\"}[$__range])))",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum by (task) (increase(tsg_jobs_total{outcome=\"failure\"}[$__range])))",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, task) (increase(tsg_job_seconds_bucket[$__range]))) >= 0",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Done"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "0"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Tried again"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "0"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #C"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Failed"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "0"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #D"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "95 % took at most"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "-"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "task": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4
+            }
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      }
+    },
+    {
+      "id": 19,
+      "type": "row",
+      "title": "What is slow",
+      "description": "Developers: where the time goes. 95 % of calls finish within the time shown.",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "panels": []
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Slowest job types",
+      "description": "How long 95 % of each kind of job took in the chosen time, slowest first.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, task) (increase(tsg_job_seconds_bucket[$__range]))) > 0",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "95 % took at most"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 300.0
+                    },
+                    {
+                      "color": "red",
+                      "value": 600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "task": true,
+              "Value": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 74
+      }
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Slowest AI steps",
+      "description": "How long 95 % of the AI calls of each step took, slowest first. Above a minute: the AI gateway is slow (see docs/UAT_LLM_TIMEOUT_RUNBOOK.md).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, task) (increase(tsg_ai_call_seconds_bucket[$__range]))) > 0",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "task"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "AI step"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "service_mapper": {
+                        "text": "Map services",
+                        "index": 0
+                      },
+                      "relevance_gate": {
+                        "text": "Check threat relevance",
+                        "index": 1
+                      },
+                      "gap_fill": {
+                        "text": "Fill threat gaps",
+                        "index": 2
+                      },
+                      "write_scenario": {
+                        "text": "Write a scenario",
+                        "index": 3
+                      },
+                      "plan_check": {
+                        "text": "Check a scenario's plan",
+                        "index": 4
+                      },
+                      "remediation_plan": {
+                        "text": "Write remediation plan",
+                        "index": 5
+                      },
+                      "embed": {
+                        "text": "Make search vectors",
+                        "index": 6
+                      },
+                      "rerank": {
+                        "text": "Rank search results",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "95 % took at most"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 30.0
+                    },
+                    {
+                      "color": "red",
+                      "value": 60
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "task": true,
+              "Value": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 74
+      }
+    },
+    {
+      "id": 22,
+      "type": "table",
+      "title": "Slowest API pages",
+      "description": "How long 95 % of the calls to each API address took (probes left out), slowest first.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (increase(tsg_http_request_seconds_bucket{route!~\"/health|/ready|/metrics\"}[$__range]))) > 0",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "route"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "API address"
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "95 % took at most"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": " "
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "route": true,
+              "Value": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 74
+      }
+    },
+    {
+      "id": 23,
+      "type": "gauge",
+      "title": "AI capacity in use",
+      "description": "AI calls running now out of CII_MAX_CONCURRENT_AI_CALLS. At 100 % new calls wait for a free slot.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(tsg_ai_slots_in_use) / max(tsg_ai_slots_cap > 0)",
+          "legendFormat": "In use",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
-          "noValue": "No server errors"
+          "min": 0,
+          "max": 1,
+          "noValue": "No limit set",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.8
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "description": "Health probes excluded (/ready answers 503 on purpose). Alert Api5xxHigh fires above 2 %."
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Slowest 5 % of requests (p95), by route",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+      "options": {
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 10
+        "w": 6,
+        "x": 0,
+        "y": 82
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "AI call time over time (95 %)",
+      "description": "How long 95 % of AI calls took, per step. A climb = the AI gateway slows down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "targets": [
         {
@@ -358,75 +4874,51 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(tsg_http_request_seconds_bucket{route!~\"/health|/ready|/metrics\"}[5m])))",
-          "legendFormat": "{{route}}"
+          "expr": "histogram_quantile(0.95, sum by (le, task) (rate(tsg_ai_call_seconds_bucket[15m])))",
+          "legendFormat": "{{task}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "Nothing yet"
         },
         "overrides": []
       },
-      "description": "Health probes excluded. Alert ApiLatencyHigh fires above 1 s."
-    },
-    {
-      "id": 9,
-      "type": "row",
-      "title": "Jobs and queues",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 18
-      },
-      "panels": []
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Jobs per minute, by task and outcome",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 19
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (task, outcome) (rate(tsg_jobs_total[5m])) * 60",
-          "legendFormat": "{{task}} {{outcome}}"
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "description": "success, retry (a store or AI outage: tried again later) or failure (final)."
-    },
-    {
-      "id": 11,
-      "type": "timeseries",
-      "title": "Job duration (p95), by task",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 19
+        "w": 9,
+        "x": 6,
+        "y": 82
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Job time over time (95 %)",
+      "description": "How long 95 % of jobs took, per job type.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "targets": [
         {
@@ -441,192 +4933,59 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 12,
-      "type": "timeseries",
-      "title": "Jobs waiting in each queue",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 19
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
           },
-          "expr": "max by (key) (redis_key_size{key=~\"tsg:tsg_.*\"})",
-          "legendFormat": "{{key}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "description": "Length of each Celery queue in Redis. Alert QueueBacklog fires above 50 for 15 minutes."
-    },
-    {
-      "id": 13,
-      "type": "timeseries",
-      "title": "Live workers per queue",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 27
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max by (queue) (tsg_workers_online)",
-          "legendFormat": "{{queue}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      }
-    },
-    {
-      "id": 14,
-      "type": "timeseries",
-      "title": "Flower: task run time (p95), by task",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 27
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum by (le, task) (rate(flower_task_runtime_seconds_bucket[15m])))",
-          "legendFormat": "{{task}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
+          "noValue": "Nothing yet"
         },
         "overrides": []
       },
-      "description": "From Flower (/flower). Open Flower for each task's arguments and history."
-    },
-    {
-      "id": 15,
-      "type": "timeseries",
-      "title": "Flower: task events per minute",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 27
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (type) (rate(flower_events_total[5m])) * 60",
-          "legendFormat": "{{type}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "w": 9,
+        "x": 15,
+        "y": 82
       }
     },
     {
-      "id": 29,
-      "type": "timeseries",
-      "title": "Scenario paths settled per hour, by outcome (written, blocked, failed, abandoned)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 35
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (outcome) (increase(tsg_scenarios_total[1h]))",
-          "legendFormat": "{{outcome}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "description": "success, retry (a store or AI outage: tried again later) or failure (final)."
-    },
-    {
-      "id": 16,
+      "id": 26,
       "type": "row",
-      "title": "AI",
+      "title": "Traffic: API and AI calls",
+      "description": "Operations: how busy the system is, and how much of it fails.",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 90
       },
       "panels": []
     },
     {
-      "id": 17,
+      "id": 27,
       "type": "timeseries",
-      "title": "AI calls per minute, by task and outcome",
+      "title": "API calls per minute",
+      "description": "Calls to the API by result (health probes left out).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 44
       },
       "targets": [
         {
@@ -635,29 +4994,131 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (task, outcome) (rate(tsg_ai_calls_total[5m])) * 60",
-          "legendFormat": "{{task}} {{outcome}}"
+          "expr": "sum(rate(tsg_http_requests_total{status=~\"[123]..\",route!~\"/health|/ready|/metrics\"}[5m])) * 60",
+          "legendFormat": "OK"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(tsg_http_requests_total{status=~\"4..\",route!~\"/health|/ready|/metrics\"}[5m])) * 60",
+          "legendFormat": "Caller mistakes (4xx)"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(tsg_http_requests_total{status=~\"5..\",route!~\"/health|/ready|/metrics\"}[5m])) * 60",
+          "legendFormat": "Server errors (5xx)"
         }
       ],
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "noValue": "Nothing yet"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "OK"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "OK"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Caller mistakes (4xx)"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Caller mistakes (4xx)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Server errors (5xx)"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Server errors (5xx)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "description": "ok, unreadable (the answer was not valid JSON) or unavailable (busy or down)."
-    },
-    {
-      "id": 18,
-      "type": "timeseries",
-      "title": "AI failure share, by model",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 44
+        "w": 8,
+        "x": 0,
+        "y": 91
+      }
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Share of API calls that are server errors",
+      "description": "Health probes left out (/ready answers 503 on purpose). The alert Api5xxHigh fires above 2 %.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "targets": [
         {
@@ -666,137 +5127,51 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (model) (rate(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) / clamp_min(sum by (model) (rate(tsg_ai_calls_total[10m])), 1e-9)",
-          "legendFormat": "{{model}}"
+          "expr": "sum(rate(tsg_http_requests_total{status=~\"5..\",route!~\"/health|/ready|/metrics\"}[5m])) / clamp_min(sum(rate(tsg_http_requests_total{route!~\"/health|/ready|/metrics\"}[5m])), 1e-9)",
+          "legendFormat": "Server errors"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
-          "noValue": "No AI failures"
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "No server errors"
         },
         "overrides": []
       },
-      "description": "Alert AiErrorRateHigh fires above 10 %."
-    },
-    {
-      "id": 19,
-      "type": "timeseries",
-      "title": "AI tokens per minute, by model",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 52
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (model, direction) (rate(tsg_ai_tokens_total[5m])) * 60",
-          "legendFormat": "{{model}} {{direction}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      }
-    },
-    {
-      "id": 20,
-      "type": "timeseries",
-      "title": "AI call duration (p95), by task and model",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 52
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum by (le, task, model) (rate(tsg_ai_call_seconds_bucket[15m])))",
-          "legendFormat": "{{task}} {{model}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "overrides": []
-      }
-    },
-    {
-      "id": 21,
-      "type": "row",
-      "title": "Dependencies and platform",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 60
-      },
-      "panels": []
-    },
-    {
-      "id": 22,
-      "type": "timeseries",
-      "title": "Stores up (1) or down (0)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 61
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "min by (name) (tsg_dependency_up)",
-          "legendFormat": "{{name}}"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      }
-    },
-    {
-      "id": 23,
-      "type": "timeseries",
-      "title": "Monitored programs reachable (1) or not (0)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 61
+        "y": 91
+      }
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "AI calls per minute",
+      "description": "AI calls by result: answered, no answer (outage), unusable answer, error.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "targets": [
         {
@@ -805,73 +5180,146 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "min by (job) (up)",
-          "legendFormat": "{{job}}"
+          "expr": "sum by (outcome) (rate(tsg_ai_calls_total[5m])) * 60",
+          "legendFormat": "{{outcome}}"
         }
       ],
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "noValue": "Nothing yet"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ok"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Answered"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unavailable"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "No answer"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unreadable"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Unusable answer"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Error"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "description": "Every program Prometheus reads: api, worker, flower, redis-exporter, loki … Alert TargetDown."
-    },
-    {
-      "id": 24,
-      "type": "timeseries",
-      "title": "Pod restarts in the last 30 minutes (UAT)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 61
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total[30m]))",
-          "legendFormat": "{{pod}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "description": "UAT only (kube-state-metrics). Empty on a laptop."
+        "y": 91
+      }
     },
     {
-      "id": 25,
+      "id": 30,
       "type": "row",
-      "title": "Logs and audit",
+      "title": "Follow one run or request",
+      "description": "Support: paste an id in 'Find a run, request or job id' at the top, or click any blue id.",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 99
       },
       "panels": []
     },
     {
-      "id": 26,
+      "id": 60,
       "type": "logs",
-      "title": "Errors and warnings",
+      "title": "Everything about this id (newest at the top)",
+      "description": "Every log line holding the id in the box at the top: the API call, its jobs, AI calls, errors. Empty box = every line. Click a line to see all its fields (the traceback too).",
       "datasource": {
         "type": "loki",
         "uid": "loki"
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 70
       },
       "targets": [
         {
@@ -880,7 +5328,50 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{app=\"tsg\", level=~\"error|warning\"}"
+          "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
+          "queryType": "range",
+          "maxLines": 2000
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false,
+        "showLabels": false
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "id": 31,
+      "type": "logs",
+      "title": "Who did what (audit trail)",
+      "description": "Every recorded action (tsg_audit keeps 365 days), for the id in the box at the top; all actions when it is empty.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{app=\"tsg\"} |= `\"event\": \"audit.recorded\"` |= \"$id\" | json | line_format `{{ .action }}  by {{ .actor_user_id }}  on {{ .target_type }} {{ .target_id }}  | request {{ .request_id }}`",
+          "queryType": "range",
+          "maxLines": 500
         }
       ],
       "fieldConfig": {
@@ -893,110 +5384,467 @@
         "sortOrder": "Descending",
         "enableLogDetails": true,
         "dedupStrategy": "none"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 112
       }
     },
     {
-      "id": 27,
-      "type": "logs",
-      "title": "Search the logs (type a request id, session id or any text in the box at the top)",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
+      "id": 35,
+      "type": "row",
+      "title": "Stores and monitoring tools",
+      "description": "Operations: each store and monitoring program over time.",
+      "collapsed": true,
       "gridPos": {
-        "h": 9,
+        "h": 1,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 118
       },
-      "targets": [
+      "panels": [
         {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{app=\"tsg\"} |= \"$search\""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "showTime": true,
-        "wrapLogMessage": true,
-        "sortOrder": "Descending",
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
-      }
-    },
-    {
-      "id": 28,
-      "type": "logs",
-      "title": "Audit trail (who did what; tsg_audit keeps 365 days)",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 88
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{app=\"tsg\"} |= \"audit.recorded\" | json | line_format \"{{.action}}  by {{.actor_user_id}}  on {{.target_type}} {{.target_id}}  request {{.request_id}}\""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "showTime": true,
-        "wrapLogMessage": true,
-        "sortOrder": "Descending",
-        "enableLogDetails": true,
-        "dedupStrategy": "none"
-      }
-    },
-    {
-      "id": 30,
-      "type": "timeseries",
-      "title": "Remediation plan versions settled per hour, by outcome (done, failed)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 96
-      },
-      "targets": [
-        {
-          "refId": "A",
+          "id": 32,
+          "type": "timeseries",
+          "title": "Stores up (1) or down (0)",
+          "description": "MongoDB, SQL Server and Redis, as the API sees them.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (increase(tsg_plans_total[1h]))",
-          "legendFormat": "{{outcome}}"
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "min by (name) (tsg_dependency_up)",
+              "legendFormat": "{{name}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 119
+          }
+        },
+        {
+          "id": 33,
+          "type": "timeseries",
+          "title": "Monitored programs reachable (1) or not (0)",
+          "description": "Every program Prometheus reads. Alert TargetDown.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "min by (job) (up)",
+              "legendFormat": "{{job}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 119
+          }
+        },
+        {
+          "id": 34,
+          "type": "timeseries",
+          "title": "Pod restarts in the last 30 minutes (UAT)",
+          "description": "UAT only (kube-state-metrics). Empty on a laptop.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (pod) (increase(kube_pod_container_status_restarts_total[30m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 119
+          }
         }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+      ]
+    },
+    {
+      "id": 47,
+      "type": "row",
+      "title": "What the system produced",
+      "description": "Everyone: runs, scenarios and plans made, and the AI bill.",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 119
       },
-      "description": "tsg_plans_total: each remediation plan version as its job ends it (BUILD_PLAN S52)."
+      "panels": [
+        {
+          "id": 36,
+          "type": "timeseries",
+          "title": "Runs started per hour",
+          "description": "Runs started, by kind.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (kind) (increase(tsg_runs_total[1h]))",
+              "legendFormat": "{{kind}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 120
+          }
+        },
+        {
+          "id": 37,
+          "type": "timeseries",
+          "title": "Scenario paths settled per hour",
+          "description": "Written, blocked, failed or abandoned.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (outcome) (increase(tsg_scenarios_total[1h]))",
+              "legendFormat": "{{outcome}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 120
+          }
+        },
+        {
+          "id": 38,
+          "type": "timeseries",
+          "title": "Remediation plans settled per hour",
+          "description": "Each plan version as its job ends it: done or failed.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (outcome) (increase(tsg_plans_total[1h]))",
+              "legendFormat": "{{outcome}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 120
+          }
+        },
+        {
+          "id": 39,
+          "type": "timeseries",
+          "title": "AI tokens per minute",
+          "description": "Tokens sent (in) and received (out), by model: the AI bill.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model, direction) (rate(tsg_ai_tokens_total[5m])) * 60",
+              "legendFormat": "{{model}} {{direction}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 128
+          }
+        },
+        {
+          "id": 46,
+          "type": "timeseries",
+          "title": "Scenarios accepted or rejected per hour",
+          "description": "Reviewers' decisions.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (decision) (increase(tsg_decisions_total[1h]))",
+              "legendFormat": "{{decision}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 128
+          }
+        }
+      ]
     }
   ]
 }

@@ -86,6 +86,7 @@ def _settle_expired_job(
 ) -> None:
     job = record["job"]
     attempts = job.get("attempts", 0)
+    job_log = log.bind(task=job["task"], record_id=record["_id"])  # the job's own task, not the reaper's
     if attempts >= Lease.MAX_ATTEMPTS:
         error = {
             "code": ErrorCode.JOB_ABANDONED,
@@ -96,11 +97,11 @@ def _settle_expired_job(
         # Counted as a job failure: the worker died mid-job, so no task outcome was ever recorded, and
         # JobsFailing would otherwise never hear of this run.
         metrics.JOBS.labels(job["task"], "failure").inc()
-        log.warning(LogEvent.JOB_FAILED, record_id=record["_id"], reason="abandoned", attempts=attempts)
+        job_log.warning(LogEvent.JOB_FAILED, reason="abandoned", attempts=attempts, **error)
     else:
         if not jobs.requeue_or_fail_expired_job(record, now):
             return  # its worker renewed or finished in between
-        log.info(LogEvent.JOB_REQUEUED, record_id=record["_id"], reason="lease_expired", attempts=attempts)
+        job_log.info(LogEvent.JOB_REQUEUED, reason="lease_expired", attempts=attempts)
         send_job(job["task"], record["_id"], job["epoch"])
     publish(record["_id"])
 
@@ -117,6 +118,7 @@ def _resend_queued_job(
     sent that often and never started."""
     job = record["job"]
     sends = job.get("resends", 0)
+    job_log = log.bind(task=job["task"], record_id=record["_id"])  # the job's own task, not the reaper's
     if sends >= Lease.MAX_ATTEMPTS:
         # Never claimed after so many sends (its task is not registered, or its message is always refused):
         # failed, counted and announced, instead of re-sent every 2 minutes for ever with no alert.
@@ -126,12 +128,10 @@ def _resend_queued_job(
         }
         if jobs.resend_or_fail_unsent_job(record, now, counted=False, error=error):
             metrics.JOBS.labels(job["task"], "failure").inc()
-            log.warning(LogEvent.JOB_FAILED, record_id=record["_id"], reason="never_started", sends=sends)
+            job_log.warning(LogEvent.JOB_FAILED, reason="never_started", sends=sends, **error)
             publish(record["_id"])
         return
     # Moving due_at forward first means one re-send per REQUEUE_QUEUED_AFTER_SECONDS, never one per minute.
     if jobs.resend_or_fail_unsent_job(record, now, counted=counted):
-        log.info(
-            LogEvent.JOB_REQUEUED, record_id=record["_id"], reason="never_picked_up", sends=sends + counted
-        )
+        job_log.info(LogEvent.JOB_REQUEUED, reason="never_picked_up", sends=sends + counted)
         send_job(job["task"], record["_id"], job["epoch"])

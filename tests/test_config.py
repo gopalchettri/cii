@@ -126,6 +126,35 @@ def test_a_log_dir_also_writes_json_lines_to_the_role_file_once(tmp_path: Path) 
             handler.close()
 
 
+def test_a_library_error_with_a_traceback_is_one_json_line_with_its_level(tmp_path: Path) -> None:
+    """Before: Celery's own lines ("Task … raised unexpected" and its traceback) were plain text, so Loki gave
+    them no level and no error view on the dashboard showed them."""
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        configure_logging(_settings(log_dir=str(tmp_path)), "worker-test")
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            logging.getLogger("celery.app.trace").exception("Task %s raised unexpected", "tsg_reap")
+        for handler in root.handlers:
+            handler.flush()
+        [line] = [
+            json.loads(text)
+            for text in (tmp_path / "worker-test.log").read_text(encoding="utf-8").splitlines()
+        ]
+        assert (line["level"], line["logger"], line["event"]) == (
+            "error",
+            "celery.app.trace",
+            "Task tsg_reap raised unexpected",
+        )
+        assert line["exception"].startswith("Traceback") and "RuntimeError: boom" in line["exception"]
+    finally:
+        for handler in set(root.handlers) - set(before):
+            root.removeHandler(handler)
+            handler.close()
+
+
 def test_a_deployment_that_forgets_cii_env_gets_production_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: CII_ENV defaulted to dev, so a UAT or production Secret without it ran with no checks."""
     monkeypatch.delenv("CII_ENV", raising=False)

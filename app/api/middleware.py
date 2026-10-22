@@ -23,6 +23,10 @@ _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _ENTITY_ID = re.compile(r"\d{1,18}")  # the X-Entity-Id the identity check accepts: a positive whole number
 
 
+#: Health probes: /ready answers 503 on purpose while a part is missing (an alert says so): never an error.
+_PROBE_ROUTES = frozenset({"/health", "/ready", "/metrics"})
+
+
 log = structlog.get_logger("http")
 
 _BYTES_PER_MB = 1024 * 1024
@@ -94,20 +98,26 @@ def _bind_request_context(scope: Scope) -> str:
 
 
 def _record_request(scope: Scope, status: int, started: float, response_started: float | None) -> None:
-    """One access line and the request metrics."""
+    """One access line and the request metrics: the real path, and for an error answer what it said (an error
+    in full; a successful answer's data stays in its store, under the id in the path)."""
     seconds = time.perf_counter() - started
     route = getattr(scope.get("route"), "path", "unmatched")
     # Latency = time until the response starts: a live-update stream stays open for minutes, and its whole
     # lifetime would read as one very slow request.
     latency = (response_started or time.perf_counter()) - started
     metrics.record_http_request(scope["method"], route, status, latency)
-    log.info(
+    state = scope.get("state", {})
+    failed = status >= 400 and route not in _PROBE_ROUTES
+    write = (log.error if status >= 500 else log.warning) if failed else log.info
+    write(
         LogEvent.HTTP_REQUEST,
         method=scope["method"],
         route=route,
+        path=scope["path"],
         status=status,
         duration_ms=round(seconds * 1000, 1),
-        client_id=scope.get("state", {}).get("client_id"),  # the calling system; None without a valid key
+        client_id=state.get("client_id"),  # the calling system; None without a valid key
+        **state.get("problem", {}),
     )
 
 

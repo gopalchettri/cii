@@ -34,6 +34,10 @@ _ERROR_CODE_BY_HTTP_STATUS = {
 }
 
 
+#: The parts of an error answer its access line repeats (app/api/middleware.py): a failed call is traceable.
+_LOGGED_PROBLEM_FIELDS = ("code", "detail", "reason", "errors", "details")
+
+
 def build_problem_body(
     status: int,
     code: ErrorCode,
@@ -78,6 +82,7 @@ def build_problem_response(
     body = build_problem_body(
         status, code, detail, request_id=request_id, reason=reason, errors=errors, details=details
     )
+    request.state.problem = {key: body[key] for key in _LOGGED_PROBLEM_FIELDS if key in body}
     # Set here too: a 500 is answered outside every middleware, so only this puts the id on it.
     headers: dict[str, str] = {Header.REQUEST_ID.value: request_id} if request_id else {}
     if retry_after:

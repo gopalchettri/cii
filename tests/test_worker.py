@@ -29,6 +29,7 @@ from app.core.constants import (
     ErrorCode,
     ErrorMessage,
     Lease,
+    LogEvent,
     Queue,
     SqlOperationStatus,
     Status,
@@ -675,7 +676,15 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
     failures = {"task": TaskName.FIND_THREATS, "outcome": "failure"}
     before = _job_samples("tsg_jobs_total", failures)
-    reaper.reap_jobs()
+    with capture_logs() as logs:
+        reaper.reap_jobs()
+    [failed] = [line for line in logs if line["event"] == LogEvent.JOB_FAILED]
+    # The job's own task, not the reaper's: the dashboard groups failed jobs by it.
+    assert (failed["task"], failed["code"], failed["reason"]) == (
+        TaskName.FIND_THREATS,
+        ErrorCode.JOB_ABANDONED,
+        "never_started",
+    )
     record = _records().find_one({"_id": stuck})
     assert sent == [] and record["status"] == Status.FAILED
     assert record["job"]["error"]["code"] == ErrorCode.JOB_ABANDONED and published == [stuck]
@@ -712,6 +721,34 @@ def test_a_finished_job_frees_its_asset_and_says_when_it_ended(published: list[s
     jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, finish)
     record = _records().find_one({"_id": record_id})
     assert record["status"] == Status.DONE and record["active"] is False and record["finished_at"] is not None
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "reason"),
+    [
+        (JobFailed(ErrorCode.PLAN_REFUSED, "no room"), ErrorCode.PLAN_REFUSED, None),
+        (KeyError("bug"), ErrorCode.INTERNAL_ERROR, None),
+        (Unavailable("timed out", reason=AiOutage.TIMED_OUT), ErrorCode.UNAVAILABLE, AiOutage.TIMED_OUT),
+    ],
+)
+def test_every_failed_job_writes_one_job_failed_line_with_its_code_and_reason(
+    published: list[str], error: Exception, code: ErrorCode, reason: AiOutage | None
+) -> None:
+    """Owner, 2026-10-23: the dashboard's "Failed jobs" table reads these lines. Before, an outage on the last
+    try wrote none, and a bug's line had no code; a bug still writes its traceback on a line of its own."""
+    record_id = _insert_job(attempts=Lease.MAX_ATTEMPTS - 1)
+
+    def work(_lease: JobLease) -> None:
+        raise error
+
+    with capture_logs() as logs, pytest.raises(type(error)):
+        jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, work)
+    failed = [line for line in logs if line["event"] == LogEvent.JOB_FAILED]
+    assert [(line["record_id"], line["code"], line.get("reason")) for line in failed] == [
+        (record_id, code, reason)
+    ]
+    bugs = [line for line in logs if line["event"] == LogEvent.JOB_UNEXPECTED_ERROR]
+    assert len(bugs) == (code == ErrorCode.INTERNAL_ERROR)
 
 
 def test_a_job_failed_by_its_own_rule_keeps_its_code_and_is_not_retried(published: list[str]) -> None:

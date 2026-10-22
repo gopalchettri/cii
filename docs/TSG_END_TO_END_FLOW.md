@@ -3670,18 +3670,25 @@ stateDiagram-v2
 - **Health:** `GET /health` (always 200) and `GET /ready` (200 only when MongoDB and Redis answer and each
   queue `tsg_threats`, `tsg_scenarios`, `tsg_maintenance` has a live worker; SQL Server is reported).
   Workers send a heartbeat to Redis every 20 s.
-- **Logs:** JSON lines (structlog) to stdout, secrets masked; locally also to `logs/<role>.log`. Alloy ships
-  them to Loki (kept 7 days).
+- **Logs:** one JSON line per event (structlog) to stdout, secrets masked; Celery's and the libraries' lines
+  too, a traceback inside its line; locally also to `logs/<role>.log`. Alloy ships them to Loki (kept 7 days).
+  Every API call writes one `http.request` line (path, status, time, caller, request id; for an error, the
+  error answer in full: code, detail, reason). Every job that fails for good writes one `job.failed` line
+  (job type, run id, code, reason, message); a bug also writes `job.unexpected_error` with its traceback.
 - **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; the local
   maintenance worker uses 9102): HTTP requests, jobs by task and outcome, runs, scenarios by outcome,
-  decisions, plans, AI calls, tokens and seconds, dependencies up, workers online, AI slots, audit and
-  library-check failures.
-- **Alerts** (`observability/prometheus/rules.yml`): API errors and latency, failing jobs, the reaper, queue
-  backlog and unknown queue depth, missing workers, stores down, the AI error rate and AI slots saturated,
-  audit-write and library-check failures, scrape targets down, and pods (not starting, restarting, out of
-  memory). Alertmanager has no receiver yet.
-- **Dashboards:** Grafana (one TSG dashboard with rows Overview, API, Jobs and queues, AI, Dependencies and
-  platform, Logs and audit) and Flower (Celery tasks).
+  decisions, plans, AI calls, AI outages by reason (`tsg_ai_outages_total`), tokens and seconds, dependencies
+  up, workers online, AI slots, audit and library-check failures.
+- **Alerts** (`observability/prometheus/rules.yml`): API errors, API bugs (500) and latency, failing jobs, the
+  reaper, queue backlog and unknown queue depth, missing workers, stores down, the AI error rate, the AI not
+  answering (by reason) and AI slots saturated, audit-write and library-check failures, scrape targets down,
+  and pods (not starting, restarting, out of memory). Each has a plain summary and a description saying what
+  to do. Alertmanager has no receiver yet.
+- **Dashboards:** Grafana's home, "TSG — is everything working?", for operations, support and developers:
+  a green/red tile for every part (API, each worker queue, beat, MongoDB, SQL Server, Redis, the AI service,
+  log collection, alerting) and the problems now; counts and lists of errors and exceptions, warnings, failed
+  jobs and failed API calls; what the workers are doing; what is slow; and "Follow one run or request":
+  every id on the page is a link to all log lines of that run or request. Flower shows the Celery tasks.
 - **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the worker
   (`tsg_threats,tsg_scenarios`), the maintenance worker and beat, starts the monitoring tools, and waits for
   `/ready`. `.\run.ps1 stop` stops them cleanly.

@@ -21,7 +21,9 @@ tests:
         alertname: Api5xxHigh
         exp_alerts:
           - exp_labels: { severity: warning }
-            exp_annotations: { summary: More than 2 % of API answers are server errors (5xx). }
+            exp_annotations:
+              summary: "More than 2 % of API answers are server errors (5xx)."
+              description: "Open the TSG dashboard, table \"API calls that went wrong\", to see which calls and why."
 
   # /ready answering 503 on purpose (a worker is missing) is not an API error.
   - interval: 1m
@@ -48,7 +50,9 @@ tests:
         alertname: ApiLatencyHigh
         exp_alerts:
           - exp_labels: { severity: warning }
-            exp_annotations: { summary: "95 % of API requests should finish within 1 s; they have not for 10 minutes." }
+            exp_annotations:
+              summary: "The API is slow; 95 % of calls should finish within 1 s and have not for 10 minutes."
+              description: "Open the TSG dashboard, \"What is slow\", to see which pages; check the stores' tiles too."
 
   - interval: 1m
     input_series:
@@ -58,8 +62,10 @@ tests:
       - eval_time: 5m
         alertname: JobsFailing
         exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations: { summary: A background job failed for good in the last 15 minutes. }
+          - exp_labels: { severity: warning, task: tsg_find_threats }
+            exp_annotations:
+              summary: "tsg_find_threats jobs failed for good in the last 15 minutes."
+              description: "Open the TSG dashboard, table \"Failed jobs\", for why; click the run id for its whole story."
 
   # A failed reaper pass or index build runs again on its timer: not a failed run.
   - interval: 1m
@@ -86,7 +92,8 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
-              summary: "The reaper has not run for 15 minutes; check Celery beat (stuck jobs are not repaired)."
+              summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
+              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
   - interval: 1m
     input_series:
@@ -97,7 +104,9 @@ tests:
         alertname: QueueBacklog
         exp_alerts:
           - exp_labels: { severity: warning, key: "tsg:tsg_threats" }
-            exp_annotations: { summary: tsg:tsg_threats has held more than 50 waiting jobs for 15 minutes. }
+            exp_annotations:
+              summary: "tsg:tsg_threats has held more than 50 waiting jobs for 15 minutes."
+              description: "The workers cannot keep up. Check that its worker is WORKING; add a worker if it is."
 
   - interval: 1m
     input_series:
@@ -108,7 +117,9 @@ tests:
         alertname: NoWorker
         exp_alerts:
           - exp_labels: { severity: critical, queue: tsg_threats }
-            exp_annotations: { summary: No live worker on queue tsg_threats; its jobs wait. }
+            exp_annotations:
+              summary: "No worker is taking tsg_threats jobs; they wait until one starts."
+              description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
 
   - interval: 1m
     input_series:
@@ -123,17 +134,23 @@ tests:
         alertname: MongoDown
         exp_alerts:
           - exp_labels: { severity: critical }
-            exp_annotations: { summary: MongoDB does not answer the API. }
+            exp_annotations:
+              summary: "MongoDB does not answer the API."
+              description: "Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL."
       - eval_time: 4m
         alertname: SqlDown
         exp_alerts:
           - exp_labels: { severity: critical }
-            exp_annotations: { summary: SQL Server does not answer the API. }
+            exp_annotations:
+              summary: "SQL Server does not answer the API."
+              description: "Asset and library data cannot be read. Check the SQL Server and its connection settings."
       - eval_time: 4m
         alertname: RedisDown
         exp_alerts:
           - exp_labels: { severity: critical }
-            exp_annotations: { summary: Redis does not answer the API. }
+            exp_annotations:
+              summary: "Redis does not answer the API."
+              description: "Jobs cannot be queued and live updates stop. Check the Redis server."
 
   - interval: 1m
     input_series:
@@ -146,7 +163,9 @@ tests:
         alertname: AiErrorRateHigh
         exp_alerts:
           - exp_labels: { severity: warning }
-            exp_annotations: { summary: More than 10 % of AI calls fail (unavailable or unreadable answer). }
+            exp_annotations:
+              summary: "More than 10 % of AI calls fail (no answer, or an answer that could not be used)."
+              description: "Open the TSG dashboard, \"Why the AI did not answer\"; see docs/UAT_LLM_TIMEOUT_RUNBOOK.md."
 
   - interval: 1m
     input_series:
@@ -160,7 +179,8 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations:
-              summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
+              summary: "Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one."
+              description: "Jobs slow down. Raise CII_MAX_CONCURRENT_AI_CALLS if the AI gateway can take more."
 
   - interval: 1m
     input_series:
@@ -182,7 +202,9 @@ tests:
         alertname: AuditWriteFailing
         exp_alerts:
           - exp_labels: { severity: critical }
-            exp_annotations: { summary: Audit records could not be written to tsg_audit (the actions still happened). }
+            exp_annotations:
+              summary: "Audit records could not be written to tsg_audit (the actions still happened)."
+              description: "Check MongoDB; the \"Errors and exceptions\" table shows each audit.write_failed line."
 
   - interval: 1m
     input_series:
@@ -193,7 +215,9 @@ tests:
         alertname: TargetDown
         exp_alerts:
           - exp_labels: { severity: warning, job: api, instance: "localhost:8000" }
-            exp_annotations: { summary: "Prometheus cannot read api at localhost:8000." }
+            exp_annotations:
+              summary: "Prometheus cannot read api at localhost:8000."
+              description: "That program is stopped or unreachable; its numbers on the dashboard are missing."
 
   - interval: 1m
     input_series:
@@ -204,7 +228,9 @@ tests:
         alertname: PodRestarting
         exp_alerts:
           - exp_labels: { severity: warning, namespace: tsg-uat, pod: api-1, container: api }
-            exp_annotations: { summary: api-1 restarted more than twice in 30 minutes. }
+            exp_annotations:
+              summary: "api-1 restarted more than twice in 30 minutes."
+              description: "oc logs --previous api-1 shows why it stopped."
 
   - interval: 1m
     input_series:
@@ -217,7 +243,9 @@ tests:
         alertname: PodOOMKilled
         exp_alerts:
           - exp_labels: { severity: warning, namespace: tsg-uat, pod: api-1, container: api, reason: OOMKilled }
-            exp_annotations: { summary: api-1 ran out of memory and was restarted. }
+            exp_annotations:
+              summary: "api-1 ran out of memory and was restarted."
+              description: "Raise its memory limit in deploy/, or find what used the memory (the \"What is slow\" row)."
 
   - interval: 1m
     input_series:
@@ -229,7 +257,8 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations:
-              summary: redis-exporter cannot reach Redis, so queue lengths are unknown (check the broker URL).
+              summary: "The monitoring cannot read Redis, so the number of waiting jobs is unknown."
+              description: "Check redis-exporter's broker address (CII_REDIS_CELERY_BROKER_URL) and that Redis is up."
 
   - interval: 1m
     input_series:
@@ -240,12 +269,16 @@ tests:
         alertname: ApiNotRunning
         exp_alerts:
           - exp_labels: { severity: critical }
-            exp_annotations: { summary: No API instance is running and answering. }
+            exp_annotations:
+              summary: "No API instance is running and answering."
+              description: "Nobody can use the app. Laptop: .\\run.ps1 start. UAT: check the api pods."
       - eval_time: 6m
         alertname: WorkerNotRunning
         exp_alerts:
           - exp_labels: { severity: critical }
-            exp_annotations: { summary: No worker process is running and answering. }
+            exp_annotations:
+              summary: "No worker process is running and answering."
+              description: "No background job runs. Laptop: .\\run.ps1 start. UAT: check the worker pods."
 
   - interval: 1m
     input_series:
@@ -272,9 +305,13 @@ tests:
         alertname: PodNotStarting
         exp_alerts:
           - exp_labels: { severity: warning, namespace: tsg-uat, pod: flower-1 }
-            exp_annotations: { summary: "flower-1 has not started for 10 minutes (oc describe pod flower-1)." }
+            exp_annotations:
+              summary: "flower-1 has not started for 10 minutes."
+              description: "oc describe pod flower-1 says why (image, setting, or not enough room)."
           - exp_labels: { severity: warning, namespace: tsg-uat, pod: grafana-1 }
-            exp_annotations: { summary: "grafana-1 has not started for 10 minutes (oc describe pod grafana-1)." }
+            exp_annotations:
+              summary: "grafana-1 has not started for 10 minutes."
+              description: "oc describe pod grafana-1 says why (image, setting, or not enough room)."
 
   # The library check failing every minute (SQL down, or a row the loader cannot read): edits are missed.
   - interval: 1m
@@ -286,7 +323,9 @@ tests:
         alertname: LibraryCheckFailing
         exp_alerts:
           - exp_labels: { severity: warning }
-            exp_annotations: { summary: "The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served)." }
+            exp_annotations:
+              summary: "The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served)."
+              description: "Check SQL Server; the \"Errors and exceptions\" table shows each library.check_failed line."
 
   # One failed check is a blip, not an alert.
   - interval: 1m
@@ -297,3 +336,38 @@ tests:
       - eval_time: 20m
         alertname: LibraryCheckFailing
         exp_alerts: []
+
+
+  # One unexpected error (a bug) is enough: 503 outages are not bugs and have their own alerts.
+  - interval: 1m
+    input_series:
+      - series: tsg_http_requests_total{method="POST",route="/v1/sessions",status="500"}
+        values: 0 0 1 1 1 1 1
+      - series: tsg_http_requests_total{method="GET",route="/v1/sessions",status="503"}
+        values: 0+5x6
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ApiCrashing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The API hit an unexpected error (a bug) on 1 calls in 10 minutes."
+              description: "Open the TSG dashboard, table \"Errors and exceptions\": click the request id for the whole story and the traceback."
+
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_outages_total{task="relevance_gate",reason="ai_timed_out"}
+        values: 0+1x20
+      - series: tsg_ai_outages_total{task="write_scenario",reason="ai_timed_out"}
+        values: 0+1x20
+      # One lost connection is a blip: below the threshold.
+      - series: tsg_ai_outages_total{task="embed",reason="ai_unreachable"}
+        values: 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: AiNotAnswering
+        exp_alerts:
+          - exp_labels: { severity: warning, reason: ai_timed_out }
+            exp_annotations:
+              summary: "The AI service timed out 20 times in 10 minutes."
+              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md). Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team."

@@ -142,15 +142,17 @@ def job_error_of(exc: Exception) -> dict[str, str]:
 def _fail_if_still_owned(
     lease: JobLease, code: ErrorCode, message: str, reason: AiOutage | None = None
 ) -> bool:
-    """False when the job is no longer this delivery's (nothing written). Best effort: if MongoDB is down too,
-    the record stays running and the reaper settles it later (True: still this delivery's as far as known)."""
+    """False when the job is no longer this delivery's (nothing written). Else the job's one job.failed line.
+    Best effort: if MongoDB is down too, the record stays running and the reaper settles it later (True: still
+    this delivery's as far as known)."""
     error = {"code": code, "message": message} | ({"reason": reason} if reason else {})
     try:
         lease.update_job(failed_job_fields(lease.collection, error))
     except LeaseLost:
         return False
     except MONGO_UNAVAILABLE_ERRORS:
-        log.warning(LogEvent.JOB_FAILED, record_id=lease.record_id, settled_by="reaper", exc_info=True)
+        log.warning(LogEvent.JOB_FAILURE_NOT_SAVED, record_id=lease.record_id, exc_info=True)
+    log.warning(LogEvent.JOB_FAILED, record_id=lease.record_id, **error)
     return True
 
 
@@ -181,11 +183,10 @@ def run_leased_job(
         raise
     except JobFailed as failure:  # the job's own final error: failed with its code, never retried
         _fail_or_end(lease, collection, failure.code, failure.message)
-        log.warning(LogEvent.JOB_FAILED, record_id=record_id, code=failure.code)
         publish(record_id)
         raise
     except Exception:
-        log.exception(LogEvent.JOB_FAILED, record_id=record_id)
+        log.exception(LogEvent.JOB_UNEXPECTED_ERROR, record_id=record_id)  # the bug, with its traceback
         message = ErrorMessage.JOB_UNEXPECTED.format(record_id=record_id)
         _fail_or_end(lease, collection, ErrorCode.INTERNAL_ERROR, message)
         publish(record_id)

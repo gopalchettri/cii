@@ -53,6 +53,9 @@ BUILT_ALERTS = {
     "LibraryCheckFailing",
     # 2026-10-10: the reaper (beat) stopped; every AI slot busy (Step 6).
     "AiSlotsSaturated",
+    # 2026-10-23: the AI not answering, by reason; the API hitting a bug.
+    "AiNotAnswering",
+    "ApiCrashing",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
@@ -60,6 +63,7 @@ EXPORTER_METRICS = {
     "redis_up",
     "flower_task_runtime_seconds_bucket",
     "flower_events_total",
+    "flower_worker_number_of_currently_executing_tasks",
     "kube_pod_container_status_restarts_total",
     "kube_pod_container_status_last_terminated_reason",
     "kube_pod_container_status_waiting_reason",
@@ -104,10 +108,18 @@ def _rules() -> list[dict]:
     ]
 
 
+def _panels() -> list[dict]:
+    """Every dashboard panel, those inside a folded row too."""
+    top = json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]
+    return top + [child for panel in top for child in panel.get("panels", [])]
+
+
 def _prometheus_queries() -> list[str]:
-    panels = json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]
     from_dashboard = [
-        t["expr"] for p in panels if p.get("datasource", {}).get("uid") == "prometheus" for t in p["targets"]
+        target["expr"]
+        for panel in _panels()
+        if panel.get("datasource", {}).get("uid") == "prometheus"
+        for target in panel["targets"]
     ]
     return [rule["expr"] for rule in _rules()] + from_dashboard
 
@@ -141,7 +153,11 @@ def test_the_built_alerts_are_all_there_each_with_a_firing_test() -> None:
     rules = _rules()
     assert {rule["alert"] for rule in rules} == BUILT_ALERTS
     assert all(
-        rule.get("for") and rule["labels"]["severity"] and rule["annotations"]["summary"] for rule in rules
+        rule.get("for")
+        and rule["labels"]["severity"]
+        and rule["annotations"]["summary"]
+        and rule["annotations"]["description"]  # what to do
+        for rule in rules
     )
     cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
     # A case that expects silence (exp_alerts: []) proves nothing about firing: only firing cases count.
@@ -243,9 +259,20 @@ def test_every_dashboard_panel_uses_a_provisioned_data_source() -> None:
         (OBS / "grafana" / "provisioning" / "datasources" / "datasources.yaml").read_text(encoding="utf-8")
     )["datasources"]
     uids = {source["uid"] for source in sources}
-    panels = json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]
+    panels = _panels()
     assert len({p["id"] for p in panels}) == len(panels)
     assert {p["datasource"]["uid"] for p in panels if "datasource" in p} <= uids
+
+
+def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() -> None:
+    """Owner, 2026-10-23: plain enough for anyone. Each panel's description says what it means; the top tiles
+    name a live worker for every routed queue and every store, so a missing one cannot go unseen."""
+    panels = _panels()
+    assert [p["title"] for p in panels if not p.get("description")] == []
+    [health] = [p for p in panels if p["title"] == "Parts of the system"]
+    queries = " ".join(t["expr"] for t in health["targets"])
+    assert all(f'queue="{queue}"' in queries for queue in ROUTED_QUEUES)
+    assert all(f'name="{store.value}"' in queries for store in Dependency)
 
 
 def _promtool() -> str | None:
