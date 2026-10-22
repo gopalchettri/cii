@@ -24,9 +24,9 @@ from app.core.singletons import singleton
 _WORD_RANGE = re.compile(r"\s*(\d+)\s*-\s*(\d+)\s*")
 
 
-class ScenarioOutputSettings(BaseSettings):
-    """What a scenario gets: its controls (owner 2026-10-13, G225) and how long its texts are (G226). Settings
-    reads these too (one class would pass the size limit)."""
+class AiOutputSettings(BaseSettings):
+    """What the AI produces: a scenario's controls (owner 2026-10-13, G225) and text lengths (G226), and the
+    service mapper's counts and upstream checks. Settings reads these too (one class would be too long)."""
 
     # A scenario's controls, in five steps: the CONTROL_CANDIDATES closest library controls that fit the asset
     # type are found; the reranker scores each 0-100; every one at or above CONTROL_SIMILARITY_THRESHOLD is
@@ -53,9 +53,21 @@ class ScenarioOutputSettings(BaseSettings):
     threat_context_country: str = Field(
         default="United Arab Emirates", validation_alias="THREAT_CONTEXT_COUNTRY"
     )
+    # Services the AI is asked for per direction (fewer is fine, none in both lists); 0 turns a direction off.
+    service_mapper_upstream_total_count: int = Field(
+        default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT"
+    )
+    service_mapper_downstream_total_count: int = Field(
+        default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
+    )
+    # What the AI checks first for every upstream list (comma-separated), sent to it as data.
+    service_mapper_upstream_checks: str = Field(
+        default="electricity, water, telecommunications, ICT hosting, payments, identity",
+        validation_alias="SERVICE_MAPPER_UPSTREAM_CHECKS",
+    )
 
     @model_validator(mode="after")
-    def refuse_output_limits_that_cannot_work(self) -> "ScenarioOutputSettings":
+    def refuse_output_limits_that_cannot_work(self) -> "AiOutputSettings":
         most = self.max_controls
         if not (self.control_candidates >= most >= self.min_controls and most >= self.nearest_controls):
             raise ValueError(
@@ -123,7 +135,7 @@ def _refuse_a_proxy_url_without_scheme(value: SecretStr) -> SecretStr:
 ProxyUrl = Annotated[SecretStr, AfterValidator(_refuse_a_proxy_url_without_scheme)]
 
 
-class Settings(ScenarioOutputSettings):
+class Settings(AiOutputSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )
@@ -193,21 +205,8 @@ class Settings(ScenarioOutputSettings):
         default=10, ge=1, le=40, validation_alias="REGENERATIONS_MAX_VERSION_COUNT"
     )
 
-    # Services the AI is asked for per direction (fewer is fine, none in both lists); 0 turns a direction off.
-    service_mapper_upstream_total_count: int = Field(
-        default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT"
-    )
-    service_mapper_downstream_total_count: int = Field(
-        default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
-    )
-    # What the AI checks first for every upstream list (comma-separated), sent to it as data.
-    service_mapper_upstream_checks: str = Field(
-        default="electricity, water, telecommunications, ICT hosting, payments, identity",
-        validation_alias="SERVICE_MAPPER_UPSTREAM_CHECKS",
-    )
-
     # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for both: a control
-    # kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, ScenarioOutputSettings); an AI-proposed threat that
+    # kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, AiOutputSettings); an AI-proposed threat that
     # IS a library threat or takes a library type.
     threat_similarity_threshold: float = Field(
         default=75.0, ge=0, le=100, validation_alias="THREAT_SIMILARITY_THRESHOLD"
@@ -269,10 +268,6 @@ class Settings(ScenarioOutputSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-
-    @property
-    def service_mapper_upstream_check_list(self) -> list[str]:
-        return _names(self.service_mapper_upstream_checks)
 
     @property
     def required_asset_properties(self) -> frozenset[str]:

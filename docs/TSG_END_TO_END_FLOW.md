@@ -3101,7 +3101,7 @@ Hand-written scenarios (`source` `manual`) are never swept (`SWEPT`).
 | `MAX_CONTROLS` | 10 | 3 |
 
 - Start-up also requires `CONTROL_CANDIDATES >= MAX_CONTROLS >= MIN_CONTROLS`
-  (`ScenarioOutputSettings.refuse_output_limits_that_cannot_work`).
+  (`AiOutputSettings.refuse_output_limits_that_cannot_work`).
 - The example's values are read from the scenario's stored `made_with`, which records the settings of the
   laptop that ran it. They differ from the code defaults.
 - Fixed in code (`Controls`, `app/core/constants/planning.py`): `QUERY_MAX_CHARS` 4000, `QUERY_MITIGATIONS`

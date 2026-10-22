@@ -147,13 +147,11 @@ def manual_plan_request(args: argparse.Namespace) -> dict[str, Any]:
     """The published hand-written example on this run's asset: the systems it names (no real asset has them)
     become the first --systems, in the scenario and in every existing control alike."""
     manual = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[1]))
-    on_asset = dict(zip(manual["manual_scenario"]["supporting_system_id"], args.systems, strict=False))
-    manual["manual_scenario"] |= {
-        "asset_id": args.asset,
-        "entity_id": args.entity,
-        "supporting_system_id": list(on_asset.values()),
-    }
-    del manual["manual_scenario"]["mapped_controls"]  # the example's control code is not in every library
+    scenario = manual["manual_scenario"]
+    on_asset = dict(zip(scenario["supporting_system_id"], args.systems, strict=False))
+    scenario |= {"asset_id": args.asset, "entity_id": args.entity}
+    scenario["supporting_system_id"] = list(on_asset.values())
+    del scenario["mapped_controls"]  # the example's control code is not in every library
     for control in manual["existing_controls"]:
         if isinstance(control, dict) and (named := control.get("supporting_system_ids")):
             control["supporting_system_ids"] = [on_asset[system] for system in named]

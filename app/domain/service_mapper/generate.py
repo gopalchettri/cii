@@ -8,7 +8,8 @@ from pydantic import ValidationError
 from app.ai.chat import ChatModel
 from app.core.config import get_settings
 from app.core.constants import AiTask
-from app.domain.service_mapper.reconcile import answer_problems, reconcile
+from app.domain.service_mapper.answer_checks import answer_problems
+from app.domain.service_mapper.reconcile import reconcile
 from app.domain.shared.names import as_json, is_same_name, shorten_text
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
@@ -41,14 +42,7 @@ def generate_answer(
     """AI creates both directions from every catalog service grouped by sector and subsector, adding a new
     service only where none provides it. The AI sees names only, never a catalog ID; a first answer with items
     reconcile would drop is asked again once with why."""
-    rank = {
-        service.service_id: place
-        for place, service in enumerate(search.candidates(catalog, _queries(request)))
-    }
-    services = sorted(
-        (service for service in catalog.services if not _is_selected(service, request)),
-        key=lambda service: rank.get(service.service_id, len(rank)),
-    )
+    services = _most_relevant_first(search, request, catalog)
     budget = min(int(chat.max_prompt_chars * 0.55), chat.max_prompt_chars - len(_SYSTEM) - 4_000)
     prompt = _user_prompt(request, catalog, services, counts)
     if len(_SYSTEM) + len(prompt) > budget:
@@ -74,6 +68,20 @@ def generate_answer(
     return GeneratedAnswer.model_validate(answer)
 
 
+def _most_relevant_first(
+    search: ServiceCandidateSearch, request: CreateMappingRequest, catalog: CatalogSnapshot
+) -> list[CatalogService]:
+    """Every catalog service but the selected one, those the search ranks first ahead and the rest after."""
+    rank = {
+        service.service_id: place
+        for place, service in enumerate(search.candidates(catalog, _queries(request)))
+    }
+    return sorted(
+        (service for service in catalog.services if not _is_selected(service, request)),
+        key=lambda service: rank.get(service.service_id, len(rank)),
+    )
+
+
 def _is_selected(service: CatalogService, request: CreateMappingRequest) -> bool:
     return is_same_name(service.service_name, request.service_name) or is_same_name(
         request.service_name, service.service_name
@@ -97,7 +105,11 @@ def _user_prompt(
 ) -> str:
     return as_json(
         {
-            "upstream_checks": get_settings().service_mapper_upstream_check_list,
+            "upstream_checks": [
+                check.strip()
+                for check in get_settings().service_mapper_upstream_checks.split(",")
+                if check.strip()
+            ],
             "selected_service": request.model_dump(),
             "upstream_count": counts[0],
             "downstream_count": counts[1],

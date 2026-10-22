@@ -2,7 +2,7 @@
 
 This **build runbook** gives the implementation sequence for the API in this repository. Follow the stages in order. Each stage names the files to implement, the calls that must connect, and the check that proves the stage. For a feature request that affects only one stage, complete its prerequisites, change that stage, then run the final checks.
 
-The target is the current **CII Threat Scenario Generator v2** API: FastAPI, MongoDB, SQL Server stored procedures, Redis, Celery, AI gateways, and SSE. [SOLUTION_DESIGN.md](SOLUTION_DESIGN.md) explains *why* the product works this way. The source files named below show the exact current implementation. The Service Mapper endpoints are currently a **contract stub with canned responses**; this handbook does not treat them as a working mapping engine.
+The target is the current **CII Threat Scenario Generator v2** API: FastAPI, MongoDB, SQL Server stored procedures, Redis, Celery, AI gateways, and SSE. [SOLUTION_DESIGN.md](SOLUTION_DESIGN.md) explains *why* the product works this way. The source files named below show the exact current implementation. The Service Mapper is implemented, with its own worker on `tsg_servicemapper`; [service_mapper/SERVICE_MAPPER.md](service_mapper/SERVICE_MAPPER.md) describes the built flow, and Recipe D below is the original build recipe, kept for reference.
 
 ## Read this before step 1
 
@@ -25,10 +25,10 @@ All commands below use **Windows PowerShell** from the repository root. Use Wind
 | 9 | Scenario generation, review, and job control | Threat/write/control jobs; accept/reject/next set; cancel/delete |
 | 10 | Remediation | Plan request, worker, status/result, review/regenerate/cancel/lists |
 | 11 | External intelligence | Switch, source refresh, evidence snapshot, health and source controls |
-| 12 | SSE and Service Mapper | Live session/plan updates; replace the six mapper stubs using Recipe D and a mapper-only worker |
+| 12 | SSE and Service Mapper | Live session/plan updates; the Service Mapper and its mapper-only worker (Recipe D, built) |
 | 13 | Compose, run, test, and hand over | All routers registered; contract pins, integration tests, manual smoke |
 
-Stages 2–12 describe **implementation order**. This checkout already contains the non-mapper implementation and a Service Mapper stub. When reproducing a completed stage, read the named source and tests and avoid duplicate modules. Build the mapper behavior in Recipe D into the existing route and service files, plus the new files it names.
+Stages 2–12 describe **implementation order**. This checkout already contains every stage, the Service Mapper included. When reproducing a completed stage, read the named source and tests and avoid duplicate modules.
 
 ## Stage 1 — Prepare the machine and record the baseline
 
@@ -60,7 +60,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 ## Cookbook — Follow four requests all the way through
 
-Recipes A–C trace implementations in the current code. Recipe D is the **implementation recipe for the currently stubbed Service Mapper**. Follow each recipe's file order and gate; do not paste code for A–C into duplicate modules.
+Recipes A–C trace implementations in the current code. Recipe D is the **original build recipe for the Service Mapper**, now implemented; where it differs from the code and [service_mapper/SERVICE_MAPPER.md](service_mapper/SERVICE_MAPPER.md), the code wins. Follow each recipe's file order and gate; do not paste code for A–C into duplicate modules.
 
 ### Recipe A — Build an authenticated `GET` from model to HTTP response
 
@@ -884,10 +884,10 @@ Build this after the original scenario path works with `EXTERNAL_INTELLIGENCE_EN
 
 1. In `app/realtime/publisher.py`, name per-session/per-plan channels and publish after the persisted status changes. In `app/realtime/event_hub.py`, share one Redis subscription among streams in the API process. A published message tells a stream to **reread MongoDB**; it is not the result itself.
 2. In `scenario.events_router`, add `GET /v1/sessions/{session_id}/events` and `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events`. Validate ownership **before** opening the stream; send the current status immediately, then changes; recheck key access while connected; emit a deletion event and close after deletion. See `_status_stream()` in `app/api/routers/scenario.py`.
-3. Implement Service Mapper by following **Recipe D1–D16 in order**. Its six route paths already exist as a canned contract in `app/api/routers/service_mapper.py`. Replace the sample service with an entity-owned repository, strict prompt-output validator, leased job, live SSE, and a worker consuming only `tsg_servicemapper`. The current `Queue.SERVICEMAPPER` constant alone does not route or execute jobs.
+3. Service Mapper: built following **Recipe D1–D16**, with the later owner decisions recorded in [service_mapper/SERVICE_MAPPER.md](service_mapper/SERVICE_MAPPER.md) (one direction per service, names only to the AI, every database service grouped by sector). Its worker consumes only `tsg_servicemapper`.
 4. Register `scenario.events_router` and `service_mapper_router` in `app/main.py`; add their tags/descriptions in `app/api/openapi_docs.py`.
 
-**Gate:** `tests/test_realtime.py` covers session/plan streaming and disconnect behavior. Add the mapper model, domain, repository, worker, and API tests in D15; verify every route plus the dedicated task and queue. The OpenAPI pin alone proves only route shapes. Until Recipe D is implemented and its gates pass, describe the current mapper as a stub.
+**Gate:** `tests/test_realtime.py` covers session/plan streaming and disconnect behavior. Add the mapper model, domain, repository, worker, and API tests in D15; verify every route plus the dedicated task and queue. The OpenAPI pin alone proves only route shapes. The mapper's tests are in `tests/test_service_mapper.py`.
 
 ## Stage 13 — Compose, run, test, and hand over
 

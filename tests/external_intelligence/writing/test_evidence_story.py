@@ -340,7 +340,7 @@ def test_nearest_evidence_is_cited_as_related_and_its_mode_is_nearest(item: Evid
     nearest = dataclasses.replace(item, nearest=True)
     brief = _story_brief(nearest)
     assert _block_of(writer_prompt(brief)[1])["evidence_mode"] == EvidenceMode.NEAREST
-    assert '`evidence_mode` is "nearest"' in WRITER_SYSTEM_PROMPT
+    assert 'When evidence_mode is "nearest", use the entry as related context only' in WRITER_SYSTEM_PROMPT
     assert "Nearest evidence is only related context." in PLAN_CHECK_SYSTEM_PROMPT
     threat = _plan_threat(evidence=[nearest.as_doc()], intel_search={"query": "q"})
     written = WrittenScenario(_DRAFT, (), PlanCheck(PlanCheckStatus.CONSISTENT), Route.STANDALONE)
@@ -456,7 +456,8 @@ def test_a_cited_record_that_is_no_technique_is_marked_about_and_told_by_its_fac
     block = _block_of(writer_prompt(_story_brief(_KEV))[1])
     (cited,) = block["evidence"]
     assert cited["cited"] is True and "about" in cited and "technique" not in cited
-    assert "A cited entry with `about` instead: state only what its facts say" in WRITER_SYSTEM_PROMPT
+    about_rule = "For a cited entry with about instead: state only its facts in plain language."
+    assert about_rule in WRITER_SYSTEM_PROMPT
     assert "for an `about` entry: what its facts say" in PLAN_CHECK_SYSTEM_PROMPT
 
 

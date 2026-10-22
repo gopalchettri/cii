@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app import container
 from app.api.dependencies import get_authenticated_principal
-from app.core.constants import Collection, ErrorCode, Limits
+from app.core.constants import ApiKey, Collection, ErrorCode, Limits
 from app.core.database import get_mongodb
 from app.core.exceptions import Unauthorized
 from app.domain.admin.api_keys import hash_api_key
@@ -22,7 +22,7 @@ def _mint_api_client_via_api(client: TestClient, name: str) -> dict:
 
 def test_mint_shows_the_secret_once_and_stores_only_its_hash(client: TestClient) -> None:
     minted = _mint_api_client_via_api(client, "frontend-a")
-    assert minted["api_key"].startswith("tsg_")
+    assert minted["api_key"].startswith(ApiKey.PREFIX)
     assert minted["key_prefix"] == minted["api_key"][:8]
     stored = get_mongodb()[Collection.API_CLIENTS].find_one({"_id": minted["client_id"]})
     assert stored["key_hash"] == hash_api_key(minted["api_key"])
@@ -74,7 +74,7 @@ def test_principal_needs_a_valid_key_and_all_identity_headers(client: TestClient
         )
     with pytest.raises(Unauthorized):
         get_authenticated_principal(
-            request, service, api_key="tsg_wrong", user_id="u1", entity_id=86, tenant_id="DESC"
+            request, service, api_key=f"{ApiKey.PREFIX}wrong", user_id="u1", entity_id=86, tenant_id="DESC"
         )
     principal = get_authenticated_principal(
         request, service, api_key=minted["api_key"], user_id=" u1 ", entity_id=86, tenant_id="DESC"
@@ -92,7 +92,7 @@ def test_wrong_keys_are_never_cached() -> None:
     service, repository = container.get_admin_service(), container.get_api_client_repository()
     cached_before = len(repository._verified)
     for attempt in range(50):
-        assert service.get_api_client_id(f"tsg_guess_{attempt}") is None
+        assert service.get_api_client_id(f"{ApiKey.PREFIX}guess_{attempt}") is None
     assert len(repository._verified) == cached_before
 
 
@@ -102,10 +102,11 @@ def test_a_key_that_cannot_be_one_tsg_minted_costs_no_database_read(monkeypatch:
     service = container.get_admin_service()
     reads: list[dict] = []
     monkeypatch.setattr(container.get_api_client_repository(), "get", lambda *_, **where: reads.append(where))
-    for junk in ("", "secret", "tsg_short", "x" * 47, "tsg_" + "a" * 44):
+    minted_length = len(ApiKey.PREFIX) + 43  # the prefix and secrets.token_urlsafe(32)
+    for junk in ("", "secret", f"{ApiKey.PREFIX}short", "x" * minted_length, ApiKey.PREFIX + "a" * 44):
         assert service.get_api_client_id(junk) is None
     assert reads == []
-    service.get_api_client_id("tsg_" + "a" * 43)  # a minted key's shape: looked up
+    service.get_api_client_id(ApiKey.PREFIX + "a" * 43)  # a minted key's shape: looked up
     assert len(reads) == 1
 
 

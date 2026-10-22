@@ -21,8 +21,9 @@ def test_the_writer_asks_for_the_configured_lengths(monkeypatch: pytest.MonkeyPa
     slots = (Writing.SCENARIO_WORDS_SLOT, Writing.RISK_WORDS_SLOT, Writing.EVIDENCE_WORDS_SLOT)
     assert all(slot in WRITER_SYSTEM_PROMPT for slot in slots)
     filled = with_word_limits(WRITER_SYSTEM_PROMPT)
-    assert "150 to 200 WORDS (NEVER MORE)" in filled and "100 to 150 WORDS (NEVER MORE)" in filled
-    assert "30 to 80 WORDS (NEVER MORE)" in filled and "NEVER write more words than it" in filled
+    assert "150 to 200 WORDS, NEVER MORE" in filled and "100 to 150 WORDS, NEVER MORE" in filled
+    assert "evidence_statement: 30 to 80 words." in filled
+    assert "The upper number of each range is a hard limit." in filled
     assert not any(slot in filled for slot in slots)
 
 

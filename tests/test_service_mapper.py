@@ -30,9 +30,10 @@ from app.core.exceptions import JobFailed
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
 from app.domain.service_mapper import generate
+from app.domain.service_mapper.answer_checks import answer_problems
 from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.generate import generate_result
-from app.domain.service_mapper.reconcile import answer_problems, reconcile
+from app.domain.service_mapper.reconcile import reconcile
 from app.domain.service_mapper.views import approved_relationships, pending_relationships
 from app.models.admin.api_clients import Principal
 from app.models.service_mapper.catalog import CatalogRows, CatalogService, CatalogSnapshot, SectorAssociation
