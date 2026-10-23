@@ -395,7 +395,24 @@ def test_the_prompt_names_every_input_key_and_answer_field_and_writes_no_number(
     }
     assert [key for key in sorted(keys) if key not in generate._SYSTEM] == []
     assert not re.search(r"\d", generate._SYSTEM)
-    assert len(generate._SYSTEM) < 3_800
+    assert len(generate._SYSTEM) < 4_300
+
+
+def test_the_prompt_keeps_the_owners_evidence_and_weak_link_rules() -> None:
+    """Owner 2026-10-23: each reason says Recorded or Inferred, a recorded dependency's direction is the
+    carrying service's, uncertainty goes in operational_context, and weak links fail the test."""
+    rules = (
+        '"Recorded: "',
+        '"Inferred: "',
+        "their direction from the service that carries them",
+        "any material uncertainty or inference",
+        "mere interaction, optional support",
+        "conditions the input does not support",
+        "(zero means [])",
+        "Empty lists are valid.",
+        "classified at sector level, not unknown",
+    )
+    assert [rule for rule in rules if rule not in generate._SYSTEM] == []
 
 
 def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
