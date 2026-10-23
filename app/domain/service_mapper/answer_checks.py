@@ -1,7 +1,7 @@
 """The problems in an AI answer that reconcile would drop or leave incomplete, for the AI's one corrective
 re-ask."""
 
-from app.domain.service_mapper.reconcile import resolve_proposals, selected_service_id
+from app.domain.service_mapper.reconcile import resolve_both
 from app.domain.shared.names import is_same_name, name_match_key
 from app.models.service_mapper.catalog import CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
@@ -21,13 +21,7 @@ def answer_problems(
     request: CreateMappingRequest, answer: GeneratedAnswer, catalog: CatalogSnapshot
 ) -> list[str]:
     """What reconcile would drop or leave without a sector, for the AI's one corrective re-ask."""
-    selected_id = selected_service_id(request, catalog)
-    upstream, upstream_dropped = resolve_proposals(
-        answer.upstream_services, catalog, request.service_name, selected_id
-    )
-    downstream, downstream_dropped = resolve_proposals(
-        answer.downstream_services, catalog, request.service_name, selected_id
-    )
+    (upstream, upstream_dropped), (downstream, downstream_dropped) = resolve_both(request, answer, catalog)
     in_both = {item.identity for item in upstream} & {item.identity for item in downstream}
     new_items = [item for item in (*upstream, *downstream) if item.ai_suggested]
     return [

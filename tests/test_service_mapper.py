@@ -308,6 +308,55 @@ def test_the_prompt_sends_names_never_a_catalog_id_and_not_the_selected_service(
     ]
 
 
+def test_the_selected_services_recorded_dependencies_lead_and_a_shared_service_is_described_once() -> None:
+    """No fixed checklist (owner 2026-10-23): what the AI decides first is the selected service's own recorded
+    upstream/downstream from the database; a service in two groups is sent with its details once."""
+    power = SectorAssociation(10, "Energy", 11, "Power")
+    water, grid = SectorAssociation(20, "Water", None, None), SectorAssociation(10, "Energy", 12, "Grid")
+    selected = CatalogService(1, "Power Generation System", "", (power,), (), "Fuel supply", "Grid operator")
+    shared = CatalogService(
+        2, "Water Treatment Service", "Supplies treated water.", (water, grid), (), "", ""
+    )
+    catalog = CatalogSnapshot("v", ("Energy", "Water"), (power, water, grid), (selected, shared))
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _Search(), _request(), catalog, ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    sent = chat.prompts[0]
+    assert "upstream_checks" not in sent
+    assert (sent["selected_service"]["known_upstream"], sent["selected_service"]["known_downstream"]) == (
+        "Fuel supply",
+        "Grid operator",
+    )
+    entries = [entry for group in sent["catalog"] for entry in group["services"]]
+    assert entries == [
+        {"service_name": "Water Treatment Service", "description": "Supplies treated water."},
+        {"service_name": "Water Treatment Service"},
+    ]
+    new_service = CreateMappingRequest(**(_request().model_dump() | {"service_name": "Hydrogen Storage"}))
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _Search(), new_service, catalog, ("mapping", 2), (2, 1))  # type: ignore[arg-type]
+    assert "known_upstream" not in chat.prompts[0]["selected_service"]  # not in the catalog: none recorded
+
+
+def test_a_new_service_named_in_two_forms_is_kept_once_in_a_list_and_across_lists() -> None:
+    reason = "It settles every top-up; without it no fare is collected."
+    answer = GeneratedAnswer.model_validate(
+        {
+            "operational_context": "The plant converts primary energy into electricity for grid delivery.",
+            "upstream_services": [
+                _item("Payment Settlement Service (PSS)", reason, "Energy"),
+                _item("Payment Settlement Service", reason, "Energy"),
+            ],
+            "downstream_services": [_item("Payment Settlement Service", reason, "Energy")],
+        }
+    )
+    result = reconcile("mapping", 1, _request(), answer, _catalog(), 5, 5)
+    assert [item["service_name"] for item in result["dependencies"]] == ["Payment Settlement Service (PSS)"]
+    assert set(result["dependencies"][0]["relations"]) == {"upstream"}  # the tie goes upstream
+    assert 'upstream_services: "Payment Settlement Service" is listed twice' in answer_problems(
+        _request(), answer, _catalog()
+    )
+
+
 def test_a_catalog_too_large_for_the_prompt_keeps_the_most_similar_services() -> None:
     water = SectorAssociation(20, "Water", None, None)
     services = tuple(

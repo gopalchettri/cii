@@ -679,9 +679,10 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     with capture_logs() as logs:
         reaper.reap_jobs()
     [failed] = [line for line in logs if line["event"] == LogEvent.JOB_FAILED]
-    # The job's own task, not the reaper's: the dashboard groups failed jobs by it.
-    assert (failed["task"], failed["code"], failed["reason"]) == (
+    # The job's own task and module, not the reaper's: the dashboard groups failed jobs by them.
+    assert (failed["task"], failed["module"], failed["code"], failed["reason"]) == (
         TaskName.FIND_THREATS,
+        "threat_scenarios",
         ErrorCode.JOB_ABANDONED,
         "never_started",
     )

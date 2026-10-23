@@ -11,7 +11,7 @@ Start (one deployment per queue; dev gives the mapper and maintenance separate w
     celery -A app.worker beat"""
 
 import structlog
-from celery import Celery
+from celery import Celery, current_task
 from kombu.exceptions import OperationalError as BrokerUnavailable
 
 from app.core.config import get_settings
@@ -121,11 +121,28 @@ def count_waiting_messages(queue: str) -> int:
         return int(connection.default_channel.queue_declare(queue=queue).message_count)
 
 
+#: The message header that carries the API request's id to the worker (lifecycle.start_job_clock binds it).
+REQUEST_ID_HEADER = "tsg_request_id"
+
+
+def _request_id_header() -> dict[str, str]:
+    """The id of the API request sending a job (bound by the API middleware), so one id finds the request and
+    every log line of the work it started; {} outside a request (the reaper, beat)."""
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    return {REQUEST_ID_HEADER: request_id} if request_id else {}
+
+
+def current_worker() -> dict[str, str | None]:
+    """The running task's id and its worker's name, saved on the job it claims; None outside a task."""
+    request = current_task.request if current_task else None
+    return {"task_id": getattr(request, "id", None), "worker": getattr(request, "hostname", None)}
+
+
 def send_admin_job(task: TaskName, job_id: str) -> bool:
     """Queue an admin job (#18). False when the broker is unreachable: no reaper re-sends admin jobs, so the
     caller fails the job at once instead of leaving it queued."""
     try:
-        celery_app.send_task(task, args=[job_id])
+        celery_app.send_task(task, args=[job_id], headers=_request_id_header())
     except (BrokerUnavailable, *REDIS_UNAVAILABLE_ERRORS):
         log.warning(LogEvent.JOB_SEND_FAILED, task=task, record_id=job_id, exc_info=True)
         return False
@@ -136,6 +153,6 @@ def send_job(task: TaskName, record_id: str, epoch: int) -> None:
     """Queue a job whose record already says queued: ids only, the record holds the data. A failed send is
     only logged, because the reaper re-sends every record left queued (Lease.REQUEUE_QUEUED_AFTER_SECONDS)."""
     try:
-        celery_app.send_task(task, args=[record_id, epoch])
+        celery_app.send_task(task, args=[record_id, epoch], headers=_request_id_header())
     except (BrokerUnavailable, *REDIS_UNAVAILABLE_ERRORS):
         log.warning(LogEvent.JOB_SEND_FAILED, task=task, record_id=record_id, exc_info=True)

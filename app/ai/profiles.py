@@ -25,6 +25,10 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
     "litellm_proxy/glm-5": ChatModelProfile(
         max_output_tokens=12_288, timeout_seconds=120, supports_json_mode=True, reasoning_effort="none"
     ),
+    # The gateway's name for glm-5 (UAT probe, 2026-10-23).
+    "litellm_proxy/glm-5.3": ChatModelProfile(
+        max_output_tokens=12_288, timeout_seconds=120, supports_json_mode=True, reasoning_effort="none"
+    ),
 }
 
 
@@ -33,7 +37,7 @@ EMBEDDING_MODEL_PROFILES: dict[str, EmbeddingModelProfile] = {
         dimensions=3072, batch_size=64, timeout_seconds=90, max_text_chars=8_000
     ),
     # UAT values (owner, 2026-10-08): as v1 runs them there.
-    "litellm_proxy/qwen3-embedding-8b-mig": EmbeddingModelProfile(
+    "litellm_proxy/qwen3-embedding-8b": EmbeddingModelProfile(
         dimensions=4096, batch_size=32, timeout_seconds=120, max_text_chars=4_000, concurrency=4
     ),
 }
@@ -41,7 +45,7 @@ EMBEDDING_MODEL_PROFILES: dict[str, EmbeddingModelProfile] = {
 
 RERANK_MODEL_PROFILES: dict[str, RerankModelProfile] = {
     "bge-reranker-v2-m3": RerankModelProfile(timeout_seconds=90),  # dev, local folder
-    "litellm_proxy/qwen3-reranker-8b-mig": RerankModelProfile(timeout_seconds=120),
+    "litellm_proxy/qwen3-reranker-8b": RerankModelProfile(timeout_seconds=120),
 }
 
 

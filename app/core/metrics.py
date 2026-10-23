@@ -27,6 +27,11 @@ AI_SECONDS = Histogram(
     buckets=(1, 2, 5, 10, 20, 30, 60, 90, 120, 180),
 )
 DEPENDENCY_UP = Gauge("tsg_dependency_up", "1 when the dependency answered the last check", ["name"])
+JOBS_NOW = Gauge(
+    "tsg_jobs_current",
+    "Jobs now by kind and status (queued, retrying, running; failed: in the last 24 h), set by the reaper",
+    ["kind", "status"],
+)
 WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbeat", ["queue"])
 #: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress): every pod reports the same
 #: total.

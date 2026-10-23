@@ -119,32 +119,31 @@ class JobRepository:
         self._records = records
 
     def create_indexes(self) -> None:
-        """The reaper's two scans, each one index read."""
+        """The reaper's two scans, each one index read, and GET /v1/admin/jobs's newest-first list."""
         self._records.create_index([("status", 1), ("job.lease_until", 1)])
+        self._records.create_index([("updated_at", -1)])
         self._records.create_index([("status", 1), ("job.due_at", 1)])
 
     def claim_job(
-        self, record_id: str, epoch: int, task: str, task_id: str, fields: Iterable[str] = ()
+        self,
+        record_id: str,
+        epoch: int,
+        task: str,
+        task_id: str,
+        fields: Iterable[str] = (),
+        worker: str = "",
     ) -> JobLease | None:
         """Claim the job if it is due (queued) or abandoned (running, lease expired) for this task and epoch,
         returning its lease with `fields` of the record; None for a duplicate, stale or early delivery."""
         now = datetime.now(UTC)
         claimed = self._records.find_one_and_update(
-            {
-                "_id": record_id,
-                "job.epoch": epoch,
-                "job.task": task,
-                "$or": [
-                    # Due only, so a duplicate message never runs a job before its back-off ends; the skew
-                    # allows for another pod's clock.
-                    {"status": Status.QUEUED, "job.due_at": {"$lte": now + _CLOCK_SKEW}},
-                    {"status": Status.RUNNING, "job.lease_until": {"$lt": now}},
-                ],
-            },
+            _claimable(record_id, epoch, task, now),
             {
                 "$set": {
                     "status": Status.RUNNING,
                     "job.task_id": task_id,
+                    "job.worker": worker,  # which worker runs it, since when: GET /v1/admin/jobs shows both
+                    "job.started_at": now,
                     "job.lease_until": now + timedelta(seconds=Lease.SECONDS),
                     "job.resends": 0,  # it reached a worker: the reaper's re-send count starts again
                     "updated_at": now,
@@ -157,6 +156,63 @@ class JobRepository:
         if claimed is None:
             return None
         return JobLease(self._records, record_id, epoch, task_id, claimed["job"]["attempts"], claimed)
+
+    def list_recent_jobs(
+        self, since: datetime, statuses: Iterable[str] = (), task: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """The collection's jobs changed since `since`, newest first: its status and job fields only, for
+        GET /v1/admin/jobs. `statuses` and `task` narrow it."""
+        where: dict[str, Any] = {"job": {"$exists": True}, "updated_at": {"$gte": since}}
+        if statuses:
+            where["status"] = {"$in": list(statuses)}
+        if task:
+            where["job.task"] = task
+        fields = ("status", "entity_id", "created_at", "updated_at", "finished_at", "job")
+        return list(self._records.find(where, dict.fromkeys(fields, 1)).sort("updated_at", -1).limit(limit))
+
+    def count_jobs_by_task(self, failed_since: datetime) -> dict[tuple[str, str], int]:
+        """{(task, status): count} of the jobs queued, retrying (queued after an outage), running, and failed
+        since `failed_since`: the reaper's tsg_jobs_current gauge."""
+        pipeline: list[dict[str, Any]] = [
+            {
+                "$match": {
+                    "job": {"$exists": True},
+                    "$or": [
+                        {"status": {"$in": [Status.QUEUED, Status.RUNNING]}},
+                        {"status": Status.FAILED, "finished_at": {"$gte": failed_since}},
+                    ],
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "task": "$job.task",
+                        "status": {
+                            "$cond": [
+                                {
+                                    "$and": [
+                                        {"$eq": ["$status", Status.QUEUED]},
+                                        {"$ifNull": ["$job.retry", False]},
+                                    ]
+                                },
+                                "retrying",
+                                "$status",
+                            ]
+                        },
+                    },
+                    "count": {"$sum": 1},
+                }
+            },
+        ]
+        return {
+            (row["_id"].get("task") or "unknown", row["_id"]["status"]): row["count"]
+            for row in self._records.aggregate(pipeline)
+        }
+
+    def get_job_record(self, record_id: str) -> dict[str, Any] | None:
+        """The record's status and job fields (GET /v1/admin/jobs/{job_id}); None for no such job."""
+        fields = ("status", "entity_id", "created_at", "updated_at", "finished_at", "job")
+        return self._records.find_one({"_id": record_id, "job": {"$exists": True}}, dict.fromkeys(fields, 1))
 
     def get_job_status(self, record_id: str) -> str | None:
         """The job record's status now; None once it is gone."""
@@ -206,3 +262,18 @@ class JobRepository:
             "job.due_at": record["job"]["due_at"],
         }
         return bool(self._records.update_one(unchanged_since_read, update).modified_count)
+
+
+def _claimable(record_id: str, epoch: int, task: str, now: datetime) -> dict[str, Any]:
+    """The job record a delivery may claim: this task and epoch, due (queued) or abandoned (lease expired)."""
+    return {
+        "_id": record_id,
+        "job.epoch": epoch,
+        "job.task": task,
+        "$or": [
+            # Due only, so a duplicate message never runs a job before its back-off ends; the skew allows for
+            # another pod's clock.
+            {"status": Status.QUEUED, "job.due_at": {"$lte": now + _CLOCK_SKEW}},
+            {"status": Status.RUNNING, "job.lease_until": {"$lt": now}},
+        ],
+    }

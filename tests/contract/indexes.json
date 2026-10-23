@@ -426,6 +426,14 @@
       1
      ]
     ]
+   },
+   "updated_at_-1": {
+    "key": [
+     [
+      "updated_at",
+      -1
+     ]
+    ]
    }
   },
   "options": {
@@ -730,6 +738,14 @@
       -1
      ]
     ]
+   },
+   "updated_at_-1": {
+    "key": [
+     [
+      "updated_at",
+      -1
+     ]
+    ]
    }
   },
   "options": {
@@ -848,6 +864,14 @@
      [
       "job.lease_until",
       1
+     ]
+    ]
+   },
+   "updated_at_-1": {
+    "key": [
+     [
+      "updated_at",
+      -1
      ]
     ]
    }

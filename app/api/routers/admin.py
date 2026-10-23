@@ -1,21 +1,26 @@
 """Admin endpoints (admin key only): mint, list and revoke API-client keys; build the library's embeddings now
-(#18) and read the build (#19). The embeddings are also built every 30 minutes and after every library change,
-without these."""
+(#18) and read the build (#19); every job of every kind with its queue and worker (GET /v1/admin/jobs). The
+embeddings are also built every 30 minutes and after every library change, without these."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Response
+from fastapi import APIRouter, Depends, Path, Query, Response
 
 from app.api.dependencies import AdminUser, require_admin_api_key
-from app.container import get_admin_service
-from app.core.constants import ApiTag
+from app.container import get_admin_service, get_job_monitor_service
+from app.core.constants import ApiTag, Module, Status
 from app.models.admin.admin_jobs import AdminJobOut, AdminJobStarted
 from app.models.admin.api_clients import ApiClientList, ApiClientOut, MintedApiClient, MintRequest
+from app.models.jobs.views import JobMonitor, MonitoredJob
 from app.services.admin.admin_service import AdminService
+from app.services.job_monitor.job_monitor_service import JobMonitorService
 
 router = APIRouter(dependencies=[Depends(require_admin_api_key)])
 
 Service = Annotated[AdminService, Depends(get_admin_service)]
+Monitor = Annotated[JobMonitorService, Depends(get_job_monitor_service)]
+_JOB_ID = Annotated[str, Path(max_length=64)]
 
 _API_CLIENTS, _EMBEDDINGS = "/v1/tsg/api-clients", "/v1/embeddings"
 
@@ -75,3 +80,45 @@ def start_embeddings_build(service: Service, actor: AdminUser) -> dict:
 def read_embeddings_build(job_id: Annotated[str, Path(max_length=64)], service: Service) -> dict:
     """Its `status`: queued, running, then done or failed (with `error`)."""
     return service.get_embeddings_build(job_id)
+
+
+@router.get(
+    "/v1/admin/jobs", tags=[ApiTag.JOBS], response_model=JobMonitor, summary="Every job, queue and worker"
+)
+def list_all_jobs(
+    monitor: Monitor,
+    status: Annotated[list[Status] | None, Query()] = None,
+    module: Annotated[Module | None, Query()] = None,
+    kind: Annotated[str | None, Query(max_length=64)] = None,
+    hours: Annotated[int, Query(ge=1, le=24 * 90)] = 24,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> JobMonitor:
+    """Every job of every kind (runs, plans, service mappings, intelligence refreshes, embeddings builds)
+    active in the last `hours`, newest first: status (queued, running, done, failed, cancelled), the retry it
+    waits for, its error, the worker running it. `queues`: each queue's waiting messages and workers online.
+    Filter by `module` (threat_scenarios, remediation, service_mapper, external_intelligence,
+    library_embeddings, maintenance), `status` (repeatable) and `kind` (a task name such as tsg_map_services,
+    or an admin job kind)."""
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    return monitor.list_jobs(since, list(status or []), kind, limit, module)
+
+
+@router.get("/v1/admin/jobs/{job_id}", tags=[ApiTag.JOBS], response_model=MonitoredJob, summary="One job")
+def read_any_job(job_id: _JOB_ID, monitor: Monitor) -> MonitoredJob:
+    """Any job by its id (an import's or build's job_id, or a run's, plan's or mapping's id): its module,
+    status, error, retry and worker. 404 for an unknown id."""
+    return monitor.get_job(job_id)
+
+
+@router.post(
+    "/v1/admin/jobs/{job_id}/cancel",
+    tags=[ApiTag.JOBS],
+    response_model=MonitoredJob,
+    summary="Cancel an intelligence import or embeddings build",
+)
+def cancel_admin_job(job_id: _JOB_ID, monitor: Monitor, actor: AdminUser) -> MonitoredJob:
+    """Queued: it never starts. Running: an import stops at its next NVD request or source, keeping what it
+    read (the next import continues from there); a build finishes but its outcome is dropped. The job reads
+    `cancelled`, a new one of its kind can start at once, and the cancel is audited. 409 `nothing_to_cancel`
+    for a job already ended or another module's job (a run or plan has its own cancel)."""
+    return monitor.cancel_job(job_id, actor)

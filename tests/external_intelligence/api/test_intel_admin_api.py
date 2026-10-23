@@ -243,10 +243,10 @@ def test_health_shows_the_evidence_settings_and_whether_they_were_calibrated(
     assert health["evidence"]["rerank_model"] == "bge-reranker-v2-m3"  # the name only, never the folder
     assert health["evidence"]["threshold_calibrated"] is True
     assert health["pending_sources"] == [] and health["no_data"] is False and health["stale"] is False
-    uat = get_settings().model_copy(update={"rerank_model": "litellm_proxy/qwen3-reranker-8b-mig"})
+    uat = get_settings().model_copy(update={"rerank_model": "litellm_proxy/qwen3-reranker-8b"})
     api.service = api.build(uat)
     shown = client.get(f"{URL}/health", headers=ADMIN).json()["evidence"]
-    assert (shown["rerank_model"], shown["threshold_calibrated"]) == ("qwen3-reranker-8b-mig", False)
+    assert (shown["rerank_model"], shown["threshold_calibrated"]) == ("qwen3-reranker-8b", False)
     assert shown["threshold_calibrated_on"] is None
 
 

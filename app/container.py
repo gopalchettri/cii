@@ -10,9 +10,9 @@ from app.ai.embeddings import EmbeddingModel, embedding_model_from
 from app.ai.rerank import RerankModel, rerank_model_from
 from app.ai.slots import AiSlots
 from app.core.config import get_settings
-from app.core.constants import AiLimits
+from app.core.constants import ROUTED_QUEUES, AiLimits
 from app.core.database import get_mongodb, get_redis_client, get_stored_procedure_client
-from app.core.readiness import log_mongodb_topology
+from app.core.readiness import count_online_workers, log_mongodb_topology
 from app.core.singletons import singleton
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.ai_call_repository import AiCallRepository
@@ -52,12 +52,13 @@ from app.search.service import LibrarySearch
 from app.search.service_mapper import ServiceCandidateSearch
 from app.services.admin.admin_service import AdminService
 from app.services.external_intelligence.external_intelligence_service import ExternalIntelligenceService
+from app.services.job_monitor.job_monitor_service import JobMonitorService
 from app.services.jobs.job_service import JobService
 from app.services.library.threat_library_service import ThreatLibraryService
 from app.services.remediation.remediation_plan_service import RemediationPlanService
 from app.services.scenario.threat_scenario_service import ThreatScenarioService
 from app.services.service_mapper.service_mapper_service import ServiceMapperService
-from app.worker.celery_app import send_admin_job, send_job
+from app.worker.celery_app import count_waiting_messages, send_admin_job, send_job
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from app.worker.external_intelligence.sources.source_catalogue import SourceCatalogue
 from app.worker.remediation.remediation_plan_job import RemediationPlanJob
@@ -383,6 +384,20 @@ def get_job_service() -> JobService:
         get_audit_repository(),
         publish_session_status,
         publish_remediation_status,
+    )
+
+
+@singleton
+def get_job_monitor_service() -> JobMonitorService:
+    from app.worker.jobs import JOB_COLLECTIONS
+
+    return JobMonitorService(
+        {collection: JobRepository(get_mongodb()[collection]) for collection in JOB_COLLECTIONS},
+        get_admin_job_repository(),
+        ROUTED_QUEUES,
+        count_waiting_messages,
+        count_online_workers,
+        get_audit_repository(),
     )
 
 

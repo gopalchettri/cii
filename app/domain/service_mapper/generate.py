@@ -6,10 +6,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.ai.chat import ChatModel
-from app.core.config import get_settings
 from app.core.constants import AiTask
 from app.domain.service_mapper.answer_checks import answer_problems
-from app.domain.service_mapper.reconcile import reconcile
+from app.domain.service_mapper.reconcile import reconcile, selected_service_id
 from app.domain.shared.names import as_json, is_same_name, shorten_text
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
@@ -105,12 +104,7 @@ def _user_prompt(
 ) -> str:
     return as_json(
         {
-            "upstream_checks": [
-                check.strip()
-                for check in get_settings().service_mapper_upstream_checks.split(",")
-                if check.strip()
-            ],
-            "selected_service": request.model_dump(),
+            "selected_service": request.model_dump() | _selected_known_dependencies(request, catalog),
             "upstream_count": counts[0],
             "downstream_count": counts[1],
             "catalog": _catalog_groups(catalog, services),
@@ -118,14 +112,27 @@ def _user_prompt(
     )
 
 
+def _selected_known_dependencies(request: CreateMappingRequest, catalog: CatalogSnapshot) -> dict[str, str]:
+    """The selected service's own recorded upstream/downstream from the database, when it is in the catalog:
+    what the AI decides on first (it is left out of the catalog list, so it would never see them)."""
+    selected_id = selected_service_id(request, catalog)
+    service = next((s for s in catalog.services if s.service_id == selected_id), None)
+    if service is None:
+        return {}
+    known = {"known_upstream": service.upstream_context, "known_downstream": service.downstream_context}
+    return {key: shorten_text(text, 1000) for key, text in known.items() if text}
+
+
 def _catalog_groups(catalog: CatalogSnapshot, services: list[CatalogService]) -> list[dict[str, Any]]:
     """Every sector and subsector of the taxonomy with the given services linked to it, in the order of the
     services (most relevant first), empty groups last; a sector-level group (subsector null) is listed only
-    when it has services or the sector has no subsectors."""
+    when it has services or the sector has no subsectors. A service in several groups is described in the
+    first only; the others carry its name alone, so its details are never sent twice."""
     groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
     for service in services:
-        for group in service.sectors:
-            groups.setdefault((group.sector_name, group.subsector_name), []).append(_service_entry(service))
+        for place, group in enumerate(service.sectors):
+            entry = _service_entry(service) if place == 0 else {"service_name": service.service_name}
+            groups.setdefault((group.sector_name, group.subsector_name), []).append(entry)
     for group in sorted(
         catalog.sector_groups, key=lambda group: (group.sector_name, group.subsector_name or "")
     ):

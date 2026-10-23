@@ -4274,6 +4274,195 @@
       }
     },
     {
+      "id": 61,
+      "type": "table",
+      "title": "Jobs now, by kind and status",
+      "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute. For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (kind, status) (tsg_jobs_current) > 0",
+          "legendFormat": "__auto",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No job waiting, running or failed"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "kind"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Job type"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "tsg_find_threats": {
+                        "text": "Find threats",
+                        "index": 0
+                      },
+                      "tsg_write_scenarios": {
+                        "text": "Write scenarios",
+                        "index": 1
+                      },
+                      "tsg_map_controls": {
+                        "text": "Map controls",
+                        "index": 2
+                      },
+                      "tsg_map_services": {
+                        "text": "Map services",
+                        "index": 3
+                      },
+                      "tsg_write_plan": {
+                        "text": "Write remediation plan",
+                        "index": 4
+                      },
+                      "tsg_retry_controls": {
+                        "text": "Retry control mapping",
+                        "index": 5
+                      },
+                      "tsg_reap": {
+                        "text": "Repair stuck jobs",
+                        "index": 6
+                      },
+                      "tsg_build_library_indexes": {
+                        "text": "Build library search",
+                        "index": 7
+                      },
+                      "tsg_refresh_external_intelligence": {
+                        "text": "Refresh threat intelligence",
+                        "index": 8
+                      },
+                      "embeddings_build": {
+                        "text": "Build library search (admin)",
+                        "index": 9
+                      },
+                      "intel_refresh": {
+                        "text": "Refresh threat intelligence (admin)",
+                        "index": 10
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Status"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "queued": {
+                        "text": "Waiting",
+                        "index": 0,
+                        "color": "blue"
+                      },
+                      "retrying": {
+                        "text": "Waiting to try again",
+                        "index": 1,
+                        "color": "orange"
+                      },
+                      "running": {
+                        "text": "Running",
+                        "index": 2,
+                        "color": "green"
+                      },
+                      "failed": {
+                        "text": "Failed (last 24 h)",
+                        "index": 3,
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Jobs"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "kind": 0,
+              "status": 1,
+              "Value": 2
+            }
+          }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      }
+    },
+    {
       "id": 19,
       "type": "row",
       "title": "What is slow",
@@ -4283,7 +4472,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 73
+        "y": 81
       },
       "panels": []
     },
@@ -4468,7 +4657,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 74
+        "y": 82
       }
     },
     {
@@ -4648,7 +4837,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 74
+        "y": 82
       }
     },
     {
@@ -4786,7 +4975,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 74
+        "y": 82
       }
     },
     {
@@ -4855,7 +5044,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 82
+        "y": 90
       }
     },
     {
@@ -4908,7 +5097,7 @@
         "h": 8,
         "w": 9,
         "x": 6,
-        "y": 82
+        "y": 90
       }
     },
     {
@@ -4961,7 +5150,7 @@
         "h": 8,
         "w": 9,
         "x": 15,
-        "y": 82
+        "y": 90
       }
     },
     {
@@ -4974,7 +5163,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 90
+        "y": 98
       },
       "panels": []
     },
@@ -5108,7 +5297,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 91
+        "y": 99
       }
     },
     {
@@ -5161,7 +5350,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 91
+        "y": 99
       }
     },
     {
@@ -5295,7 +5484,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 91
+        "y": 99
       }
     },
     {
@@ -5308,7 +5497,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 99
+        "y": 107
       },
       "panels": []
     },
@@ -5350,7 +5539,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 100
+        "y": 108
       }
     },
     {
@@ -5389,7 +5578,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 112
+        "y": 120
       }
     },
     {
@@ -5402,7 +5591,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 118
+        "y": 126
       },
       "panels": [
         {
@@ -5455,7 +5644,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 119
+            "y": 127
           }
         },
         {
@@ -5508,7 +5697,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 119
+            "y": 127
           }
         },
         {
@@ -5561,7 +5750,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 119
+            "y": 127
           }
         }
       ]
@@ -5576,7 +5765,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 127
       },
       "panels": [
         {
@@ -5629,7 +5818,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 120
+            "y": 128
           }
         },
         {
@@ -5682,7 +5871,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 120
+            "y": 128
           }
         },
         {
@@ -5735,7 +5924,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 120
+            "y": 128
           }
         },
         {
@@ -5788,7 +5977,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 128
+            "y": 136
           }
         },
         {
@@ -5841,7 +6030,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 128
+            "y": 136
           }
         }
       ]

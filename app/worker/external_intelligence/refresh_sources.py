@@ -35,6 +35,7 @@ from app.models.external_intelligence.source_health import (
 from app.search.external_intelligence import intelligence_metrics as metrics
 from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
+from app.worker.external_intelligence.cancel_check import import_cancelled
 from app.worker.external_intelligence.record_batch_writer import (
     ClaimLost,
     RefreshMessage,
@@ -66,13 +67,13 @@ class SourceRefresher:
         self._audit = audit
 
     def refresh_due_sources(self, now: datetime) -> RefreshSummary:
-        """Refresh every approved source that is due, in the catalogue's order (KEV before EPSS and NVD)."""
+        """Every approved due source, KEV before EPSS and NVD; a cancelled import skips the rest."""
         self._feeds.create_missing_intel_feeds()
         approved = set(sources_in_registry_order(self._feeds.list(["_id"], sources=True, approved=True)))
         outcomes = tuple(
             self._refresh(source, fetcher, now, forced=False)
             for source, fetcher in self._catalogue.fetchers().items()
-            if source in approved
+            if source in approved and not import_cancelled()
         )
         return self._finish(outcomes)
 

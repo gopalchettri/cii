@@ -189,6 +189,7 @@ class AuditAction(StrEnum):
     LIBRARY_DECIDED = "library.decided"  # a curator approved or rejected pending threats
     ADMIN_JOB_STARTED = "admin.job_started"
     ADMIN_JOB_FINISHED = "admin.job_finished"  # the actor is the job
+    ADMIN_JOB_CANCELLED = "admin.job_cancelled"  # POST /v1/admin/jobs/{job_id}/cancel
     RUN_CANCELLED = "run.cancelled"
     SESSION_DELETED = "session.deleted"  # a run removed for good, with its scenarios and plans
     PLAN_CANCELLED = "plan.cancelled"

@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from app.core.constants import IntelKind, IntelLimits, IntelRejection
 from app.core.exceptions import IntelFetchFailed
 from app.models.external_intelligence.fetch_result import FetchResult
+from app.worker.external_intelligence.cancel_check import import_cancel_check
 from app.worker.external_intelligence.sources import nist_nvd_details_source as nvd_module
 from app.worker.external_intelligence.sources.nist_nvd_details_source import NistNvdDetailsSource
 
@@ -352,3 +353,18 @@ def test_more_is_set_only_when_the_budget_or_the_rate_limit_cut_the_run(sleeps) 
     assert _fetch(FakeNvd([_item(c) for c in ids]), ids).more is False
     cut = _fetch(FakeNvd([_item(c) for c in ids], ok_first=1), ids)
     assert cut.more is True
+
+
+def test_a_cancelled_import_stops_at_its_next_request_and_keeps_what_it_read(sleeps) -> None:
+    """POST /v1/admin/jobs/{job_id}/cancel mid-NVD: no further request; like a rate limit, the records read
+    are kept, `more` says the source is unfinished and a window not fully read keeps its checkpoint."""
+    ids = ["CVE-2024-0001", "CVE-2024-0002", "CVE-2024-0003"]
+    server = FakeNvd([_item(c) for c in ids])
+    with import_cancel_check(lambda: len(server.requests) < 1):  # cancelled once the first request was sent
+        result = _fetch(server, set(ids))
+    assert [r.external_id for r in result.records] == ids[:1] and result.more and len(server.requests) == 1
+    since = _days_ago(2)
+    server.requests.clear()
+    with import_cancel_check(lambda: False):  # cancelled before the window's first page
+        windowed = _fetch(server, set(ids), since, stored=set(ids))
+    assert windowed.checkpoint == since and windowed.more and server.requests == []

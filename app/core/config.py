@@ -26,7 +26,7 @@ _WORD_RANGE = re.compile(r"\s*(\d+)\s*-\s*(\d+)\s*")
 
 class AiOutputSettings(BaseSettings):
     """What the AI produces: a scenario's controls (owner 2026-10-13, G225) and text lengths (G226), and the
-    service mapper's counts and upstream checks. Settings reads these too (one class would be too long)."""
+    service mapper's counts. Settings reads these too (one class would be too long)."""
 
     # A scenario's controls, in five steps: the CONTROL_CANDIDATES closest library controls that fit the asset
     # type are found; the reranker scores each 0-100; every one at or above CONTROL_SIMILARITY_THRESHOLD is
@@ -59,11 +59,6 @@ class AiOutputSettings(BaseSettings):
     )
     service_mapper_downstream_total_count: int = Field(
         default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
-    )
-    # What the AI checks first for every upstream list (comma-separated), sent to it as data.
-    service_mapper_upstream_checks: str = Field(
-        default="electricity, water, telecommunications, ICT hosting, payments, identity",
-        validation_alias="SERVICE_MAPPER_UPSTREAM_CHECKS",
     )
 
     @model_validator(mode="after")
@@ -160,6 +155,10 @@ class Settings(AiOutputSettings):
     chat_api_key: SecretStr
     chat_model: str
     chat_fallback_model: str = ""
+    # CII_CHAT_MODEL_THINKING / CII_CHAT_FALLBACK_MODEL_THINKING: false (default) = that model's thinking off
+    # (LiteLLM gateway models: app/ai/chat.py); true = the model's own default.
+    chat_model_thinking: bool = False
+    chat_fallback_model_thinking: bool = False
 
     embedding_base_url: str
     embedding_api_key: SecretStr

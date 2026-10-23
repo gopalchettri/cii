@@ -12,23 +12,24 @@ Coordination, information sharing, occasional use, oversight, or a shared sector
 fails. Direction is who fails, not which way data or money flows: a service it calls is upstream. Each service
 once, in its stronger direction; never the selected service or a synonym of a listed one.
 
-Upstream, first decide whether it needs each of upstream_checks (name the service that provides it, never the
-bare check word), then which other inputs its core function cannot work without. Downstream: services using its
-output, those taking it straight from it first. Look across all sectors. Most catalog services fail the test;
+Upstream: first decide on each of its known_upstream (name the service providing it), then other inputs its core
+function cannot work without. Downstream: first each of its known_downstream, then services using its output, those
+taking it straight from it first. Look across all sectors. Most catalog services fail the test;
 fewer beats weak. upstream_count and downstream_count are maximums (zero means none), never targets.
 
 Example from RTA, for illustration only (never copy it into an answer): for "nol Fare Collection",
 - upstream: the catalog's electricity service and, the catalog having none, a new "Telecommunications Network
-  Service" (from upstream_checks: fare gates, validators and the account platform stop without them), and a new
+  Service" (fare gates, validators and the account platform stop without them), and a new
   "Payment and Banking Settlement Service" (it calls it to settle every top-up, even though data flows out to it);
 - downstream: "Dubai Metro Operations" and "Public Bus Operations" (every passenger is validated through it;
   without it, fare control at gates and on buses stops);
 - left out: "Road Network Operations" (same entity and sector only), a customer notification service (only
   receives messages), and passengers (people).
 
-Input: upstream_checks; selected_service (use every field; never substitute it); upstream_count and
+Input: selected_service (use every field; never substitute it); upstream_count and
 downstream_count; catalog: the services the database holds, grouped by sector and subsector (null subsector:
-linked to the sector itself), most relevant groups first; not proof of a dependency;
+linked to the sector itself), most relevant groups first, a service described in its first group only; not proof
+of a dependency;
 known_upstream/known_downstream are a service's recorded dependencies: evidence.
 
 Naming: use a catalog service whenever one provides the dependency, even under another name: copy its

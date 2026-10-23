@@ -4,6 +4,7 @@ from app.core.constants.api import *  # noqa: F403
 from app.core.constants.common import *  # noqa: F403
 from app.core.constants.evidence import *  # noqa: F403
 from app.core.constants.intelligence import *  # noqa: F403
+from app.core.constants.job_modules import *  # noqa: F403
 from app.core.constants.jobs import *  # noqa: F403
 from app.core.constants.planning import *  # noqa: F403
 from app.core.constants.remediation import *  # noqa: F403

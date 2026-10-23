@@ -27,6 +27,8 @@ from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
 from app.core.config import Settings
 from app.core.constants import (
     CHAT_TEMPERATURES,
+    LITELLM_MODEL_PREFIX,
+    THINKING_OFF_TEMPLATE_KWARGS,
     AiLimits,
     AiOutcome,
     AiTask,
@@ -56,8 +58,11 @@ def _reask_build_correction_message(problems: list[str]) -> str:
     return AiLimits.REASK_MESSAGE.format(problems="\n".join(lines))
 
 
-def _build_request_options(profile: ChatModelProfile, task: AiTask) -> dict[str, Any]:
-    """The request options this model accepts (its profile) for this task (its temperature, R-2)."""
+def _build_request_options(
+    profile: ChatModelProfile, task: AiTask, model: str, thinking: bool
+) -> dict[str, Any]:
+    """The request options this model accepts (its profile) for this task (its temperature, R-2), with its
+    thinking switched off unless `thinking` (CII_*_MODEL_THINKING)."""
     # stream=False on the wire: a proxy entry pinning stream=true (UAT glm-5's) would otherwise
     # pick the shape.
     options: dict[str, Any] = {
@@ -75,6 +80,10 @@ def _build_request_options(profile: ChatModelProfile, task: AiTask) -> dict[str,
         # table thinks unsupported (v1 saw this on openai/Kimi-K2.6), and thinking silently stays on.
         options["reasoning_effort"] = profile.reasoning_effort
         options["allowed_openai_params"] = ["reasoning_effort"]
+    if not thinking and model.startswith(LITELLM_MODEL_PREFIX):
+        # The gateway's vLLM models switch thinking in their chat template (UAT probe). Gateway models only:
+        # another provider (dev Azure) may refuse a parameter it does not know.
+        options["extra_body"] = {"chat_template_kwargs": dict(THINKING_OFF_TEMPLATE_KWARGS)}
     return options
 
 
@@ -91,8 +100,10 @@ class ChatModel:
         call_records: AiCallRepository,
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
+        thinking_on: frozenset[str] = frozenset(),
     ):
         self._models = models
+        self._thinking_on = thinking_on  # models whose thinking stays on; every other one's is switched off
         self._base_url = base_url
         self._api_key = api_key
         self._call_records = call_records
@@ -176,7 +187,8 @@ class ChatModel:
         with self._slots.hold_slot(self._slot_hold):
             for model, profile in self._models:
                 started = time.perf_counter()
-                options = self._key_header | _build_request_options(profile, task)
+                thinking = model in self._thinking_on
+                options = self._key_header | _build_request_options(profile, task, model, thinking)
                 try:
                     with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
                         # num_retries=0: call_with_retries is the only retry (litellm's own needs tenacity).
@@ -224,6 +236,14 @@ def chat_model_from(settings: Settings, calls: AiCallRepository, slots: AiSlots)
     model_names = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []
     )
+    thinking_on = {
+        name
+        for name, on in (
+            (settings.chat_model, settings.chat_model_thinking),
+            (settings.chat_fallback_model, settings.chat_fallback_model_thinking),
+        )
+        if on
+    }
     return ChatModel(
         [(name, find_model_profile(CHAT_MODEL_PROFILES, name)) for name in model_names],
         settings.chat_base_url,
@@ -231,4 +251,5 @@ def chat_model_from(settings: Settings, calls: AiCallRepository, slots: AiSlots)
         calls,
         settings.ai_key_header,
         slots,
+        frozenset(thinking_on),
     )

@@ -56,7 +56,7 @@ class AdminJobMessage(StrEnum):
     IN_PROGRESS = "An embeddings build is already queued or running: details.job_id names it."
     NOT_FOUND = "Admin job '{job_id}' does not exist."
     NOT_SENT = "The job queue is unreachable: the build was not started. Try again shortly."
-    ABANDONED = "Still unfinished after {seconds} s: taken over by a new build."
+    ABANDONED = "Still unfinished after {seconds} s (its worker stopped): marked failed; a new one can start."
 
 
 class Event(StrEnum):

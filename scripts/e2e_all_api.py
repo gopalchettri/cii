@@ -1,8 +1,9 @@
 """Every API operation, end to end, against a running TSG (API, workers, MongoDB, SQL Server, Redis, the AI):
 an API key, the library's vectors, the intel import, a run written, reviewed, regenerated and given its next
 set, a promoted threat rejected again, plans (generated and manual) reviewed, regenerated and cancelled, a
-service mapping, a second run cancelled and deleted, a source withdrawn and approved again, the key revoked.
-At the end, every operation the app's own OpenAPI lists is checked off ("45 of 45 operations called").
+service mapping, every job listed and an embeddings build cancelled, a second run cancelled and deleted, a
+source withdrawn and approved again, the key revoked.
+At the end, every operation the app's own OpenAPI lists is checked off ("51 of 51 operations called").
 
 It keeps the main run (saved as TSG_RUN_ID in debug/.env, for scripts/scorecard.py) and rejects the threats
 it promoted, so the library ends as it began. The intel switch and the source end as they began too,
@@ -16,9 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 import uuid
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +25,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from debug_tools import set_debug_value  # noqa: E402  (scripts/ is on the path: this script's own folder)
-from e2e_client import CALLED, FAILED, Api  # noqa: E402
+from e2e_client import CALLED, FAILED, Api, job_settled, run_settled, wait  # noqa: E402
 
 from app.core.constants import Header  # noqa: E402
 from app.models.remediation.requests import PLAN_REQUEST_EXAMPLES  # noqa: E402
@@ -38,40 +37,7 @@ PLAN = RUN + "/scenarios/{scenario_id}/treatment-plan"
 MAPPING = "/v1/service-mapper/{mapping_id}"
 REFRESH = "/v1/tsg/intel/refresh/{job_id}"
 SOURCE = "/v1/tsg/intel/sources/{source}"
-
-
-def wait(api: Api, template: str, settled: Callable[[Any], bool], minutes: int, **given: Any) -> Any:
-    """Reads `template` every 10 s, printing each new state, until `settled`; a timeout is a failure, and an
-    unexpected status stops the wait (already a failure)."""
-    deadline, last, body = time.monotonic() + minutes * 60, None, None
-    while time.monotonic() < deadline:
-        body = api.call("GET", template, quiet=True, **given)
-        if CALLED[("GET", template)] != 200:
-            return body
-        if (state := json.dumps(_state(body), default=str)) != last:
-            print(f"      {next(part for part in reversed(template.split('/')) if '{' not in part)}: {state}")
-            last = state
-        if settled(body):
-            return body
-        time.sleep(10)
-    FAILED.append(f"GET {template}: not settled in {minutes} min")
-    return body
-
-
-def _state(body: dict[str, Any]) -> dict[str, Any]:
-    progress = body.get("progress")
-    if isinstance(progress, dict):
-        keys = ("threats", "scenarios", "controls", "overall", "generation")
-        return {key: progress[key] for key in keys if progress.get(key) is not None}
-    return {key: body[key] for key in ("status", "latest_status") if key in body}
-
-
-def run_settled(body: dict[str, Any]) -> bool:
-    return body.get("progress", {}).get("overall") not in ("pending", "in_progress")
-
-
-def job_settled(body: dict[str, Any]) -> bool:
-    return body.get("status") in ("done", "failed", "cancelled")
+JOB = "/v1/admin/jobs/{job_id}"
 
 
 def setup(api: Api) -> str:
@@ -204,6 +170,18 @@ def service_mapper(api: Api, args: argparse.Namespace) -> None:
     wait(api, MAPPING, job_settled, 20, mapping_id=mapping)
 
 
+def admin_jobs(api: Api, run: str) -> None:
+    """Every job listed, the main run among them; the run read by its id; an embeddings build cancelled at
+    once (409: it ended first)."""
+    listed = api.call("GET", "/v1/admin/jobs", admin=True, params={"module": "threat_scenarios"}) or {}
+    if run not in {job["id"] for job in listed.get("jobs", [])}:
+        FAILED.append(f"admin jobs: the run {run} is not listed")
+    api.call("GET", JOB, admin=True, job_id=run)
+    build = api.call("POST", "/v1/embeddings", (202,), admin=True)
+    api.call("POST", JOB + "/cancel", (200, 409), admin=True, job_id=build["job_id"])
+    wait(api, "/v1/embeddings/{job_id}", job_settled, 30, admin=True, job_id=build["job_id"])
+
+
 def cancel_and_delete(api: Api, args: argparse.Namespace) -> None:
     """A second run, on one system, cancelled at once and deleted for good."""
     run = start_run(api, args, args.systems[:1])
@@ -283,6 +261,8 @@ def main() -> int:
         plans(api, args, run, accepted[0])
         print("Service mapper")
         service_mapper(api, args)
+        print("Admin jobs")
+        admin_jobs(api, run)
         print("Cancel and delete")
         cancel_and_delete(api, args)
         print("Intel source")

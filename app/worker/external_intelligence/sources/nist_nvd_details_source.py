@@ -14,6 +14,7 @@ from app.core.constants import IntelLimits, IntelMessage, IntelSource, IntelUrl,
 from app.core.exceptions import IntelFetchFailed
 from app.models.external_intelligence.fetch_result import FetchResult
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord
+from app.worker.external_intelligence.cancel_check import import_cancelled
 from app.worker.external_intelligence.sources.http_download import load_json, network_reason, read_bounded
 from app.worker.external_intelligence.sources.nvd_item_reader import NvdItemReader
 from app.worker.external_intelligence.sources.text_guard import SourceTextGuard, limit_rejected
@@ -155,7 +156,8 @@ class NistNvdDetailsSource:
             if moved_to is None:
                 cut = True
             for cve in sorted(wanted - self._stored_cves() - found.records.keys()):
-                body = api.get({"cveId": cve})
+                # A cancelled import stops here like a rate limit: what was read is kept, the next goes on.
+                body = None if import_cancelled() else api.get({"cveId": cve})
                 if body is None:
                     cut = True
                     break
@@ -182,6 +184,8 @@ class NistNvdDetailsSource:
         index = 0
         while True:
             window = {"lastModStartDate": since.strftime(_TIME), "lastModEndDate": end.strftime(_TIME)}
+            if import_cancelled():  # the window is not fully read: the checkpoint stays where it was
+                return None
             body = api.get({**window, "startIndex": index, "resultsPerPage": IntelLimits.NVD_PAGE_SIZE})
             if body is None:
                 return None
