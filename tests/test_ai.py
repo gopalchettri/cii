@@ -925,9 +925,9 @@ def test_a_cut_off_answer_or_a_too_long_prompt_is_truncated(monkeypatch: pytest.
 
 
 def test_the_prompt_limit_is_the_smaller_models_so_either_can_answer() -> None:
-    """UAT: kimi-k2.5 first, glm-5.3 as fallback; a prompt glm cannot take is never sent to kimi either."""
+    """UAT: kimi-k2.5 first, glm-5.3 (1M tokens) as fallback; a prompt kimi cannot take is never sent."""
     uat = [(name, CHAT_MODEL_PROFILES[name]) for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3")]
-    assert _chat_model(*uat).max_prompt_chars == (131_072 - 12_288) * 3
+    assert _chat_model(*uat).max_prompt_chars == (262_144 - 12_288) * 3
 
 
 def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pytest.MonkeyPatch) -> None:

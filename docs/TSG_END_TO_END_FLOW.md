@@ -1061,7 +1061,7 @@ flowchart TB
 > **In plain words:** The AI is shown a short, fixed description of the asset and its supporting systems, built only from facts recorded in the platform. Empty or placeholder facts are left out, so the AI reads them as unknown, never as absent. The text has a size limit. If it is too long, the longest facts are shortened first, so no system is ever dropped.
 
 **How**
-1. `describe_asset_for_ai(context, chat.max_prompt_chars // 2, country)` builds a `Landscape`. The budget is half the smallest input limit of the configured chat models. That limit is each model's `max_input_chars` (`app/models/ai/profiles.py`): its `context_tokens` less the answer's `max_output_tokens`, at 3 characters a token. Dev Kimi-K2.6 takes 263,136 characters, so the budget is 131,568; UAT (glm-5.3 the smaller) 356,352, so 178,176.
+1. `describe_asset_for_ai(context, chat.max_prompt_chars // 2, country)` builds a `Landscape`. The budget is half the smallest input limit of the configured chat models. That limit is each model's `max_input_chars` (`app/models/ai/profiles.py`): its `context_tokens` less the answer's `max_output_tokens`, at 3 characters a token. Dev Kimi-K2.6 takes 263,136 characters, so the budget is 131,568; UAT (kimi-k2.5 the smaller; glm-5.3 takes 1,000,000 tokens) 749,568, so 374,784.
 2. `_landscape_text` writes these lines:
    - `ASSET: {"asset": name, "country": … (only while intelligence is on), "asset_context": {…}, "supporting_systems": [{"name", "asset_type"}, …]}`. The asset's lead facts come first: `sector`, `sub_sector`, `critical_service`, `asset_priority`.
    - An `ORGANISATION (the owner's whole estate, background only, NOT this asset): …` line, only when the asset has `entity_*` facts.
@@ -2158,7 +2158,7 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 
 3. **The facts budget.** `PathWriter` sets it once: `chat.max_prompt_chars // 2`. `max_prompt_chars` is the
    smallest `max_input_chars` of the chat model and its fallback (`ChatModelProfile`, each model's own), so the
-   budget is 131,568 characters on dev and 178,176 on UAT.
+   budget is 131,568 characters on dev and 374,784 on UAT.
 4. **Asset facts** (`_asset_facts`). The asset's own facts from the frozen `asset_context`, under the brief's
    names: `cii_asset_description` → `description`, `asset_type` → `type`, `asset_priority` → `priority`;
    every other fact keeps its name. In an evidence story only, `country` is added from

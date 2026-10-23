@@ -40,13 +40,13 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         reasoning_effort="none",
         context_tokens=131_072,
     ),
-    # The gateway's name for glm-5 (UAT probe, 2026-10-23); its 131,072 context confirmed by the owner.
+    # The gateway's name for glm-5 (UAT probe, 2026-10-23); 1 million tokens of input (owner, 2026-10-23).
     "litellm_proxy/glm-5.3": ChatModelProfile(
         max_output_tokens=12_288,
         timeout_seconds=120,
         supports_json_mode=True,
         reasoning_effort="none",
-        context_tokens=131_072,
+        context_tokens=1_000_000,
     ),
 }
 
