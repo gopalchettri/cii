@@ -61,6 +61,24 @@ def test_find_shows_the_key_fields_of_each_matching_line(tools, capsys: pytest.C
     assert "event=http.request  status=500  route=/x" in capsys.readouterr().out
 
 
+def test_find_reads_the_rolled_over_copies_oldest_first(tools, capsys: pytest.CaptureFixture[str]) -> None:  # type: ignore[no-untyped-def]
+    """Before: find read only the current <role>.log, so after a 50 MB rollover a request's older lines were
+    never found."""
+    from app.core.config import get_settings
+
+    folder = Path(get_settings().log_dir)
+    names = ["worker-find.log.2", "worker-find.log.1", "worker-find.log"]  # oldest to newest
+    for name in names:
+        (folder / name).write_text(json.dumps({"event": "job.started", "request_id": "rolled-7"}) + "\n")
+    try:
+        assert tools.find("rolled-7") == 0
+        shown = [line.split(": ", 1)[0] for line in capsys.readouterr().out.splitlines()]
+        assert [name for name in shown if name.startswith("worker-find")] == names
+    finally:
+        for name in names:
+            (folder / name).unlink()
+
+
 def test_a_stream_to_an_api_that_is_not_running_ends_with_a_plain_message(
     tools, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:  # type: ignore[no-untyped-def]

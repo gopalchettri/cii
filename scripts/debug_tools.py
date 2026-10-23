@@ -105,12 +105,14 @@ def find(text: str) -> int:
 
     folder = REPO / (get_settings().log_dir or "logs")
     found = 0
-    for path in sorted(p for pattern in LOG_FILES for p in folder.glob(pattern)):
-        with path.open(encoding="utf-8", errors="replace") as lines:  # line by line: the files never rotate
-            for line in lines:
-                if text and text in line:
-                    found += 1
-                    print(f"{path.name}: {_short(line.rstrip())}")
+    for current in sorted(p for pattern in LOG_FILES for p in folder.glob(pattern)):
+        rolled_over = sorted(folder.glob(f"{current.name}.[0-9]"), reverse=True)  # .3 is the oldest copy
+        for path in [*rolled_over, current]:
+            with path.open(encoding="utf-8", errors="replace") as lines:  # line by line: up to 50 MB each
+                for line in lines:
+                    if text and text in line:
+                        found += 1
+                        print(f"{path.name}: {_short(line.rstrip())}")
     print(f"  {found} line(s) with '{text}' in {folder}")
     return 0 if found else 1
 

@@ -166,9 +166,9 @@ UAT works again here. But a later deployment would bring back the old settings, 
   `ai-remediation`. These images must already be in `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`
   ("STEP 0" at the top of `deploy\observability.yaml`): `prometheus:v3.15.0`, `alertmanager:v0.34.1`, `loki:3.7.8`,
   `alloy:v1.20.1`, `grafana:12.4.12`, `redis_exporter:v1.93.0`, `kube-state-metrics:v2.20.0`. Check each one in the
-  Quay web UI (`/repository/dda-desc/<name>?tab=tags`). Do **not** try to keep v1's monitoring with `-SkipMonitoring`:
-  the script still deletes v1's monitoring with that switch, and installs none. If the images aren't there yet, wait
-  with step 5; Part A keeps UAT working.
+  Quay web UI (`/repository/dda-desc/<name>?tab=tags`). If the images aren't there yet, either wait with step 5
+  (Part A keeps UAT working), or add `-SkipMonitoring` to step 5.2's command. That switch leaves all of v1's
+  monitoring running as it is (its Flower, exporters, Grafana and their Route) and installs none of v2's.
 - **Tools:** run steps 5 and 6 in PowerShell, on a machine that can reach the cluster, with:
   - `git`;
   - Docker (Docker Desktop, Linux containers);

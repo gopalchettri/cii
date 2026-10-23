@@ -386,11 +386,20 @@ def test_a_process_start_time_tells_a_reused_id_apart() -> None:
     assert own and started_later and started_later > own
 
 
-@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
-@pytest.mark.parametrize(
-    "name",
-    ["run.ps1", "stop.ps1", "deploy/observability.ps1", "deploy/deploy-uat.ps1", "deploy/build-image.ps1"],
+POWERSHELL_SCRIPTS = [
+    "run.ps1",
+    "stop.ps1",
+    "deploy/observability.ps1",
+    "deploy/deploy-uat.ps1",
+    "deploy/build-image.ps1",
+]
+NO_POWERSHELL = pytest.mark.skipif(
+    shutil.which("powershell") is None, reason="Windows PowerShell is not installed here"
 )
+
+
+@NO_POWERSHELL
+@pytest.mark.parametrize("name", POWERSHELL_SCRIPTS)
 def test_the_laptop_scripts_parse_and_are_plain_ascii(name: str) -> None:
     """run.ps1 / stop.ps1 start and stop the laptop stack: a broken edit must fail here, not at the next
     start. ASCII only: Windows PowerShell 5.1 reads a file without a byte-order mark as the ANSI code page."""
@@ -403,6 +412,73 @@ def test_the_laptop_scripts_parse_and_are_plain_ascii(name: str) -> None:
     powershell = [shutil.which("powershell") or "powershell", "-NoProfile", "-Command", parse]
     result = subprocess.run(powershell, capture_output=True, text=True, timeout=60, check=False)  # noqa: S603
     assert result.stdout.strip() == "0", result.stdout + result.stderr
+
+
+#: Two mistakes PowerShell never reports, found with its own parser: one name in two casings in one scope
+#: (names ignore case: one variable where two were meant), and a helper that runs a block it is given using a
+#: name found elsewhere in the file (the block reads the helper's variable in place of its caller's).
+VARIABLE_RULES = r"""using namespace System.Management.Automation.Language
+param([string] $Path)
+$tree = [Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+function Get-Function($node) {
+    for ($up = $node.Parent; $up; $up = $up.Parent) { if ($up -is [FunctionDefinitionAst]) { return $up } }
+}
+$all = @($tree.FindAll({ $args[0] -is [VariableExpressionAst] }, $true) |
+    Where-Object { -not $_.VariablePath.IsDriveQualified } |
+    ForEach-Object { [pscustomobject]@{ Name = $_.VariablePath.UserPath -replace '^\w+:', ''
+                                        In = Get-Function $_ } })
+$all | Group-Object { "$($_.In.Name)|$($_.Name.ToLower())" } | ForEach-Object {
+    $spellings = @($_.Group.Name | Sort-Object -Unique -CaseSensitive)
+    if ($spellings.Count -gt 1) { "two casings in one scope: $($spellings -join ' and ')" }
+}
+$helpers = @($tree.FindAll({ $args[0] -is [FunctionDefinitionAst] }, $true) | Where-Object {
+    $parameters = @($_.Parameters) + @($_.Body.ParamBlock.Parameters)
+    @($parameters | Where-Object { $_.StaticType -eq [scriptblock] }).Count
+})
+$automatic = @('_', 'args', 'true', 'false', 'null', 'lastexitcode', 'input', 'matches')
+foreach ($helper in $helpers) {
+    $own = @($all | Where-Object { $_.In -eq $helper } | ForEach-Object { $_.Name.ToLower() } |
+        Where-Object { $_ -notmatch 'preference$' -and $automatic -notcontains $_ } | Sort-Object -Unique)
+    $elsewhere = @($all | Where-Object { $_.In -ne $helper } | ForEach-Object { $_.Name.ToLower() })
+    foreach ($name in $own | Where-Object { $elsewhere -contains $_ }) {
+        "$($helper.Name) runs a block, and its `$$name is used elsewhere"
+    }
+}
+"""
+
+
+def _variable_rule_breaks(script: Path, tmp_path: Path) -> list[str]:
+    rules = tmp_path / "variable-rules.ps1"
+    rules.write_text(VARIABLE_RULES, encoding="ascii")
+    powershell = [shutil.which("powershell") or "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+    run = [*powershell, "-File", str(rules), "-Path", str(script)]
+    result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
+    assert result.returncode == 0 and not result.stderr, result.stderr
+    return result.stdout.splitlines()
+
+
+@NO_POWERSHELL
+@pytest.mark.parametrize("name", POWERSHELL_SCRIPTS)
+def test_no_script_lets_one_variable_stand_in_for_another(name: str, tmp_path: Path) -> None:
+    """Before: deploy-uat.ps1's `$v1 = @()` emptied its list $V1, so v1 was never stopped; and Invoke-Step's
+    $Name took the place of the caller's $name in every step's block. Both parsed and passed list tests."""
+    assert _variable_rule_breaks(REPO / name, tmp_path) == []
+
+
+@NO_POWERSHELL
+def test_the_variable_rules_find_both_mistakes(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.ps1"
+    lines = [
+        "$V1 = @{ a = 1 }",
+        "$v1 = @()",
+        "function Invoke-Step([string] $Name, [scriptblock] $Command) { & $Command }",
+        "foreach ($name in 'a') { Invoke-Step 'x' { $name } }",
+    ]
+    sample.write_text("\n".join(lines) + "\n", encoding="ascii")
+    assert _variable_rule_breaks(sample, tmp_path) == [
+        "two casings in one scope: v1 and V1",
+        "Invoke-Step runs a block, and its $name is used elsewhere",
+    ]
 
 
 def test_start_fails_when_a_window_s_program_has_ended() -> None:

@@ -21,7 +21,8 @@
     %USERPROFILE%\.tsg\uat-backups\<time>\, outside the repo; copies of v1's Routes go to ...\uat-backups\v1\,
     kept across runs. v1's Deployments are scaled to 0, never deleted, except v1's monitoring programs that v2's
     replace under the same name (prometheus, grafana ...): those are deleted, after asking (v1's own
-    .\deploy\deploy-uat.ps1 -MonitoringOnly brings them back; the rollback says so).
+    .\deploy\deploy-uat.ps1 -MonitoringOnly brings them back; the rollback says so). -SkipMonitoring leaves
+    all of v1's monitoring running.
 
 .PARAMETER AppImage
     The image deploy\build-image.ps1 printed (<registry>/tsg-api:v2-<commit>): a pinned tag, never :latest.
@@ -30,7 +31,8 @@
     The tested settings file, at the repo root. The monitoring always reads .env.uat (deploy\observability.ps1).
 
 .PARAMETER SkipMonitoring
-    Leave the monitoring and Flower as they are.
+    Leave the monitoring and Flower as they are: v2's are not installed, and v1's (its Flower, exporters,
+    monitoring programs and their Route) keep running.
 
 .EXAMPLE
     .\deploy\deploy-uat.ps1 -AppImage quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-1a2b3c4d5e6f
@@ -67,6 +69,9 @@ $V1 = [ordered]@{
     $App   = @('tsg-api', 'celery-worker', 'celery-worker-admin', 'tsg-beat', 'tsg-flower')
     $Extra = @('celery-worker', 'celery-exporter', 'mssql-exporter', 'mongodb-exporter')
 }
+# Of those, v1's monitoring: with -SkipMonitoring v2's is not installed, so these keep running, as do v1's
+# programs under v2's monitoring names and v1's Route on the monitoring host.
+$V1Monitoring = @('tsg-flower', 'celery-exporter', 'mssql-exporter', 'mongodb-exporter')
 $Ours = @('tsg', 'tsg-observability')  # the app.kubernetes.io/part-of label of everything v2 creates
 $Backups = Join-Path $env:USERPROFILE '.tsg\uat-backups'
 $V1Dir = Join-Path $Backups 'v1'
@@ -79,12 +84,14 @@ $OutputEncoding = $utf8
 
 # Every oc / python call goes through here: a non-zero exit stops the run and names the step. Native stderr is
 # never redirected (in 5.1, 2>&1 turns each stderr line into an error record).
-function Invoke-Step([string] $Name, [scriptblock] $Command) {
-    Write-Host "==> $Name" -ForegroundColor Cyan
+# Its own variable names are used nowhere else: PowerShell looks a name up the call stack, so a step's block
+# would read Invoke-Step's $Name in place of the caller's $name.
+function Invoke-Step([string] $StepName, [scriptblock] $StepCommand) {
+    Write-Host "==> $StepName" -ForegroundColor Cyan
     $global:LASTEXITCODE = 0
-    $output = & $Command
-    if ($LASTEXITCODE) { throw "Step '$Name' failed (exit code $LASTEXITCODE)" }
-    return $output
+    $stepOutput = & $StepCommand
+    if ($LASTEXITCODE) { throw "Step '$StepName' failed (exit code $LASTEXITCODE)" }
+    return $stepOutput
 }
 
 # The items oc lists, as objects (JSON, not jsonpath: 5.1 mangles quotes inside native arguments).
@@ -170,25 +177,27 @@ try {
     $everything = $null
 
     # v1's replica counts: from the Deployment, or from the note a previous run left on it when it stopped it.
-    $v1 = @(); $replaced = @(); $theirRoutes = @()
+    $v1Found = @(); $replaced = @(); $theirRoutes = @()
     foreach ($ns in $App, $Extra) {
         foreach ($item in Get-Items $ns @('deployment')) {
             $name = $item.metadata.name
             if ($V1[$ns] -contains $name) {
+                if ($SkipMonitoring -and $V1Monitoring -contains $name) { continue }
                 $now = [int]$item.spec.replicas
                 $before = [math]::Max($now, [int]$item.metadata.annotations.'tsg/replicas-before-v2')
-                $v1 += [pscustomobject]@{ Ns = $ns; Name = $name; Now = $now; Before = $before }
+                $v1Found += [pscustomobject]@{ Ns = $ns; Name = $name; Now = $now; Before = $before }
             }
-            elseif ($ns -eq $Extra -and $Monitoring -contains $name -and
+            elseif (-not $SkipMonitoring -and $ns -eq $Extra -and $Monitoring -contains $name -and
                     $Ours -notcontains $item.metadata.labels.'app.kubernetes.io/part-of') {
                 $replaced += [pscustomobject]@{ Ns = $ns; Name = $name }
             }
         }
+        if ($SkipMonitoring -and $ns -eq $Extra) { continue }  # its Route is the monitoring host's
         $theirRoutes += @(Get-Items $ns @('route') | Where-Object {
             $_.spec.host -eq $Hosts[$ns] -and $Ours -notcontains $_.metadata.labels.'app.kubernetes.io/part-of'
         })
     }
-    $running = @($v1 | Where-Object { $_.Now -gt 0 })
+    $running = @($v1Found | Where-Object { $_.Now -gt 0 })
     foreach ($route in $theirRoutes) {
         $copy = $route | ConvertTo-Json -Depth 30 | ConvertFrom-Json  # restorable: without the server's fields
         foreach ($field in 'resourceVersion', 'uid', 'creationTimestamp', 'managedFields', 'generation') {
@@ -207,7 +216,7 @@ try {
         "oc -n $Extra delete deployment,route -l app.kubernetes.io/part-of=tsg-observability"
     )
     $rollback += @(Get-ChildItem $V1Dir -Filter 'route-*.json' | ForEach-Object { "oc apply -f `"$($_.FullName)`"" })
-    $rollback += @($v1 | Where-Object { $_.Before -gt 0 } | ForEach-Object {
+    $rollback += @($v1Found | Where-Object { $_.Before -gt 0 } | ForEach-Object {
         "oc -n $($_.Ns) scale deployment $($_.Name) --replicas=$($_.Before)"
     })
     $rollback += "# v1's monitoring: from the v1 repo, run .\deploy\deploy-uat.ps1 -MonitoringOnly"

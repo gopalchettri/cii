@@ -4,8 +4,11 @@ the deploy script's lists, and what goes into the image. A broken file must fail
 rollout."""
 
 import importlib
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -247,6 +250,156 @@ def test_the_deploy_script_rolls_and_recognises_every_v2_deployment() -> None:
     assert list(rollout) == ["Extra", "App"]
     in_files = {d["metadata"]["name"] for d in _objects(*MONITORING_FILES, kind="Deployment")}
     assert set(_script_names("Monitoring")[""]) == in_files
+
+
+#: A UAT still on v1: its app, its Flower and exporters, and v1 programs under v2's monitoring names.
+V1_UAT = {
+    "ai-threatgen": ["tsg-api", "celery-worker", "tsg-beat", "tsg-flower"],
+    "ai-remediation": ["celery-worker", "celery-exporter", "mssql-exporter", "grafana", "prometheus"],
+}
+V1_ROUTES = {"ai-threatgen": API_HOST, "ai-remediation": MONITORING_HOST}
+
+
+#: deploy-uat.ps1 run against a stand-in cluster: oc logs each call and answers from the v1 files, DNS and
+#: the smoke test's curl always succeed, and the YES prompt gets the test's answer. The gate is the real one.
+STAND_INS = r"""param([string] $Answer, [string] $Script, [switch] $SkipMonitoring)
+$Fixtures = $PSScriptRoot
+function oc {
+    $line = $args -join ' '
+    Add-Content -LiteralPath (Join-Path $Fixtures 'oc-calls.txt') -Value $line
+    $global:LASTEXITCODE = 0
+    if ($line -match '^-n (\S+) get (deployment|route) -o json$') {
+        return Get-Content -Raw (Join-Path $Fixtures ($Matches[2] + '-' + $Matches[1] + '.json'))
+    }
+    if ($line -match 'secret quay-pull -o json$') { return '{"metadata": {"name": "q", "namespace": "n"}}' }
+    if ($line -match '-o json$') { return '{"items": []}' }
+    if ($line -match 'spec\.paused') { return 'true' }
+    if ($line -match 'status\.ingress') { return 'True' }
+}
+function Resolve-DnsName { }
+function curl.exe { '200' }
+function Read-Host { $Answer }
+& $Script -AppImage registry/tsg-api:v2-test -EnvFile (Join-Path $Fixtures '.env.uat') `
+    -SkipMonitoring:$SkipMonitoring
+"""
+
+
+def _run_deploy_script(tmp_path: Path, answer: str, *switches: str) -> tuple[str, list[str]]:
+    """deploy-uat.ps1 on a UAT still running V1_UAT: what it printed and every oc call it made. Its safety
+    copies and rollback.ps1 go to tmp_path/.tsg."""
+    for namespace, names in V1_UAT.items():
+        deployments = [
+            {"metadata": {"name": name, "namespace": namespace, "labels": {}}, "spec": {"replicas": 1}}
+            for name in names
+        ]
+        route = {
+            "metadata": {"name": "v1", "namespace": namespace, "labels": {}},
+            "spec": {"host": V1_ROUTES[namespace]},
+        }
+        (tmp_path / f"deployment-{namespace}.json").write_text(
+            json.dumps({"items": deployments}), encoding="ascii"
+        )
+        (tmp_path / f"route-{namespace}.json").write_text(json.dumps({"items": [route]}), encoding="ascii")
+    settings = "".join(f"{key}={value}\n" for key, value in _uat_values().items())
+    (tmp_path / ".env.uat").write_text(settings, encoding="utf-8")
+    (tmp_path / "stand-ins.ps1").write_text(STAND_INS, encoding="ascii")
+    powershell = [shutil.which("powershell") or "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+    result = subprocess.run(  # noqa: S603
+        [
+            *powershell,
+            "-File",
+            str(tmp_path / "stand-ins.ps1"),
+            "-Answer",
+            answer,
+            "-Script",
+            str(DEPLOY / "deploy-uat.ps1"),
+            *switches,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+        env=os.environ | {"USERPROFILE": str(tmp_path)},
+    )
+    calls = tmp_path / "oc-calls.txt"
+    return result.stdout + result.stderr, calls.read_text().splitlines() if calls.exists() else []
+
+
+def _v1_plan(tmp_path: Path, *switches: str) -> dict[str, set[str]]:
+    """What deploy-uat.ps1 says it will do to v1, answered "no", so nothing is changed."""
+    output, _ = _run_deploy_script(tmp_path, "no", *switches)
+    assert "Stopped before changing anything" in output, output
+    found = {
+        "stopped": r"scale (\S+) from 1 to 0",
+        "deleted": r"delete v1's monitoring program (\S+) ",
+        "routes": r"delete Route (\S+)/v1 on ",
+    }
+    return {what: set(re.findall(pattern, output)) for what, pattern in found.items()}
+
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
+def test_skip_monitoring_stops_v1_s_app_but_leaves_all_of_v1_s_monitoring_running(tmp_path: Path) -> None:
+    """Before: -SkipMonitoring installed none of v2's monitoring, yet still deleted v1's Grafana, Prometheus
+    and their Route and stopped v1's Flower and exporters, so UAT was left with no monitoring at all."""
+    assert set(_script_names("V1Monitoring")[""]) <= {
+        n for names in _script_names("V1").values() for n in names
+    }
+    full = _v1_plan(tmp_path)
+    assert full == {
+        "stopped": {
+            "ai-threatgen/tsg-api",
+            "ai-threatgen/celery-worker",
+            "ai-threatgen/tsg-beat",
+            "ai-threatgen/tsg-flower",
+            "ai-remediation/celery-worker",
+            "ai-remediation/celery-exporter",
+            "ai-remediation/mssql-exporter",
+        },
+        "deleted": {"ai-remediation/grafana", "ai-remediation/prometheus"},
+        "routes": {"ai-threatgen", "ai-remediation"},
+    }
+    kept = _v1_plan(tmp_path, "-SkipMonitoring")
+    assert kept == {
+        "stopped": {
+            "ai-threatgen/tsg-api",
+            "ai-threatgen/celery-worker",
+            "ai-threatgen/tsg-beat",
+            "ai-remediation/celery-worker",
+        },
+        "deleted": set(),
+        "routes": {"ai-threatgen"},
+    }
+
+
+@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
+def test_a_full_run_stops_v1_rolls_each_v2_deployment_by_its_name_and_can_be_rolled_back(
+    tmp_path: Path,
+) -> None:
+    """Before: `$v1 = @()` emptied $V1 (PowerShell names ignore case), so v1's app was never stopped before
+    v2 started on the same Redis, and the rollback had nothing to start again; and a step's block read
+    Invoke-Step's own $Name in place of the caller's $name, so step 6 asked oc about a Deployment named "is
+    ai-threatgen/api held" and stopped with every Deployment on hold."""
+    output, calls = _run_deploy_script(tmp_path, "YES", "-SkipMonitoring")
+    assert "Done." in output, output
+    v1_app = [("ai-threatgen", "tsg-api"), ("ai-threatgen", "celery-worker"), ("ai-threatgen", "tsg-beat")]
+    v1_app.append(("ai-remediation", "celery-worker"))
+    stopped = [(ns, name) for ns, name in v1_app if f"-n {ns} scale deployment/{name} --replicas=0" in calls]
+    assert stopped == v1_app
+    namespaces = {"App": "ai-threatgen", "Extra": "ai-remediation"}
+    rollout = [(namespaces[key], name) for key, names in _script_names("Rollout").items() for name in names]
+    asked = [
+        (ns, name)
+        for ns, name in rollout
+        if f"-n {ns} get deployment {name} -o jsonpath={{.spec.paused}}" in calls
+    ]
+    assert asked == rollout
+    resumes = [
+        call.split() for call in calls if " rollout resume deployment/" in call
+    ]  # -n <ns> rollout resume
+    assert [(words[1], words[4].removeprefix("deployment/")) for words in resumes] == rollout  # the API last
+    [rollback] = (tmp_path / ".tsg" / "uat-backups").glob("*/rollback.ps1")
+    text = rollback.read_text(encoding="utf-8")
+    assert all(f"oc -n {ns} scale deployment {name} --replicas=1" in text for ns, name in v1_app)
 
 
 def test_secrets_go_to_the_secret_plain_settings_to_the_config_map_and_other_lines_nowhere() -> None:
