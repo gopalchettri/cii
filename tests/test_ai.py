@@ -194,6 +194,37 @@ def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pyte
     assert "response_format" not in fallback and "reasoning_effort" not in fallback
 
 
+def test_thinking_is_switched_off_per_gateway_model_unless_its_env_line_says_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UAT probe (2026-10-23): reasoning_effort alone left GLM thinking; its chat template switch stops it.
+    Each model has its own .env line; a non-gateway model (dev Azure) never gets the template switch."""
+    sent: list[dict] = []
+
+    def first_model_busy(**kwargs: object) -> SimpleNamespace:
+        sent.append(kwargs)
+        if not str(kwargs["model"]).endswith("fallback"):
+            raise litellm.RateLimitError(message="busy", llm_provider="openai", model="m")
+        return _json_response('{"ok": true}')
+
+    _no_waiting(monkeypatch)
+    monkeypatch.setattr(litellm, "completion", first_model_busy)
+    off = {"chat_template_kwargs": {"thinking": False, "enable_thinking": False}}
+    models = [("litellm_proxy/main", JSON_CHAT), ("litellm_proxy/fallback", JSON_CHAT)]
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    for thinking_on, main_body, fallback_body in (
+        (frozenset(), off, off),  # the default: both off
+        (frozenset({"litellm_proxy/fallback"}), off, None),  # main off, fallback on
+    ):
+        sent.clear()
+        chat = ai.ChatModel(models, "http://ai.invalid", "key", records, thinking_on=thinking_on)
+        _ask(chat, AiTask.RELEVANCE_GATE)
+        assert sent[0].get("extra_body") == main_body and sent[-1].get("extra_body") == fallback_body
+    sent.clear()
+    _ask(_chat_model(("litellm_proxy/x", JSON_CHAT), ("openai/fallback", JSON_CHAT)), AiTask.RELEVANCE_GATE)
+    assert "extra_body" not in sent[-1]  # not a gateway model
+
+
 @pytest.fixture
 def busy_provider() -> Iterator[tuple[str, list[str]]]:
     """A local OpenAI-style endpoint answering every request 503: (its URL, the paths requested)."""

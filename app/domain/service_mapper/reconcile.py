@@ -1,7 +1,7 @@
 """Canonical matching, direct-dependency filtering, global deduplication and directional caps."""
 
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from uuid import NAMESPACE_URL, uuid5
 
 from app.domain.shared.names import is_same_name, name_match_key
@@ -24,15 +24,13 @@ def reconcile(
     max_upstream: int,
     max_downstream: int,
 ) -> dict:
-    selected_id = selected_service_id(request, catalog)
-    upstream, _ = resolve_proposals(answer.upstream_services, catalog, request.service_name, selected_id)
-    downstream, _ = resolve_proposals(answer.downstream_services, catalog, request.service_name, selected_id)
+    (upstream, _), (downstream, _) = resolve_both(request, answer, catalog)
     upstream, downstream = _one_direction(upstream, downstream)
     upstream = upstream[:max_upstream]
     downstream = downstream[:max_downstream]
     dependencies = _merge(mapping_id, generation, upstream, downstream, catalog)
     selected = request.model_dump() | {
-        "service_id": selected_id,
+        "service_id": selected_service_id(request, catalog),
         "operational_context": answer.operational_context,
     }
     return {
@@ -63,6 +61,35 @@ def selected_service_id(request: CreateMappingRequest, catalog: CatalogSnapshot)
         )
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def resolve_both(
+    request: CreateMappingRequest, answer: GeneratedAnswer, catalog: CatalogSnapshot
+) -> tuple[tuple[list[ResolvedDependency], list[str]], tuple[list[ResolvedDependency], list[str]]]:
+    """Both directions resolved (kept, dropped). A new downstream service that is an upstream new one in
+    another form ("Payment Settlement Service" for "Payment Settlement Service (PSS)") takes its identity, so
+    it counts once."""
+    selected_id = selected_service_id(request, catalog)
+    upstream, up_dropped = resolve_proposals(
+        answer.upstream_services, catalog, request.service_name, selected_id
+    )
+    downstream, down_dropped = resolve_proposals(
+        answer.downstream_services, catalog, request.service_name, selected_id
+    )
+    downstream = [
+        next((replace(item, identity=up.identity) for up in upstream if _same_new_service(up, item)), item)
+        for item in downstream
+    ]
+    return (upstream, up_dropped), (downstream, down_dropped)
+
+
+def _same_new_service(a: ResolvedDependency, b: ResolvedDependency) -> bool:
+    """Two services the AI named itself that are one service in two forms, either way round."""
+    return (
+        a.ai_suggested
+        and b.ai_suggested
+        and (is_same_name(a.service_name, b.service_name) or is_same_name(b.service_name, a.service_name))
+    )
 
 
 def resolve_proposals(
@@ -99,7 +126,7 @@ def resolve_proposals(
             dropped.append(f"{name} is a sector or subsector name, not a service: name the service")
         elif (resolved := _resolve_one(proposal, matches[0] if matches else None, catalog, rank)) is None:
             dropped.append(f"{name} {_TOO_VAGUE}")
-        elif resolved.identity in kept:
+        elif resolved.identity in kept or any(_same_new_service(item, resolved) for item in kept.values()):
             dropped.append(f"{name} is listed twice")
         else:
             kept[resolved.identity] = resolved

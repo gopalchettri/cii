@@ -70,3 +70,35 @@ class SessionDeleted(BaseModel):
 class PlanCancelled(BaseModel):
     remediation_id: str
     status: Status
+
+
+class MonitoredJob(BaseModel):
+    """One job of any kind as GET /v1/admin/jobs lists it: what it is, where it is, why it failed or waits,
+    and which worker runs it."""
+
+    id: str
+    module: str  # threat_scenarios, remediation, service_mapper, external_intelligence, library_embeddings
+    kind: str  # the task (tsg_map_services, tsg_write_scenarios, ...) or the admin job kind
+    collection: str  # where its record lives
+    entity_id: int | str | None = None
+    status: str  # queued, running, done, failed, cancelled
+    retrying: RetryNotice | None = None  # queued again after an outage: which try comes when
+    attempts: int | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error: dict[str, Any] | None = None  # {code, message, reason?} of a failed job
+    task_id: str | None = None
+    worker: str | None = None
+
+
+class QueueState(BaseModel):
+    waiting: int | None  # messages not yet taken by a worker; None when the broker could not be read
+    workers_online: int
+
+
+class JobMonitor(BaseModel):
+    """Every job of every kind, newest first, and each queue's backlog and workers."""
+
+    jobs: list[MonitoredJob]
+    queues: dict[str, QueueState]

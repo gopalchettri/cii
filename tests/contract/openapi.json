@@ -1604,6 +1604,31 @@
     "title": "JobList",
     "type": "object"
    },
+   "JobMonitor": {
+    "description": "Every job of every kind, newest first, and each queue's backlog and workers.",
+    "properties": {
+     "jobs": {
+      "items": {
+       "$ref": "#/components/schemas/MonitoredJob"
+      },
+      "title": "Jobs",
+      "type": "array"
+     },
+     "queues": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/QueueState"
+      },
+      "title": "Queues",
+      "type": "object"
+     }
+    },
+    "required": [
+     "jobs",
+     "queues"
+    ],
+    "title": "JobMonitor",
+    "type": "object"
+   },
    "JobProgress": {
     "description": "How far a run is: scenarios planned, written, still to write, and controls still being matched.",
     "properties": {
@@ -2484,6 +2509,158 @@
      "api_key"
     ],
     "title": "MintedApiClient",
+    "type": "object"
+   },
+   "Module": {
+    "description": "The product module a job works for: on every job.started/job.finished log line and every\nGET /v1/admin/jobs row, so a job is traced to its module without knowing task names.",
+    "enum": [
+     "threat_scenarios",
+     "remediation",
+     "service_mapper",
+     "external_intelligence",
+     "library_embeddings",
+     "maintenance"
+    ],
+    "title": "Module",
+    "type": "string"
+   },
+   "MonitoredJob": {
+    "description": "One job of any kind as GET /v1/admin/jobs lists it: what it is, where it is, why it failed or waits,\nand which worker runs it.",
+    "properties": {
+     "attempts": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Attempts"
+     },
+     "collection": {
+      "title": "Collection",
+      "type": "string"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     },
+     "entity_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Entity Id"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Finished At"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "module": {
+      "title": "Module",
+      "type": "string"
+     },
+     "retrying": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RetryNotice"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Started At"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     },
+     "task_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Task Id"
+     },
+     "worker": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Worker"
+     }
+    },
+    "required": [
+     "id",
+     "module",
+     "kind",
+     "collection",
+     "status"
+    ],
+    "title": "MonitoredJob",
     "type": "object"
    },
    "PendingThreat": {
@@ -3553,6 +3730,31 @@
      "results"
     ],
     "title": "PromotionResult",
+    "type": "object"
+   },
+   "QueueState": {
+    "properties": {
+     "waiting": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Waiting"
+     },
+     "workers_online": {
+      "title": "Workers Online",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "waiting",
+     "workers_online"
+    ],
+    "title": "QueueState",
     "type": "object"
    },
    "RegenerateRequest": {
@@ -6060,6 +6262,269 @@
     "summary": "2. Are its stores and workers ready?",
     "tags": [
      "1. Health"
+    ]
+   }
+  },
+  "/v1/admin/jobs": {
+   "get": {
+    "description": "Every job of every kind (runs, plans, service mappings, intelligence refreshes, embeddings builds)\nactive in the last `hours`, newest first: status (queued, running, done, failed, cancelled), the retry it\nwaits for, its error, the worker running it. `queues`: each queue's waiting messages and workers online.\nFilter by `module` (threat_scenarios, remediation, service_mapper, external_intelligence,\nlibrary_embeddings, maintenance), `status` (repeatable) and `kind` (a task name such as tsg_map_services,\nor an admin job kind).",
+    "operationId": "list_all_jobs_v1_admin_jobs_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "status",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "$ref": "#/components/schemas/Status"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Status"
+      }
+     },
+     {
+      "in": "query",
+      "name": "module",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/Module"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Module"
+      }
+     },
+     {
+      "in": "query",
+      "name": "kind",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Kind"
+      }
+     },
+     {
+      "in": "query",
+      "name": "hours",
+      "required": false,
+      "schema": {
+       "default": 24,
+       "maximum": 2160,
+       "minimum": 1,
+       "title": "Hours",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 200,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Admin-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Admin-Key"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JobMonitor"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Every job, queue and worker",
+    "tags": [
+     "8. My jobs"
+    ]
+   }
+  },
+  "/v1/admin/jobs/{job_id}": {
+   "get": {
+    "description": "Any job by its id (an import's or build's job_id, or a run's, plan's or mapping's id): its module,\nstatus, error, retry and worker. 404 for an unknown id.",
+    "operationId": "read_any_job_v1_admin_jobs__job_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "job_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Job Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Admin-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Admin-Key"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MonitoredJob"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "One job",
+    "tags": [
+     "8. My jobs"
+    ]
+   }
+  },
+  "/v1/admin/jobs/{job_id}/cancel": {
+   "post": {
+    "description": "Queued: it never starts. Running: an import stops at its next NVD request or source, keeping what it\nread (the next import continues from there); a build finishes but its outcome is dropped. The job reads\n`cancelled`, a new one of its kind can start at once, and the cancel is audited. 409 `nothing_to_cancel`\nfor a job already ended or another module's job (a run or plan has its own cancel).",
+    "operationId": "cancel_admin_job_v1_admin_jobs__job_id__cancel_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "job_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Job Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Admin-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Admin-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MonitoredJob"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Cancel an intelligence import or embeddings build",
+    "tags": [
+     "8. My jobs"
     ]
    }
   },

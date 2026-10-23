@@ -571,6 +571,51 @@
       }
     },
     {
+      "id": 31,
+      "type": "table",
+      "title": "Jobs now, by kind and status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true,
+          "format": "table",
+          "expr": "max by (kind, status) (tsg_jobs_current) > 0"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "jobs"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Every kind of job (tsg_map_services, tsg_write_scenarios, intelligence refresh, embeddings build, ...) queued, retrying after an outage, running, or failed in the last 24 h. Set each minute by the reaper. Which jobs exactly, with their errors and workers: GET /v1/admin/jobs."
+    },
+    {
       "id": 29,
       "type": "timeseries",
       "title": "Scenario paths settled per hour, by outcome (written, blocked, failed, abandoned)",
@@ -582,7 +627,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 43
       },
       "targets": [
         {
@@ -610,7 +655,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 51
       },
       "panels": []
     },
@@ -626,7 +671,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "targets": [
         {
@@ -657,7 +702,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 52
       },
       "targets": [
         {
@@ -691,7 +736,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "targets": [
         {
@@ -721,7 +766,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 60
       },
       "targets": [
         {
@@ -750,7 +795,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "panels": []
     },
@@ -766,7 +811,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 61
+        "y": 69
       },
       "targets": [
         {
@@ -796,7 +841,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 61
+        "y": 69
       },
       "targets": [
         {
@@ -827,7 +872,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 61
+        "y": 69
       },
       "targets": [
         {
@@ -855,7 +900,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 77
       },
       "panels": []
     },
@@ -871,7 +916,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 78
       },
       "targets": [
         {
@@ -907,7 +952,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 87
       },
       "targets": [
         {
@@ -943,7 +988,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 96
       },
       "targets": [
         {
@@ -979,7 +1024,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 104
       },
       "targets": [
         {

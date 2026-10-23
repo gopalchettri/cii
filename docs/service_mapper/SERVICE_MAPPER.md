@@ -16,7 +16,7 @@ reviewer to accept or reject relationship by relationship. The definitions follo
 2. The worker reads the SQL onboarding catalog (`app/worker/service_mapper/catalog_provider.py`): every service
    with its sectors and subsectors (`Onboarding_GetServicesWithSectorDetails`, `tsg_GetServiceMapperAssociations`).
 3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `prompts/generate.txt` and a JSON user
-   message with the upstream checks, the selected service, the counts (`upstream_count`, `downstream_count`, a
+   message with the selected service (with its recorded `known_upstream`/`known_downstream` when it is in the catalog), the counts (`upstream_count`, `downstream_count`, a
    maximum each) and `catalog`: **every** database service, grouped by sector and subsector, groups and services
    ordered most relevant first by hybrid search (`app/search/service_mapper.py`); the selected service is left
    out. Only a catalog too large for the input keeps just its most relevant services. **No catalog ID ever
@@ -39,7 +39,6 @@ reviewer to accept or reject relationship by relationship. The definitions follo
 | Setting | Default | What it does |
 |---|---|---|
 | `SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT` / `..._DOWNSTREAM_...` | 10 | The most services per direction (0 turns one off). |
-| `SERVICE_MAPPER_UPSTREAM_CHECKS` | electricity, water, telecommunications, ICT hosting, payments, identity | What the AI decides first for every upstream list. |
 
 ## Rules (owner, 2026-10-22)
 
@@ -70,4 +69,4 @@ direction, evidence and no-fabrication rules, and differs in these ways:
 - The sectors and subsectors come from the SQL catalog taxonomy, not a fixed list.
 - `confidence`, `verification_status`, `evidence`, `applies_to_entities` and `dependency_type` are not asked for.
 - Reciprocal pairs are not allowed: one direction only.
-- The Dubai scope is added, and the upstream checks come from settings.
+- The Dubai scope is added; what the AI decides first is the selected service's own recorded upstream/downstream from the SQL catalog, never a fixed list.

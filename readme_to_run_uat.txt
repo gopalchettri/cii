@@ -55,26 +55,32 @@ python -c "from app.services.readiness import check_readiness; print(check_readi
 
 # 8. Start in this order: workers and beat FIRST, the API LAST
 #    (the API is "ready" only when every queue has a worker).
-#    Open 4 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
+#    Open 5 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
 
 #   The AI calls skip the corporate proxy by themselves: .env has CII_AI_BYPASS_PROXY=true (as v1's
 #   TSG_LITELLM_BYPASS_PROXY). Keep CII_LOG_LEVEL=INFO: DEBUG is for a short diagnosis only.
 
 # Window 1 - job worker (threat finding, scenarios, controls).
 #   --pool=threads is REQUIRED: gevent / prefork are refused at start-up on purpose.
-celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios -n uat@%h --loglevel=INFO
+celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios -n scenarios@%h --loglevel=INFO
 
-# Window 2 - maintenance worker (the reaper that re-sends lost jobs).
+# Window 2 - Service Mapper worker (its own queue, 2 mappings at once; as run.ps1 does locally).
+#   !! RUN BOTH LINES, in this order, in the SAME window: its own metrics port (9103), never the job worker's 9100.
+#   !! After it starts, the first log line must say  "port": 9103  (if 9100, Ctrl+C and redo both lines).
+$env:CII_WORKER_METRICS_PORT = "9103"
+celery -A app.worker worker --pool=threads -c 2 -Q tsg_servicemapper -n mapper@%h --loglevel=INFO
+
+# Window 3 - maintenance worker (the reaper that re-sends lost jobs).
 #   !! RUN BOTH LINES, in this order, in the SAME window. The CII_WORKER_METRICS_PORT line gives this
 #   !! worker its own metrics port (9102). Without it the worker silently uses 9100, the job worker's port.
 #   !! After it starts, the first log line must say  "port": 9102  (if 9100, Ctrl+C and redo all lines).
 $env:CII_WORKER_METRICS_PORT = "9102"
-celery -A app.worker worker --pool=threads -c 3 -Q tsg_maintenance -n maint@%h --loglevel=INFO
+celery -A app.worker worker --pool=threads -c 3 -Q tsg_maintenance -n maintenance@%h --loglevel=INFO
 
-# Window 3 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
+# Window 4 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
 celery -A app.worker beat --loglevel=INFO
 
-# Window 4 - the API
+# Window 5 - the API
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 # 9. Check (browser)
@@ -166,12 +172,18 @@ python scripts/monitoring.py status
 
 # 13. Check that every celery worker is working (new window, .venv activated):
 python -c "from app.worker.heartbeat import count_online_workers; from app.worker import ROUTED_QUEUES; print(count_online_workers(ROUTED_QUEUES))"
-#    each of tsg_threats, tsg_scenarios, tsg_maintenance must show at least 1 (wait up to 20 s after start)
+#    each of tsg_threats, tsg_scenarios, tsg_servicemapper, tsg_maintenance must show at least 1 (wait up to 20 s after start)
 celery -A app.worker inspect ping
-#    must answer pong from uat@... and maint@...
+#    must answer pong from scenarios@..., mapper@... and maintenance@...
 celery -A app.worker inspect active_queues
-#    uat@... serves tsg_threats + tsg_scenarios; maint@... serves tsg_maintenance
+#    scenarios@... serves tsg_threats + tsg_scenarios; mapper@... serves tsg_servicemapper; maintenance@... serves
+#    tsg_maintenance (intelligence refresh, embeddings builds, the reaper). Each worker is named by its module:
+#    its log file is logs/worker-<name>.log, and every job line carries module=<module> and worker=<name>@<host>.
 #    Beat is not in these checks: about 1 minute after it starts, the maint window must log tsg_reap, every minute.
+#    Every job, queue and worker in one call (admin key; add &status=failed, &kind=tsg_map_services, &hours=72):
+curl.exe -H "X-Admin-Key: <CII_ADMIN_API_KEY>" "http://localhost:8000/v1/admin/jobs?status=queued&status=running&status=failed"
+#    One API call to its worker: take X-Request-ID from the API's answer, then
+python scripts/debug_tools.py find <request id>
 
 # 14. Stop: Ctrl+C in each window (a worker finishes its running jobs first; press twice to force).
 #     Put your laptop settings back:

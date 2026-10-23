@@ -50,7 +50,7 @@ groups:
 
       # Queue lists in Redis are named <Worker.BROKER_KEY_PREFIX><queue>, i.e. tsg:tsg_threats.
       - alert: QueueBacklog
-        expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios)"}) > 50
+        expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios|servicemapper)"}) > 50
         for: 15m
         labels: { severity: warning }
         annotations:

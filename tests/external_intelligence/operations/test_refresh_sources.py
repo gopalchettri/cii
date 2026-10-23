@@ -23,6 +23,7 @@ from app.models.external_intelligence.source_health import (
     SourceHealth,
 )
 from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
+from app.worker.external_intelligence.cancel_check import import_cancel_check
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from tests.external_intelligence.evidence_fakes import NOW, MemoryCatalogue, MemoryKeeper, StubFetcher
 from tests.external_intelligence.operations.refresh_fakes import ClaimFeeds, CurrentRecords
@@ -237,3 +238,13 @@ def test_a_checkpoint_without_its_version_is_downloaded_in_full_and_saved_whole_
     run.refresh_due_sources(NOW + timedelta(days=2))
     assert first.checkpoints[-1] is None  # not trusted: asked from the start
     assert feeds.successes[-1][1:3] == ("v2", "v2") and feeds.health[KEV].source_version == "v2"
+
+
+def test_a_cancelled_import_stops_before_its_next_source() -> None:
+    """POST /v1/admin/jobs/{job_id}/cancel: the source being imported finishes, the next is never fetched."""
+    kev, epss = StubFetcher(KEV, result("A")), StubFetcher(EPSS, result("B", version="d"))
+    run, *_ = refresher({KEV: kev, EPSS: epss}, [KEV, EPSS])
+    answers = iter([True, False])  # still active before KEV, cancelled before EPSS
+    with import_cancel_check(lambda: next(answers)):
+        run.refresh_due_sources(NOW)
+    assert (kev.calls, epss.calls) == (1, 0)

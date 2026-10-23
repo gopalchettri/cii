@@ -3680,6 +3680,16 @@ stateDiagram-v2
   backlog and unknown queue depth, missing workers, stores down, the AI error rate and AI slots saturated,
   audit-write and library-check failures, scrape targets down, and pods (not starting, restarting, out of
   memory). Alertmanager has no receiver yet.
+- **Seeing jobs:** `GET /v1/admin/jobs` (admin key) lists every job of every kind (runs, plans, service
+  mappings, intelligence refreshes, embeddings builds) with its `module` (threat_scenarios, remediation,
+  service_mapper, external_intelligence, library_embeddings, maintenance), its status, the retry it waits for, its error and
+  the worker running it, plus each queue's waiting messages and workers online; filter with `module`,
+  `status`, `kind` and `hours`. Workers are named by module (`scenarios@`, `mapper@`, `maintenance@`), so each
+  writes `logs/worker-<name>.log`. Each task logs `job.started` and `job.finished` (outcome, seconds) with its `record_id`, its
+  `worker` and the `request_id` of the API call that sent it: searching that id in Loki (or
+  `scripts/debug_tools.py find <id>`) shows the API call and all its worker lines. The reaper also fails an
+  admin job still running after an hour, and sets `tsg_jobs_current{kind,status}` for Grafana's "Jobs now"
+  panel.
 - **Dashboards:** Grafana (one TSG dashboard with rows Overview, API, Jobs and queues, AI, Dependencies and
   platform, Logs and audit) and Flower (Celery tasks).
 - **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the worker
@@ -3746,6 +3756,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5) |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 16 | AI calls at once, all pods |
 | `CII_CHAT_MODEL`, `CII_CHAT_FALLBACK_MODEL` | - | the chat model and its fallback |
+| `CII_CHAT_MODEL_THINKING`, `CII_CHAT_FALLBACK_MODEL_THINKING` | false | each chat model's thinking (LiteLLM gateway models): false = off |
 
 ---
 

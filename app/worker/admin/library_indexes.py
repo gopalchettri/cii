@@ -12,7 +12,7 @@ from app.domain.shared.audit import audit_target
 from app.search.library_cache import LibraryCache
 from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
-from app.worker.celery_app import celery_app
+from app.worker.celery_app import celery_app, current_worker
 from app.worker.jobs import job_error_of
 
 
@@ -51,7 +51,7 @@ def run_embeddings_job(
     then raised (counted like any failed job). Audited only when this job ended the record: one taken over as
     abandoned keeps that outcome."""
     started_at = datetime.now(UTC)
-    if not jobs.update_admin_job_running(job_id, started_at):
+    if not jobs.update_admin_job_running(job_id, started_at, **current_worker()):
         return  # done, failed or taken over already: a late or repeated message
     try:
         library.reload_if_library_changed()  # raises, unlike the background check: the job must say so

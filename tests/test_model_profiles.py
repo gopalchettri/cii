@@ -42,18 +42,18 @@ def test_an_unknown_model_name_is_refused_with_its_name() -> None:
 
 def test_the_uat_models_keep_the_values_uat_runs_with() -> None:
     """Owner's UAT values (2026-10-08). Reasoning stays "none": v1 UAT sends that too (thinking off)."""
-    for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5"):
+    for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5", "litellm_proxy/glm-5.3"):
         chat = CHAT_MODEL_PROFILES[name]
         assert (chat.max_output_tokens, chat.supports_json_mode, chat.reasoning_effort) == (
             12_288,
             True,
             "none",
         )
-    embed = EMBEDDING_MODEL_PROFILES["litellm_proxy/qwen3-embedding-8b-mig"]
+    embed = EMBEDDING_MODEL_PROFILES["litellm_proxy/qwen3-embedding-8b"]
     assert (embed.dimensions, embed.batch_size, embed.max_text_chars, embed.concurrency) == (
         4096,
         32,
         4000,
         4,
     )
-    assert "litellm_proxy/qwen3-reranker-8b-mig" in RERANK_MODEL_PROFILES
+    assert "litellm_proxy/qwen3-reranker-8b" in RERANK_MODEL_PROFILES

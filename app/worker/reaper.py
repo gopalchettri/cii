@@ -13,6 +13,7 @@ from app.core import metrics
 from app.core.constants import ErrorCode, ErrorMessage, Lease, LogEvent, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, REDIS_UNAVAILABLE_ERRORS
+from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.jobs.job_repository import JobRepository
 from app.worker.celery_app import BrokerUnavailable, celery_app, count_waiting_messages, queue_of, send_job
 from app.worker.jobs import JOB_COLLECTIONS
@@ -33,6 +34,29 @@ def reap_jobs() -> None:
             _isolated(_settle_expired_job, jobs, record, now, publish)
         for record in jobs.list_unsent_jobs(stale_queued):
             _isolated(_resend_if_lost, jobs, record, now, queue_is_empty, publish)
+    admin_jobs = AdminJobRepository()
+    for job_id in admin_jobs.fail_stale_admin_jobs(now):  # never left "running" until the next request
+        log.warning(LogEvent.JOB_FAILED, record_id=job_id, code=ErrorCode.JOB_ABANDONED)
+    try:
+        _count_jobs_now(admin_jobs, now)
+    except Exception:  # noqa: BLE001 — a count for Grafana never fails the reaper's repairs
+        log.warning(LogEvent.JOB_REAP_FAILED, step="count_jobs_now", exc_info=True)
+
+
+def _count_jobs_now(admin_jobs: AdminJobRepository, now: datetime) -> None:
+    """tsg_jobs_current for Grafana: every kind's queued, retrying and running jobs, and its failures of the
+    last 24 h. A kind with none is set to 0, so a panel never keeps showing a job that ended."""
+    since = now - timedelta(hours=24)
+    counts: dict[tuple[str, str], int] = {}
+    for collection in JOB_COLLECTIONS:
+        counts |= JobRepository(get_mongodb()[collection]).count_jobs_by_task(since)
+    counts |= admin_jobs.count_admin_jobs_by_kind(since)
+    for labels in _jobs_now_labels | counts.keys():
+        metrics.JOBS_NOW.labels(*labels).set(counts.get(labels, 0))
+    _jobs_now_labels.update(counts)
+
+
+_jobs_now_labels: set[tuple[str, str]] = set()  # every (kind, status) ever set, so an ended one drops to 0
 
 
 def _isolated(repair: Callable[..., None], jobs: JobRepository, record: dict[str, Any], *args: Any) -> None:

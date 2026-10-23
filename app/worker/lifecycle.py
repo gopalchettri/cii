@@ -11,11 +11,11 @@ from celery.concurrency import get_implementation
 from prometheus_client import start_http_server
 
 from app.core import metrics
-from app.core.constants import ErrorMessage, LogEvent, TaskName
+from app.core.constants import ErrorMessage, LogEvent, TaskName, module_of
 from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.logging import configure_logging
 from app.core.readiness import log_mongodb_topology
-from app.worker.celery_app import settings
+from app.worker.celery_app import REQUEST_ID_HEADER, settings
 from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
 from app.worker.jobs import JOB_COLLECTIONS
@@ -115,20 +115,38 @@ def warm_up_external_intelligence(**_: object) -> None:
 
 
 @signals.task_prerun.connect
-def start_job_clock(task_id: str, task: Task, **_: object) -> None:
+def start_job_clock(task_id: str, task: Task, args: tuple | None = None, **_: object) -> None:
+    """Every task's start, logged with what identifies it: its record or job id (its first argument), its
+    worker, and the API request that sent it (that request's id, so one id finds both sides)."""
     structlog.contextvars.clear_contextvars()  # pool threads are reused: no field leaks into the next task
-    structlog.contextvars.bind_contextvars(task_id=task_id, task=task.name)
+    request = getattr(task, "request", None)
+    request_id = getattr(request, REQUEST_ID_HEADER, None) or (getattr(request, "headers", None) or {}).get(
+        REQUEST_ID_HEADER
+    )
+    structlog.contextvars.bind_contextvars(
+        task_id=task_id,
+        task=task.name,
+        module=module_of(task.name),
+        worker=getattr(request, "hostname", None),
+        **({"record_id": str(args[0])} if args else {}),
+        **({"request_id": request_id} if request_id else {}),
+    )
     _job_started[task_id] = time.perf_counter()
+    log.info(LogEvent.JOB_STARTED)
 
 
 @signals.task_postrun.connect
 def record_job_outcome(task_id: str, task: Task, state: str | None = None, **_: object) -> None:
     started = _job_started.pop(task_id, None)
     if state == states.IGNORED:
+        log.info(LogEvent.JOB_FINISHED, outcome="ignored")  # another delivery owns the job: no job done
         return  # a delivery that found its job owned by another did no job: no outcome, no duration
     metrics.JOBS.labels(task.name, (state or "unknown").lower()).inc()
-    if started is not None:
-        metrics.JOB_SECONDS.labels(task.name).observe(time.perf_counter() - started)
+    seconds = None if started is None else time.perf_counter() - started
+    if seconds is not None:
+        metrics.JOB_SECONDS.labels(task.name).observe(seconds)
+    outcome = (state or "unknown").lower()
+    log.info(LogEvent.JOB_FINISHED, outcome=outcome, seconds=None if seconds is None else round(seconds, 1))
 
 
 @signals.worker_shutdown.connect

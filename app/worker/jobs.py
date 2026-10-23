@@ -221,7 +221,8 @@ def _claim_or_ignore(
     (or finished) raises Ignore."""
     try:
         jobs = JobRepository(get_mongodb()[collection])
-        lease = jobs.claim_job(record_id, epoch, task.name, task.request.id, fields)
+        worker = getattr(task.request, "hostname", "") or ""
+        lease = jobs.claim_job(record_id, epoch, task.name, task.request.id, fields, worker)
     except MONGO_UNAVAILABLE_ERRORS as exc:
         # Nothing is owned yet, so nothing to give back: the same message simply comes again after the first
         # back-off instead of waiting for the reaper.

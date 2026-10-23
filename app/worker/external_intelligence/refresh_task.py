@@ -9,7 +9,8 @@ import structlog
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
 from app.data_access.admin.admin_job_repository import AdminJobRepository
-from app.worker.celery_app import celery_app
+from app.worker.celery_app import celery_app, current_worker
+from app.worker.external_intelligence.cancel_check import import_cancel_check
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from app.worker.jobs import job_error_of
 
@@ -36,7 +37,7 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
     (the worker's cached run-time switch can lag a change by a minute). A late or repeated message finds the
     job no longer active and does nothing; a failure is recorded, then raised."""
     now = datetime.now(UTC)
-    if not jobs.update_admin_job_running(job_id, now):
+    if not jobs.update_admin_job_running(job_id, now, **current_worker()):
         return
     record = jobs.get(("source",), _id=job_id) or {}
     source = IntelSource(record["source"]) if record.get("source") else None
@@ -45,10 +46,11 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
             error = {"code": ErrorCode.CONFLICT, "message": IntelRefreshMessage.SWITCH_OFF.value}
             jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
             return
-        if source is None:
-            summary = refresher().refresh_due_sources(now)
-        else:
-            summary = refresher().refresh_one_source(source, now)
+        with import_cancel_check(lambda: jobs.is_admin_job_active(job_id)):  # its cancel stops it early
+            if source is None:
+                summary = refresher().refresh_due_sources(now)
+            else:
+                summary = refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
         jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=job_error_of(exc))

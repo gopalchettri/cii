@@ -165,6 +165,9 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
 
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
+#: Thinking off in the gateway models' chat templates (UAT probe, 2026-10-23): Kimi reads "thinking", GLM
+#: "enable_thinking"; each template ignores the other. Its own reasoning_effort did not stop GLM thinking.
+THINKING_OFF_TEMPLATE_KWARGS: Final = {"thinking": False, "enable_thinking": False}
 
 
 class AiLimits:
@@ -257,6 +260,8 @@ class LogEvent(StrEnum):
     WRITER_REGENERATE_FAILED = "writer.regenerate_failed"  # the old version stays current
     EMBEDDINGS_RETIRED = "embedding.retired"
     EMBEDDING_STORED_SIZE_WRONG = "embedding.stored_size_wrong"
+    JOB_STARTED = "job.started"  # every task: its id, record/job id, worker and the API request that sent it
+    JOB_FINISHED = "job.finished"  # the same with its outcome and seconds
     JOB_NOT_CLAIMED = "job.not_claimed"
     JOB_LEASE_LOST = "job.lease_lost"
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted

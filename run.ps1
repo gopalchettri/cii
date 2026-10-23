@@ -55,9 +55,9 @@ $Python = Join-Path $Root '.venv\Scripts\python.exe'
 $EnvFile = Join-Path $Root '.env'
 $StateFile = Join-Path $Root '.run\processes.json'
 $Monitoring = Join-Path $Root 'scripts\monitoring.py'
-$WorkerName = "dev@$env:COMPUTERNAME"
+$WorkerName = "scenarios@$env:COMPUTERNAME"  # named by module: logs/worker-scenarios.log
 $MapperWorkerName = "mapper@$env:COMPUTERNAME"
-$MaintenanceName = "maint@$env:COMPUTERNAME"
+$MaintenanceName = "maintenance@$env:COMPUTERNAME"
 $ReadyUrl = 'http://127.0.0.1:8000/ready'
 $GrafanaUrl = 'http://localhost:3000/grafana/'
 

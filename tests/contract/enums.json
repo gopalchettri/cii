@@ -77,6 +77,7 @@
   "RANKED": "ranked"
  },
  "AuditAction": {
+  "ADMIN_JOB_CANCELLED": "admin.job_cancelled",
   "ADMIN_JOB_FINISHED": "admin.job_finished",
   "ADMIN_JOB_STARTED": "admin.job_started",
   "DEPENDENCY_REVIEWED": "mapping.dependency_reviewed",
@@ -427,6 +428,14 @@
   "DONE": "done",
   "FAILED": "failed",
   "GENERATING": "generating"
+ },
+ "Module": {
+  "EXTERNAL_INTELLIGENCE": "external_intelligence",
+  "LIBRARY_EMBEDDINGS": "library_embeddings",
+  "MAINTENANCE": "maintenance",
+  "REMEDIATION": "remediation",
+  "SERVICE_MAPPER": "service_mapper",
+  "THREAT_SCENARIOS": "threat_scenarios"
  },
  "PathProblem": {
   "ATTACKER_RETIRED": "its acting attacker is no longer active in the library",

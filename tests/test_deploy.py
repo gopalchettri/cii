@@ -362,9 +362,9 @@ def test_the_pods_may_reach_the_ai_gateway_directly_and_the_proxy_for_the_feeds(
 GATEWAY_SETTINGS = {
     "CII_CHAT_MODEL": "litellm_proxy/kimi-k2.5",
     "CII_CHAT_BASE_URL": "https://llmapi.govai.ae",
-    "CII_EMBEDDING_MODEL": "litellm_proxy/qwen3-embedding-8b-mig",
+    "CII_EMBEDDING_MODEL": "litellm_proxy/qwen3-embedding-8b",
     "CII_EMBEDDING_BASE_URL": "https://llmapi.govai.ae",
-    "CII_RERANK_MODEL": "litellm_proxy/qwen3-reranker-8b-mig",
+    "CII_RERANK_MODEL": "litellm_proxy/qwen3-reranker-8b",
     "CII_RERANK_BASE_URL": "https://llmapi.govai.ae",
 }
 
