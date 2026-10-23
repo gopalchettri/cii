@@ -3,6 +3,8 @@ app/ai/profiles.py."""
 
 from dataclasses import dataclass
 
+from app.core.constants import AiLimits
+
 
 @dataclass(frozen=True)
 class ChatModelProfile:
@@ -10,9 +12,15 @@ class ChatModelProfile:
     timeout_seconds: int  # one reply; proxy models queue under load
     supports_json_mode: bool  # sends response_format=json_object
     reasoning_effort: str | None  # "none" = thinking off (owner decision); None = never sent
-    # Longest prompt sent (all messages together): a longer one raises TruncatedAiAnswer before any call, and
-    # the caller sends less (e.g. halves the batch). The landscape budget is half of it (§8).
-    max_input_chars: int = 60_000
+    # Most tokens one call holds, prompt and answer together: the smaller of the model's context window and
+    # any cap in front of it (a gateway's, a deployment's tokens per minute).
+    context_tokens: int
+
+    @property
+    def max_input_chars(self) -> int:
+        """Longest prompt sent (all messages together), the answer's tokens kept free: a longer one raises
+        TruncatedAiAnswer before any call, and the caller sends less. The landscape budget is half of it."""
+        return (self.context_tokens - self.max_output_tokens) * AiLimits.PROMPT_CHARS_PER_TOKEN
 
 
 @dataclass(frozen=True)

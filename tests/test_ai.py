@@ -18,6 +18,7 @@ from structlog.testing import capture_logs
 
 from app import ai
 from app.ai.common import UnusableAiAnswer
+from app.ai.profiles import CHAT_MODEL_PROFILES
 from app.core.constants import AI_OUTAGE_MESSAGES, AiLimits, AiOutage, AiTask, EmbeddingCorpus, ErrorCode
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
@@ -28,10 +29,18 @@ from app.data_access.base import MongoRepository, VectorRepository
 from app.models.ai.profiles import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 
 JSON_CHAT = ChatModelProfile(
-    max_output_tokens=100, timeout_seconds=5, supports_json_mode=True, reasoning_effort="none"
+    max_output_tokens=100,
+    timeout_seconds=5,
+    supports_json_mode=True,
+    reasoning_effort="none",
+    context_tokens=20_100,  # 60,000 prompt characters
 )
 PLAIN_CHAT = ChatModelProfile(
-    max_output_tokens=50, timeout_seconds=9, supports_json_mode=False, reasoning_effort=None
+    max_output_tokens=50,
+    timeout_seconds=9,
+    supports_json_mode=False,
+    reasoning_effort=None,
+    context_tokens=20_050,
 )
 
 
@@ -913,6 +922,12 @@ def test_a_cut_off_answer_or_a_too_long_prompt_is_truncated(monkeypatch: pytest.
     with pytest.raises(ai.TruncatedAiAnswer, match="takes at most"):
         _ask(_chat_model(), AiTask.RELEVANCE_GATE, "system", too_long)
     assert len(sent) == 1  # the too-long prompt was never sent
+
+
+def test_the_prompt_limit_is_the_smaller_models_so_either_can_answer() -> None:
+    """UAT: kimi-k2.5 first, glm-5.3 as fallback; a prompt glm cannot take is never sent to kimi either."""
+    uat = [(name, CHAT_MODEL_PROFILES[name]) for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3")]
+    assert _chat_model(*uat).max_prompt_chars == (131_072 - 12_288) * 3
 
 
 def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pytest.MonkeyPatch) -> None:

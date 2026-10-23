@@ -176,6 +176,9 @@ class AiLimits:
     RETRIES: Final = 3  # a busy or unreachable provider is retried this many times, with back-off
     RETRY_FIRST_WAIT_SECONDS: Final = 0.5  # then doubling
     CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
+    # Prompt characters counted per token: real prompts measured 4.3-6.1 on Kimi-K2.6 (dev, 2026-10-23); 3
+    # leaves room for another tokenizer (glm) and non-English text.
+    PROMPT_CHARS_PER_TOKEN: Final = 3
     SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod
     API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
     WORKER_SLOT_WAIT_SECONDS: Final = 300

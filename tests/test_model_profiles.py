@@ -1,5 +1,6 @@
 """Model profiles: every configured model resolves, a local path resolves by folder, an unknown name stops."""
 
+import dataclasses
 import re
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from app.ai.profiles import (
     UnknownModelProfile,
     find_model_profile,
 )
+from app.models.ai.profiles import ChatModelProfile
 
 _PROFILES_BY_SETTING = {
     "CII_CHAT_MODEL": CHAT_MODEL_PROFILES,
@@ -38,6 +40,24 @@ def test_a_local_model_path_resolves_by_its_folder_name() -> None:
 def test_an_unknown_model_name_is_refused_with_its_name() -> None:
     with pytest.raises(UnknownModelProfile, match="openai/gpt-unknown"):
         find_model_profile(CHAT_MODEL_PROFILES, "openai/gpt-unknown")
+
+
+def test_each_chat_model_states_its_own_context_with_the_answer_kept_free() -> None:
+    """No shared default limit: each model's comes from its own context (sources in app/ai/profiles.py)."""
+    defaults = {
+        field.name
+        for field in dataclasses.fields(ChatModelProfile)
+        if field.default is not dataclasses.MISSING
+    }
+    assert "context_tokens" not in defaults
+    contexts = {name: chat.context_tokens for name, chat in CHAT_MODEL_PROFILES.items()}
+    assert contexts == {
+        "openai/Kimi-K2.6": 100_000,
+        "litellm_proxy/kimi-k2.5": 262_144,
+        "litellm_proxy/glm-5": 131_072,
+        "litellm_proxy/glm-5.3": 131_072,
+    }
+    assert CHAT_MODEL_PROFILES["openai/Kimi-K2.6"].max_input_chars == (100_000 - 12_288) * 3
 
 
 def test_the_uat_models_keep_the_values_uat_runs_with() -> None:

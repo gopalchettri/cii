@@ -15,19 +15,38 @@ class UnknownModelProfile(Exception):
 
 CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
     # dev, Azure AI Foundry. Thinking off measured on this model: 6 output tokens instead of 45-139.
+    # Context: the deployment's 100,000 tokens a minute (x-ratelimit-limit-tokens, 2026-10-23), below the
+    # model's 262,144: one call over it is refused (429), however long the wait.
     "openai/Kimi-K2.6": ChatModelProfile(
-        max_output_tokens=12_288, timeout_seconds=90, supports_json_mode=True, reasoning_effort="none"
+        max_output_tokens=12_288,
+        timeout_seconds=90,
+        supports_json_mode=True,
+        reasoning_effort="none",
+        context_tokens=100_000,
     ),
     # UAT, LiteLLM proxy. kimi answers in ~5 s, glm-5 in 55-99 s: 120 s lets either finish.
+    # Context: the gateway's /model/info max_tokens (2026-07-29); no tpm or key limit set there.
     "litellm_proxy/kimi-k2.5": ChatModelProfile(
-        max_output_tokens=12_288, timeout_seconds=120, supports_json_mode=True, reasoning_effort="none"
+        max_output_tokens=12_288,
+        timeout_seconds=120,
+        supports_json_mode=True,
+        reasoning_effort="none",
+        context_tokens=262_144,
     ),
     "litellm_proxy/glm-5": ChatModelProfile(
-        max_output_tokens=12_288, timeout_seconds=120, supports_json_mode=True, reasoning_effort="none"
+        max_output_tokens=12_288,
+        timeout_seconds=120,
+        supports_json_mode=True,
+        reasoning_effort="none",
+        context_tokens=131_072,
     ),
-    # The gateway's name for glm-5 (UAT probe, 2026-10-23).
+    # The gateway's name for glm-5 (UAT probe, 2026-10-23); its 131,072 context confirmed by the owner.
     "litellm_proxy/glm-5.3": ChatModelProfile(
-        max_output_tokens=12_288, timeout_seconds=120, supports_json_mode=True, reasoning_effort="none"
+        max_output_tokens=12_288,
+        timeout_seconds=120,
+        supports_json_mode=True,
+        reasoning_effort="none",
+        context_tokens=131_072,
     ),
 }
 

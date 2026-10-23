@@ -283,7 +283,8 @@ class MapperLimits:
     SELECTED_RECORD_CHARS: Final = 1_000  # the selected service's recorded upstream / downstream text
     CATALOG_DESCRIPTION_CHARS: Final = 240  # each catalog service's description
     # Each catalog service's recorded upstream / downstream text. Longer shows fewer services in the prompt
-    # budget: DESC with records fits 36 of 68 at 240, 18 at 600 (max_input_chars 60,000).
+    # budget: DESC with records fits all 68 at 240 (~54k chars) and at 600 (~100k) under dev's 263,136-char
+    # limit (UAT's is larger); it was 36 and 18 under the old shared 60,000 (2026-10-23).
     CATALOG_RECORD_CHARS: Final = 240
     REASK_NAMES_SHOWN: Final = 8  # catalog services named in one re-ask problem
     SCHEMA_ERRORS_SHOWN: Final = 10  # answer-format errors sent back in a re-ask
