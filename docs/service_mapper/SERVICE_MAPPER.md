@@ -50,7 +50,10 @@ reviewer to accept or reject relationship by relationship. The definitions follo
 - Database services come first: when one provides a dependency the AI must use it. The AI adds a service only
   when the database has none that provides it (e.g. telecommunications), shown as AI-suggested.
 - The answer per item is `service_name, sector, subsector, dependency_reason, applicability`. Entity scope goes
-  in `applicability`, and an inferred link says so in its reason.
+  in `applicability`. Each reason starts `Recorded:` or `Inferred:`. `Recorded:` stays only when the database
+  records that link: the selected service's known dependencies in that direction, or the other service's in the
+  opposite one (`reconcile.resolve_both`). Otherwise the code turns it into `Inferred:`, so the AI cannot claim
+  evidence that was never supplied (owner, 2026-10-23).
 
 ## Quality check
 

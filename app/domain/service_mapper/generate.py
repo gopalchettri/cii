@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.ai.chat import ChatModel
-from app.core.constants import AiTask
+from app.core.constants import AiTask, MapperLimits
 from app.domain.service_mapper.answer_checks import answer_problems
 from app.domain.service_mapper.reconcile import reconcile, selected_service_id
 from app.domain.shared.names import as_json, is_same_name, shorten_text
@@ -42,7 +42,10 @@ def generate_answer(
     service only where none provides it. The AI sees names only, never a catalog ID; a first answer with items
     reconcile would drop is asked again once with why."""
     services = _most_relevant_first(search, request, catalog)
-    budget = min(int(chat.max_prompt_chars * 0.55), chat.max_prompt_chars - len(_SYSTEM) - 4_000)
+    budget = min(
+        int(chat.max_prompt_chars * MapperLimits.PROMPT_SHARE),
+        chat.max_prompt_chars - len(_SYSTEM) - MapperLimits.PROMPT_RESERVE_CHARS,
+    )
     prompt = _user_prompt(request, catalog, services, counts)
     if len(_SYSTEM) + len(prompt) > budget:
         # ponytail: a catalog too large for one prompt keeps its services most similar to the selected one.
@@ -57,7 +60,8 @@ def generate_answer(
         try:
             GeneratedAnswer.model_validate(answer)
         except ValidationError as exc:
-            return [str(error["loc"]) + ": " + error["msg"] for error in exc.errors()[:10]]
+            errors = exc.errors()[: MapperLimits.SCHEMA_ERRORS_SHOWN]
+            return [str(error["loc"]) + ": " + error["msg"] for error in errors]
         return []
 
     def dropped_items(answer: dict[str, Any]) -> list[str]:
@@ -120,7 +124,9 @@ def _selected_known_dependencies(request: CreateMappingRequest, catalog: Catalog
     if service is None:
         return {}
     known = {"known_upstream": service.upstream_context, "known_downstream": service.downstream_context}
-    return {key: shorten_text(text, 1000) for key, text in known.items() if text}
+    return {
+        key: shorten_text(text, MapperLimits.SELECTED_RECORD_CHARS) for key, text in known.items() if text
+    }
 
 
 def _catalog_groups(catalog: CatalogSnapshot, services: list[CatalogService]) -> list[dict[str, Any]]:
@@ -148,9 +154,11 @@ def _catalog_groups(catalog: CatalogSnapshot, services: list[CatalogService]) ->
 def _service_entry(service: CatalogService) -> dict[str, Any]:
     entry: dict[str, Any] = {"service_name": service.service_name}
     if service.description and service.description.casefold() != service.service_name.casefold():
-        entry["description"] = shorten_text(service.description, 240)
+        entry["description"] = shorten_text(service.description, MapperLimits.CATALOG_DESCRIPTION_CHARS)
     if service.upstream_context:
-        entry["known_upstream"] = shorten_text(service.upstream_context, 240)
+        entry["known_upstream"] = shorten_text(service.upstream_context, MapperLimits.CATALOG_RECORD_CHARS)
     if service.downstream_context:
-        entry["known_downstream"] = shorten_text(service.downstream_context, 240)
+        entry["known_downstream"] = shorten_text(
+            service.downstream_context, MapperLimits.CATALOG_RECORD_CHARS
+        )
     return entry

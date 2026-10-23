@@ -3,6 +3,7 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -395,7 +396,7 @@ def test_the_prompt_names_every_input_key_and_answer_field_and_writes_no_number(
     }
     assert [key for key in sorted(keys) if key not in generate._SYSTEM] == []
     assert not re.search(r"\d", generate._SYSTEM)
-    assert len(generate._SYSTEM) < 4_300
+    assert len(generate._SYSTEM) < 4_400
 
 
 def test_the_prompt_keeps_the_owners_evidence_and_weak_link_rules() -> None:
@@ -411,6 +412,17 @@ def test_the_prompt_keeps_the_owners_evidence_and_weak_link_rules() -> None:
         "(zero means [])",
         "Empty lists are valid.",
         "classified at sector level, not unknown",
+    )
+    assert [rule for rule in rules if rule not in generate._SYSTEM] == []
+
+
+def test_the_prompt_says_a_weaker_service_is_not_a_failed_one() -> None:
+    """Live 2026-10-23: 1 reason in 9 said only that a service would "degrade", be delayed or be at risk. With
+    these rules that halved on the DESC register, the dev catalog and the register with its records."""
+    rules = (
+        "Delay, extra cost, lower quality or risk is not failure.",
+        "without it, <selected service> cannot ...",
+        "without it,\n  <service> cannot ...",
     )
     assert [rule for rule in rules if rule not in generate._SYSTEM] == []
 
@@ -459,6 +471,80 @@ def test_each_list_keeps_only_its_limit_strongest_first() -> None:
     assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (2, 1)
 
 
+def test_a_recorded_reason_needs_a_record_of_the_link_in_the_input() -> None:
+    """Live 2026-10-23: with no known_upstream/known_downstream anywhere, the AI still began 5 of 175 reasons
+    "Recorded: ". Without a record of the link in that direction the reason says "Inferred: "."""
+    recorded = "Recorded: the plant cannot generate without what this service provides."
+    answer = GeneratedAnswer.model_validate(
+        {
+            "operational_context": "The plant converts primary energy into electricity for grid delivery.",
+            "upstream_services": [
+                _item("Water Treatment Service", recorded),
+                _item("Fuel Logistics Service", recorded, "Energy"),
+            ],
+            "downstream_services": [_item("Grid Balancing Service", recorded, "Energy")],
+        }
+    )
+
+    def labels(service_id: int, **record: str) -> dict[str, str]:
+        catalog = _catalog()
+        services = tuple(replace(s, **record) if s.service_id == service_id else s for s in catalog.services)
+        result = reconcile("mapping", 1, _request(), answer, replace(catalog, services=services), 5, 5)
+        return {
+            item["service_name"]: relation["dependency_reason"].split(":")[0]
+            for item in result["dependencies"]
+            for relation in item["relations"].values()
+        }
+
+    nothing = {"Water Treatment Service": "Inferred", "Fuel Logistics Service": "Inferred"}
+    assert labels(1) == nothing | {"Grid Balancing Service": "Inferred"}
+    assert labels(2, downstream_context="Power plants take its cooling water.") == nothing | {
+        "Water Treatment Service": "Recorded",  # the other service records the selected one downstream of it
+        "Grid Balancing Service": "Inferred",
+    }
+    assert labels(1, upstream_context="Cooling water and fuel.") == {  # the selected one's upstream record
+        "Water Treatment Service": "Recorded",
+        "Fuel Logistics Service": "Recorded",
+        "Grid Balancing Service": "Inferred",
+    }
+    assert labels(1, downstream_context="The grid.")["Grid Balancing Service"] == "Recorded"
+
+
+def test_a_new_service_named_with_the_recorded_text_is_asked_again() -> None:
+    """Live 2026-10-23 (DESC register): given its recorded upstream, the AI named "services" such as
+    "Technology, hosting and cybersecurity providers", the record's headings. Each is asked again; a real name
+    never is."""
+    record = (
+        "1. Emergency communications and telecom services - radio links. 2. Technology, hosting providers."
+    )
+    catalog = _catalog()
+    services = tuple(
+        replace(s, upstream_context=record) if s.service_id == 1 else s for s in catalog.services
+    )
+    reason = "Inferred: the plant cannot be dispatched without what this service provides."
+    answer = GeneratedAnswer.model_validate(
+        {
+            "operational_context": "The plant converts primary energy into electricity for grid delivery.",
+            "upstream_services": [
+                _item("Emergency Communications and Telecom Services", reason, "Energy"),
+                _item("Telecommunications Network Service", reason, "Energy"),
+                _item("Technology, Hosting Providers", reason, "Energy"),
+            ],
+            "downstream_services": [],
+        }
+    )
+    copied = [
+        p for p in answer_problems(_request(), answer, replace(catalog, services=services)) if "copies" in p
+    ]
+    assert copied == [
+        f'"{name}" copies the recorded text, not a service: name the specific service that provides it'
+        for name in ("Emergency Communications and Telecom Services", "Technology, Hosting Providers")
+    ]
+    assert [
+        p for p in answer_problems(_request(), answer, catalog) if "copies" in p
+    ] == []  # nothing recorded
+
+
 def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None:
     """The limits saved with the mapping (SERVICE_MAPPER_*_TOTAL_COUNT) reach the AI and cap the result."""
 
@@ -502,6 +588,28 @@ def test_semantic_retrieval_can_find_a_cross_sector_service_without_matching_wor
     found = ServiceCandidateSearch(Embeddings()).candidates(_catalog(), ["unrelated vocabulary"])
     assert found[0].service_name == "Water Treatment Service"
     assert found[0].primary_sector.sector_name == "Water"
+
+
+def test_the_candidate_search_fuses_every_question_and_breaks_a_tie_by_service_id() -> None:
+    """Each question's ranking adds 1 / (RRF_K + rank) (fuse_by_rank); a tie goes to the lower service id."""
+
+    class Embeddings:
+        def embed_search_queries(self, queries):
+            return np.zeros((len(queries), 2), dtype=np.float32)
+
+    class Index:
+        rankings = {"first": [2, 0], "second": [0, 2, 1]}  # positions, best first
+
+        def search(self, query, _vector, _top_k):
+            return [SimpleNamespace(position=position) for position in self.rankings[query]]
+
+    services = tuple(
+        CatalogService(service_id, f"Service {service_id}", "", (), (), "", "") for service_id in (1, 2, 3)
+    )
+    search = ServiceCandidateSearch(Embeddings())  # type: ignore[arg-type]
+    search._for_catalog = lambda _catalog: Index()  # type: ignore[method-assign,assignment,return-value]
+    found = search.candidates(CatalogSnapshot("fusion", (), (), services), ["first", "second"])
+    assert [service.service_id for service in found] == [1, 3, 2]  # 1 and 3 tie at 1/61 + 1/62
 
 
 def test_shared_catalog_alias_is_not_misreported_as_an_out_of_catalog_service() -> None:

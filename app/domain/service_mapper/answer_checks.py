@@ -1,7 +1,8 @@
 """The problems in an AI answer that reconcile would drop or leave incomplete, for the AI's one corrective
 re-ask."""
 
-from app.domain.service_mapper.reconcile import resolve_both
+from app.core.constants import MapperLimits
+from app.domain.service_mapper.reconcile import resolve_both, selected_service_id
 from app.domain.shared.names import is_same_name, name_match_key
 from app.models.service_mapper.catalog import CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
@@ -24,6 +25,7 @@ def answer_problems(
     (upstream, upstream_dropped), (downstream, downstream_dropped) = resolve_both(request, answer, catalog)
     in_both = {item.identity for item in upstream} & {item.identity for item in downstream}
     new_items = [item for item in (*upstream, *downstream) if item.ai_suggested]
+    record = _selected_record(request, catalog)
     return [
         *(f"upstream_services: {problem}" for problem in upstream_dropped),
         *(f"downstream_services: {problem}" for problem in downstream_dropped),
@@ -38,7 +40,22 @@ def answer_problems(
             if item.sector is None and catalog.sector_names
         ),
         *filter(None, (_catalog_alternative(item, catalog, request.service_name) for item in new_items)),
+        *(
+            f'"{item.service_name}" copies the recorded text, not a service: name the specific service that '
+            "provides it"
+            for item in new_items
+            if record and f" {name_match_key(item.service_name)} " in record
+        ),
     ]
+
+
+def _selected_record(request: CreateMappingRequest, catalog: CatalogSnapshot) -> str:
+    """The selected service's recorded dependency text, name-normalised and space-padded ("" when none): a new
+    service named with a phrase of it copied a heading ("Technology, hosting and cybersecurity providers")."""
+    selected_id = selected_service_id(request, catalog)
+    service = next((s for s in catalog.services if s.service_id == selected_id), None)
+    text = name_match_key(f"{service.upstream_context} | {service.downstream_context}") if service else ""
+    return f" {text} " if text else ""
 
 
 def _catalog_alternative(
@@ -65,7 +82,7 @@ def _catalog_alternative(
     if not names:
         return None
     where = f"{item.sector} / {item.subsector}" if item.subsector else item.sector
-    listed = ", ".join(f'"{name}"' for name in names[:8])
+    listed = ", ".join(f'"{name}"' for name in names[: MapperLimits.REASK_NAMES_SHOWN])
     return (
         f'"{item.service_name}" is new, but catalog {where} already has {listed}: '
         f'use the one that provides it, or keep "{item.service_name}" only if none does'

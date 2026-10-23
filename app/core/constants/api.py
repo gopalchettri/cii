@@ -278,3 +278,12 @@ class MapperMessage(StrEnum):
 class MapperLimits:
     CANDIDATE_POOL: Final = 80
     MAX_DECISIONS: Final = 200  # ids per relationship decision: both directions at their largest count (100)
+    PROMPT_SHARE: Final = 0.55  # the most of the model's input the prompt fills before the catalog is cut
+    PROMPT_RESERVE_CHARS: Final = 4_000  # input kept free for the re-ask turn
+    SELECTED_RECORD_CHARS: Final = 1_000  # the selected service's recorded upstream / downstream text
+    CATALOG_DESCRIPTION_CHARS: Final = 240  # each catalog service's description
+    # Each catalog service's recorded upstream / downstream text. Longer shows fewer services in the prompt
+    # budget: DESC with records fits 36 of 68 at 240, 18 at 600 (max_input_chars 60,000).
+    CATALOG_RECORD_CHARS: Final = 240
+    REASK_NAMES_SHOWN: Final = 8  # catalog services named in one re-ask problem
+    SCHEMA_ERRORS_SHOWN: Final = 10  # answer-format errors sent back in a re-ask

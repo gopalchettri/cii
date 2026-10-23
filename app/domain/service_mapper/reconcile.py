@@ -80,7 +80,33 @@ def resolve_both(
         next((replace(item, identity=up.identity) for up in upstream if _same_new_service(up, item)), item)
         for item in downstream
     ]
+    selected = next((service for service in catalog.services if service.service_id == selected_id), None)
+    upstream = _recorded_only_with_a_record(
+        upstream,
+        selected.upstream_context if selected else "",
+        {service.service_id: service.downstream_context for service in catalog.services},
+    )
+    downstream = _recorded_only_with_a_record(
+        downstream,
+        selected.downstream_context if selected else "",
+        {service.service_id: service.upstream_context for service in catalog.services},
+    )
     return (upstream, up_dropped), (downstream, down_dropped)
+
+
+def _recorded_only_with_a_record(
+    items: list[ResolvedDependency], selected_record: str, other_records: dict[int, str]
+) -> list[ResolvedDependency]:
+    """A "Recorded:" reason needs a record of the link in the input (the selected service's known text in this
+    direction, or the other service's in the opposite one); without one it says "Inferred:"."""
+    # ponytail: any record in that direction counts; free text cannot be matched to one service reliably.
+    return [
+        replace(item, dependency_reason="Inferred:" + item.dependency_reason.removeprefix("Recorded:"))
+        if item.dependency_reason.startswith("Recorded:")
+        and not (selected_record or other_records.get(item.service_id or 0))
+        else item
+        for item in items
+    ]
 
 
 def _same_new_service(a: ResolvedDependency, b: ResolvedDependency) -> bool:

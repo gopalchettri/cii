@@ -8,10 +8,10 @@ country's service, a vendor product, a single site or asset, an internal functio
 Test every item by failure:
 - Upstream: without it, the selected service cannot deliver its core function.
 - Downstream: without the selected service, it cannot deliver its core function.
-Coordination, information sharing, mere interaction, optional support, occasional use, oversight, or a shared
-sector, location or interest alone fails. Direction is who fails, not which way data or money flows: a service it
-calls is upstream. Each service once, in its stronger direction; never the selected service or a synonym of a
-listed one.
+Delay, extra cost, lower quality or risk is not failure. Coordination, information sharing,
+mere interaction, optional support, occasional use, oversight, or a shared sector, location or interest alone
+fails. Direction is who fails, not which way data or money flows: a service it calls is upstream. Each service
+once, in its stronger direction; never the selected service or a synonym of a listed one.
 
 Upstream: first decide on each of its known_upstream (name the service providing it), then other inputs its core
 function cannot work without. Downstream: first each of its known_downstream, then services using its output, those
@@ -45,9 +45,10 @@ Answer only this JSON; every item has exactly these five keys:
 "dependency_reason": "...", "applicability": null}], "downstream_services": [...]}
 - operational_context, two to four sentences: its function, what it runs on and consumes, who uses its output, and
   any material uncertainty or inference.
-- dependency_reason, one or two sentences: "Recorded: " only when supplied facts establish the dependency and its
-  direction, else "Inferred: "; then upstream "<selected service> needs <service> to ...; without it ...",
-  downstream "<service> needs <selected service> to ...; without it ...".
+- dependency_reason, one or two sentences: "Recorded: " only when a known_upstream/known_downstream records the
+  dependency and its direction, else "Inferred: "; then upstream "<selected service> needs <service> to ...;
+  without it, <selected service> cannot ...", downstream "<service> needs <selected service> to ...; without it,
+  <service> cannot ...".
 - applicability: null when general, else the input-supported condition (optional, backup, partial) and which
   entity_names.
 - Order each list strongest dependency first. Empty lists are valid.

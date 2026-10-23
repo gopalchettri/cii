@@ -5,7 +5,7 @@ import threading
 from app.ai.embeddings import EmbeddingModel
 from app.core.constants import EMBEDDING_SOURCE_TABLE, EmbeddingCorpus, MapperLimits
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
-from app.search.indexes import HybridIndex
+from app.search.indexes import HybridIndex, fuse_by_rank
 
 
 class ServiceCandidateSearch:
@@ -21,15 +21,13 @@ class ServiceCandidateSearch:
             return []
         index = self._for_catalog(catalog)
         vectors = self._embeddings.embed_search_queries(queries)
-        scores: dict[int, float] = {}
-        for query, vector in zip(queries, vectors, strict=True):
-            hits = index.search(query, vector, MapperLimits.CANDIDATE_POOL)
-            for rank, hit in enumerate(hits, start=1):
-                scores[hit.position] = scores.get(hit.position, 0.0) + 1.0 / (60 + rank)
-        ranked = sorted(
-            scores, key=lambda position: (-scores[position], catalog.services[position].service_id)
-        )
-        return [catalog.services[position] for position in ranked[: MapperLimits.CANDIDATE_POOL]]
+        rankings = [
+            [hit.position for hit in index.search(query, vector, MapperLimits.CANDIDATE_POOL)]
+            for query, vector in zip(queries, vectors, strict=True)
+        ]
+        # catalog positions follow service ids (build_catalog), so ties still go to the lower service id
+        fused = fuse_by_rank(rankings)[: MapperLimits.CANDIDATE_POOL]
+        return [catalog.services[position] for position, _score in fused]
 
     def _for_catalog(self, catalog: CatalogSnapshot) -> HybridIndex:
         with self._lock:

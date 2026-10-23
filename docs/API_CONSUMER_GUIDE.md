@@ -1099,7 +1099,7 @@ Each service in `upstream_services[]` / `downstream_services[]`:
 | `service_id` | int or null | onboarding catalog id; `null` when the AI proposed a service outside the catalog |
 | `service_name` | string | |
 | `sector` / `subsector` | string or null | |
-| `dependency_reason` | string | why it is a direct dependency, in this direction |
+| `dependency_reason` | string | why it is a direct dependency, in this direction; starts `Recorded:` when the onboarding catalog records the link, else `Inferred:` |
 | `applicability` | string or null | when it applies; `null` = always |
 | `ai_suggested` | bool | `true` when it is not from the catalog (`service_id` is `null`) |
 | `isAccepted` | bool or null | `null` pending, `true` accepted, `false` rejected |
