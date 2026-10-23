@@ -26,7 +26,7 @@ UAT may run the old version (v1) or the new one (v2). Step 1 tells you which.
 | Project | v1 names: change these | v2 names: change these | Never change |
 |---|---|---|---|
 | `ai-threatgen` | `tsg-api`, `celery-worker`, `celery-worker-admin`, `tsg-beat` | `api`, `worker-threats`, `worker-scenarios`, `worker-service-mapper`, `worker-maintenance`, `beat` | `tsg-flower`, `flower`, and the monitoring |
-| `ai-remediation` | `celery-worker` | `worker-threats`, `worker-scenarios`, `worker-service-mapper` | `celery-exporter`, `mssql-exporter`, `mongodb-exporter`, `flower`, and the monitoring (Prometheus, Grafana, Loki, Alloy, Alertmanager, exporters) |
+| `ai-remediation` | `celery-worker` | `worker-threats`, `worker-scenarios`, `worker-service-mapper`, `worker-maintenance` | `celery-exporter`, `mssql-exporter`, `mongodb-exporter`, `flower`, and the monitoring (Prometheus, Grafana, Loki, Alloy, Alertmanager, exporters) |
 
 "The monitoring" means Prometheus, Grafana, Loki, Alloy, Alertmanager, kube-state-metrics and the exporters. If
 step 1 shows an app deployment that is in neither list, change it too and tell us its name.
@@ -162,8 +162,8 @@ UAT works again here. But a later deployment would bring back the old settings, 
   systems for good, and the deploy does not check it. Get the DBA's confirmation.
 - **`.env.uat` must pass the check.** Today it has `*` in `CII_CORS_ORIGINS`: replace it with the real address(es) of
   the platform UI. The deploy refuses `*`.
-- **The monitoring images must be in the image mirror.** By default step 5 also replaces the monitoring in
-  `ai-remediation`. These images must already be in `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`
+- **The monitoring images must be in the image mirror.** By default step 5 also installs the monitoring in
+  `ai-common` (D24) and removes the one in `ai-remediation`. These images must already be in `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`
   ("STEP 0" at the top of `deploy\observability.yaml`): `prometheus:v3.15.0`, `alertmanager:v0.34.1`, `loki:3.7.8`,
   `alloy:v1.20.1`, `grafana:12.4.12`, `redis_exporter:v1.93.0`, `kube-state-metrics:v2.20.0`. Check each one in the
   Quay web UI (`/repository/dda-desc/<name>?tab=tags`). If the images aren't there yet, either wait with step 5
@@ -216,7 +216,8 @@ docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
 - It then lists what it will change and asks you to **type `YES`**. Read the list first:
   - it scales v1's deployments to 0;
   - it deletes v1's Routes on `threatgen-api` and `threatgen-grafana`;
-  - it deletes v1's monitoring programs in `ai-remediation`.
+  - it deletes the monitoring programs in `ai-remediation` (v1's, and v2's own from before the move to
+    `ai-common`) and their Routes: `ai-common` needs the `threatgen-grafana` host. Their volumes are kept.
   Type `YES` only inside the agreed window. Anything else stops the script before it changes anything.
 - It then deploys every worker of both projects, the API last, and the new monitoring.
 - At the end it prints `Undo: powershell -File "<folder>\rollback.ps1"` and a "Next, once" list (see step 6.3).
@@ -247,7 +248,7 @@ Then do step 4 again. Once the cause is fixed, run 5.2 again: it is safe to repe
 ## Step 6: final check
 
 1. **Run step 2 for each new deployment**: `api`, `worker-threats`, `worker-scenarios`, `worker-service-mapper`,
-   `worker-maintenance`, `beat` in `ai-threatgen`, and the three workers in `ai-remediation`. Each must show
+   `worker-maintenance`, `beat` in `ai-threatgen`, and the four workers in `ai-remediation`. Each must show
    `default:200,exit=0`. The new deployments already list the AI service on `NO_PROXY`.
 2. **Each worker logs, at start-up, how it reaches the AI service.** Check one worker in each project:
 

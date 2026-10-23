@@ -1,6 +1,7 @@
 <#
-Apply TSG monitoring (deploy/observability.yaml) to project ai-remediation, as v1 kept it there (log in with
-`oc login` first; this makes ai-remediation the current project):
+Apply TSG monitoring (deploy/observability.yaml) to project ai-common, which TSG shares with the chatbot (log in
+with `oc login` first; this makes ai-common the current project). deploy/deploy-uat.ps1 runs it after it has put
+the pull secret quay-pull and the app's settings (redis-exporter reads tsg-secrets) in ai-common:
 
     .\deploy\observability.ps1
 
@@ -10,7 +11,7 @@ Safe to run again: every step is an apply. Images must be in the mirror first (S
 Flower (deploy/flower.yaml) runs from the app image: deploy/deploy-uat.ps1 applies it.
 #>
 $ErrorActionPreference = "Stop"
-$Namespace = 'ai-remediation'
+$Namespace = 'ai-common'
 # Windows PowerShell 5.1 passes text between programs (oc ... | oc apply) as ASCII and may add a byte-order
 # mark: every non-ASCII character in the settings would arrive as "?". UTF-8 without a mark, both ways, keeps
 # them intact.
@@ -94,9 +95,15 @@ foreach ($key in $settings.Keys) {
     if ($key.StartsWith('GF_') -and -not $fixed.Count) { $grafana[$key] = $settings[$key] }
 }
 
-# The ConfigMaps and Secrets below are applied to the current project: make it ai-remediation.
+# The ConfigMaps and Secrets below are applied to the current project: make it ai-common.
 oc project $Namespace
 Assert-Ok "oc project $Namespace"
+# Without these two every image pull, or redis-exporter's start, fails only after the apply.
+foreach ($needed in 'quay-pull', 'tsg-secrets') {
+    if (-not (oc get secret $needed --ignore-not-found -o name)) {
+        throw "No Secret $needed in ${Namespace}: run deploy\deploy-uat.ps1, which puts it there first."
+    }
+}
 Set-ConfigMap prometheus-config @("$obs/prometheus/prometheus.yml", "$obs/prometheus/rules.yml")
 Set-ConfigMap alertmanager-config @("$obs/alertmanager/alertmanager.yml")
 Set-ConfigMap loki-config @("$obs/loki/loki.yaml")

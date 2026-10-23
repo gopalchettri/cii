@@ -1,10 +1,13 @@
-# TSG v2 workers in project ai-remediation: the second threats, scenarios and service-mapper workers (the first
-# of each runs in ai-threatgen, deploy/deploy.yaml). As in v1, this uses ai-remediation's CPU budget, and every
-# worker takes jobs from the same queues in the same Redis, so the two projects share the work with no Service,
-# Route or coordination.
+# TSG v2 workers in project ai-remediation: the second worker for every queue (threats, scenarios, service-mapper,
+# maintenance; the first of each runs in ai-threatgen, deploy/deploy.yaml). As in v1, this uses ai-remediation's
+# budget, and every worker takes jobs from the same queues in the same Redis, so the two projects share the work
+# with no Service, Route or coordination. While one copy rolls (maxSurge 0) its twin serves the queue.
 #
-# NOT here, on purpose: the API (ai-threatgen only), beat (exactly one in the whole system: a second sends every
-# scheduled job twice) and the maintenance worker (one is enough; it lives in ai-threatgen).
+# NOT here, on purpose: the API (ai-threatgen only) and beat (exactly one in the whole system: a second sends
+# every scheduled job twice). The monitoring is in ai-common (deploy/observability.yaml).
+#
+# Budget (quota: 6 CPU, 12 Gi memory, in limits): threats 1 / 2 Gi, scenarios 1 / 2 Gi, service-mapper
+# 0.25 / 2 Gi, maintenance 0.5 / 2 Gi = 2.75 CPU, 8 Gi; an update adds nothing (maxSurge 0).
 #
 # Needs in ai-remediation, all made by deploy/deploy-uat.ps1: the pull secret quay-pull, the settings
 # (tsg-config, tsg-secrets, from the same .env.uat as ai-threatgen's, so the two cannot differ) and the network
@@ -22,7 +25,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-threats, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-threats }
   template:
@@ -34,6 +37,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -75,7 +79,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-service-mapper, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-service-mapper }
   template:
@@ -87,6 +91,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -128,7 +133,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-scenarios, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-scenarios }
   template:
@@ -140,6 +145,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -166,6 +172,61 @@ spec:
           resources:
             requests: { cpu: 500m, memory: 1Gi }
             limits: { cpu: "1", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+
+# The reaper and the rebuilds: beat sends each once and one worker takes it, so two copies never double a job.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-maintenance
+  namespace: ai-remediation
+  labels: { app.kubernetes.io/name: worker-maintenance, app.kubernetes.io/part-of: tsg }
+spec:
+  replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: worker-maintenance }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: worker-maintenance, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+        tsg/settings-fingerprint: none
+    spec:
+      automountServiceAccountToken: false
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
+      imagePullSecrets: [{ name: quay-pull }]
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT
+          imagePullPolicy: IfNotPresent
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "3", -Q, tsg_maintenance]
+          envFrom:
+            - configMapRef: { name: tsg-config }
+            - secretRef: { name: tsg-secrets }
+          env:
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }
+          ports: [{ name: metrics, containerPort: 9100 }]
+          livenessProbe:
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { cpu: 500m, memory: 2Gi }
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

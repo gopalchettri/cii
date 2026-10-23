@@ -5,7 +5,7 @@
 # in the same change. scripts/gen_openshift_config.py --gate checks that the stores named in .env.uat are the
 # addresses below, so the settings and these rules cannot point at different places.
 
-# In: the router to the API; the monitoring (Prometheus, in ai-remediation) and this project's own pods to the
+# In: the router to the API; the monitoring (Prometheus, in ai-common) and this project's own pods to the
 # API and the worker metrics.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -20,7 +20,7 @@ spec:
       ports: [{ port: 8000, protocol: TCP }]
     - from:
         - podSelector: {}
-        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ai-remediation } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ai-common } }
           podSelector: { matchLabels: { tsg-observability: "true" } }
       ports: [{ port: 8000, protocol: TCP }, { port: 9100, protocol: TCP }]
 

@@ -1,10 +1,12 @@
-# Flower (the live view of the background jobs) on OpenShift, project ai-remediation, beside the rest of the
+# Flower (the live view of the background jobs) on OpenShift, project ai-common, beside the rest of the
 # monitoring: https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/flower/ (public, no login, owner
 # 2026-10-08; Flower switches its own API off without a login, so it is view only).
 #
-# It runs from the app image and reads the app's settings (tsg-config, tsg-secrets: the job queue's address),
-# so deploy/deploy-uat.ps1 applies it with the image it deploys: it replaces tsg-api:v2-COMMIT below with the
-# build's tag and `none` with the settings fingerprint. By hand: put the image's tag in place of COMMIT.
+# It runs from the app image and reads the app's settings (tsg-config, tsg-secrets: the job queue's address; the
+# app checks every required setting at start, so the whole Secret is copied here: whoever may read Secrets in
+# ai-common can read the app's passwords). deploy/deploy-uat.ps1 applies it with the image it deploys: it
+# replaces tsg-api:v2-COMMIT below with the build's tag and `none` with the settings fingerprint. By hand: put
+# the image's tag in place of COMMIT.
 # A live view only: Flower's history is not a record (the runs and the audit live in MongoDB). No volume, no
 # disruption budget. Labelled as monitoring (tsg-observability), so the monitoring's network rules cover it.
 
@@ -12,7 +14,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flower
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: flower, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1 # two would each read the job events and show half a picture
@@ -31,6 +33,7 @@ spec:
         prometheus.io/path: /flower/metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       imagePullSecrets: [{ name: quay-pull }]
       containers:
         - name: flower
@@ -63,7 +66,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: flower
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   selector: { app.kubernetes.io/name: flower }
   ports: [{ name: http, port: 5555, targetPort: 5555 }]
@@ -73,7 +76,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: flower
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/part-of: tsg-observability }
 spec:
   host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local

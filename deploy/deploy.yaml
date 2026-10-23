@@ -1,10 +1,11 @@
 # TSG v2 on OpenShift, project ai-threatgen: the API, one worker per queue, beat, the API's Service and Route
 # (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget. v2 replaces v1 here.
+# UAT is production (owner, 2026-10-23): these files are what production runs.
 #
-# The rest, as v1 split it:
-#   deploy/deploy.ai-remediation.yaml       one more threats and one more scenarios worker in ai-remediation
+# The rest:
+#   deploy/deploy.ai-remediation.yaml       a second worker for every queue, in ai-remediation
 #   deploy/networkpolicy.yaml               this project's network rules (deploy/networkpolicy.ai-remediation.yaml there)
-#   deploy/observability.yaml, flower.yaml  the monitoring, in ai-remediation (not on this project's CPU budget)
+#   deploy/observability.yaml, flower.yaml  the monitoring, in ai-common (shared with the chatbot, not on this budget)
 #   settings (ConfigMap tsg-config, Secret tsg-secrets) are made from .env.uat by scripts/gen_openshift_config.py
 #
 # Apply with deploy/deploy-uat.ps1. It replaces tsg-api:v2-COMMIT below with the image it deploys (the tag
@@ -12,12 +13,16 @@
 # fingerprint (a changed setting rolls the pods; none changed, none restart). By hand: put the tag in place of COMMIT.
 #
 # Workers: two of each kind in all, one here and one in ai-remediation, so every queue still has a worker when
-# either project is down or full. One per project means no disruption budget for a worker (minAvailable 1 on a
-# single pod blocks every node drain); the API has two copies and its budget.
+# either project is down, full or rolling. One per project means no disruption budget for a worker (minAvailable 1
+# on a single pod blocks every node drain); the API has two copies and its budget. A worker updates by stopping
+# its pod first (maxSurge 0): its twin in the other project serves the queue meanwhile, so /ready stays green and
+# no extra 2 Gi pod has to fit in the quota.
 #
-# CPU budget (v1's notes: ai-threatgen allows 6 CPU in limits). Limits here: api 2 x 1, threats 1, scenarios 1,
-# service-mapper 0.25, maintenance 0.5, beat 0.25 = 5 CPU, and an update starts one extra pod at a time (at most
-# 1 CPU): 6, the limit. tests/test_deploy.py keeps it within 6.
+# Budget (ai-threatgen's quota: 6 CPU, 12 Gi memory, in limits). Limits here: api 2 x 1 CPU / 1 Gi, threats 1 / 2 Gi,
+# scenarios 1 / 2 Gi, service-mapper 0.25 / 2 Gi, maintenance 0.5 / 2 Gi, beat 0.25 / 0.5 Gi = 5 CPU, 10.5 Gi; an
+# API update starts one extra API pod: 6 CPU, 11.5 Gi. tests/test_deploy.py keeps every project within its quota.
+#
+# No pod mounts a service account token: the app never calls the Kubernetes API.
 #
 # Every pod carries app.kubernetes.io/part-of: tsg and app.kubernetes.io/component: api|worker|beat: Prometheus
 # names its jobs by the component (the alerts read job="api" and job="worker") and Alloy labels logs by both.
@@ -52,6 +57,7 @@ spec:
               podAffinityTerm:
                 topologyKey: kubernetes.io/hostname
                 labelSelector: { matchLabels: { app.kubernetes.io/name: api } }
+      automountServiceAccountToken: false
       # Cluster DNS cannot resolve the AI gateway: pinned here; called directly: it is on NO_PROXY (D23).
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
@@ -113,7 +119,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-threats, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-threats }
   template:
@@ -125,6 +131,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -166,7 +173,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-scenarios, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-scenarios }
   template:
@@ -178,6 +185,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -219,7 +227,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-service-mapper, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-service-mapper }
   template:
@@ -231,6 +239,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -275,7 +284,7 @@ metadata:
   labels: { app.kubernetes.io/name: worker-maintenance, app.kubernetes.io/part-of: tsg }
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
   selector:
     matchLabels: { app.kubernetes.io/name: worker-maintenance }
   template:
@@ -287,6 +296,7 @@ spec:
         prometheus.io/path: /metrics
         tsg/settings-fingerprint: none
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       terminationGracePeriodSeconds: 120
@@ -339,6 +349,7 @@ spec:
       labels: { app.kubernetes.io/name: beat, app.kubernetes.io/part-of: tsg, app.kubernetes.io/component: beat }
       annotations: { tsg/settings-fingerprint: none }
     spec:
+      automountServiceAccountToken: false
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]
       imagePullSecrets: [{ name: quay-pull }]
       containers:

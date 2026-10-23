@@ -1,10 +1,11 @@
-"""The OpenShift delivery (M15, T-OPS-08), laid out as v1 was: deploy/deploy.yaml (ai-threatgen),
-deploy/deploy.ai-remediation.yaml, the two networkpolicy files, the settings generator and its safety gate,
-the deploy script's lists, and what goes into the image. A broken file must fail here, not halfway through a
-rollout."""
+"""The OpenShift delivery (M15, T-OPS-08; UAT is production): deploy/deploy.yaml (ai-threatgen),
+deploy/deploy.ai-remediation.yaml, the two networkpolicy files, the monitoring in ai-common, the settings
+generator and its safety gate, the deploy script's lists, each project's quota, and what goes into the image.
+A broken file must fail here, not halfway through a rollout."""
 
 import importlib
 import json
+import math
 import os
 import re
 import shutil
@@ -27,10 +28,17 @@ NETWORK_FILES = {
     "ai-remediation": DEPLOY / "networkpolicy.ai-remediation.yaml",
 }
 MONITORING_FILES = (DEPLOY / "observability.yaml", DEPLOY / "flower.yaml")
+MONITORING_NAMESPACE = "ai-common"  # shared with the chatbot
 APP_IMAGE = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT"
 API_HOST = "threatgen-api.apps.dda-desc-az1-01.desccii.local"
 MONITORING_HOST = "threatgen-grafana.apps.dda-desc-az1-01.desccii.local"
-QUOTA_CPU = 6.0  # v1's notes: ai-threatgen's budget, in CPU limits
+#: Each project's quota in limits (CPU, memory Gi, storage Gi); in ai-common, TSG's share of it (the chatbot
+#: has the rest).
+QUOTAS = {
+    "ai-threatgen": (6.0, 12.0, 60.0),
+    "ai-remediation": (6.0, 12.0, 60.0),
+    MONITORING_NAMESPACE: (3.0, 6.0, 60.0),
+}
 SECRET_NAMES = {
     "CII_DB_DSN",
     "CII_PROXY_URL",  # an address can carry a password
@@ -71,6 +79,33 @@ def _cpu(amount: str) -> float:
     return float(amount[:-1]) / 1000 if amount.endswith("m") else float(amount)
 
 
+def _gib(amount: str) -> float:
+    return float(amount[:-2]) * {"Mi": 1 / 1024, "Gi": 1.0}[amount[-2:]]
+
+
+def _pod_limits(deployment: dict) -> tuple[float, float]:
+    """A pod's CPU and memory limits as a quota counts them: its containers together, or its largest init
+    container when that is larger."""
+    spec = deployment["spec"]["template"]["spec"]
+    cpu = sum(_cpu(c["resources"]["limits"]["cpu"]) for c in spec["containers"])
+    memory = sum(_gib(c["resources"]["limits"]["memory"]) for c in spec["containers"])
+    for init in spec.get("initContainers", []):
+        cpu = max(cpu, _cpu(init["resources"]["limits"]["cpu"]))
+        memory = max(memory, _gib(init["resources"]["limits"]["memory"]))
+    return cpu, memory
+
+
+def _surge_pods(deployment: dict) -> int:
+    """The extra pods an update starts before it stops old ones (Kubernetes' default: 25%, rounded up)."""
+    strategy = deployment["spec"].get("strategy", {})
+    if strategy.get("type") == "Recreate":
+        return 0
+    surge = strategy.get("rollingUpdate", {}).get("maxSurge", "25%")
+    if isinstance(surge, str):
+        return math.ceil(deployment["spec"].get("replicas", 1) * int(surge.rstrip("%")) / 100)
+    return surge
+
+
 def _script_names(block: str) -> dict[str, list[str]]:
     """The names a deploy-script list holds: `$Monitoring = @(...)` -> {"": [...]}; an `[ordered]@{...}`
     block of `$App = @(...)` lines -> {"App": [...], "Extra": [...]}."""
@@ -104,6 +139,12 @@ def _uat_values() -> dict[str, str]:
 def test_every_object_is_in_its_file_s_project() -> None:
     for namespace, path in [*APP_FILES.items(), *NETWORK_FILES.items()]:
         assert {o["metadata"]["namespace"] for o in _objects(path)} == {namespace}, path.name
+    for item in _objects(*MONITORING_FILES):  # all in ai-common, but the right to read an app project's pods
+        where = item["metadata"]["namespace"]
+        if item["metadata"]["name"] == "tsg-monitoring-read-pods":
+            assert where in APP_FILES, item["kind"]
+        else:
+            assert where == MONITORING_NAMESPACE, (item["kind"], item["metadata"]["name"])
 
 
 def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened_and_sized() -> None:
@@ -113,6 +154,7 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
         assert deployment["spec"]["selector"]["matchLabels"] == {"app.kubernetes.io/name": name}
         assert labels["app.kubernetes.io/name"] == name and labels["app.kubernetes.io/part-of"] == "tsg"
         assert pod["metadata"]["annotations"]["tsg/settings-fingerprint"] == "none"  # the script fills it
+        assert pod["spec"]["automountServiceAccountToken"] is False, name  # the app never calls the cluster
         assert pod["spec"]["imagePullSecrets"] == [{"name": "quay-pull"}]
         assert pod["spec"]["hostAliases"] == [{"ip": "10.231.255.253", "hostnames": ["llmapi.govai.ae"]}]
         container = _container(deployment)
@@ -132,10 +174,13 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
             "capabilities": {"drop": ["ALL"]},
             "seccompProfile": {"type": "RuntimeDefault"},
         }
+    [flower] = _objects(DEPLOY / "flower.yaml", kind="Deployment")
+    assert flower["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
 
 
-def test_every_queue_has_a_worker_in_ai_threatgen_and_the_second_ones_are_in_ai_remediation() -> None:
-    """/ready needs a live worker on every routed queue: ai-threatgen alone must serve them all."""
+def test_every_queue_has_a_worker_in_each_app_project() -> None:
+    """/ready needs a live worker on every routed queue: each project alone serves them all, so either one's
+    copy may stop to update (maxSurge 0) while /ready stays green."""
     queues: dict[str, list[str]] = {}
     for namespace, path in APP_FILES.items():
         for deployment in _objects(path, kind="Deployment"):
@@ -143,8 +188,7 @@ def test_every_queue_has_a_worker_in_ai_threatgen_and_the_second_ones_are_in_ai_
             if command[:4] == ["celery", "-A", "app.worker", "worker"]:
                 assert "--pool=threads" in command  # the worker refuses any other pool at start-up
                 queues.setdefault(namespace, []).append(command[command.index("-Q") + 1])
-    assert sorted(queues["ai-threatgen"]) == sorted(ROUTED_QUEUES)
-    assert sorted(queues["ai-remediation"]) == sorted(set(ROUTED_QUEUES) - {Queue.MAINTENANCE})
+    assert sorted(queues["ai-threatgen"]) == sorted(queues["ai-remediation"]) == sorted(ROUTED_QUEUES)
 
 
 def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_budget() -> None:
@@ -160,22 +204,42 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
     assert budgets == {d["metadata"]["name"] for d in deployments if d["spec"]["replicas"] >= 2} == {"api"}
     for deployment in deployments:
         if deployment["spec"]["strategy"]["type"] == "RollingUpdate":
-            assert deployment["spec"]["strategy"]["rollingUpdate"] == {"maxUnavailable": 0, "maxSurge": 1}
+            # The API starts its new copy first; a worker stops first, while its twin serves the queue.
+            api = deployment["metadata"]["name"] == "api"
+            expected = {"maxUnavailable": 0, "maxSurge": 1} if api else {"maxUnavailable": 1, "maxSurge": 0}
+            assert deployment["spec"]["strategy"]["rollingUpdate"] == expected, deployment["metadata"]
+        else:
+            assert deployment["metadata"]["name"] == "beat"
 
 
-def test_ai_threatgen_stays_within_its_cpu_budget_during_an_update() -> None:
-    """Steady CPU limits plus the one extra pod an update starts at a time (deploy-uat.ps1 rolls them one by
-    one)."""
-    pods = [
-        (d["spec"]["replicas"], _cpu(_container(d)["resources"]["limits"]["cpu"]))
-        for d in _objects(APP_FILES["ai-threatgen"], kind="Deployment")
-    ]
-    assert sum(count * cpu for count, cpu in pods) + max(cpu for _, cpu in pods) <= QUOTA_CPU
+def test_every_project_stays_within_its_quota_during_an_update() -> None:
+    """Steady limits plus what an update adds: deploy-uat.ps1 rolls the app one Deployment at a time (the
+    largest surge counts), observability.ps1 restarts every monitoring Deployment at once (every surge
+    counts). Before: a worker update in ai-threatgen started a second 2 Gi pod, 12.5 Gi against 12 Gi."""
+    deployments = _objects(*APP_FILES.values(), *MONITORING_FILES, kind="Deployment")
+    claims = _objects(*MONITORING_FILES, kind="PersistentVolumeClaim")
+    for namespace, (cpu_quota, memory_quota, storage_quota) in QUOTAS.items():
+        steady_cpu = steady_memory = 0.0
+        surges = [(0.0, 0.0)]
+        for deployment in (d for d in deployments if d["metadata"]["namespace"] == namespace):
+            cpu, memory = _pod_limits(deployment)
+            replicas, extra = deployment["spec"].get("replicas", 1), _surge_pods(deployment)
+            steady_cpu, steady_memory = steady_cpu + replicas * cpu, steady_memory + replicas * memory
+            surges.append((extra * cpu, extra * memory))
+        added = sum if namespace == MONITORING_NAMESPACE else max
+        assert steady_cpu + added(cpu for cpu, _ in surges) <= cpu_quota, namespace
+        assert steady_memory + added(memory for _, memory in surges) <= memory_quota, namespace
+        storage = sum(
+            _gib(c["spec"]["resources"]["requests"]["storage"])
+            for c in claims
+            if c["metadata"]["namespace"] == namespace
+        )
+        assert storage <= storage_quota, namespace
 
 
 def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_both_projects() -> None:
     """The alerts read job="api" and job="worker" (the component label); each scraped pod declares its port;
-    the monitoring in ai-remediation reads ai-threatgen's pods through a Role there."""
+    the monitoring in ai-common reads each app project's pods through a Role there."""
     rules = (REPO / "observability" / "prometheus" / "rules.yml").read_text(encoding="utf-8")
     scraped: dict[str, set[str]] = {}
     for deployment in _app_deployments():
@@ -187,24 +251,28 @@ def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_both_projects() 
     assert {"api", "worker"} <= set(re.findall(r'job="(\w+)"', rules))
     assert scraped == {"api": {"8000"}, "worker": {str(Settings.model_fields["worker_metrics_port"].default)}}
     prometheus = yaml.safe_load((REPO / "observability" / "prometheus" / "prometheus.yml").read_text("utf-8"))
+    watched = [*APP_FILES, MONITORING_NAMESPACE]  # Flower and the monitoring itself run in ai-common
     [pods_job] = [job for job in prometheus["scrape_configs"] if job["job_name"] == "pods"]
-    assert set(pods_job["kubernetes_sd_configs"][0]["namespaces"]["names"]) == set(APP_FILES)
+    assert set(pods_job["kubernetes_sd_configs"][0]["namespaces"]["names"]) == set(watched)
     assert all(
         f'"{namespace}"' in (REPO / "observability" / "alloy" / "uat.alloy").read_text()
-        for namespace in APP_FILES
+        for namespace in watched
     )
-    [binding] = [
-        b
-        for b in _objects(*MONITORING_FILES, kind="RoleBinding")
-        if b["metadata"]["namespace"] == "ai-threatgen"
-    ]
-    assert {s["name"] for s in binding["subjects"]} == {"prometheus", "alloy", "kube-state-metrics"}
+    for namespace in APP_FILES:
+        [binding] = [
+            b
+            for b in _objects(*MONITORING_FILES, kind="RoleBinding")
+            if b["metadata"]["namespace"] == namespace
+        ]
+        assert {(s["name"], s["namespace"]) for s in binding["subjects"]} == {
+            (name, MONITORING_NAMESPACE) for name in ("prometheus", "alloy", "kube-state-metrics")
+        }, namespace
     [ksm] = [
         d
         for d in _objects(*MONITORING_FILES, kind="Deployment")
         if d["metadata"]["name"] == "kube-state-metrics"
     ]
-    assert f"--namespaces={','.join(APP_FILES)}" in _container(ksm)["args"]
+    assert f"--namespaces={','.join(watched)}" in _container(ksm)["args"]
 
 
 def test_every_route_is_https_on_its_host_and_no_two_share_a_path() -> None:
@@ -213,7 +281,7 @@ def test_every_route_is_https_on_its_host_and_no_two_share_a_path() -> None:
     assert len(places) == len(set(places))
     assert {place[:2] for place in places} == {
         ("ai-threatgen", API_HOST),
-        ("ai-remediation", MONITORING_HOST),
+        (MONITORING_NAMESPACE, MONITORING_HOST),
     }
     assert ("ai-threatgen", API_HOST, "/") in places
     assert all(
@@ -227,14 +295,17 @@ def test_both_projects_reach_the_same_stores_and_prometheus_reaches_the_app() ->
     assert generator.reachable(NETWORK_FILES["ai-threatgen"]) == generator.reachable(
         NETWORK_FILES["ai-remediation"]
     )
-    [ingress] = [p for p in _objects(NETWORK_FILES["ai-threatgen"]) if "Ingress" in p["spec"]["policyTypes"]]
-    from_monitoring = [
-        rule
-        for rule in ingress["spec"]["ingress"]
-        if {"kubernetes.io/metadata.name": "ai-remediation"}
-        in [peer.get("namespaceSelector", {}).get("matchLabels") for peer in rule["from"]]
-    ]
-    assert from_monitoring and {p["port"] for p in from_monitoring[0]["ports"]} >= {8000, 9100}
+    scraped = {"ai-threatgen": {8000, 9100}, "ai-remediation": {9100}}  # the API and the worker metrics
+    for namespace, path in NETWORK_FILES.items():
+        [ingress] = [p for p in _objects(path) if "Ingress" in p["spec"]["policyTypes"]]
+        from_monitoring = [
+            rule
+            for rule in ingress["spec"]["ingress"]
+            if {"kubernetes.io/metadata.name": MONITORING_NAMESPACE}
+            in [peer.get("namespaceSelector", {}).get("matchLabels") for peer in rule["from"]]
+        ]
+        assert from_monitoring, namespace
+        assert {p["port"] for p in from_monitoring[0]["ports"]} >= scraped[namespace], namespace
 
 
 def test_the_deploy_script_rolls_and_recognises_every_v2_deployment() -> None:
@@ -258,6 +329,9 @@ V1_UAT = {
     "ai-remediation": ["celery-worker", "celery-exporter", "mssql-exporter", "grafana", "prometheus"],
 }
 V1_ROUTES = {"ai-threatgen": API_HOST, "ai-remediation": MONITORING_HOST}
+#: v2's own monitoring left in ai-remediation from before its move to ai-common, labelled as v2's.
+V2_BEFORE_THE_MOVE = {"deployments": ["flower", "alertmanager"], "route": "grafana"}
+OURS = {"app.kubernetes.io/part-of": "tsg-observability"}
 
 
 #: deploy-uat.ps1 run against a stand-in cluster: oc logs each call and answers from the v1 files, DNS and
@@ -292,14 +366,27 @@ def _run_deploy_script(tmp_path: Path, answer: str, *switches: str) -> tuple[str
             {"metadata": {"name": name, "namespace": namespace, "labels": {}}, "spec": {"replicas": 1}}
             for name in names
         ]
-        route = {
-            "metadata": {"name": "v1", "namespace": namespace, "labels": {}},
-            "spec": {"host": V1_ROUTES[namespace]},
-        }
+        routes = [
+            {
+                "metadata": {"name": "v1", "namespace": namespace, "labels": {}},
+                "spec": {"host": V1_ROUTES[namespace]},
+            }
+        ]
+        if namespace == "ai-remediation":
+            deployments += [
+                {"metadata": {"name": name, "namespace": namespace, "labels": OURS}, "spec": {"replicas": 1}}
+                for name in V2_BEFORE_THE_MOVE["deployments"]
+            ]
+            routes.append(
+                {
+                    "metadata": {"name": V2_BEFORE_THE_MOVE["route"], "namespace": namespace, "labels": OURS},
+                    "spec": {"host": MONITORING_HOST},
+                }
+            )
         (tmp_path / f"deployment-{namespace}.json").write_text(
             json.dumps({"items": deployments}), encoding="ascii"
         )
-        (tmp_path / f"route-{namespace}.json").write_text(json.dumps({"items": [route]}), encoding="ascii")
+        (tmp_path / f"route-{namespace}.json").write_text(json.dumps({"items": routes}), encoding="ascii")
     settings = "".join(f"{key}={value}\n" for key, value in _uat_values().items())
     (tmp_path / ".env.uat").write_text(settings, encoding="utf-8")
     (tmp_path / "stand-ins.ps1").write_text(STAND_INS, encoding="ascii")
@@ -333,6 +420,8 @@ def _v1_plan(tmp_path: Path, *switches: str) -> dict[str, set[str]]:
         "stopped": r"scale (\S+) from 1 to 0",
         "deleted": r"delete v1's monitoring program (\S+) ",
         "routes": r"delete Route (\S+)/v1 on ",
+        "old programs": r"delete v2's old monitoring program (\S+) ",
+        "old routes": r"delete v2's old Route (\S+) on ",
     }
     return {what: set(re.findall(pattern, output)) for what, pattern in found.items()}
 
@@ -340,7 +429,8 @@ def _v1_plan(tmp_path: Path, *switches: str) -> dict[str, set[str]]:
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
 def test_skip_monitoring_stops_v1_s_app_but_leaves_all_of_v1_s_monitoring_running(tmp_path: Path) -> None:
     """Before: -SkipMonitoring installed none of v2's monitoring, yet still deleted v1's Grafana, Prometheus
-    and their Route and stopped v1's Flower and exporters, so UAT was left with no monitoring at all."""
+    and their Route and stopped v1's Flower and exporters, so UAT was left with no monitoring at all. A full
+    run also frees the monitoring host in ai-remediation for ai-common: v2's own monitoring there goes too."""
     assert set(_script_names("V1Monitoring")[""]) <= {
         n for names in _script_names("V1").values() for n in names
     }
@@ -357,6 +447,8 @@ def test_skip_monitoring_stops_v1_s_app_but_leaves_all_of_v1_s_monitoring_runnin
         },
         "deleted": {"ai-remediation/grafana", "ai-remediation/prometheus"},
         "routes": {"ai-threatgen", "ai-remediation"},
+        "old programs": {f"ai-remediation/{name}" for name in V2_BEFORE_THE_MOVE["deployments"]},
+        "old routes": {f"ai-remediation/{V2_BEFORE_THE_MOVE['route']}"},
     }
     kept = _v1_plan(tmp_path, "-SkipMonitoring")
     assert kept == {
@@ -368,6 +460,8 @@ def test_skip_monitoring_stops_v1_s_app_but_leaves_all_of_v1_s_monitoring_runnin
         },
         "deleted": set(),
         "routes": {"ai-threatgen"},
+        "old programs": set(),
+        "old routes": set(),
     }
 
 

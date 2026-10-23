@@ -1,9 +1,9 @@
-# TSG v2 monitoring in UAT: plain OpenShift YAML for project ai-remediation (v1 kept its monitoring there too, so
-# it does not use ai-threatgen's CPU budget). Apply with deploy/observability.ps1: it first builds the ConfigMaps
-# from observability/ (the same files the laptop uses: Prometheus' config and alert rules, Alertmanager, Loki,
-# Alloy, Grafana's data sources and dashboard) and the Secrets from .env.uat (Grafana's admin password and
-# settings, the queue-depth database), then applies this file. Flower is deploy/flower.yaml (it runs from the app
-# image; deploy/deploy-uat.ps1 applies it).
+# TSG v2 monitoring in UAT (which is production): plain OpenShift YAML for project ai-common, which TSG shares
+# with the chatbot, so it uses neither app project's budget. Apply with deploy/observability.ps1: it first builds
+# the ConfigMaps from observability/ (the same files the laptop uses: Prometheus' config and alert rules,
+# Alertmanager, Loki, Alloy, Grafana's data sources and dashboard) and the Secrets from .env.uat (Grafana's admin
+# password and settings, the queue-depth database), then applies this file. Flower is deploy/flower.yaml (it runs
+# from the app image; deploy/deploy-uat.ps1 applies it).
 #
 # What you get, all public and without login (owner, 2026-10-08), on the monitoring host:
 #   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/       Grafana: the one place to look
@@ -13,9 +13,13 @@
 #   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/loki/          Loki's API (read it through Grafana)
 # The API's own /metrics, /health and /ready are on threatgen-api (deploy/deploy.yaml).
 #
-# Prometheus finds the app pods in BOTH projects (ai-threatgen and ai-remediation) by their annotations
-# (observability/prometheus/prometheus.yml); Alloy ships both projects' pod logs; kube-state-metrics watches both.
-# Each reads ai-threatgen through a Role there (below): namespaced objects only, no cluster-wide rights.
+# Prometheus finds the pods in the app's two projects (ai-threatgen, ai-remediation) and in this one by their
+# annotations (observability/prometheus/prometheus.yml); Alloy ships their pod logs; kube-state-metrics watches
+# them. Each reads an app project through a Role there (below): namespaced objects only, no cluster-wide rights.
+#
+# Budget (ai-common's quota: 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
+# 6 Gi, 60 Gi): limits 2.3 CPU, about 4.1 Gi, and observability.ps1's restart adds one pod of each rolling
+# Deployment (0.5 CPU, about 1.1 Gi); volumes 21 Gi. tests/test_deploy.py keeps it there.
 #
 # STEP 0 — images. The cluster pulls only from the mirror (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/
 # dda-desc). Before the first apply, and after any version change below, copy each image there from a machine
@@ -31,13 +35,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: prometheus
-  namespace: ai-remediation
+  namespace: ai-common
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: prometheus-find-pods
-  namespace: ai-remediation
+  namespace: ai-common
 rules:
   - apiGroups: [""]
     resources: [pods]
@@ -47,7 +51,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: prometheus-find-pods
-  namespace: ai-remediation
+  namespace: ai-common
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -55,20 +59,20 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: prometheus
-    namespace: ai-remediation
+    namespace: ai-common
 
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: alloy
-  namespace: ai-remediation
+  namespace: ai-common
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: alloy-read-logs
-  namespace: ai-remediation
+  namespace: ai-common
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log]
@@ -78,7 +82,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: alloy-read-logs
-  namespace: ai-remediation
+  namespace: ai-common
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -86,20 +90,20 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: alloy
-    namespace: ai-remediation
+    namespace: ai-common
 
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kube-state-metrics
-  namespace: ai-remediation
+  namespace: ai-common
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kube-state-metrics-read-pods
-  namespace: ai-remediation
+  namespace: ai-common
 rules:
   - apiGroups: [""]
     resources: [pods]
@@ -109,7 +113,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kube-state-metrics-read-pods
-  namespace: ai-remediation
+  namespace: ai-common
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -117,9 +121,9 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kube-state-metrics
-    namespace: ai-remediation
+    namespace: ai-common
 
-# The app's own project: the same three may read its pods (and Alloy their logs), nothing else.
+# The app's two projects: the same three may read their pods (and Alloy their logs), nothing else.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -141,9 +145,33 @@ roleRef:
   kind: Role
   name: tsg-monitoring-read-pods
 subjects:
-  - { kind: ServiceAccount, name: prometheus, namespace: ai-remediation }
-  - { kind: ServiceAccount, name: alloy, namespace: ai-remediation }
-  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-remediation }
+  - { kind: ServiceAccount, name: prometheus, namespace: ai-common }
+  - { kind: ServiceAccount, name: alloy, namespace: ai-common }
+  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-common }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tsg-monitoring-read-pods
+  namespace: ai-remediation
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tsg-monitoring-read-pods
+  namespace: ai-remediation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tsg-monitoring-read-pods
+subjects:
+  - { kind: ServiceAccount, name: prometheus, namespace: ai-common }
+  - { kind: ServiceAccount, name: alloy, namespace: ai-common }
+  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-common }
 
 # ---------------------------------------------------------------- volumes (D-07)
 ---
@@ -151,7 +179,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: prometheus-data
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -162,7 +190,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: loki-data
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -173,7 +201,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: grafana-data
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -186,7 +214,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prometheus
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: prometheus, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1
@@ -247,7 +275,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: prometheus
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   selector: { app.kubernetes.io/name: prometheus }
   ports: [{ name: http, port: 9090, targetPort: 9090 }]
@@ -258,7 +286,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: alertmanager
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: alertmanager, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1
@@ -321,7 +349,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: alertmanager
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   selector: { app.kubernetes.io/name: alertmanager }
   ports: [{ name: http, port: 9093, targetPort: 9093 }]
@@ -332,7 +360,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: loki
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: loki, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1
@@ -395,7 +423,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: loki
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   selector: { app.kubernetes.io/name: loki }
   ports: [{ name: http, port: 3100, targetPort: 3100 }]
@@ -406,7 +434,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: alloy
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: alloy, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1 # one reader: two would ship every line twice
@@ -473,7 +501,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: grafana, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1
@@ -575,7 +603,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: grafana
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   selector: { app.kubernetes.io/name: grafana }
   ports: [{ name: http, port: 3000, targetPort: 3000 }]
@@ -586,7 +614,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis-exporter
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: redis-exporter, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1
@@ -643,7 +671,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kube-state-metrics
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/name: kube-state-metrics, app.kubernetes.io/part-of: tsg-observability }
 spec:
   replicas: 1
@@ -663,8 +691,8 @@ spec:
         - name: kube-state-metrics
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/kube-state-metrics:v2.20.0
           imagePullPolicy: IfNotPresent
-          # Both projects the app's pods run in (restarts, OOM kills, pods that never start).
-          args: ["--namespaces=ai-threatgen,ai-remediation", --resources=pods]
+          # The app's two projects and this one (restarts, OOM kills, pods that never start).
+          args: ["--namespaces=ai-threatgen,ai-remediation,ai-common", --resources=pods]
           ports: [{ name: metrics, containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
@@ -687,7 +715,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: kube-state-metrics
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   selector: { app.kubernetes.io/name: kube-state-metrics }
   ports: [{ name: metrics, port: 8080, targetPort: 8080 }]
@@ -699,7 +727,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: grafana
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/part-of: tsg-observability }
 spec:
   host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
@@ -712,7 +740,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: prometheus
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/part-of: tsg-observability }
 spec:
   host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
@@ -725,7 +753,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: alertmanager
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/part-of: tsg-observability }
 spec:
   host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
@@ -738,7 +766,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: loki
-  namespace: ai-remediation
+  namespace: ai-common
   labels: { app.kubernetes.io/part-of: tsg-observability }
 spec:
   host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local
@@ -754,7 +782,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: observability-from-router
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   podSelector:
     matchLabels: { tsg-observability: "true" }
@@ -767,7 +795,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: observability-from-namespace
-  namespace: ai-remediation
+  namespace: ai-common
 spec:
   podSelector:
     matchLabels: { tsg-observability: "true" }

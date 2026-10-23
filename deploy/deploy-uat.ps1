@@ -10,19 +10,22 @@
     DBA has installed the procedures (every scripts\sql\tsg_*.sql except the "copy" backup, then grants.sql),
     including tsg_GetServiceMapperAssociations, and the three existing Onboarding catalog procedures are present.
 
-    What goes where (as in v1):
+    What goes where (UAT is production):
       ai-threatgen    deploy\deploy.yaml (API, one worker per queue, beat) and deploy\networkpolicy.yaml
-      ai-remediation  deploy\deploy.ai-remediation.yaml (the second threats, scenarios and mapper workers),
-                      deploy\networkpolicy.ai-remediation.yaml, the monitoring (deploy\observability.ps1 applies
-                      deploy\observability.yaml) and Flower (deploy\flower.yaml)
-      both            the settings (ConfigMap tsg-config, Secret tsg-secrets), made from the env file
+      ai-remediation  deploy\deploy.ai-remediation.yaml (a second worker per queue) and
+                      deploy\networkpolicy.ai-remediation.yaml
+      ai-common       the monitoring (deploy\observability.ps1 applies deploy\observability.yaml) and Flower
+                      (deploy\flower.yaml); shared with the chatbot
+      all three       the settings (ConfigMap tsg-config, Secret tsg-secrets), made from the env file (ai-common
+                      only with the monitoring: Flower and redis-exporter read them)
 
-    Never prints a secret. Safety copies of both projects (they hold passwords) and a ready rollback.ps1 go to
+    Never prints a secret. Safety copies of the projects (they hold passwords) and a ready rollback.ps1 go to
     %USERPROFILE%\.tsg\uat-backups\<time>\, outside the repo; copies of v1's Routes go to ...\uat-backups\v1\,
-    kept across runs. v1's Deployments are scaled to 0, never deleted, except v1's monitoring programs that v2's
-    replace under the same name (prometheus, grafana ...): those are deleted, after asking (v1's own
-    .\deploy\deploy-uat.ps1 -MonitoringOnly brings them back; the rollback says so). -SkipMonitoring leaves
-    all of v1's monitoring running.
+    kept across runs. v1's Deployments are scaled to 0, never deleted, except the monitoring programs in
+    ai-remediation (prometheus, grafana ...: v1's, and v2's own from before the move to ai-common) and their
+    Routes, which hold the monitoring host ai-common needs: those are deleted, after asking (v1's own
+    .\deploy\deploy-uat.ps1 -MonitoringOnly brings v1's back; the rollback says so). Their volumes are kept.
+    -SkipMonitoring leaves all of the monitoring in ai-remediation running.
 
 .PARAMETER AppImage
     The image deploy\build-image.ps1 printed (<registry>/tsg-api:v2-<commit>): a pinned tag, never :latest.
@@ -48,6 +51,9 @@ $ErrorActionPreference = 'Stop'
 
 $App = 'ai-threatgen'
 $Extra = 'ai-remediation'
+$Common = 'ai-common'  # the monitoring, shared with the chatbot
+# The projects this run changes: ai-common only with the monitoring.
+$Projects = if ($SkipMonitoring) { @($App, $Extra) } else { @($App, $Extra, $Common) }
 $ApiHost = 'threatgen-api.apps.dda-desc-az1-01.desccii.local'
 $MonitoringHost = 'threatgen-grafana.apps.dda-desc-az1-01.desccii.local'
 $Hosts = [ordered]@{ $App = $ApiHost; $Extra = $MonitoringHost }
@@ -59,10 +65,11 @@ $FingerprintPlaceholder = 'tsg/settings-fingerprint: none'
 # do (D18: a plan version stored without its snapshot), and an API pod is ready only when every queue has a
 # live worker. One at a time: only one extra pod is ever starting.
 $Rollout = [ordered]@{
-    $Extra = @('worker-threats', 'worker-scenarios', 'worker-service-mapper')
+    $Extra = @('worker-threats', 'worker-scenarios', 'worker-service-mapper', 'worker-maintenance')
     $App   = @('worker-threats', 'worker-scenarios', 'worker-service-mapper', 'worker-maintenance', 'beat', 'api')
 }
-# v2's monitoring programs (deploy\observability.yaml, deploy\flower.yaml): v1 has some under the same names.
+# v2's monitoring programs (deploy\observability.yaml, deploy\flower.yaml), in ai-common. In ai-remediation a
+# program of one of these names is v1's, or v2's own from before the move: either is deleted with its Route.
 $Monitoring = @('prometheus', 'alertmanager', 'loki', 'alloy', 'grafana', 'redis-exporter', 'kube-state-metrics', 'flower')
 # v1, stopped first: it shares Redis with v2. Scaled to 0, never deleted.
 $V1 = [ordered]@{
@@ -120,16 +127,16 @@ function Wait-Rollout([string] $Ns, [string] $Deployment) {
     }
 }
 
-# ai-remediation's pods pull the image with ai-threatgen's pull secret (v1 copied it the same way).
-function Copy-PullSecret {
-    if (oc -n $Extra get secret quay-pull --ignore-not-found -o name) { return }
+# ai-remediation's and ai-common's pods pull the images with ai-threatgen's pull secret (v1 copied it the same way).
+function Copy-PullSecret([string] $Into) {
+    if (oc -n $Into get secret quay-pull --ignore-not-found -o name) { return }
     $json = Invoke-Step "read quay-pull in $App" { oc -n $App get secret quay-pull -o json }
     $secret = $json -join "`n" | ConvertFrom-Json
     foreach ($field in 'resourceVersion', 'uid', 'creationTimestamp', 'managedFields', 'ownerReferences') {
         $secret.metadata.PSObject.Properties.Remove($field)
     }
-    $secret.metadata.namespace = $Extra
-    Invoke-Step "copy quay-pull into $Extra" { $secret | ConvertTo-Json -Depth 30 | oc apply -f - }
+    $secret.metadata.namespace = $Into
+    Invoke-Step "copy quay-pull into $Into" { $secret | ConvertTo-Json -Depth 30 | oc apply -f - }
 }
 
 function Test-Url([string] $Url) {
@@ -151,7 +158,7 @@ try {
     if (-not (Test-Path $Python)) { throw "No ${Python}: create the virtual environment first (docs\RUNNING.md step 4)" }
     if (-not (Test-Path $EnvFile -PathType Leaf)) { throw "No $EnvFile in $(Get-Location)" }
     Invoke-Step 'logged in to the cluster' { oc whoami }
-    foreach ($ns in $App, $Extra) {
+    foreach ($ns in $Projects) {
         Invoke-Step "may deploy to $ns" { oc auth can-i create deployments -n $ns }
         Invoke-Step "$ns's CPU and memory budget" { oc -n $ns describe quota }
     }
@@ -168,7 +175,7 @@ try {
     # ---------------------------------------------------------------- 3. Safety copies and the rollback script
     $BackupDir = Join-Path $Backups (Get-Date -Format 'yyyyMMdd-HHmmss')
     New-Item -ItemType Directory -Force -Path $BackupDir, $V1Dir | Out-Null
-    foreach ($ns in $App, $Extra) {
+    foreach ($ns in $Projects) {
         $everything = Invoke-Step "safety copy of $ns" {
             oc -n $ns get deployment,service,route,configmap,secret,poddisruptionbudget,networkpolicy -o yaml
         }
@@ -177,7 +184,7 @@ try {
     $everything = $null
 
     # v1's replica counts: from the Deployment, or from the note a previous run left on it when it stopped it.
-    $v1Found = @(); $replaced = @(); $theirRoutes = @()
+    $v1Found = @(); $replaced = @(); $theirRoutes = @(); $oldRoutes = @()
     foreach ($ns in $App, $Extra) {
         foreach ($item in Get-Items $ns @('deployment')) {
             $name = $item.metadata.name
@@ -187,15 +194,19 @@ try {
                 $before = [math]::Max($now, [int]$item.metadata.annotations.'tsg/replicas-before-v2')
                 $v1Found += [pscustomobject]@{ Ns = $ns; Name = $name; Now = $now; Before = $before }
             }
-            elseif (-not $SkipMonitoring -and $ns -eq $Extra -and $Monitoring -contains $name -and
-                    $Ours -notcontains $item.metadata.labels.'app.kubernetes.io/part-of') {
-                $replaced += [pscustomobject]@{ Ns = $ns; Name = $name }
+            elseif (-not $SkipMonitoring -and $ns -eq $Extra -and $Monitoring -contains $name) {
+                $whose = if ($Ours -contains $item.metadata.labels.'app.kubernetes.io/part-of') { "v2's old" } else { "v1's" }
+                $replaced += [pscustomobject]@{ Ns = $ns; Name = $name; Whose = $whose }
             }
         }
         if ($SkipMonitoring -and $ns -eq $Extra) { continue }  # its Route is the monitoring host's
-        $theirRoutes += @(Get-Items $ns @('route') | Where-Object {
-            $_.spec.host -eq $Hosts[$ns] -and $Ours -notcontains $_.metadata.labels.'app.kubernetes.io/part-of'
-        })
+        $onHost = @(Get-Items $ns @('route') | Where-Object { $_.spec.host -eq $Hosts[$ns] })
+        $theirRoutes += @($onHost | Where-Object { $Ours -notcontains $_.metadata.labels.'app.kubernetes.io/part-of' })
+        # v2's own Routes on the monitoring host in ai-remediation, from before the move: ai-common needs the host
+        # (the router gives a host to the first project that claims it).
+        if ($ns -eq $Extra) {
+            $oldRoutes += @($onHost | Where-Object { $Ours -contains $_.metadata.labels.'app.kubernetes.io/part-of' })
+        }
     }
     $running = @($v1Found | Where-Object { $_.Now -gt 0 })
     foreach ($route in $theirRoutes) {
@@ -213,7 +224,7 @@ try {
         "oc -n $App scale deployment -l app.kubernetes.io/part-of=tsg --replicas=0",
         "oc -n $Extra scale deployment -l app.kubernetes.io/part-of=tsg --replicas=0",
         "oc -n $App delete route -l app.kubernetes.io/part-of=tsg",
-        "oc -n $Extra delete deployment,route -l app.kubernetes.io/part-of=tsg-observability"
+        "oc -n $Common delete deployment,route -l app.kubernetes.io/part-of=tsg-observability"
     )
     $rollback += @(Get-ChildItem $V1Dir -Filter 'route-*.json' | ForEach-Object { "oc apply -f `"$($_.FullName)`"" })
     $rollback += @($v1Found | Where-Object { $_.Before -gt 0 } | ForEach-Object {
@@ -224,12 +235,13 @@ try {
     Write-Host "    safety copies and rollback.ps1 in $BackupDir (they hold passwords: keep them, never commit them)"
 
     # ---------------------------------------------------------------- 4. Stop v1
-    if ($running.Count -or $replaced.Count -or $theirRoutes.Count) {
+    if ($running.Count -or $replaced.Count -or $theirRoutes.Count -or $oldRoutes.Count) {
         Write-Host ''
         Write-Host 'v1 must stop first (it shares Redis with v2). This run will:' -ForegroundColor Yellow
         $running | ForEach-Object { Write-Host "    scale $($_.Ns)/$($_.Name) from $($_.Now) to 0" }
-        $replaced | ForEach-Object { Write-Host "    delete v1's monitoring program $($_.Ns)/$($_.Name) (v2's replaces it)" }
+        $replaced | ForEach-Object { Write-Host "    delete $($_.Whose) monitoring program $($_.Ns)/$($_.Name) (v2's runs in $Common)" }
         $theirRoutes | ForEach-Object { Write-Host "    delete Route $($_.metadata.namespace)/$($_.metadata.name) on $($_.spec.host) (copy in $V1Dir)" }
+        $oldRoutes | ForEach-Object { Write-Host "    delete v2's old Route $($_.metadata.namespace)/$($_.metadata.name) on $($_.spec.host) ($Common takes the host)" }
         if ((Read-Host 'Type YES to go on') -cne 'YES') { throw 'Stopped before changing anything: v1 is still running.' }
         foreach ($item in $running) {
             Invoke-Step "note v1 $($item.Ns)/$($item.Name)'s $($item.Now) replicas" {
@@ -238,10 +250,13 @@ try {
             Invoke-Step "stop v1 $($item.Ns)/$($item.Name)" { oc -n $item.Ns scale "deployment/$($item.Name)" --replicas=0 }
         }
         foreach ($item in $replaced) {
-            Invoke-Step "delete v1 $($item.Ns)/$($item.Name)" { oc -n $item.Ns delete deployment $item.Name }
+            Invoke-Step "delete $($item.Whose) $($item.Ns)/$($item.Name)" { oc -n $item.Ns delete deployment $item.Name }
         }
         foreach ($route in $theirRoutes) {
             Invoke-Step "delete v1 Route $($route.metadata.name)" { oc -n $route.metadata.namespace delete route $route.metadata.name }
+        }
+        foreach ($route in $oldRoutes) {
+            Invoke-Step "delete v2's old Route $($route.metadata.name)" { oc -n $route.metadata.namespace delete route $route.metadata.name }
         }
         # A v1 worker may take its whole 740 s grace period to finish what it is doing.
         $deadline = (Get-Date).AddSeconds(900)
@@ -254,9 +269,11 @@ try {
         }
     }
 
-    # ---------------------------------------------------------------- 5. Settings and network rules, both projects
-    Copy-PullSecret
-    foreach ($ns in $App, $Extra) {
+    # ---------------------------------------------------------------- 5. Settings and network rules, every project
+    foreach ($ns in $Projects) {
+        if ($ns -ne $App) { Copy-PullSecret $ns }
+    }
+    foreach ($ns in $Projects) {
         Invoke-Step "settings in $ns (ConfigMap and Secret from $EnvFile)" { & $Python $Generator $EnvFile | oc -n $ns apply -f - }
     }
     $fingerprint = Invoke-Step 'settings fingerprint' { & $Python $Generator $EnvFile --fingerprint }
@@ -288,12 +305,12 @@ try {
     } while ((Get-Date) -lt $deadline)
     if ($admitted -ne 'True') { throw "Step 'Route api' failed: not admitted. Is $ApiHost path / used by another Route (oc get route -A)?" }
 
-    # ---------------------------------------------------------------- 7. Monitoring and Flower (ai-remediation)
+    # ---------------------------------------------------------------- 7. Monitoring and Flower (ai-common)
     if (-not $SkipMonitoring) {
         Write-Host '==> monitoring (deploy\observability.ps1)' -ForegroundColor Cyan
         & (Join-Path $PSScriptRoot 'observability.ps1')
-        Invoke-Step "Flower in $Extra (deploy\flower.yaml)" { Get-Manifest 'deploy\flower.yaml' | oc apply -f - }
-        Wait-Rollout $Extra 'flower'
+        Invoke-Step "Flower in $Common (deploy\flower.yaml)" { Get-Manifest 'deploy\flower.yaml' | oc apply -f - }
+        Wait-Rollout $Common 'flower'
     }
 
     # ---------------------------------------------------------------- 8. Smoke test

@@ -1,6 +1,7 @@
 """TSG's settings for OpenShift, made from one tested env file (.env.uat): the ConfigMap tsg-config (plain
 settings) and the Secret tsg-secrets (keys, passwords and connection strings) that every app pod reads with
-envFrom, in both projects (ai-threatgen and ai-remediation get the same two: they cannot differ).
+envFrom, in every project (ai-threatgen, ai-remediation and, for Flower and redis-exporter, ai-common get the
+same two: they cannot differ).
 
     .venv\\Scripts\\python scripts\\gen_openshift_config.py .env.uat | oc -n ai-threatgen apply -f -
     .venv\\Scripts\\python scripts\\gen_openshift_config.py .env.uat --gate [--monitoring]

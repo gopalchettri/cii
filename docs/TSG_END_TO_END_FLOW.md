@@ -3704,8 +3704,9 @@ stateDiagram-v2
   (`tsg_threats,tsg_scenarios`), the maintenance worker and beat, starts the monitoring tools, and waits for
   `/ready`. `.\run.ps1 stop` stops them cleanly.
 - **OpenShift:** `deploy/deploy.yaml` runs the API (2 replicas), one worker per queue and beat in project
-  `ai-threatgen`; `deploy/deploy.ai-remediation.yaml` adds a second threats and scenarios worker in project
-  `ai-remediation`, which also holds the monitoring (`deploy/observability.yaml`) and Flower. Settings come
+  `ai-threatgen`; `deploy/deploy.ai-remediation.yaml` adds a second worker for every queue in project
+  `ai-remediation`. The monitoring (`deploy/observability.yaml`) and Flower run in project `ai-common`, which
+  TSG shares with the chatbot (D24). Settings come
   from `.env.uat` through `scripts/gen_openshift_config.py` (ConfigMap `tsg-config`, Secret `tsg-secrets`);
   `deploy/deploy-uat.ps1` gates, applies, rolls out and smoke-tests.
 

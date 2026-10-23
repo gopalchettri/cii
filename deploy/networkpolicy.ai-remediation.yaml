@@ -1,11 +1,11 @@
 # Network rules for TSG v2's worker pods in project ai-remediation (deploy/deploy.ai-remediation.yaml). They select
-# only pods labelled app.kubernetes.io/part-of: tsg: the monitoring in this project (tsg-observability) and v1's
-# pods are not touched. Self-contained: everything a worker needs, as deploy/networkpolicy.yaml gives ai-threatgen's.
+# only pods labelled app.kubernetes.io/part-of: tsg: v1's pods are not touched. Self-contained: everything a
+# worker needs, as deploy/networkpolicy.yaml gives ai-threatgen's.
 #
 # Once any rule selects a pod, everything not listed here is dropped: a new outside dependency needs a line here
 # in the same change. scripts/gen_openshift_config.py --gate checks the stores in .env.uat against these addresses.
 
-# In: Prometheus (this project) to the worker metrics. Nothing else calls a worker.
+# In: Prometheus (in ai-common) to the worker metrics. Nothing else calls a worker.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -15,7 +15,9 @@ spec:
   podSelector: { matchLabels: { app.kubernetes.io/part-of: tsg } }
   policyTypes: [Ingress]
   ingress:
-    - from: [{ podSelector: { matchLabels: { tsg-observability: "true" } } }]
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ai-common } }
+          podSelector: { matchLabels: { tsg-observability: "true" } }
       ports: [{ port: 9100, protocol: TCP }]
 
 # Out, and nothing else: DNS, the proxy (intelligence feeds), the AI gateway directly (G264), Redis, SQL Server,
