@@ -433,6 +433,52 @@ def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
     assert failed.value.message == MapperMessage.AI_ANSWER_TOO_LONG
 
 
+def _over_the_limits() -> dict[str, Any]:
+    """Three defensible services each way: more than limits of two upstream and one downstream."""
+    reason = "It directly supplies an input the generation process cannot run without."
+    upstream = ("Fuel Logistics Service", "Gas Pipeline Operations", "Telecommunications Network Service")
+    downstream = ("Grid Balancing Service", "Metro Rail Operations", "Hospital Emergency Care")
+    return {
+        "operational_context": "The plant converts primary energy into electricity for grid delivery.",
+        "upstream_services": [_item(name, reason) for name in upstream],
+        "downstream_services": [_item(name, reason) for name in downstream],
+    }
+
+
+def test_each_list_keeps_only_its_limit_strongest_first() -> None:
+    answer = GeneratedAnswer.model_validate(_over_the_limits())
+    result = reconcile("mapping", 1, _request(), answer, _catalog(), 2, 1)
+    names = {
+        direction: [item["service_name"] for item in result["dependencies"] if direction in item["relations"]]
+        for direction in ("upstream", "downstream")
+    }
+    assert names == {
+        "upstream": ["Fuel Logistics Service", "Gas Pipeline Operations"],
+        "downstream": ["Grid Balancing Service"],
+    }
+    assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (2, 1)
+
+
+def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None:
+    """The limits saved with the mapping (SERVICE_MAPPER_*_TOTAL_COUNT) reach the AI and cap the result."""
+
+    class Catalog:
+        def snapshot(self) -> CatalogSnapshot:
+            return _catalog()
+
+    class Mappings:
+        def finish_generation(self, _lease, result) -> None:
+            self.result = result
+
+    chat, mappings = _Chat(_over_the_limits(), _over_the_limits()), Mappings()
+    record = {"request": _request().model_dump(), "limits": {"max_upstream": 2, "max_downstream": 1}}
+    job = ServiceMapperJob(mappings, None, Catalog(), _Search(), chat)  # type: ignore[arg-type]
+    job.generate(SimpleNamespace(record=record, record_id="mapping", epoch=1))  # type: ignore[arg-type]
+    assert (chat.prompts[0]["upstream_count"], chat.prompts[0]["downstream_count"]) == (2, 1)
+    summary = mappings.result["summary"]
+    assert (summary["upstream_count"], summary["downstream_count"]) == (2, 1)
+
+
 def test_empty_catalog_still_keeps_defensible_ai_services() -> None:
     empty = build_catalog(CatalogRows([], [], [], [], [], []))
     answer = _answer().model_dump()
