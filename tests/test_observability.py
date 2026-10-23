@@ -275,6 +275,38 @@ def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() 
     assert all(f'name="{store.value}"' in queries for store in Dependency)
 
 
+def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
+    """Owner, 2026-10-23: one Flower link that is right where Grafana runs. Before: "Flower (jobs)" (/flower/)
+    worked only in UAT and "Flower on the laptop" (localhost:5555) only on the laptop. Each environment's
+    Prometheus names its Flower page (ui_url on the Flower target); the link reads it."""
+    dashboard = json.loads(DASHBOARD.read_text(encoding="utf-8"))
+    [link] = [link for link in dashboard["links"] if "flower" in f"{link['title']} {link['url']}".lower()]
+    [variable] = [v for v in dashboard["templating"]["list"] if link["url"] == f"${{{v['name']}}}"]
+    assert (variable["definition"], variable["hide"]) == ('label_values(up{job="flower"}, ui_url)', 2)
+
+    laptop = yaml.safe_load((OBS / "prometheus" / "prometheus.local.yml").read_text(encoding="utf-8"))
+    [job] = [job for job in laptop["scrape_configs"] if job["job_name"] == "flower"]
+    [(target, labels)] = [(group["targets"], group["labels"]) for group in job["static_configs"]]
+    assert labels["ui_url"] == f"http://{target[0]}/flower/" and len(target) == 1
+
+    uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
+    [pods] = [job for job in uat["scrape_configs"] if job["job_name"] == "pods"]
+    rules = [rule.get("target_label") for rule in pods["relabel_configs"]]
+    ui = pods["relabel_configs"][rules.index("ui_url")]
+    assert rules.index("ui_url") > rules.index("job")  # it reads the job label an earlier rule sets
+    assert (ui["source_labels"], ui["regex"]) == (["job"], "flower")
+    [flower] = [d for d in _template_objects("Deployment") if d["metadata"]["name"] == "flower"]
+    assert (
+        flower["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/component"] == "flower"
+    )  # its job
+    routes = {route["metadata"]["name"]: route["spec"] for route in _template_objects("Route")}
+    # Relative: UAT's Flower is on Grafana's own host.
+    assert (
+        ui["replacement"] == routes["flower"]["path"] + "/"
+        and routes["flower"]["host"] == routes["grafana"]["host"]
+    )
+
+
 def _promtool() -> str | None:
     found = shutil.which("promtool")
     installed = [*Path.home().glob(".tsg/monitoring-v2/bin/prometheus-*/**/promtool.exe")]

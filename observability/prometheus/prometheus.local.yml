@@ -25,6 +25,7 @@ scrape_configs:
     metrics_path: /flower/metrics
     static_configs:
       - targets: ["localhost:5555"]
+        labels: { ui_url: "http://localhost:5555/flower/" } # the dashboard's Flower link opens this
   - job_name: redis-exporter
     static_configs:
       - targets: ["localhost:9121"]

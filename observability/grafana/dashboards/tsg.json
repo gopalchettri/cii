@@ -27,16 +27,9 @@
       "title": "Flower (jobs)",
       "type": "link",
       "icon": "external link",
-      "url": "/flower/",
+      "url": "${flower}",
       "targetBlank": true,
-      "tooltip": "UAT: on the app's address"
-    },
-    {
-      "title": "Flower on the laptop",
-      "type": "link",
-      "icon": "external link",
-      "url": "http://localhost:5555/flower/",
-      "targetBlank": true
+      "tooltip": "Every worker and every job, one by one (this environment's Flower)"
     },
     {
       "title": "Explore (developers)",
@@ -59,6 +52,30 @@
         },
         "hide": 0,
         "description": "Paste a request id (from an error message), a run id or a job id. 'Follow one run or request' then shows its whole story."
+      },
+      {
+        "name": "flower",
+        "label": "Flower address",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(up{job=\"flower\"}, ui_url)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(up{job=\"flower\"}, ui_url)",
+        "refresh": 1,
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "sort": 0,
+        "regex": "",
+        "options": [],
+        "current": {},
+        "description": "Hidden. Flower's page in this environment, as this environment's Prometheus names it (ui_url on its Flower target): http://localhost:5555/flower/ on the laptop, /flower/ in UAT. The Flower link opens it."
       }
     ]
   },

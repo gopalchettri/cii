@@ -44,6 +44,11 @@ scrape_configs:
         target_label: __metrics_path__
       - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
         target_label: job
+      # The dashboard's Flower link opens this: Flower's Route is on Grafana's own host (deploy/flower.yaml).
+      - source_labels: [job]
+        regex: flower
+        target_label: ui_url
+        replacement: /flower/
       - source_labels: [__meta_kubernetes_namespace]
         target_label: namespace
       - source_labels: [__meta_kubernetes_pod_name]
