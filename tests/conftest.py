@@ -153,11 +153,17 @@ def _stop(message: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def loggers_never_cached() -> None:
+def loggers_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     """The app caches each module's logger on first use (cache_logger_on_first_use, for speed): a logger first
     used inside a test's capture_logs kept writing to that capture, so a later test saw none of its lines
-    (2026-10-12: test_library's warning after test_asset_types). In tests a logger is never cached."""
-    structlog.configure(cache_logger_on_first_use=False)
+    (2026-10-12: test_library's warning after test_asset_types). In tests a logger is never cached, also once
+    a test starts a worker or the app: configure_logging turned caching back on mid-test, and lifecycle's
+    logger stayed bound to that test's set-up (2026-10-23: test_job_monitor's job lines after test_worker)."""
+    configure = structlog.configure
+    configure(cache_logger_on_first_use=False)
+    monkeypatch.setattr(
+        structlog, "configure", lambda **options: configure(**options | {"cache_logger_on_first_use": False})
+    )
 
 
 @pytest.fixture(autouse=True)

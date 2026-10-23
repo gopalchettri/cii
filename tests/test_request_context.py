@@ -7,13 +7,14 @@ import pytest
 import structlog
 from fastapi import Body, FastAPI
 from fastapi.testclient import TestClient
+from structlog.testing import capture_logs
 
 from app import container
 from app.api import middleware
 from app.api.middleware import _bind_request_context
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, Header, LogEvent
-from app.core.logging import mask_secret_values
+from app.core.logging import configure_logging, mask_secret_values
 from app.main import create_app
 
 
@@ -64,6 +65,19 @@ def test_secrets_are_masked_but_token_counts_are_not() -> None:
         "tokens_in": 23,
         "key_prefix": "tsg_abcd",
     }
+
+
+def test_a_logger_first_used_between_two_logging_set_ups_is_still_captured() -> None:
+    """Before: configure_logging turned logger caching back on mid-test, so a logger first used after one
+    set-up kept that set-up's pipeline after the next, and capture_logs saw none of its lines (lifecycle's,
+    whenever test_job_monitor ran after test_worker)."""
+    logger = structlog.get_logger(f"tests.capture.{uuid.uuid4().hex}")
+    configure_logging(get_settings())  # a worker starting in this process
+    logger.info("first use")
+    configure_logging(get_settings())  # another one (or the API) setting logging up again
+    with capture_logs() as logs:
+        logger.info("seen")
+    assert [line["event"] for line in logs] == ["seen"]
 
 
 def test_only_a_numeric_entity_id_reaches_the_log_lines() -> None:

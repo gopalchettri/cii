@@ -82,6 +82,7 @@ class ApiClientOut(BaseModel):
     revoked_at: datetime | None = None
     revoked_by: str | None = None
 
+
 class ApiClientList(BaseModel):
     items: list[ApiClientOut]
     total: int
@@ -126,6 +127,7 @@ def list_api_clients(self, active: bool | None) -> list[dict[str, Any]]:
 def get_api_client_repository() -> ApiClientRepository:
     return ApiClientRepository()
 
+
 @singleton
 def get_admin_service() -> AdminService:
     return AdminService(
@@ -140,6 +142,7 @@ router = APIRouter(dependencies=[Depends(require_admin_api_key)])
 Service = Annotated[AdminService, Depends(get_admin_service)]
 
 _API_CLIENTS, _EMBEDDINGS = "/v1/tsg/api-clients", "/v1/embeddings"
+
 
 @router.get(
     _API_CLIENTS,
@@ -251,6 +254,7 @@ The service audits the successful start and returns `{"job_id": job_id, "status"
 def start_embeddings_build(service: Service, actor: AdminUser) -> dict:
     return service.create_embeddings_build(actor)
 
+
 @router.get(
     f"{_EMBEDDINGS}/{{job_id}}",
     tags=[ApiTag.EMBEDDINGS],
@@ -301,6 +305,7 @@ Target: `POST /v1/sessions` creates a scenario run, workers generate scenarios, 
 
 ```python
 SqlId = Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)]
+
 
 class StartRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -489,6 +494,7 @@ Add these fields to the existing class; the pre-existing `service_id`/`service_n
 sector: PermittedSector
 subsector: str = Field(min_length=1, max_length=255)
 
+
 @field_validator("sector", "subsector", mode="before")
 @classmethod
 def strip_classification(cls, value: object) -> object:
@@ -588,6 +594,7 @@ class DependencyItem(BaseModel):
     verification_status: Literal["verified_inventory", "evidence_supported", "inferred_candidate"]
     evidence: list[str]
 
+
 class DependencyAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
     selected_service: SelectedService
@@ -625,7 +632,11 @@ def map_services(self: Task, record_id: str, epoch: int) -> None:
         container.get_service_mapper_job().map_services(lease)
 
     run_leased_job(
-        self, Collection.SERVICE_MAPPINGS, record_id, epoch, work,
+        self,
+        Collection.SERVICE_MAPPINGS,
+        record_id,
+        epoch,
+        work,
         fields=("generation", "input_snapshot"),
     )
 ```
@@ -642,6 +653,7 @@ for optional in ("entity_context", "service_inventory"):
 user_prompt = json.dumps(payload, ensure_ascii=False)
 system_prompt = snapshot["prompt_text"]
 
+
 def read_answer(raw: dict[str, object]) -> tuple[DependencyAnalysis | None, list[str]]:
     try:
         analysis = DependencyAnalysis.model_validate(raw)  # never filter unknown keys
@@ -649,9 +661,8 @@ def read_answer(raw: dict[str, object]) -> tuple[DependencyAnalysis | None, list
         return None, [f"{'.'.join(map(str, error['loc']))}: {error['msg']}" for error in exc.errors()]
     return analysis, validate_analysis(analysis, snapshot)
 
-analysis = ask_ai_and_check(
-    chat, AiTask.SERVICE_MAPPER, (system_prompt, user_prompt), read_answer
-)
+
+analysis = ask_ai_and_check(chat, AiTask.SERVICE_MAPPER, (system_prompt, user_prompt), read_answer)
 ```
 
 Import `json`, `ValidationError`, `DependencyAnalysis`, `validate_analysis`, and `ask_ai_and_check` in that module. The service snapshots the prompt text before queueing; the worker uses that snapshot on every retry. Validation problems trigger the gateway's one corrective re-ask. The worker saves the validated model using `model_dump(mode="json")`, never raw model text. The AI call may propose an unmatched service with `service_id:null`; only the validated inventory matcher may retain a canonical ID. An empty upstream or downstream list is a successful result.

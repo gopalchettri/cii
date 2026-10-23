@@ -6,6 +6,8 @@ import ast
 import importlib
 import pathlib
 import re
+import subprocess
+import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 APP = REPO / "app"  # not a relative path: run from another folder, every guard below passed on no files
@@ -317,3 +319,12 @@ def test_every_constant_is_imported_from_one_place_and_defined_once() -> None:
             defined[name] = source.stem
             assert getattr(package, name) is getattr(module, name), name
     assert len(defined) > 50  # the guard sees the declarations
+
+
+def test_the_repo_passes_ruff_lint_and_format() -> None:
+    """Before: nothing ran ruff with the tests, so docs/API_DEVELOPER_HANDBOOK.md's code examples drifted from
+    ruff format unnoticed (2026-10-23). The project's own settings (pyproject.toml) decide what is checked."""
+    for check in (["check", "."], ["format", "--check", "."]):
+        ruff = [sys.executable, "-m", "ruff", *check]
+        result = subprocess.run(ruff, cwd=REPO, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
+        assert result.returncode == 0, result.stdout + result.stderr
