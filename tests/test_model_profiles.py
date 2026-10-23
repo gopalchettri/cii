@@ -54,7 +54,6 @@ def test_each_chat_model_states_its_own_context_with_the_answer_kept_free() -> N
     assert contexts == {
         "openai/Kimi-K2.6": 100_000,
         "litellm_proxy/kimi-k2.5": 262_144,
-        "litellm_proxy/glm-5": 131_072,
         "litellm_proxy/glm-5.3": 1_000_000,
     }
     assert CHAT_MODEL_PROFILES["openai/Kimi-K2.6"].max_input_chars == (100_000 - 12_288) * 3
@@ -62,7 +61,7 @@ def test_each_chat_model_states_its_own_context_with_the_answer_kept_free() -> N
 
 def test_the_uat_models_keep_the_values_uat_runs_with() -> None:
     """Owner's UAT values (2026-10-08). Reasoning stays "none": v1 UAT sends that too (thinking off)."""
-    for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5", "litellm_proxy/glm-5.3"):
+    for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"):
         chat = CHAT_MODEL_PROFILES[name]
         assert (chat.max_output_tokens, chat.supports_json_mode, chat.reasoning_effort) == (
             12_288,

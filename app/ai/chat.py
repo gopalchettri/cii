@@ -63,7 +63,7 @@ def _build_request_options(
 ) -> dict[str, Any]:
     """The request options this model accepts (its profile) for this task (its temperature, R-2), with its
     thinking switched off unless `thinking` (CII_*_MODEL_THINKING)."""
-    # stream=False on the wire: a proxy entry pinning stream=true (UAT glm-5's) would otherwise
+    # stream=False on the wire: a proxy entry pinning stream=true (UAT glm-5.3's) would otherwise
     # pick the shape.
     options: dict[str, Any] = {
         "max_tokens": profile.max_output_tokens,

@@ -24,7 +24,7 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         reasoning_effort="none",
         context_tokens=100_000,
     ),
-    # UAT, LiteLLM proxy. kimi answers in ~5 s, glm-5 in 55-99 s: 120 s lets either finish.
+    # UAT, LiteLLM proxy. kimi answers in ~5 s, glm-5.3 in 55-99 s: 120 s lets either finish.
     # Context: the gateway's /model/info max_tokens (2026-07-29); no tpm or key limit set there.
     "litellm_proxy/kimi-k2.5": ChatModelProfile(
         max_output_tokens=12_288,
@@ -33,14 +33,7 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         reasoning_effort="none",
         context_tokens=262_144,
     ),
-    "litellm_proxy/glm-5": ChatModelProfile(
-        max_output_tokens=12_288,
-        timeout_seconds=120,
-        supports_json_mode=True,
-        reasoning_effort="none",
-        context_tokens=131_072,
-    ),
-    # The gateway's name for glm-5 (UAT probe, 2026-10-23); 1 million tokens of input (owner, 2026-10-23).
+    # UAT's fallback model (CII_CHAT_FALLBACK_MODEL); 1 million tokens of input (owner, 2026-10-23).
     "litellm_proxy/glm-5.3": ChatModelProfile(
         max_output_tokens=12_288,
         timeout_seconds=120,
