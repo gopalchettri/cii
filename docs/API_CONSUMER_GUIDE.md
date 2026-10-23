@@ -462,7 +462,7 @@ Notes:
 - `replace_accepted: true`: the old accepted version goes back to `pending` (listed in `replaced`); the new one becomes accepted. Without it → `409 duplicate_version`. The old version's plan, if any, becomes read-only (review/regenerate → `409 scenario_not_accepted`); request a new plan for the new `scenario_id` (4.1).
 - Decisions are final: an accepted scenario cannot be rejected, a rejected one cannot be accepted. Regenerate for a new version.
 - `controls_pending` is no blocker: you can request the plan now (4.1); the plan job maps the controls first.
-- The same holds when `controls_mapping_exhausted` is `true`: the plan job maps them itself. The plan never waits forever: it ends `done`, or `failed` (e.g. `control_library_empty`, or the mapping keeps failing) and you retry with regenerate (4.4).
+- The same holds when `controls_mapping_exhausted` is `true`: the plan job maps them itself. The plan never waits forever: it ends `done`, or `failed` (e.g. `control_library_empty`, or the mapping keeps failing) and you retry with regenerate (4.5).
 
 ### 3.6 `POST /v1/sessions/{session_id}/regenerate/scenarios`
 
@@ -553,14 +553,16 @@ Notes:
 
 ## 4. Remediation endpoints
 
-`PLAN` = `/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan`. Path params for every `PLAN` route:
+Every route below except 4.1 is under `/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan`. Path params for each of them:
 
 | Path param | Type | Meaning |
 | --- | --- | --- |
 | `session_id` | string ≤ 64 | the run (for a manual scenario: the `session_id` returned by 4.1) |
 | `scenario_id` | string ≤ 64 | the scenario |
 
-Every `PLAN` route: no plan for that scenario in that run → `404`; another entity's → `403`.
+Each of them: no plan for that scenario in that run → `404`; another entity's → `403`.
+
+Not covered here: `POST /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/cancel` (stop a version being written), `GET /v1/sessions/{session_id}/treatment-plans` (a run's plans) and `GET /v1/entities/{listed_entity_id}/treatment-plans` (an entity's plans).
 
 ### 4.1 `POST /v1/remediation`
 
@@ -666,8 +668,8 @@ Hand-written scenario (with `Idempotency-Key`):
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `remediation_id` | string | plan id |
-| `session_id` | string | keep: used in every `PLAN` path (new run id for a manual scenario) |
-| `scenario_id` | string | keep: used in every `PLAN` path |
+| `session_id` | string | keep: used in every treatment-plan path (new run id for a manual scenario) |
+| `scenario_id` | string | keep: used in every treatment-plan path |
 | `version` | int | `1` |
 | `status` | string | `queued` (on replay: the current status) |
 | `is_manual` | bool | the scenario is hand-written |
@@ -698,7 +700,7 @@ Hand-written scenario (with `Idempotency-Key`):
 | 403 | `asset_not_owned` / `system_not_linked` | manual: asset or systems not yours |
 | 404 | — | scenario unknown, or not in `session_id` |
 | 409 | `scenario_not_accepted` | accept it first (3.5) |
-| 409 | `plan_already_exists` | one plan per scenario, even if its version 1 failed: regenerate it (4.4); id in `details.remediation_id` |
+| 409 | `plan_already_exists` | one plan per scenario, even if its version 1 failed: regenerate it (4.5); id in `details.remediation_id` |
 | 409 | `idempotency_key_conflict` | key reused for another body |
 | 409 | `control_library_empty` | control library not loaded; admin issue |
 | 409 | `run_being_deleted` | |
@@ -709,7 +711,7 @@ Notes:
 - `is_manual=true`: do not send `session_id` / `scenario_id` (422); TSG creates them and returns them.
 - `existing_controls_all_supporting_system_applicable: 0` → every `existing_controls` item needs `supporting_system_ids`, so use objects, not strings.
 
-### 4.2 `GET PLAN/status`
+### 4.2 `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/status`
 
 Cheap poll of the plan.
 
@@ -756,7 +758,7 @@ Headers: identity headers.
 | 404 | — | no plan requested for this scenario in this run |
 | 403 | — | another entity's plan |
 
-### 4.3 `GET PLAN`
+### 4.3 `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan`
 
 Read the plan: the accepted version, else the newest finished one.
 
@@ -850,7 +852,40 @@ Headers: identity headers.
 | 404 | — | no plan for this scenario in this run |
 | 403 | — | another entity's plan |
 
-### 4.4 `POST PLAN/regenerate`
+### 4.4 `POST /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/review`
+
+Accept or reject one finished version.
+
+Headers: identity headers, `Content-Type`.
+
+**Body** (`ReviewRequest`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `decision` | `"accepted"` / `"rejected"` | yes | |
+| `version` | int ≥ 1 | no | omitted = the newest finished (`done`) version |
+| `comment` | string ≤ 2000 | no | stored with the decision |
+
+```json
+{ "decision": "accepted", "version": 2, "comment": "Matches the register." }
+```
+
+**Response** `200`: `RemediationStatus` (4.2).
+
+**Errors**
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 422 | — | bad `decision`, `version` < 1, unknown field |
+| 404 / 403 | — | as 4.2 |
+| 404 | `version_not_found` | no such version |
+| 409 | `not_complete` | version not `done`, or no version is done yet |
+| 409 | `scenario_not_accepted` | plan is read-only |
+| 409 | `changed_concurrently` | another decision landed: read again and retry |
+
+Notes: accepting a version makes it the plan; an earlier accepted version goes back to pending. Rejecting the accepted version clears `accepted_version` (no plan is accepted then). Any `done` version can be reviewed by `version`, even while a newer one is still being written. Repeating the same decision changes nothing and returns `200`.
+
+### 4.5 `POST /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/regenerate`
 
 Write a new version (2, 3, ...) from the same register data. Earlier versions stay.
 
@@ -893,43 +928,10 @@ Headers: identity headers, `Content-Type`.
 | 409 | `run_being_deleted` | |
 
 Notes:
-- Regenerating an **accepted** plan keeps `decision: accepted`: `overall` goes `generating` → `accepted`, never `awaiting_review`. `GET PLAN` keeps showing the accepted version until you accept the new one (`review {"decision": "accepted", "version": N}`). Detect the new version by `latest_version`/`latest_status` in 4.2, not by `overall`.
+- Regenerating an **accepted** plan keeps `decision: accepted`: `overall` goes `generating` → `accepted`, never `awaiting_review`. `GET .../treatment-plan` (4.3) keeps showing the accepted version until you accept the new one (review, 4.4: `{"decision": "accepted", "version": N}`). Detect the new version by `latest_version`/`latest_status` in 4.2, not by `overall`.
 - A failed or cancelled latest version is retried with regenerate, never with a new `POST /v1/remediation`.
 
-### 4.5 `POST PLAN/review`
-
-Accept or reject one finished version.
-
-Headers: identity headers, `Content-Type`.
-
-**Body** (`ReviewRequest`)
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `decision` | `"accepted"` / `"rejected"` | yes | |
-| `version` | int ≥ 1 | no | omitted = the newest finished (`done`) version |
-| `comment` | string ≤ 2000 | no | stored with the decision |
-
-```json
-{ "decision": "accepted", "version": 2, "comment": "Matches the register." }
-```
-
-**Response** `200`: `RemediationStatus` (4.2).
-
-**Errors**
-
-| Status | Reason | Fix |
-| --- | --- | --- |
-| 422 | — | bad `decision`, `version` < 1, unknown field |
-| 404 / 403 | — | as 4.2 |
-| 404 | `version_not_found` | no such version |
-| 409 | `not_complete` | version not `done`, or no version is done yet |
-| 409 | `scenario_not_accepted` | plan is read-only |
-| 409 | `changed_concurrently` | another decision landed: read again and retry |
-
-Notes: accepting a version makes it the plan; an earlier accepted version goes back to pending. Rejecting the accepted version clears `accepted_version` (no plan is accepted then). Any `done` version can be reviewed by `version`, even while a newer one is still being written. Repeating the same decision changes nothing and returns `200`.
-
-### 4.6 `GET PLAN/events` (SSE)
+### 4.6 `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events` (SSE)
 
 Live status of the plan. `text/event-stream`. Defined in `scenario.py`.
 
