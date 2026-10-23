@@ -1,6 +1,6 @@
-# TSG API consumer guide: threat scenarios and remediation
+# TSG API consumer guide: threat scenarios, remediation and service mapper
 
-Covers 13 endpoints. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/models/**`.
+Covers 18 endpoints. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/api/routers/service_mapper.py`, `app/models/**`.
 
 ## 1. Basics
 
@@ -20,7 +20,7 @@ Covers 13 endpoints. Source of truth: `app/api/routers/scenario.py`, `app/api/ro
 
 Any of the four identity headers missing → `401`. Unknown or revoked key → `401`. A `401` carries `WWW-Authenticate: ApiKey realm="tsg", header="X-API-Key"`.
 
-Every run, scenario and plan belongs to the entity in `X-Entity-Id`. Unknown id → `404`; another entity's → `403`.
+Every run, scenario, plan and mapping belongs to the entity in `X-Entity-Id`. Unknown id → `404`; another entity's → `403`.
 
 ### Idempotency-Key
 
@@ -29,8 +29,9 @@ Every run, scenario and plan belongs to the entity in `X-Entity-Id`. Unknown id 
 | `POST /v1/sessions` | optional. Same key + same body → `200` with the same run. Same key, other body → `409 idempotency_key_conflict`. |
 | `POST /v1/remediation`, `is_manual=true` | **required** (else `422`). Same key + same body → `200`, `replayed: true`. Same key, other body → `409 idempotency_key_conflict`. |
 | `POST /v1/remediation`, `is_manual=false` | accepted but ignored. A repeat → `409 plan_already_exists`. |
+| `POST /v1/service-mapper` | optional. Same key + same body → `200` with the same `mapping_id`. Same key, other body → `409` (no `reason`). |
 
-Keys are one namespace per entity across `POST /v1/sessions` and manual `POST /v1/remediation`: a key used on one → `409 idempotency_key_conflict` on the other. Use a fresh key (e.g. a UUID) per new request.
+Keys are one namespace per entity across `POST /v1/sessions` and manual `POST /v1/remediation`: a key used on one → `409 idempotency_key_conflict` on the other. `POST /v1/service-mapper` keys are a namespace of their own. Use a fresh key (e.g. a UUID) per new request.
 
 ### Error body
 
@@ -67,8 +68,8 @@ Every error is `application/problem+json` (RFC 9457):
 
 | Code | When |
 | --- | --- |
-| 200 | read; review; accept; idempotent replay |
-| 202 | work queued (start run, regenerate, next set, request plan, regenerate plan) |
+| 200 | read; review; accept; relationship decisions; idempotent replay |
+| 202 | work queued (start run, regenerate, next set, request plan, regenerate plan, create mapping) |
 | 401 | identity headers missing, bad key |
 | 403 | another entity's record, asset or system not yours |
 | 404 | unknown id |
@@ -81,7 +82,7 @@ Every error is `application/problem+json` (RFC 9457):
 ### Validation rules that apply everywhere
 
 - Unknown body fields → `422` (`Extra inputs are not permitted`). Every request body model uses `extra="forbid"`.
-- Ids in a path (`session_id`, `scenario_id`): at most 64 chars.
+- Ids in a path (`session_id`, `scenario_id`, `mapping_id`): at most 64 chars.
 - Paging (only `GET .../results` here): `offset` default 0, 0..2147483647; `limit` default 50, 1..500. Use `total` to page.
 
 ## 2. Flow
@@ -111,6 +112,19 @@ GET .../treatment-plan ─► plan (null until a version is done)
 ```
 
 `...` = `/v1/sessions/{session_id}/scenarios/{scenario_id}`. Accept starts no work. Regenerate and next-set do: until that job finishes (`session_status` back to `completed`), accept, regenerate and next-set all get `409 generation_in_progress`.
+
+Service mapper (section 5), on its own:
+
+```
+POST /v1/service-mapper ─► 202 {mapping_id, status: "queued", generation: 1}
+        │
+        ├─► GET /v1/service-mapper/{id}/status   (poll)  ┐ until progress.overall =
+        └─► GET /v1/service-mapper/{id}/events   (SSE)   ┘ done | failed | cancelled
+        │
+GET /v1/service-mapper/{id} ─► upstream_services[], downstream_services[] (take dependency_id from here)
+        │
+POST /v1/service-mapper/{id}/dependencies/decision {"accept": [...], "reject": [...]} ─► 200 (+ failed[])
+```
 
 ## 3. Threat Scenario endpoints
 
@@ -938,7 +952,309 @@ Headers: identity headers (same SSE auth as 3.3: headers only).
 | 404 | — | no plan requested yet for this scenario: call 4.1 first |
 | 403 | — | another entity's plan |
 
-## 5. JavaScript
+## 5. Service Mapper endpoints
+
+Describe one service: TSG finds the services it depends on (**upstream**) and the services that depend on it (**downstream**), from the onboarding catalog and the AI. A reviewer then accepts or rejects each one. There is no review of the mapping as a whole: the review is complete when every service has a decision (`progress.relationships.pending` is `0`, 5.2).
+
+Not covered here: `GET /v1/service-mapper` (list an entity's mappings), `POST /v1/service-mapper/{mapping_id}/regenerate` (a new generation) and `GET /v1/entities/{listed_entity_id}/services` (the entity's catalog services).
+
+Path param for every `/v1/service-mapper/{mapping_id}` route:
+
+| Path param | Type | Meaning |
+| --- | --- | --- |
+| `mapping_id` | string ≤ 64 | from 5.1 |
+
+Every such route: unknown mapping (or another tenant's) → `404` (`No such mapping.`); another entity's → `403`.
+
+### 5.1 `POST /v1/service-mapper`
+
+Start a mapping for one service. Returns `202` at once; the services are found in the background.
+
+Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
+
+**Body** (`CreateMappingRequest`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `service_name` | string 1-255 | yes | the service to map |
+| `service_description` | string 1-4000 | yes | what the service does; the AI works from this |
+| `sector` | string 1-255 | yes | sector name, e.g. `Transport`. `sector_name` is also accepted. |
+| `subsector` | string 1-255 | yes | sub-sector name, e.g. `Land`. `sub_sector_name` is also accepted. |
+| `entity_names` | string[] 1-20 | yes | the entities that run the service; each 1-255 chars, no repeats in any letter case |
+
+```json
+{
+  "service_name": "Traffic Management & Control",
+  "service_description": "Monitors, manages and optimizes road traffic flow using traffic signals, surveillance, sensors and intelligent transportation systems.",
+  "sector": "Transport",
+  "subsector": "Land",
+  "entity_names": ["Road Transport Authority"]
+}
+```
+
+**Response** `202` (`200` on replay): `MappingAccepted`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `mapping_id` | string | keep it |
+| `status` | string | always `queued` in this answer, also on a replay: read the real state from 5.2 |
+| `generation` | int | `1` |
+
+```json
+{ "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9", "status": "queued", "generation": 1 }
+```
+
+**Errors**
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 422 | — | fix `errors[]`: a field missing, blank or too long; no entity names or more than 20; an entity name repeated; unknown field |
+| 409 | — | `Idempotency-Key` used before with another body (`This Idempotency-Key was already used for another mapping input.`): use a new key |
+
+Notes:
+- Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`). A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
+- `sector`, `subsector` and `entity_names` are free text for the AI: names, not ids, and not checked against the catalog. The mapping belongs to the entity in `X-Entity-Id`, whatever `entity_names` says.
+- How many services to find per direction is a server setting (default 10 upstream and 10 downstream); 5.3 shows it as `summary.max_upstream` / `summary.max_downstream`. Fewer come back when fewer are defensible.
+
+### 5.2 `GET /v1/service-mapper/{mapping_id}/status`
+
+Cheap poll of the mapping. Poll this (or use SSE, 5.4) until `progress.overall` is no longer `generating`.
+
+Headers: identity headers.
+
+**Response** `200`: `MappingStatus`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `mapping_id` | string | |
+| `entity_id` | int | |
+| `user_id` | string or null | who created it (`X-User-Id`) |
+| `status` | string | the generation's job: `queued`, `running`, `done`, `failed`, `cancelled` |
+| `generation` | int | `1` for the first; one more each time the mapping is regenerated |
+| `progress.overall` | string | what to do now: `generating` (queued or running: wait), `done` (decide the services, 5.5), `failed` (`error` says why), `cancelled` |
+| `progress.relationships.total` / `.accepted` / `.rejected` / `.pending` | int | the current generation's services and their decisions; all `0` while generating |
+| `retrying` | object or null | waiting after an AI or store outage: `stage` (null), `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
+| `error` | object or null | when `failed`: `{code, message, reason}` |
+| `created_at` / `updated_at` | datetime | |
+
+```json
+{
+  "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9",
+  "entity_id": 125,
+  "user_id": "e2e-tester",
+  "status": "done",
+  "generation": 3,
+  "progress": {
+    "overall": "done",
+    "relationships": { "total": 14, "accepted": 0, "rejected": 0, "pending": 14 }
+  },
+  "retrying": null,
+  "error": null,
+  "created_at": "2026-10-21T15:34:15.706000Z",
+  "updated_at": "2026-10-22T12:33:01.451000Z"
+}
+```
+
+**Errors**
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 404 | — | unknown mapping |
+| 403 | — | another entity's mapping |
+
+Notes:
+- A failed generation's `error`: `code: internal_error` with `The AI answer did not satisfy the Service Mapper output contract.` or `The AI answer was too long for the model; ...`; or `code: unavailable` with `reason` `ai_down`, `ai_unreachable`, `ai_busy` or `ai_timed_out` when the AI stayed unavailable through every retry.
+- A failed generation stays `failed`: it is not retried by itself and never turns `done`. Regenerate it (not covered here) or create a new mapping (5.1, with a new `Idempotency-Key`).
+- `done` means the services are ready to decide, not that they are decided. The review is complete when `progress.relationships.pending` is `0`.
+- `retrying` is set only while the job is `queued` or `running`.
+- `cancelled` belongs to the shared status vocabulary; no call cancels a mapping today.
+
+### 5.3 `GET /v1/service-mapper/{mapping_id}`
+
+The mapping: its upstream and downstream services and their decisions.
+
+Headers: identity headers.
+
+**Response** `200`: `MappingView`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `mapping_id` | string | |
+| `status` / `generation` | string / int | as 5.2 |
+| `upstream_services[]` | object[] | services the mapped service depends on (below) |
+| `downstream_services[]` | object[] | services that depend on it (below) |
+| `summary.unique_services` | int | services in both lists |
+| `summary.upstream_count` / `.downstream_count` | int | how many in each list |
+| `summary.max_upstream` / `.max_downstream` | int | the most asked for per direction (the server setting) |
+| `error` / `retrying` | object or null | as 5.2 |
+| `created_at` / `updated_at` | datetime | |
+
+Each service in `upstream_services[]` / `downstream_services[]`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `dependency_id` | string | send this to 5.5 |
+| `service_id` | int or null | onboarding catalog id; `null` when the AI proposed a service outside the catalog |
+| `service_name` | string | |
+| `sector` / `subsector` | string or null | |
+| `dependency_reason` | string | why it is a direct dependency, in this direction |
+| `applicability` | string or null | when it applies; `null` = always |
+| `ai_suggested` | bool | `true` when it is not from the catalog (`service_id` is `null`) |
+| `isAccepted` | bool or null | `null` pending, `true` accepted, `false` rejected |
+| `accepted_datetime` / `accepted_by` | datetime / string, or null | set for an accepted service only; `accepted_by` = the decider's `X-User-Id`. Who rejected a service, and when, is not returned. |
+
+Trimmed (the full answer has 4 upstream and 10 downstream services):
+
+```json
+{
+  "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9",
+  "status": "done",
+  "generation": 3,
+  "upstream_services": [
+    {
+      "dependency_id": "6ad43b3b40155429bc486d476fce7fa0",
+      "service_id": null,
+      "service_name": "Water Supply System",
+      "sector": "Energy",
+      "subsector": "Water",
+      "dependency_reason": "Provides cooling water and process water required for thermal power plant operations and steam cycle management.",
+      "applicability": "Applicable to thermal generation plants (fossil fuel, nuclear, concentrated solar thermal) ...",
+      "ai_suggested": true,
+      "isAccepted": null,
+      "accepted_datetime": null,
+      "accepted_by": null
+    }
+  ],
+  "downstream_services": [
+    {
+      "dependency_id": "99b094278ef85c6bac58abefe56fccec",
+      "service_id": 1548,
+      "service_name": "Dubai Metro Operations",
+      "sector": "Transport",
+      "subsector": "Land",
+      "dependency_reason": "Directly consumes electrical energy supplied through the grid for traction power and station operations.",
+      "applicability": null,
+      "ai_suggested": false,
+      "isAccepted": null,
+      "accepted_datetime": null,
+      "accepted_by": null
+    }
+  ],
+  "summary": { "unique_services": 14, "upstream_count": 4, "downstream_count": 10, "max_upstream": 10, "max_downstream": 10 },
+  "error": null,
+  "retrying": null,
+  "created_at": "2026-10-21T15:34:15.706000Z",
+  "updated_at": "2026-10-22T12:33:01.451000Z"
+}
+```
+
+**Errors**
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 404 | — | unknown mapping |
+| 403 | — | another entity's mapping |
+
+Notes:
+- Both lists are empty until `status` is `done` (and stay empty after a failure). A `done` mapping may also have empty lists, when the AI found nothing defensible: then there is nothing to decide.
+- Each list is ordered by relevance, strongest first.
+- A service is in one direction only. (A mapping generated by an older version may list one service in both, with the same `dependency_id`.)
+- A new generation replaces both lists with new `dependency_id`s; the old generation's decisions stay with it.
+
+### 5.4 `GET /v1/service-mapper/{mapping_id}/events` (SSE)
+
+Live status of the mapping. `text/event-stream`.
+
+Headers: identity headers (same SSE auth as 3.3: headers only).
+
+**Events**
+
+| `event:` | `data:` (JSON) | When |
+| --- | --- | --- |
+| `mapping.updated` | the `MappingStatus` of 5.2 | once on connect, then on every change (identical bodies are not resent) |
+
+There is no `*.deleted` event: mappings are not deleted. `retry: 3000`, `: ping` every 15 s idle, re-read every 30 s, same end conditions as 3.3 (the stream does not end on `done`).
+
+Changes close together are sent as one: when the worker picks the job up at once, `queued` is skipped and the first update already says `running`. Act on `progress.overall`, not on each `status` step.
+
+**Errors** (before the stream starts)
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 401 | — | send identity headers |
+| 404 | — | unknown mapping |
+| 403 | — | another entity's mapping |
+
+### 5.5 `POST /v1/service-mapper/{mapping_id}/dependencies/decision`
+
+Accept or reject one or more upstream and downstream services in one call.
+
+Headers: identity headers, `Content-Type`.
+
+**Body** (`DependencyDecisionRequest`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `accept` | string[] or null | no | `dependency_id`s to accept |
+| `reject` | string[] or null | no | `dependency_id`s to reject |
+
+- Either list may be `null`, missing, `[]` or `[""]`: blanks are dropped, ids trimmed, repeats removed.
+- At least one id in all; an id may not be in both lists; at most 200 ids; each id ≤ 64 chars.
+
+```json
+{ "accept": ["99b094278ef85c6bac58abefe56fccec", "6ad43b3b40155429bc486d476fce7fa0"], "reject": [""] }
+```
+
+**Response** `200`: the `MappingView` of 5.3, with the decisions applied, plus:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `failed[]` | object[] | the ids not saved; `[]` when every id was saved |
+| `failed[].dependency_id` | string | |
+| `failed[].reason` | string | `dependency_not_found`: not in the current generation; `decision_final`: it already has the other decision |
+| `failed[].message` | string | `No such dependency in the current generation.` / `This recommendation was already decided differently; decisions are final.` |
+
+```json
+{
+  "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9",
+  "status": "done",
+  "generation": 3,
+  "upstream_services": ["... as 5.3, each isAccepted updated ..."],
+  "downstream_services": ["..."],
+  "summary": { "unique_services": 14, "upstream_count": 4, "downstream_count": 10, "max_upstream": 10, "max_downstream": 10 },
+  "error": null,
+  "retrying": null,
+  "created_at": "2026-10-21T15:34:15.706000Z",
+  "updated_at": "2026-10-22T12:33:01.451000Z",
+  "failed": [
+    {
+      "dependency_id": "0000000000000000000000000000dead",
+      "reason": "dependency_not_found",
+      "message": "No such dependency in the current generation."
+    }
+  ]
+}
+```
+
+**Errors**
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 422 | — | fix `errors[]`. Field `body`: nothing to decide (`Name at least one dependency_id in accept or reject.`), an id in both lists, more than 200 ids in all. Field `body.accept` / `body.reject`: one list over 200 items. Field `body.accept.N` / `body.reject.N`: an id over 64 chars. Unknown field. |
+| 404 | — | unknown mapping |
+| 403 | — | another entity's mapping |
+| 409 | — | `status` is not `done` (`The mapping has not finished generating.`): wait for `done` (5.2). A `failed` mapping never gets there: see 5.2. |
+| 409 | `generation_in_progress` | `A round is already running for this mapping.`: another change kept landing at the same moment (e.g. a new generation started). Read 5.3 again and retry with its ids. |
+
+Notes:
+- **A `200` does not mean every id was saved: always check `failed[]`.** It is `200` even when every id failed.
+- Ids from an earlier generation come back as `dependency_not_found`: after a new generation, read 5.3 again and use its ids.
+- An id decides that service's relationship in the direction it is listed in (in both, for an older mapping that lists it twice).
+- Decisions are final: accept → reject (or the reverse) comes back in `failed` as `decision_final`. Sending the same decision again changes nothing and is not a failure, so retries are safe.
+- The valid ids are saved together in one update; the answer already shows them decided, and one `mapping.updated` event follows (5.4).
+- An accepted service counts as approved at once; there is no separate review of the whole mapping. Any caller of the same entity may decide; `accepted_by` records the `X-User-Id`.
+
+## 6. JavaScript
 
 ### POST with headers
 
@@ -1011,3 +1327,32 @@ streamEvents(`/v1/sessions/${run.session_id}/events`, (event, body) => {
 ```
 
 Reconnect yourself after a drop (the server suggests 3000 ms). From a browser, the origin must be in `CII_CORS_ORIGINS`; CORS allows these headers and exposes `X-Request-Id`.
+
+### Service mapper: create, wait, decide
+
+```js
+const mapping = await tsg("POST", "/v1/service-mapper", {
+  service_name: "Traffic Management & Control",
+  service_description: "Monitors, manages and optimizes road traffic flow.",
+  sector: "Transport",
+  subsector: "Land",
+  entity_names: ["Road Transport Authority"],
+}, { "Idempotency-Key": crypto.randomUUID() });
+
+// Wait for the generation (5.2); or stream `.../events` and stop when overall is not "generating".
+const base = `/v1/service-mapper/${mapping.mapping_id}`;
+let status;
+do {
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  status = await tsg("GET", `${base}/status`);
+} while (status.progress.overall === "generating");
+if (status.progress.overall !== "done") throw new Error(status.error?.message ?? status.progress.overall);
+
+// Read the services (5.3) and decide them in one call (5.5): here every one is accepted.
+const view = await tsg("GET", base);
+const ids = [...view.upstream_services, ...view.downstream_services].map((s) => s.dependency_id);
+const decided = await tsg("POST", `${base}/dependencies/decision`, { accept: ids, reject: [] });
+for (const f of decided.failed) console.warn(f.dependency_id, f.reason); // a 200 can still carry failures
+const after = await tsg("GET", `${base}/status`);
+const reviewed = after.progress.relationships.pending === 0; // the review is complete
+```
