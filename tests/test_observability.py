@@ -183,14 +183,16 @@ def test_queue_depth_reads_the_keys_celery_really_uses() -> None:
 
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
-    """In ai-remediation, as v1's monitoring; only the Role that lets it read the app's pods is in
-    ai-threatgen."""
+    """In ai-common, shared with the chatbot (D24); only the Role that lets it read the app's pods is in
+    each app project."""
     objects = _uat_objects()
     assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
     elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
-        (o["kind"], "ai-remediation") for o in objects
+        (o["kind"], "ai-common") for o in objects
     }
-    assert elsewhere == {("Role", "ai-threatgen"), ("RoleBinding", "ai-threatgen")}
+    assert elsewhere == {
+        (kind, project) for kind in ("Role", "RoleBinding") for project in ("ai-threatgen", "ai-remediation")
+    }
     for deployment in _template_objects("Deployment"):
         pod = deployment["spec"]["template"]["spec"]
         assert pod["imagePullSecrets"] == [{"name": "quay-pull"}]
