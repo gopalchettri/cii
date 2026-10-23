@@ -56,8 +56,13 @@ groups:
 
       # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
       # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
+      # The age of the last pass, not a rise in tsg_jobs_total: the first pass after a start comes before
+      # Prometheus' first scrape, so a rise was never seen and every start showed this for a minute. Only the
+      # worker that runs the reaper exports it; none for 10 minutes (that worker gone) is the same problem.
       - alert: ReaperNotRunning
-        expr: sum(increase(tsg_jobs_total{task="tsg_reap",outcome="success"}[10m])) < 1
+        expr: >-
+          time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
+          or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
         for: 5m
         labels: { severity: critical }
         annotations:

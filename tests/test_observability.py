@@ -14,6 +14,7 @@ import pytest
 import yaml
 from dotenv import dotenv_values
 from prometheus_client import REGISTRY
+from prometheus_client.metrics import MetricWrapperBase
 
 import app.core.metrics  # noqa: F401 — registers every app metric
 from app.core.constants import Dependency, Queue, Worker
@@ -93,8 +94,11 @@ def _template_objects(kind: str) -> list[dict]:
 
 
 def _app_metric_names() -> set[str]:
+    """Every metric the app defines: those it registers at import, and those only one process exports
+    (REAPER_LAST_PASS: the worker that runs the reaper)."""
+    defined = [metric for metric in vars(app.core.metrics).values() if isinstance(metric, MetricWrapperBase)]
     names = set()
-    for family in REGISTRY.collect():
+    for family in [*REGISTRY.collect(), *(family for metric in defined for family in metric.collect())]:
         suffixes = {"counter": ["_total"], "histogram": ["_bucket", "_sum", "_count"]}.get(family.type, [""])
         names |= {family.name + suffix for suffix in suffixes}
     return names
@@ -273,6 +277,23 @@ def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() 
     queries = " ".join(t["expr"] for t in health["targets"])
     assert all(f'queue="{queue}"' in queries for queue in ROUTED_QUEUES)
     assert all(f'name="{store.value}"' in queries for store in Dependency)
+
+
+def test_a_fresh_start_never_reads_as_the_reaper_not_running() -> None:
+    """Before: ReaperNotRunning and the beat tile read a rise in tsg_jobs_total. The first pass after a start
+    comes before Prometheus' first scrape, so for a minute after every start the alert was pending and the
+    tile DOWN. Both read the age of the last pass now, and rules.test.yml checks that exact expression right
+    after a start (promtool runs it)."""
+    [rule] = [rule for rule in _rules() if rule["alert"] == "ReaperNotRunning"]
+    [tiles] = [panel for panel in _panels() if panel["title"] == "Parts of the system"]
+    [beat] = [target["expr"] for target in tiles["targets"] if target["legendFormat"] == "Scheduler (beat)"]
+    for expr in (rule["expr"], beat):
+        assert "tsg_reaper_last_pass_timestamp_seconds" in expr and "increase(" not in expr, expr
+    cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
+    after_a_start = [
+        test for case in cases for test in case.get("promql_expr_test", []) if test["expr"] == rule["expr"]
+    ]
+    assert after_a_start and all(test["exp_samples"] == [] for test in after_a_start)
 
 
 def test_the_one_flower_link_opens_this_environment_s_flower() -> None:

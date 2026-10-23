@@ -1,8 +1,9 @@
 """Prometheus metrics (scraped from /metrics; viewed in Grafana)."""
 
 from collections.abc import Iterable
+from contextlib import suppress
 
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import REGISTRY, Counter, Gauge, Histogram
 
 from app.core.constants import Dependency
 
@@ -32,6 +33,15 @@ JOBS_NOW = Gauge(
     "Jobs now by kind and status (queued, retrying, running; failed: in the last 24 h), set by the reaper",
     ["kind", "status"],
 )
+#: When the reaper last finished a pass. ReaperNotRunning and the dashboard's beat tile read its age: a
+#: pass made before Prometheus' first scrape still counts, which a rise in tsg_jobs_total cannot show.
+#: Exported only by the worker that runs the reaper (start_reaper_clock): a 0 from every other process made
+#: the newest pass depend on which one Prometheus scraped first after a start.
+REAPER_LAST_PASS = Gauge(
+    "tsg_reaper_last_pass_timestamp_seconds",
+    "When the reaper last finished a pass (Unix time)",
+    registry=None,
+)
 WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbeat", ["queue"])
 #: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress): every pod reports the same
 #: total.
@@ -53,6 +63,13 @@ def start_job_counters(tasks: Iterable[str]) -> None:
     for task in tasks:
         for outcome in JOB_OUTCOMES:
             JOBS.labels(task, outcome)
+
+
+def start_reaper_clock() -> None:
+    """This process runs the reaper: export its last pass, on time from now (a fresh start is on time)."""
+    with suppress(ValueError):  # already exported: tests start several workers in one process
+        REGISTRY.register(REAPER_LAST_PASS)
+    REAPER_LAST_PASS.set_to_current_time()
 
 
 def record_http_request(method: str, route: str, status: int, seconds: float) -> None:

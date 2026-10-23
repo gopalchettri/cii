@@ -79,15 +79,70 @@ tests:
         alertname: JobsFailing
         exp_alerts: []
 
+  # The reaper's last pass as Unix time (promtool's clock starts at 0), from the one worker that runs it:
+  # a pass every minute for 10 minutes, then none.
   - interval: 1m
     input_series:
-      - series: tsg_jobs_total{task="tsg_reap",outcome="success"}
-        values: 0+1x10 10x30
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 0+60x10 600x30
     alert_rule_test:
       - eval_time: 9m
         alertname: ReaperNotRunning
         exp_alerts: []
       - eval_time: 30m
+        alertname: ReaperNotRunning
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
+              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+
+  # A start after the stack was down from 6 to 19 minutes: its first pass comes a second after the start, before
+  # Prometheus' first scrape. Quiet from that first scrape on. Before, the alert read a rise in tsg_jobs_total,
+  # which a first scrape cannot show, and every start showed it (and the beat tile DOWN) for a minute.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 0+60x5 _x14 1201+60x10
+    promql_expr_test:
+      - expr: time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+        eval_time: 20m
+        exp_samples: []
+      - expr: time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+        eval_time: 21m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+
+  # A start whose scheduler never sends the reaper: on time from the worker's start (at 5 minutes), then due.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: _x5 300x30
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperNotRunning
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
+              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+
+  # The worker that runs the reaper gone at 5 minutes: nothing reports a pass any more.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 0+60x5
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+      - eval_time: 25m
         alertname: ReaperNotRunning
         exp_alerts:
           - exp_labels: { severity: critical }

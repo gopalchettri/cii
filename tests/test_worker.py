@@ -3,6 +3,8 @@
 import contextvars
 import logging
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -459,6 +461,55 @@ def test_every_job_outcome_series_starts_at_zero_when_the_worker_starts(
     for task in TaskName:
         for outcome in metrics.JOB_OUTCOMES:
             assert REGISTRY.get_sample_value("tsg_jobs_total", {"task": task, "outcome": outcome}) is not None
+
+
+def _last_reaper_pass() -> float:
+    return metrics.REAPER_LAST_PASS.collect()[0].samples[0].value
+
+
+def test_no_process_but_the_reaper_s_worker_exports_its_last_pass() -> None:
+    """Before: every process that loads the metrics exported 0 (the API, every worker, Flower), so right
+    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending)."""
+    code = (
+        "import app.main, app.worker.lifecycle; from prometheus_client import generate_latest; "
+        "print(b'tsg_reaper_last_pass' in generate_latest())"
+    )
+    run = [sys.executable, "-c", code]
+    result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
+    assert result.stdout.strip().splitlines()[-1:] == ["False"], result.stdout + result.stderr
+
+
+def test_only_the_worker_that_runs_the_reaper_starts_on_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before: ReaperNotRunning read a rise in tsg_jobs_total, and the first pass after a start comes before
+    Prometheus' first scrape, so every start showed it (and the beat tile DOWN) for a minute. The worker that
+    runs the reaper is on time from its own start; no other worker stands in for it."""
+    metrics.REAPER_LAST_PASS.set(0)
+    monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
+    lifecycle.prepare_worker(_worker_starting("threads", Queue.THREATS, Queue.SCENARIOS))
+    assert _last_reaper_pass() == 0
+    monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
+    before = time.time()
+    lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
+    assert before <= _last_reaper_pass() <= time.time()
+
+
+def test_each_reaper_pass_records_when_it_ended_and_a_failed_one_does_not(
+    published: list[str], sent: list[tuple], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    metrics.REAPER_LAST_PASS.set(0)
+    before = time.time()
+    reaper.reap_jobs()
+    assert before <= _last_reaper_pass() <= time.time()
+
+    def mongodb_down(*_: object) -> list:
+        raise AutoReconnect("MongoDB is down")
+
+    metrics.REAPER_LAST_PASS.set(0)
+    monkeypatch.setattr(JobRepository, "list_expired_jobs", mongodb_down)
+    with pytest.raises(AutoReconnect):
+        reaper.reap_jobs()
+    assert _last_reaper_pass() == 0  # a pass that did not end is not on time
 
 
 def test_celery_keeps_the_log_level_cii_log_level_chose() -> None:

@@ -41,6 +41,7 @@ def reap_jobs() -> None:
         _count_jobs_now(admin_jobs, now)
     except Exception:  # noqa: BLE001 — a count for Grafana never fails the reaper's repairs
         log.warning(LogEvent.JOB_REAP_FAILED, step="count_jobs_now", exc_info=True)
+    metrics.REAPER_LAST_PASS.set_to_current_time()  # a pass that ends in an error above never gets here
 
 
 def _announce_abandoned_admin_job(job: dict[str, Any]) -> None:
