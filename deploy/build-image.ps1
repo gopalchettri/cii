@@ -4,10 +4,13 @@ Build the TSG v2 image from the committed code, check that it loads, and push it
     .\deploy\build-image.ps1            build, check, push
     .\deploy\build-image.ps1 -NoPush    build and check only (then move it with docker save / docker load)
 
-The tag is v2-<commit>, so an image always names the exact code inside it: the build stops while any file it
-copies (app/, pyproject.toml, requirements.txt, Dockerfile, .dockerignore) differs from the commit.
+The tag is v2-<commit>, where <commit> is the last commit that changed a file the image is built from
+(app/, pyproject.toml, requirements.txt, Dockerfile, .dockerignore): a commit that changes only YAML or docs keeps
+the same tag, and an image always names the exact code inside it. The build stops while any of those files
+differs from the last commit.
 Log in to the registry first: docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
-Prints the image name to give deploy-uat.ps1.
+Prints the image tag to put in deploy\deploy_threatgen.yaml, deploy_remediation.yaml and deploy_common.yaml
+(step by step: deploy\DEPLOYMENT_GUIDE.md).
 #>
 param(
     [string] $Registry = 'quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc',
@@ -23,14 +26,17 @@ function Assert-Ok([string] $step) {
 
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
-    $changed = git status --porcelain --untracked-files=all -- app pyproject.toml requirements.txt Dockerfile .dockerignore
+    $buildInputs = @('app', 'pyproject.toml', 'requirements.txt', 'Dockerfile', '.dockerignore')
+    $changed = git status --porcelain --untracked-files=all -- $buildInputs
     Assert-Ok 'git status'
     if ($changed) {
         throw "These build files differ from the last commit (commit them first, so the image matches its tag):`n$($changed -join "`n")"
     }
-    $commit = git rev-parse --short=12 HEAD
-    Assert-Ok 'git rev-parse'
-    $image = "$Registry/${Repository}:v2-$commit"
+    # The last commit that changed the image's inputs, not HEAD: a YAML-only commit keeps the tag.
+    $commit = git log -1 --format=%h --abbrev=12 -- $buildInputs
+    Assert-Ok 'git log'
+    $tag = "v2-$commit"
+    $image = "$Registry/${Repository}:$tag"
 
     docker build --platform linux/amd64 -t $image .
     Assert-Ok 'docker build'
@@ -44,7 +50,9 @@ try {
     }
     Write-Host ''
     Write-Host "Image: $image" -ForegroundColor Green
-    Write-Host "Next:  .\deploy\deploy-uat.ps1 -AppImage $image"
+    Write-Host "Tag:   $tag" -ForegroundColor Green
+    Write-Host "Next:  put $tag in deploy\deploy_threatgen.yaml, deploy\deploy_remediation.yaml and deploy\deploy_common.yaml,"
+    Write-Host "       then follow deploy\DEPLOYMENT_GUIDE.md"
 }
 finally {
     Pop-Location

@@ -1,5 +1,6 @@
-// Alloy in UAT / production: ships the stdout of every pod in the app's two projects and in ai-common (the
-// monitoring, Flower) to Loki, through the Kubernetes API (no host folders). The laptop uses local.alloy: same
+// Alloy in UAT / production: ships the stdout of TSG's pods (pod label part-of: tsg or tsg-monitoring) in the
+// app's two projects and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
+// folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop uses local.alloy: same
 // labels, read from log files instead.
 
 logging {
@@ -14,10 +15,16 @@ discovery.kubernetes "pods" {
   }
 }
 
-// The only labels: each has a small, fixed set of values. app = app.kubernetes.io/part-of ("tsg" on every
-// app pod), component = app.kubernetes.io/component (api, worker, beat, flower …).
+// The only labels: each has a small, fixed set of values. app = the pod label part-of ("tsg" on every
+// app pod), component = the pod label component (api, worker, beat, flower …).
 discovery.relabel "pod_logs" {
   targets = discovery.kubernetes.pods.targets
+  // TSG's pods only: the chatbot's pods in ai-common are never read.
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_part_of"]
+    regex         = "tsg|tsg-monitoring"
+    action        = "keep"
+  }
   rule {
     source_labels = ["__meta_kubernetes_namespace"]
     target_label  = "namespace"
@@ -31,11 +38,11 @@ discovery.relabel "pod_logs" {
     target_label  = "container"
   }
   rule {
-    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_part_of"]
+    source_labels = ["__meta_kubernetes_pod_label_part_of"]
     target_label  = "app"
   }
   rule {
-    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+    source_labels = ["__meta_kubernetes_pod_label_component"]
     target_label  = "component"
   }
 }

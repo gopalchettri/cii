@@ -15,3 +15,6 @@ deploy/monitoring.env
 
 # One-time data backups (never committed)
 backups/
+
+# The real OpenShift secrets (deploy/secrets.example.yaml is the template in git)
+deploy/secrets.yaml

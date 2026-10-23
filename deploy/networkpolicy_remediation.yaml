@@ -1,0 +1,49 @@
+# networkpolicy_remediation.yaml - network rules for TSG's worker pods in project ai-remediation
+# (deploy_remediation.yaml). They apply only to pods labelled part-of=tsg: other pods are not touched.
+# Once a rule selects a pod, everything not listed is blocked: without these lines a worker never reaches Redis.
+# Apply:  oc apply -f deploy/networkpolicy_remediation.yaml
+# Step by step: deploy/DEPLOYMENT_GUIDE.md
+
+# ---------------------------------------------------------------- what may connect IN to TSG's pods
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: tsg-app-ingress                          # rule name
+  namespace: ai-remediation                      # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # the rule
+  podSelector: { matchLabels: { part-of: tsg } } # applies to TSG's pods only
+  policyTypes: [Ingress]                         # controls incoming connections
+  ingress:                                       # allowed incoming connections (nothing else calls a worker)
+    - from:                                      # the monitoring
+        - namespaceSelector: {}                  # any project ...
+          podSelector: { matchLabels: { part-of: tsg-monitoring } }   # ... but only TSG's monitoring pods (Prometheus, in ai-common)
+      ports: [{ port: 9100, protocol: TCP }]     # the workers' /metrics
+
+# ---------------------------------------------------------------- where TSG's pods may connect OUT to
+---
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: tsg-app-egress                           # rule name
+  namespace: ai-remediation                      # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # the rule
+  podSelector: { matchLabels: { part-of: tsg } } # applies to TSG's pods only
+  policyTypes: [Egress]                          # controls outgoing connections
+  egress:                                        # allowed outgoing connections
+    - ports:                                     # DNS (name lookups), to any address
+        - { port: 53, protocol: UDP }            # DNS
+        - { port: 53, protocol: TCP }            # DNS over TCP (large answers)
+        - { port: 5353, protocol: UDP }          # where OpenShift's DNS pods really listen
+        - { port: 5353, protocol: TCP }          # the same over TCP
+    - to: [{ ipBlock: { cidr: 10.61.192.2/32 } }]      # the corporate proxy: the intelligence feeds (every outside URL)
+      ports: [{ port: 8080, protocol: TCP }]     # proxy port
+    - to: [{ ipBlock: { cidr: 10.231.255.253/32 } }]   # the AI gateway (llmapi.govai.ae), called directly
+      ports: [{ port: 443, protocol: TCP }]      # https
+    - to: [{ ipBlock: { cidr: 10.228.146.4/32 } }]     # Redis: job queues, live updates, caches
+      ports: [{ port: 6379, protocol: TCP }]     # Redis port
+    - to: [{ ipBlock: { cidr: 10.228.146.2/32 } }]     # SQL Server: the library and the asset facts
+      ports: [{ port: 1444, protocol: TCP }]     # SQL Server port
+    - to: [{ ipBlock: { cidr: 10.228.146.3/32 } }]     # MongoDB: every run, scenario, plan and job
+      ports: [{ port: 27018, protocol: TCP }]    # MongoDB port

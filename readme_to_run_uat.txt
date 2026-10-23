@@ -1,4 +1,5 @@
 # TSG v2 (cii) - run in UAT, step by step (PowerShell).
+# This file runs TSG from a laptop against the UAT stores. To deploy TSG on OpenShift, follow deploy\DEPLOYMENT_GUIDE.md.
 # NOTE: run every command below from the "cii" folder (the one with pyproject.toml).
 cd "C:\GopalChettri\Projects\desc-ai-modules\cii"
 
@@ -118,10 +119,9 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #         oc -n <project> rollout status deploy/<name> --timeout=15m
 #    4. Check: step 2 again on every changed deployment (both lines list llmapi.govai.ae, "default:200,exit=0");
 #       one threat run and one plan finish.
-#    5. For good: deploy from this repository (deploy\build-image.ps1, then deploy\deploy-uat.ps1 -AppImage <image>).
-#       From v1 this is the switch to v2 (downtime, a YES prompt, the DBA installs scripts\sql\tsg_*.sql first):
-#       read "Before step 5" in the runbook. Never delete the old v1 deployments before v2 is accepted: the
-#       rollback (%USERPROFILE%\.tsg\uat-backups\<time>\rollback.ps1) needs them.
+#    5. For good: deploy from this repository, step by step: deploy\DEPLOYMENT_GUIDE.md (plain YAML applied with
+#       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first): its step 6.
+#       Never delete the old v1 deployments before v2 is accepted: they are the way back (the guide's "Roll back").
 #    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line (both projects):
 #         oc -n <project> logs deploy/worker-scenarios | findstr ai.gateway_route
 

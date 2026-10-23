@@ -1,4 +1,4 @@
-"""The monitoring files (observability/, deploy/observability.yaml, scripts/monitoring.py) stay valid and in
+"""The monitoring files (observability/, deploy/deploy_common.yaml, scripts/monitoring.py) stay valid and in
 step with the app: T-OPS-03..06. promtool checks run when it is installed (scripts/monitoring.py install)."""
 
 import importlib
@@ -24,10 +24,10 @@ REPO = Path(__file__).resolve().parents[1]
 OBS = REPO / "observability"
 RULES = OBS / "prometheus" / "rules.yml"
 DASHBOARD = OBS / "grafana" / "dashboards" / "tsg.json"
-TEMPLATE = REPO / "deploy" / "observability.yaml"
-FLOWER = REPO / "deploy" / "flower.yaml"
+TEMPLATE = REPO / "deploy" / "deploy_common.yaml"
 MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
-APP_IMAGE = f"{MIRROR}/tsg-api:v2-COMMIT"  # deploy-uat.ps1 puts the deployed tag in
+APP_IMAGE = rf"{re.escape(MIRROR)}/tsg-api:v2-[0-9a-f]{{12,}}"  # Flower: build-image.ps1's v2-<commit> tag
+MONITORING_IMAGE = rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*"  # a mirrored image pinned to a version
 
 #: §22.3 alerts that are Built (AiSlotsSaturated and IntelStale wait for their metrics).
 BUILT_ALERTS = {
@@ -71,6 +71,7 @@ EXPORTER_METRICS = {
     "kube_pod_status_phase",
 }
 PUBLIC_PATHS = {"/grafana", "/flower", "/prometheus", "/alertmanager", "/loki"}
+WATCHED_APP_PROJECTS = ("ai-threatgen", "ai-remediation")  # TSG's own projects: every pod there is TSG's
 
 
 def _monitoring_script():
@@ -83,10 +84,8 @@ def _monitoring_script():
 
 
 def _uat_objects() -> list[dict]:
-    """Every object of the UAT monitoring files: deploy/observability.yaml and Flower's deploy/flower.yaml."""
-    return [
-        o for path in (TEMPLATE, FLOWER) for o in yaml.safe_load_all(path.read_text(encoding="utf-8")) if o
-    ]
+    """Every object of the UAT monitoring file, deploy/deploy_common.yaml: the monitoring and Flower."""
+    return [o for o in yaml.safe_load_all(TEMPLATE.read_text(encoding="utf-8")) if o]
 
 
 def _template_objects(kind: str) -> list[dict]:
@@ -198,7 +197,7 @@ def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
         assert pod["imagePullSecrets"] == [{"name": "quay-pull"}]
         for container in pod.get("initContainers", []) + pod["containers"]:
             image = container["image"]
-            assert image == APP_IMAGE or re.fullmatch(rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*", image), image
+            assert re.fullmatch(APP_IMAGE, image) or re.fullmatch(MONITORING_IMAGE, image), image
             assert container["resources"]["requests"] and container["resources"]["limits"], deployment
             security = container["securityContext"]
             assert security["allowPrivilegeEscalation"] is False and security["runAsNonRoot"] is True
@@ -239,18 +238,30 @@ def test_laptop_grafana_takes_its_settings_from_env_but_never_the_fixed_ones(
     assert "CII_LOG_LEVEL" not in grafana
 
 
-def test_uat_grafana_reads_the_env_file_secret_and_the_same_fixed_list() -> None:
-    """UAT: the GF_ lines of .env.uat reach Grafana through the Secret observability.ps1 builds; the template
-    sets only fixed GF_ settings itself, and the deploy script ignores the same fixed list as the laptop."""
+def test_uat_grafana_sets_the_fixed_settings_in_the_template() -> None:
+    """UAT has no .env: Grafana's settings are its env in deploy_common.yaml. Of the fixed list the laptop
+    scripts own, it sets those the links, the /grafana path and the home dashboard need (the rest are the
+    image's defaults); anyone may look but only look; the admin password comes from Secret tsg-monitoring."""
     _monitoring_script()
     fixed = sys.modules["monitoring_commands"].FIXED_GRAFANA_SETTINGS
     [grafana] = [d for d in _template_objects("Deployment") if d["metadata"]["name"] == "grafana"]
     container = grafana["spec"]["template"]["spec"]["containers"][0]
-    assert container["envFrom"] == [{"secretRef": {"name": "tsg-grafana-settings"}}]
-    assert all(e["name"].startswith(fixed) for e in container["env"] if e["name"].startswith("GF_"))
-    script = (REPO / "deploy" / "observability.ps1").read_text(encoding="ascii")
-    (listed,) = re.findall(r"\$fixedGrafana = @\(([^)]*)\)", script)
-    assert tuple(re.findall(r"'([^']+)'", listed)) == fixed
+    env = {e["name"]: e.get("value") or e["valueFrom"] for e in container["env"]}
+    assert {name for name in env if name.startswith(fixed)} == {
+        "GF_SERVER_ROOT_URL",
+        "GF_SERVER_SERVE_FROM_SUB_PATH",
+        "GF_SECURITY_ADMIN_PASSWORD",
+        "GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH",
+    }
+    [route] = [r["spec"] for r in _template_objects("Route") if r["metadata"]["name"] == "grafana"]
+    assert env["GF_SERVER_ROOT_URL"] == f"https://{route['host']}{route['path']}/"
+    assert env["GF_SERVER_SERVE_FROM_SUB_PATH"] == "true"
+    mounts = {mount["name"]: mount["mountPath"] for mount in container["volumeMounts"]}
+    assert env["GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH"] == f"{mounts['dashboards']}/{DASHBOARD.name}"
+    password = {"secretKeyRef": {"name": "tsg-monitoring", "key": "GF_SECURITY_ADMIN_PASSWORD"}}
+    assert env["GF_SECURITY_ADMIN_PASSWORD"] == password
+    anonymous = ("GF_AUTH_ANONYMOUS_ENABLED", "GF_AUTH_ANONYMOUS_ORG_ROLE", "GF_ANALYTICS_REPORTING_ENABLED")
+    assert [env[name] for name in anonymous] == ["true", "Viewer", "false"]
 
 
 def test_the_example_documents_grafana_settings_but_none_the_scripts_fix() -> None:
@@ -315,19 +326,52 @@ def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
     uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
     [pods] = [job for job in uat["scrape_configs"] if job["job_name"] == "pods"]
     rules = [rule.get("target_label") for rule in pods["relabel_configs"]]
+    job = pods["relabel_configs"][rules.index("job")]
+    assert job["source_labels"] == ["__meta_kubernetes_pod_label_component"]  # the pod label component
     ui = pods["relabel_configs"][rules.index("ui_url")]
     assert rules.index("ui_url") > rules.index("job")  # it reads the job label an earlier rule sets
     assert (ui["source_labels"], ui["regex"]) == (["job"], "flower")
     [flower] = [d for d in _template_objects("Deployment") if d["metadata"]["name"] == "flower"]
-    assert (
-        flower["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/component"] == "flower"
-    )  # its job
+    assert flower["spec"]["template"]["metadata"]["labels"]["component"] == "flower"  # its job
     routes = {route["metadata"]["name"]: route["spec"] for route in _template_objects("Route")}
     # Relative: UAT's Flower is on Grafana's own host.
     assert (
         ui["replacement"] == routes["flower"]["path"] + "/"
         and routes["flower"]["host"] == routes["grafana"]["host"]
     )
+
+
+def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
+    """ai-common is shared with a chatbot: Prometheus scrapes, Alloy reads and kube-state-metrics' series keep
+    only TSG's pods there, and a restart there selects TSG's Deployments only."""
+    uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
+    jobs = {job["job_name"]: job for job in uat["scrape_configs"]}
+    tsg_only = jobs["pods"]["relabel_configs"][0]
+    assert tsg_only == {
+        "source_labels": ["__meta_kubernetes_pod_label_part_of"],
+        "regex": "tsg|tsg-monitoring",
+        "action": "keep",
+    }
+    alloy = (OBS / "alloy" / "uat.alloy").read_text(encoding="utf-8")
+    keep = r'"__meta_kubernetes_pod_label_part_of"\]\s+regex\s+= "tsg\|tsg-monitoring"\s+action\s+= "keep"'
+    assert re.search(keep, alloy)
+    common = [d for d in _template_objects("Deployment") if d["metadata"]["namespace"] == "ai-common"]
+    [kept] = jobs["kube-state-metrics"]["metric_relabel_configs"]
+    assert (kept["source_labels"], kept["action"]) == (["namespace", "pod"], "keep")
+    for deployment in common:
+        name, labels = deployment["metadata"]["name"], deployment["spec"]["template"]["metadata"]["labels"]
+        assert re.fullmatch(tsg_only["regex"], labels["part-of"]), name
+        assert re.fullmatch(kept["regex"], f"ai-common;{name}-7d9f8b6c5d-x2x4z"), name  # <rs hash>-<5 chars>
+    chatbot_pods = ["chatbot-api-7d9f8b6c5d-x2x4z", "grafana-agent-7d9f8b6c5d-x2x4z"]
+    assert not [pod for pod in chatbot_pods if re.fullmatch(kept["regex"], f"ai-common;{pod}")]
+    assert all(re.fullmatch(kept["regex"], f"{app};{chatbot_pods[0]}") for app in WATCHED_APP_PROJECTS)
+    restarts = [
+        line
+        for path in (TEMPLATE, REPO / "deploy" / "configmap.yaml")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "-n ai-common rollout restart deployment" in line
+    ]
+    assert restarts and all(line.endswith(" -l part-of=tsg-monitoring") for line in restarts)
 
 
 def _promtool() -> str | None:
@@ -444,8 +488,6 @@ def test_a_process_start_time_tells_a_reused_id_apart() -> None:
 POWERSHELL_SCRIPTS = [
     "run.ps1",
     "stop.ps1",
-    "deploy/observability.ps1",
-    "deploy/deploy-uat.ps1",
     "deploy/build-image.ps1",
 ]
 NO_POWERSHELL = pytest.mark.skipif(
@@ -515,7 +557,7 @@ def _variable_rule_breaks(script: Path, tmp_path: Path) -> list[str]:
 @NO_POWERSHELL
 @pytest.mark.parametrize("name", POWERSHELL_SCRIPTS)
 def test_no_script_lets_one_variable_stand_in_for_another(name: str, tmp_path: Path) -> None:
-    """Before: deploy-uat.ps1's `$v1 = @()` emptied its list $V1, so v1 was never stopped; and Invoke-Step's
+    """Before: a deploy script's `$v1 = @()` emptied its list $V1, so v1 was never stopped; and Invoke-Step's
     $Name took the place of the caller's $name in every step's block. Both parsed and passed list tests."""
     assert _variable_rule_breaks(REPO / name, tmp_path) == []
 
@@ -561,7 +603,7 @@ def _run_powershell_function(script: Path, function: str, call: str) -> list[str
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
-def test_the_scripts_read_env_values_as_the_app_does(tmp_path: Path) -> None:
+def test_run_ps1_reads_env_values_as_the_app_does(tmp_path: Path) -> None:
     """Before: run.ps1 cut an unquoted value at any '#', so a Redis password holding '#' broke its broker
     check and stop killed the worker without letting it finish its jobs."""
     env = tmp_path / ".env"
@@ -574,11 +616,6 @@ def test_the_scripts_read_env_values_as_the_app_does(tmp_path: Path) -> None:
     assert (
         _run_powershell_function(REPO / "run.ps1", "Get-EnvValue", f"$EnvFile = '{env}'; {calls}") == expected
     )
-    read_all = f"$utf8 = [System.Text.UTF8Encoding]::new($false); $v = Read-EnvFile '{env}'; " + "; ".join(
-        f"$v['{key}']" for key in keys
-    )
-    deploy = REPO / "deploy" / "observability.ps1"
-    assert _run_powershell_function(deploy, "Read-EnvFile", read_all) == expected
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
@@ -632,22 +669,6 @@ def test_a_window_started_as_administrator_is_never_forgotten() -> None:
         "refused",
         "returned:",
     ]
-
-
-@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
-def test_a_uat_file_without_grafana_lines_still_gets_its_grafana_secret() -> None:
-    """GF_ lines are optional (owner, 2026-10-09). Grafana reads tsg-grafana-settings, so with none in
-    .env.uat the Secret is still applied, empty, and never from an empty env file."""
-    call = (
-        "function oc { if ($args[0] -eq 'apply') { $input | ForEach-Object { \"applied $_\" } } "
-        "else { 'create ' + ($args -join ' ') } }; function Assert-Ok {}; "
-        "$utf8 = [System.Text.UTF8Encoding]::new($false); "
-        "Set-Secret 'tsg-grafana-settings' ([ordered]@{}); "
-        "Set-Secret 'tsg-grafana-settings' ([ordered]@{ GF_A = '1' })"
-    )
-    empty, with_lines = _run_powershell_function(REPO / "deploy" / "observability.ps1", "Set-Secret", call)
-    assert empty == "applied create create secret generic tsg-grafana-settings --dry-run=client -o yaml"
-    assert "--from-env-file=" in with_lines
 
 
 def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> None:

@@ -1,0 +1,411 @@
+# deploy_threatgen.yaml - TSG in project ai-threatgen (UAT is production): the API (2 copies), one worker per
+# queue, beat (the timer), the API's Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local)
+# and its disruption budget. Network rules: networkpolicy_threatgen.yaml. Settings: configmap.yaml, secrets.yaml.
+# Apply AFTER deploy_remediation.yaml is rolled out (new workers before a new API):
+#   oc apply -f deploy/deploy_threatgen.yaml
+# New release: replace the image tag (v2-f0560c76a491) everywhere in deploy_*.yaml with the one build-image.ps1 printed.
+# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5 CPU and 10.5 Gi; an API update adds one API pod
+# (6 CPU, 11.5 Gi). A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
+# A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
+# update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
+# once the old pod is gone: rollout status only takes longer. A worker is ready once it answers a ping (startupProbe).
+# Step by step: deploy/DEPLOYMENT_GUIDE.md
+
+# ---------------------------------------------------------------- the API
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps the wanted number of API pods running
+metadata:                                        # the object's name and place
+  name: api                                      # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: api, part-of: tsg }             # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 2                                    # two copies: one can stop while the other serves
+  strategy:                                      # how an update replaces pods
+    type: RollingUpdate                          # one pod at a time
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }   # start the new pod first, then stop an old one: no gap
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: api }                    # pods labelled app=api (cannot change after creation)
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: api, component: api, part-of: tsg }   # component becomes Prometheus' job name; part-of selects the network rules
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "8000"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # the app never calls the OpenShift API: no token in the pod
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # cluster DNS cannot resolve the AI gateway: its address is fixed here
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (Quay)
+      terminationGracePeriodSeconds: 40          # time a stopping pod gets to finish open requests
+      containers:                                # the programs in the pod
+        - name: api                              # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # a tag never changes content: pull only if missing
+          command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --proxy-headers, "--forwarded-allow-ips=*", --no-access-log, --timeout-graceful-shutdown, "30"]   # start the web API on port 8000
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings (configmap.yaml)
+            - secretRef: { name: tsg-secrets }     # passwords, keys, connection strings (secrets.yaml)
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls (intelligence feeds) go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy: local, cluster and the AI gateway
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case (some tools read only this)
+          ports: [{ name: http, containerPort: 8000 }]   # the API's port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /ready, port: 8000 }   # every store answers and every queue has a live worker
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 10                    # then every 10 s
+            timeoutSeconds: 7                    # each check may take 7 s
+            failureThreshold: 3                  # 3 failures in a row = not ready
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /health, port: 8000 }   # no store calls, so a store outage never restarts a healthy pod
+            initialDelaySeconds: 30              # first check after 30 s
+            periodSeconds: 20                    # then every 20 s
+            timeoutSeconds: 2                    # each check may take 2 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          lifecycle:                             # actions at stop
+            preStop: { exec: { command: [sleep, "5"] } }   # wait 5 s so the router stops sending requests first
+          resources:                             # CPU and memory
+            requests: { cpu: 250m, memory: 512Mi }   # reserved for the pod
+            limits: { cpu: "1", memory: 1Gi }        # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+# ---------------------------------------------------------------- workers: one Deployment per queue
+# A stopped worker loses nothing: its job goes back to the queue and is picked up again.
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one threat-finding worker running
+metadata:                                        # the object's name and place
+  name: worker-threats                           # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: worker-threats, part-of: tsg }  # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one here; its twin runs in ai-remediation
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra 2 Gi pod in the quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-threats }         # pods labelled app=worker-threats
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-threats, component: worker, part-of: tsg }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_threats]   # 4 threads on the tsg_threats queue
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 500m, memory: 1Gi }   # reserved for the pod
+            limits: { cpu: "1", memory: 2Gi }      # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one scenario-writing worker running
+metadata:                                        # the object's name and place
+  name: worker-scenarios                         # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: worker-scenarios, part-of: tsg }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one here; its twin runs in ai-remediation
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-scenarios }       # pods labelled app=worker-scenarios
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-scenarios, component: worker, part-of: tsg }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_scenarios]   # 4 threads on the tsg_scenarios queue
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 500m, memory: 1Gi }   # reserved for the pod
+            limits: { cpu: "1", memory: 2Gi }      # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one service-mapper worker running
+metadata:                                        # the object's name and place
+  name: worker-service-mapper                    # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: worker-service-mapper, part-of: tsg }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one here; its twin runs in ai-remediation
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-service-mapper }  # pods labelled app=worker-service-mapper
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-service-mapper, component: worker, part-of: tsg }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_servicemapper]   # 2 threads on the tsg_servicemapper queue
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 125m, memory: 1Gi }   # reserved for the pod
+            limits: { cpu: 250m, memory: 2Gi }     # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+# The maintenance worker: the reaper (puts lost jobs back), library rebuilds and the intelligence refresh.
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one maintenance worker running
+metadata:                                        # the object's name and place
+  name: worker-maintenance                       # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: worker-maintenance, part-of: tsg }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one here; its twin runs in ai-remediation
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-maintenance }     # pods labelled app=worker-maintenance
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-maintenance, component: worker, part-of: tsg }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "3", -Q, tsg_maintenance]   # 3 threads on the tsg_maintenance queue
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 250m, memory: 1Gi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 2Gi }     # the most it may use (its jobs mostly wait on stores and the AI)
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+# ---------------------------------------------------------------- beat: the timer (exactly one, only here)
+# Two beats would send every scheduled job twice: never scale it above 1, never copy it to another project.
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps the one timer running
+metadata:                                        # the object's name and place
+  name: beat                                     # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: beat, part-of: tsg }            # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # exactly one
+  strategy: { type: Recreate }                   # the old pod is gone before the new one starts: never two at once
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: beat }                   # pods labelled app=beat
+  template:                                      # the pod to run
+    metadata:                                    # pod labels
+      labels: { app: beat, component: beat, part-of: tsg }   # component names it in the logs
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: beat                             # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, beat, -s, /tmp/beat/schedule]   # the timer; it keeps its schedule file in /tmp/beat
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          livenessProbe:                         # "alive" = it saved its schedule in the last 6 minutes (it saves every ~3)
+            exec: { command: [sh, -c, "find /tmp/beat -name 'schedule*' -newermt '-360 seconds' | grep -q ."] }   # look for a recent schedule file
+            initialDelaySeconds: 60              # first check after 1 minute
+            periodSeconds: 30                    # then every 30 s
+            timeoutSeconds: 10                   # each check may take 10 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          volumeMounts: [{ name: schedule, mountPath: /tmp/beat }]   # where the schedule file is written
+          resources:                             # CPU and memory
+            requests: { cpu: 50m, memory: 320Mi }  # reserved for the pod
+            limits: { cpu: 250m, memory: 512Mi }   # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+      volumes: [{ name: schedule, emptyDir: {} }]   # a scratch folder; a new pod simply starts a fresh schedule
+
+# ---------------------------------------------------------------- how the API is reached
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the API pods
+metadata:                                        # the object's name and place
+  name: api                                      # Service name (the Route below points here)
+  namespace: ai-threatgen                        # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # what it does
+  selector: { app: api }                         # sends traffic to the pods labelled app=api
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]   # port 8000 to the pods' port 8000
+
+---
+apiVersion: route.openshift.io/v1                # OpenShift Route API version
+kind: Route                                      # the public https address
+metadata:                                        # the object's name and place
+  name: api                                      # Route name
+  namespace: ai-threatgen                        # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # what it does
+  host: threatgen-api.apps.dda-desc-az1-01.desccii.local   # the address callers use
+  path: /                                        # every path
+  to: { kind: Service, name: api }               # forwards to the api Service
+  port: { targetPort: http }                     # on its http port
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
+
+# A node drain (cluster maintenance) never stops both API pods at once.
+---
+apiVersion: policy/v1                            # disruption budget API version
+kind: PodDisruptionBudget                        # limits voluntary stops
+metadata:                                        # the object's name and place
+  name: api                                      # budget name
+  namespace: ai-threatgen                        # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # the rule
+  minAvailable: 1                                # at least one API pod stays up
+  selector: { matchLabels: { app: api } }        # for the pods labelled app=api

@@ -1,0 +1,882 @@
+# deploy_common.yaml - TSG's monitoring and Flower in project ai-common (UAT is production): Prometheus (metrics
+# and alert rules), Alertmanager (firing alerts), Loki (logs), Alloy (ships the pods' logs to Loki), Grafana (the
+# one place to look), redis-exporter (jobs waiting per queue), kube-state-metrics (restarts, OOM kills) and Flower
+# (the live view of the background jobs); their volumes, Services, Routes and network rules; and the read-only
+# access they need in ai-threatgen and ai-remediation. Config files: configmap.yaml. Passwords: secrets.yaml.
+#
+# Public addresses, without login (owner's decision):
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/       Grafana: the one place to look
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/flower/        Flower: background jobs (view only)
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/prometheus/    Prometheus: raw metrics, alert rules
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/alertmanager/  Alertmanager: firing alerts, silences
+#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/loki/          Loki's API (read it through Grafana)
+#
+# Apply AFTER configmap.yaml and secrets.yaml (and after deploy_threatgen.yaml is rolled out):
+#   oc apply -f deploy/deploy_common.yaml
+#   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --watch
+# A running pod never sees a changed config file or password: after a change, restart TSG's monitoring pods
+# (the -l keeps the chatbot's pods in this project running):
+#   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
+# New release: Flower runs from the app image, so its tag (v2-f0560c76a491) changes with the deploy_*.yaml files.
+#
+# BEFORE THE FIRST APPLY - images. The cluster pulls only from the Quay mirror
+# <mirror> = quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc. Copy each monitoring image there from
+# a machine with internet access, before the first apply and after any version change below:
+#   docker.io/prom/prometheus:v3.15.0                             -> <mirror>/prometheus:v3.15.0
+#   docker.io/prom/alertmanager:v0.34.1                           -> <mirror>/alertmanager:v0.34.1
+#   docker.io/grafana/loki:3.7.8                                  -> <mirror>/loki:3.7.8
+#   docker.io/grafana/alloy:v1.20.1                               -> <mirror>/alloy:v1.20.1
+#   docker.io/grafana/grafana:12.4.12                             -> <mirror>/grafana:12.4.12
+#   docker.io/oliver006/redis_exporter:v1.93.0                    -> <mirror>/redis_exporter:v1.93.0
+#   registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0 -> <mirror>/kube-state-metrics:v2.20.0
+# For each one, e.g.:
+#   podman pull --platform linux/amd64 docker.io/prom/prometheus:v3.15.0
+#   podman tag  docker.io/prom/prometheus:v3.15.0 <mirror>/prometheus:v3.15.0
+#   podman push <mirror>/prometheus:v3.15.0
+# The version on each image line is the one pin: scripts/monitoring.py installs the same versions on a laptop.
+#
+# FIRST TIME ONLY: the old monitoring ran in ai-remediation, and a Deployment's selector cannot change. Delete it
+# there by name (this also frees the threatgen-grafana host for ai-common):
+#   oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
+#   oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
+#   oc -n ai-remediation get route    (delete any other Route still on threatgen-grafana.apps.dda-desc-az1-01.desccii.local)
+# The old volumes in ai-remediation (prometheus-data, loki-data, grafana-data) stay until the owner deletes them.
+# If "oc apply" here says "field is immutable", an older copy of that Deployment runs in ai-common: check it is
+# TSG's ("oc -n ai-common get deployment <name> --show-labels"), delete it by name and apply again.
+#
+# Budget: ai-common's quota is 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
+# 6 Gi and 60 Gi. These pods' limits: about 2.3 CPU and 4.1 Gi; a restart adds up to 0.5 CPU and 1.1 Gi (one new
+# pod each for alertmanager, redis-exporter, kube-state-metrics and flower); volumes 21 Gi.
+# Security: Flower and redis-exporter read tsg-secrets here, so whoever may read Secrets in ai-common can read
+# TSG's passwords and keys.
+# Step by step: deploy/DEPLOYMENT_GUIDE.md
+
+# ---------------------------------------------------------------- access: read-only, namespaced, no cluster rights
+# Prometheus finds the pods to scrape, Alloy reads their logs, kube-state-metrics watches them.
+apiVersion: v1                                   # core API version
+kind: ServiceAccount                             # the identity Prometheus runs as
+metadata:                                        # the object's name and place
+  name: prometheus                               # ServiceAccount name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: Role                                       # what may be done in this project
+metadata:                                        # the object's name and place
+  name: prometheus-find-pods                     # Role name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+rules:                                           # the allowed actions
+  - apiGroups: [""]                              # core objects
+    resources: [pods]                            # pods only
+    verbs: [get, list, watch]                    # read them, nothing else
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: RoleBinding                                # gives the Role to an identity
+metadata:                                        # the object's name and place
+  name: prometheus-find-pods                     # RoleBinding name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+roleRef:                                         # the Role given
+  apiGroup: rbac.authorization.k8s.io            # access rules API group
+  kind: Role                                     # a Role in this project
+  name: prometheus-find-pods                     # the Role above
+subjects:                                        # who gets it
+  - kind: ServiceAccount                         # an identity pods run as
+    name: prometheus                             # the prometheus ServiceAccount
+    namespace: ai-common                         # in this project
+
+---
+apiVersion: v1                                   # core API version
+kind: ServiceAccount                             # the identity Alloy runs as
+metadata:                                        # the object's name and place
+  name: alloy                                    # ServiceAccount name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: Role                                       # what may be done in this project
+metadata:                                        # the object's name and place
+  name: alloy-read-logs                          # Role name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+rules:                                           # the allowed actions
+  - apiGroups: [""]                              # core objects
+    resources: [pods, pods/log]                  # pods and their logs
+    verbs: [get, list, watch]                    # read them, nothing else
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: RoleBinding                                # gives the Role to an identity
+metadata:                                        # the object's name and place
+  name: alloy-read-logs                          # RoleBinding name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+roleRef:                                         # the Role given
+  apiGroup: rbac.authorization.k8s.io            # access rules API group
+  kind: Role                                     # a Role in this project
+  name: alloy-read-logs                          # the Role above
+subjects:                                        # who gets it
+  - kind: ServiceAccount                         # an identity pods run as
+    name: alloy                                  # the alloy ServiceAccount
+    namespace: ai-common                         # in this project
+
+---
+apiVersion: v1                                   # core API version
+kind: ServiceAccount                             # the identity kube-state-metrics runs as
+metadata:                                        # the object's name and place
+  name: kube-state-metrics                       # ServiceAccount name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: Role                                       # what may be done in this project
+metadata:                                        # the object's name and place
+  name: kube-state-metrics-read-pods             # Role name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+rules:                                           # the allowed actions
+  - apiGroups: [""]                              # core objects
+    resources: [pods]                            # pods only
+    verbs: [list, watch]                         # list and follow them, nothing else
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: RoleBinding                                # gives the Role to an identity
+metadata:                                        # the object's name and place
+  name: kube-state-metrics-read-pods             # RoleBinding name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+roleRef:                                         # the Role given
+  apiGroup: rbac.authorization.k8s.io            # access rules API group
+  kind: Role                                     # a Role in this project
+  name: kube-state-metrics-read-pods             # the Role above
+subjects:                                        # who gets it
+  - kind: ServiceAccount                         # an identity pods run as
+    name: kube-state-metrics                     # the kube-state-metrics ServiceAccount
+    namespace: ai-common                         # in this project
+
+# The app's two projects: the same three may read their pods (and Alloy their logs), nothing else.
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: Role                                       # what may be done in that project
+metadata:                                        # the object's name and place
+  name: tsg-monitoring-read-pods                 # Role name
+  namespace: ai-threatgen                        # the API's project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+rules:                                           # the allowed actions
+  - apiGroups: [""]                              # core objects
+    resources: [pods, pods/log]                  # pods and their logs
+    verbs: [get, list, watch]                    # read them, nothing else
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: RoleBinding                                # gives the Role to identities
+metadata:                                        # the object's name and place
+  name: tsg-monitoring-read-pods                 # RoleBinding name
+  namespace: ai-threatgen                        # the API's project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+roleRef:                                         # the Role given
+  apiGroup: rbac.authorization.k8s.io            # access rules API group
+  kind: Role                                     # a Role in this project
+  name: tsg-monitoring-read-pods                 # the Role above
+subjects:                                        # who gets it: the three monitoring identities from ai-common
+  - { kind: ServiceAccount, name: prometheus, namespace: ai-common }   # Prometheus: finds the pods to scrape
+  - { kind: ServiceAccount, name: alloy, namespace: ai-common }   # Alloy: reads the pods' logs
+  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-common }   # kube-state-metrics: watches the pods
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: Role                                       # what may be done in that project
+metadata:                                        # the object's name and place
+  name: tsg-monitoring-read-pods                 # Role name
+  namespace: ai-remediation                      # the twin workers' project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+rules:                                           # the allowed actions
+  - apiGroups: [""]                              # core objects
+    resources: [pods, pods/log]                  # pods and their logs
+    verbs: [get, list, watch]                    # read them, nothing else
+---
+apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
+kind: RoleBinding                                # gives the Role to identities
+metadata:                                        # the object's name and place
+  name: tsg-monitoring-read-pods                 # RoleBinding name
+  namespace: ai-remediation                      # the twin workers' project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+roleRef:                                         # the Role given
+  apiGroup: rbac.authorization.k8s.io            # access rules API group
+  kind: Role                                     # a Role in this project
+  name: tsg-monitoring-read-pods                 # the Role above
+subjects:                                        # who gets it: the three monitoring identities from ai-common
+  - { kind: ServiceAccount, name: prometheus, namespace: ai-common }   # Prometheus: finds the pods to scrape
+  - { kind: ServiceAccount, name: alloy, namespace: ai-common }   # Alloy: reads the pods' logs
+  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-common }   # kube-state-metrics: watches the pods
+
+# ---------------------------------------------------------------- volumes (21 Gi in all)
+---
+apiVersion: v1                                   # core API version
+kind: PersistentVolumeClaim                      # a disk that outlives the pod
+metadata:                                        # the object's name and place
+  name: prometheus-data                          # volume name (the prometheus Deployment mounts it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the disk wanted
+  accessModes: [ReadWriteOnce]                   # one pod writes at a time
+  resources:                                     # size
+    requests:                                    # asked for
+      storage: 10Gi                              # 15 days of metrics (Prometheus stops at 8 GB)
+---
+apiVersion: v1                                   # core API version
+kind: PersistentVolumeClaim                      # a disk that outlives the pod
+metadata:                                        # the object's name and place
+  name: loki-data                                # volume name (the loki Deployment mounts it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the disk wanted
+  accessModes: [ReadWriteOnce]                   # one pod writes at a time
+  resources:                                     # size
+    requests:                                    # asked for
+      storage: 10Gi                              # 7 days of logs
+---
+apiVersion: v1                                   # core API version
+kind: PersistentVolumeClaim                      # a disk that outlives the pod
+metadata:                                        # the object's name and place
+  name: grafana-data                             # volume name (the grafana Deployment mounts it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the disk wanted
+  accessModes: [ReadWriteOnce]                   # one pod writes at a time
+  resources:                                     # size
+    requests:                                    # asked for
+      storage: 1Gi                               # Grafana's own small database
+
+# ---------------------------------------------------------------- Prometheus (metrics, 15 days)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one Prometheus running
+metadata:                                        # the object's name and place
+  name: prometheus                               # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: prometheus, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy
+  strategy: { type: Recreate }                   # the old pod stops before the new one starts: one writer on a ReadWriteOnce volume
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: prometheus }             # pods labelled app=prometheus (cannot change after creation)
+  template:                                      # the pod to run
+    metadata:                                    # pod labels
+      labels: { app: prometheus, component: prometheus, part-of: tsg-monitoring }   # component becomes Prometheus' job name; part-of selects the network rules
+    spec:                                        # pod settings
+      serviceAccountName: prometheus             # runs as the prometheus identity (may read pods)
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (Quay)
+      containers:                                # the programs in the pod
+        - name: prometheus                       # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/prometheus:v3.15.0   # the mirrored Prometheus image
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          imagePullPolicy: IfNotPresent          # a tag never changes content: pull only if missing
+          args:                                  # start-up options
+            - --config.file=/etc/prometheus/prometheus.yml   # what to scrape (prometheus-config)
+            - --storage.tsdb.path=/prometheus    # metrics are kept on the volume
+            - --storage.tsdb.retention.time=15d  # keep 15 days
+            - --storage.tsdb.retention.size=8GB  # and never more than 8 GB (the volume is 10 Gi)
+            - --web.external-url=https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/prometheus/   # its public address (it serves under /prometheus)
+          ports: [{ name: http, containerPort: 9090 }]   # Prometheus' port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /prometheus/-/ready, port: 9090 }   # Prometheus' own ready check
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 10                    # then every 10 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 6                  # 6 failures in a row = not ready
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /prometheus/-/healthy, port: 9090 }   # Prometheus' own health check
+            initialDelaySeconds: 60              # first check after 1 minute
+            periodSeconds: 20                    # then every 20 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 6                  # 6 failures in a row = restart
+          volumeMounts:                          # folders from the volumes below
+            - { name: config, mountPath: /etc/prometheus }   # prometheus.yml and rules.yml
+            - { name: data, mountPath: /prometheus }   # the stored metrics
+          resources:                             # CPU and memory
+            requests: { cpu: 100m, memory: 512Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 1Gi }   # the most it may use
+      volumes:                                   # where the folders come from
+        - name: config                           # the config files
+          configMap: { name: prometheus-config }   # from configmap.yaml
+        - name: data                             # the stored metrics
+          persistentVolumeClaim: { claimName: prometheus-data }   # the prometheus-data volume above
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: prometheus                               # Service name (Grafana and the Route use it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: prometheus }                  # sends traffic to the pods labelled app=prometheus
+  ports: [{ name: http, port: 9090, targetPort: 9090 }]   # port 9090 to the pod's port 9090
+
+# ---------------------------------------------------------------- Alertmanager (no alert channel yet)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one Alertmanager running
+metadata:                                        # the object's name and place
+  name: alertmanager                             # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: alertmanager, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: alertmanager }           # pods labelled app=alertmanager
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: alertmanager, component: alertmanager, part-of: tsg-monitoring }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9093"               # on this port
+        prometheus.io/path: /alertmanager/metrics   # at this path
+    spec:                                        # pod settings
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: alertmanager                     # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alertmanager:v0.34.1   # the mirrored Alertmanager image
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          args:                                  # start-up options
+            - --config.file=/etc/alertmanager/alertmanager.yml   # receivers and routing (alertmanager-config)
+            - --storage.path=/alertmanager       # silences live on a scratch folder and are lost on restart (ponytail: add a volume if that hurts)
+            - --web.external-url=https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/alertmanager/   # its public address (it serves under /alertmanager)
+            - --cluster.listen-address=          # one Alertmanager: no peers to find
+          ports: [{ name: http, containerPort: 9093 }]   # Alertmanager's port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /alertmanager/-/ready, port: 9093 }   # Alertmanager's own ready check
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 10                    # then every 10 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 3                  # 3 failures in a row = not ready
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /alertmanager/-/healthy, port: 9093 }   # Alertmanager's own health check
+            initialDelaySeconds: 30              # first check after 30 s
+            periodSeconds: 20                    # then every 20 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 6                  # 6 failures in a row = restart
+          volumeMounts:                          # folders from the volumes below
+            - { name: config, mountPath: /etc/alertmanager }   # alertmanager.yml
+            - { name: data, mountPath: /alertmanager }   # silences and notification state
+          resources:                             # CPU and memory
+            requests: { cpu: 25m, memory: 64Mi }   # reserved for the pod
+            limits: { cpu: 100m, memory: 256Mi }   # the most it may use
+      volumes:                                   # where the folders come from
+        - name: config                           # the config file
+          configMap: { name: alertmanager-config }   # from configmap.yaml
+        - name: data                             # silences
+          emptyDir: {}                           # a scratch folder, emptied when the pod stops
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: alertmanager                             # Service name (Prometheus, Grafana and the Route use it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: alertmanager }                # sends traffic to the pods labelled app=alertmanager
+  ports: [{ name: http, port: 9093, targetPort: 9093 }]   # port 9093 to the pod's port 9093
+
+# ---------------------------------------------------------------- Loki (logs, 7 days)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one Loki running
+metadata:                                        # the object's name and place
+  name: loki                                     # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: loki, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy
+  strategy: { type: Recreate }                   # the old pod stops before the new one starts: one writer on a ReadWriteOnce volume
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: loki }                   # pods labelled app=loki
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: loki, component: loki, part-of: tsg-monitoring }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "3100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: loki                             # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/loki:3.7.8   # the mirrored Loki image
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          args: [-config.file=/etc/loki/loki.yaml, -config.expand-env=true, -target=all]   # its config (loki-config), with ${...} filled from the environment, all parts in one process
+          env:                                   # values the config file reads
+            - { name: LOKI_DATA, value: /loki }  # where Loki keeps its data (the volume)
+          ports:                                 # Loki's ports
+            - { name: http, containerPort: 3100 }   # the API (Alloy writes, Grafana reads)
+            - { name: grpc, containerPort: 9095 }   # internal calls between its parts
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /ready, port: 3100 }   # Loki's own ready check
+            initialDelaySeconds: 30              # first check after 30 s
+            periodSeconds: 10                    # then every 10 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 6                  # 6 failures in a row = not ready
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /ready, port: 3100 }   # the same check, with more patience
+            initialDelaySeconds: 90              # first check after 90 s
+            periodSeconds: 30                    # then every 30 s
+            timeoutSeconds: 10                   # each check may take 10 s
+            failureThreshold: 10                 # 10 failures in a row = restart
+          volumeMounts:                          # folders from the volumes below
+            - { name: config, mountPath: /etc/loki }   # loki.yaml
+            - { name: data, mountPath: /loki }   # the stored logs
+          resources:                             # CPU and memory
+            requests: { cpu: 100m, memory: 256Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 1Gi }   # the most it may use
+      volumes:                                   # where the folders come from
+        - name: config                           # the config file
+          configMap: { name: loki-config }       # from configmap.yaml
+        - name: data                             # the stored logs
+          persistentVolumeClaim: { claimName: loki-data }   # the loki-data volume above
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: loki                                     # Service name (Alloy, Grafana and the Route use it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: loki }                        # sends traffic to the pods labelled app=loki
+  ports: [{ name: http, port: 3100, targetPort: 3100 }]   # port 3100 to the pod's port 3100
+
+# ---------------------------------------------------------------- Alloy (the pods' logs -> Loki)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one Alloy running
+metadata:                                        # the object's name and place
+  name: alloy                                    # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: alloy, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one reader: two would ship every line twice
+  strategy: { type: Recreate }                   # the old pod stops before the new one starts: never two readers
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: alloy }                  # pods labelled app=alloy
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: alloy, component: alloy, part-of: tsg-monitoring }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "12345"              # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      serviceAccountName: alloy                  # runs as the alloy identity (may read pods and their logs)
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: alloy                            # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alloy:v1.20.1   # the mirrored Alloy image
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          args:                                  # start-up options
+            - run                                # run a config
+            - /etc/alloy/config.alloy            # this one (alloy-config): which pods' logs to read
+            - --server.http.listen-addr=0.0.0.0:12345   # its own web port (metrics, health)
+            - --storage.path=/tmp/alloy          # where it remembers how far it has read
+            - --disable-reporting                # sends no usage data to Grafana Labs
+          ports: [{ name: http, containerPort: 12345 }]   # Alloy's port
+          readinessProbe:                        # "ready" = working
+            httpGet: { path: /-/ready, port: 12345 }   # Alloy's own ready check
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 10                    # then every 10 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 3                  # 3 failures in a row = not ready
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /-/ready, port: 12345 }   # the same check, with more patience
+            initialDelaySeconds: 30              # first check after 30 s
+            periodSeconds: 20                    # then every 20 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 6                  # 6 failures in a row = restart
+          volumeMounts:                          # folders from the volumes below
+            - { name: config, mountPath: /etc/alloy }   # config.alloy
+            - { name: data, mountPath: /tmp/alloy }   # its read positions
+          resources:                             # CPU and memory
+            requests: { cpu: 50m, memory: 128Mi }   # reserved for the pod
+            limits: { cpu: 300m, memory: 512Mi }   # the most it may use
+      volumes:                                   # where the folders come from
+        - name: config                           # the config file
+          configMap: { name: alloy-config }      # from configmap.yaml
+        - name: data                             # read positions
+          emptyDir: {}                           # a scratch folder, emptied when the pod stops
+
+# ---------------------------------------------------------------- Grafana (the one place to look)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one Grafana running
+metadata:                                        # the object's name and place
+  name: grafana                                  # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: grafana, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy
+  strategy: { type: Recreate }                   # the old pod stops before the new one starts: one writer on a ReadWriteOnce volume
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: grafana }                # pods labelled app=grafana
+  template:                                      # the pod to run
+    metadata:                                    # pod labels
+      labels: { app: grafana, component: grafana, part-of: tsg-monitoring }   # component names it in the logs
+    spec:                                        # pod settings
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      initContainers:                            # runs to the end before Grafana starts
+        - name: set-admin-password               # Grafana reads the admin password only when it creates its database: this sets a changed one
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/grafana:12.4.12   # the same Grafana image (it has the grafana cli)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          command: [sh, -c]                      # run the shell line below
+          args:                                  # the shell line
+            - >-                                 # if Grafana's database exists, reset the admin password to the one in the Secret
+              if [ -f /var/lib/grafana/grafana.db ]; then
+              printf '%s' "$GF_SECURITY_ADMIN_PASSWORD" | grafana cli --homepath /usr/share/grafana
+              admin reset-admin-password --password-from-stdin; fi
+          env:                                   # its one setting
+            - name: GF_SECURITY_ADMIN_PASSWORD   # the admin password
+              valueFrom: { secretKeyRef: { name: tsg-monitoring, key: GF_SECURITY_ADMIN_PASSWORD } }   # from Secret tsg-monitoring (secrets.yaml)
+          volumeMounts:                          # folders from the volumes below
+            - { name: data, mountPath: /var/lib/grafana }   # Grafana's database
+          resources:                             # CPU and memory
+            requests: { cpu: 50m, memory: 64Mi }   # reserved while it runs
+            limits: { cpu: 200m, memory: 256Mi }   # the most it may use
+      containers:                                # the programs in the pod
+        - name: grafana                          # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/grafana:12.4.12   # the mirrored Grafana image
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          env:                                   # Grafana's settings
+            - name: GF_SECURITY_ADMIN_PASSWORD   # the admin password: only to change Grafana, looking needs no login
+              valueFrom: { secretKeyRef: { name: tsg-monitoring, key: GF_SECURITY_ADMIN_PASSWORD } }   # from Secret tsg-monitoring (secrets.yaml)
+            - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }   # anyone may look without a login
+            - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: "Viewer" }   # ... but only look, never change
+            - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }   # sends no usage data to Grafana Labs
+            - { name: GF_SERVER_ROOT_URL, value: "https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/" }   # its public address, for links
+            - { name: GF_SERVER_SERVE_FROM_SUB_PATH, value: "true" }   # it serves under /grafana
+            - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /var/lib/grafana/dashboards/tsg.json }   # the TSG dashboard is the home page
+            - { name: GRAFANA_DASHBOARDS, value: /var/lib/grafana/dashboards }   # the folder dashboards.yaml loads dashboards from
+            - { name: PROMETHEUS_URL, value: "http://prometheus:9090/prometheus" }   # data source: Prometheus (datasources.yaml reads it)
+            - { name: LOKI_URL, value: "http://loki:3100" }   # data source: Loki
+            - { name: ALERTMANAGER_URL, value: "http://alertmanager:9093/alertmanager" }   # data source: Alertmanager
+          ports: [{ name: http, containerPort: 3000 }]   # Grafana's port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /api/health, port: 3000 }   # Grafana's own health check
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 10                    # then every 10 s
+            timeoutSeconds: 5                    # each check may take 5 s
+            failureThreshold: 6                  # 6 failures in a row = not ready
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /api/health, port: 3000 }   # the same check, with more patience
+            initialDelaySeconds: 60              # first check after 1 minute
+            periodSeconds: 30                    # then every 30 s
+            timeoutSeconds: 10                   # each check may take 10 s
+            failureThreshold: 6                  # 6 failures in a row = restart
+          volumeMounts:                          # folders from the volumes below
+            - { name: data, mountPath: /var/lib/grafana }   # Grafana's database
+            - { name: provisioning, mountPath: /etc/grafana/provisioning }   # data sources and the dashboard folder, read at start
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }   # the TSG dashboard
+          resources:                             # CPU and memory
+            requests: { cpu: 100m, memory: 256Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 512Mi }   # the most it may use
+      volumes:                                   # where the folders come from
+        - name: data                             # Grafana's database
+          persistentVolumeClaim: { claimName: grafana-data }   # the grafana-data volume above
+        - name: provisioning                     # Grafana's start-up files
+          configMap:                             # from configmap.yaml
+            name: grafana-provisioning           # ConfigMap name
+            items:                               # each key to the sub-folder Grafana looks in
+              - { key: datasources.yaml, path: datasources/datasources.yaml }   # the data sources
+              - { key: dashboards.yaml, path: dashboards/dashboards.yaml }   # where the dashboards are
+        - name: dashboards                       # the dashboard
+          configMap: { name: grafana-dashboards }   # from configmap.yaml (tsg.json)
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: grafana                                  # Service name (the Route uses it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: grafana }                     # sends traffic to the pods labelled app=grafana
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]   # port 3000 to the pod's port 3000
+
+# ---------------------------------------------------------------- redis-exporter (jobs waiting per queue)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one redis-exporter running
+metadata:                                        # the object's name and place
+  name: redis-exporter                           # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: redis-exporter, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: redis-exporter }         # pods labelled app=redis-exporter
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: redis-exporter, component: redis-exporter, part-of: tsg-monitoring }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9121"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: redis-exporter                   # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/redis_exporter:v1.93.0   # the mirrored redis_exporter image
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          env:                                   # what to read
+            - name: REDIS_ADDR                   # the Redis to read: the app's own broker URL (password included)
+              valueFrom: { secretKeyRef: { name: tsg-secrets, key: CII_REDIS_CELERY_BROKER_URL } }   # one copy, so a password change reaches both
+            - { name: REDIS_DB, value: "1" }     # the job queues are Redis database 1
+            - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS   # each queue is a Redis list named tsg:<queue>: its length = jobs waiting
+              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_maintenance"   # the four queues
+            - { name: REDIS_EXPORTER_INCL_SYSTEM_METRICS, value: "false" }   # no host metrics
+          ports: [{ name: metrics, containerPort: 9121 }]   # its metrics port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /health, port: 9121 }   # its own health check
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 15                    # then every 15 s
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /health, port: 9121 }   # the same check
+            initialDelaySeconds: 30              # first check after 30 s
+            periodSeconds: 30                    # then every 30 s
+          resources:                             # CPU and memory
+            requests: { cpu: 25m, memory: 64Mi }   # reserved for the pod
+            limits: { cpu: 100m, memory: 128Mi }   # the most it may use
+
+# ---------------------------------------------------------------- kube-state-metrics (restarts, OOM kills)
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one kube-state-metrics running
+metadata:                                        # the object's name and place
+  name: kube-state-metrics                       # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: kube-state-metrics, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: kube-state-metrics }     # pods labelled app=kube-state-metrics
+  template:                                      # the pod to run
+    metadata:                                    # pod labels
+      labels: { app: kube-state-metrics, component: kube-state-metrics, part-of: tsg-monitoring }   # component names it in the logs
+    spec:                                        # pod settings
+      serviceAccountName: kube-state-metrics     # runs as the kube-state-metrics identity (may read pods)
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: kube-state-metrics               # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/kube-state-metrics:v2.20.0   # the mirrored kube-state-metrics image
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          args: ["--namespaces=ai-threatgen,ai-remediation,ai-common", --resources=pods]   # the pods of the app's two projects and this one (restarts, OOM kills, pods that never start)
+          ports: [{ name: metrics, containerPort: 8080 }]   # its metrics port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /healthz, port: 8080 }   # its own health check
+            initialDelaySeconds: 5               # first check after 5 s
+            periodSeconds: 20                    # then every 20 s
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /healthz, port: 8080 }   # the same check
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 30                    # then every 30 s
+          resources:                             # CPU and memory
+            requests: { cpu: 20m, memory: 64Mi }   # reserved for the pod
+            limits: { cpu: 100m, memory: 192Mi }   # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: kube-state-metrics                       # Service name (Prometheus scrapes it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: kube-state-metrics }          # sends traffic to the pods labelled app=kube-state-metrics
+  ports: [{ name: metrics, port: 8080, targetPort: 8080 }]   # port 8080 to the pod's port 8080
+
+# ---------------------------------------------------------------- Flower (the live view of the background jobs)
+# It runs from the app image and reads the app's settings (the app checks every setting at start). View only:
+# without a login Flower switches its own API off. A live view, not a record (runs and the audit are in MongoDB).
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one Flower running
+metadata:                                        # the object's name and place
+  name: flower                                   # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: flower, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # two would each read the job events and show half a picture
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: flower }                 # pods labelled app=flower
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: flower, component: flower, part-of: tsg-monitoring }   # component becomes Prometheus' job name; part-of = the monitoring's network rules
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "5555"               # on this port
+        prometheus.io/path: /flower/metrics      # at this path
+    spec:                                        # pod settings
+      automountServiceAccountToken: false        # Flower never calls the OpenShift API: no token in the pod
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      containers:                                # the programs in the pod
+        - name: flower                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, flower, --address=0.0.0.0, --port=5555, --url_prefix=flower]   # Flower on port 5555, under /flower
+          envFrom:                               # every app setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings (configmap.yaml)
+            - secretRef: { name: tsg-secrets }   # passwords and connection strings (secrets.yaml): the job queue's address
+          ports: [{ name: http, containerPort: 5555 }]   # Flower's port
+          readinessProbe:                        # "ready" = may receive requests
+            tcpSocket: { port: 5555 }            # the port accepts connections
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 10                    # then every 10 s
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            tcpSocket: { port: 5555 }            # the port accepts connections
+            initialDelaySeconds: 30              # first check after 30 s
+            periodSeconds: 30                    # then every 30 s
+          resources:                             # CPU and memory
+            requests: { cpu: 100m, memory: 256Mi }   # reserved for the pod
+            limits: { cpu: 200m, memory: 512Mi }   # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: flower                                   # Service name (the Route uses it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: flower }                      # sends traffic to the pods labelled app=flower
+  ports: [{ name: http, port: 5555, targetPort: 5555 }]   # port 5555 to the pod's port 5555
+
+# ---------------------------------------------------------------- public paths on the monitoring host
+---
+apiVersion: route.openshift.io/v1                # OpenShift Route API version
+kind: Route                                      # a public https address
+metadata:                                        # the object's name and place
+  name: grafana                                  # Route name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
+  path: /grafana                                 # this path
+  to: { kind: Service, name: grafana }           # forwards to the grafana Service
+  port: { targetPort: http }                     # on its http port
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
+---
+apiVersion: route.openshift.io/v1                # OpenShift Route API version
+kind: Route                                      # a public https address
+metadata:                                        # the object's name and place
+  name: prometheus                               # Route name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
+  path: /prometheus                              # this path
+  to: { kind: Service, name: prometheus }        # forwards to the prometheus Service
+  port: { targetPort: http }                     # on its http port
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
+---
+apiVersion: route.openshift.io/v1                # OpenShift Route API version
+kind: Route                                      # a public https address
+metadata:                                        # the object's name and place
+  name: alertmanager                             # Route name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
+  path: /alertmanager                            # this path
+  to: { kind: Service, name: alertmanager }      # forwards to the alertmanager Service
+  port: { targetPort: http }                     # on its http port
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
+---
+apiVersion: route.openshift.io/v1                # OpenShift Route API version
+kind: Route                                      # a public https address
+metadata:                                        # the object's name and place
+  name: loki                                     # Route name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
+  path: /loki                                    # this path
+  to: { kind: Service, name: loki }              # forwards to the loki Service
+  port: { targetPort: http }                     # on its http port
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
+---
+apiVersion: route.openshift.io/v1                # OpenShift Route API version
+kind: Route                                      # a public https address
+metadata:                                        # the object's name and place
+  name: flower                                   # Route name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
+  path: /flower                                  # this path
+  to: { kind: Service, name: flower }            # forwards to the flower Service
+  port: { targetPort: http }                     # on its http port
+  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
+
+# ---------------------------------------------------------------- network rules: TSG's monitoring pods only
+# They select only pods labelled part-of=tsg-monitoring: the chatbot's pods in this project are not touched.
+---
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: monitoring-from-router                   # rule name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the rule
+  podSelector: { matchLabels: { part-of: tsg-monitoring } }   # applies to TSG's monitoring pods only
+  policyTypes: [Ingress]                         # controls incoming connections
+  ingress:                                       # allowed incoming connections
+    - from:                                      # the OpenShift router (the public https addresses)
+        - namespaceSelector: { matchLabels: { policy-group.network.openshift.io/ingress: "" } }   # the router's project
+---
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: monitoring-from-project                  # rule name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the rule
+  podSelector: { matchLabels: { part-of: tsg-monitoring } }   # applies to TSG's monitoring pods only
+  policyTypes: [Ingress]                         # controls incoming connections
+  ingress:                                       # allowed incoming connections
+    - from:                                      # pods of this project (Grafana to Prometheus, Alloy to Loki, Prometheus to every exporter)
+        - podSelector: {}                        # any pod in this project

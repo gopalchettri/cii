@@ -14,7 +14,7 @@ from monitoring_install import REPO, ROOT, program
 
 OBS = REPO / "observability"
 #: Grafana settings the scripts set themselves: the links, the /grafana path and the home dashboard depend on
-#: them, so a GF_ line for one of these in .env is ignored (deploy/observability.ps1 has the same list, UAT).
+#: them, so a GF_ line for one of these in .env is ignored (UAT: grafana's env in deploy/deploy_common.yaml).
 FIXED_GRAFANA_SETTINGS = (
     "GF_SERVER_ROOT_URL",
     "GF_SERVER_SERVE_FROM_SUB_PATH",

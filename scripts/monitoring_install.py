@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 REPO = Path(__file__).resolve().parents[1]
-TEMPLATE = REPO / "deploy" / "observability.yaml"
+TEMPLATE = REPO / "deploy" / "deploy_common.yaml"
 #: Not under AppData: Windows gives a packaged app (the Claude desktop app, a Store Python) its own private
 #: AppData, and a stop from another window would not find what a start from this one installed.
 ROOT = Path.home() / ".tsg" / "monitoring-v2"

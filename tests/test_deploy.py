@@ -1,35 +1,47 @@
-"""The OpenShift delivery (M15, T-OPS-08; UAT is production): deploy/deploy.yaml (ai-threatgen),
-deploy/deploy.ai-remediation.yaml, the two networkpolicy files, the monitoring in ai-common, the settings
-generator and its safety gate, the deploy script's lists, each project's quota, and what goes into the image.
+"""The OpenShift delivery (M15, T-OPS-08; UAT is production), plain YAML applied with `oc apply -f` and every
+value written in it: deploy_threatgen.yaml (ai-threatgen), deploy_remediation.yaml (ai-remediation),
+deploy_common.yaml (the monitoring and Flower in ai-common), the two networkpolicy files, configmap.yaml
+and secrets.example.yaml (the template of the git-ignored secrets.yaml). The settings the pods load, each
+project's quota, the owner's two file rules (no kubernetes.io, a comment on every line) and what goes into
+the image.
 A broken file must fail here, not halfway through a rollout."""
 
-import importlib
-import json
 import math
 import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
+from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import Generation, Lease, Queue, ThreatFinding, Worker
+from app.core.constants import LITELLM_MODEL_PREFIX, Generation, Lease, Queue, ThreatFinding, Worker
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
 DEPLOY = REPO / "deploy"
-APP_FILES = {"ai-threatgen": DEPLOY / "deploy.yaml", "ai-remediation": DEPLOY / "deploy.ai-remediation.yaml"}
-NETWORK_FILES = {
-    "ai-threatgen": DEPLOY / "networkpolicy.yaml",
-    "ai-remediation": DEPLOY / "networkpolicy.ai-remediation.yaml",
+APP_FILES = {
+    "ai-threatgen": DEPLOY / "deploy_threatgen.yaml",
+    "ai-remediation": DEPLOY / "deploy_remediation.yaml",
 }
-MONITORING_FILES = (DEPLOY / "observability.yaml", DEPLOY / "flower.yaml")
+NETWORK_FILES = {
+    "ai-threatgen": DEPLOY / "networkpolicy_threatgen.yaml",
+    "ai-remediation": DEPLOY / "networkpolicy_remediation.yaml",
+}
+COMMON_FILE = DEPLOY / "deploy_common.yaml"
+CONFIG_FILE = DEPLOY / "configmap.yaml"
+SECRETS_FILE = DEPLOY / "secrets.example.yaml"
+SECRETS_COPY = DEPLOY / "secrets.yaml"  # the operator's copy with the real values: git-ignored, may be absent
+#: Every deploy file in git (the operator's secrets.yaml is not).
+YAML_FILES = sorted(path for path in DEPLOY.glob("*.yaml") if path != SECRETS_COPY)
 MONITORING_NAMESPACE = "ai-common"  # shared with the chatbot
-APP_IMAGE = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-COMMIT"
+WATCHED = [*APP_FILES, MONITORING_NAMESPACE]  # Flower and the monitoring itself run in ai-common
+MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
+APP_IMAGE = re.compile(rf"{re.escape(MIRROR)}/tsg-api:v2-[0-9a-f]{{12}}")
 API_HOST = "threatgen-api.apps.dda-desc-az1-01.desccii.local"
 MONITORING_HOST = "threatgen-grafana.apps.dda-desc-az1-01.desccii.local"
 #: Each project's quota in limits (CPU, memory Gi, storage Gi); in ai-common, TSG's share of it (the chatbot
@@ -51,18 +63,55 @@ SECRET_NAMES = {
     "CII_ADMIN_API_KEY",
     "CII_NVD_API_KEY",
 }
-
-
-def _generator():
-    sys.path.insert(0, str(REPO / "scripts"))
-    try:
-        return importlib.import_module("gen_openshift_config")
-    finally:
-        sys.path.remove(str(REPO / "scripts"))
+#: Connection strings carry their password: they are secrets, with the keys.
+CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
+#: The settings that name a store the pods must reach.
+STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
+DEFAULT_PORTS = {"redis": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
+#: Each AI model and the base URL its calls go to.
+GATEWAYS = (
+    ("CII_CHAT_MODEL", "CII_CHAT_BASE_URL"),
+    ("CII_CHAT_FALLBACK_MODEL", "CII_CHAT_BASE_URL"),
+    ("CII_EMBEDDING_MODEL", "CII_EMBEDDING_BASE_URL"),
+    ("CII_RERANK_MODEL", "CII_RERANK_BASE_URL"),
+)
+HARDENED = {
+    "allowPrivilegeEscalation": False,
+    "runAsNonRoot": True,
+    "capabilities": {"drop": ["ALL"]},
+    "seccompProfile": {"type": "RuntimeDefault"},
+}
+MONITORING_PEER = {"namespaceSelector": {}, "podSelector": {"matchLabels": {"part-of": "tsg-monitoring"}}}
+ROUTER_PEER = {"namespaceSelector": {"matchLabels": {"policy-group.network.openshift.io/ingress": ""}}}
+DNS = {(53, "UDP"), (53, "TCP"), (5353, "UDP"), (5353, "TCP")}  # 5353: where OpenShift's DNS pods listen
+#: Each config file configmap.yaml embeds, and the observability/ file the laptop runs.
+EMBEDDED_CONFIGS = {
+    "prometheus.yml": "observability/prometheus/prometheus.yml",
+    "rules.yml": "observability/prometheus/rules.yml",
+    "alertmanager.yml": "observability/alertmanager/alertmanager.yml",
+    "loki.yaml": "observability/loki/loki.yaml",
+    "config.alloy": "observability/alloy/uat.alloy",
+    "datasources.yaml": "observability/grafana/provisioning/datasources/datasources.yaml",
+    "dashboards.yaml": "observability/grafana/provisioning/dashboards/dashboards.yaml",
+    "tsg.json": "observability/grafana/dashboards/tsg.json",
+}
+#: How a pod names a ConfigMap or Secret it reads (envFrom, env valueFrom).
+REFERENCES = {
+    "configMapRef": "ConfigMap",
+    "secretRef": "Secret",
+    "configMapKeyRef": "ConfigMap",
+    "secretKeyRef": "Secret",
+}
+BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
 
 
 def _objects(*paths: Path, kind: str = "") -> list[dict]:
-    found = [o for path in paths for o in yaml.safe_load_all(path.read_text(encoding="utf-8")) if o]
+    """Every object in the files, a List's items one by one."""
+    found = []
+    for path in paths:
+        for document in yaml.safe_load_all(path.read_text(encoding="utf-8")):
+            if document:
+                found += document["items"] if document["kind"] == "List" else [document]
     return [o for o in found if not kind or o["kind"] == kind]
 
 
@@ -70,9 +119,60 @@ def _app_deployments() -> list[dict]:
     return _objects(*APP_FILES.values(), kind="Deployment")
 
 
+def _all_deployments() -> list[dict]:
+    return _objects(*APP_FILES.values(), COMMON_FILE, kind="Deployment")
+
+
+def _deployment(name: str) -> dict:
+    [found] = [d for d in _all_deployments() if d["metadata"]["name"] == name]
+    return found
+
+
 def _container(deployment: dict) -> dict:
     [container] = deployment["spec"]["template"]["spec"]["containers"]
     return container
+
+
+def _containers(deployment: dict) -> list[dict]:
+    spec = deployment["spec"]["template"]["spec"]
+    return spec["containers"] + spec.get("initContainers", [])
+
+
+def _shared(path: Path, name: str) -> dict[str, dict[str, str]]:
+    """Each project's copy of tsg-config or tsg-secrets: {namespace: its values}."""
+    return {
+        o["metadata"]["namespace"]: o.get("data") or o.get("stringData") or {}
+        for o in _objects(path)
+        if o["metadata"]["name"] == name
+    }
+
+
+def _settings() -> dict[str, str]:
+    return _shared(CONFIG_FILE, "tsg-config")["ai-threatgen"]
+
+
+def _secrets() -> dict[str, str]:
+    return _shared(SECRETS_FILE, "tsg-secrets")["ai-threatgen"]
+
+
+def _env_name(field: str) -> str:
+    """The environment name a setting is read from: the owner's own name (CONTROL_CANDIDATES), else
+    CII_<FIELD>."""
+    alias = Settings.model_fields[field].validation_alias
+    return alias if isinstance(alias, str) else f"CII_{field.upper()}"
+
+
+def _load_settings(environment: dict[str, str]) -> Settings:
+    """The app's settings as a pod builds them from exactly `environment`: no .env file and nothing from this
+    computer's environment, which is put back afterwards."""
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        return Settings(_env_file=None)  # type: ignore[call-arg]
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def _cpu(amount: str) -> float:
@@ -96,7 +196,7 @@ def _pod_limits(deployment: dict) -> tuple[float, float]:
 
 
 def _surge_pods(deployment: dict) -> int:
-    """The extra pods an update starts before it stops old ones (Kubernetes' default: 25%, rounded up)."""
+    """The extra pods an update starts before it stops old ones (the default: 25%, rounded up)."""
     strategy = deployment["spec"].get("strategy", {})
     if strategy.get("type") == "Recreate":
         return 0
@@ -106,76 +206,139 @@ def _surge_pods(deployment: dict) -> int:
     return surge
 
 
-def _script_names(block: str) -> dict[str, list[str]]:
-    """The names a deploy-script list holds: `$Monitoring = @(...)` -> {"": [...]}; an `[ordered]@{...}`
-    block of `$App = @(...)` lines -> {"App": [...], "Extra": [...]}."""
-    script = (DEPLOY / "deploy-uat.ps1").read_text(encoding="ascii")
-    found = re.search(rf"^\${block} = (?:@\((.*?)\)|\[ordered\]@\{{(.*?)^\}})$", script, re.M | re.S)
-    assert found, block
-    if found.group(1) is not None:
-        return {"": re.findall(r"'([^']+)'", found.group(1))}
+def _addresses(url: str) -> list[tuple[str, str]]:
+    """Every host and port a connection string names (MongoDB may list several), without its password."""
+    if not url:
+        return []
+    parts = urlsplit(url)
+    default = DEFAULT_PORTS.get(parts.scheme, "")
+    found = []
+    for host in parts.netloc.rpartition("@")[2].split(","):
+        name, _, port = host.partition(":")
+        found.append((name, port or default))
+    return found
+
+
+def _reachable(rules: Path) -> set[tuple[str, str]]:
+    """Every (IP, port) a NetworkPolicy file's egress rules let the pods reach (ipBlock rules only)."""
+    found = set()
+    for policy in _objects(rules, kind="NetworkPolicy"):
+        for rule in policy["spec"].get("egress", []):
+            hosts = [
+                peer["ipBlock"]["cidr"].removesuffix("/32")
+                for peer in rule.get("to", [])
+                if "ipBlock" in peer
+            ]
+            found |= {(host, str(port["port"])) for host in hosts for port in rule.get("ports", [])}
+    return found
+
+
+def _ports_open_to(rules: Path, peer: dict) -> set[int]:
+    """The ports a NetworkPolicy file's ingress rules open to `peer`."""
     return {
-        key: re.findall(r"'([^']+)'", names)
-        for key, names in re.findall(r"\$(\w+)\s*= @\(([^)]*)\)", found.group(2))
+        port["port"]
+        for policy in _objects(rules, kind="NetworkPolicy")
+        for rule in policy["spec"].get("ingress", [])
+        if peer in rule.get("from", [])
+        for port in rule.get("ports", [])
     }
 
 
-def _uat_values() -> dict[str, str]:
-    """A settings file that must pass the gate: .env.example's lines, with UAT's kind of values."""
-    values = _generator().read_env(REPO / ".env.example")
-    return values | {
-        "CII_ENV": "uat",
-        "CII_CORS_ORIGINS": "https://platform.example.local",
-        "CII_ADMIN_API_KEY": "a" * 40,
-        "EVIDENCE_SIMILARITY_THRESHOLD": "40",
-        "CII_DB_DSN": "mssql+pyodbc://tsg:pw@10.228.146.2:1444/EYShieldDB_Copy?driver=ODBC+Driver+17+for+SQL+Server",
-        "CII_MONGO_URL": "mongodb://tsg:pw@10.228.146.3:27018/?authSource=admin&directConnection=true",
-        "CII_REDIS_URL": "redis://:pw@10.228.146.4:6379/0",
-        "CII_REDIS_CELERY_BROKER_URL": "redis://:pw@10.228.146.4:6379/1",
-        "CII_AI_BYPASS_PROXY": "true",  # owner 2026-10-16: the pods call the AI gateway directly
-    }
+def _uncommented_lines(path: Path) -> list[str]:
+    """Each line without a trailing comment, skipping blanks, full-line comments, `---` and a block scalar's
+    content (an embedded file cannot carry YAML comments; its `key: |` line can)."""
+    found, block = [], None
+    for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        text, indent = line.strip(), len(line) - len(line.lstrip(" "))
+        if block is not None:
+            if not text or indent > block:
+                continue
+            block = None
+        if not text or text.startswith("#") or text == "---":
+            continue
+        if " #" not in line:
+            found.append(f"line {number}: {text[:80]}")
+        if BLOCK_SCALAR.search(line.split(" #")[0].rstrip()):
+            block = indent
+    return found
+
+
+def _reads(deployment: dict) -> set[tuple[str, str, str]]:
+    """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes, and
+    its volume claims; key "" = the whole object."""
+    spec = deployment["spec"]["template"]["spec"]
+    reads = set()
+    for container in _containers(deployment):
+        sources = container.get("envFrom", []) + [
+            v["valueFrom"] for v in container.get("env", []) if "valueFrom" in v
+        ]
+        for source in sources:
+            for reference, target in source.items():
+                if reference in REFERENCES:
+                    reads.add((REFERENCES[reference], target["name"], target.get("key", "")))
+    for volume in spec.get("volumes", []):
+        if "configMap" in volume:
+            keys = [item["key"] for item in volume["configMap"].get("items", [])] or [""]
+            reads |= {("ConfigMap", volume["configMap"]["name"], key) for key in keys}
+        if "persistentVolumeClaim" in volume:
+            reads.add(("PersistentVolumeClaim", volume["persistentVolumeClaim"]["claimName"], ""))
+    return reads
+
+
+@pytest.mark.parametrize("path", YAML_FILES, ids=lambda path: path.name)
+def test_no_deploy_file_names_kubernetes_io(path: Path) -> None:
+    """The owner's rule: no kubernetes.io anywhere, not in a label, selector, Secret type or comment."""
+    assert "kubernetes.io" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("path", YAML_FILES, ids=lambda path: path.name)
+def test_every_line_of_a_deploy_file_says_what_it_does(path: Path) -> None:
+    """The owner's rule: every YAML line carries a plain-English comment, but an embedded file's lines."""
+    assert _uncommented_lines(path) == []
 
 
 def test_every_object_is_in_its_file_s_project() -> None:
     for namespace, path in [*APP_FILES.items(), *NETWORK_FILES.items()]:
         assert {o["metadata"]["namespace"] for o in _objects(path)} == {namespace}, path.name
-    for item in _objects(*MONITORING_FILES):  # all in ai-common, but the right to read an app project's pods
+    for item in _objects(COMMON_FILE):  # all in ai-common, but the right to read an app project's pods
         where = item["metadata"]["namespace"]
         if item["metadata"]["name"] == "tsg-monitoring-read-pods":
             assert where in APP_FILES, item["kind"]
         else:
             assert where == MONITORING_NAMESPACE, (item["kind"], item["metadata"]["name"])
+    for path, shared in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
+        assert sorted(_shared(path, shared)) == sorted(WATCHED), path.name  # every project with TSG pods
+        others = {o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] != shared}
+        assert others == {MONITORING_NAMESPACE}, path.name  # the monitoring's files and Grafana's password
 
 
 def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened_and_sized() -> None:
+    flower = _deployment("flower")
+    assert flower["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+    images = {_container(flower)["image"]}  # Flower runs from the app image
     for deployment in _app_deployments():
         name, pod = deployment["metadata"]["name"], deployment["spec"]["template"]
-        labels = pod["metadata"]["labels"]
-        assert deployment["spec"]["selector"]["matchLabels"] == {"app.kubernetes.io/name": name}
-        assert labels["app.kubernetes.io/name"] == name and labels["app.kubernetes.io/part-of"] == "tsg"
-        assert pod["metadata"]["annotations"]["tsg/settings-fingerprint"] == "none"  # the script fills it
+        assert deployment["spec"]["selector"]["matchLabels"] == {"app": name}
+        # component: api, worker or beat (Prometheus' job); part-of: the network rules select it
+        assert pod["metadata"]["labels"] == {"app": name, "component": name.split("-")[0], "part-of": "tsg"}
         assert pod["spec"]["automountServiceAccountToken"] is False, name  # the app never calls the cluster
         assert pod["spec"]["imagePullSecrets"] == [{"name": "quay-pull"}]
         assert pod["spec"]["hostAliases"] == [{"ip": "10.231.255.253", "hostnames": ["llmapi.govai.ae"]}]
         container = _container(deployment)
-        assert container["image"] == APP_IMAGE, name  # one image; deploy-uat.ps1 puts the deployed tag in
+        images.add(container["image"])
         assert container["envFrom"] == [
             {"configMapRef": {"name": "tsg-config"}},
             {"secretRef": {"name": "tsg-secrets"}},
         ]
-        # Only the proxy is written inline: every setting (CII_AI_BYPASS_PROXY too) comes from the env file.
+        # Only the proxy is written inline: every setting (CII_AI_BYPASS_PROXY too) comes from tsg-config.
         assert {e["name"] for e in container["env"]} == {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "no_proxy"}
+        assert set(container["resources"]) == {"requests", "limits"}, name
         for amounts in container["resources"].values():
             assert set(amounts) == {"cpu", "memory"}, name
         assert container["livenessProbe"], name
-        assert container["securityContext"] == {
-            "allowPrivilegeEscalation": False,
-            "runAsNonRoot": True,
-            "capabilities": {"drop": ["ALL"]},
-            "seccompProfile": {"type": "RuntimeDefault"},
-        }
-    [flower] = _objects(DEPLOY / "flower.yaml", kind="Deployment")
-    assert flower["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+        assert container["securityContext"] == HARDENED, name
+    [image] = images  # one release: one tag on every app pod and Flower
+    assert APP_IMAGE.fullmatch(image), image
 
 
 def test_every_queue_has_a_worker_in_each_app_project() -> None:
@@ -187,6 +350,9 @@ def test_every_queue_has_a_worker_in_each_app_project() -> None:
             command = _container(deployment)["command"]
             if command[:4] == ["celery", "-A", "app.worker", "worker"]:
                 assert "--pool=threads" in command  # the worker refuses any other pool at start-up
+                # Ready only once it answers its own ping, so rollout status waits until the queue is served.
+                container = _container(deployment)
+                assert container["startupProbe"]["exec"] == container["livenessProbe"]["exec"], namespace
                 queues.setdefault(namespace, []).append(command[command.index("-Q") + 1])
     assert sorted(queues["ai-threatgen"]) == sorted(queues["ai-remediation"]) == sorted(ROUTED_QUEUES)
 
@@ -200,7 +366,9 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
     assert command[3] == "beat" and command[command.index("-s") + 1].startswith(mount["mountPath"] + "/")
     [api] = [d for d in deployments if d["metadata"]["name"] == "api"]
     assert api["metadata"]["namespace"] == "ai-threatgen"
-    budgets = {b["metadata"]["name"] for b in _objects(*APP_FILES.values(), kind="PodDisruptionBudget")}
+    budgets = {
+        b["metadata"]["name"] for b in _objects(*APP_FILES.values(), COMMON_FILE, kind="PodDisruptionBudget")
+    }
     assert budgets == {d["metadata"]["name"] for d in deployments if d["spec"]["replicas"] >= 2} == {"api"}
     for deployment in deployments:
         if deployment["spec"]["strategy"]["type"] == "RollingUpdate":
@@ -213,22 +381,19 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
 
 
 def test_every_project_stays_within_its_quota_during_an_update() -> None:
-    """Steady limits plus what an update adds: deploy-uat.ps1 rolls the app one Deployment at a time (the
-    largest surge counts), observability.ps1 restarts every monitoring Deployment at once (every surge
-    counts). Before: a worker update in ai-threatgen started a second 2 Gi pod, 12.5 Gi against 12 Gi."""
-    deployments = _objects(*APP_FILES.values(), *MONITORING_FILES, kind="Deployment")
-    claims = _objects(*MONITORING_FILES, kind="PersistentVolumeClaim")
+    """Steady limits plus what an update adds. `oc apply` of a new image and `oc rollout restart deployment`
+    roll every Deployment of a project at once, so every surge counts. A stopping pod also counts until it
+    has exited; that only delays its replacement (OpenShift retries a refused create), so it is not added."""
+    deployments = _all_deployments()
+    claims = _objects(COMMON_FILE, kind="PersistentVolumeClaim")
     for namespace, (cpu_quota, memory_quota, storage_quota) in QUOTAS.items():
-        steady_cpu = steady_memory = 0.0
-        surges = [(0.0, 0.0)]
+        cpu_needed = memory_needed = 0.0
         for deployment in (d for d in deployments if d["metadata"]["namespace"] == namespace):
             cpu, memory = _pod_limits(deployment)
-            replicas, extra = deployment["spec"].get("replicas", 1), _surge_pods(deployment)
-            steady_cpu, steady_memory = steady_cpu + replicas * cpu, steady_memory + replicas * memory
-            surges.append((extra * cpu, extra * memory))
-        added = sum if namespace == MONITORING_NAMESPACE else max
-        assert steady_cpu + added(cpu for cpu, _ in surges) <= cpu_quota, namespace
-        assert steady_memory + added(memory for _, memory in surges) <= memory_quota, namespace
+            pods = deployment["spec"].get("replicas", 1) + _surge_pods(deployment)
+            cpu_needed, memory_needed = cpu_needed + pods * cpu, memory_needed + pods * memory
+        assert cpu_needed <= cpu_quota, namespace
+        assert memory_needed <= memory_quota, namespace
         storage = sum(
             _gib(c["spec"]["resources"]["requests"]["storage"])
             for c in claims
@@ -237,46 +402,45 @@ def test_every_project_stays_within_its_quota_during_an_update() -> None:
         assert storage <= storage_quota, namespace
 
 
-def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_both_projects() -> None:
-    """The alerts read job="api" and job="worker" (the component label); each scraped pod declares its port;
-    the monitoring in ai-common reads each app project's pods through a Role there."""
+def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_all_three_projects() -> None:
+    """The alerts read job="api" and job="worker" (the pod label component); each scraped pod declares its
+    port; the monitoring in ai-common reads each app project's pods through a Role there."""
     rules = (REPO / "observability" / "prometheus" / "rules.yml").read_text(encoding="utf-8")
-    scraped: dict[str, set[str]] = {}
-    for deployment in _app_deployments():
-        pod = deployment["spec"]["template"]
-        port = pod["metadata"]["annotations"].get("prometheus.io/port")
-        if port:
-            assert int(port) in {p["containerPort"] for p in _container(deployment)["ports"]}
-            scraped.setdefault(pod["metadata"]["labels"]["app.kubernetes.io/component"], set()).add(port)
     assert {"api", "worker"} <= set(re.findall(r'job="(\w+)"', rules))
-    assert scraped == {"api": {"8000"}, "worker": {str(Settings.model_fields["worker_metrics_port"].default)}}
+    scraped: dict[str, set[str]] = {}
+    for deployment in _all_deployments():
+        pod = deployment["spec"]["template"]
+        port = pod["metadata"].get("annotations", {}).get("prometheus.io/port")
+        if port:
+            declared = {p["containerPort"] for c in _containers(deployment) for p in c.get("ports", [])}
+            assert int(port) in declared, deployment["metadata"]["name"]
+            if deployment["metadata"]["namespace"] in APP_FILES:
+                scraped.setdefault(pod["metadata"]["labels"]["component"], set()).add(port)
+    assert scraped == {"api": {"8000"}, "worker": {_settings()["CII_WORKER_METRICS_PORT"]}}
     prometheus = yaml.safe_load((REPO / "observability" / "prometheus" / "prometheus.yml").read_text("utf-8"))
-    watched = [*APP_FILES, MONITORING_NAMESPACE]  # Flower and the monitoring itself run in ai-common
     [pods_job] = [job for job in prometheus["scrape_configs"] if job["job_name"] == "pods"]
-    assert set(pods_job["kubernetes_sd_configs"][0]["namespaces"]["names"]) == set(watched)
-    assert all(
-        f'"{namespace}"' in (REPO / "observability" / "alloy" / "uat.alloy").read_text()
-        for namespace in watched
-    )
+    assert set(pods_job["kubernetes_sd_configs"][0]["namespaces"]["names"]) == set(WATCHED)
+    job_rule = {"source_labels": ["__meta_kubernetes_pod_label_component"], "target_label": "job"}
+    assert job_rule in pods_job["relabel_configs"]
+    alloy = (REPO / "observability" / "alloy" / "uat.alloy").read_text(encoding="utf-8")
+    assert all(f'"{namespace}"' in alloy for namespace in WATCHED)
+    for pod_label, log_label in (("part_of", "app"), ("component", "component")):
+        rule = (
+            rf'source_labels = \["__meta_kubernetes_pod_label_{pod_label}"\]\s+target_label\s+= "{log_label}"'
+        )
+        assert re.search(rule, alloy), log_label
     for namespace in APP_FILES:
         [binding] = [
-            b
-            for b in _objects(*MONITORING_FILES, kind="RoleBinding")
-            if b["metadata"]["namespace"] == namespace
+            b for b in _objects(COMMON_FILE, kind="RoleBinding") if b["metadata"]["namespace"] == namespace
         ]
         assert {(s["name"], s["namespace"]) for s in binding["subjects"]} == {
             (name, MONITORING_NAMESPACE) for name in ("prometheus", "alloy", "kube-state-metrics")
         }, namespace
-    [ksm] = [
-        d
-        for d in _objects(*MONITORING_FILES, kind="Deployment")
-        if d["metadata"]["name"] == "kube-state-metrics"
-    ]
-    assert f"--namespaces={','.join(watched)}" in _container(ksm)["args"]
+    assert f"--namespaces={','.join(WATCHED)}" in _container(_deployment("kube-state-metrics"))["args"]
 
 
 def test_every_route_is_https_on_its_host_and_no_two_share_a_path() -> None:
-    routes = _objects(*APP_FILES.values(), *MONITORING_FILES, kind="Route")
+    routes = _objects(*APP_FILES.values(), COMMON_FILE, kind="Route")
     places = [(r["metadata"]["namespace"], r["spec"]["host"], r["spec"]["path"]) for r in routes]
     assert len(places) == len(set(places))
     assert {place[:2] for place in places} == {
@@ -290,292 +454,171 @@ def test_every_route_is_https_on_its_host_and_no_two_share_a_path() -> None:
     )
 
 
-def test_both_projects_reach_the_same_stores_and_prometheus_reaches_the_app() -> None:
-    generator = _generator()
-    assert generator.reachable(NETWORK_FILES["ai-threatgen"]) == generator.reachable(
-        NETWORK_FILES["ai-remediation"]
-    )
+def test_both_projects_reach_the_same_stores_and_the_monitoring_and_router_reach_the_app() -> None:
+    """Prometheus (ai-common) scrapes the API and the workers, the router sends the public https calls to the
+    API, and every pod looks names up: a rule without these leaves the pods unreachable or blind."""
+    assert _reachable(NETWORK_FILES["ai-threatgen"]) == _reachable(NETWORK_FILES["ai-remediation"])
     scraped = {"ai-threatgen": {8000, 9100}, "ai-remediation": {9100}}  # the API and the worker metrics
     for namespace, path in NETWORK_FILES.items():
-        [ingress] = [p for p in _objects(path) if "Ingress" in p["spec"]["policyTypes"]]
-        from_monitoring = [
-            rule
-            for rule in ingress["spec"]["ingress"]
-            if {"kubernetes.io/metadata.name": MONITORING_NAMESPACE}
-            in [peer.get("namespaceSelector", {}).get("matchLabels") for peer in rule["from"]]
+        assert _ports_open_to(path, MONITORING_PEER) >= scraped[namespace], namespace
+        to_any_address = [
+            {(port["port"], port["protocol"]) for port in rule["ports"]}
+            for policy in _objects(path, kind="NetworkPolicy")
+            for rule in policy["spec"].get("egress", [])
+            if "to" not in rule
         ]
-        assert from_monitoring, namespace
-        assert {p["port"] for p in from_monitoring[0]["ports"]} >= scraped[namespace], namespace
+        assert any(ports >= DNS for ports in to_any_address), namespace
+    assert _ports_open_to(NETWORK_FILES["ai-threatgen"], ROUTER_PEER) == {8000}
 
 
-def test_the_deploy_script_rolls_and_recognises_every_v2_deployment() -> None:
-    """deploy-uat.ps1 rolls the app Deployments it names, the API last, and treats a Deployment of a v2
-    monitoring name that v2 did not make as v1's: its lists must be the files' Deployments."""
-    rollout = _script_names("Rollout")
-    for namespace, variable in (("ai-threatgen", "App"), ("ai-remediation", "Extra")):
-        in_file = [d["metadata"]["name"] for d in _objects(APP_FILES[namespace], kind="Deployment")]
-        assert sorted(rollout[variable]) == sorted(in_file), namespace
-    assert rollout["App"][-1] == "api"  # every queue has its worker before an API pod can be ready
-    # ai-remediation's workers roll before ai-threatgen's, so the API is the last rollout of the whole run:
-    # a new API may queue work only a new worker can do (D18).
-    assert list(rollout) == ["Extra", "App"]
-    in_files = {d["metadata"]["name"] for d in _objects(*MONITORING_FILES, kind="Deployment")}
-    assert set(_script_names("Monitoring")[""]) == in_files
+def test_each_project_may_reach_every_store_the_proxy_and_the_ai_gateway() -> None:
+    """Owner 2026-10-16 (G264): on OpenShift the AI gateway is called directly (CII_AI_BYPASS_PROXY=true) and
+    only the outside calls, the intel feeds, go through the proxy. Each project's egress rules allow every
+    store the secrets name (the template keeps the real host:port), the pods' proxy and the pinned gateway
+    address (hostAliases), so the rules and the addresses cannot drift apart."""
+    secrets = _secrets()
+    for namespace, app_file in APP_FILES.items():
+        allowed = _reachable(NETWORK_FILES[namespace])
+        assert ("10.61.192.2", "8080") in allowed, namespace  # the proxy the intel feeds go through
+        for key in STORES:
+            assert _addresses(secrets[key]), key
+            for address in _addresses(secrets[key]):
+                assert address in allowed, (namespace, key, address)
+        for deployment in _objects(app_file, kind="Deployment"):
+            name = deployment["metadata"]["name"]
+            env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
+            for proxy in ("HTTP_PROXY", "HTTPS_PROXY"):
+                assert set(_addresses(env[proxy])) <= allowed, (namespace, name, proxy)
+            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]:
+                assert (alias["ip"], "443") in allowed, (namespace, name)
 
 
-#: A UAT still on v1: its app, its Flower and exporters, and v1 programs under v2's monitoring names.
-V1_UAT = {
-    "ai-threatgen": ["tsg-api", "celery-worker", "tsg-beat", "tsg-flower"],
-    "ai-remediation": ["celery-worker", "celery-exporter", "mssql-exporter", "grafana", "prometheus"],
-}
-V1_ROUTES = {"ai-threatgen": API_HOST, "ai-remediation": MONITORING_HOST}
-#: v2's own monitoring left in ai-remediation from before its move to ai-common, labelled as v2's.
-V2_BEFORE_THE_MOVE = {"deployments": ["flower", "alertmanager"], "route": "grafana"}
-OURS = {"app.kubernetes.io/part-of": "tsg-observability"}
+def test_every_app_pod_lists_its_pinned_ai_gateway_on_both_no_proxy_spellings() -> None:
+    """D23 (UAT, 2026-10-21): through the corporate proxy every AI call timed out; the pods list the gateway
+    on NO_PROXY and no_proxy themselves, so every tool in the pod goes direct, the app's own bypass aside."""
+    for deployment in _app_deployments():
+        hosts = {
+            name
+            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]
+            for name in alias["hostnames"]
+        }
+        env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
+        assert env["NO_PROXY"] == env["no_proxy"], deployment["metadata"]["name"]
+        assert hosts <= set(env["NO_PROXY"].split(",")), deployment["metadata"]["name"]
 
 
-#: deploy-uat.ps1 run against a stand-in cluster: oc logs each call and answers from the v1 files, DNS and
-#: the smoke test's curl always succeed, and the YES prompt gets the test's answer. The gate is the real one.
-STAND_INS = r"""param([string] $Answer, [string] $Script, [switch] $SkipMonitoring)
-$Fixtures = $PSScriptRoot
-function oc {
-    $line = $args -join ' '
-    Add-Content -LiteralPath (Join-Path $Fixtures 'oc-calls.txt') -Value $line
-    $global:LASTEXITCODE = 0
-    if ($line -match '^-n (\S+) get (deployment|route) -o json$') {
-        return Get-Content -Raw (Join-Path $Fixtures ($Matches[2] + '-' + $Matches[1] + '.json'))
+def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_pod() -> None:
+    """A LiteLLM gateway (litellm_proxy/ models) the pods cannot call directly times out through the proxy:
+    it must be https on 443 (the only port the egress rules open to it), pinned (hostAliases) and on
+    NO_PROXY and no_proxy in every app pod, and the app must bypass the proxy for it."""
+    settings = _settings()
+    assert settings["CII_AI_BYPASS_PROXY"] == "true"
+    gateways = {
+        settings[url] for model, url in GATEWAYS if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)
     }
-    if ($line -match 'secret quay-pull -o json$') { return '{"metadata": {"name": "q", "namespace": "n"}}' }
-    if ($line -match '-o json$') { return '{"items": []}' }
-    if ($line -match 'spec\.paused') { return 'true' }
-    if ($line -match 'status\.ingress') { return 'True' }
-}
-function Resolve-DnsName { }
-function curl.exe { '200' }
-function Read-Host { $Answer }
-& $Script -AppImage registry/tsg-api:v2-test -EnvFile (Join-Path $Fixtures '.env.uat') `
-    -SkipMonitoring:$SkipMonitoring
-"""
-
-
-def _run_deploy_script(tmp_path: Path, answer: str, *switches: str) -> tuple[str, list[str]]:
-    """deploy-uat.ps1 on a UAT still running V1_UAT: what it printed and every oc call it made. Its safety
-    copies and rollback.ps1 go to tmp_path/.tsg."""
-    for namespace, names in V1_UAT.items():
-        deployments = [
-            {"metadata": {"name": name, "namespace": namespace, "labels": {}}, "spec": {"replicas": 1}}
-            for name in names
-        ]
-        routes = [
-            {
-                "metadata": {"name": "v1", "namespace": namespace, "labels": {}},
-                "spec": {"host": V1_ROUTES[namespace]},
+    assert gateways
+    for address in gateways:
+        parts = urlsplit(address)
+        assert parts.scheme == "https" and parts.port in (None, 443), address
+        for deployment in _app_deployments():
+            name = deployment["metadata"]["name"]
+            pinned = {
+                host
+                for alias in deployment["spec"]["template"]["spec"]["hostAliases"]
+                for host in alias["hostnames"]
             }
-        ]
-        if namespace == "ai-remediation":
-            deployments += [
-                {"metadata": {"name": name, "namespace": namespace, "labels": OURS}, "spec": {"replicas": 1}}
-                for name in V2_BEFORE_THE_MOVE["deployments"]
-            ]
-            routes.append(
-                {
-                    "metadata": {"name": V2_BEFORE_THE_MOVE["route"], "namespace": namespace, "labels": OURS},
-                    "spec": {"host": MONITORING_HOST},
-                }
-            )
-        (tmp_path / f"deployment-{namespace}.json").write_text(
-            json.dumps({"items": deployments}), encoding="ascii"
-        )
-        (tmp_path / f"route-{namespace}.json").write_text(json.dumps({"items": routes}), encoding="ascii")
-    settings = "".join(f"{key}={value}\n" for key, value in _uat_values().items())
-    (tmp_path / ".env.uat").write_text(settings, encoding="utf-8")
-    (tmp_path / "stand-ins.ps1").write_text(STAND_INS, encoding="ascii")
-    powershell = [shutil.which("powershell") or "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
-    result = subprocess.run(  # noqa: S603
-        [
-            *powershell,
-            "-File",
-            str(tmp_path / "stand-ins.ps1"),
-            "-Answer",
-            answer,
-            "-Script",
-            str(DEPLOY / "deploy-uat.ps1"),
-            *switches,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-        env=os.environ | {"USERPROFILE": str(tmp_path)},
-    )
-    calls = tmp_path / "oc-calls.txt"
-    return result.stdout + result.stderr, calls.read_text().splitlines() if calls.exists() else []
+            env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
+            assert parts.hostname in pinned, (address, name)
+            for variable in ("NO_PROXY", "no_proxy"):
+                assert parts.hostname in env[variable].split(","), (address, name, variable)
 
 
-def _v1_plan(tmp_path: Path, *switches: str) -> dict[str, set[str]]:
-    """What deploy-uat.ps1 says it will do to v1, answered "no", so nothing is changed."""
-    output, _ = _run_deploy_script(tmp_path, "no", *switches)
-    assert "Stopped before changing anything" in output, output
-    found = {
-        "stopped": r"scale (\S+) from 1 to 0",
-        "deleted": r"delete v1's monitoring program (\S+) ",
-        "routes": r"delete Route (\S+)/v1 on ",
-        "old programs": r"delete v2's old monitoring program (\S+) ",
-        "old routes": r"delete v2's old Route (\S+) on ",
-    }
-    return {what: set(re.findall(pattern, output)) for what, pattern in found.items()}
-
-
-@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
-def test_skip_monitoring_stops_v1_s_app_but_leaves_all_of_v1_s_monitoring_running(tmp_path: Path) -> None:
-    """Before: -SkipMonitoring installed none of v2's monitoring, yet still deleted v1's Grafana, Prometheus
-    and their Route and stopped v1's Flower and exporters, so UAT was left with no monitoring at all. A full
-    run also frees the monitoring host in ai-remediation for ai-common: v2's own monitoring there goes too."""
-    assert set(_script_names("V1Monitoring")[""]) <= {
-        n for names in _script_names("V1").values() for n in names
-    }
-    full = _v1_plan(tmp_path)
-    assert full == {
-        "stopped": {
-            "ai-threatgen/tsg-api",
-            "ai-threatgen/celery-worker",
-            "ai-threatgen/tsg-beat",
-            "ai-threatgen/tsg-flower",
-            "ai-remediation/celery-worker",
-            "ai-remediation/celery-exporter",
-            "ai-remediation/mssql-exporter",
-        },
-        "deleted": {"ai-remediation/grafana", "ai-remediation/prometheus"},
-        "routes": {"ai-threatgen", "ai-remediation"},
-        "old programs": {f"ai-remediation/{name}" for name in V2_BEFORE_THE_MOVE["deployments"]},
-        "old routes": {f"ai-remediation/{V2_BEFORE_THE_MOVE['route']}"},
-    }
-    kept = _v1_plan(tmp_path, "-SkipMonitoring")
-    assert kept == {
-        "stopped": {
-            "ai-threatgen/tsg-api",
-            "ai-threatgen/celery-worker",
-            "ai-threatgen/tsg-beat",
-            "ai-remediation/celery-worker",
-        },
-        "deleted": set(),
-        "routes": {"ai-threatgen"},
-        "old programs": set(),
-        "old routes": set(),
-    }
-
-
-@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
-def test_a_full_run_stops_v1_rolls_each_v2_deployment_by_its_name_and_can_be_rolled_back(
-    tmp_path: Path,
-) -> None:
-    """Before: `$v1 = @()` emptied $V1 (PowerShell names ignore case), so v1's app was never stopped before
-    v2 started on the same Redis, and the rollback had nothing to start again; and a step's block read
-    Invoke-Step's own $Name in place of the caller's $name, so step 6 asked oc about a Deployment named "is
-    ai-threatgen/api held" and stopped with every Deployment on hold."""
-    output, calls = _run_deploy_script(tmp_path, "YES", "-SkipMonitoring")
-    assert "Done." in output, output
-    v1_app = [("ai-threatgen", "tsg-api"), ("ai-threatgen", "celery-worker"), ("ai-threatgen", "tsg-beat")]
-    v1_app.append(("ai-remediation", "celery-worker"))
-    stopped = [(ns, name) for ns, name in v1_app if f"-n {ns} scale deployment/{name} --replicas=0" in calls]
-    assert stopped == v1_app
-    namespaces = {"App": "ai-threatgen", "Extra": "ai-remediation"}
-    rollout = [(namespaces[key], name) for key, names in _script_names("Rollout").items() for name in names]
-    asked = [
-        (ns, name)
-        for ns, name in rollout
-        if f"-n {ns} get deployment {name} -o jsonpath={{.spec.paused}}" in calls
-    ]
-    assert asked == rollout
-    resumes = [
-        call.split() for call in calls if " rollout resume deployment/" in call
-    ]  # -n <ns> rollout resume
-    assert [(words[1], words[4].removeprefix("deployment/")) for words in resumes] == rollout  # the API last
-    [rollback] = (tmp_path / ".tsg" / "uat-backups").glob("*/rollback.ps1")
-    text = rollback.read_text(encoding="utf-8")
-    assert all(f"oc -n {ns} scale deployment {name} --replicas=1" in text for ns, name in v1_app)
-
-
-def test_secrets_go_to_the_secret_plain_settings_to_the_config_map_and_other_lines_nowhere() -> None:
-    generator = _generator()
-    extra = {
-        "GRAFANA_ADMIN_PASSWORD": "x",
-        "GF_AUTH_ANONYMOUS_ENABLED": "true",
-        "CII_LOG_DIR": "logs",
-        "OLD": "1",
-    }
-    values = _uat_values() | extra
-    config, secret, left_out = generator.split_settings(values)
-    assert set(secret) == SECRET_NAMES
-    assert "CONTROL_CANDIDATES" in config and "CII_ENV" in config and not set(config) & set(secret)
-    assert left_out == sorted({key for key in values if key.startswith("GF_")} | set(extra))
-
-
-def test_the_manifests_carry_no_secret_in_plain_text_and_are_the_names_the_pods_read() -> None:
-    generator = _generator()
-    config, secret, _ = generator.split_settings(_uat_values() | {"THREAT_CONTEXT_COUNTRY": "Émirats"})
-    text = generator.manifests(config, secret)
-    assert text.isascii() and "a" * 40 not in text and ":pw@" not in text
-    config_map, secret_object = yaml.safe_load_all(text)
-    read = _container(_app_deployments()[0])["envFrom"]
-    assert read == [
-        {"configMapRef": {"name": config_map["metadata"]["name"]}},
-        {"secretRef": {"name": secret_object["metadata"]["name"]}},
-    ]
-    assert config_map["data"]["THREAT_CONTEXT_COUNTRY"] == "Émirats"
-
-
-def test_the_gate_passes_a_good_file_and_names_each_problem_never_its_value(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    generator = _generator()
+def test_the_pods_settings_load_and_a_wildcard_origin_stops_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pod builds its settings from tsg-config and tsg-secrets alone: a missing required setting, a short
+    admin key or a "*" CORS origin would stop every pod at start-up, so it must fail here first."""
     monkeypatch.setenv("TSG_TEST_SENTINEL", "kept")
-    good = _uat_values()
-    assert generator.settings_problems(good) == [] and generator.store_problems(good) == []
-    bad = {key: value for key, value in good.items() if key != "CONTROL_CANDIDATES"}
-    problems = generator.settings_problems(
-        bad | {"CII_CORS_ORIGINS": "*", "CII_ADMIN_API_KEY": "short-secret"}
-    )
-    # The laptop's .env sets CONTROL_CANDIDATES: the gate reads only the settings it is given.
-    assert any(problem.startswith("CONTROL_CANDIDATES: Field required") for problem in problems)
-    assert "short-secret" not in "".join(problems)
-    assert generator.settings_problems(good | {"CII_CORS_ORIGINS": "*"})
-    # Owner 2026-10-16 (G264): the AI direct, only the outside calls (the intel feeds) through the proxy.
-    bypass = generator.settings_problems(good | {"CII_AI_BYPASS_PROXY": "false"})
-    assert [problem.split(":")[0] for problem in bypass] == ["CII_AI_BYPASS_PROXY"]
+    environment = _settings() | _secrets()
+    assert _load_settings(environment).ai_bypass_proxy is True
+    assert environment["CII_CORS_ORIGINS"] != "*"
+    with pytest.raises(ValidationError):
+        _load_settings(environment | {"CII_CORS_ORIGINS": "*"})
     assert os.environ["TSG_TEST_SENTINEL"] == "kept"  # this process's environment is put back
 
 
-def test_a_store_the_network_rules_do_not_allow_is_named_for_each_project_without_its_password() -> None:
-    generator = _generator()
-    moved = _uat_values() | {"CII_MONGO_URL": "mongodb://tsg:topsecret@10.0.0.9:27018,10.228.146.3:27018/"}
-    problems = generator.store_problems(moved)
-    assert [p.split(" is ")[0] for p in problems] == ["CII_MONGO_URL: 10.0.0.9:27018"] * 2
-    assert (
-        "deploy/networkpolicy.yaml" in problems[0]
-        and "deploy/networkpolicy.ai-remediation.yaml" in problems[1]
+def test_the_secret_template_holds_every_secret_and_placeholders_only() -> None:
+    """Every key, password and connection string goes to tsg-secrets, never to tsg-config; the template in
+    git holds no real value, and the operator's copy with the real values is git-ignored."""
+    secrets = _secrets()
+    assert set(secrets) == SECRET_NAMES
+    secret_fields = CONNECTIONS | {
+        field for field, info in Settings.model_fields.items() if info.annotation is SecretStr
+    }
+    assert {_env_name(field) for field in secret_fields} <= SECRET_NAMES
+    assert all("CHANGE_ME" in value for value in secrets.values() if value)
+    # Every store login names its user: a Redis URL without one logs in as Redis' "default" user.
+    assert all(urlsplit(secrets[key]).username for key in STORES)
+    assert not set(_settings()) & SECRET_NAMES
+    git = shutil.which("git") or "git"
+    ignored = subprocess.run(  # noqa: S603
+        [git, "check-ignore", "-q", str(SECRETS_COPY.relative_to(REPO).as_posix())],
+        cwd=REPO,
+        check=False,
     )
-    assert "topsecret" not in "".join(problems)
-    assert generator.addresses("redis://10.228.146.4/0") == [("10.228.146.4", "6379")]
-    assert generator.monitoring_problems({"GRAFANA_ADMIN_PASSWORD": "x" * 15})
-    assert generator.monitoring_problems({"GRAFANA_ADMIN_PASSWORD": "x" * 16}) == []
-    assert generator.monitoring_problems({}) == []  # no line: no Grafana login (random password, never shown)
+    assert ignored.returncode == 0, "deploy/secrets.yaml must be git-ignored"
 
 
-def test_the_fingerprint_changes_with_a_setting_and_only_then(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    generator = _generator()
-    path = tmp_path / ".env.uat"
+def test_every_project_gets_the_same_settings_and_only_ones_the_app_reads() -> None:
+    """The three projects' pods share one queue and one database: their settings cannot differ. A key the app
+    does not read (a typo, an old name) would be silently ignored."""
+    for path, name in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
+        copies = list(_shared(path, name).values())
+        assert len(copies) == len(WATCHED) and all(copy == copies[0] for copy in copies), name
+    read = {_env_name(field) for field in Settings.model_fields}
+    assert set(_settings()) - read == set()
 
-    def fingerprint(values: dict[str, str]) -> str:
-        path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
-        assert generator.main([str(path), "--fingerprint"]) == 0
-        return capsys.readouterr().out
 
-    first = fingerprint(_uat_values())
-    assert re.fullmatch(r"[0-9a-f]{16}", first) and fingerprint(_uat_values()) == first
-    assert fingerprint(_uat_values() | {"CII_CHAT_API_KEY": "rotated"}) != first
+def test_every_config_map_secret_and_volume_a_pod_reads_is_written_in_its_project() -> None:
+    """A pod that reads a ConfigMap, Secret, key or volume its project does not have never starts."""
+    written = {
+        (o["kind"], o["metadata"]["namespace"], o["metadata"]["name"]): o.get("data")
+        or o.get("stringData")
+        or {}
+        for o in _objects(CONFIG_FILE, SECRETS_FILE, COMMON_FILE)
+        if o["kind"] in {"ConfigMap", "Secret", "PersistentVolumeClaim"}
+    }
+    for deployment in _all_deployments():
+        namespace, name = deployment["metadata"]["namespace"], deployment["metadata"]["name"]
+        for kind, target, key in _reads(deployment):
+            assert (kind, namespace, target) in written, (namespace, name, kind, target)
+            assert not key or key in written[(kind, namespace, target)], (namespace, name, target, key)
+
+
+def test_each_embedded_monitoring_config_is_its_observability_file_byte_for_byte() -> None:
+    """The laptop runs observability/'s files and OpenShift configmap.yaml's copies: a change made to one
+    only must fail here."""
+    embedded = {
+        key: text
+        for config_map in _objects(CONFIG_FILE, kind="ConfigMap")
+        if config_map["metadata"]["name"] != "tsg-config"
+        for key, text in config_map["data"].items()
+    }
+    assert set(embedded) == set(EMBEDDED_CONFIGS)
+    differ = [
+        key
+        for key, source in EMBEDDED_CONFIGS.items()
+        if embedded[key].encode("utf-8") != (REPO / source).read_bytes()
+    ]
+    assert differ == []
+
+
+def test_monitoring_images_come_from_the_mirror_with_a_pinned_version() -> None:
+    """The cluster pulls only from the Quay mirror, and a moving tag (latest) would change a pod at its next
+    restart. Flower runs from the app image, checked with the app pods."""
+    for deployment in _objects(COMMON_FILE, kind="Deployment"):
+        if deployment["metadata"]["name"] != "flower":
+            for container in _containers(deployment):
+                pinned = rf"{re.escape(MIRROR)}/[\w.-]+:v?\d+\.\d+\.\d+"
+                assert re.fullmatch(pinned, container["image"]), container["image"]
 
 
 def test_the_image_gets_only_what_it_runs() -> None:
@@ -593,83 +636,26 @@ def test_the_image_gets_only_what_it_runs() -> None:
     assert "local" not in re.findall(r"\[(\w+)\]", dockerfile) and "\nUSER 10001\n" in dockerfile
 
 
-def test_the_pods_may_reach_the_ai_gateway_directly_and_the_proxy_for_the_feeds() -> None:
-    """Owner 2026-10-16 (G264): on OpenShift the AI gateway is called directly (CII_AI_BYPASS_PROXY=true) and
-    only the outside calls, the intel feeds, go through the proxy: each project's egress rules allow both, so
-    the pinned gateway address (hostAliases) and the rules cannot drift apart."""
-    generator = _generator()
-    for namespace, app_file in APP_FILES.items():
-        allowed = generator.reachable(NETWORK_FILES[namespace])
-        assert ("10.61.192.2", "8080") in allowed, namespace  # the proxy: the intel feeds
-        for deployment in _objects(app_file, kind="Deployment"):
-            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]:
-                assert (alias["ip"], "443") in allowed, (namespace, deployment["metadata"]["name"])
-
-
-GATEWAY_SETTINGS = {
-    "CII_CHAT_MODEL": "litellm_proxy/kimi-k2.5",
-    "CII_CHAT_BASE_URL": "https://llmapi.govai.ae",
-    "CII_EMBEDDING_MODEL": "litellm_proxy/qwen3-embedding-8b",
-    "CII_EMBEDDING_BASE_URL": "https://llmapi.govai.ae",
-    "CII_RERANK_MODEL": "litellm_proxy/qwen3-reranker-8b",
-    "CII_RERANK_BASE_URL": "https://llmapi.govai.ae",
-}
-
-
-def test_every_app_pod_lists_its_pinned_ai_gateway_on_both_no_proxy_spellings() -> None:
-    """D23 (UAT, 2026-10-21): through the corporate proxy every AI call timed out; the pods list the gateway
-    on NO_PROXY and no_proxy themselves, so every tool in the pod goes direct, the app's own bypass aside."""
-    for deployment in _app_deployments():
-        hosts = {
-            name
-            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]
-            for name in alias["hostnames"]
-        }
-        env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
-        assert env["NO_PROXY"] == env["no_proxy"], deployment["metadata"]["name"]
-        assert hosts <= set(env["NO_PROXY"].split(",")), deployment["metadata"]["name"]
-
-
-def test_the_gate_refuses_an_ai_gateway_the_pods_cannot_call_directly() -> None:
-    generator = _generator()
-    good = _uat_values() | GATEWAY_SETTINGS
-    assert generator.gateway_problems(good) == []
-    for url in ("http://llmapi.govai.ae", "https://llmapi.govai.ae:8443"):
-        problems = generator.gateway_problems(good | {"CII_CHAT_BASE_URL": url})
-        assert problems == [
-            "CII_CHAT_BASE_URL: the AI gateway must be https on port 443, the port the egress rules open"
-        ]
-    moved = generator.gateway_problems(good | {"CII_EMBEDDING_BASE_URL": "https://llm.other.ae"})
-    pods = len(_app_deployments())
-    assert len(moved) == 3 * pods  # each pod: not pinned, not on NO_PROXY, not on no_proxy
-    assert all(problem.startswith("CII_EMBEDDING_BASE_URL: llm.other.ae is not ") for problem in moved)
-    not_the_gateway = {"CII_CHAT_MODEL": "openai/gpt"}  # not a LiteLLM gateway model: nothing to check
-    assert generator.gateway_problems(good | not_the_gateway) == []
-
-
-def test_the_deploy_gate_runs_the_gateway_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    generator, path = _generator(), tmp_path / ".env.uat"
-    values = _uat_values() | GATEWAY_SETTINGS | {"CII_CHAT_BASE_URL": "http://llmapi.govai.ae"}
-    path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
-    assert generator.main([str(path), "--gate"]) == 1
-    assert "GATE FAILED  CII_CHAT_BASE_URL: the AI gateway must be https" in capsys.readouterr().out
-
-
 def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
-    """Threads x AI calls per job x replicas near CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and
-    times out the job), far fewer leaves the cap unused."""
-    cap = Settings.model_fields["max_concurrent_ai_calls"].default
+    """Threads x AI calls per job x replicas near CII_MAX_CONCURRENT_AI_CALLS, in each project (either one
+    alone serves every queue while its twin restarts): more only waits on a slot (and times out the job), far
+    fewer leaves the cap unused."""
+    cap = int(_settings()["CII_MAX_CONCURRENT_AI_CALLS"])
     calls_per_job = {
         Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,
         Queue.SCENARIOS: Generation.WRITER_BATCH,
     }
-    for deployment in _objects(APP_FILES["ai-threatgen"], kind="Deployment"):
-        command = _container(deployment)["command"]
-        queue = command[command.index("-Q") + 1] if "-Q" in command else None
-        if queue in calls_per_job:
-            threads = int(command[command.index("-c") + 1])
-            asked = threads * calls_per_job[queue] * deployment["spec"]["replicas"]
-            assert threads == Worker.THREADS and cap / 2 < asked <= cap, (queue, asked, cap)
+    for namespace, path in APP_FILES.items():
+        checked = set()
+        for deployment in _objects(path, kind="Deployment"):
+            command = _container(deployment)["command"]
+            queue = command[command.index("-Q") + 1] if "-Q" in command else None
+            if queue in calls_per_job:
+                threads = int(command[command.index("-c") + 1])
+                asked = threads * calls_per_job[queue] * deployment["spec"]["replicas"]
+                assert threads == Worker.THREADS and cap / 2 < asked <= cap, (namespace, queue, asked, cap)
+                checked.add(queue)
+        assert checked == set(calls_per_job), namespace
 
 
 def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:

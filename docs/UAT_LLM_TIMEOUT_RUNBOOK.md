@@ -148,39 +148,44 @@ UAT works again here. But a later deployment would bring back the old settings, 
 
 ## Before step 5 (read all of it)
 
+- **Since D25 the deploy is plain YAML applied with `oc`.** The scripts this runbook used before
+  (`deploy-uat.ps1`, `observability.ps1`, `scripts/gen_openshift_config.py`) are gone. Step 5 now follows
+  `deploy/DEPLOYMENT_GUIDE.md`, step by step; the step numbers below ("guide step N") are that guide's.
 - **Step 5 is not only the NO_PROXY fix.** If step 1 showed v1 names, step 5 is the switch from v1 to v2. It replaces
   UAT's app with everything in this repository's `main` branch:
   - the `NO_PROXY` fix (D23);
   - a plan covers every system linked to the asset (D20);
   - a control counts only on systems of its asset type (D21);
   - prompt `remediation-4`, and at most 5 controls per scenario (D22).
-- **It causes downtime.** After you type `YES`, the script stops v1, and UAT is down until the new API is running:
-  up to about 15 minutes for v1 to stop, then each deployment in turn. Agree the release and a downtime window first.
+- **It causes downtime.** Guide step 6 stops v1 and deletes the old v2 Deployments; UAT is down until the new API is
+  running (guide step 9). Agree the release and a downtime window first.
 - **The DBA goes first.** The DBA must install every `scripts\sql\tsg_*.sql` in the UAT database, then
   `grants.sql`. Leave out any file whose name has `copy` in it. This includes the new `tsg_GetAssetContext.sql` (D20)
   and must be done **before** the new app starts: runs the new app starts on the old procedure keep only their named
   systems for good, and the deploy does not check it. Get the DBA's confirmation.
-- **`.env.uat` must pass the check.** Today it has `*` in `CII_CORS_ORIGINS`: replace it with the real address(es) of
-  the platform UI. The deploy refuses `*`.
-- **The monitoring images must be in the image mirror.** By default step 5 also installs the monitoring in
-  `ai-common` (D24) and removes the one in `ai-remediation`. These images must already be in `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`
-  ("STEP 0" at the top of `deploy\observability.yaml`): `prometheus:v3.15.0`, `alertmanager:v0.34.1`, `loki:3.7.8`,
-  `alloy:v1.20.1`, `grafana:12.4.12`, `redis_exporter:v1.93.0`, `kube-state-metrics:v2.20.0`. Check each one in the
-  Quay web UI (`/repository/dda-desc/<name>?tab=tags`). If the images aren't there yet, either wait with step 5
-  (Part A keeps UAT working), or add `-SkipMonitoring` to step 5.2's command. That switch leaves all of v1's
-  monitoring running as it is (its Flower, exporters, Grafana and their Route) and installs none of v2's.
+- **`CII_CORS_ORIGINS` must be a real address.** In `deploy\configmap.yaml` replace `CHANGE_ME_UI_ORIGIN` with the
+  real address(es) of the platform UI (guide step 5). `*` stops the app at start.
+- **The monitoring images must be in the image mirror** (guide step 0). Step 5 also installs the monitoring in
+  `ai-common` (D24) and removes the one in `ai-remediation`. These images must already be in
+  `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`: `prometheus:v3.15.0`, `alertmanager:v0.34.1`,
+  `loki:3.7.8`, `alloy:v1.20.1`, `grafana:12.4.12`, `redis_exporter:v1.93.0`, `kube-state-metrics:v2.20.0` (the
+  `image:` lines of `deploy\deploy_common.yaml`). Check each one in the Quay web UI
+  (`/repository/dda-desc/<name>?tab=tags`). If the images aren't there yet, wait with step 5 (Part A keeps UAT
+  working).
 - **Tools:** run steps 5 and 6 in PowerShell, on a machine that can reach the cluster, with:
   - `git`;
   - Docker (Docker Desktop, Linux containers);
   - a login to the image registry;
-  - this repository with its `.venv` (`.venv\Scripts\python.exe` must exist).
-- If PowerShell says "running scripts is disabled on this system", run each script as
-  `powershell -ExecutionPolicy Bypass -File .\deploy\<script>.ps1 ...`.
+  - the `oc` command, with admin rights in `ai-threatgen`, `ai-remediation` and `ai-common`.
+- If PowerShell says "running scripts is disabled on this system", run the build script as
+  `powershell -ExecutionPolicy Bypass -File .\deploy\build-image.ps1`.
 
 ## Step 5: deploy from the repository
 
-**5.1 Build and push the image.** In PowerShell, in the `cii` folder (the one with `pyproject.toml`) of a clone of
-`https://github.com/gopalchettri/cii.git`:
+Since D25 the deploy is plain YAML applied with `oc`: follow `deploy/DEPLOYMENT_GUIDE.md`. In short, in PowerShell,
+in the `cii` folder (the one with `pyproject.toml`) of a clone of `https://github.com/gopalchettri/cii.git`:
+
+**5.1 Get the code and build the image** (guide steps 0 and 1):
 
 ```
 git checkout main
@@ -191,59 +196,42 @@ docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
 ```
 
 - `git branch --contains 0f62fd8` must print `* main`. If it prints nothing, this checkout doesn't have the fix: stop.
-  The `master` branch has neither the fix nor these scripts.
+  The `master` branch has neither the fix nor these files.
 - The script stops if `app\`, `pyproject.toml`, `requirements.txt`, `Dockerfile` or `.dockerignore` have local
   changes. Build from a clean checkout of `main`.
 - `docker push failed ... unauthorized` means the `docker login` failed: log in and run it again.
 - The build downloads from the internet (Docker Hub, Debian, packages.microsoft.com, PyPI); the push needs the
-  company network. If no machine has both:
-  1. Run `.\deploy\build-image.ps1 -NoPush` on the internet machine.
-  2. Run `docker save -o tsg-api-v2.tar <image>` there, and copy the file across.
-  3. On the company machine, run `docker load -i tsg-api-v2.tar`, then `docker login`, then `docker push <image>`.
-- At the end it prints `Image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-<commit>`.
-  Copy that whole name.
+  company network. If no machine has both, follow the `-NoPush` note in guide step 1.
+- At the end it prints `Tag:   v2-<commit>`. Write it down.
 
-**5.2 Deploy.** With the image from 5.1:
+**5.2 Deploy** (guide steps 2 to 10, in this order):
 
-```
-.\deploy\deploy-uat.ps1 -AppImage <the image from 5.1>
-```
+1. Put the tag in `deploy\deploy_threatgen.yaml`, `deploy\deploy_remediation.yaml` and `deploy\deploy_common.yaml`
+   (guide step 2).
+2. First time only: create the image pull secret `quay-pull` in `ai-remediation` and `ai-common` (guide step 3).
+3. Copy `deploy\secrets.example.yaml` to `deploy\secrets.yaml`, fill in every `CHANGE_ME` and apply it (guide step 4).
+   The file holds passwords: never commit or share it.
+4. Set `CII_CORS_ORIGINS` in `deploy\configmap.yaml` and apply it (guide step 5).
+5. First time only: stop v1 (scaled to 0, not deleted), delete the old v2 Deployments, the old monitoring in
+   `ai-remediation`, and v1's Routes on `threatgen-api` and `threatgen-grafana` after saving a copy (guide step 6).
+   This is where the downtime starts.
+6. Apply the network rules, then `deploy_remediation.yaml`, `deploy_threatgen.yaml` and `deploy_common.yaml`, waiting
+   for each rollout: every worker first, the API last (guide steps 7 to 10).
 
-- It first checks the settings. The check refuses to deploy if the AI service is missing from `NO_PROXY` in any pod,
-  or if `CII_CORS_ORIGINS` has `*`.
-- Near the start it prints `safety copies and rollback.ps1 in <folder>`. **Write that folder down.** The copies hold
-  passwords: never commit or share them.
-- It then lists what it will change and asks you to **type `YES`**. Read the list first:
-  - it scales v1's deployments to 0;
-  - it deletes v1's Routes on `threatgen-api` and `threatgen-grafana`;
-  - it deletes the monitoring programs in `ai-remediation` (v1's, and v2's own from before the move to
-    `ai-common`) and their Routes: `ai-common` needs the `threatgen-grafana` host. Their volumes are kept.
-  Type `YES` only inside the agreed window. Anything else stops the script before it changes anything.
-- It then deploys every worker of both projects, the API last, and the new monitoring.
-- At the end it prints `Undo: powershell -File "<folder>\rollback.ps1"` and a "Next, once" list (see step 6.3).
-
-**5.3 Do not delete the old (v1) deployments yet.** The deploy only scaled them to 0. The rollback in 5.4 needs them,
+**5.3 Do not delete the old (v1) deployments yet.** Guide step 6 only scaled them to 0. Going back (5.4) needs them,
 and they still carry the `NO_PROXY` from step 3.
 - Check with `oc -n ai-threatgen get deploy` and `oc -n ai-remediation get deploy`: the old ones show READY `0/0` or
-  empty, and the new ones (`api`, `worker-*`, `beat`, `flower`, the monitoring) show `1/1`.
+  empty, and the new ones (`api`, `worker-*`, `beat`) show `1/1` (`api` `2/2`); `oc -n ai-common get deploy` shows
+  `flower` and the monitoring.
 - Delete the old ones (`oc -n <project> delete deploy/<old-name>`) only after step 6 passes **and** v2 is accepted
   in UAT.
 
-**5.4 If step 5 fails and UAT must work again now**, run the rollback the script wrote. It is in the folder from
-5.2, which is also the newest folder here:
+**5.4 If step 5 fails and UAT must work again now**, go back to v1 as the guide's "Roll back" section says: scale the
+new Deployments to 0, delete the new Route `api`, apply the copies of v1's Routes (guide step 6.5) and scale v1 back
+up to its old counts (guide step 6.1). Step 3's `NO_PROXY` is still on v1. v1's monitoring does not come back this
+way: bring it back from the v1 repository.
 
-```
-$last = Get-ChildItem "$env:USERPROFILE\.tsg\uat-backups" -Directory | Where-Object Name -ne 'v1' | Sort-Object Name | Select-Object -Last 1
-powershell -File "$($last.FullName)\rollback.ps1"
-```
-
-What it does:
-- It stops v2, removes v2's Routes and monitoring, puts v1's Routes back, and scales v1 back to its old counts. Step
-  3's `NO_PROXY` is still on v1.
-- It does **not** bring back v1's monitoring. Do that from the v1 repository with
-  `.\deploy\deploy-uat.ps1 -MonitoringOnly`.
-
-Then do step 4 again. Once the cause is fixed, run 5.2 again: it is safe to repeat.
+Then do step 4 again. Once the cause is fixed, do 5.2 again (leave out its first-time-only parts already done).
 
 ## Step 6: final check
 
@@ -264,7 +252,8 @@ Then do step 4 again. Once the cause is fixed, run 5.2 again: it is safe to repe
    `https://threatgen-api.apps.dda-desc-az1-01.desccii.local`. The first time v2 runs, two refusals can happen that have
    nothing to do with the proxy, so don't go back to step 3 for them:
    - **401 "API key invalid":** v2 has its own key store. Create a key once; the admin key is `CII_ADMIN_API_KEY`
-     from `.env.uat`. The new `api_key` is shown **once**: copy it into the console's X-API-Key field.
+     from `deploy\secrets.yaml` (guide step 12). The new `api_key` is shown **once**: copy it into the console's
+     X-API-Key field.
 
      ```
      curl.exe -k -X POST https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/api-clients -H "X-Admin-Key: <CII_ADMIN_API_KEY>" -H "Content-Type: application/json" -d '{\"name\":\"uat-console\",\"description\":\"uat\"}'

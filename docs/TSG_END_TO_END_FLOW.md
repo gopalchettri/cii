@@ -3703,12 +3703,15 @@ stateDiagram-v2
 - **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the worker
   (`tsg_threats,tsg_scenarios`), the maintenance worker and beat, starts the monitoring tools, and waits for
   `/ready`. `.\run.ps1 stop` stops them cleanly.
-- **OpenShift:** `deploy/deploy.yaml` runs the API (2 replicas), one worker per queue and beat in project
-  `ai-threatgen`; `deploy/deploy.ai-remediation.yaml` adds a second worker for every queue in project
-  `ai-remediation`. The monitoring (`deploy/observability.yaml`) and Flower run in project `ai-common`, which
-  TSG shares with the chatbot (D24). Settings come
-  from `.env.uat` through `scripts/gen_openshift_config.py` (ConfigMap `tsg-config`, Secret `tsg-secrets`);
-  `deploy/deploy-uat.ps1` gates, applies, rolls out and smoke-tests.
+- **OpenShift:** plain YAML applied with `oc apply -f` (D25). `deploy/deploy_threatgen.yaml` runs the API
+  (2 replicas), one worker per queue and beat in project `ai-threatgen`; `deploy/deploy_remediation.yaml` adds a
+  second worker for every queue in project `ai-remediation`; `deploy/deploy_common.yaml` runs the monitoring and
+  Flower in project `ai-common`, which TSG shares with the chatbot (D24). Settings are `deploy/configmap.yaml`
+  (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
+  (Secret `tsg-secrets`, copied from `deploy/secrets.example.yaml`, never committed); network rules are
+  `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
+  settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each rollout awaited.
+  `deploy/DEPLOYMENT_GUIDE.md` has every step and check.
 
 ---
 
