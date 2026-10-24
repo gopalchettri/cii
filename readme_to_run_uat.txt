@@ -11,7 +11,7 @@ cd "C:\GopalChettri\Projects\desc-ai-modules\cii"
 # The OpenShift v2 pods must be scaled to 0 first too: they share the Redis queues and would take this laptop's jobs:
 #   oc -n ai-threatgen scale deployment -l part-of=tsg --replicas=0
 #   oc -n ai-remediation scale deployment -l part-of=tsg --replicas=0
-#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md steps 10 and 11)
+#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, steps 11 and 12)
 # The DBA must already have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
 
 # The env MUST be named .venv (dot-prefixed).
@@ -124,7 +124,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #    4. Check: step 2 again on every changed deployment (both lines list llmapi.govai.ae, "default:200,exit=0");
 #       one threat run and one plan finish.
 #    5. For good: deploy from this repository, step by step: deploy\DEPLOYMENT_GUIDE.md (plain YAML applied with
-#       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first): its step 6.
+#       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first): its Part 2, step 9.
 #       Never delete the old v1 deployments before v2 is accepted: they are the way back (the guide's "Roll back").
 #    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line (both projects):
 #         oc -n <project> logs deploy/worker-scenarios | findstr ai.gateway_route

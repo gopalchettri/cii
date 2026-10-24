@@ -13,15 +13,14 @@ The first time, do Parts 1, 2 and 3 in order. For each later version, do Part 4 
 log in (Part 2, step 1), run `oc -n ai-common get deployment -l part-of=tsg-monitoring`: `No resources found` means
 it is the first time; a list of 8 means do Part 4.
 
-Run every command in **PowerShell**, in the code folder: the folder that holds `pyproject.toml` (`cii-main` from the
-ZIP, `cii` from git). Open PowerShell and go there first, e.g.:
+Run every command in **PowerShell**, in the code folder: the folder that holds `pyproject.toml`. From a GitHub ZIP it is named `cii-<branch>` (e.g. `cii-master`; a `/` in the branch name becomes `-`), and Windows' **Extract All** often puts it one folder deeper (e.g. `C:\work\cii-master\cii-master`). From git it is `cii`. Open PowerShell and go there first, e.g.:
 
 ```powershell
 cd C:\work\cii-main
 Test-Path pyproject.toml
 ```
 
-**You should see:** `True`. In every new PowerShell window, run the `cd` line again.
+**You should see:** `True`. **If `False`:** run `Get-ChildItem C:\work -Recurse -Filter pyproject.toml | Select-Object -First 1 DirectoryName` and `cd` to the folder it prints, then run `Test-Path pyproject.toml` again. In every new PowerShell window, run the `cd` line again.
 
 Replace `<...>` with your value. Each step says what to **do**, what **you should see**, and what to do **if not**.
 
@@ -35,7 +34,9 @@ Have all of these ready:
       (steps 3 and 4) also download from the internet: registry.access.redhat.com, cdn-ubi.redhat.com, github.com,
       dl.grafana.com, packages.microsoft.com, pypi.org, files.pythonhosted.org and proxy.golang.org.
 - [ ] The `oc` command (OpenShift CLI). Get it in the OpenShift web console: the **?** menu (top right) →
-      **Command Line Tools**. Put `oc.exe` in a folder on your PATH.
+      **Command Line Tools** → **Download oc for Windows**. Unzip `oc.exe` into e.g. `C:\tools`, run
+      `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';C:\tools', 'User')`
+      and open a new PowerShell window. Check: `oc version --client` prints `Client Version: 4...`.
 - [ ] An OpenShift user with **admin** rights in `ai-threatgen`, `ai-remediation` and `ai-common` (the monitoring
       creates roles in them). Ask the cluster admin.
 - [ ] A Quay user name and password that may push to `dda-desc`. Ask the cluster admin.
@@ -58,7 +59,7 @@ Have all of these ready:
 **Do:**
 
 1. Open the OpenShift web console (usually https://console-openshift-console.apps.dda-desc-az1-01.desccii.local).
-   Click your name (top right) → **Copy login command** → **Display Token**.
+   Click your name (top right) → **Copy login command**. A new tab opens: log in again if it asks, then click **Display Token**.
 2. Copy the line that starts with `oc login --token=` and run it in PowerShell.
 3. Run these. `docker login` asks for your Quay user name and password:
 
@@ -164,7 +165,7 @@ oc -n ai-common create secret generic quay-pull --type=kubernetes.io/dockerconfi
 Remove-Item "$env:TEMP\.dockerconfigjson"
 ```
 
-**You should see:** `secret/quay-pull created` twice.
+**You should see:** first the file it wrote (e.g. `C:\Users\<you>\AppData\Local\Temp\.dockerconfigjson`), then `secret/quay-pull created` twice.
 
 **If it says `already exists`:** fine, it is there.
 
@@ -188,6 +189,7 @@ Save and close.
 - In the connection strings (`CII_DB_DSN`, `CII_MONGO_URL`, `CII_REDIS_URL`, `CII_REDIS_CELERY_BROKER_URL`), a user
   name or password with a special character (`@ : / ? # % &`) must be URL-encoded. Run this, type the password,
   and paste what it prints: `[uri]::EscapeDataString((Read-Host 'Password'))`
+- Redis with a password but no user name: delete `CHANGE_ME_USER` and keep the `:`, e.g. `redis://:<password>@10.228.146.4:6379/0` (in both Redis lines).
 - The admin key and the Grafana password are yours to make up. This makes one (64 characters):
   `-join (1..2 | ForEach-Object { [guid]::NewGuid().ToString('N') })`
 - No NVD key: delete `CHANGE_ME` so the line reads `CII_NVD_API_KEY: ""`.
@@ -318,12 +320,14 @@ curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/health
 curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/ready
 ```
 
-**You should see:** first `{"status":"ok"}`, then a longer answer that starts with `{"status":"ready"`.
+**You should see:** first `{"status":"ok"}`, then a longer answer that starts with `{"status":"ready"` and contains `"sql":true`. `"sql":false` does not stop `ready`, but the library pages fail: the `CII_DB_DSN` line in `secrets.yaml` is wrong. Fix it (step 7), then restart the pods (Part 5, "Change a setting or secret later").
 
 **If the second answer starts with `{"status":"not_ready"`:** each `false` in it is a store, or a queue with no
 worker, that is missing. Wait a minute and try again; still `not_ready`: Part 5.
 
 **If nothing is printed:** this PC cannot reach the API's address. Ask the network team.
+
+**If it prints an HTML page with `Application is not available`:** the address works, but no API pod is ready or another Route holds the address. Run `oc -n ai-threatgen get route api` (`HostAlreadyClaimed` in it: delete the old Route, Part 2, step 9) and `oc -n ai-threatgen get pods` (a pod not `1/1 Running`: Part 5).
 
 ### Step 15. Check Grafana
 
@@ -346,8 +350,9 @@ curl.exe -sk -X POST https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1
 Remove-Item client.json
 ```
 
-**You should see:** an answer with `"api_key": "..."`. **Copy that value now**: it is shown only once. Give it to
-that system's team. Ask the owner which systems need a key (e.g. `shield-frontend`).
+(Before **Do**:) First ask the owner which systems need a key (e.g. `shield-frontend`). Do this step once for each system, with its name in place of `<system name>`.
+
+**You should see:** an answer with `"api_key":"..."`. **Copy that value now**: it is shown only once. Give it to that system's team.
 
 **If it says `The admin key is missing or wrong.`:** you typed the admin key wrong. Run the four lines again.
 
@@ -372,6 +377,16 @@ curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/int
 ```
 
 **If `status` is `failed`:** its `error` says why. Fix that and run the first line again.
+
+**If `status` is `done` but the answer has `index_error`:** the data was imported but not indexed, and runs are refused (`intel_no_data`). Its `message` says why (often the AI embedding key). Fix that and run the first line again.
+
+**Last check:**
+
+```powershell
+curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/intel/health
+```
+
+**You should see:** `"snapshot_id":"..."` with a value, not `"snapshot_id":null`.
 
 The deployment is finished.
 
@@ -430,7 +445,7 @@ oc apply -f deploy\secrets.yaml
 oc -n ai-common rollout restart deployment/grafana
 ```
 
-Grafana takes the password from the secret each time it starts.
+**You should see:** `secret/tsg-monitoring configured` (the other secrets `unchanged`), then `deployment.apps/grafana restarted`. Grafana is down for about a minute. When `oc -n ai-common get pods -l app=grafana` shows `1/1` and `Running`, sign in with the new password. Grafana takes the password from the secret each time it starts.
 
 The TSG dashboard cannot be changed in the browser. To change it, edit `observability\grafana\dashboards\tsg.json`
 and its copy in `deploy\configmap.yaml` in git, apply `configmap.yaml` (Part 2, step 8), then
@@ -451,7 +466,8 @@ oc -n ai-common get pods -l app=grafana
 - **`Unauthorized`:** log in again (Part 2, step 1).
 - **`NotFound`** for the Route: Grafana is not deployed. Do Part 2, step 13.
 - **`HostAlreadyClaimed`** in the Route: an old Route still holds the address. Delete it (Part 2, step 9).
-- **The pod is `Running` with `0/1`:** it is still starting. Wait 2 minutes and look again.
+- **The pod is `Running` with `0/1`, or `Init:0/1`, `PodInitializing` or `ContainerCreating`:** it is still starting. Wait 2 minutes and look again.
+- **`No resources found` for the pod** (the Route is there): OpenShift could not create the pod, usually because ai-common's quota (shared with the chatbot) is full. `oc -n ai-common get events --sort-by=.lastTimestamp | Select-Object -Last 20` says why (`exceeded quota`: see Part 5).
 - **The pod is `Pending`, `ImagePullBackOff` or `CreateContainerConfigError`:** the last lines (Events) of
   `oc -n ai-common describe pod -l app=grafana` say why. Then see Part 5.
 - **The pod is `Init:Error` or `Init:CrashLoopBackOff`:** `oc -n ai-common logs deployment/grafana -c set-admin-password`
