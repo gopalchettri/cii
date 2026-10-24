@@ -37,6 +37,7 @@ spec:                                            # what to run
         prometheus.io/port: "8000"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API: no token in the pod
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # cluster DNS cannot resolve the AI gateway: its address is fixed here
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (Quay)
@@ -109,6 +110,7 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
@@ -178,6 +180,7 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
@@ -247,6 +250,7 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
@@ -316,6 +320,7 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
@@ -385,6 +390,7 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
@@ -455,6 +461,7 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
@@ -520,6 +527,7 @@ spec:                                            # what to run
     metadata:                                    # pod labels
       labels: { app: beat, component: beat, part-of: tsg }   # component names it in the logs
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry

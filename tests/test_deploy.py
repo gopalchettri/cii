@@ -328,6 +328,15 @@ def test_every_line_of_a_deploy_file_says_what_it_does(path: Path) -> None:
     assert _uncommented_lines(path) == []
 
 
+def test_no_pod_takes_the_project_s_service_variables() -> None:
+    """A Service named flower puts FLOWER_PORT=tcp://<ip>:5555 into every pod of its project, and Flower reads
+    every FLOWER_* variable as its own option, so it took that address for its port and stopped at start-up.
+    No pod takes these variables: each finds a Service by its DNS name."""
+    for deployment in _all_deployments():
+        pod = deployment["spec"]["template"]["spec"]
+        assert pod.get("enableServiceLinks") is False, deployment["metadata"]["name"]
+
+
 def test_every_object_is_in_its_file_s_project() -> None:
     for namespace, path in [*APP_FILES.items(), *NETWORK_FILES.items()]:
         assert {o["metadata"]["namespace"] for o in _objects(path)} == {namespace}, path.name
