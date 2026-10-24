@@ -1,6 +1,6 @@
 """Health (freshness per source, snapshot, switch) and the purge of a revoked source."""
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -37,7 +37,7 @@ class FixedSwitch:
 def env_on_at_now(monkeypatch: pytest.MonkeyPatch) -> None:
     """The env master switch on, and NOW the service's time."""
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    monkeypatch.setattr(service_module, "datetime", _FixedClock)
+    monkeypatch.setattr(service_module, "utc_now", lambda: NOW)
 
 
 def _health(feeds: MemoryFeeds, pointer: MemoryPointer) -> dict:
@@ -95,17 +95,11 @@ def test_a_revoked_source_counts_neither_as_stale_nor_as_pending() -> None:
 def test_the_worker_search_flag_follows_the_same_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     feeds = MemoryFeeds([KEV, NVD])
     feeds.health = {KEV: _fresh(KEV, 1), NVD: SourceHealth(NVD)}
-    monkeypatch.setattr(evidence_at_write, "datetime", _FixedClock)
+    monkeypatch.setattr(evidence_at_write, "utc_now", lambda: NOW)
     batch = EvidenceAtWrite({}, {}, None, None, feeds, None)  # type: ignore[arg-type]
     assert batch._is_stale(set(feeds.list_approved_sources())) is False
     feeds.health[KEV] = _fresh(KEV, IntelLimits.STALE_AFTER_HOURS + 1)
     assert batch._is_stale(set(feeds.list_approved_sources())) is True
-
-
-class _FixedClock:
-    @staticmethod
-    def now(_tz: object = None) -> datetime:
-        return NOW
 
 
 class MemoryVectors:

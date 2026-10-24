@@ -4,12 +4,13 @@ never reached the broker, or was lost) is sent again. Every write applies only i
 since it was read, so two reapers never send the same job twice."""
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
 
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.constants import ADMIN_JOB_TASKS, ErrorCode, ErrorMessage, Lease, LogEvent, TaskName, module_of
 from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, REDIS_UNAVAILABLE_ERRORS
@@ -25,7 +26,7 @@ log = structlog.get_logger(__name__)
 def reap_jobs() -> None:
     """Every minute: give back jobs whose worker stopped renewing the lease (or fail them after
     Lease.MAX_ATTEMPTS), and re-send jobs left queued (a send that never reached the broker)."""
-    now = datetime.now(UTC)
+    now = utc_now()
     stale_queued = now - timedelta(seconds=Lease.REQUEUE_QUEUED_AFTER_SECONDS)
     queue_is_empty = _queue_sizes_read_once()
     for collection, publish in JOB_COLLECTIONS.items():

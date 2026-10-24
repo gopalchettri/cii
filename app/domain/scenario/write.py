@@ -9,13 +9,14 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Iterator
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
@@ -813,7 +814,7 @@ def written_record(
 ) -> dict[str, Any]:
     """A written scenario (done, its controls queued), or one kept for audit only (blocked: an evidence story
     citing nothing is never done). `replaces`: the version a regenerate follows ({_id, version})."""
-    draft, now = written.draft, datetime.now(UTC)
+    draft, now = written.draft, utc_now()
     statement, evidence = _cited(brief, draft)
     unproven = brief.style is WriterStyle.EVIDENCE_STORY and not evidence
     status = ScenarioStatus.BLOCKED if is_blocked(written) or unproven else ScenarioStatus.DONE
@@ -921,7 +922,7 @@ def failure_record(
 ) -> dict[str, Any]:
     """A visible failure card: what was to be written and why it could not be."""
     content = _threat_content(path, threat) if threat is not None else _category(path)
-    return _record_fields(run, path, ScenarioStatus.FAILED, datetime.now(UTC)) | {
+    return _record_fields(run, path, ScenarioStatus.FAILED, utc_now()) | {
         "content": content,
         "findings": [],
         "failure": {"code": failure.code, "message": failure.message}

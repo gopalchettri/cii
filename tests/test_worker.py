@@ -571,6 +571,32 @@ def test_a_duplicate_message_cannot_run_a_job_before_its_back_off_ends() -> None
     assert _claim(record_id, "retry") is not None  # another pod's clock may run a little ahead
 
 
+def test_a_delivery_that_cannot_claim_its_job_logs_why() -> None:
+    """UAT, 2026-10-24: job.not_claimed said only that a delivery was dropped, so the clocks (not_due) could
+    not be told from a worker reading another database (missing) without guessing."""
+    jobs_ = JobRepository(_records())
+
+    def why(record_id: str, epoch: int = 1, task: str = TaskName.FIND_THREATS) -> dict[str, Any]:
+        return jobs_.why_not_claimed(record_id, epoch, task)
+
+    assert why("no-such-record") == {"reason": "missing"}
+    queued = _insert_job(due_at=datetime.now(UTC) + timedelta(seconds=76))
+    assert why(queued, epoch=2) == {"reason": "other_epoch", "job_epoch": 1}
+    assert why(queued, task=TaskName.WRITE_SCENARIOS) == {
+        "reason": "other_task",
+        "job_task": TaskName.FIND_THREATS,
+    }
+    not_due = why(queued)
+    assert not_due["reason"] == "not_due" and 70 < not_due["due_in_seconds"] <= 76
+    running = _insert_job(Status.RUNNING, worker="celery@worker-threats", lease_until=datetime.now(UTC))
+    assert why(running) == {"reason": "leased", "worker": "celery@worker-threats"}
+    assert why(_insert_job(Status.FAILED)) == {"reason": "status_failed"}
+    with capture_logs() as logs, pytest.raises(Ignore):
+        jobs.run_leased_job(_task("early"), Collection.SESSIONS, queued, 1, lambda _lease: None)
+    [line] = [line for line in logs if line["event"] == LogEvent.JOB_NOT_CLAIMED]
+    assert line["reason"] == "not_due" and line["due_in_seconds"] > 70
+
+
 #: Routed ahead of their build step (BLUEPRINT §15, Steps 11-14): no module defines them yet, and nothing
 #: sends them. Remove each one here when its task is built.
 NOT_BUILT_YET: set[TaskName] = set()

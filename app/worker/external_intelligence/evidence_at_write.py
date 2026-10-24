@@ -2,12 +2,12 @@
 together (one embedding call) on every delivery, and the result is kept in memory only."""
 
 from collections.abc import Iterable, Iterator
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.ai.common import outage_reason
+from app.core.clock import utc_now
 from app.core.constants import (
     AuditAction,
     AuditTarget,
@@ -89,14 +89,14 @@ class EvidenceAtWrite:
         from approved sources only."""
         results, summary = self._finder.find_evidence(list(requests.values()), stale=stale, approved=approved)
         self._audit_batch(summary)
-        searched_at = datetime.now(UTC).isoformat()
+        searched_at = utc_now().isoformat()
         pairs = zip(requests, results, strict=True)
         return {key: _threat_fields(result, searched_at) for key, result in pairs}
 
     def _is_stale(self, approved: set[IntelSource]) -> bool:
         """True when an approved source that has data is older than IntelLimits.STALE_AFTER_HOURS, from one
         read of the source health."""
-        return FeedFreshness.of(self._feeds.list_source_health(), approved, datetime.now(UTC)).stale
+        return FeedFreshness.of(self._feeds.list_source_health(), approved, utc_now()).stale
 
     def _audit_batch(self, summary: EvidenceBatchSummary) -> None:
         """Write one audit row per search batch (its snapshot, threats and evidence counts); each threat's

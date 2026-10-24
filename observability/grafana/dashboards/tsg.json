@@ -569,6 +569,10 @@
                       "PodOOMKilled": {
                         "text": "A pod ran out of memory",
                         "index": 21
+                      },
+                      "ClockSkew": {
+                        "text": "A pod's clock is off: its node needs time sync",
+                        "index": 22
                       }
                     }
                   }

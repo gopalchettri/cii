@@ -4,10 +4,10 @@ build, one build at a time; its job record says how it went (app/worker/admin/li
 
 import secrets
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from app.core.callables import SendAdminJob
+from app.core.clock import utc_now
 from app.core.constants import (
     AdminJobKind,
     AdminJobMessage,
@@ -47,7 +47,7 @@ def queue_admin_job(
     one of its kind is queued or running; a send that raises or returns False (503) fails the job, so a job no
     worker will run never blocks the next."""
     job_id = job["_id"]
-    active_id = jobs.create_admin_job(job | {"created_at": datetime.now(UTC)})
+    active_id = jobs.create_admin_job(job | {"created_at": utc_now()})
     if active_id != job_id:
         raise Conflict(in_progress, reason=ConflictReason.JOB_IN_PROGRESS, details={"job_id": active_id})
     sent = False
@@ -56,7 +56,7 @@ def queue_admin_job(
     finally:
         if not sent:
             error = {"code": ErrorCode.UNAVAILABLE, "message": not_sent}
-            jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
+            jobs.update_admin_job_finished(job_id, utc_now(), error=error)
     if not sent:
         raise Unavailable(not_sent)
 
@@ -85,7 +85,7 @@ class AdminService:
             "key_hash": hash_api_key(api_key),
             "key_prefix": key_prefix,
             "active": True,
-            "created_at": datetime.now(UTC),
+            "created_at": utc_now(),
             "created_by": created_by,
         }
         stored = {"_id": client_id} | {key: value for key, value in client.items() if key != "client_id"}
@@ -110,7 +110,7 @@ class AdminService:
 
     def revoke_api_client(self, client_id: str, revoked_by: str) -> dict[str, Any]:
         """Idempotent: revoking a revoked client returns it unchanged; only the first revoke is audited."""
-        client = self._api_clients.revoke_api_client(client_id, revoked_by, datetime.now(UTC))
+        client = self._api_clients.revoke_api_client(client_id, revoked_by, utc_now())
         if client is not None:
             self._audit.create_audit_record(
                 AuditAction.KEY_REVOKED,

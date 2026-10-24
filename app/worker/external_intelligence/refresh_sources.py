@@ -2,10 +2,11 @@
 and stored, then the evidence index rebuilt. A failing source never stops the others; its last data stays."""
 
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime
 
 import structlog
 
+from app.core.clock import utc_now
 from app.core.constants import (
     AuditAction,
     AuditTarget,
@@ -170,7 +171,7 @@ class SourceRefresher:
 
     def _holds(self, source: IntelSource, claim: str) -> bool:
         """The heartbeat before a write: the claim is ours and fresh again, and the source still approved."""
-        return self._feeds.renew_intel_feed_refresh(source, claim, datetime.now(UTC))
+        return self._feeds.renew_intel_feed_refresh(source, claim, utc_now())
 
     def _purge_if_revoked(self, source: IntelSource) -> bool:
         """Delete the records of a source revoked meanwhile (perhaps mid-write); True when revoked."""

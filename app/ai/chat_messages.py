@@ -3,12 +3,12 @@ record (metrics, log line, tsg_ai_calls copy). No AI call here: app/ai/chat.py m
 
 import hashlib
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.constants import AiOutcome, AiTask, LogEvent
 from app.data_access.admin.ai_call_repository import AiCallRepository
 
@@ -47,7 +47,7 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
     """The audit copy of one chat call, with the run and the request it served (from the log context)."""
     context = structlog.contextvars.get_contextvars()
     return {
-        "created_at": datetime.now(UTC),
+        "created_at": utc_now(),
         "task": task,
         "model": model,
         "outcome": outcome,

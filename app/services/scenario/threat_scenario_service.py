@@ -4,13 +4,14 @@ to the library."""
 
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Final
 
 import structlog
 
 from app.core import metrics
 from app.core.callables import Publish, SendJob
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
     ActionStatus,
@@ -551,7 +552,7 @@ class ThreatScenarioService:
         promotion = {
             "by": principal.user_id,
             "by_client": principal.client_id,
-            "at": datetime.now(UTC),
+            "at": utc_now(),
             "results": [result.model_dump(mode="json")],
         }
         changes = {"library_promotion": promotion, "updated_at": promotion["at"]}
@@ -604,7 +605,7 @@ def _new_run_record(
     principal: Principal, request: StartRunRequest, idempotency_key: str | None, context: FrozenContext
 ) -> dict[str, Any]:
     """A queued run with its threat-finding job."""
-    now = datetime.now(UTC)
+    now = utc_now()
     record: dict[str, Any] = {
         "_id": uuid.uuid4().hex,
         "kind": RunKind.GENERATED,
@@ -638,4 +639,4 @@ def _started(run: SessionStatus, status: ActionStatus, epoch: int) -> RunActionS
 
 def _new_decided_stamp(principal: Principal) -> dict[str, Any]:
     """This call's decided stamp: now, and a new decision id."""
-    return decided_stamp(principal, datetime.now(UTC), uuid.uuid4().hex)
+    return decided_stamp(principal, utc_now(), uuid.uuid4().hex)

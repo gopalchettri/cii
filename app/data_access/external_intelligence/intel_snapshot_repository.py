@@ -1,12 +1,13 @@
 """tsg_external_intelligence_snapshots in MongoDB: one description per built snapshot and the `active`
 pointer that every process follows."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 from pymongo.errors import DuplicateKeyError
 
+from app.core.clock import utc_now
 from app.core.constants import Collection, IntelDocId, SnapshotState, StoreLimits
 from app.data_access.base import MongoRepository
 
@@ -34,7 +35,7 @@ class IntelSnapshotRepository(MongoRepository):
         if doc is None:
             return False
         pointer = {**doc, "_id": IntelDocId.ACTIVE_SNAPSHOT, "state": SnapshotState.ACTIVE}
-        pointer["activated_at"] = datetime.now(UTC)
+        pointer["activated_at"] = utc_now()
         if not self._replace_older_pointer(pointer, doc["built_at"]):
             return False
         self.update({"state": SnapshotState.ACTIVE}, _id=snapshot_id)

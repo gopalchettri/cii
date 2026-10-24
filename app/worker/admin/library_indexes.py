@@ -1,9 +1,9 @@
 """Background job of the library: keep the search indexes built (maintenance queue), every 30 minutes and
 when an admin asks for it now (#18, an embeddings build with its own job record)."""
 
-from datetime import UTC, datetime
 from typing import Any
 
+from app.core.clock import utc_now
 from app.core.constants import LIBRARY_OF_CORPUS, AuditAction, AuditTarget, Status, TaskName
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.audit_repository import AuditRepository
@@ -50,7 +50,7 @@ def run_embeddings_job(
     (SQL Server unreachable while reading the library included: never "done" on the old library) is recorded,
     then raised (counted like any failed job). Audited only when this job ended the record: one taken over as
     abandoned keeps that outcome."""
-    started_at = datetime.now(UTC)
+    started_at = utc_now()
     if not jobs.update_admin_job_running(job_id, started_at, **current_worker()):
         return  # done, failed or taken over already: a late or repeated message
     try:
@@ -59,14 +59,14 @@ def run_embeddings_job(
         made = vectors.count_library_vectors_made_since(started_at)
     except Exception as exc:
         error = job_error_of(exc)
-        if jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error):
+        if jobs.update_admin_job_finished(job_id, utc_now(), error=error):
             _audit_finished(audit, job_id, {"status": Status.FAILED, "error": error})
         raise
     result = {
         "counts": library_counts(snapshot),
         "newly_embedded": {name: made.get(corpus, 0) for corpus, name in LIBRARY_OF_CORPUS.items()},
     }
-    if jobs.update_admin_job_finished(job_id, datetime.now(UTC), result=result):
+    if jobs.update_admin_job_finished(job_id, utc_now(), result=result):
         _audit_finished(audit, job_id, {"status": Status.DONE, **result})
 
 

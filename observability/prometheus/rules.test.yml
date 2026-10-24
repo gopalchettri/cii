@@ -150,6 +150,26 @@ tests:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
               description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
+  # The UAT case (2026-10-24): one worker 76 s behind MongoDB, another 0.2 s. Quiet for the first 5 minutes,
+  # then only the far one is named; a pod off by under 5 s never is.
+  - interval: 1m
+    input_series:
+      - series: tsg_clock_offset_seconds{instance="worker-threats"}
+        values: 76x20
+      - series: tsg_clock_offset_seconds{instance="worker-scenarios"}
+        values: -0.2x20
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ClockSkew
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ClockSkew
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: worker-threats }
+            exp_annotations:
+              summary: "worker-threats's clock is more than 5 s off MongoDB's; the app corrects for it."
+              description: "UAT: the cluster admin fixes time sync on its node: oc debug node/<node> -- chroot /host chronyc tracking."
+
   - interval: 1m
     input_series:
       - series: redis_key_size{db="db0",key="tsg:tsg_threats"}

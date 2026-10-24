@@ -3,11 +3,12 @@ of scenario sessions and remediation plans, and the controls sweep. It writes th
 repository's collection: a session first, then its cards."""
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import Collection, JobControl, Lease, RunActionKind, RunActionOutcome, Status
 from app.data_access.jobs.job_repository import ended_job_fields
 from app.data_access.remediation.remediation_repository import RemediationRepository
@@ -98,7 +99,7 @@ class WorkControlRepository:
         queued or running, the controls while waiting, being mapped or failed with attempts left; its controls
         delivery lease ended. Order: the session (job cancelled, delivery lease unset), its summary's outcome,
         the cards, the counts, then the stamp on a finished session."""
-        sessions, now = self._sessions.collection, datetime.now(UTC)
+        sessions, now = self._sessions.collection, utc_now()
         session, cancelled = {"_id": session_id, "entity_id": entity_id}, {**who, "at": now}
         stop_session = {
             "$set": _cancelled_job(cancelled, now) | {"last_action.outcome": RunActionOutcome.CANCELLED},
@@ -129,7 +130,7 @@ class WorkControlRepository:
 
     def cancel_remediation_plan(self, remediation_id: str, entity_id: int, who: dict[str, Any]) -> bool:
         """The plan's job stopped while it is queued or running; who and when kept on the plan."""
-        now = datetime.now(UTC)
+        now = utc_now()
         stopped = self._remediations.collection.update_one(
             {"_id": remediation_id, "entity_id": entity_id, "status": {"$in": _WORKING}},
             {"$set": _cancelled_job({**who, "at": now}, now)},
@@ -153,7 +154,7 @@ class WorkControlRepository:
             {**stamp_seen, DELETING_MARK: {"$exists": False}}, _DONE_AGAIN
         ).matched_count:
             return None if self._sessions.is_being_deleted(session_id) else 0
-        requeued_at = datetime.now(UTC)
+        requeued_at = utc_now()
         requeued = scenarios.update_many(
             stopped,
             {
@@ -203,7 +204,7 @@ class WorkControlRepository:
         sessions, scenarios = self._sessions.collection, self._scenarios.collection
         plans, session = self._remediations.collection, {"_id": session_id, "entity_id": entity_id}
         marked = sessions.update_one(
-            {**session, "status": {"$nin": _WORKING}}, {"$set": {DELETING_MARK: datetime.now(UTC)}}
+            {**session, "status": {"$nin": _WORKING}}, {"$set": {DELETING_MARK: utc_now()}}
         ).matched_count
         if not marked:
             return None
@@ -232,11 +233,11 @@ class WorkControlRepository:
         session goes, whatever its status (failure and blocked cards too). The waiting cards are read before
         the session states and only they are stopped: a card a resume queued again is never stopped again."""
         scenarios = self._scenarios.collection
-        stoppable = {"$or": [*waiting_controls(datetime.now(UTC)), FAILED_WITH_ATTEMPTS_LEFT]}
+        stoppable = {"$or": [*waiting_controls(utc_now()), FAILED_WITH_ATTEMPTS_LEFT]}
         waiting = {**SWEPT, "$and": [MAPPED_VERSIONS, stoppable]}
         waiting_cards = list(scenarios.find(waiting, {"session_id": 1}))
         waiting_ids = {card.get("session_id") for card in waiting_cards}
-        recent = {"created_at": {"$gte": datetime.now(UTC) - _ORPHANS_WRITTEN_WITHIN}}
+        recent = {"created_at": {"$gte": utc_now() - _ORPHANS_WRITTEN_WITHIN}}
         session_ids = [
             found for found in waiting_ids | set(scenarios.distinct("session_id", recent)) if found
         ]
@@ -265,7 +266,7 @@ class WorkControlRepository:
         never a live lease's. The sorted ids of the sessions that need a mapping message: those no delivery
         serves, read after the requeue, so a session released in between still gets its message."""
         self.settle_stopped_scenario_sessions()
-        now = datetime.now(UTC)
+        now = utc_now()
         for session_id in self._scenarios.fail_abandoned_controls(now):
             self._sessions.update_scenario_session_counts(session_id)
         session_ids = self._scenarios.requeue_stalled_controls(now)

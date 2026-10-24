@@ -4,7 +4,7 @@ the set's next batch handed over, the set ended, or the regenerate ended."""
 import contextvars
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import partial
 from typing import Any
 
@@ -12,6 +12,7 @@ import structlog
 
 from app.ai import ChatModel
 from app.ai.common import outage_reason
+from app.core.clock import utc_now
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AI_PATH_OUTAGE_MESSAGE,
@@ -228,5 +229,5 @@ def write_at_once(
 
 def _run_timed(job: Callable[[], PathOutcome]) -> tuple[datetime, PathOutcome]:
     """Run `job`; return when it started and its outcome."""
-    started = datetime.now(UTC)
+    started = utc_now()
     return started, job()

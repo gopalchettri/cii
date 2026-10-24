@@ -2,13 +2,14 @@
 (#18) and read the build (#19); every job of every kind with its queue and worker (GET /v1/admin/jobs). The
 embeddings are also built every 30 minutes and after every library change, without these."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Response
 
 from app.api.dependencies import AdminUser, require_admin_api_key
 from app.container import get_admin_service, get_job_monitor_service
+from app.core.clock import utc_now
 from app.core.constants import ApiTag, Module, Status
 from app.models.admin.admin_jobs import AdminJobOut, AdminJobStarted
 from app.models.admin.api_clients import ApiClientList, ApiClientOut, MintedApiClient, MintRequest
@@ -99,7 +100,7 @@ def list_all_jobs(
     Filter by `module` (threat_scenarios, remediation, service_mapper, external_intelligence,
     library_embeddings, maintenance), `status` (repeatable) and `kind` (a task name such as tsg_map_services,
     or an admin job kind)."""
-    since = datetime.now(UTC) - timedelta(hours=hours)
+    since = utc_now() - timedelta(hours=hours)
     return monitor.list_jobs(since, list(status or []), kind, limit, module)
 
 

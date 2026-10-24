@@ -4,12 +4,12 @@ env master switch off no intelligence store is read."""
 
 import uuid
 from contextlib import suppress
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.core.callables import SendAdminJob
+from app.core.clock import utc_now
 from app.core.config import Settings
 from app.core.constants import (
     AdminJobKind,
@@ -151,7 +151,7 @@ class ExternalIntelligenceService:
             }
         sources = tuple(source_health_in_registry_order(self._feeds.list(sources=True)))
         approved = sources_in_registry_order(self._feeds.list(["_id"], sources=True, approved=True))
-        freshness = FeedFreshness.of(sources, approved, datetime.now(UTC))
+        freshness = FeedFreshness.of(sources, approved, utc_now())
         active = self._snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT)
         snapshot_id = active.get("snapshot_id") if active else self._keeper.peek_index().snapshot_id
         report = HealthReport(

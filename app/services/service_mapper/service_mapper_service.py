@@ -3,9 +3,9 @@
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.core.clock import utc_now
 from app.core.config import Settings
 from app.core.constants import (
     AuditAction,
@@ -156,7 +156,7 @@ class ServiceMapperService:
             if record["status"] in (Status.QUEUED, Status.RUNNING):
                 raise Conflict(MapperMessage.ROUND_RUNNING, reason=MapperConflict.GENERATION_IN_PROGRESS)
             self._archive_pending(record)
-            now, generation = datetime.now(UTC), record["generation"] + 1
+            now, generation = utc_now(), record["generation"] + 1
             if self._mappings.start_generation(
                 mapping_id,
                 record["generation"],
@@ -196,7 +196,7 @@ class ServiceMapperService:
                 record["decision_seq"],
                 changes,
                 principal.user_id,
-                datetime.now(UTC),
+                utc_now(),
             ):
                 saved = {dependency_id: accepted for dependency_id, _direction, accepted in changes}
                 self._record_change(
@@ -267,7 +267,7 @@ def _new_record(
     mapping_id: str, principal: Principal, request: dict, fingerprint: str, key_hash: str | None, limits: dict
 ) -> dict:
     """A new mapping's first record: generation 1 queued, nothing decided."""
-    now = datetime.now(UTC)
+    now = utc_now()
     return {
         "_id": mapping_id,
         "tenant_id": principal.tenant_id,

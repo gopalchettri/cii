@@ -2,12 +2,13 @@
 each written scenario's controls lease. It never touches tsg_sessions."""
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, ReturnDocument, UpdateOne
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import (
     Collection,
     Controls,
@@ -96,7 +97,7 @@ def _controls_waiting(_: Any = True) -> Record:
     left."""
     return {
         "status": ScenarioStatus.DONE,
-        "$and": [MAPPED_VERSIONS, {"$or": waiting_controls(datetime.now(UTC))}],
+        "$and": [MAPPED_VERSIONS, {"$or": waiting_controls(utc_now())}],
     }
 
 
@@ -267,7 +268,7 @@ class ThreatScenarioRepository(MongoRepository):
         """tsg_scenarios: the session's oldest scenario whose controls wait, now running for `task_id`."""
         return self.collection.find_one_and_update(
             {"session_id": session_id, **_controls_waiting()},
-            _running(task_id, datetime.now(UTC)),
+            _running(task_id, utc_now()),
             projection=_CLAIMED_FIELDS,
             sort=[("created_at", 1)],
             return_document=ReturnDocument.AFTER,
@@ -279,7 +280,7 @@ class ThreatScenarioRepository(MongoRepository):
         """tsg_scenarios: one scenario's controls claimed by a plan job when not mapped (or, `remap`,
         mapped to retired controls only); None when mapped, a live lease holds them, or an expired one used
         every attempt."""
-        now = datetime.now(UTC)
+        now = utc_now()
         not_mapped = [
             {"controls.status": {"$in": [Status.QUEUED, Status.FAILED, Status.CANCELLED]}},
             {
@@ -311,7 +312,7 @@ class ThreatScenarioRepository(MongoRepository):
         """tsg_scenarios: the claim's outcome, only while it still holds (task id + attempts + running;
         Celery reuses a task id on a redelivery): RUNNING renews the lease, DONE saves `mapping`, QUEUED gives
         it back (FAILED once Controls.MAX_ATTEMPTS were used), FAILED saves `error`. False once taken over."""
-        now = datetime.now(UTC)
+        now = utc_now()
         if outcome == Status.QUEUED and attempts >= Controls.MAX_ATTEMPTS:
             outcome = Status.FAILED
         if outcome == Status.RUNNING:

@@ -6,11 +6,11 @@ a pod that dies without a word drops out within a minute."""
 
 import contextlib
 import threading
-import time
 from collections.abc import Iterable
 
 import structlog
 
+from app.core.clock import epoch_seconds
 from app.core.constants import LogEvent, Worker
 from app.core.database import get_redis_client
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS
@@ -31,7 +31,7 @@ class WorkerHeartbeat:
 
     def beat(self) -> None:
         """One Redis round trip: stamp this worker and drop stamps too old to count."""
-        now = time.time()
+        now = epoch_seconds()
         with get_redis_client().pipeline(transaction=False) as pipe:
             for key in self._keys:
                 pipe.zadd(key, {self._hostname: now})

@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, NoReturn, Protocol
 
 import structlog
@@ -19,6 +19,7 @@ from celery import Task
 from celery.exceptions import Ignore
 
 from app.ai.common import outage_reason
+from app.core.clock import utc_now
 from app.core.constants import (
     AiOutage,
     Collection,
@@ -61,7 +62,7 @@ def hand_over(lease: JobLease, next_task: TaskName, changes: dict[str, Any] | No
             **(changes or {}),
             "status": Status.QUEUED,
             "job.task": next_task,
-            "job.due_at": datetime.now(UTC),
+            "job.due_at": utc_now(),
             "job.attempts": 0,
             "job.lease_until": None,
             "job.retry": None,
@@ -229,9 +230,9 @@ def _claim_or_ignore(
         # back-off instead of waiting for the reaper.
         raise _retry_later(task, exc, Lease.RETRY_DELAYS_SECONDS[0]) from exc
     if lease is None:
-        log.info(LogEvent.JOB_NOT_CLAIMED, record_id=record_id, epoch=epoch)
-        # This delivery did nothing. Ignore acknowledges the message and keeps it out of the job outcomes,
-        # which count jobs, not deliveries (app/worker/lifecycle.py).
+        why = jobs.why_not_claimed(record_id, epoch, task.name)  # not due, missing, another epoch...
+        log.info(LogEvent.JOB_NOT_CLAIMED, record_id=record_id, epoch=epoch, **why)
+        # Ignore: this delivery did nothing, and job outcomes count jobs, not deliveries (lifecycle.py).
         raise Ignore
     return lease
 
@@ -248,7 +249,7 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
         # retry finds it still owned and exits, and the reaper re-queues it once the lease runs out.
         given_back = True
         with contextlib.suppress(*MONGO_UNAVAILABLE_ERRORS):
-            due_at = datetime.now(UTC) + timedelta(seconds=delay)
+            due_at = utc_now() + timedelta(seconds=delay)
             try:
                 lease.update_job(
                     {

@@ -5,12 +5,13 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
-from datetime import UTC, datetime
+from datetime import datetime
 
 import structlog
 
 from app.ai import EmbeddingModel, RerankModel
 from app.ai.common import outage_reason
+from app.core.clock import utc_now
 from app.core.constants import Dependency, IntelDocId, IntelLimits, IntelMessage, LogEvent
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
@@ -78,7 +79,7 @@ class EvidenceIndexKeeper:
     def snapshot_age_seconds(self) -> float:
         """Seconds since the index in use was built; NaN while there is none (the gauge shows nothing)."""
         index = self._index
-        return (datetime.now(UTC) - index.built_at).total_seconds() if index.has_records else float("nan")
+        return (utc_now() - index.built_at).total_seconds() if index.has_records else float("nan")
 
     def _launch(self, *, read_again: bool) -> Future[EvidenceIndex]:
         """Start the build thread, or join the build running (asking it to read again when `read_again`)."""

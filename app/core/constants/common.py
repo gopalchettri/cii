@@ -1,4 +1,4 @@
-"""Statuses, store names, timeouts and limits, AI calls and log events shared by every layer."""
+"""Statuses, store names and limits, AI calls and log events shared by every layer (waits: timing.py)."""
 
 from enum import StrEnum
 from typing import Final
@@ -70,29 +70,6 @@ class Dependency(StrEnum):
     MONGO = "mongo"
     SQL = "sql"
     REDIS = "redis"
-
-
-class Timeouts:
-    """Every network wait is bounded, so a hung store never holds a worker thread for ever."""
-
-    MONGO_MS: Final = 5_000  # find a server / open a connection
-    MONGO_SOCKET_MS: Final = 30_000  # one network wait inside an operation
-    SQL_CONNECT_SECONDS: Final = 5  # short, so an outage answers 503 quickly
-    SQL_QUERY_SECONDS: Final = 30  # one procedure call
-    REDIS_SECONDS: Final = 5  # connect and each command
-    REDIS_HEALTH_CHECK_SECONDS: Final = 30  # a pooled connection idle this long is PINGed before use
-    READY_CHECK_SECONDS: Final = 5  # /ready waits at most this for its checks; a slower one counts as down
-    READY_CHECK_REUSE_SECONDS: Final = 2  # a finished check is reused this long (below the probe period)
-    RECORD_WRITE_SECONDS: Final = 5  # an audit or AI-call record write never holds an answer longer
-
-
-class Cache:
-    SERVICE_MAPPER_CATALOG_SECONDS: Final = 60
-    API_KEY_TTL_SECONDS: Final = 60  # an API key is checked again after this
-    LIBRARY_STAMP_EVERY_SECONDS: Final = 60  # the library stamp is read again after this
-    LIBRARY_INDEXES_EVERY_SECONDS: Final = 1_800  # the maintenance worker embeds new library rows this often
-    QUERY_VECTOR_DAYS: Final = 14  # a search query's vector expires after this
-    RETIRED_VECTOR_DAYS: Final = 365  # a library vector no row uses is kept this long, then deleted
 
 
 class Limits:
@@ -265,7 +242,8 @@ class LogEvent(StrEnum):
     EMBEDDING_STORED_SIZE_WRONG = "embedding.stored_size_wrong"
     JOB_STARTED = "job.started"  # every task: its id, record/job id, worker and the API request that sent it
     JOB_FINISHED = "job.finished"  # the same with its outcome and seconds
-    JOB_NOT_CLAIMED = "job.not_claimed"
+    JOB_NOT_CLAIMED = "job.not_claimed"  # with its reason: missing, other_epoch, other_task, not_due, ...
+    CLOCK_OFF = "clock.off"  # this pod's clock differs from MongoDB's by more than Clock.WARN_OVER_SECONDS
     JOB_LEASE_LOST = "job.lease_lost"
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted
     JOB_LEASE_RENEW_FAILED = "job.lease_renew_failed"

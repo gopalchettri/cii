@@ -9,6 +9,7 @@ from typing import Any, Final
 
 import httpx
 
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import IntelLimits, IntelMessage, IntelSource, IntelUrl, SourceDownload
 from app.core.exceptions import IntelFetchFailed
@@ -139,7 +140,7 @@ class NistNvdDetailsSource:
         self._api_key = api_key or (lambda: get_settings().nvd_api_key.get_secret_value())
         self._client = client
         self._sleep = sleep
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or (lambda: utc_now())
         self._reader = NvdItemReader(SourceTextGuard(IntelSource.NIST_NVD))
 
     def download_changes(self, checkpoint: str | None) -> FetchResult | None:

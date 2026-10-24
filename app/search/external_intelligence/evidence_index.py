@@ -5,11 +5,11 @@ scores. Indicators of compromise never reach a model."""
 import re
 from collections.abc import Collection, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
 
 import numpy as np
 
 from app.ai import EmbeddingModel, RerankModel
+from app.core.clock import utc_now
 from app.core.constants import (
     EMBEDDING_SOURCE_TABLE,
     AiOutage,
@@ -91,7 +91,7 @@ class EvidenceIndex:
         self._embeddings = embeddings
         self._rerank = rerank
         self.rerank_model = rerank_model  # the model whose 0-100 scores the threshold is cut on
-        self.built_at = datetime.now(UTC)
+        self.built_at = utc_now()
         self._asset_types = np.array([hit.asset_type for hit in corpus.hits])
         self._sources = [frozenset({hit.source, *hit.joined}) for hit in corpus.hits]
         self._titles = {

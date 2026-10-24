@@ -60,6 +60,8 @@ BUILT_ALERTS = {
     # 2026-10-23: the AI not answering, by reason; the API hitting a bug.
     "AiNotAnswering",
     "ApiCrashing",
+    # 2026-10-24: a pod's clock far from MongoDB's (UAT: 76 s, every run failed before the shared clock).
+    "ClockSkew",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {

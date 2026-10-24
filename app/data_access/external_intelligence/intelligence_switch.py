@@ -5,11 +5,11 @@ read or written."""
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
+from app.core.clock import utc_now
 from app.core.constants import ErrorMessage, IntelDocId, IntelLimits, LogEvent, SwitchTiming
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Unavailable
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
@@ -61,7 +61,7 @@ class IntelligenceSwitch:
     def save(self, enabled: bool, changed_by: str) -> SwitchState:
         """Write the admin's change and return the new state; raises when the store cannot be written
         (nothing changed)."""
-        now = datetime.now(UTC)
+        now = utc_now()
         self._feeds.save(
             {"_id": IntelDocId.SWITCH, "enabled": enabled, "changed_by": changed_by, "changed_at": now}
         )

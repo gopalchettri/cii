@@ -64,6 +64,7 @@ for _field, _number in TEST_REDIS_DATABASES.items():
     _url = urlsplit(getattr(_laptop, _field))._replace(path=f"/{_number}").geturl()
     os.environ[f"CII_{_field.upper()}"] = _url
 
+import math  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 
 import pytest  # noqa: E402
@@ -73,6 +74,7 @@ from redis import Redis  # noqa: E402
 from sqlalchemy import Engine  # noqa: E402
 
 from app.container import create_all_indexes  # noqa: E402
+from app.core import clock  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_mongodb  # noqa: E402
 from app.main import create_app  # noqa: E402
@@ -171,6 +173,14 @@ def no_log_fields_left_over() -> None:
     """Each test starts with no request or job fields bound to its log lines: a test that bound them (a
     request through the middleware, a job) and ended before unbinding tagged every later test's lines."""
     structlog.contextvars.clear_contextvars()
+
+
+@pytest.fixture(autouse=True)
+def pod_clock_is_mongodbs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests run where MongoDB is: the shared clock's offset stays 0 and it never asks MongoDB its time
+    (tests/test_clock.py measures it on purpose)."""
+    monkeypatch.setattr(clock._clock, "_offset", 0.0)
+    monkeypatch.setattr(clock._clock, "_next_check", math.inf)
 
 
 @pytest.fixture(scope="session")

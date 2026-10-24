@@ -3,11 +3,12 @@ builds) with its status, error, retry and worker, and each queue's backlog and w
 and the cancel of an intelligence import or an embeddings build."""
 
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import structlog
 
+from app.core.clock import utc_now
 from app.core.constants import (
     AuditAction,
     AuditTarget,
@@ -58,7 +59,7 @@ class JobMonitorService:
         if job.collection != Collection.ADMIN_JOBS:
             message = JobMonitorMessage.NOT_ADMIN_JOB.format(job_id=job_id, module=job.module)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
-        if not self._admin_jobs.cancel_admin_job(job_id, datetime.now(UTC), actor):
+        if not self._admin_jobs.cancel_admin_job(job_id, utc_now(), actor):
             message = JobMonitorMessage.ALREADY_ENDED.format(job_id=job_id, status=job.status)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         self._audit.create_audit_record(

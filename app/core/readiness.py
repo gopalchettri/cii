@@ -13,6 +13,7 @@ import pymongo
 import structlog
 
 from app.core import metrics
+from app.core.clock import epoch_seconds
 from app.core.constants import ROUTED_QUEUES, Dependency, LogEvent, Timeouts, Worker
 from app.core.database import get_mongodb, get_redis_client, get_stored_procedure_client
 
@@ -75,7 +76,7 @@ Readiness = tuple[dict[Dependency, bool], dict[str, int] | None]
 def count_online_workers(queues: Iterable[str]) -> dict[str, int]:
     """Worker pods per queue whose last heartbeat is recent enough; one Redis round trip."""
     names = list(queues)
-    since = time.time() - Worker.ONLINE_WITHIN_SECONDS
+    since = epoch_seconds() - Worker.ONLINE_WITHIN_SECONDS
     with get_redis_client().pipeline(transaction=False) as pipe:
         for queue in names:
             pipe.zcount(Worker.HEARTBEAT_KEY.format(queue=queue), since, "+inf")

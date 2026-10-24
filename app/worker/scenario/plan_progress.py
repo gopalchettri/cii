@@ -1,12 +1,12 @@
 """A run's plan paths as the write job settles them, each change in one fenced write with the run's counts and
 plan note, then the set's next batch handed over, or the set or the regenerate ended."""
 
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.constants import (
     LogEvent,
     RunActionKind,
@@ -120,7 +120,7 @@ class PlanProgress:
         partial = plan_counts(in_set)["abandoned"] > 0
         # This action's own writing time: from the plan's freeze, or from a later set's start.
         started = max(self._plan["frozen_at"], self._last_action.get("started_at") or self._plan["frozen_at"])
-        seconds = (datetime.now(UTC) - started).total_seconds()
+        seconds = (utc_now() - started).total_seconds()
         outcome = RunActionOutcome.PARTIAL if partial else RunActionOutcome.COMPLETE
         changes: dict[str, Any] = {"last_action.outcome": outcome, "timings.scenarios_s": round(seconds, 1)}
         if self._last_action.get("kind") == RunActionKind.NEXT_SET:  # requested and epoch stay as queued
@@ -132,13 +132,13 @@ class PlanProgress:
         """End a regenerate: complete when every target got its new version, partial when any kept its old
         one, timed from the click."""
         outcome = RunActionOutcome.COMPLETE if replaced == requested else RunActionOutcome.PARTIAL
-        started = self._last_action.get("started_at") or datetime.now(UTC)
+        started = self._last_action.get("started_at") or utc_now()
         self._lease.update_job(
             {
                 "last_action.outcome": outcome,
                 "last_regen.outcome": outcome,  # requested and epoch stay as queued
                 "last_regen.replaced": replaced,
-                "timings.scenarios_s": round((datetime.now(UTC) - started).total_seconds(), 1),
+                "timings.scenarios_s": round((utc_now() - started).total_seconds(), 1),
             }
             | ended_job_fields(Status.DONE)
         )

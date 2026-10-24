@@ -1,10 +1,11 @@
 """MongoDB Service Mapper records, guarded generations and authoritative relationship decisions."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import Collection, Status
 from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
@@ -125,6 +126,6 @@ class MappingHistoryRepository(MongoRepository):
                 "status": mapping["status"],
                 "result": mapping.get("result"),
                 "error": mapping.get("error"),
-                "archived_at": datetime.now(UTC),
+                "archived_at": utc_now(),
             }
         )

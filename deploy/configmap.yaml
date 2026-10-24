@@ -240,6 +240,17 @@ data:                                            # one key per file
               summary: The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired.
               description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
+          # Each process measures its clock against MongoDB's and corrects itself (app/core/clock.py), so jobs still
+          # start. A pod far off means its node's time sync is broken: before the shared clock, a worker 76 s behind
+          # dropped every job as "not due" and runs failed "sent 5 times and never started" (UAT, 2026-10-24).
+          - alert: ClockSkew
+            expr: max by (instance) (abs(tsg_clock_offset_seconds)) > 5
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.instance }}'s clock is more than 5 s off MongoDB's; the app corrects for it."
+              description: "UAT: the cluster admin fixes time sync on its node: oc debug node/<node> -- chroot /host chronyc tracking."
+
           # Queue lists in Redis are named <Worker.BROKER_KEY_PREFIX><queue>, i.e. tsg:tsg_threats.
           - alert: QueueBacklog
             expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios|servicemapper)"}) > 50
@@ -1212,6 +1223,10 @@ data:                                            # one key per file
                           "PodOOMKilled": {
                             "text": "A pod ran out of memory",
                             "index": 21
+                          },
+                          "ClockSkew": {
+                            "text": "A pod's clock is off: its node needs time sync",
+                            "index": 22
                           }
                         }
                       }

@@ -1,12 +1,13 @@
 """tsg_audit: the audit trail, append-only."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pymongo
 import structlog
 from pymongo.collection import Collection as MongoCollection
 
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.constants import Audit, AuditAction, Collection, LogEvent, Timeouts
 from app.data_access.base import MongoRepository, Record
 
@@ -44,7 +45,7 @@ class AuditRepository(MongoRepository):
         # Also a log line (Grafana shows the trail next to the logs); before/after stay in tsg_audit only.
         log.info(LogEvent.AUDIT_RECORDED, action=action, actor=actor, target=target)
         record = {
-            "at": datetime.now(UTC),
+            "at": utc_now(),
             "action": action,
             "actor": actor,
             "target": target,

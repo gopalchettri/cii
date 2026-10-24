@@ -2,11 +2,12 @@
 lost is replayed with the same parameters, never guessed."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import (
     Collection,
     ConflictReason,
@@ -69,13 +70,13 @@ class SqlOperationRepository(MongoRepository):
             message = ErrorMessage.SQL_OPERATION_UNCONFIRMED.format(operation_id=operation_id)
             raise OutcomeUnknown(message, details={"operation_id": operation_id}) from exc
         except Exception:
-            changes = {"status": SqlOperationStatus.NOT_APPLIED, "finished_at": datetime.now(UTC)}
+            changes = {"status": SqlOperationStatus.NOT_APPLIED, "finished_at": utc_now()}
             self._finish(operation_id, attempt, changes)
             raise
         finished = {
             "status": SqlOperationStatus.DONE,
             "result": result_sets,
-            "finished_at": datetime.now(UTC),
+            "finished_at": utc_now(),
         }
         self._finish(operation_id, attempt, finished | ({"reconciled": True} if reconciling else {}))
         return result_sets, True
@@ -85,7 +86,7 @@ class SqlOperationRepository(MongoRepository):
     ) -> str:
         """This attempt's tsg_sql_operations record, written pending before the call; its attempt id. 409
         operation_in_progress while another attempt is young (or the record became done meanwhile)."""
-        now, attempt = datetime.now(UTC), uuid.uuid4().hex
+        now, attempt = utc_now(), uuid.uuid4().hex
         started = {
             "_id": operation_id,
             "procedure": procedure,

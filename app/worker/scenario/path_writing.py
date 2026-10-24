@@ -3,13 +3,14 @@ version in the job's thread (PathSaver), a written scenario checked for a near c
 
 import dataclasses
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import structlog
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.constants import (
     AiOutage,
     ErrorCode,
@@ -118,7 +119,7 @@ def save_with_unique_title(
 def supersede_scenario_version(scenarios: ThreatScenarioRepository, old_id: str, new_id: str) -> None:
     """tsg_scenarios version `old_id` replaced by `new_id` (saved first); a repeat changes nothing. An earlier
     failed regenerate's reason goes with it."""
-    changes = {"superseded_by": new_id, "updated_at": datetime.now(UTC), "regenerate_error": None}
+    changes = {"superseded_by": new_id, "updated_at": utc_now(), "regenerate_error": None}
     scenarios.update(changes, _id=old_id, newest=True)
 
 
@@ -276,7 +277,7 @@ class PathSaver:
     ) -> None:
         """Log why a regenerate wrote no new version and note it on the old one, with the AI outage if one."""
         log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, reason=message)
-        error = {"code": code, "message": message, "at": datetime.now(UTC)}
+        error = {"code": code, "message": message, "at": utc_now()}
         error |= {"reason": reason} if reason else {}
         changes = {"regenerate_error": error, "updated_at": error["at"]}
         self._scenarios.update(changes, _id=target_id, newest=True)

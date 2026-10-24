@@ -1,11 +1,12 @@
 """tsg_embeddings: the vectors of the library and of external intelligence texts."""
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from pymongo import UpdateOne
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import Cache, Collection, EmbeddingCorpus, IntelSource
 from app.data_access.base import Record, VectorRepository
 
@@ -47,9 +48,7 @@ class EmbeddingRepository(VectorRepository):
         rolling update a newer process's next build brings back what it uses. How many were retired."""
         known = [corpus.value for corpus in EmbeddingCorpus]
         unknown = {"corpus": {"$exists": True, "$nin": known}, "retired_at": {"$exists": False}}
-        return self.collection.update_many(
-            unknown, {"$set": _retired_fields(datetime.now(UTC))}
-        ).modified_count
+        return self.collection.update_many(unknown, {"$set": _retired_fields(utc_now())}).modified_count
 
     def update_library_vector_corpus(
         self, corpus: EmbeddingCorpus, in_use: dict[str, list[Record]], stored: dict[str, Record]
@@ -68,9 +67,7 @@ class EmbeddingRepository(VectorRepository):
         if changed:
             self.collection.bulk_write(changed, ordered=False)
         unused = {"corpus": corpus, "_id": {"$nin": list(in_use)}, "retired_at": {"$exists": False}}
-        return self.collection.update_many(
-            unused, {"$set": _retired_fields(datetime.now(UTC))}
-        ).modified_count
+        return self.collection.update_many(unused, {"$set": _retired_fields(utc_now())}).modified_count
 
     def count_library_vectors_made_since(self, since: datetime) -> dict[str, int]:
         """{corpus: tsg_embeddings vectors embedded at or after `since`}: one aggregation answered from the

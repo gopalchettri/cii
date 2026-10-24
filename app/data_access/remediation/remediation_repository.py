@@ -1,11 +1,12 @@
 """tsg_remediations: one remediation plan per scenario (a unique index, race-free) with its versions, and the
 plan's guarded writes: a new version, a decision, and the plan job's version writes under its job lease."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import Collection, Decision, Status
 from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
@@ -146,7 +147,7 @@ class RemediationRepository(MongoRepository):
     def stop_remediation_plan_version(self, remediation_id: str, version: int) -> None:
         """Ends `version`'s job cancelled on tsg_remediations while it still waits or runs (a regenerate that
         lost the race with its run's delete)."""
-        now = datetime.now(UTC)
+        now = utc_now()
         self.collection.update_one(
             {"_id": remediation_id, "job.epoch": version, "status": {"$in": [Status.QUEUED, Status.RUNNING]}},
             {"$set": ended_job_fields(Status.CANCELLED, now) | {"updated_at": now}},

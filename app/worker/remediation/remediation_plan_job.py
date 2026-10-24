@@ -1,13 +1,13 @@
 """The plan job (tsg_write_plan): one plan version written from the scenario now and the stored register."""
 
 import time
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.ai import ChatModel
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.constants import (
     AuditAction,
     AuditTarget,
@@ -95,7 +95,7 @@ class RemediationPlanJob:
             "plan": plan,
             "warnings": warnings,
             "prompt_version": Remediation.PROMPT_VERSION,
-            "completed_at": datetime.now(UTC),
+            "completed_at": utc_now(),
         }
         self._remediations.update_remediation_plan_version(lease, written, done=True)
         metrics.PLANS.labels(Status.DONE).inc()

@@ -18,6 +18,8 @@ SIZE_CHECKED_SOURCES = APP_SOURCES + sorted((REPO / "scripts").glob("*.py"))
 TOP_LEVEL_FILES = {"__init__.py", "main.py", "container.py"}
 INLINE_LOG_EVENT = re.compile(r"\blog\.(debug|info|warning|error|exception)\(\s*[\"']")
 INLINE_RAISE_MESSAGE = re.compile(r"\braise\s+\w+\(\s*[\"']")
+#: The pod's own clock read directly: every "now" comes from app/core/clock.py, MongoDB's clock.
+POD_CLOCK_READ = re.compile(r"\bdatetime\.(now|utcnow|today)\(|\btime\.time\(\)|\bdate\.today\(")
 
 #: Which layers each layer may import (BLUEPRINT §5): the diagram's arrows. A layer always may import itself.
 ALLOWED_IMPORTS: dict[str, set[str]] = {
@@ -121,6 +123,12 @@ def test_log_event_names_come_from_the_log_event_enum() -> None:
 
 def test_exception_messages_come_from_constants() -> None:
     assert _offending_lines(INLINE_RAISE_MESSAGE) == [], "use ErrorMessage or a domain message enum"
+
+
+def test_every_now_comes_from_the_shared_clock() -> None:
+    """UAT, 2026-10-24: the pods' clocks disagreed by up to 76 s, and a worker reading its own clock dropped
+    every job as not due yet. Use app.core.clock.utc_now / epoch_seconds (time.monotonic for durations)."""
+    assert _offending_lines(POD_CLOCK_READ) == [], "use app.core.clock.utc_now or epoch_seconds"
 
 
 def test_the_guards_see_the_code() -> None:

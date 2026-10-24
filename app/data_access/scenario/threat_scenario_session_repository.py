@@ -2,12 +2,13 @@
 mark and the controls delivery lease. It reads tsg_scenarios through the scenario repository only."""
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 from pymongo.errors import DuplicateKeyError
 
+from app.core.clock import utc_now
 from app.core.constants import (
     Collection,
     Controls,
@@ -177,7 +178,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
             "cancelled.at": (session.cancelled or {}).get("at"),  # None also matches no stamp
             DELETING_MARK: {"$exists": False},
         }
-        epoch, now = session.epoch + 1, datetime.now(UTC)
+        epoch, now = session.epoch + 1, utc_now()
         queued = {
             "status": Status.QUEUED,
             "active": True,
@@ -206,7 +207,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
         """Save attack path states, plan figures, scenario counts and plan note on tsg_sessions in ONE write
         fenced on the job lease; counts newer-wins: after a newer count the plan is written without counts.
         LeaseLost when the delivery no longer owns the job."""
-        counted_at = datetime.now(UTC)  # taken before the aggregate: a later count always counts as newer
+        counted_at = utc_now()  # taken before the aggregate: a later count always counts as newer
         scenario_counts = self._scenarios.count_scenarios_of_session(lease.record_id)
         note = PlanMessage.PLAN_NOTE.format(
             planned=plan_figures["planned"],
@@ -235,7 +236,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
     ) -> dict[str, int]:
         """The scenario session's counts now, saved on tsg_sessions unless a later count was saved first
         (counts_at newer wins); `controls_seconds` is added to the controls time in the same write."""
-        counted_at = datetime.now(UTC)  # taken before the aggregate: a later one always counts as newer
+        counted_at = utc_now()  # taken before the aggregate: a later one always counts as newer
         counts = self._scenarios.count_scenarios_of_session(session_id)
         older = {"$or": [{"counts_at": {"$lt": counted_at}}, {"counts_at": None}]}
         changes: dict[str, Any] = {f"counts.{key}": value for key, value in counts.items()}
@@ -255,7 +256,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
         """tsg_sessions: the session's delivery lease for `task_id` when free, expired, handed over or
         already its own, never for a cancelled session; its frozen context, or None while another delivery
         holds it."""
-        now = datetime.now(UTC)
+        now = utc_now()
         free = [
             {"controls_delivery.until": {"$lt": now}},
             {"controls_delivery.task_id": {"$in": [None, task_id]}},  # also: no lease at all
@@ -272,11 +273,11 @@ class ThreatScenarioSessionRepository(MongoRepository):
         """tsg_sessions: the delivery lease extended; `hand_over`, its next turn queued: no holder, and the
         session counts as served while that message waits. False once another delivery holds it."""
         if hand_over:
-            until = datetime.now(UTC) + timedelta(seconds=Controls.RESEND_QUEUED_AFTER_SECONDS)
+            until = utc_now() + timedelta(seconds=Controls.RESEND_QUEUED_AFTER_SECONDS)
             return self._update_if_held(
                 session_id, task_id, {"$set": {"controls_delivery": {"task_id": None, "until": until}}}
             )
-        until = datetime.now(UTC) + timedelta(seconds=Controls.LEASE_SECONDS)
+        until = utc_now() + timedelta(seconds=Controls.LEASE_SECONDS)
         return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.until": until}})
 
     def release_controls_delivery(self, session_id: str, task_id: str) -> None:
@@ -286,7 +287,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
     def list_scenario_sessions_with_live_delivery(self, session_ids: Iterable[str]) -> set[str]:
         """tsg_sessions: of `session_ids`, the ones a delivery maps now or whose next turn is on its way."""
         found = self.collection.find(
-            {"_id": {"$in": list(session_ids)}, "controls_delivery.until": {"$gte": datetime.now(UTC)}},
+            {"_id": {"$in": list(session_ids)}, "controls_delivery.until": {"$gte": utc_now()}},
             {"_id": 1},
         )
         return {record["_id"] for record in found}

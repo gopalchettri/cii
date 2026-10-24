@@ -2,10 +2,10 @@
 or an admin's refresh recorded on its job. A failed source keeps its last good data."""
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 
 import structlog
 
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
 from app.data_access.admin.admin_job_repository import AdminJobRepository
@@ -24,7 +24,7 @@ def refresh_external_intelligence(job_id: str | None = None) -> None:
 
     if job_id is None:
         if container.get_intelligence_switch().is_on():
-            container.get_source_refresher().refresh_due_sources(datetime.now(UTC))
+            container.get_source_refresher().refresh_due_sources(utc_now())
         else:
             log.info(IntelWorkEvent.REFRESH_SKIPPED)
         return
@@ -36,7 +36,7 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
     The run-time switch was checked when the job was queued, so only the env master switch is checked here
     (the worker's cached run-time switch can lag a change by a minute). A late or repeated message finds the
     job no longer active and does nothing; a failure is recorded, then raised."""
-    now = datetime.now(UTC)
+    now = utc_now()
     if not jobs.update_admin_job_running(job_id, now, **current_worker()):
         return
     record = jobs.get(("source",), _id=job_id) or {}
@@ -44,7 +44,7 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
     try:
         if not get_settings().external_intelligence_enabled:
             error = {"code": ErrorCode.CONFLICT, "message": IntelRefreshMessage.SWITCH_OFF.value}
-            jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=error)
+            jobs.update_admin_job_finished(job_id, utc_now(), error=error)
             return
         with import_cancel_check(lambda: jobs.is_admin_job_active(job_id)):  # its cancel stops it early
             if source is None:
@@ -53,8 +53,8 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
                 summary = refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
-        jobs.update_admin_job_finished(job_id, datetime.now(UTC), error=job_error_of(exc))
+        jobs.update_admin_job_finished(job_id, utc_now(), error=job_error_of(exc))
         raise
     # Done: the data refresh stands; an index the AI could not rebuild is told beside it (with its reason).
     index_error = {"index_error": summary.index_error} if summary.index_error else {}
-    jobs.update_admin_job_finished(job_id, datetime.now(UTC), result={"source": source} | index_error)
+    jobs.update_admin_job_finished(job_id, utc_now(), result={"source": source} | index_error)

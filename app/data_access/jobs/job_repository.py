@@ -3,12 +3,13 @@ updates and the reaper's settling updates (the owner's cancel, resume and delete
 work_control_repository.py)."""
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo import ReturnDocument
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import (
     Collection,
     Lease,
@@ -16,7 +17,7 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.exceptions import LeaseLost
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
 
@@ -42,7 +43,7 @@ def ended_job_fields(status: Status, now: datetime | None = None) -> dict[str, A
     return {
         "status": status,
         "active": False,
-        "finished_at": now or datetime.now(UTC),
+        "finished_at": now or utc_now(),
         "job.lease_until": None,
         "job.retry": None,
     }
@@ -96,14 +97,14 @@ class JobLease:
     def update_job(self, changes: dict[str, Any], array_filters: list[dict[str, Any]] | None = None) -> None:
         """Write `changes` to the job record while this delivery owns it, else raise LeaseLost;
         `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]."""
-        update = {"$set": {**changes, "updated_at": datetime.now(UTC)}}
+        update = {"$set": {**changes, "updated_at": utc_now()}}
         if self._records.update_one(self.fence, update, array_filters=array_filters).matched_count != 1:
             raise LeaseLost(self.record_id)
 
     def renew_job(self) -> bool:
         """Extend the job's lease while the work goes on; False once it is lost."""
         try:
-            self.update_job({"job.lease_until": datetime.now(UTC) + timedelta(seconds=Lease.SECONDS)})
+            self.update_job({"job.lease_until": utc_now() + timedelta(seconds=Lease.SECONDS)})
         except LeaseLost:
             return False
         return True
@@ -135,7 +136,7 @@ class JobRepository:
     ) -> JobLease | None:
         """Claim the job if it is due (queued) or abandoned (running, lease expired) for this task and epoch,
         returning its lease with `fields` of the record; None for a duplicate, stale or early delivery."""
-        now = datetime.now(UTC)
+        now = utc_now()
         claimed = self._records.find_one_and_update(
             _claimable(record_id, epoch, task, now),
             {
@@ -156,6 +157,30 @@ class JobRepository:
         if claimed is None:
             return None
         return JobLease(self._records, record_id, epoch, task_id, claimed["job"]["attempts"], claimed)
+
+    def why_not_claimed(self, record_id: str, epoch: int, task: str) -> dict[str, Any]:
+        """Why a delivery could not claim its job, for the job.not_claimed log line: the record is missing
+        (this worker reads another database?), another epoch or task, a live lease, another status, or not
+        due yet."""
+        try:
+            record = self._records.find_one({"_id": record_id}, {"status": 1, "job": 1})
+        except MONGO_UNAVAILABLE_ERRORS:
+            return {"reason": "unknown"}  # only a log line: the delivery is dropped either way
+        if record is None:
+            return {"reason": "missing"}
+        job, status = record.get("job") or {}, record.get("status")
+        if job.get("epoch") != epoch:
+            return {"reason": "other_epoch", "job_epoch": job.get("epoch")}
+        if job.get("task") != task:
+            return {"reason": "other_task", "job_task": job.get("task")}
+        if status == Status.QUEUED and job.get("due_at"):
+            return {
+                "reason": "not_due",
+                "due_in_seconds": round((job["due_at"] - utc_now()).total_seconds(), 1),
+            }
+        if status == Status.RUNNING:
+            return {"reason": "leased", "worker": job.get("worker")}
+        return {"reason": f"status_{status}"}
 
     def list_recent_jobs(
         self, since: datetime, statuses: Iterable[str] = (), task: str | None = None, limit: int = 100

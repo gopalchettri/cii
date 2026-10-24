@@ -7,7 +7,7 @@ import hashlib
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import litellm
@@ -24,6 +24,7 @@ from app.ai.common import (
 from app.ai.profiles import EMBEDDING_MODEL_PROFILES, find_model_profile
 from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
 from app.core import metrics
+from app.core.clock import utc_now
 from app.core.config import Settings
 from app.core.constants import AiOutcome, AiTask, Cache, EmbeddingCorpus, ErrorMessage, LogEvent
 from app.data_access.admin.embedding_repository import EmbeddingRepository
@@ -71,7 +72,7 @@ class EmbeddingModel:
     def embed_search_queries(self, texts: list[str]) -> np.ndarray:
         """One L2-normalised float32 row per search query. Kept Cache.QUERY_VECTOR_DAYS; only the text's hash
         is stored, never the text."""
-        expires_at = datetime.now(UTC) + timedelta(days=Cache.QUERY_VECTOR_DAYS)
+        expires_at = utc_now() + timedelta(days=Cache.QUERY_VECTOR_DAYS)
         texts = self._cut_to_model_limit(texts)
         keys = [f"{self._space}|{_text_sha256(text)}" for text in texts]
         matrix, _ = self._load_stored_or_embed(
@@ -130,7 +131,7 @@ class EmbeddingModel:
                 "model": self._model,
                 "revision": self._profile.revision,
                 "dimensions": dimensions,
-                "created_at": datetime.now(UTC),
+                "created_at": utc_now(),
             }
             documents = [
                 describe(key_of[text], text)

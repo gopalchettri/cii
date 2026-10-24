@@ -2,11 +2,11 @@
 (the claim filters on job.task, so a late copy of the message never plans the run again)."""
 
 import time
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
     Lease,
@@ -45,7 +45,7 @@ class PlanJob:
         last_attempt = lease.attempts >= Lease.MAX_ATTEMPTS
         findings = self._threat_finder.find_threats(context, country, last_attempt=last_attempt)
         plan = build_plan(findings, get_settings().total_scenario_count)  # other sessions never block (D15)
-        plan |= {"frozen_at": datetime.now(UTC), "made_with": _made_with(findings.library_stamp)}
+        plan |= {"frozen_at": utc_now(), "made_with": _made_with(findings.library_stamp)}
         selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
         asked, batch = set_and_first_batch(plan["paths"], get_settings().initial_set_size)  # [] when none
         trace = build_plan_trace(findings, plan, len(asked))

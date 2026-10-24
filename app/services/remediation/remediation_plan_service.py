@@ -1,12 +1,12 @@
 """Remediation plans: a plan requested for a generated or a hand-written scenario, a new version, a review,
 and the reads. No request calls the AI: the plan job builds each version's input and writes it."""
 
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.core.callables import Publish, SendJob
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
     AuditAction,
@@ -119,7 +119,7 @@ class RemediationPlanService:
         if self._sessions.is_being_deleted(read["session_id"]):
             raise run_being_deleted(read["session_id"])
         check_control_library(self._library.get_loaded_libraries().control_library)
-        now = datetime.now(UTC)
+        now = utc_now()
         job, item = new_job(TaskName.WRITE_PLAN, version, now), new_version(version, principal, now)
         if not self._remediations.create_remediation_plan_version(remediation_id, latest, item, job, now):
             raise version_in_progress(remediation_id, latest)  # another regenerate made it first
@@ -151,7 +151,7 @@ class RemediationPlanService:
         for _read_again in range(2):
             read = self._read_changeable(principal, remediation_id)
             version = decidable_version(read, body.version, remediation_id)
-            now = datetime.now(UTC)
+            now = utc_now()
             change = decision_change(read, version, body.decision, decided_by, body.comment, now)
             if change is None:  # a repeat
                 return self._status_now(remediation_id)
@@ -258,7 +258,7 @@ class RemediationPlanService:
         """One plan per scenario (the unique index decides): version 1 queued, its job sent and audited."""
         check_control_library(self._library.get_loaded_libraries().control_library)
         self._check_register_systems(register, scenario["session_id"])
-        now = datetime.now(UTC)
+        now = utc_now()
         record = new_plan_record(principal, register, scenario, new_job(TaskName.WRITE_PLAN, 1, now), now)
         try:
             self._remediations.create(record)
@@ -317,7 +317,7 @@ class RemediationPlanService:
         check_control_library(loaded.control_library)
         threat = resolve_threat(loaded.threat_library, manual)
         controls = resolve_mapped_controls(manual, loaded.control_library)
-        now, ids = datetime.now(UTC), manual_ids(principal.entity_id, key)
+        now, ids = utc_now(), manual_ids(principal.entity_id, key)
         run = manual_run_record(principal, manual, ids[0], key, request_hash, context, now)
         scenario = manual_scenario_record(
             principal,

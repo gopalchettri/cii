@@ -1013,7 +1013,9 @@ flowchart TB
    - `_id`, `job.epoch` and `job.task` match; and
    - either `status=queued` and `job.due_at` ≤ now + 5 s (`Lease.CLOCK_SKEW_SECONDS`), or `status=running` with `job.lease_until` in the past (an abandoned lease).
 
-   The update sets `status=running`, `job.task_id`, `job.lease_until` = now + 120 s (`Lease.SECONDS`) and `job.resends=0`, and adds 1 to `job.attempts`. No match means a stale, duplicate or early delivery: it logs `job.not_claimed` and ends with Celery `Ignore`.
+   "Now" is MongoDB's clock, not the pod's. Every pod reads the time through `app/core/clock.py` (`utc_now`, `epoch_seconds`), which corrects its own clock by the difference to MongoDB's, measured every minute. Pods whose clocks disagree therefore still agree on due times, leases and heartbeats (UAT, 2026-10-24: a worker 76 s behind dropped every job; `docs/UAT_CLOCK_SKEW_RUNBOOK.md`).
+
+   The update sets `status=running`, `job.task_id`, `job.lease_until` = now + 120 s (`Lease.SECONDS`) and `job.resends=0`, and adds 1 to `job.attempts`. No match means a stale, duplicate or early delivery: it logs `job.not_claimed` with its `reason` (`not_due` with `due_in_seconds`, `missing`, `other_epoch`, `other_task`, `leased` or `status_<x>`) and ends with Celery `Ignore`.
 4. `keep_lease_alive` renews the lease every 30 s (`Lease.RENEW_EVERY_SECONDS`) from a background thread, for at most 1 hour (`Lease.MAX_JOB_SECONDS`). Every write is fenced on `_id`, `status=running`, `job.task_id`, `job.epoch` and `job.attempts` (`JobLease.fence`). A lost lease (a cancel, a delete, or another delivery taking over) raises `LeaseLost` at the next write or AI call, and the job stops without writing.
 5. `PlanJob.plan_threat_scenario_session` then does the following:
    - reads the frozen context with `FrozenContext.from_record`; SQL Server is not read again;

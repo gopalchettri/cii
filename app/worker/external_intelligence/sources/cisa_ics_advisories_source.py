@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from typing import Final
 
+from app.core.clock import utc_now
 from app.core.constants import (
     IcsReading,
     IntelLimits,
@@ -93,7 +94,7 @@ class CisaIcsAdvisoriesSource:
         self, downloader: HttpDownloader | None = None, clock: Callable[[], datetime] | None = None
     ) -> None:
         self._downloader = downloader or HttpDownloader()
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or (lambda: utc_now())
         self._guard = SourceTextGuard(IntelSource.CISA_ICS)
         self._reader = IcsAdvisoryReader(self._guard)
 

@@ -43,6 +43,8 @@ REAPER_LAST_PASS = Gauge(
     registry=None,
 )
 WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbeat", ["queue"])
+#: MongoDB's clock minus this process's clock (app/core/clock.py): ClockSkew fires when a pod is far off.
+CLOCK_OFFSET = Gauge("tsg_clock_offset_seconds", "MongoDB's clock minus this process's clock")
 #: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress): every pod reports the same
 #: total.
 AI_SLOTS_IN_USE = Gauge("tsg_ai_slots_in_use", "AI calls in progress across all pods")
