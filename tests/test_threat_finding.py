@@ -11,7 +11,7 @@ import pytest
 
 from app.ai import UnreadableAiAnswer
 from app.core.config import get_settings
-from app.core.constants import ActorRole, AiTask, AttackerCheck, CandidateRejection, ErrorCode
+from app.core.constants import ActorRole, AiTask, AttackerCheck, CandidateRejection, ErrorCode, ThreatFinding
 from app.core.exceptions import PlanRefused, Unavailable
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import (
@@ -125,6 +125,8 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
     rejection = {"slot": "R2", "relevant": False, "systems": [], "reason": "No mail.", "impact": "N/A"}
     verdict, problems = parse_verdict(rejection | {"confidence": 5}, {"SYS1": 321}, [])
     assert problems == [] and verdict == Verdict(False, (), "No mail.", 0, 5.0)
+    short = {"slot": "R3", "relevant": False, "reason": "No mail.", "needs": ["mail"]}  # the form asked for
+    assert parse_verdict(short, {"SYS1": 321}, []) == (Verdict(False, (), "No mail.", 0, 0.0, ("mail",)), [])
 
 
 def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
@@ -166,6 +168,22 @@ def test_an_unreadable_gate_reply_retries_before_gap_fill_and_a_cut_off_one_is_s
 
     chat.responders[AiTask.RELEVANCE_GATE] = cut_off_spoofing
     assert [threat.name for threat in finder(chat).find_threats(CONTEXT).threats] == [LOG_WIPE.name]
+
+
+def test_once_a_gate_call_raises_unavailable_no_new_gate_call_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The job retries anyway: a call already running finishes, the batches still waiting never start."""
+    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)
+    monkeypatch.setattr(ThreatFinding, "AI_BATCHES_AT_ONCE", 1)  # one gate call at a time
+
+    def down(user_prompt: str) -> dict[str, Any]:
+        raise Unavailable("provider down")
+
+    for responder, calls in ((down, 1), (lambda _: {"verdicts": "?"}, 2)):  # an outage; unreadable, re-asked
+        chat = planner_chat({})
+        chat.responders[AiTask.RELEVANCE_GATE] = responder
+        with pytest.raises(Unavailable):
+            finder(chat).find_threats(CONTEXT)
+        assert len(chat.asked(AiTask.RELEVANCE_GATE)) == calls
 
 
 def test_on_the_last_attempt_a_broken_batch_is_skipped_and_its_category_gets_no_gap_fill() -> None:
@@ -320,6 +338,7 @@ def test_an_ai_rewording_of_the_same_type_is_folded_by_meaning() -> None:
         [library, reworded, different, other_type], embeddings, "Grid Control Centre"
     )  # type: ignore[arg-type]
     assert [threat.key for threat in kept] == ["lib:1", "ai:b", "ai:c"] and kept[0].systems == (321, 322)
+    assert embeddings.calls == ["compare"]  # both sides alike, never as search queries
 
 
 def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,18 +382,22 @@ def test_the_gates_pick_acts_none_fits_names_no_one_and_no_pick_takes_the_top_li
         (decided,) = assign_attackers(snapshot, [_library_threat(S.TAMPERING, RANSOMWARE, verdict)], "Energy")
         return decided
 
-    pick = ActorPick(INSIDER.name, "Holds the backup admin account.")
-    picked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=pick))
-    assert picked.actors[0].actor_id == INSIDER.actor_id and picked.attacker_check == AttackerCheck.CHOSEN
-    assert picked.attacker_check_reason == "Holds the backup admin account."
-    nobody = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None.")))
-    assert nobody.attacker_check == AttackerCheck.NONE_FITS and nobody.actors == ()
     unchecked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
     assert (
         unchecked.attacker_check == AttackerCheck.NOT_CHECKED
         and unchecked.actors[0].actor_id == GANG.actor_id
     )
-    embeddings.queries_down = True
+    pick = ActorPick(INSIDER.name, "Holds the backup admin account.")
+    verdicts = [Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=p) for p in (pick, None)]
+    picked_then_open = [_library_threat(S.TAMPERING, RANSOMWARE, verdict) for verdict in verdicts]
+    mixed = assign_attackers(snapshot, picked_then_open, "Energy")
+    assert [t.actors[0].actor_id for t in mixed] == [INSIDER.actor_id, GANG.actor_id]  # the open one ranked
+    embeddings.queries_down = True  # a pick that decides is never ranked: no embedding call
+    picked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=pick))
+    assert picked.actors[0].actor_id == INSIDER.actor_id and picked.attacker_check == AttackerCheck.CHOSEN
+    assert picked.attacker_check_reason == "Holds the backup admin account."
+    nobody = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None.")))
+    assert nobody.attacker_check == AttackerCheck.NONE_FITS and nobody.actors == ()
     with pytest.raises(Unavailable):  # no vectors, no ranking: the job retries
         chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
 

@@ -1,4 +1,6 @@
 {
+ "AiLimits.FALLBACK_SLOTS_KEY": "tsg:ai_fallback_slots",
+ "AiLimits.REQUEST_RATE_KEY": "tsg:ai_next_request:{model}",
  "AiLimits.SLOTS_KEY": "tsg:ai_slots",
  "ContextProperties.__doc__": "The columns of dbo.tsg_GetAssetContext: every one but these is a fact of the asset or a system.",
  "Problem.AUTH_CHALLENGE": "ApiKey realm=\"tsg\", header=\"X-API-Key\"",

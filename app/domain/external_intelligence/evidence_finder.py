@@ -3,8 +3,10 @@ threat behind the process gate, then the rule-based choice of what counts as evi
 meets the threshold). A search that cannot be made leaves that threat without evidence and says why; it never
 fails the batch."""
 
+import threading
 import time
 from collections.abc import Callable, Collection, Sequence
+from dataclasses import replace
 
 import structlog
 
@@ -64,6 +66,10 @@ class EvidenceFinder:
         self._gate = gate
         self._candidates = candidates  # records reranked per threat (EVIDENCE_CANDIDATES)
         self._selector = EvidenceSelector(threshold, PlainFactWriter(), kept_per_threat)
+        # Each candidate's score, best first, by (snapshot, rerank model, query, candidate ids): another path
+        # of the same threat, a later set, a retry or another run asks the same rerank again.
+        self._scored: dict[tuple[object, ...], tuple[tuple[tuple[IntelSource, str], float], ...]] = {}
+        self._scored_lock = threading.Lock()
 
     def find_evidence(
         self, requests: Sequence[EvidenceRequest], *, stale: bool, approved: Collection[IntelSource]
@@ -118,13 +124,26 @@ class EvidenceFinder:
         )
 
     def _rerank(self, search: EvidenceIndex, query: str, hits: list[IntelHit]) -> list[IntelHit]:
-        """Score `hits` against `query` while holding a place of the rerank gate; no hits, no call."""
+        """Score `hits` against `query` while holding a place of the rerank gate; no hits, no call. A rerank
+        already answered for the same snapshot, model, query and candidates is taken from memory."""
         if not hits:
             return []
+        candidate_ids = tuple((hit.source, hit.external_id) for hit in hits)
+        key = (search.snapshot_id, search.rerank_model, query, candidate_ids)
+        with self._scored_lock:
+            known = self._scored.get(key)
+        if known is not None:  # the scores only: the records are this index's own
+            by_id = dict(zip(candidate_ids, hits, strict=True))
+            return [replace(by_id[ref], score=score) for ref, score in known]
         with self._gate.hold_place():
             started = time.perf_counter()
             scored = search.score_candidates(query, hits)
             metrics.RERANK_SECONDS.observe(time.perf_counter() - started)
+        # ponytail: first in, first out; an older snapshot's entries wait to be pushed out, never served.
+        with self._scored_lock:  # only a whole answer gets here: a failed or short one raised
+            self._scored[key] = tuple(((hit.source, hit.external_id), hit.score) for hit in scored)
+            if len(self._scored) > EvidenceLimits.RERANKS_KEPT:
+                del self._scored[next(iter(self._scored))]
         return scored
 
     def _record(

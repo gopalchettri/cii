@@ -161,7 +161,7 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     sends: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(jobs, "send_job", lambda *args: sends.append(args))
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args))
     monkeypatch.setattr(write_job, "send_job", lambda *args: sends.append(args))  # the controls messages
     return sends
 
@@ -192,19 +192,19 @@ def _scenarios_of(record_id: str) -> list[dict[str, Any]]:
     return list(get_mongodb()[Collection.SCENARIOS].find({"session_id": record_id}).sort("path_id", 1))
 
 
-def test_fourteen_paths_are_written_in_four_batches_by_themselves(
+def test_fourteen_paths_are_written_in_three_batches_by_themselves(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
-    """T-WRT-20 (S25-S26): 4 + 4 + 4 + 2, each batch handed on in a fenced write; one title per scenario; the
-    run ends complete, its counts from the scenarios."""
+    """T-WRT-20 (S25-S26): 6 + 6 + 2, each batch handed on in a fenced write; one title per scenario; the run
+    ends complete, its counts from the scenarios."""
     container.get_threat_scenario_repository().create_indexes()
     record_id = _queued_run([f"Threat {number}" for number in range(1, 15)])
     written_before = _settled("written")
-    assert _deliver_until_done(record_id) == 4
-    # Each batch hands the next to itself (3), and each sends one controls message ("card first, controls
-    # later", S34): reviewers see the scenarios while their controls are mapped.
-    assert [task for task, _, _ in sent].count(TaskName.WRITE_SCENARIOS) == 3
-    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 4
+    assert _deliver_until_done(record_id) == 3
+    # Each batch hands the next to itself (2); each scenario sends a controls message as it is saved and each
+    # batch one more ("card first, controls later", S34): reviewers see the scenarios while they are mapped.
+    assert [task for task, _, _ in sent].count(TaskName.WRITE_SCENARIOS) == 2
+    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 14 + 3
     assert _settled("written") == written_before + 14  # S27: tsg_scenarios_total{outcome}
     assert PUBLISHED.count(record_id) == 14  # T-WRT-19: a live update after every save
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
@@ -252,7 +252,7 @@ def test_a_job_with_no_set_writes_its_batch_and_stops(
     _sessions().update_one({"_id": record_id}, {"$unset": {"job.set": ""}})
     assert _deliver_until_done(record_id) == 1
     run = _sessions().find_one({"_id": record_id})
-    assert (run["status"], run["counts"]["written"], run["counts"]["remaining"]) == (Status.DONE, 4, 4)
+    assert (run["status"], run["counts"]["written"], run["counts"]["remaining"]) == (Status.DONE, 6, 2)
 
 
 def test_a_set_ends_complete_though_an_earlier_set_abandoned_a_path(
@@ -364,7 +364,8 @@ def test_a_retry_after_a_crash_still_sends_the_written_scenarios_controls_messag
     record_id = _queued_run(["Threat 1", "Threat 2"])
 
     def dies(*_: Any) -> None:
-        raise RuntimeError("the worker died")
+        if len(_scenarios_of(record_id)) == 2:  # every path saved: it dies before the next message
+            raise RuntimeError("the worker died")
 
     monkeypatch.setattr(write_job, "send_job", dies)
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
@@ -481,7 +482,7 @@ def test_a_last_try_that_fails_still_sends_the_saved_scenarios_controls_message(
     with pytest.raises(JobFailed):
         _write_batch(_on_last_try(record_id))
     assert len(_scenarios_of(record_id)) == 1
-    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 1
+    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 2  # as it was saved, after the batch
 
 
 def test_a_written_path_another_delivery_gave_up_on_ends_served(

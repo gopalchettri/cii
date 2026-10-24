@@ -1,14 +1,18 @@
 # deploy_threatgen.yaml - TSG in project ai-threatgen (UAT is production): the API (2 copies), one worker per
-# queue, beat (the timer), the API's Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local)
-# and its disruption budget. Network rules: networkpolicy_threatgen.yaml. Settings: configmap.yaml, secrets.yaml.
-# Apply AFTER deploy_remediation.yaml is rolled out (new workers before a new API):
+# queue (threats, scenarios, controls, remediation, service mapper, maintenance), beat (the timer), the API's
+# Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget.
+# Network rules: networkpolicy_threatgen.yaml. Settings: configmap.yaml, secrets.yaml.
+# Apply AFTER deploy_remediation.yaml is rolled out (new workers before a new API), and wait until it is rolled out:
 #   oc apply -f deploy/deploy_threatgen.yaml
+#   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 # New release: replace the image tag (24-Oct-2026) everywhere in deploy_*.yaml with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5 CPU and 10.5 Gi; an API update adds one API pod
+# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5.25 CPU and 10.5 Gi; an API update adds one API pod
 # (6 CPU, 11.5 Gi). A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
 # A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
 # update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
 # once the old pod is gone: rollout status only takes longer. A worker is ready once it answers a ping (startupProbe).
+# Each worker prefers a node its twin in ai-remediation is not on, and the two API pods different nodes, so one node
+# failure stops neither a queue nor the API (preferred only: a pod still starts when no other node fits).
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- the API
@@ -33,10 +37,18 @@ spec:                                            # what to run
         prometheus.io/port: "8000"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API: no token in the pod
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # cluster DNS cannot resolve the AI gateway: its address is fixed here
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (Quay)
       terminationGracePeriodSeconds: 40          # time a stopping pod gets to finish open requests
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts on a busy cluster and as the update's extra pod
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: api } }   # the other API pod, in this project only (no namespaces line)
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves an API pod serving (D29)
       containers:                                # the programs in the pod
         - name: api                              # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -56,7 +68,7 @@ spec:                                            # what to run
             initialDelaySeconds: 10              # first check after 10 s
             periodSeconds: 10                    # then every 10 s
             timeoutSeconds: 7                    # each check may take 7 s
-            failureThreshold: 3                  # 3 failures in a row = not ready
+            failureThreshold: 12                 # 12 failures in a row (2 minutes) = not ready: a short store or worker gap leaves the API serving
           livenessProbe:                         # "alive" = the process answers; failing restarts the container
             httpGet: { path: /health, port: 8000 }   # no store calls, so a store outage never restarts a healthy pod
             initialDelaySeconds: 30              # first check after 30 s
@@ -67,7 +79,7 @@ spec:                                            # what to run
             preStop: { exec: { command: [sleep, "5"] } }   # wait 5 s so the router stops sending requests first
           resources:                             # CPU and memory
             requests: { cpu: 250m, memory: 512Mi }   # reserved for the pod
-            limits: { cpu: "1", memory: 1Gi }        # the most it may use
+            limits: { cpu: 750m, memory: 1Gi }       # the most it may use
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -87,7 +99,7 @@ spec:                                            # what to run
   replicas: 1                                    # one here; its twin runs in ai-remediation
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
-    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra 2 Gi pod in the quota
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
   selector:                                      # which pods belong to this Deployment
     matchLabels: { app: worker-threats }         # pods labelled app=worker-threats
   template:                                      # the pod to run
@@ -98,15 +110,24 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: worker-threats } }   # this worker's twin (and any extra copy)
+                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_threats]   # 4 threads on the tsg_threats queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_threats]   # 2 threads on the tsg_threats queue
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -117,20 +138,20 @@ spec:                                            # what to run
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
           startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
           livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
             requests: { cpu: 500m, memory: 1Gi }   # reserved for the pod
-            limits: { cpu: "1", memory: 2Gi }      # the most it may use
+            limits: { cpu: "1", memory: 1536Mi }   # the most it may use
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -159,15 +180,24 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: worker-scenarios } }   # this worker's twin (and any extra copy)
+                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_scenarios]   # 4 threads on the tsg_scenarios queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_scenarios]   # 2 threads on the tsg_scenarios queue
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -178,13 +208,13 @@ spec:                                            # what to run
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
           startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
           livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
@@ -192,6 +222,146 @@ spec:                                            # what to run
           resources:                             # CPU and memory
             requests: { cpu: 500m, memory: 1Gi }   # reserved for the pod
             limits: { cpu: "1", memory: 2Gi }      # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one control-mapping worker running
+metadata:                                        # the object's name and place
+  name: worker-controls                          # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: worker-controls, part-of: tsg }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one here; its twin runs in ai-remediation
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-controls }        # pods labelled app=worker-controls
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-controls, component: worker, part-of: tsg }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: worker-controls } }   # this worker's twin (and any extra copy)
+                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "1", -Q, tsg_controls]   # 1 thread on the tsg_controls queue (each job maps several scenarios at once)
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 100m, memory: 640Mi }   # reserved for the pod
+            limits: { cpu: 250m, memory: 1Gi }     # the most it may use
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one remediation-plan worker running
+metadata:                                        # the object's name and place
+  name: worker-remediation                       # Deployment name
+  namespace: ai-threatgen                        # project
+  labels: { app: worker-remediation, part-of: tsg }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one here; its twin runs in ai-remediation
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-remediation }     # pods labelled app=worker-remediation
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-remediation, component: worker, part-of: tsg }   # component becomes Prometheus' job name
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: worker-remediation } }   # this worker's twin (and any extra copy)
+                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_remediation]   # 2 threads on the tsg_remediation queue
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings
+            - secretRef: { name: tsg-secrets }     # secrets
+          env:                                   # the corporate proxy
+            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
+            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
+            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
+            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 250m, memory: 640Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 1Gi }     # the most it may use
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -220,10 +390,19 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: worker-service-mapper } }   # this worker's twin (and any extra copy)
+                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -239,20 +418,20 @@ spec:                                            # what to run
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
           startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
           livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
-            requests: { cpu: 125m, memory: 1Gi }   # reserved for the pod
-            limits: { cpu: 250m, memory: 2Gi }     # the most it may use
+            requests: { cpu: 250m, memory: 640Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 1Gi }     # the most it may use
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -282,10 +461,19 @@ spec:                                            # what to run
         prometheus.io/port: "9100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
+      affinity:                                  # where the scheduler places the pod
+        podAntiAffinity:                         # away from some other pods
+          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
+            - weight: 100                        # the strongest wish
+              podAffinityTerm:                   # the pods to keep away from
+                labelSelector: { matchLabels: { app: worker-maintenance } }   # this worker's twin (and any extra copy)
+                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
+                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -301,20 +489,20 @@ spec:                                            # what to run
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
           startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
           livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.worker inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
-            requests: { cpu: 250m, memory: 1Gi }   # reserved for the pod
-            limits: { cpu: 500m, memory: 2Gi }     # the most it may use (its jobs mostly wait on stores and the AI)
+            requests: { cpu: 100m, memory: 768Mi }   # reserved for the pod
+            limits: { cpu: 250m, memory: 1536Mi }  # the most it may use (its jobs mostly wait on stores and the AI)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -339,6 +527,7 @@ spec:                                            # what to run
     metadata:                                    # pod labels
       labels: { app: beat, component: beat, part-of: tsg }   # component names it in the logs
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry

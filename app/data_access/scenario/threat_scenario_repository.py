@@ -118,7 +118,7 @@ _SCENARIO_CONDITIONS: dict[str, Condition] = {
 
 _SCENARIO_FIELD_LISTS = {
     #: A served scenario as shown: never the control search text, what mapped it, the plan check.
-    "shown": {"controls.query": 0, "controls.made_with": 0, "plan_check": 0},
+    "shown": {"controls.query": 0, "controls.shortlist": 0, "controls.made_with": 0, "plan_check": 0},
     #: A regenerate's versions of an attack path.
     "version": ("path_id", "version", "superseded_by", "content.statement", "content.evidence.supports"),
     #: What finding an attack path's accepted version reads.
@@ -153,6 +153,7 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "content.actors.role",
         "content.systems.id",
         "content.evidence.mitigations",
+        "content.evidence.facts",  # is_about_ai leaves the cited attackers' names out
     ),
     1,
 )

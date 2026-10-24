@@ -63,7 +63,7 @@ for %%I in (%LIST%) do (
 echo.
 if "%PUSH%"=="1" (echo Built, checked and pushed to Quay:) else (echo Built and checked, not pushed:)
 for %%I in (%DONE%) do echo   %%I
-if "%PUSH%"=="1" echo Next:   deploy\DEPLOYMENT_GUIDE.md step 8
+if "%PUSH%"=="1" echo Next:   the next step of deploy\DEPLOYMENT_GUIDE.md
 if exist "%OUT%" del "%OUT%"
 popd
 endlocal

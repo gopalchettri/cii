@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 import structlog
-from celery import Task, signals, states
+from celery import Task, signals
 from celery.concurrency import get_implementation
 from prometheus_client import start_http_server
 
@@ -18,7 +18,7 @@ from app.core.readiness import log_mongodb_topology
 from app.worker.celery_app import REQUEST_ID_HEADER, queue_of, settings
 from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
-from app.worker.jobs import JOB_COLLECTIONS
+from app.worker.jobs import JOB_COLLECTIONS, JobWaiting
 
 log = structlog.get_logger(__name__)
 
@@ -52,6 +52,7 @@ def prepare_worker(sender: Any, **_: object) -> None:
     _serve_metrics(pool)
     _prepare_stores_and_models()
     log_mongodb_topology()
+    warm_up_external_intelligence(sender)  # before Celery starts the consumer and sends worker_ready
 
 
 def _serve_metrics(pool: str) -> None:
@@ -104,11 +105,12 @@ def start_heartbeat(sender: Any, **_: object) -> None:
     _heartbeat.start()
 
 
-@signals.worker_ready.connect
-def warm_up_external_intelligence(**_: object) -> None:
-    """Once the worker is consuming: ask for the intelligence search index in the background, only while the
-    switch is on, then follow the active snapshot every minute (G242). Never waits for it and never stops the
-    worker (both swallow their faults)."""
+def warm_up_external_intelligence(sender: Any) -> None:
+    """On a worker that writes scenarios (the index's only reader), before it consumes or beats: build the
+    intelligence search index while the switch is on, then follow the active snapshot every minute (G242).
+    Never stops the worker (both swallow their faults)."""
+    if queue_of(TaskName.WRITE_SCENARIOS) not in sender.app.amqp.queues.consume_from:
+        return  # maintenance still builds and publishes the index at each refresh
     from app import container
 
     switch = container.get_intelligence_switch()
@@ -138,16 +140,19 @@ def start_job_clock(task_id: str, task: Task, args: tuple | None = None, **_: ob
 
 
 @signals.task_postrun.connect
-def record_job_outcome(task_id: str, task: Task, state: str | None = None, **_: object) -> None:
+def record_job_outcome(
+    task_id: str, task: Task, state: str | None = None, retval: object = None, **_: object
+) -> None:
+    """Counts each delivery by its Celery state, or as `waiting` when its job waits for another job."""
     started = _job_started.pop(task_id, None)
-    if state == states.IGNORED:
-        log.info(LogEvent.JOB_FINISHED, outcome="ignored")  # another delivery owns the job: no job done
+    outcome = "waiting" if isinstance(retval, JobWaiting) else (state or "unknown").lower()
+    if outcome == "ignored":
+        log.info(LogEvent.JOB_FINISHED, outcome=outcome)  # another delivery owns the job: no job done
         return  # a delivery that found its job owned by another did no job: no outcome, no duration
-    metrics.JOBS.labels(task.name, (state or "unknown").lower()).inc()
+    metrics.JOBS.labels(task.name, outcome).inc()
     seconds = None if started is None else time.perf_counter() - started
-    if seconds is not None:
+    if seconds is not None and outcome != "waiting":  # a look for another job's work, not a job's run
         metrics.JOB_SECONDS.labels(task.name).observe(seconds)
-    outcome = (state or "unknown").lower()
     log.info(LogEvent.JOB_FINISHED, outcome=outcome, seconds=None if seconds is None else round(seconds, 1))
 
 

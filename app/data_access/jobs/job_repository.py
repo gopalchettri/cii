@@ -135,7 +135,8 @@ class JobRepository:
         worker: str = "",
     ) -> JobLease | None:
         """Claim the job if it is due (queued) or abandoned (running, lease expired) for this task and epoch,
-        returning its lease with `fields` of the record; None for a duplicate, stale or early delivery."""
+        returning its lease with `fields` of the record and job.due_at; None for a duplicate, stale or early
+        delivery."""
         now = utc_now()
         claimed = self._records.find_one_and_update(
             _claimable(record_id, epoch, task, now),
@@ -151,7 +152,7 @@ class JobRepository:
                 },
                 "$inc": {"job.attempts": 1},
             },
-            projection=dict.fromkeys(("job.attempts", *fields), 1),
+            projection=dict.fromkeys(("job.attempts", "job.due_at", *fields), 1),
             return_document=ReturnDocument.AFTER,
         )
         if claimed is None:

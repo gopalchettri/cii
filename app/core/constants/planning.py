@@ -3,6 +3,7 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.constants.common import EmbeddingCorpus
 from app.core.constants.jobs import Generation
 
 
@@ -105,6 +106,24 @@ class Search:
     VECTOR_FLOOR: Final = 0.60  # the vector leg keeps rows at least this similar when any reach it
 
 
+#: What a search of each corpus asks, in English: sent before the query to a model with a query instruction
+#: (EmbeddingModelProfile.query_instruction).
+QUERY_TASKS: Final[dict[EmbeddingCorpus, str]] = {
+    EmbeddingCorpus.THREAT: "Given a proposed threat, retrieve the library threats that are the same threat",
+    EmbeddingCorpus.THREAT_TYPE: "Given a threat type name, retrieve the threat types with the same meaning",
+    EmbeddingCorpus.THREAT_ACTOR: "Given a cyber threat, retrieve the threat actors likely to carry it out",
+    EmbeddingCorpus.CONTROL: "Given a threat scenario, retrieve the security controls that mitigate it",
+    EmbeddingCorpus.SERVICE: (
+        "Given a description of a service or of what flows to or from it, retrieve the catalog services that "
+        "match it"
+    ),
+    EmbeddingCorpus.EXTERNAL_INTELLIGENCE: (
+        "Given a cyber threat, retrieve the threat intelligence records (attack techniques, exploited "
+        "vulnerabilities, advisories) that show it"
+    ),
+}
+
+
 class ContextProperties:
     """The columns of dbo.tsg_GetAssetContext: every one but these is a fact of the asset or a system."""
 
@@ -155,7 +174,7 @@ class ThreatFinding:
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
     CATEGORIES_AT_ONCE: Final = 6  # STRIDE categories judged in parallel
-    AI_BATCHES_AT_ONCE: Final = 4  # gate batches of all categories share one pool this size
+    AI_BATCHES_AT_ONCE: Final = 8  # gate batches of all categories share one pool this size
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id

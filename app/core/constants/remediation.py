@@ -204,8 +204,8 @@ class RemediationMessage(StrEnum):
         "implements_controls"
     )
     CODE_FACT_IN_ACTION_PLAN = (
-        "action_plan states '{claim}': restate no schedule (order, parallel work, days, dates, critical "
-        "path, window or deadline) and say nothing of the library — the application owns both"
+        "action_plan says only what the application states itself ('{claim}'): describe the actions and "
+        "how they reduce the risk, with no schedule and nothing about the library"
     )
     PARTIAL_NOT_EXTENDED = (
         "{code} is partially implemented: describe what to extend and where, never a new deployment"

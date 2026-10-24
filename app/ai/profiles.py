@@ -24,7 +24,7 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         reasoning_effort="none",
         context_tokens=100_000,
     ),
-    # UAT, LiteLLM proxy. kimi answers in ~5 s, glm-5.3 in 55-99 s: 120 s lets either finish.
+    # UAT, LiteLLM proxy. kimi answers in ~5 s; 120 s covers its longest answers.
     # Context: the gateway's /model/info max_tokens (2026-07-29); no tpm or key limit set there.
     "litellm_proxy/kimi-k2.5": ChatModelProfile(
         max_output_tokens=12_288,
@@ -34,9 +34,11 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         context_tokens=262_144,
     ),
     # UAT's fallback model (CII_CHAT_FALLBACK_MODEL); 1 million tokens of input (owner, 2026-10-23).
+    # It answers in 55-99 s: 180 s keeps its longest answers from timing out (a timed-out gate batch fails
+    # the job).
     "litellm_proxy/glm-5.3": ChatModelProfile(
         max_output_tokens=12_288,
-        timeout_seconds=120,
+        timeout_seconds=180,
         supports_json_mode=True,
         reasoning_effort="none",
         context_tokens=1_000_000,
@@ -48,9 +50,15 @@ EMBEDDING_MODEL_PROFILES: dict[str, EmbeddingModelProfile] = {
     "openai/text-embedding-3-large": EmbeddingModelProfile(
         dimensions=3072, batch_size=64, timeout_seconds=90, max_text_chars=8_000
     ),
-    # UAT values (owner, 2026-10-08): as v1 runs them there.
+    # UAT values (owner, 2026-10-08): as v1 runs them there. The query instruction is the model card's
+    # (huggingface.co/Qwen/Qwen3-Embedding-8B, get_detailed_instruct: no space after "Query:").
     "litellm_proxy/qwen3-embedding-8b": EmbeddingModelProfile(
-        dimensions=4096, batch_size=32, timeout_seconds=120, max_text_chars=4_000, concurrency=4
+        dimensions=4096,
+        batch_size=32,
+        timeout_seconds=120,
+        max_text_chars=4_000,
+        concurrency=4,
+        query_instruction="Instruct: {task}\nQuery:",
     ),
 }
 

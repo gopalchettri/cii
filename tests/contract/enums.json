@@ -26,6 +26,7 @@
  "AiOutcome": {
   "ERROR": "error",
   "OK": "ok",
+  "TRUNCATED": "truncated",
   "UNAVAILABLE": "unavailable",
   "UNREADABLE": "unreadable"
  },
@@ -509,6 +510,7 @@
   "INSERTED": "inserted"
  },
  "Queue": {
+  "CONTROLS": "tsg_controls",
   "MAINTENANCE": "tsg_maintenance",
   "REMEDIATION": "tsg_remediation",
   "SCENARIOS": "tsg_scenarios",

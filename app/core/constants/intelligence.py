@@ -146,6 +146,7 @@ class IntelLimits:
     STALE_AFTER_HOURS: Final = 48  # a source not refreshed this long marks its snapshot stale (still used)
     CLAIM_STALE_SECONDS: Final = 3_600  # a refresh claim this old belongs to a dead worker: taken over
     SWITCH_CACHE_SECONDS: Final = 60  # how long a process remembers the on/off switch
+    INDEX_AT_START_SECONDS: Final = 120  # a scenarios worker's longest wait for its index before it consumes
     MAX_REJECTED_PER_RUN: Final = 100  # quarantined rows kept per run, so one bad file cannot flood storage
     ICS_FIRST_RUN_MONTHS: Final = 24  # a first CISA ICS run reads only advisories changed this recently
     ICS_MAX_PER_RUN: Final = 400  # advisory files downloaded per run; the next run continues from there

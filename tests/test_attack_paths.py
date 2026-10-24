@@ -310,7 +310,7 @@ def _threats_task() -> Any:
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     sends: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(jobs, "send_job", lambda *args: sends.append(args))
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args))
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, lambda _record_id: None)
     return sends
 

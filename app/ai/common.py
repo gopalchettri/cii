@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import litellm
 import structlog
 
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, AiRequestRate, busy_retry_wait, sleep_unless_lease_lost
 from app.core import metrics
 from app.core.config import Settings
 from app.core.constants import (
@@ -19,14 +20,13 @@ from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AI_TIMED_OUT_STATUSES,
     LITELLM_MODEL_PREFIX,
-    AiLimits,
     AiOutage,
     AiOutcome,
     ErrorCode,
     ErrorMessage,
     LogEvent,
 )
-from app.core.exceptions import AppError, JobFailed, LeaseLost, Unavailable
+from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, AppError, JobFailed, LeaseLost, Unavailable
 
 log = structlog.get_logger(__name__)
 
@@ -198,27 +198,43 @@ def build_api_key_header(header: str, api_key: str, option: str = "extra_headers
     return {option: {header: api_key}} if header else {}
 
 
-def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
-    """Run an AI call (and the check of its answer), retrying AiLimits.RETRIES times, 0.5 s, 1 s, 2 s apart,
-    when the provider is busy or unreachable or the answer came back short. The only retries: litellm's own
-    are switched off (app/ai/__init__.py), so one call is at most RETRIES + 1 requests.
+def call_with_retries[Answer](
+    call: Callable[[], Answer], request_rate: AiRequestRate = UNLIMITED_AI_REQUEST_RATE, *, model: str
+) -> tuple[Answer, float]:
+    """(the answer, its seconds without the request-rate waits) of an AI call to `model` and the check of its
+    answer. Each request first waits its turn at `request_rate`, `model`'s own. Asked again when the provider
+    is busy or unreachable or the answer came back short: AiLimits.RETRIES times, 0.5 s, 1 s, 2 s apart; a
+    rate-limited request (HTTP 429, counted) as request_rate.wait_after_rate_limit says. The only retries:
+    litellm's own are switched off (app/ai/__init__.py). After the last, the outage reaches the caller.
 
     A call that timed out is not asked again here (owner, 2026-10-10): the provider is overloaded, and asking
     again would hold the worker another full timeout (90-120 s) each time and add to its load. The fallback
     model answers instead, or the job's own back-off asks later."""
-    for attempt in range(AiLimits.RETRIES):
+    started = time.perf_counter()
+    rate_waits = rate_limited_waits = 0.0
+    attempt = 0
+    while True:
+        rate_waits += request_rate.wait_for_turn()
         try:
-            return call()
+            return call(), time.perf_counter() - started - rate_waits
         except litellm.Timeout:
             raise
+        except litellm.RateLimitError as exc:
+            metrics.AI_RATE_LIMITED.labels(model).inc()
+            retry_after = exc.response.headers.get("retry-after")
+            wait = request_rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
+            if wait is None:
+                raise
+            rate_limited_waits += wait
         except Exception as exc:
             unmapped = is_unmapped_outage(exc)  # a timed-out status is a timeout too: not asked again
             if unmapped and ai_outage_of(exc) is AiOutage.TIMED_OUT:
                 raise
-            if not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
+            wait = busy_retry_wait(attempt)
+            if wait is None or not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
                 raise
-            time.sleep(AiLimits.RETRY_FIRST_WAIT_SECONDS * 2**attempt)
-    return call()  # the last try: its outage reaches the caller
+        sleep_unless_lease_lost(wait)
+        attempt += 1
 
 
 def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
@@ -253,7 +269,9 @@ def count_and_convert_ai_errors(
     except LeaseLost:
         raise  # its job was stopped (G214): not an AI failure, so never counted as one (G222)
     except Unavailable:
-        raise  # no provider answered: counted already, or no slot was free (app/ai/slots.py)
+        raise  # no provider answered: counted already, or no slot or request turn free (app/ai/slots.py)
+    except REDIS_UNAVAILABLE_ERRORS:
+        raise  # the limiters' Redis is down, not the AI: the job retries as for any store outage
     except AI_UNAVAILABLE_ERRORS as exc:
         raise _counted_outage(task, model, exc) from exc
     except litellm.APIError as exc:  # a status litellm maps to no class: an outage when a server's (5xx)

@@ -34,6 +34,7 @@ from app.domain.remediation.plan import (
     risk_scope,
     write_plan,
 )
+from app.domain.scenario.controls import ControlMapper, controls_record
 from app.models.ai.profiles import ChatModelProfile
 from app.models.library.library import LibraryControl
 from app.models.remediation.plan import PlanView
@@ -42,6 +43,8 @@ from app.models.scenario.asset_context import FrozenContext
 from tests.fakes import FakeChatModel, truncated
 from tests.plan_job_fakes import RETAINED_ALL
 from tests.planner_samples import CONTEXT
+from tests.test_control_mapping import _CONTROLS, _OT_CONTEXT, _SCENARIO, _ScoresByText
+from tests.test_control_mapping import _snapshot as _library_snapshot
 
 IMPLEMENTED = ImplementationStatus.IMPLEMENTED
 PARTIAL = ImplementationStatus.PARTIALLY_IMPLEMENTED
@@ -755,18 +758,12 @@ def test_a_nearest_control_flagged_for_review_is_left_out_with_no_re_ask() -> No
     ]
 
 
-def test_a_schedule_claim_in_the_first_answer_is_re_asked_and_code_keeps_the_schedule(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_schedule_claim_is_dropped_with_no_re_ask_and_code_keeps_the_schedule() -> None:
     """The live C plan said 24 days where the schedule was 19: only code states days, dates, path, window."""
     stated = "A1, then A2. The critical path is 24 days, inside the 47-day mitigation window."
-    claimed, clean = _answer("CII-CID-5", "CII-CID-6", action_plan=stated), _answer("CII-CID-5", "CII-CID-6")
-    chat, sent = _real_chat(monkeypatch, json.dumps(claimed), json.dumps(clean))
-    plan, warnings = write_plan(chat, _snapshot())
-    correction = sent[1][-1]["content"]
-    assert len(sent) == 2
-    assert all(f"'{claim}'" in correction for claim in ("critical path", "24 days", "47-day"))
-    assert plan["action_plan"] == clean["action_plan"] and warnings == []
+    plan, warnings, chat = _written(_answer("CII-CID-5", "CII-CID-6", action_plan=stated))
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 1
+    assert plan["action_plan"] == "A1, then A2." and warnings == []
     assert (plan["mitigation_timeline_days"], plan["mitigation_end_date_planned"]) == (20, "2026-11-03")
 
 
@@ -785,12 +782,22 @@ def test_a_schedule_claim_in_the_first_answer_is_re_asked_and_code_keeps_the_sch
         "No gaps exist in the mapped control library for this scenario.",
     ],
 )
-def test_a_schedule_claim_the_re_ask_kept_is_dropped_with_its_sentence(claim: str) -> None:
-    """Asked again and still stated, the sentence goes; the rest stays, daily or 24/7 work included."""
+def test_a_schedule_claim_is_dropped_with_its_sentence(claim: str) -> None:
+    """The sentence goes; the rest stays, daily or 24/7 work included."""
     kept = ("A1 restricts remote access first.", "A2 adds daily and 24/7 monitoring in maintenance windows.")
     answer = _answer("CII-CID-5", "CII-CID-6", action_plan=f"{kept[0]} {claim} {kept[1]}")
-    plan, _, chat = _written(answer, answer)
-    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 2 and plan["action_plan"] == " ".join(kept)
+    plan, _, chat = _written(answer)
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 1 and plan["action_plan"] == " ".join(kept)
+
+
+def test_an_action_plan_of_nothing_but_schedule_claims_is_asked_again() -> None:
+    """Removing every sentence would leave no action plan: only then is the AI asked again."""
+    stated = "The critical path is 24 days, inside the 47-day window."
+    claimed = _answer("CII-CID-5", "CII-CID-6", action_plan=stated)
+    clean = _answer("CII-CID-5", "CII-CID-6")
+    plan, warnings, chat = _written(claimed, clean)
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 2
+    assert plan["action_plan"] == clean["action_plan"] and warnings == []
 
 
 def test_a_partial_control_described_as_new_or_a_missing_one_as_extended_is_re_asked(
@@ -945,6 +952,34 @@ OFFERED = (_item(3, match="alternative", score=64.0), _item(4, match="alternativ
 def _check(code: str, validation: str, replacement: str | None = None) -> dict[str, Any]:
     reason = "A better fit for this risk." if replacement else "It reduces the firmware tampering risk."
     return {"control_code": code, "validation": validation, "replacement_code": replacement, "reason": reason}
+
+
+def test_alternatives_reuse_the_mappings_reranked_shortlist_only_while_it_still_applies() -> None:
+    """Same query, library and models: the mapping's scores, no rerank; another query (an attacker picked
+    since), another rerank model or a record kept without a shortlist is reranked."""
+    rerank = _ScoresByText({"Backup of controller logic": 91.0, "Backup policy": 70.0})
+    snapshot, mapper = _library_snapshot(*_CONTROLS), ControlMapper(rerank)  # type: ignore[arg-type]
+    record = controls_record(mapper.map_controls(_SCENARIO, _OT_CONTEXT, snapshot), snapshot)
+    reused = mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2, record)
+    assert len(rerank.asked) == 1 and reused == [(_CONTROLS[2], 70.0)]
+    assert mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2) == reused  # a rerank agrees
+    insider = [{"name": "Insider", "role": "acting"}]
+    picked = {"content": _SCENARIO["content"] | {"actors": insider}}
+    other_model = record | {"made_with": record["made_with"] | {"rerank_model": "another-reranker"}}
+    without = {key: value for key, value in record.items() if key != "shortlist"}
+    instructed = record | {"made_with": record["made_with"] | {"query_instruction": "Instruct: x\nQuery:"}}
+    for scenario, mapped in (
+        (picked, record),
+        (_SCENARIO, other_model),
+        (_SCENARIO, without),
+        (_SCENARIO, instructed),  # searched with another query instruction: another shortlist
+    ):
+        mapper.find_alternatives(scenario, _OT_CONTEXT, snapshot, [2], 2, mapped)
+    assert len(rerank.asked) == 6
+    made_before = {key: value for key, value in record["made_with"].items() if key != "query_instruction"}
+    mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2, record | {"made_with": made_before})
+    plain = record["made_with"]["query_instruction"] is None  # the laptop's model takes queries plain
+    assert len(rerank.asked) == 6 + (not plain)  # kept before the key: reused while the model takes none
 
 
 def test_a_replaced_control_gives_way_to_its_alternative_and_both_are_traced() -> None:

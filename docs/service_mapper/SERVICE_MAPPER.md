@@ -21,10 +21,12 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    ordered most relevant first by hybrid search (`app/search/service_mapper.py`); the selected service is left
    out. Only a catalog too large for the input keeps just its most relevant services. **No catalog ID ever
    reaches the AI**: services are named, and the answer names services.
-4. The schema is checked (`GeneratedAnswer`). If any item would be dropped, the AI is asked again once in the
-   same conversation, with the reasons. Drops are: an ambiguous name, the selected service, a one-word unmatched
-   name, a sector or subsector name used as a service, a duplicate, a service in both lists, or a new service
-   without a catalog sector. A new service that looks like a database one (same sector or subsector and a
+4. The schema is checked (`GeneratedAnswer`). If an item would be dropped for a fault only the AI can fix, the
+   AI is asked again once in the same conversation, with the reasons: an ambiguous name, a one-word unmatched
+   name, a sector or subsector name used as a service, or a new service without a catalog sector. The selected
+   service itself, a duplicate and a service in both lists are never asked about: reconcile drops the first,
+   keeps the first mention of a duplicate, and keeps a service in both lists where the AI ranked it higher. A
+   new service that looks like a database one (same sector or subsector and a
    distinctive word in common, e.g. "Water Supply" and "Water Production & Transmission") is asked again too:
    a service already in the database is never identified anew by the AI. An unusable re-ask keeps the first
    answer.

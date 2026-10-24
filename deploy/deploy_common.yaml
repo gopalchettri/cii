@@ -255,6 +255,7 @@ spec:                                            # what to run
     metadata:                                    # pod labels
       labels: { app: prometheus, component: prometheus, part-of: tsg-monitoring }   # component becomes Prometheus' job name; part-of selects the network rules
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       serviceAccountName: prometheus             # runs as the prometheus identity (may read pods)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (Quay)
       containers:                                # the programs in the pod
@@ -327,6 +328,7 @@ spec:                                            # what to run
         prometheus.io/port: "9093"               # on this port
         prometheus.io/path: /alertmanager/metrics   # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: alertmanager                     # container name
@@ -398,6 +400,7 @@ spec:                                            # what to run
         prometheus.io/port: "3100"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: loki                             # container name
@@ -469,6 +472,7 @@ spec:                                            # what to run
         prometheus.io/port: "12345"              # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       serviceAccountName: alloy                  # runs as the alloy identity (may read pods and their logs)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
@@ -528,6 +532,7 @@ spec:                                            # what to run
     metadata:                                    # pod labels
       labels: { app: grafana, component: grafana, part-of: tsg-monitoring }   # component names it in the logs
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       initContainers:                            # runs to the end before Grafana starts
         - name: set-admin-password               # Grafana reads the admin password only when it creates its database: this sets a changed one
@@ -636,6 +641,7 @@ spec:                                            # what to run
         prometheus.io/port: "9121"               # on this port
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: redis-exporter                   # container name
@@ -650,8 +656,8 @@ spec:                                            # what to run
             - name: REDIS_ADDR                   # the Redis to read: the app's own broker URL (password included)
               valueFrom: { secretKeyRef: { name: tsg-secrets, key: CII_REDIS_CELERY_BROKER_URL } }   # one copy, so a password change reaches both
             - { name: REDIS_DB, value: "1" }     # the job queues are Redis database 1
-            - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS   # each queue is a Redis list named tsg:<queue>: its length = jobs waiting
-              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_maintenance"   # the four queues
+            - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS   # each queue is two Redis lists, tsg:<queue> (next stages) and tsg:<queue>\x06\x163 (new work): their lengths = jobs waiting
+              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_threats\x06\x163,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_scenarios\x06\x163,db$(REDIS_DB)=tsg:tsg_controls,db$(REDIS_DB)=tsg:tsg_controls\x06\x163,db$(REDIS_DB)=tsg:tsg_remediation,db$(REDIS_DB)=tsg:tsg_remediation\x06\x163,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_servicemapper\x06\x163,db$(REDIS_DB)=tsg:tsg_maintenance,db$(REDIS_DB)=tsg:tsg_maintenance\x06\x163"   # the six queues, both lists each
             - { name: REDIS_EXPORTER_INCL_SYSTEM_METRICS, value: "false" }   # no host metrics
           ports: [{ name: metrics, containerPort: 9121 }]   # its metrics port
           readinessProbe:                        # "ready" = may receive requests
@@ -682,6 +688,7 @@ spec:                                            # what to run
     metadata:                                    # pod labels
       labels: { app: kube-state-metrics, component: kube-state-metrics, part-of: tsg-monitoring }   # component names it in the logs
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       serviceAccountName: kube-state-metrics     # runs as the kube-state-metrics identity (may read pods)
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
@@ -739,6 +746,7 @@ spec:                                            # what to run
         prometheus.io/port: "5555"               # on this port
         prometheus.io/path: /flower/metrics      # at this path
     spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
       automountServiceAccountToken: false        # Flower never calls the OpenShift API: no token in the pod
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod

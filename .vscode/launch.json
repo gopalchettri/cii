@@ -26,7 +26,7 @@
       // Metrics port 9101: never clashes with a normal worker still running on 9100.
       "args": [
         "-A", "app.worker", "worker", "--pool=solo",
-        "-Q", "tsg_threats,tsg_scenarios,tsg_maintenance",
+        "-Q", "tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation,tsg_servicemapper,tsg_maintenance",
         "-n", "debug@%h", "--loglevel=INFO"
       ],
       "cwd": "${workspaceFolder}",

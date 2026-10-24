@@ -17,7 +17,13 @@ from app.ai.common import (
 )
 from app.ai.local_turns import LocalTurns
 from app.ai.profiles import RERANK_MODEL_PROFILES, find_model_profile
-from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
+from app.ai.slots import (
+    UNLIMITED_AI_REQUEST_RATE,
+    UNLIMITED_AI_SLOTS,
+    AiRequestRate,
+    AiSlots,
+    max_slot_hold_seconds,
+)
 from app.core import metrics
 from app.core.config import Settings
 from app.core.constants import AiLimits, AiOutcome, AiTask, ErrorMessage
@@ -41,6 +47,7 @@ class RerankModel:
         api_key: str,
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
+        request_rate: AiRequestRate = UNLIMITED_AI_REQUEST_RATE,
     ):
         self._model = model
         self.profile = profile
@@ -50,25 +57,26 @@ class RerankModel:
         self._local_model: Any = None
         self._turns = LocalTurns()  # the local model: loaded once, one prediction at a time, scenarios first
         self._slots = slots  # remote calls only: a local model shares no provider
+        self._request_rate = request_rate
 
     def score_relevance(self, query: str, documents: list[str]) -> list[float]:
         if not documents:
             return []
-        started = time.perf_counter()
         # A local model that would not load is counted too, so AiErrorRateHigh sees it on the laptop.
         with count_and_convert_ai_errors(AiTask.RERANK, self._model):
-            scores = (
+            scores, seconds = (
                 self._score_with_provider(query, documents)
                 if self._base_url
                 else self._score_with_local_model(query, documents)
             )
         metrics.AI_CALLS.labels(AiTask.RERANK, self._model, AiOutcome.OK).inc()
-        metrics.AI_SECONDS.labels(AiTask.RERANK, self._model).observe(time.perf_counter() - started)
+        metrics.AI_SECONDS.labels(AiTask.RERANK, self._model).observe(seconds)
         return scores
 
-    def _score_with_provider(self, query: str, documents: list[str]) -> list[float]:
+    def _score_with_provider(self, query: str, documents: list[str]) -> tuple[list[float], float]:
         # call_with_retries is the only retry; a short answer is asked again too.
-        with self._slots.hold_slot(max_slot_hold_seconds(self.profile.timeout_seconds)):
+        hold = max_slot_hold_seconds(self.profile.timeout_seconds, self._request_rate.wait_seconds)
+        with self._slots.hold_slot(hold):
             return call_with_retries(
                 lambda: self._read_checked_scores(
                     litellm.rerank(
@@ -82,7 +90,9 @@ class RerankModel:
                         **self._key_header,
                     ),
                     len(documents),
-                )
+                ),
+                self._request_rate,
+                model=self._model,
             )
 
     def _read_checked_scores(self, response: Any, expected: int) -> list[float]:
@@ -104,12 +114,13 @@ class RerankModel:
             )
         return [100.0 * score for score in scores]
 
-    def _score_with_local_model(self, query: str, documents: list[str]) -> list[float]:
+    def _score_with_local_model(self, query: str, documents: list[str]) -> tuple[list[float], float]:
         """ponytail: dev-only CPU model; UAT uses the proxy. Loaded once per process on first use, and one
         prediction at a time (G199): one already uses every core, so ten at once (a worker's threads) only
         thrashed, and none of them finished in 38 minutes (live test 2026-10-11). A few documents per turn,
         scenarios first (G222, local_turns.py): a 40-control mapping never holds it while a next set waits.
-        Each pair is scored on its own, so the turns change no score."""
+        Each pair is scored on its own, so the turns change no score. (The scores, the seconds.)"""
+        started = time.perf_counter()
         step = AiLimits.LOCAL_RERANK_TURN_DOCUMENTS
         scores: list[float] = []
         for start in range(0, len(documents), step):
@@ -119,7 +130,7 @@ class RerankModel:
                 pairs = [(query, document) for document in documents[start : start + step]]
                 # CrossEncoder.predict already applies the sigmoid for a one-label model: scores are 0..1.
                 scores += [100.0 * float(p) for p in self._loaded_local_model().predict(pairs)]
-        return scores
+        return scores, time.perf_counter() - started
 
     def _loaded_local_model(self) -> Any:
         if self._local_model is None:
@@ -129,7 +140,7 @@ class RerankModel:
         return self._local_model
 
 
-def rerank_model_from(settings: Settings, slots: AiSlots) -> RerankModel:
+def rerank_model_from(settings: Settings, slots: AiSlots, request_rate: AiRequestRate) -> RerankModel:
     """The rerank model the settings name; LocalRerankerMissing for a local model whose package is not
     installed, so start-up stops (API and worker build it at start) instead of every rerank failing later."""
     if not settings.rerank_base_url and find_spec(_LOCAL_PACKAGE) is None:
@@ -141,4 +152,5 @@ def rerank_model_from(settings: Settings, slots: AiSlots) -> RerankModel:
         settings.rerank_api_key.get_secret_value(),
         settings.ai_key_header,
         slots,
+        request_rate,
     )

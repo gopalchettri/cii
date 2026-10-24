@@ -4,7 +4,7 @@ asking the container for its job when it runs."""
 import structlog
 from celery import Task
 
-from app.core.constants import Collection, Lease, TaskName
+from app.core.constants import Collection, Lease, TaskName, Worker
 from app.core.exceptions import TEMPORARY_ERRORS
 from app.data_access.jobs.job_repository import JobLease
 from app.worker.celery_app import celery_app
@@ -44,8 +44,8 @@ def map_controls(self: Task, record_id: str, epoch: int) -> None:
     try:
         container.get_controls_job().map_threat_scenario_controls(record_id, self.request.id)
     except TEMPORARY_ERRORS as exc:
-        delays = Lease.RETRY_DELAYS_SECONDS
-        raise self.retry(countdown=delays[min(self.request.retries, len(delays) - 1)], exc=exc) from exc
+        delay = Lease.RETRY_DELAYS_SECONDS[min(self.request.retries, len(Lease.RETRY_DELAYS_SECONDS) - 1)]
+        raise self.retry(countdown=delay, exc=exc, priority=Worker.NEXT_STAGE_PRIORITY) from exc
 
 
 @celery_app.task(name=TaskName.RETRY_CONTROLS)

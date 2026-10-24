@@ -17,6 +17,12 @@ PLANS = Counter("tsg_plans_total", "Remediation plan versions settled, by outcom
 JOB_SECONDS = Histogram(
     "tsg_job_seconds", "Background job duration", ["task"], buckets=(1, 5, 15, 30, 60, 120, 300, 600, 1800)
 )
+JOB_QUEUE_WAIT = Histogram(
+    "tsg_job_queue_wait_seconds",
+    "Time a job waited for a worker after it was due",
+    ["task"],
+    buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800),
+)
 AI_CALLS = Counter("tsg_ai_calls_total", "AI calls by outcome", ["task", "model", "outcome"])
 AI_OUTAGES = Counter("tsg_ai_outages_total", "AI calls with no answer, by reason", ["task", "reason"])
 AI_TOKENS = Counter("tsg_ai_tokens_total", "AI tokens", ["task", "model", "direction"])
@@ -27,6 +33,14 @@ AI_SECONDS = Histogram(
     ["task", "model"],
     buckets=(1, 2, 5, 10, 20, 30, 60, 90, 120, 180),
 )
+#: Each turn of a model's request-rate limiter (AiRequestRate), 0 included; none while its limit is 0.
+AI_REQUEST_RATE_WAIT = Histogram(
+    "tsg_ai_request_rate_wait_seconds",
+    "Seconds an AI request waited for its turn in its model's request-rate limiter",
+    ["model"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
+)
+AI_RATE_LIMITED = Counter("tsg_ai_rate_limited_total", "HTTP 429 answers from the AI gateway", ["model"])
 DEPENDENCY_UP = Gauge("tsg_dependency_up", "1 when the dependency answered the last check", ["name"])
 JOBS_NOW = Gauge(
     "tsg_jobs_current",

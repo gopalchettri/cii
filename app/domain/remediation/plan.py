@@ -544,10 +544,13 @@ def _gap_problems(snapshot: dict[str, Any], answer: dict[str, Any]) -> list[str]
 
 
 def _prose_problems(snapshot: dict[str, Any], answer: dict[str, Any]) -> list[str]:
-    """A shape-valid first answer's prose faults: code's facts in action_plan, a partial control described as
-    new or a not implemented one as extended, an interim action when covered."""
+    """A shape-valid first answer's prose faults: a partial control described as new or a not implemented one
+    as extended, an interim action when covered, an action_plan of nothing but code's facts (`_finish` removes
+    those sentences itself, so only an action_plan they would empty is asked again)."""
     draft = PlanDraft.model_validate(answer)
     claims = dict.fromkeys(match.group(0) for match in _CODE_FACT.finditer(draft.action_plan))
+    if _without_code_facts(draft.action_plan):  # something is left once code's sentences go: no re-ask
+        claims = {}
     problems = [RemediationMessage.CODE_FACT_IN_ACTION_PLAN.format(claim=claim) for claim in claims]
     rows, _ = _weighed(snapshot, draft)
     status_of = {_key(row["control_code"]): row["implementation_status"] for row in rows}
@@ -579,7 +582,7 @@ def _finish(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any],
     plan = draft.model_dump(mode="json", exclude={"control_validation", "uncovered_risks"})
     if not plan["remediation_action_plan"]:
         raise JobFailed(ErrorCode.INVALID_PLAN, RemediationMessage.PLAN_WITHOUT_ACTION)
-    plan["action_plan"] = _without_code_facts(plan["action_plan"])  # a claim the re-ask left
+    plan["action_plan"] = _without_code_facts(plan["action_plan"])  # the schedule and the library are code's
     rows, warnings = _weighed(snapshot, draft)
     gaps = {_key(r["control_code"]): r for r in rows if _validated(r) and r["implementation_status"] in _GAPS}
     controls, kept_warnings = _kept_controls(plan["controls_to_be_implemented"], rows, gaps)

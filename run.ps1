@@ -65,10 +65,12 @@ $GrafanaUrl = 'http://localhost:3000/grafana/'
 # The maintenance worker has its own 3 threads (BLUEPRINT worker-maintenance, G198): the reaper and the controls
 # sweep never wait behind long jobs. With one worker for all queues, ten long mappings held every thread and a
 # lost job was never re-sent (live test 2026-10-11).
+# tsg_controls stays in the job worker: the laptop's local CPU reranker is shared within one process.
 $Programs = [ordered]@{
     api         = @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000')
     worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '10',
-                    '-Q', 'tsg_threats,tsg_scenarios', '-n', $WorkerName, '--loglevel=INFO')
+                    '-Q', 'tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation', '-n', $WorkerName,
+                    '--loglevel=INFO')
     service_mapper = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
                        '-Q', 'tsg_servicemapper', '-n', $MapperWorkerName, '--loglevel=INFO')
     maintenance = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '3',

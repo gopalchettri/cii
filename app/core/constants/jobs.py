@@ -7,6 +7,7 @@ from typing import Final
 class Queue(StrEnum):
     THREATS = "tsg_threats"
     SCENARIOS = "tsg_scenarios"
+    CONTROLS = "tsg_controls"
     MAINTENANCE = "tsg_maintenance"
     REMEDIATION = "tsg_remediation"
     SERVICEMAPPER = "tsg_servicemapper"
@@ -24,13 +25,12 @@ class TaskName(StrEnum):
     REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # sources due, then a snapshot
 
 
-#: The queue each task's messages go to (the Celery app's task_routes).
-TASK_ROUTES: Final[dict[str, dict[str, str]]] = {
+TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Celery app's task_routes)
     TaskName.MAP_SERVICES: {"queue": Queue.SERVICEMAPPER},
     TaskName.FIND_THREATS: {"queue": Queue.THREATS},
     TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
-    TaskName.MAP_CONTROLS: {"queue": Queue.SCENARIOS},
-    TaskName.WRITE_PLAN: {"queue": Queue.SCENARIOS},
+    TaskName.MAP_CONTROLS: {"queue": Queue.CONTROLS},
+    TaskName.WRITE_PLAN: {"queue": Queue.REMEDIATION},
     TaskName.REAP: {"queue": Queue.MAINTENANCE},
     TaskName.RETRY_CONTROLS: {"queue": Queue.MAINTENANCE},
     TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
@@ -86,12 +86,14 @@ class Realtime:
 
 
 class Worker:
-    THREADS: Final = 4  # tasks at once per AI worker pod: x calls per job x replicas stays near the AI cap
+    THREADS: Final = 4  # tasks at once when a worker's command names none: each Deployment's -c sets its own
     BROKER_KEY_PREFIX: Final = "tsg:"  # every Celery key in Redis: v1 must not share the Redis database
     BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS: never redelivered
     HEARTBEAT_SECONDS: Final = 20  # each worker pod tells /ready "alive" this often
     ONLINE_WITHIN_SECONDS: Final = 60  # /ready counts a worker only if its last beat is this recent
     HEARTBEAT_KEY: Final = "tsg:workers:{queue}"  # sorted set: member = worker hostname, score = last beat
+    NEXT_STAGE_PRIORITY: Final = 0  # next stages, retries, the reaper's re-sends: Redis serves 0 first
+    NEW_WORK_PRIORITY: Final = 3  # every other send; its list is <queue>\x06\x163, which old pods read too
 
 
 class Lease:
@@ -104,6 +106,7 @@ class Lease:
     MAX_JOB_SECONDS: Final = 3_600  # a job running this long stops renewing, so a hung job is taken over
     RETRY_DELAYS_SECONDS: Final = (15, 30, 60, 120)  # wait before retrying after an outage, by attempt
     CLOCK_SKEW_SECONDS: Final = 5  # a claim accepts a job due this much later than the pod's clock
+    RESEND_EARLY_WITHIN_SECONDS: Final = RETRY_DELAYS_SECONDS[-1] + CLOCK_SKEW_SECONDS  # retry early: re-sent
 
 
 class JobKind(StrEnum):
@@ -133,7 +136,7 @@ class JobControlMessage(StrEnum):
 
 
 class Generation:
-    WRITER_BATCH: Final = 4  # paths one write job writes at once: a concurrency bound, not a scenario limit
+    WRITER_BATCH: Final = 6  # paths one write job writes at once (a set in one round): not a scenario limit
     MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 

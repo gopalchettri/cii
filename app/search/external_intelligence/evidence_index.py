@@ -144,7 +144,9 @@ class EvidenceIndex:
         asked = [i for i, fits in enumerate(allowed) if fits.any() and queries[i]]
         if not asked:
             return found
-        vectors = self._embeddings.embed_search_queries([queries[i] for i in asked])
+        vectors = self._embeddings.embed_search_queries(
+            [queries[i] for i in asked], EmbeddingCorpus.EXTERNAL_INTELLIGENCE
+        )
         for position, vector in zip(asked, vectors, strict=True):
             hits = self._hybrid.search(queries[position], vector, limit, allowed[position])
             found[position] = [self._corpus.hits[hit.position] for hit in hits]

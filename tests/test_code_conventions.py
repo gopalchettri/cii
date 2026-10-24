@@ -15,7 +15,7 @@ APP_SOURCES = sorted(APP.rglob("*.py"))
 #: The size rules also hold for the laptop scripts (no layers there).
 SIZE_CHECKED_SOURCES = APP_SOURCES + sorted((REPO / "scripts").glob("*.py"))
 #: The only modules outside a layer folder.
-TOP_LEVEL_FILES = {"__init__.py", "main.py", "container.py"}
+TOP_LEVEL_FILES = {"__init__.py", "main.py", "container.py", "probe.py"}
 INLINE_LOG_EVENT = re.compile(r"\blog\.(debug|info|warning|error|exception)\(\s*[\"']")
 INLINE_RAISE_MESSAGE = re.compile(r"\braise\s+\w+\(\s*[\"']")
 #: The pod's own clock read directly: every "now" comes from app/core/clock.py, MongoDB's clock.

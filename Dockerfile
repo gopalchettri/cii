@@ -12,6 +12,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONPATH=/app
+# One BLAS thread per process: numpy started one per node core, so vector searches used 13-17x the CPU
+# of a 250m limit.
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
 
 # Python 3.12 as "python" and "pip", and Microsoft's ODBC Driver 17 (unixODBC from UBI AppStream).
 RUN dnf install -y python3.12 python3.12-pip \

@@ -164,7 +164,7 @@ class LibrarySnapshot:
         if not queries:  # nothing to embed: no MongoDB read, no AI call
             return []
         index = self._indexes[corpus]
-        vectors = self._embeddings.embed_search_queries(list(queries))
+        vectors = self._embeddings.embed_search_queries(list(queries), corpus)
         return [
             [(rows[hit.position], hit.score) for hit in index.search(query, vector, top_k, scope, **options)]
             for query, vector, scope in zip(queries, vectors, scopes or [None] * len(queries), strict=True)

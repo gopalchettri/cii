@@ -455,6 +455,7 @@ def test_missing_controls_are_mapped_by_the_plan_job_never_the_request(
     assert version["status"] == Status.DONE and _mapped_codes(version) == ["CII-CID-1"]
     saved = _scenario_controls(scenario_id)
     assert (saved["status"], [item["code"] for item in saved["items"]]) == (Status.DONE, ["CII-CID-1"])
+    assert world["mapper"].mapped["items"] == saved["items"]  # the alternatives see the record just mapped
     assert _request(client, api_key, generated(scenario_id)).status_code == 409
     assert world["mapper"].asked == [scenario_id]  # refused before any control was mapped
 
@@ -504,7 +505,7 @@ def test_a_plan_cancel_ends_the_job_and_a_run_cancel_retries_it(
     cancelled: str,
 ) -> None:
     """The mapping's next AI call sees either lease lost. A plan cancel ends the delivery as stopped by its
-    owner; a run cancel (the scenario's control lease lost) gives the plan job back for its normal retry."""
+    owner; a run cancel (the scenario's control lease lost) gives the plan job back to wait, not to retry."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
     scenario_id = _scenario(controls=UNMAPPED)
     remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
@@ -537,7 +538,7 @@ def test_a_plan_cancel_ends_the_job_and_a_run_cancel_retries_it(
         assert record["status"] == Status.CANCELLED
         assert _scenario_controls(scenario_id).get("error") is None  # stopped, never told as an outage
     else:
-        assert stopped_by == [scenario_id] and "job.retry_scheduled" in events
+        assert stopped_by == [scenario_id] and "job.waiting" in events and "job.retry_scheduled" not in events
         assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 0)  # no attempt used
 
 

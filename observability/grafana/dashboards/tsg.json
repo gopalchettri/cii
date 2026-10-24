@@ -197,7 +197,7 @@
       "id": 4,
       "type": "stat",
       "title": "Parts of the system",
-      "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios, map controls and plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+      "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -235,6 +235,30 @@
           },
           "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_scenarios\"}), 1) or vector(-1)",
           "legendFormat": "Worker: write scenarios",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "N",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_controls\"}), 1) or vector(-1)",
+          "legendFormat": "Worker: map controls",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "M",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_remediation\"}), 1) or vector(-1)",
+          "legendFormat": "Worker: write plans",
           "instant": true,
           "range": false,
           "format": "time_series"
@@ -317,7 +341,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
+          "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!~\"ok|truncated\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!~\"ok|truncated\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
           "legendFormat": "AI service",
           "instant": true,
           "range": false,
@@ -573,6 +597,10 @@
                       "ClockSkew": {
                         "text": "A pod's clock is off: its node needs time sync",
                         "index": 22
+                      },
+                      "AiRequestRateWaitHigh": {
+                        "text": "A model's AI requests wait long for their turn (its requests-a-minute limit)",
+                        "index": 23
                       }
                     }
                   }
@@ -3829,7 +3857,7 @@
       "id": 16,
       "type": "timeseries",
       "title": "Jobs waiting in each queue",
-      "description": "Jobs sent but not yet picked up by a worker. Growing for long = the workers cannot keep up (or are down).",
+      "description": "Jobs sent but not yet picked up by a worker, a run's next stages and new work together. Growing for long = the workers cannot keep up (or are down).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -3841,7 +3869,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (queue) (label_replace(redis_key_size{key=~\"tsg:tsg_.*\"}, \"queue\", \"$1\", \"key\", \"tsg:(.*)\"))",
+          "expr": "sum by (queue) (label_replace(max by (key) (redis_key_size{key=~\"tsg:tsg_.*\"}), \"queue\", \"$1\", \"key\", \"tsg:([a-z_]+).*\"))",
           "legendFormat": "{{queue}}"
         }
       ],
@@ -3882,7 +3910,7 @@
       "id": 17,
       "type": "timeseries",
       "title": "Jobs finished, by result",
-      "description": "Jobs ended per 5 minutes (the every-minute reaper left out): done, tried again after an outage, failed.",
+      "description": "Jobs ended per 5 minutes (the every-minute reaper and the 15 s looks of a job waiting for another job left out): done, tried again after an outage, failed.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -3894,7 +3922,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\"}[5m]))",
+          "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\",outcome!=\"waiting\"}[5m]))",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -5116,7 +5144,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 9,
+        "w": 6,
         "x": 6,
         "y": 90
       }
@@ -5169,8 +5197,61 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 9,
-        "x": 15,
+        "w": 6,
+        "x": 12,
+        "y": 90
+      }
+    },
+    {
+      "id": 62,
+      "type": "timeseries",
+      "title": "Wait for a worker over time (95 %)",
+      "description": "How long 95 % of jobs waited after they were due until a worker took them, per job type. A climb = too few worker threads for the work sent.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, task) (rate(tsg_job_queue_wait_seconds_bucket[15m])))",
+          "legendFormat": "{{task}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "Nothing yet"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
         "y": 90
       }
     },
@@ -5509,6 +5590,112 @@
       }
     },
     {
+      "id": 63,
+      "type": "timeseries",
+      "title": "Wait for an AI request's turn (95 %), by model",
+      "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(tsg_ai_request_rate_wait_seconds_bucket[5m])))",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "Nothing yet"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 107
+      }
+    },
+    {
+      "id": 64,
+      "type": "timeseries",
+      "title": "AI gateway refusals (429) per minute",
+      "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (CII_CHAT_REQUESTS_PER_MINUTE and its siblings) is below that model's limit.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (model) (rate(tsg_ai_rate_limited_total[5m])) * 60",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "noValue": "No refusals"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 107
+      }
+    },
+    {
       "id": 30,
       "type": "row",
       "title": "Follow one run or request",
@@ -5518,7 +5705,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 107
+        "y": 115
       },
       "panels": []
     },
@@ -5560,7 +5747,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 108
+        "y": 116
       }
     },
     {
@@ -5599,7 +5786,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 120
+        "y": 128
       }
     },
     {
@@ -5612,7 +5799,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 126
+        "y": 134
       },
       "panels": [
         {
@@ -5665,7 +5852,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 127
+            "y": 135
           }
         },
         {
@@ -5718,7 +5905,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 127
+            "y": 135
           }
         },
         {
@@ -5771,7 +5958,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 127
+            "y": 135
           }
         }
       ]
@@ -5786,7 +5973,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 135
       },
       "panels": [
         {
@@ -5839,7 +6026,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 128
+            "y": 136
           }
         },
         {
@@ -5892,7 +6079,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 128
+            "y": 136
           }
         },
         {
@@ -5945,7 +6132,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 128
+            "y": 136
           }
         },
         {
@@ -5998,7 +6185,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 136
+            "y": 144
           }
         },
         {
@@ -6051,7 +6238,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 136
+            "y": 144
           }
         }
       ]

@@ -6,8 +6,11 @@
 # A running pod never sees a changed setting: after a change, restart TSG's pods in each project (the -l leaves
 # every other Deployment alone: v1's in the app projects, the chatbot's in ai-common):
 #   oc -n ai-remediation rollout restart deployment -l part-of=tsg
+#   oc -n ai-remediation rollout status deployment -l part-of=tsg --timeout=10m
 #   oc -n ai-threatgen rollout restart deployment -l part-of=tsg
+#   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
+#   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --timeout=10m
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- 1. the app's settings (tsg-config)
@@ -37,7 +40,12 @@ items:                                           # one tsg-config per project th
       CII_AI_BYPASS_PROXY: "true"                # must stay true: AI calls go to the gateway directly, not via the proxy
       CII_WORKER_METRICS_PORT: "9100"            # port each worker serves /metrics on for Prometheus
       CII_MAX_REQUEST_MB: "2"                    # largest request body the API accepts, in MB
-      CII_MAX_CONCURRENT_AI_CALLS: "16"          # most AI calls at once across all pods (0 = no limit)
+      CII_MAX_CONCURRENT_AI_CALLS: "0"           # most AI calls at once across all pods (0 = no limit: the owner's choice for UAT)
+      CII_MAX_CONCURRENT_FALLBACK_CALLS: "16"    # most calls at once to the fallback model (glm-5.3) across all pods; ask the gateway admin how many it takes
+      CII_CHAT_REQUESTS_PER_MINUTE: "180"            # requests a minute to the main chat model (kimi-k2.5) across all pods: its own limit is 192; 180 leaves headroom, assuming nothing else uses kimi-k2.5 on this key
+      CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE: "0"     # the same for the fallback model (glm-5.3); 0 = no limit: set it when the gateway admin gives glm-5.3's limit
+      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # the same for the embedding model; 0 = no limit: set it when the gateway admin gives its limit
+      CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: set it when the gateway admin gives its limit
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)
       TOTAL_SCENARIO_COUNT: "15"                 # most scenarios a run produces
       INITIAL_SET_SIZE: "6"                      # scenarios written first, so a reviewer can start reading
@@ -251,13 +259,15 @@ data:                                            # one key per file
               summary: "{{ $labels.instance }}'s clock is more than 5 s off MongoDB's; the app corrects for it."
               description: "UAT: the cluster admin fixes time sync on its node: oc debug node/<node> -- chroot /host chronyc tracking."
 
-          # Queue lists in Redis are named <Worker.BROKER_KEY_PREFIX><queue>, i.e. tsg:tsg_threats.
+          # Each queue is two Redis lists: <Worker.BROKER_KEY_PREFIX><queue> (a run's next stages), i.e.
+          # tsg:tsg_threats, and the same name + "\x06\x163" (new work, Worker.NEW_WORK_PRIORITY); summed per queue.
+          # Every queue but tsg_maintenance, so a new queue is covered without an edit here.
           - alert: QueueBacklog
-            expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios|servicemapper)"}) > 50
+            expr: sum by (queue) (label_replace(max by (key) (redis_key_size{key=~"tsg:tsg_.*", key!~"tsg:tsg_maintenance.*"}), "queue", "$1", "key", "tsg:([a-z_]+).*")) > 50
             for: 15m
             labels: { severity: warning }
             annotations:
-              summary: "{{ $labels.key }} has held more than 50 waiting jobs for 15 minutes."
+              summary: "{{ $labels.queue }} has held more than 50 waiting jobs for 15 minutes."
               description: The workers cannot keep up. Check that its worker is WORKING; add a worker if it is.
 
           # redis-exporter answers even when it cannot reach Redis; then queue lengths vanish and QueueBacklog
@@ -303,7 +313,7 @@ data:                                            # one key per file
               description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
           - alert: AiErrorRateHigh
-            expr: sum(rate(tsg_ai_calls_total{outcome!="ok"}[10m])) / sum(rate(tsg_ai_calls_total[10m])) > 0.10
+            expr: sum(rate(tsg_ai_calls_total{outcome!~"ok|truncated"}[10m])) / sum(rate(tsg_ai_calls_total{outcome!="truncated"}[10m])) > 0.10
             for: 10m
             labels: { severity: warning }
             annotations:
@@ -333,6 +343,20 @@ data:                                            # one key per file
             annotations:
               summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
               description: Jobs slow down. Raise CII_MAX_CONCURRENT_AI_CALLS if the AI gateway can take more.
+
+          # Every AI request waits its turn under its model's own requests-a-minute setting (app/ai/slots.py
+          # AiRequestRate), so by model: a long wait means more work is sent to that model than it allows.
+          - alert: AiRequestRateWaitHigh
+            expr: histogram_quantile(0.95, sum by (le, model) (rate(tsg_ai_request_rate_wait_seconds_bucket[5m]))) > 30
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.model }} requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
+              description: >-
+                More work is sent to {{ $labels.model }} than its requests-a-minute setting allows
+                (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE
+                or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a
+                minute, then raise its setting; the dashboard's 429 panel shows refusals.
 
       - name: tsg-audit
         rules:
@@ -851,7 +875,7 @@ data:                                            # one key per file
           "id": 4,
           "type": "stat",
           "title": "Parts of the system",
-          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios, map controls and plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -889,6 +913,30 @@ data:                                            # one key per file
               },
               "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_scenarios\"}), 1) or vector(-1)",
               "legendFormat": "Worker: write scenarios",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "N",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_controls\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: map controls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "M",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_remediation\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: write plans",
               "instant": true,
               "range": false,
               "format": "time_series"
@@ -971,7 +1019,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
+              "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!~\"ok|truncated\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!~\"ok|truncated\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
               "legendFormat": "AI service",
               "instant": true,
               "range": false,
@@ -1227,6 +1275,10 @@ data:                                            # one key per file
                           "ClockSkew": {
                             "text": "A pod's clock is off: its node needs time sync",
                             "index": 22
+                          },
+                          "AiRequestRateWaitHigh": {
+                            "text": "A model's AI requests wait long for their turn (its requests-a-minute limit)",
+                            "index": 23
                           }
                         }
                       }
@@ -4483,7 +4535,7 @@ data:                                            # one key per file
           "id": 16,
           "type": "timeseries",
           "title": "Jobs waiting in each queue",
-          "description": "Jobs sent but not yet picked up by a worker. Growing for long = the workers cannot keep up (or are down).",
+          "description": "Jobs sent but not yet picked up by a worker, a run's next stages and new work together. Growing for long = the workers cannot keep up (or are down).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -4495,7 +4547,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max by (queue) (label_replace(redis_key_size{key=~\"tsg:tsg_.*\"}, \"queue\", \"$1\", \"key\", \"tsg:(.*)\"))",
+              "expr": "sum by (queue) (label_replace(max by (key) (redis_key_size{key=~\"tsg:tsg_.*\"}), \"queue\", \"$1\", \"key\", \"tsg:([a-z_]+).*\"))",
               "legendFormat": "{{queue}}"
             }
           ],
@@ -4536,7 +4588,7 @@ data:                                            # one key per file
           "id": 17,
           "type": "timeseries",
           "title": "Jobs finished, by result",
-          "description": "Jobs ended per 5 minutes (the every-minute reaper left out): done, tried again after an outage, failed.",
+          "description": "Jobs ended per 5 minutes (the every-minute reaper and the 15 s looks of a job waiting for another job left out): done, tried again after an outage, failed.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -4548,7 +4600,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\"}[5m]))",
+              "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\",outcome!=\"waiting\"}[5m]))",
               "legendFormat": "{{outcome}}"
             }
           ],
@@ -5770,7 +5822,7 @@ data:                                            # one key per file
           },
           "gridPos": {
             "h": 8,
-            "w": 9,
+            "w": 6,
             "x": 6,
             "y": 90
           }
@@ -5823,8 +5875,61 @@ data:                                            # one key per file
           },
           "gridPos": {
             "h": 8,
-            "w": 9,
-            "x": 15,
+            "w": 6,
+            "x": 12,
+            "y": 90
+          }
+        },
+        {
+          "id": 62,
+          "type": "timeseries",
+          "title": "Wait for a worker over time (95 %)",
+          "description": "How long 95 % of jobs waited after they were due until a worker took them, per job type. A climb = too few worker threads for the work sent.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, task) (rate(tsg_job_queue_wait_seconds_bucket[15m])))",
+              "legendFormat": "{{task}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
             "y": 90
           }
         },
@@ -6163,6 +6268,112 @@ data:                                            # one key per file
           }
         },
         {
+          "id": 63,
+          "type": "timeseries",
+          "title": "Wait for an AI request's turn (95 %), by model",
+          "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(tsg_ai_request_rate_wait_seconds_bucket[5m])))",
+              "legendFormat": "{{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 107
+          }
+        },
+        {
+          "id": 64,
+          "type": "timeseries",
+          "title": "AI gateway refusals (429) per minute",
+          "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (CII_CHAT_REQUESTS_PER_MINUTE and its siblings) is below that model's limit.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model) (rate(tsg_ai_rate_limited_total[5m])) * 60",
+              "legendFormat": "{{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "No refusals"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 107
+          }
+        },
+        {
           "id": 30,
           "type": "row",
           "title": "Follow one run or request",
@@ -6172,7 +6383,7 @@ data:                                            # one key per file
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 107
+            "y": 115
           },
           "panels": []
         },
@@ -6214,7 +6425,7 @@ data:                                            # one key per file
             "h": 12,
             "w": 24,
             "x": 0,
-            "y": 108
+            "y": 116
           }
         },
         {
@@ -6253,7 +6464,7 @@ data:                                            # one key per file
             "h": 6,
             "w": 24,
             "x": 0,
-            "y": 120
+            "y": 128
           }
         },
         {
@@ -6266,7 +6477,7 @@ data:                                            # one key per file
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 126
+            "y": 134
           },
           "panels": [
             {
@@ -6319,7 +6530,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 0,
-                "y": 127
+                "y": 135
               }
             },
             {
@@ -6372,7 +6583,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 8,
-                "y": 127
+                "y": 135
               }
             },
             {
@@ -6425,7 +6636,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 16,
-                "y": 127
+                "y": 135
               }
             }
           ]
@@ -6440,7 +6651,7 @@ data:                                            # one key per file
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 127
+            "y": 135
           },
           "panels": [
             {
@@ -6493,7 +6704,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 0,
-                "y": 128
+                "y": 136
               }
             },
             {
@@ -6546,7 +6757,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 8,
-                "y": 128
+                "y": 136
               }
             },
             {
@@ -6599,7 +6810,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 16,
-                "y": 128
+                "y": 136
               }
             },
             {
@@ -6652,7 +6863,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 12,
                 "x": 0,
-                "y": 136
+                "y": 144
               }
             },
             {
@@ -6705,7 +6916,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 12,
                 "x": 12,
-                "y": 136
+                "y": 144
               }
             }
           ]

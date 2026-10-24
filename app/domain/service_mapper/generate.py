@@ -1,4 +1,4 @@
-"""AI dependency generation with a checked JSON answer; items reconcile would drop are asked again once."""
+"""AI dependency generation with a checked JSON answer; items reconcile cannot settle are asked again once."""
 
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,7 @@ def generate_answer(
 ) -> GeneratedAnswer:
     """AI creates both directions from every catalog service grouped by sector and subsector, adding a new
     service only where none provides it. The AI sees names only, never a catalog ID; a first answer with items
-    reconcile would drop is asked again once with why."""
+    reconcile cannot settle itself is asked again once with why."""
     services = _most_relevant_first(search, request, catalog)
     budget = min(
         int(chat.max_prompt_chars * MapperLimits.PROMPT_SHARE),

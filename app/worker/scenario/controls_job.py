@@ -7,6 +7,7 @@ from typing import Any
 import structlog
 
 from app.ai import RerankModel, background_reranks
+from app.core.config import get_settings
 from app.core.constants import (
     Controls,
     ErrorCode,
@@ -20,6 +21,7 @@ from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.shared.parallel import run_in_parallel
 from app.models.scenario.asset_context import FrozenContext
 from app.realtime.publisher import publish_session_status
 from app.search.service import LibrarySearch
@@ -82,26 +84,48 @@ class RunControls:
         self._context = FrozenContext.from_record(context)
         self._sessions, self._scenarios = sessions, scenarios
         self._snapshot, self._mapper = snapshot, mapper
+        self._taken_over = False  # another delivery took the run over mid-turn
 
     def map_all(self) -> int:
-        """Map up to Controls.PER_DELIVERY scenarios, updating the run's counts and watchers after each; a
-        delivery that used its whole turn hands the run over and queues its next turn behind other work."""
+        """Map up to Controls.PER_DELIVERY scenarios, all at once on a remote reranker (the local CPU model
+        predicts one at a time: one by one), updating the run's counts and watchers after each; a delivery
+        that used its whole turn hands the run over and queues its next turn behind other work. A failure is
+        raised once the scenarios beside it are saved."""
+        at_once = Controls.PER_DELIVERY if get_settings().rerank_base_url else 1
         mapped = 0
-        for _ in range(Controls.PER_DELIVERY):
-            scenario = self._scenarios.claim_scenario_controls(self._record_id, self._task_id)
-            if scenario is None:  # none waits: the run's mapping is done until its next written batch
+        for _ in range(Controls.PER_DELIVERY // at_once):
+            # Claimed before any is mapped: a scenario an outage gives back is never claimed again this turn.
+            scenarios = self._claim_up_to(at_once)
+            mapped += sum(run_in_parallel(self._map_and_count, scenarios, at_once, "controls"))
+            if self._taken_over:  # the run's lease ran out mid-turn and another delivery took the run over
+                return mapped
+            if len(scenarios) < at_once:  # none waits: the run's mapping is done until its next written batch
                 self._release()
                 return mapped
-            started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
-            mapped += self._map_one(scenario)
-            self._sessions.update_scenario_session_counts(
-                self._record_id, controls_seconds=time.perf_counter() - started
-            )
-            publish_session_status(self._record_id)
-            if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
-                return mapped  # the run's lease ran out mid-turn and another delivery took the run over
         self._sessions.update_controls_delivery(self._record_id, self._task_id, hand_over=True)
         send_job(TaskName.MAP_CONTROLS, self._record_id, 0)  # the epoch is never checked for controls
+        return mapped
+
+    def _claim_up_to(self, count: int) -> list[dict[str, Any]]:
+        """Up to `count` of the run's waiting scenarios, oldest first, claimed for this delivery."""
+        claimed: list[dict[str, Any]] = []
+        while len(claimed) < count:
+            scenario = self._scenarios.claim_scenario_controls(self._record_id, self._task_id)
+            if scenario is None:
+                break
+            claimed.append(scenario)
+        return claimed
+
+    def _map_and_count(self, scenario: dict[str, Any]) -> int:
+        """Map one claimed scenario, then update the run's counts, watchers and lease: 1 when saved."""
+        started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
+        mapped = self._map_one(scenario)
+        self._sessions.update_scenario_session_counts(
+            self._record_id, controls_seconds=time.perf_counter() - started
+        )
+        publish_session_status(self._record_id)
+        if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
+            self._taken_over = True
         return mapped
 
     def _release(self) -> None:

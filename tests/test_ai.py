@@ -1,14 +1,16 @@
 """AI gateway logic with litellm faked: outage handling, JSON reading, call records, embedding cache."""
 
+import dataclasses
 import hashlib
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import litellm
 import numpy as np
 import pytest
@@ -16,11 +18,21 @@ import structlog
 from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
-from app import ai
+from app import ai, container
 from app.ai.common import UnusableAiAnswer
 from app.ai.profiles import CHAT_MODEL_PROFILES
-from app.core.constants import AI_OUTAGE_MESSAGES, AiLimits, AiOutage, AiTask, EmbeddingCorpus, ErrorCode
-from app.core.database import get_mongodb
+from app.ai.slots import AiRequestRate, AiSlots
+from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    CHAT_MAX_OUTPUT_TOKENS,
+    AiLimits,
+    AiOutage,
+    AiTask,
+    EmbeddingCorpus,
+    ErrorCode,
+    TaskName,
+)
+from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
 from app.data_access.admin.ai_call_repository import AiCallRepository
@@ -120,9 +132,9 @@ def test_an_unmapped_server_error_is_retried_and_a_client_error_is_not(
         raise litellm.APIError(status, "gateway said no", llm_provider="openai", model="m")
 
     with pytest.raises(Unavailable), ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"):
-        ai.common.call_with_retries(lambda: failing(529))
+        ai.common.call_with_retries(lambda: failing(529), model="m")
     with pytest.raises(litellm.APIError), ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"):
-        ai.common.call_with_retries(lambda: failing(413))
+        ai.common.call_with_retries(lambda: failing(413), model="m")
     assert asked == [529] * (AiLimits.RETRIES + 1) + [413]
 
 
@@ -142,7 +154,7 @@ def test_an_unmapped_timed_out_status_is_not_asked_again_and_is_told_as_timed_ou
         pytest.raises(Unavailable) as raised,
         ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"),
     ):
-        ai.common.call_with_retries(origin_timed_out)
+        ai.common.call_with_retries(origin_timed_out, model="m")
     assert asked == [524] and raised.value.reason == AiOutage.TIMED_OUT
 
 
@@ -177,6 +189,50 @@ def test_a_retried_job_asks_again_and_each_call_record_keeps_the_system_prompt_a
     assert user == {"role": "user", "content": "batch"}
 
 
+def test_a_job_takes_the_answers_any_of_its_deliveries_already_got_when_asked_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With reuse_earlier_answer, an ask the job (record, epoch, stage) already got an ok answer to is read
+    from tsg_ai_calls (no AI call, no new record), whichever delivery got it: a reaper re-send has a new
+    Celery task_id. Not when the check rejects that answer (the job retries to get another), nor for another
+    epoch or stage, nor outside a leased job (the API)."""
+    calls: list[int] = []
+
+    def numbered_answer(**_: object) -> SimpleNamespace:
+        calls.append(1)
+        return _json_response(f'{{"n": {len(calls)}}}')
+
+    monkeypatch.setattr(litellm, "completion", numbered_answer)
+    chat = _chat_model()
+    job = {"record_id": uuid.uuid4().hex, "epoch": 1, "task": TaskName.FIND_THREATS, "task_id": "first"}
+    resent = job | {"task_id": "resent"}
+
+    def ask(context: dict, lowest_accepted: int = 1) -> dict:
+        with structlog.contextvars.bound_contextvars(**context):
+            return chat.ask_for_checked_json(
+                AiTask.RELEVANCE_GATE,
+                "s",
+                "batch",
+                lambda answer: [] if answer["n"] >= lowest_accepted else ["rejected"],
+                reuse_earlier_answer=True,
+            )
+
+    assert ask(job) == {"n": 1}  # the first delivery asks
+    with capture_logs() as logs:
+        assert ask(resent) == {"n": 1}  # a re-send reads the answer back
+    with pytest.raises(ai.UnreadableAiAnswer):
+        ask(job, lowest_accepted=4)  # an answer the check rejects is not read back: asked, then re-asked
+    assert len(calls) == 3
+    assert ask(job, lowest_accepted=4) == {"n": 4}  # so the job's retry gets another answer
+    assert ask(resent, lowest_accepted=4) == {"n": 4}  # and the newest answer is the one read back
+    assert ask(job | {"epoch": 2}) == {"n": 5}  # a new run of the record asks
+    assert ask(job | {"task": TaskName.WRITE_SCENARIOS}) == {"n": 6}  # so does another stage
+    api = {"request_id": "req-1"}
+    assert [ask(api), ask(api)] == [{"n": 7}, {"n": 8}]  # outside a leased job, every ask is sent
+    assert len(calls) == 8 and [entry["event"] for entry in logs] == ["ai.answer_reused"]
+    assert get_mongodb()["test_ai_calls"].count_documents({"record_id": job["record_id"]}) == 6
+
+
 def test_unreadable_answer_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(litellm, "completion", lambda **_: _json_response("not json"))
     with pytest.raises(ai.UnreadableAiAnswer):
@@ -198,12 +254,63 @@ def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pyte
     *firsts, fallback = sent
     first = firsts[0]
     assert answer == {"ok": True}
-    assert len(firsts) == AiLimits.RETRIES + 1  # the first model's own retries, then the fallback
+    # The first model rate-limited (429): asked again after each of its waits, then the fallback.
+    assert len(firsts) == len(AiLimits.RATE_LIMITED_WAITS_SECONDS) + 1
     assert first["response_format"] == {"type": "json_object"} and first["reasoning_effort"] == "none"
     assert first["temperature"] == fallback["temperature"] == 0.0  # R-2: the task's, for either model
     # The fallback gets ITS limits and none of the options its profile says it does not accept.
     assert fallback["max_tokens"] == 50 and fallback["timeout"] == 9
     assert "response_format" not in fallback and "reasoning_effort" not in fallback
+
+
+def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 waits its Retry-After (at most 15 s), else 2, 5, 10, 15 s +-20%, at most 35 s in all, and asks
+    the same model again: kimi answers in ~5 s, the fallback glm-5.3 in 55-99 s."""
+    waits: list[float] = []
+    monkeypatch.setattr(ai.common, "sleep_unless_lease_lost", waits.append)
+    retry_after = iter(["20", "3", "", "", ""])
+    asked: list[str] = []
+
+    def first_model_rate_limited(**kwargs: object) -> SimpleNamespace:
+        asked.append(str(kwargs["model"]))
+        if kwargs["model"] == "first":
+            told = httpx.Response(429, headers={"retry-after": next(retry_after)})
+            raise litellm.RateLimitError("busy", llm_provider="openai", model="first", response=told)
+        return _json_response('{"ok": true}')
+
+    monkeypatch.setattr(litellm, "completion", first_model_rate_limited)
+    assert _ask(_chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT)), AiTask.RELEVANCE_GATE) == {
+        "ok": True
+    }
+    assert asked == ["first"] * 5 + ["fallback"]
+    assert waits[:2] == [15, 3] and 8 <= waits[2] <= 12  # Retry-After capped, then the third default wait
+    assert sum(waits) == pytest.approx(AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS)  # the last wait cut to fit
+
+
+def test_an_ai_call_s_seconds_leave_out_its_request_rate_waits() -> None:
+    class SlowTurn:
+        def wait_for_turn(self) -> float:
+            time.sleep(0.2)
+            return 0.2
+
+    _, seconds = ai.common.call_with_retries(lambda: None, SlowTurn(), model="m")  # type: ignore[arg-type]
+    assert seconds < 0.1
+
+
+def test_a_task_s_answer_cap_applies_under_its_model_s_limit_unless_the_model_thinks() -> None:
+    """A cap measured with thinking off; a model thinking counts its hidden thinking too."""
+    large = dataclasses.replace(JSON_CHAT, max_output_tokens=12_288)
+
+    def max_tokens(profile: ChatModelProfile, task: AiTask, thinking: bool = False) -> int:
+        return ai.chat_messages.build_request_options(profile, task, "m", thinking)["max_tokens"]
+
+    assert max_tokens(large, AiTask.PLAN_CHECK) == CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK] < 12_288
+    assert max_tokens(JSON_CHAT, AiTask.PLAN_CHECK) == 100  # the model's own limit is lower
+    assert max_tokens(large, AiTask.GAP_FILL) == 12_288  # no cap: too few calls measured
+    assert max_tokens(large, AiTask.REMEDIATION_PLAN) == 12_288  # no cap: grows with its 1-50 controls
+    assert max_tokens(large, AiTask.PLAN_CHECK, thinking=True) == 12_288
 
 
 def test_thinking_is_switched_off_per_gateway_model_unless_its_env_line_says_on(
@@ -289,7 +396,7 @@ def test_a_busy_provider_is_retried_by_us_alone_then_the_fallback_then_unavailab
     embed_before = _ai_calls(AiTask.EMBED, "openai/embed", "unavailable")
     with pytest.raises(Unavailable):
         ai.EmbeddingModel("openai/embed", profile, url, "key", *stores).embed_search_queries(
-            [uuid.uuid4().hex]
+            [uuid.uuid4().hex], EmbeddingCorpus.CONTROL
         )
     assert len(requested) == AiLimits.RETRIES + 1
     assert _ai_calls(AiTask.EMBED, "openai/embed", "unavailable") == embed_before + 1
@@ -304,8 +411,10 @@ def test_each_text_is_embedded_once_then_read_from_the_cache(monkeypatch: pytest
         return SimpleNamespace(data=[{"index": i, "embedding": [3.0, 4.0]} for i in range(len(batch))])
 
     monkeypatch.setattr(litellm, "embedding", fake_embedding)
-    first = _embedding_model(dimensions=2).embed_search_queries(["alpha", "beta", "alpha"])
-    second = _embedding_model(dimensions=2).embed_search_queries(["beta", "alpha"])
+    first = _embedding_model(dimensions=2).embed_search_queries(
+        ["alpha", "beta", "alpha"], EmbeddingCorpus.CONTROL
+    )
+    second = _embedding_model(dimensions=2).embed_search_queries(["beta", "alpha"], EmbeddingCorpus.CONTROL)
     assert requested == [["alpha", "beta"]]
     assert np.allclose(first[0], [0.6, 0.8]) and np.allclose(second[1], first[0])
 
@@ -319,7 +428,7 @@ def test_a_vector_of_the_wrong_size_is_refused_not_cached(monkeypatch: pytest.Mo
         _ai_calls(AiTask.EMBED, "test-embed", "unreadable"),
     )
     with pytest.raises(ai.EmbeddingSizeMismatch, match="returned 3 numbers per text, not 2"):
-        _embedding_model(dimensions=2).embed_search_queries(["gamma"])
+        _embedding_model(dimensions=2).embed_search_queries(["gamma"], EmbeddingCorpus.CONTROL)
     assert cache.count_documents({}) == cached_before
     assert _ai_calls(AiTask.EMBED, "test-embed", "unreadable") == unreadable_before + 1  # not "error"
 
@@ -347,7 +456,7 @@ def test_an_embedding_answer_with_a_repeated_index_is_refused(monkeypatch: pytes
     monkeypatch.setattr(litellm, "embedding", lambda **_: repeated)
     # Still short after the retries: an outage the job retries later, not a bug that fails it for good.
     with pytest.raises(Unavailable, match="did not match its 2 inputs"):
-        _embedding_model(dimensions=2).embed_search_queries(["delta", "epsilon"])
+        _embedding_model(dimensions=2).embed_search_queries(["delta", "epsilon"], EmbeddingCorpus.CONTROL)
 
 
 def test_a_rerank_answer_missing_a_document_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,7 +479,7 @@ def test_an_embedding_with_a_nan_or_no_value_is_refused_not_cached(
     cache = get_mongodb()["test_query_vectors"]
     cached_before = cache.count_documents({})
     with pytest.raises(ai.EmbeddingNotFinite) as refused:
-        _embedding_model(dimensions=2).embed_search_queries([f"zeta {vector}"])
+        _embedding_model(dimensions=2).embed_search_queries([f"zeta {vector}"], EmbeddingCorpus.CONTROL)
     assert refused.value.code == ErrorCode.AI_ANSWER_UNUSABLE  # the job fails with this code, never retried
     assert cache.count_documents({}) == cached_before
 
@@ -454,8 +563,8 @@ def test_a_query_vector_expires_and_its_text_is_never_stored(monkeypatch: pytest
     requested = _fake_vectors(monkeypatch)
     text = f"query {uuid.uuid4().hex}"
     model = _embedding_model(dimensions=2)
-    model.embed_search_queries([text])
-    model.embed_search_queries([text])
+    model.embed_search_queries([text], EmbeddingCorpus.CONTROL)
+    model.embed_search_queries([text], EmbeddingCorpus.CONTROL)
     assert requested == [[text]]
     stored = get_mongodb()["test_query_vectors"].find_one({"_id": f"test-embed|{_sha(text)}"})
     assert "text" not in stored and stored["text_hash"] == _sha(text) and stored["dimensions"] == 2
@@ -525,7 +634,8 @@ def _busy() -> litellm.RateLimitError:
 def _no_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
     # Our retry wait set to 0, not time.sleep replaced: that is the one time module of the whole process, and
     # a litellm thread that waits with sleep() then spun 200 million times and starved the test (2 s/request).
-    monkeypatch.setattr(ai.common.AiLimits, "RETRY_FIRST_WAIT_SECONDS", 0)
+    monkeypatch.setattr(AiLimits, "RETRY_FIRST_WAIT_SECONDS", 0)
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (0, 0, 0, 0))
 
 
 @pytest.mark.parametrize(
@@ -559,7 +669,9 @@ def test_the_key_goes_in_the_gateways_own_header_on_every_call(
         key_header,
     )
     _ask(chat, AiTask.WRITE_SCENARIO, "s", "u")
-    _embedding_model(2, key_header).embed_search_queries([f"header {uuid.uuid4().hex}"])
+    _embedding_model(2, key_header).embed_search_queries(
+        [f"header {uuid.uuid4().hex}"], EmbeddingCorpus.CONTROL
+    )
     profile = RerankModelProfile(timeout_seconds=5)
     ai.RerankModel("test-rerank", profile, "http://ai.invalid", "key", key_header).score_relevance("q", ["a"])
     assert sent == {"chat": expected, "embed": expected, "rerank": expected}
@@ -577,9 +689,9 @@ def test_a_text_longer_than_the_model_takes_is_cut_before_it_is_sent_and_cached(
 
     monkeypatch.setattr(litellm, "embedding", fake_embedding)
     head = uuid.uuid4().hex
-    _embedding_model(2, max_text_chars=40).embed_search_queries([head + "x" * 100])
+    _embedding_model(2, max_text_chars=40).embed_search_queries([head + "x" * 100], EmbeddingCorpus.CONTROL)
     _embedding_model(2, max_text_chars=40).embed_search_queries(
-        [head + "x" * 500]
+        [head + "x" * 500], EmbeddingCorpus.CONTROL
     )  # same first 40: read from the cache
     assert sent == [(head + "x" * 100)[:40]]
 
@@ -604,7 +716,9 @@ def test_batches_go_out_together_up_to_the_models_concurrency_and_stay_in_order(
 
     monkeypatch.setattr(litellm, "embedding", fake_embedding)
     texts = [uuid.uuid4().hex + "x" * n for n in range(9)]
-    matrix = _embedding_model(2, batch_size=1, concurrency=3).embed_search_queries(texts)
+    matrix = _embedding_model(2, batch_size=1, concurrency=3).embed_search_queries(
+        texts, EmbeddingCorpus.CONTROL
+    )
     assert peak[0] == 3
     lengths = np.array([len(t) for t in texts], dtype=np.float32)
     expected = np.stack([lengths, np.ones(9, dtype=np.float32)], axis=1)
@@ -624,7 +738,7 @@ def test_a_failed_batch_stops_the_batches_not_yet_sent(monkeypatch: pytest.Monke
     monkeypatch.setattr(litellm, "embedding", first_batch_breaks)
     with pytest.raises(ValueError, match="bad answer"):
         _embedding_model(2, batch_size=1, concurrency=2).embed_search_queries(
-            [uuid.uuid4().hex for _ in range(20)]
+            [uuid.uuid4().hex for _ in range(20)], EmbeddingCorpus.CONTROL
         )
     assert len(calls) < 20
 
@@ -655,7 +769,7 @@ def test_a_busy_provider_is_retried_for_rerank_and_embeddings(
             "q", ["a"]
         ) == [50.0]
     else:
-        _embedding_model(2).embed_search_queries([f"retry {uuid.uuid4().hex}"])
+        _embedding_model(2).embed_search_queries([f"retry {uuid.uuid4().hex}"], EmbeddingCorpus.CONTROL)
     assert len(attempts) == 3
 
 
@@ -704,7 +818,7 @@ def test_a_short_embedding_answer_is_asked_again_and_counted_only_once_checked(
     monkeypatch.setattr(litellm, "embedding", lambda **_: answers.pop(0))
     ok_before = _ai_calls(AiTask.EMBED, "test-embed", "ok")
     matrix = _embedding_model(2).embed_search_queries(
-        [f"short {uuid.uuid4().hex}", f"short {uuid.uuid4().hex}"]
+        [f"short {uuid.uuid4().hex}", f"short {uuid.uuid4().hex}"], EmbeddingCorpus.CONTROL
     )
     assert matrix.shape == (2, 2) and answers == []
     assert _ai_calls(AiTask.EMBED, "test-embed", "ok") == ok_before + 1
@@ -720,7 +834,9 @@ def test_a_bad_answer_that_stays_bad_is_counted_unreadable_not_ok(monkeypatch: p
     )
     rerank_bad = _ai_calls(AiTask.RERANK, "test-rerank", "unreadable")
     with pytest.raises(Unavailable):
-        _embedding_model(2).embed_search_queries([f"never answered {uuid.uuid4().hex}"])
+        _embedding_model(2).embed_search_queries(
+            [f"never answered {uuid.uuid4().hex}"], EmbeddingCorpus.CONTROL
+        )
     profile = RerankModelProfile(timeout_seconds=5)
     with pytest.raises(Unavailable):
         ai.RerankModel("test-rerank", profile, "http://ai.invalid", "key").score_relevance("q", ["a"])
@@ -746,7 +862,9 @@ def test_a_refused_key_is_counted_as_an_error_on_every_ai_kind(monkeypatch: pyte
     rerank = ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key")
     calls = (
         lambda: _ask(_chat_model(), AiTask.WRITE_SCENARIO),
-        lambda: _embedding_model(2).embed_search_queries([f"refused {uuid.uuid4().hex}"]),
+        lambda: _embedding_model(2).embed_search_queries(
+            [f"refused {uuid.uuid4().hex}"], EmbeddingCorpus.CONTROL
+        ),
         lambda: rerank.score_relevance("q", ["a"]),
     )
     for (
@@ -785,7 +903,9 @@ def test_batches_already_paid_for_are_cached_even_when_another_batch_fails(
 
     monkeypatch.setattr(litellm, "embedding", answer)
     with pytest.raises(ValueError, match="bad gateway answer"):
-        _embedding_model(2, batch_size=1, concurrency=2).embed_search_queries([failing, slow])
+        _embedding_model(2, batch_size=1, concurrency=2).embed_search_queries(
+            [failing, slow], EmbeddingCorpus.CONTROL
+        )
     cached = get_mongodb()["test_query_vectors"].find_one(
         {"_id": f"test-embed|{hashlib.sha256(slow.encode()).hexdigest()}"}
     )
@@ -981,3 +1101,284 @@ def test_a_job_that_lost_its_lease_never_calls_the_ai(monkeypatch: pytest.Monkey
         with pytest.raises(LeaseLost):
             _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     assert called == []
+
+
+def test_at_most_cap_fallback_calls_run_at_once_and_the_first_model_is_never_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CII_MAX_CONCURRENT_FALLBACK_CALLS: when kimi fails, glm (~77 s a call) would otherwise take ~230 calls
+    at once at 180 requests a minute."""
+    _no_waiting(monkeypatch)
+    lock, in_flight, most = threading.Lock(), {"first": 0, "fallback": 0}, {"first": 0, "fallback": 0}
+    failing = {"first"}
+
+    def answer(**kwargs: object) -> SimpleNamespace:
+        model = str(kwargs["model"])
+        if model in failing:
+            raise _overloaded()
+        with lock:
+            in_flight[model] += 1
+            most[model] = max(most[model], in_flight[model])
+        time.sleep(0.1)
+        with lock:
+            in_flight[model] -= 1
+        return _json_response('{"ok": true}')
+
+    monkeypatch.setattr(litellm, "completion", answer)
+    key = f"tsg:test_fallback_slots:{uuid.uuid4().hex}"
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    models = [("first", JSON_CHAT), ("fallback", PLAIN_CHAT)]
+    capped = AiSlots(get_redis_client(), cap=1, wait_seconds=10, key=key)
+    chat = ai.ChatModel(models, "http://ai.invalid", "key", records, fallback_slots=capped)
+    answers: list[dict] = []
+
+    def ask_four_at_once() -> None:
+        callers = [
+            threading.Thread(target=lambda: answers.append(_ask(chat, AiTask.GAP_FILL))) for _ in range(4)
+        ]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join()
+
+    ask_four_at_once()  # the first model down: the fallback answers, one call at a time
+    failing.clear()
+    ask_four_at_once()  # the first model up again: no cap
+    get_redis_client().delete(key)
+    assert answers == [{"ok": True}] * 8 and most["fallback"] == 1 and most["first"] > 1
+
+
+def _timed_out() -> litellm.Timeout:
+    return litellm.Timeout("no answer in time", model="first", llm_provider="openai")
+
+
+def _overloaded() -> litellm.ServiceUnavailableError:
+    return litellm.ServiceUnavailableError(message="overloaded", llm_provider="openai", model="first")
+
+
+@pytest.mark.parametrize(("failure", "cools_down"), [(_timed_out, True), (_busy, True), (_overloaded, False)])
+def test_a_model_that_timed_out_or_stayed_rate_limited_is_asked_last_until_it_answers(
+    monkeypatch: pytest.MonkeyPatch, failure: Callable[[], Exception], cools_down: bool
+) -> None:
+    """Before: every call asked kimi first again, waiting out its timeout (120 s). A 429 left after its waits
+    cools the model down too: the limit is that model's own, and the fallback's is not spent."""
+    _no_waiting(monkeypatch)
+    asked: list[str] = []
+    failing = {"first": failure}
+
+    def answer(**kwargs: object) -> SimpleNamespace:
+        asked.append(str(kwargs["model"]))
+        if fail := failing.get(str(kwargs["model"])):
+            raise fail()
+        return _json_response('{"ok": true}')
+
+    monkeypatch.setattr(litellm, "completion", answer)
+    chat = _chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT))
+    _ask(chat, AiTask.RELEVANCE_GATE)
+    asked.clear()
+    _ask(chat, AiTask.RELEVANCE_GATE)
+    assert asked[0] == ("fallback" if cools_down else "first")
+    failing.clear()
+    failing["fallback"] = _overloaded
+    _ask(chat, AiTask.RELEVANCE_GATE)  # the other one fails: the cooling one is still asked, and answers
+    assert asked[-1] == "first"
+    asked.clear()
+    _ask(chat, AiTask.RELEVANCE_GATE)
+    assert asked == ["first"]  # its answer ended its cool-down
+
+
+def test_a_fallback_asked_first_takes_no_slot_wait_while_the_cooling_model_is_still_to_try(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before: glm, first while kimi cooled down, waited up to 300 s for a slot; kimi answers in about 5 s."""
+    _no_waiting(monkeypatch)
+    asked: list[str] = []
+    failing = {"first"}
+
+    def answer(**kwargs: object) -> SimpleNamespace:
+        asked.append(str(kwargs["model"]))
+        if str(kwargs["model"]) in failing:
+            raise _timed_out()
+        return _json_response('{"ok": true}')
+
+    monkeypatch.setattr(litellm, "completion", answer)
+    key = f"tsg:test_fallback_slots:{uuid.uuid4().hex}"
+    fallback_slots = AiSlots(get_redis_client(), cap=1, wait_seconds=10, key=key)
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    models = [("first", JSON_CHAT), ("fallback", PLAIN_CHAT)]
+    chat = ai.ChatModel(models, "http://ai.invalid", "key", records, fallback_slots=fallback_slots)
+    _ask(chat, AiTask.RELEVANCE_GATE)  # the first model timed out: it cools down
+    failing.clear()
+    asked.clear()
+    started = time.monotonic()
+    try:
+        with fallback_slots.hold_slot(60):  # every fallback slot busy
+            assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
+    finally:
+        get_redis_client().delete(key)
+    assert asked == ["first"] and time.monotonic() - started < 5
+
+
+def test_an_answer_cut_off_at_the_task_s_cap_is_asked_once_more_at_the_model_s_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caps were measured on dev's Kimi-K2.6 alone: another model (glm-5.3) may count more tokens."""
+    sent: list[object] = []
+    finish_reasons = iter(["length", "stop", "length", "length"])
+
+    def answer(**kwargs: object) -> SimpleNamespace:
+        sent.append(kwargs["max_tokens"])
+        message = SimpleNamespace(content='{"ok": true}')
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason=next(finish_reasons))], usage=None
+        )
+
+    monkeypatch.setattr(litellm, "completion", answer)
+    large = dataclasses.replace(JSON_CHAT, max_output_tokens=12_288)
+    cap = CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK]
+    truncated = _ai_calls(AiTask.PLAN_CHECK, "test-chat", "truncated")
+    assert _ask(_chat_model(("test-chat", large)), AiTask.PLAN_CHECK) == {"ok": True}
+    with pytest.raises(ai.TruncatedAiAnswer, match="cut off"):  # cut off at the model's own limit too
+        _ask(_chat_model(("test-chat", large)), AiTask.PLAN_CHECK)
+    assert sent == [cap, 12_288, cap, 12_288]
+    assert _ai_calls(AiTask.PLAN_CHECK, "test-chat", "truncated") == truncated + 3
+
+
+def test_the_corrective_re_ask_after_an_answer_cut_off_at_the_cap_goes_at_the_model_s_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before: the re-ask went at the task's cap again, to be cut off there first."""
+    sent: list[object] = []
+    finish_reasons = iter(["length", "stop", "stop"])
+
+    def answer(**kwargs: object) -> SimpleNamespace:
+        sent.append(kwargs["max_tokens"])
+        message = SimpleNamespace(content='{"ok": true}')
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason=next(finish_reasons))], usage=None
+        )
+
+    monkeypatch.setattr(litellm, "completion", answer)
+    large = dataclasses.replace(JSON_CHAT, max_output_tokens=12_288)
+    problems = iter([["wrong"], []])
+    chat = _chat_model(("test-chat", large))
+    assert chat.ask_for_checked_json(AiTask.PLAN_CHECK, "s", "u", lambda _: next(problems)) == {"ok": True}
+    assert sent == [CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK], 12_288, 12_288]
+
+
+def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The API answers a caller: a 429's waits (up to 35 s) are a worker's alone. Every 429 is counted."""
+    waits: list[float] = []
+    monkeypatch.setattr(ai.common, "sleep_unless_lease_lost", waits.append)
+
+    def rate_limited() -> None:
+        raise _busy()
+
+    def counted() -> float:
+        return REGISTRY.get_sample_value("tsg_ai_rate_limited_total", {"model": "m"}) or 0.0
+
+    before = counted()
+    api = AiRequestRate(None, "m", per_minute=0, wait_seconds=0, waits_out_rate_limits=False)
+    with pytest.raises(litellm.RateLimitError):
+        ai.common.call_with_retries(rate_limited, api, model="m")
+    assert waits == [0.5, 1, 2] and counted() == before + AiLimits.RETRIES + 1
+    waits.clear()
+    with pytest.raises(litellm.RateLimitError):
+        ai.common.call_with_retries(rate_limited, model="m")  # a worker's limiter
+    assert len(waits) == len(AiLimits.RATE_LIMITED_WAITS_SECONDS) and min(waits) > 1
+    for builder in ("create_all_indexes", "get_chat_model", "get_embedding_model", "get_rerank_model"):
+        monkeypatch.setattr(container, builder, lambda *_: None)
+    monkeypatch.setattr(container, "_waits_out_rate_limits", False)
+    monkeypatch.setattr(container, "_ai_slot_wait_seconds", AiLimits.API_SLOT_WAIT_SECONDS)
+    assert not container.ai_request_rate_for("m", 0)._waits_out_rate_limits  # the API's
+    container.set_up_worker([])
+    assert container.ai_request_rate_for("m", 0)._waits_out_rate_limits
+
+
+def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kimi-k2.5 and glm-5.3 each have their own requests-a-minute limit: a fallback request spends glm's."""
+    _no_waiting(monkeypatch)
+    turns: list[str] = []
+
+    class CountedTurns(AiRequestRate):
+        def wait_for_turn(self) -> float:
+            turns.append(self._model)
+            return 0.0
+
+    def first_model_overloaded(**kwargs: object) -> SimpleNamespace:
+        if kwargs["model"] == "first":
+            raise _overloaded()
+        return _json_response('{"ok": true}')
+
+    monkeypatch.setattr(litellm, "completion", first_model_overloaded)
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    models = [("first", JSON_CHAT), ("fallback", PLAIN_CHAT)]
+    first, fallback = CountedTurns(None, "first", 0, 0), CountedTurns(None, "fallback", 0, 0)
+    chat = ai.ChatModel(
+        models, "http://ai.invalid", "key", records, request_rate=first, fallback_request_rate=fallback
+    )
+    assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
+    assert turns == ["first"] * (AiLimits.RETRIES + 1) + ["fallback"]
+
+
+def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before: one limiter for the whole gateway, so embedding, rerank and glm requests spent kimi's."""
+    settings = container.get_settings().model_copy(
+        update={
+            "chat_model": "litellm_proxy/kimi-k2.5",
+            "chat_fallback_model": "litellm_proxy/glm-5.3",
+            "embedding_model": "litellm_proxy/qwen3-embedding-8b",
+            "rerank_model": "litellm_proxy/qwen3-reranker-8b",
+            "rerank_base_url": "http://ai.invalid",
+            "chat_requests_per_minute": 11,
+            "chat_fallback_requests_per_minute": 12,
+            "embedding_requests_per_minute": 13,
+            "rerank_requests_per_minute": 14,
+        }
+    )
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
+    chat = container.get_chat_model._build()
+    embedding = container.get_embedding_model._build()
+    rerank = container.get_rerank_model._build()
+    rates = {  # by the model each request goes to
+        **chat._request_rates,
+        embedding._model: embedding._provider._request_rate,
+        rerank._model: rerank._request_rate,
+    }
+    assert all(rate._model == model for model, rate in rates.items())  # its own model's Redis key
+    assert {model: rate._per_minute for model, rate in rates.items()} == {
+        "litellm_proxy/kimi-k2.5": 11,
+        "litellm_proxy/glm-5.3": 12,
+        "litellm_proxy/qwen3-embedding-8b": 13,
+        "litellm_proxy/qwen3-reranker-8b": 14,
+    }
+
+
+def test_a_batch_another_process_stored_meanwhile_is_not_sent_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every pod embeds a changed library at once: each sent every batch, though another had stored it."""
+    texts = [f"stampede {uuid.uuid4().hex}" for _ in range(3)]
+    theirs = np.array([0.0, 1.0], dtype=np.float32).tobytes()
+    requested: list[list[str]] = []
+
+    def embed_and_let_another_process_store_the_rest(**kwargs: object) -> SimpleNamespace:
+        batch = list(kwargs["input"])  # type: ignore[call-overload]
+        requested.append(batch)
+        for text in set(texts) - set(batch):
+            get_mongodb()["test_query_vectors"].update_one(
+                {"_id": f"test-embed|{_sha(text)}"},
+                {"$set": {"vector": theirs, "dimensions": 2}},
+                upsert=True,
+            )
+        return SimpleNamespace(data=[{"index": i, "embedding": [1.0, 0.0]} for i in range(len(batch))])
+
+    monkeypatch.setattr(litellm, "embedding", embed_and_let_another_process_store_the_rest)
+    matrix = _embedding_model(2, batch_size=1).embed_search_queries(texts, EmbeddingCorpus.CONTROL)
+    (sent,) = requested
+    assert [list(row) for row in matrix] == [[1.0, 0.0] if [text] == sent else [0.0, 1.0] for text in texts]

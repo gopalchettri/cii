@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
 from app import container
+from app.ai import common as ai_common
 from app.api import middleware
 from app.api.middleware import _bind_request_context
 from app.core.config import get_settings
@@ -77,6 +78,18 @@ def test_a_logger_first_used_between_two_logging_set_ups_is_still_captured() -> 
     configure_logging(get_settings())  # another one (or the API) setting logging up again
     with capture_logs() as logs:
         logger.info("seen")
+    assert [line["event"] for line in logs] == ["seen"]
+
+
+@pytest.mark.usefixtures("client")
+def test_a_logger_the_run_s_app_start_used_is_still_captured() -> None:
+    """Before: the run's API client (a session fixture) started the app before any test's own guard, so
+    its configure_logging turned caching on and the gateway logger its start used kept that pipeline:
+    after a worker set logging up again, capture_logs saw none of its lines (test_ai's, run after
+    test_intel_worker_jobs)."""
+    configure_logging(get_settings())  # a worker starting in this process
+    with capture_logs() as logs:
+        ai_common.log.info("seen")
     assert [line["event"] for line in logs] == ["seen"]
 
 

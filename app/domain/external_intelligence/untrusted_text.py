@@ -53,6 +53,28 @@ _WORD = re.compile(r"\w+")
 _NOT_LETTER = re.compile(r"[^a-z]")
 
 
+class _Searches:
+    """The pattern searches of one sanitise call. Its views (each round's text, the skeleton, the plain forms)
+    are often the very same string, so a pattern already found absent from a text is not searched again."""
+
+    def __init__(self) -> None:
+        self._absent: set[tuple[int, str]] = set()  # (id of a pattern, a text it is not in)
+
+    def first_match(self, patterns: Patterns, text: str) -> str | None:
+        """The reason code of the first pattern found in `text`."""
+        for code, pattern in patterns:
+            if (id(pattern), text) in self._absent:
+                continue
+            if pattern.search(text):
+                return code
+            self._absent.add((id(pattern), text))
+        return None
+
+    def first_in_views(self, patterns: Patterns, text: str) -> str | None:
+        """The reason code of the first pattern found in `text` or in its skeleton."""
+        return self.first_match(patterns, text) or self.first_match(patterns, _skeleton(text))
+
+
 class UntrustedTextSanitiser:
     """Stateless, so one may be shared by any thread. The pattern tables are the ingest ones unless a caller
     with a narrower purpose gives its own (the writer's echo check: ECHO_PATTERNS, no squashed view)."""
@@ -75,9 +97,10 @@ class UntrustedTextSanitiser:
         allow-list applied, long encoded runs refused and the text cut at a sentence or word end."""
         if not isinstance(text, str) or max_chars <= 0:
             return SanitisedText("")
+        searches = _Searches()
         raw = text[: max(TextCleaning.MIN_RAW_CHARS, max_chars * TextCleaning.RAW_FACTOR)]
         for _ in range(TextCleaning.MAX_ROUNDS):
-            cleaned, reason = self._normalise_and_strip(raw)
+            cleaned, reason = self._normalise_and_strip(raw, searches)
             if reason:
                 return SanitisedText("", True, reason)
             if cleaned == raw:
@@ -85,27 +108,27 @@ class UntrustedTextSanitiser:
             raw = cleaned
         else:
             return SanitisedText("", True, _UNSTABLE_MARKUP)
-        reason = self._skeleton_reason(raw) or _mixed_script_reason(raw)
+        reason = self._skeleton_reason(raw, searches) or _mixed_script_reason(raw)
         if reason:
             return SanitisedText("", True, reason)
         final = _plain(raw, " ")  # stored: a symbol such as a backslash separates words
         reason = (
-            _first_match(self._all_patterns, _plain(raw, ""))  # and as the symbols glue the words
-            or _first_match(self._all_patterns, final)
+            searches.first_match(self._all_patterns, _plain(raw, ""))  # and as the symbols glue the words
+            or searches.first_match(self._all_patterns, final)
             or _blob_reason(final)
         )
         if reason:
             return SanitisedText("", True, reason)
         return SanitisedText(_cut(final, max_chars))
 
-    def _normalise_and_strip(self, text: str) -> tuple[str, str | None]:
+    def _normalise_and_strip(self, text: str, searches: _Searches) -> tuple[str, str | None]:
         """One round: decoded and normalised, checked WITH its markup, then the markup removed."""
         text = _normalise(unescape(text))
-        reason = _first_in_views(self._text_patterns, text)
+        reason = searches.first_in_views(self._text_patterns, text)
         if reason:
             return text, reason
-        text = self._without_quoted_markup(text)
-        reason = _first_in_views(self._markup_patterns, text)
+        text = self._without_quoted_markup(text, searches)
+        reason = searches.first_in_views(self._markup_patterns, text)
         if reason:
             return text, reason
         text = _COMMENT.sub(" ", text)
@@ -116,20 +139,20 @@ class UntrustedTextSanitiser:
         text = _URL.sub(" ", text)
         return _TAG.sub(" ", text), None
 
-    def _without_quoted_markup(self, text: str) -> str:
+    def _without_quoted_markup(self, text: str, searches: _Searches) -> str:
         """`text` without the code spans that hold live-looking markup: a description QUOTING `<script>` is
         not markup. Every other pattern has read the span already; what is left is checked for markup."""
 
         def quoted(span: re.Match[str]) -> str:
             """A quoted span, or a space when it holds live-looking markup."""
-            return " " if _first_match(self._markup_patterns, span.group()) else span.group()
+            return " " if searches.first_match(self._markup_patterns, span.group()) else span.group()
 
         return _QUOTED_CODE.sub(quoted, text)
 
-    def _skeleton_reason(self, text: str) -> str | None:
+    def _skeleton_reason(self, text: str, searches: _Searches) -> str | None:
         """The code of a pattern found in the look-alike skeleton, or in it with every non-letter removed."""
         skeleton = _skeleton(text)
-        return _first_match(self._all_patterns, skeleton) or _first_match(
+        return searches.first_match(self._all_patterns, skeleton) or searches.first_match(
             self._squashed_patterns, _NOT_LETTER.sub("", skeleton)
         )
 
@@ -152,16 +175,6 @@ def _normalise(text: str) -> str:
 def _skeleton(text: str) -> str:
     """Lower case with look-alike letters turned into the Latin ones they imitate (for checking only)."""
     return text.lower().translate(CONFUSABLES)
-
-
-def _first_match(patterns: Patterns, text: str) -> str | None:
-    """The reason code of the first pattern found in `text`."""
-    return next((code for code, pattern in patterns if pattern.search(text)), None)
-
-
-def _first_in_views(patterns: Patterns, text: str) -> str | None:
-    """The reason code of the first pattern found in `text` or in its skeleton."""
-    return _first_match(patterns, text) or _first_match(patterns, _skeleton(text))
 
 
 def _blob_reason(text: str) -> str | None:

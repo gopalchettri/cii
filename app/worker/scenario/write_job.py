@@ -115,7 +115,8 @@ class BatchWriter:
         self._evidence_waits: set[str] = set()  # paths held back by an evidence search outage
 
     def write(self) -> None:
-        """Write the batch's open paths, queue control mapping, settle any outage, then move the run on."""
+        """Write the batch's open paths (control mapping queued as each scenario is saved), queue it again for
+        the whole batch, settle any outage, then move the run on."""
         to_write = self._saver.to_write(self._batch, self._replaces)
         if not self._replaces:
             to_write = self._without_repeats(to_write)
@@ -125,7 +126,7 @@ class BatchWriter:
             to_write = {key: others for key, others in to_write.items() if not self._held_back(key, outages)}
         paths = self._progress.paths
         path_jobs = {key: partial(self._paths.write, paths[key], others) for key, others in to_write.items()}
-        outages |= write_at_once(path_jobs, self._saver.save)
+        outages |= write_at_once(path_jobs, self._save)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
         # delivery that died or failed after saving must not leave its controls to the sweep. The controls
         # job claims each scenario once.
@@ -137,6 +138,13 @@ class BatchWriter:
             self._progress.finish_regenerate(len(self._served_paths()), len(self._replaces))
         else:
             self._progress.continue_or_finish()
+
+    def _save(self, path_id: str, outcome: PathOutcome, started_at: datetime) -> None:
+        """Save one path's outcome; a scenario that now serves it has its controls mapped while the batch's
+        other paths are still being written (a message that finds the run being mapped costs one update)."""
+        self._saver.save(path_id, outcome, started_at)
+        if path_id in self._served_paths():
+            send_job(TaskName.MAP_CONTROLS, self._run["_id"], self._lease.epoch)
 
     def _served_paths(self) -> list[str]:
         """The batch's paths served by a scenario written for it (a regenerate's: a new version)."""

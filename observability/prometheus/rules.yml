@@ -80,13 +80,15 @@ groups:
           summary: "{{ $labels.instance }}'s clock is more than 5 s off MongoDB's; the app corrects for it."
           description: "UAT: the cluster admin fixes time sync on its node: oc debug node/<node> -- chroot /host chronyc tracking."
 
-      # Queue lists in Redis are named <Worker.BROKER_KEY_PREFIX><queue>, i.e. tsg:tsg_threats.
+      # Each queue is two Redis lists: <Worker.BROKER_KEY_PREFIX><queue> (a run's next stages), i.e.
+      # tsg:tsg_threats, and the same name + "\x06\x163" (new work, Worker.NEW_WORK_PRIORITY); summed per queue.
+      # Every queue but tsg_maintenance, so a new queue is covered without an edit here.
       - alert: QueueBacklog
-        expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios|servicemapper)"}) > 50
+        expr: sum by (queue) (label_replace(max by (key) (redis_key_size{key=~"tsg:tsg_.*", key!~"tsg:tsg_maintenance.*"}), "queue", "$1", "key", "tsg:([a-z_]+).*")) > 50
         for: 15m
         labels: { severity: warning }
         annotations:
-          summary: "{{ $labels.key }} has held more than 50 waiting jobs for 15 minutes."
+          summary: "{{ $labels.queue }} has held more than 50 waiting jobs for 15 minutes."
           description: The workers cannot keep up. Check that its worker is WORKING; add a worker if it is.
 
       # redis-exporter answers even when it cannot reach Redis; then queue lengths vanish and QueueBacklog
@@ -132,7 +134,7 @@ groups:
           description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
       - alert: AiErrorRateHigh
-        expr: sum(rate(tsg_ai_calls_total{outcome!="ok"}[10m])) / sum(rate(tsg_ai_calls_total[10m])) > 0.10
+        expr: sum(rate(tsg_ai_calls_total{outcome!~"ok|truncated"}[10m])) / sum(rate(tsg_ai_calls_total{outcome!="truncated"}[10m])) > 0.10
         for: 10m
         labels: { severity: warning }
         annotations:
@@ -162,6 +164,20 @@ groups:
         annotations:
           summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
           description: Jobs slow down. Raise CII_MAX_CONCURRENT_AI_CALLS if the AI gateway can take more.
+
+      # Every AI request waits its turn under its model's own requests-a-minute setting (app/ai/slots.py
+      # AiRequestRate), so by model: a long wait means more work is sent to that model than it allows.
+      - alert: AiRequestRateWaitHigh
+        expr: histogram_quantile(0.95, sum by (le, model) (rate(tsg_ai_request_rate_wait_seconds_bucket[5m]))) > 30
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.model }} requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
+          description: >-
+            More work is sent to {{ $labels.model }} than its requests-a-minute setting allows
+            (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE
+            or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a
+            minute, then raise its setting; the dashboard's 429 panel shows refusals.
 
   - name: tsg-audit
     rules:

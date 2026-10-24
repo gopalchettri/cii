@@ -419,7 +419,7 @@ def start_run(
 
 `GET /v1/sessions/{session_id}` uses `CallersRun`, which performs 404/403 ownership before `get_threat_scenario_session()`. `GET .../results` uses the same dependency plus `Offset`/`Limit`.
 
-**C8. Run three tasks, not one long HTTP call.** `app/worker/scenario/tasks.py:find_threats` takes `(record_id,epoch)` and calls `PlanJob.plan_threat_scenario_session()` under `run_leased_job()`. `PlanJob` stores the plan and hands the lease to `WRITE_SCENARIOS`; `ScenarioWriteJob` writes versions; `ControlsJob` maps controls. Task routes send the first to `tsg_threats` and the latter tasks to `tsg_scenarios`. The task body must check the lease before persisting an answer; a stale delivery may continue running after a replacement worker claims the record.
+**C8. Run three tasks, not one long HTTP call.** `app/worker/scenario/tasks.py:find_threats` takes `(record_id,epoch)` and calls `PlanJob.plan_threat_scenario_session()` under `run_leased_job()`. `PlanJob` stores the plan and hands the lease to `WRITE_SCENARIOS`; `ScenarioWriteJob` writes versions; `ControlsJob` maps controls. Task routes send the first to `tsg_threats`, the writer to `tsg_scenarios` and control mapping to `tsg_controls`; a stage's hand-over is sent ahead of new work (`Worker.NEXT_STAGE_PRIORITY`). The task body must check the lease before persisting an answer; a stale delivery may continue running after a replacement worker claims the record.
 
 ```python
 @celery_app.task(name=TaskName.FIND_THREATS, bind=True)
@@ -779,7 +779,7 @@ Build this before normal scenario calls, because callers need a minted key:
 ## Stage 6 — Build the library and AI/search foundation
 
 1. Use `tsg_GetThreatLibrary`, `tsg_GetControlLibrary`, and `tsg_GetLibraryStamp` through `ThreatRepository` and `ControlRepository`; map SQL rows in `app/data_access/library/rows.py` and `app/models/library/`. `LibraryCache` in `app/search/library_cache.py` holds the active library.
-2. Build `EmbeddingModel`, `ChatModel`, and `RerankModel` through `app/ai/` and the model profiles. Build `LibrarySearch` in `app/search/service.py`. The container providers call `get_settings()` and share the AI-slot limiter; do not create a new model client per request.
+2. Build `EmbeddingModel`, `ChatModel`, and `RerankModel` through `app/ai/` and the model profiles. Build `LibrarySearch` in `app/search/service.py`. The container providers call `get_settings()`, share the AI-slot limiter and give each gateway its own model's request-rate limiter (`ai_request_rate_for`); do not create a new model client per request.
 3. The scheduled/on-demand index build is `app/worker/admin/library_indexes.py`. Wire `TaskName.BUILD_LIBRARY_INDEXES` to `tsg_maintenance` and the admin job endpoints from Stage 5.
 4. For curator changes, `app/models/library/curation.py` validates decision bodies; `app/domain/library/curation.py` decides outcomes; `ThreatLibraryService` calls `tsg_ListPendingThreats` and `tsg_DecidePendingThreats` through `ThreatRepository` and audits the result. Expose `GET /v1/tsg/library/pending` and `POST /v1/tsg/library/decisions` in `app/api/routers/library.py`, protected by the admin key.
 
@@ -787,7 +787,7 @@ Build this before normal scenario calls, because callers need a minted key:
 
 ## Stage 7 — Build the worker runtime before accepting long jobs
 
-1. In `app/core/constants/jobs.py`, define `TaskName`, `Queue`, `TASK_ROUTES`, `ROUTED_QUEUES`, lease limits, and status/event values. The **routed and staffed** queues today are `tsg_threats`, `tsg_scenarios`, and `tsg_maintenance`. The enum also contains `tsg_remediation` and `tsg_servicemapper`, but no current task routes or running workers use them.
+1. In `app/core/constants/jobs.py`, define `TaskName`, `Queue`, `TASK_ROUTES`, `ROUTED_QUEUES`, lease limits, and status/event values. The **routed and staffed** queues today are `tsg_threats` (plan), `tsg_scenarios` (write), `tsg_controls` (control mapping), `tsg_remediation` (treatment plans), `tsg_servicemapper` (service mapper) and `tsg_maintenance`; each has its own worker Deployment in both OpenShift projects, and `/ready` needs a live worker on every one of them.
 2. In `app/worker/celery_app.py`, register every task module in `TASK_MODULES`, define routes and the beat schedule, set the thread pool, JSON messages, late acknowledgements, and `task_ignore_result=True`. Job state lives in MongoDB, not a Celery result backend.
 3. In `app/data_access/jobs/job_repository.py`, implement claims, lease renewal, epochs, task IDs, attempts, and fenced writes. In `app/worker/jobs.py:run_leased_job()`, claim the record, keep the lease alive, retry temporary failures, and stop if the lease is lost. In `app/worker/reaper.py`, resend queued/lost work. In `app/worker/heartbeat.py` and `app/worker/lifecycle.py`, make worker liveness visible to `/ready`.
 4. Add object providers in `app/container.py` and call `set_up_worker()` at worker startup. A task imports `app.container` **inside** its function, obtains the job object, and passes work to `run_leased_job()`. `app/worker/scenario/tasks.py` is the example.
@@ -872,7 +872,7 @@ The public request is `POST /v1/remediation`. For the plan routes below, `PLAN_B
 1. In `app/models/remediation/{requests,plan,reviews,views}.py`, define separate request, stored/status, review, and view models. `PlanRequest` has two mutually exclusive paths: an accepted generated scenario (`is_manual=false`, session/scenario IDs) or a hand-written scenario (`is_manual=true`, `manual_scenario`, and `Idempotency-Key`). Register fields are optional but validated.
 2. In `app/domain/remediation/`, implement manual record creation, version/decision rules, snapshot of input facts, register values, references, and schedule calculations. A generated scenario must already be accepted. A manual scenario is stored and accepted as part of the request; repeat of the same key/body returns the same plan.
 3. In `RemediationRepository` and `ThreatScenarioRepository`, persist the plan and versions with atomic uniqueness/ownership checks. In `RemediationPlanService.create_remediation_plan()`, validate the scenario and entity, create the queued plan, send `TaskName.WRITE_PLAN`, audit, and return IDs. Do not map missing controls or call AI in the HTTP request.
-4. In `app/worker/remediation/tasks.py`, register `WRITE_PLAN` and run `RemediationPlanJob` under the lease. `app/worker/remediation/plan_inputs.py` reads the frozen inputs, maps missing controls/actors, then the job writes a version. A failed or cancelled version stays inspectable; regeneration writes the next version without erasing the old one.
+4. In `app/worker/remediation/tasks.py`, register `WRITE_PLAN` (routed to `tsg_remediation`) and run `RemediationPlanJob` under the lease. `app/worker/remediation/plan_inputs.py` reads the frozen inputs, maps missing controls/actors, then the job writes a version. A failed or cancelled version stays inspectable; regeneration writes the next version without erasing the old one.
 5. In `app/api/routers/remediation.py`, implement the eight routes above; use `Caller`, `CallersPlan`, or `CallersRun` as appropriate. `plan_status` can return the validated `CallersPlan` directly; other routes call one service method. Use `JobService` for cancellation. Put the plan SSE route in Stage 12.
 6. Add remediation repository, service, and job providers to `app/container.py`, and register `remediation_router` in `app/main.py`.
 
@@ -924,7 +924,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-`/ready` needs one live worker on each **routed** queue. Before Recipe D, the local script starts `tsg_threats,tsg_scenarios` on one worker and `tsg_maintenance` on another, plus beat. After D9 and D13, it also starts a separate `tsg_servicemapper` worker; the API then requires that worker's heartbeat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
+`/ready` needs one live worker on each **routed** queue. Before Recipe D, the local script starts `tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation` on one worker and `tsg_maintenance` on another, plus beat. After D9 and D13, it also starts a separate `tsg_servicemapper` worker; the API then requires that worker's heartbeat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
 
 ### 13.3 Run tests without touching application data
 
