@@ -41,7 +41,10 @@ YAML_FILES = sorted(path for path in DEPLOY.glob("*.yaml") if path != SECRETS_CO
 MONITORING_NAMESPACE = "ai-common"  # shared with the chatbot
 WATCHED = [*APP_FILES, MONITORING_NAMESPACE]  # Flower and the monitoring itself run in ai-common
 MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
-APP_IMAGE = re.compile(rf"{re.escape(MIRROR)}/tsg-api:v2-[0-9a-f]{{12}}")
+#: build-image.bat's tag: the build date dd-Mon-yyyy (English month), -<suffix> on a same-day rebuild.
+APP_IMAGE = re.compile(
+    rf"{re.escape(MIRROR)}/tsg-api:\d{{2}}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{{4}}(-\w+)?"
+)
 API_HOST = "threatgen-api.apps.dda-desc-az1-01.desccii.local"
 MONITORING_HOST = "threatgen-grafana.apps.dda-desc-az1-01.desccii.local"
 #: Each project's quota in limits (CPU, memory Gi, storage Gi); in ai-common, TSG's share of it (the chatbot

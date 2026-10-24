@@ -26,7 +26,10 @@ RULES = OBS / "prometheus" / "rules.yml"
 DASHBOARD = OBS / "grafana" / "dashboards" / "tsg.json"
 TEMPLATE = REPO / "deploy" / "deploy_common.yaml"
 MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
-APP_IMAGE = rf"{re.escape(MIRROR)}/tsg-api:v2-[0-9a-f]{{12,}}"  # Flower: build-image.ps1's v2-<commit> tag
+#: build-image.bat's tag: the build date dd-Mon-yyyy (English month), -<suffix> on a same-day rebuild.
+APP_IMAGE = (
+    rf"{re.escape(MIRROR)}/tsg-api:\d{{2}}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{{4}}(-\w+)?"
+)
 MONITORING_IMAGE = rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*"  # a mirrored image pinned to a version
 
 #: §22.3 alerts that are Built (AiSlotsSaturated and IntelStale wait for their metrics).
@@ -488,7 +491,6 @@ def test_a_process_start_time_tells_a_reused_id_apart() -> None:
 POWERSHELL_SCRIPTS = [
     "run.ps1",
     "stop.ps1",
-    "deploy/build-image.ps1",
 ]
 NO_POWERSHELL = pytest.mark.skipif(
     shutil.which("powershell") is None, reason="Windows PowerShell is not installed here"

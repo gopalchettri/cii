@@ -17,7 +17,7 @@
 # A running pod never sees a changed config file or password: after a change, restart TSG's monitoring pods
 # (the -l keeps the chatbot's pods in this project running):
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
-# New release: Flower runs from the app image, so its tag (v2-f0560c76a491) changes with the deploy_*.yaml files.
+# New release: Flower runs from the app image, so its tag (24-Oct-2026) changes with the deploy_*.yaml files.
 #
 # BEFORE THE FIRST APPLY - images. The cluster pulls only from the Quay mirror
 # <mirror> = quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc. Copy each monitoring image there from
@@ -751,7 +751,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: flower                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:v2-f0560c76a491   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, flower, --address=0.0.0.0, --port=5555, --url_prefix=flower]   # Flower on port 5555, under /flower
           envFrom:                               # every app setting, as environment variables

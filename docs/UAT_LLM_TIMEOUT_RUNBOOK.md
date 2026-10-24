@@ -44,7 +44,7 @@ oc -n ai-remediation get deploy -o custom-columns=NAME:.metadata.name,READY:.sta
 
 - Write down every deployment **name**. Use the table above to pick the ones you change in step 3.
 - Names like `tsg-api` and `celery-worker` mean UAT runs **v1**. Names like `api` and `worker-scenarios`, with an image
-  ending in `tsg-api:v2-<commit>`, mean UAT runs **v2**.
+  ending in `tsg-api:v2-<commit>` or a build date such as `tsg-api:24-Oct-2026`, mean UAT runs **v2**.
 
 ## Step 2: confirm the problem, from inside each app pod (changes nothing)
 
@@ -177,8 +177,6 @@ UAT works again here. But a later deployment would bring back the old settings, 
   - Docker (Docker Desktop, Linux containers);
   - a login to the image registry;
   - the `oc` command, with admin rights in `ai-threatgen`, `ai-remediation` and `ai-common`.
-- If PowerShell says "running scripts is disabled on this system", run the build script as
-  `powershell -ExecutionPolicy Bypass -File .\deploy\build-image.ps1`.
 
 ## Step 5: deploy from the repository
 
@@ -192,17 +190,19 @@ git checkout main
 git pull
 git branch --contains 0f62fd8
 docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
-.\deploy\build-image.ps1
+.\deploy\build-image.bat
 ```
 
 - `git branch --contains 0f62fd8` must print `* main`. If it prints nothing, this checkout doesn't have the fix: stop.
   The `master` branch has neither the fix nor these files.
 - The script stops if `app\`, `pyproject.toml`, `requirements.txt`, `Dockerfile` or `.dockerignore` have local
   changes. Build from a clean checkout of `main`.
-- `docker push failed ... unauthorized` means the `docker login` failed: log in and run it again.
+- A push that fails with `unauthorized` means the `docker login` failed: log in and run it again.
 - The build downloads from the internet (Docker Hub, Debian, packages.microsoft.com, PyPI); the push needs the
-  company network. If no machine has both, follow the `-NoPush` note in guide step 1.
-- At the end it prints `Tag:   v2-<commit>`. Write it down.
+  company network. If no machine has both, follow the `--no-push` note in guide step 1.
+- At the end it prints the tag: today's date, such as `24-Oct-2026`. Write it down.
+- A tag that is already in Quay is refused. For a second build on the same day, give a new tag:
+  `.\deploy\build-image.bat 24-Oct-2026-2`.
 
 **5.2 Deploy** (guide steps 2 to 10, in this order):
 
