@@ -39,7 +39,7 @@ foreach ($f in 'deploy_threatgen.yaml', 'deploy_remediation.yaml', 'deploy_commo
 Select-String -Path deploy\deploy_*.yaml -Pattern 'tsg-api:'
 ```
 
-Check: every line shows the new tag. Commit the three files.
+Check: every line shows the new tag.
 
 ## 3. Secrets
 
@@ -50,7 +50,7 @@ oc apply -f deploy\secrets.yaml
 ```
 
 Replace every `CHANGE_ME` with the real value. A password inside a connection string must be URL-encoded
-(`@` becomes `%40`). Never commit `secrets.yaml`.
+(`@` becomes `%40`). Keep `secrets.yaml` private: never share it.
 
 Check: `Select-String -Path deploy\secrets.yaml -Pattern '^[^#]*CHANGE_ME'` prints nothing.
 

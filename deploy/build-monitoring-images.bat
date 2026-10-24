@@ -39,7 +39,7 @@ goto read_args
 :args_read
 
 rem Work from the repo root, wherever this was started from.
-pushd "%ROOT%" || (echo ERROR: cannot open the repo folder %ROOT%. & exit /b 1)
+pushd "%ROOT%" || (echo ERROR: cannot open the folder above deploy\. & exit /b 1)
 
 rem 1. The images: every image: line in Quay but the app's (tsg-api), each name:tag once.
 set "LIST= "
