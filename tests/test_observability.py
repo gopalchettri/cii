@@ -18,7 +18,7 @@ from prometheus_client.metrics import MetricWrapperBase
 
 import app.core.metrics  # noqa: F401 — registers every app metric
 from app.core.constants import Dependency, Queue, Worker
-from app.worker import ROUTED_QUEUES
+from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
 OBS = REPO / "observability"
@@ -62,6 +62,8 @@ BUILT_ALERTS = {
     "ApiCrashing",
     # 2026-10-24: a pod's clock far from MongoDB's (UAT: 76 s, every run failed before the shared clock).
     "ClockSkew",
+    # A model's AI requests waiting long for their turn under its own requests-a-minute limit.
+    "AiRequestRateWaitHigh",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
@@ -180,10 +182,34 @@ def test_queue_depth_reads_the_keys_celery_really_uses() -> None:
     commands = sys.modules["monitoring_commands"]
     assert set(commands.QUEUES) == set(ROUTED_QUEUES)
     assert commands.QUEUE_KEY_PREFIX == Worker.BROKER_KEY_PREFIX
+    with celery_app.connection_for_read() as connection:  # kombu's own name of each priority's list
+        channel = connection.default_channel
+        lists = {channel._q_for_pri(name, step) for name in ROUTED_QUEUES for step in channel.priority_steps}
+    suffixes = commands.QUEUE_PRIORITY_SUFFIXES
+    assert {queue + suffix for queue in commands.QUEUES for suffix in suffixes} == lists
     [exporter] = [d for d in _template_objects("Deployment") if d["metadata"]["name"] == "redis-exporter"]
     env = {e["name"]: e.get("value") for e in exporter["spec"]["template"]["spec"]["containers"][0]["env"]}
-    for queue in ROUTED_QUEUES:
-        assert f"={Worker.BROKER_KEY_PREFIX}{queue}" in env["REDIS_EXPORTER_CHECK_SINGLE_KEYS"]
+    exported = {key.split("=", 1)[1] for key in env["REDIS_EXPORTER_CHECK_SINGLE_KEYS"].split(",")}
+    assert exported == {Worker.BROKER_KEY_PREFIX + name for name in lists}
+
+
+def test_queue_backlog_watches_every_routed_queue_but_maintenance() -> None:
+    """A queue added to the routes is watched without editing the alert; both of its lists count."""
+    [rule] = [rule for rule in _rules() if rule["alert"] == "QueueBacklog"]
+    [selector] = re.findall(r"redis_key_size\{([^}]*)\}", rule["expr"])
+    matchers = re.findall(r'key\s*(=~|!~)\s*"([^"]*)"', selector)
+    _monitoring_script()
+    suffixes = sys.modules["monitoring_commands"].QUEUE_PRIORITY_SUFFIXES  # each queue's two kombu lists
+    watched = {
+        queue
+        for queue in ROUTED_QUEUES
+        if all(
+            bool(re.fullmatch(pattern, Worker.BROKER_KEY_PREFIX + queue + suffix)) == (operator == "=~")
+            for suffix in suffixes
+            for operator, pattern in matchers
+        )
+    }
+    assert matchers and watched == set(ROUTED_QUEUES) - {Queue.MAINTENANCE}
 
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:

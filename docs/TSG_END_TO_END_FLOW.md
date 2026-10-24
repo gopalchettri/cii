@@ -55,7 +55,8 @@ about 1 more minute.
 - **Checked twice.** Plain code rules first, then a reviewer AI that checks the draft against the plan.
 - **No duplicates within a session.** A session never tells the same threat as the same kind twice, and an exact repeat is never saved. The asset's other sessions never block a scenario (D15).
 - **People decide.** Every scenario waits for a person's decision, and decisions are audited.
-- **Bounded cost and safe failure.** AI calls are limited (by default 16 at once across all servers). Versions per
+- **Bounded cost and safe failure.** AI calls are limited across all servers (by default 16 at once; in UAT 180
+  requests a minute to the main chat model, under its own limit of 192). Versions per
   scenario are capped at 10 (this cap is ready to merge). Every job is tracked and retried, so an outage never
   loses or duplicates work.
 
@@ -103,12 +104,15 @@ flowchart LR
     subgraph Stores
         M[("MongoDB<br/>sessions, scenarios,<br/>plans, intel, audit")]
         Q[("SQL Server<br/>threat + control library,<br/>asset context, curation")]
-        RD[("Redis<br/>Celery broker, pub/sub,<br/>AI slots, heartbeats")]
+        RD[("Redis<br/>Celery broker, pub/sub,<br/>AI slots and request rate,<br/>heartbeats")]
     end
 
     subgraph Workers["Worker pods (Celery, threads)"]
         W1["tsg_threats<br/>tsg_find_threats (plan job)"]
-        W2["tsg_scenarios<br/>tsg_write_scenarios, tsg_map_controls,<br/>tsg_write_plan"]
+        W2["tsg_scenarios<br/>tsg_write_scenarios (write job)"]
+        W4["tsg_controls<br/>tsg_map_controls (controls job)"]
+        W5["tsg_remediation<br/>tsg_write_plan (treatment plan)"]
+        W6["tsg_servicemapper<br/>tsg_map_services (service mapper)"]
         W3["tsg_maintenance<br/>tsg_reap, tsg_retry_controls,<br/>tsg_build_library_indexes,<br/>tsg_refresh_external_intelligence"]
         B["Beat<br/>schedules the maintenance tasks"]
     end
@@ -124,14 +128,14 @@ flowchart LR
     DA --> M
     DA --> Q
     S -- "send job, publish id" --> RD
-    RD -- "jobs" --> W1 & W2 & W3
+    RD -- "jobs" --> W1 & W2 & W4 & W5 & W6 & W3
     B --> RD
-    W1 & W2 & W3 --> M
-    W1 & W2 & W3 --> Q
-    W1 & W2 -- "chat, embeddings, rerank" --> AI
+    W1 & W2 & W4 & W5 & W6 & W3 --> M
+    W1 & W2 & W4 & W5 & W6 & W3 --> Q
+    W1 & W2 & W4 & W5 & W6 -- "chat, embeddings, rerank" --> AI
     W3 -- "embeddings, rerank" --> AI
     W3 -- "downloads" --> SRC
-    W1 & W2 & W3 -- "publish id" --> RD
+    W1 & W2 & W4 & W5 & W6 & W3 -- "publish id" --> RD
     RD -- "tsg:events:*" --> EH
 ```
 
@@ -334,9 +338,17 @@ never become rows; they are joined by CVE id into the KEV entry's `data`:
 5. A failed build keeps the old index and is retried after 30 s, doubling up to 900 s. Approved sources that hold
    nothing fail the build; a process that never built serves the settled empty index. When every source is
    revoked, an empty index is published, so every process drops the data.
-6. **Each process follows the pointer.** A worker starts with `warm_up_external_intelligence`
-   (`app/worker/lifecycle.py`): a background build while the switch is on, and a daemon thread
-   (`follow_active_snapshot`) that asks for the index every 60 s. `current_index` never waits. At most every
+6. **Each searching process follows the pointer.** Only a worker that takes `tsg_scenarios` (the write job, the
+   index's only reader) warms the index up and follows it: such a worker holds about 450 MB, against about 220 MB
+   without it, and up to about 800 MB while a rebuild runs. The maintenance worker still builds and publishes one at each import (step 8); the other workers
+   never load it. A scenarios worker builds its index while the switch is on in `warm_up_external_intelligence`
+   (`app/worker/lifecycle.py`), which `prepare_worker` calls at `worker_init`: before Celery starts the consumer
+   and `worker_ready` starts the heartbeat, so the worker takes no write job and does not count on `/ready` until
+   its index is ready. It waits at most `IntelLimits.INDEX_AT_START_SECONDS` = 120 s (the startupProbe allows
+   about 5 minutes). A build that failed (AI or store down) or is still running then lets the worker start: until
+   a build ends, a batch's search finds no snapshot, so its paths wait as for an outage and the job is retried
+   after the back-off (15, 30, 60, 120 s, at most `Lease.MAX_ATTEMPTS` = 5 tries). A daemon thread
+   (`follow_active_snapshot`) then asks for the index every 60 s. `current_index` never waits. At most every
    60 s (`IntelLimits.SWITCH_CACHE_SECONDS`) it reads the pointer in a background thread and builds when the active
    snapshot is a newer, different corpus. A batch reads the index once, so a swap never mixes two indexes in one
    batch.
@@ -984,7 +996,7 @@ flowchart TB
     A["Claim the lease<br/>status running, attempts + 1"] --> B["Library snapshot<br/>refused if no threat type links an attacker"]
     B --> C["Landscape text<br/>the asset and its systems, within a budget"]
     C --> D["Code filter<br/>asset type fits, attacker linked<br/>one bucket per kind of attack"]
-    D --> E["Relevance gate (AI)<br/>batches of 10, at most 4 at once"]
+    D --> E["Relevance gate (AI)<br/>batches of 10, at most 8 at once"]
     E --> F["Check every answer<br/>re-ask once; accepted, not relevant,<br/>needs unrecorded, not judged"]
     F --> G["Two code checks<br/>no way in fits the type: refused<br/>a need under one kind: refused under all"]
     G --> H{"A kind with<br/>nothing accepted?"}
@@ -1115,9 +1127,9 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
 **How**
 1. **Parallel pools.** `_judge_categories` opens two thread pools:
    - one thread per kind (`ThreatFinding.CATEGORIES_AT_ONCE` = 6);
-   - one shared pool for the gate calls of all kinds (`ThreatFinding.AI_BATCHES_AT_ONCE` = 4), so at most 4 gate calls run at once per plan.
+   - one shared pool for the gate calls of all kinds (`ThreatFinding.AI_BATCHES_AT_ONCE` = 8), so at most 8 gate calls run at once per plan.
 
-   `run_in_shared_pool` returns results in STRIDE order. Every chat call also holds one Redis AI slot (`CII_MAX_CONCURRENT_AI_CALLS`, across all pods).
+   `run_in_shared_pool` returns results in STRIDE order. Every chat call also holds one Redis AI slot (`CII_MAX_CONCURRENT_AI_CALLS`, across all pods) and waits its turn under its model's own requests a minute (`CII_CHAT_REQUESTS_PER_MINUTE`, the fallback's `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`; section 15). Once one gate call finds the AI unavailable, no new one starts: the job is retried anyway.
 2. **Slots.** `_CategoryJudge.judge_category` numbers the kind's whole bucket `R1`, `R2`, … (`ThreatFinding.RECORD_SLOT`). `_candidate_for_gate` gives each candidate `{slot, threat_type, threat, attackers}`, with library codes removed. `attackers` holds the type's linked actors.
 3. **Batches.** `_judge` splits the slots with `itertools.batched(items, GATE_BATCH_SIZE)` (10), so R41-R50 is the 5th batch. `_judge_batch` makes one call per batch: `ask_ai_and_check(chat, AiTask.RELEVANCE_GATE, relevance_gate_prompt(…), _read_verdicts)`.
 4. **Prompt** (`relevance_gate_prompt`):
@@ -1126,9 +1138,9 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
 5. **Options** (`_build_request_options`, from `CHAT_TEMPERATURES` and the model profile):
    - temperature 0.0;
    - JSON mode;
-   - `max_tokens` 12,288;
+   - `max_tokens` 8,192 (`CHAT_MAX_OUTPUT_TOKENS`; the model's 12,288 while its thinking is on);
    - `reasoning_effort` "none" for `openai/Kimi-K2.6`.
-6. **Reply contract** (`gate.txt`, `RelevanceVerdict`): `{"verdicts": [{"slot", "relevant", "systems", "entry_points", "reason", "impact", "confidence", "needs", "attacker", "attacker_reason"}, …]}`, exactly one per slot. The fields mean:
+6. **Reply contract** (`gate.txt`, `RelevanceVerdict`): `{"verdicts": [{"slot", "relevant", "systems", "entry_points", "reason", "impact", "confidence", "needs", "attacker", "attacker_reason"}, …]}`, exactly one per slot; a rejected threat (`relevant` false) answers only `slot`, `relevant`, `reason` and `needs` (`planner-6`), so most of a batch's answer is short. The fields mean:
    - `systems`: every system the threat involves, judged with the asset and all its systems together. [] means the asset itself.
    - `entry_points`: the systems among `systems` an attacker could really get in through.
    - `reason`: one sentence naming systems by name, with any assumption written as "assumes … - not recorded in the platform".
@@ -1175,7 +1187,7 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
    - `_place_problems`: `systems` are listed aliases; for a relevant verdict, `entry_points` are among them, with at least one way in when it names systems.
    - `relevant` is true or false.
    - `impact` is HIGH, MEDIUM or LOW when relevant.
-   - `confidence` is 0-100.
+   - `confidence` is 0-100, unless rejected.
    - `reason` is not empty.
    - `needs` is a list of names.
    - The item then goes through `answer_item_problems(RelevanceVerdict, …)`.
@@ -1189,7 +1201,8 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
    - `actor_pick`, for a relevant verdict only. A listed name with a reason becomes a pick of that attacker. Null with a reason means "none fits". A name not on the slot's list, or no reason, means no pick, so the search decides (5.11).
 5. **Retry or skip** (`_retry_or_skip`):
    - An `UnreadableAiAnswer` on a normal attempt raises `Unavailable`, so the whole job is retried later.
-   - A `TruncatedAiAnswer` (reply cut off, or prompt too long) on any attempt skips that batch, and so does any bad answer on the last attempt. The skip is logged as `planner.threats_not_judged`.
+   - A `TruncatedAiAnswer` (reply cut off even when asked again at the model's full limit, or prompt too long) on any attempt skips that batch, and so does any bad answer on the last attempt. The skip is logged as `planner.threats_not_judged`.
+   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer the job already got and accepted from `tsg_ai_calls` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
    - If the buckets held threats but no batch of any kind was answered, it raises `Unavailable` ("The AI could not answer. Start a new session later.").
 6. **Sorting** (`judge_category`):
    - no verdict (batch skipped) → `not_judged`;
@@ -1266,10 +1279,10 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
    - Scoring is BM25 with `Search.BM25_K1` = 1.5 and `Search.BM25_B` = 0.75, and `idf = ln(1 + (N − df + 0.5) / (df + 0.5))`.
    - It finds rare exact words such as product names and acronyms.
 2. **Meaning leg:**
-   - `EmbeddingModel.embed_search_queries` embeds all the queries of one search in one call (`CII_EMBEDDING_MODEL`).
+   - `EmbeddingModel.embed_search_queries(texts, corpus)` embeds all the queries of one search in one call (`CII_EMBEDDING_MODEL`). A model whose profile has a `query_instruction` gets each query after it, with the task of the corpus searched (`QUERY_TASKS`, `app/core/constants/planning.py`, in English). UAT's qwen3-embedding-8b takes `Instruct: {task}\nQuery:{query}` (its model card, huggingface.co/Qwen/Qwen3-Embedding-8B). text-embedding-3-large takes none, so its queries are sent as before. Library texts are always sent plain, so no stored vector changes. Texts compared with their own kind (`merge_reworded_threats`) go plain on both sides (`embed_texts_to_compare`). The cut to the profile's `max_text_chars` shortens the query, never the instruction.
    - Vectors are L2-normalised, so a dot product is the cosine similarity.
-   - Library vectors are cached in `tsg_embeddings` (key `{model}|{corpus}|sha256(text)`). Query vectors are cached in `tsg_query_vectors` (key `{model}|sha256(text)`) and expire after 14 days.
-   - For threats and controls, when any row reaches cosine `VECTOR_FLOOR` (0.60), rows below it are left out. Actors and types have no floor and rank every row.
+   - Library vectors are cached in `tsg_embeddings` (key `{model}|{corpus}|sha256(text)`). Query vectors are cached in `tsg_query_vectors` (key `{model}|sha256(text sent)`, the instruction included) and expire after 14 days.
+   - For threats, controls, catalog services and evidence, when any row reaches cosine `VECTOR_FLOOR` (0.60), rows below it are left out. Actors and types have no floor and rank every row. The floor compares a query vector with library vectors, so with the query instruction qwen3-embedding-8b's cosines are not the ones 0.60 was set on (v1, plain queries): check it on UAT. The thresholds in `.env.uat` (`THREAT_`, `CONTROL_`, `EVIDENCE_SIMILARITY_THRESHOLD`) are reranker scores and do not change.
 3. **Scope first.** Rows outside the scope (another kind, an asset type that does not fit, actors not linked) are zeroed *before* each leg is cut. `rank_best_first` drops zero scores and keeps the leg's best `top_k`.
 4. **Fusion** (`fuse_by_rank`): reciprocal-rank fusion. A row at rank *r* in a leg earns `1 / (RRF_K + r)`, with `RRF_K` = 60. The two legs are added, best total first. Fusing by rank means the two score scales never need calibrating.
 5. **Exact match** (`HybridIndex.search`): a row whose tokenized text equals the tokenized query comes first, with score 1.0.
@@ -1303,7 +1316,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
    - the attacker pick by `_named_pick_first` (5.11).
 
    An AI threat with the same normalised name and type id as a library threat is folded into it.
-3. `merge_reworded_threats` runs only when AI threats exist. It makes one embedding call over the names, with the asset's name removed. Each AI threat is compared with the library threats, then with the AI threats kept before it, of the same type id. At cosine ≥ `AI_DUPLICATE_COSINE` (0.98) it is folded. Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
+3. `merge_reworded_threats` runs only when AI threats exist. It makes one embedding call over the names, with the asset's name removed (`embed_texts_to_compare`: plain, both sides alike, never with a query instruction). Each AI threat is compared with the library threats, then with the AI threats kept before it, of the same type id. At cosine ≥ `AI_DUPLICATE_COSINE` (0.98) it is folded. Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
 4. **Re-fit after the merge** (`_keep_on_matching_systems`): each library threat's kinds are checked again with `_fitting`, because an AI twin's kinds may have joined. A kind with no way in its type fits is dropped (`asset_type_mismatch`, stage `merge`, counted as `unfit_after_merge`). `_with_places` recomputes the threat's kinds, systems, impact, confidence and pick from the kinds kept.
 
 **In the example.**
@@ -1317,7 +1330,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 
 **How**
 1. `assign_attackers(snapshot, threats, landscape.sector)` gathers each threat's linked actors: its library record's, or for an AI threat, its matched type's (`linked_actors_by_type`).
-2. For **every** threat it builds the query `"{type name}: {threat name}. {reason} {sector}"` and runs one `snapshot.find_actors(queries, top_k=all actors, allowed_ids=linked)`. That is a hybrid search (5.9) over the linked actors only, with one embedding call for all threats.
+2. For every threat the gate's pick leaves open it builds the query `"{type name}: {threat name}. {reason} {sector}"` and runs one `snapshot.find_actors(queries, top_k=all actors, allowed_ids=linked)`. That is a hybrid search (5.9) over the linked actors only, with one embedding call for all those threats. A pick that decides whatever the ranking ("none fits", or exactly one linked actor of that name) is not ranked (`_pick_decides`); with none left open, no call is made.
 3. `choose_actor(threat, order)` takes the order of ranked linked actors, then any linked actor not ranked:
    - The pick names no one ("none fits") → no attacker, `attacker_check: none_fits`.
    - The pick names a linked actor → that actor, `attacker_check: chosen`, with the gate's `attacker_reason`.
@@ -1426,13 +1439,13 @@ The real record of `e6e2f9ec043f7c21`. Its `path_id` was **checked**: sha256 of 
 
 ### 5.14 Freeze and hand over
 
-> **In plain words:** The plan is saved on the session in one step, together with a full record of why each candidate was left out. A reviewer can always ask "why these scenarios and not others?". The plan also records which AI models and which library version made it. The first six scenarios are then handed to the writing step, four at a time. The handover and the plan are saved together, so the work can never be lost or done twice.
+> **In plain words:** The plan is saved on the session in one step, together with a full record of why each candidate was left out. A reviewer can always ask "why these scenarios and not others?". The plan also records which AI models and which library version made it. The first six scenarios are then handed to the writing step, all six at once. The handover and the plan are saved together, so the work can never be lost or done twice.
 
 **How**
-1. `plan |= {"frozen_at": now, "made_with": _made_with(library_stamp)}`. `made_with` holds `chat_models` (the chat model and any fallback), `embedding_model`, `rerank_model` and the library stamp per table. `prompt_version` is `PLANNER_PROMPT_VERSION` (`planner-5` in the code now).
+1. `plan |= {"frozen_at": now, "made_with": _made_with(library_stamp)}`. `made_with` holds `chat_models` (the chat model and any fallback), `embedding_model`, `rerank_model` and the library stamp per table. `prompt_version` is `PLANNER_PROMPT_VERSION` (`planner-6` in the code now).
 2. `set_and_first_batch(plan["paths"], INITIAL_SET_SIZE)` (default 6) works in two steps:
    - `next_set_paths` takes the best 6 selected, unwritten paths by rank;
-   - `next_paths_to_write` takes up to `Generation.WRITER_BATCH` (4) of them, never-tried first, then by rank, as `[{"path_id", "replaces": null}]`.
+   - `next_paths_to_write` takes up to `Generation.WRITER_BATCH` (6) of them, never-tried first, then by rank, as `[{"path_id", "replaces": null}]`.
 3. `build_plan_trace(findings, plan, len(set))` gives `counts`, `landscape_cut`, `drops` (most telling first, at most 300; `PlanTraceLimits.MAX_DROPS`), `drops_total`, `turns` and `groups` (`_turns_and_groups`):
    - `turns`: how many paths get in through each system, every system in turn order, with 0 when no path gets in through it. When two systems share a name, the alias is added. The asset itself is listed only when a path is on it.
    - `groups`: how many paths cover each group of systems, most common first.
@@ -1444,7 +1457,7 @@ The real record of `e6e2f9ec043f7c21`. Its `path_id` was **checked**: sha256 of 
    - `timings.threats_s`.
 
    The trace joins the same write as `plan_trace`.
-5. **Hand over.** With a first set, `hand_over(lease, "tsg_write_scenarios", changes | {"job.batch", "job.set"})` makes **one fenced write**: everything above plus `status=queued`, `job.task=tsg_write_scenarios`, `job.due_at=now`, `job.attempts=0`, `job.lease_until=null`. It then calls `send_job` on queue `tsg_scenarios` with the **same epoch**. With no path selected, the same write instead ends the session `done` with `last_action.outcome=complete`.
+5. **Hand over.** With a first set, `hand_over(lease, "tsg_write_scenarios", changes | {"job.batch", "job.set"})` makes **one fenced write**: everything above plus `status=queued`, `job.task=tsg_write_scenarios`, `job.due_at=now`, `job.attempts=0`, `job.lease_until=null`. It then calls `send_job` on queue `tsg_scenarios` with the **same epoch**, at the front of the queue (`Worker.NEXT_STAGE_PRIORITY`, section 15). With no path selected, the same write instead ends the session `done` with `last_action.outcome=complete`.
 6. One `planner.funnel` log line carries the counts.
 
 **In the example.**
@@ -1486,10 +1499,11 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 
 | Case | What happens (code) |
 |---|---|
-| AI busy or down | 3 quick retries 0.5, 1 and 2 s apart (`call_with_retries`); a timeout goes straight to the fallback model (`CII_CHAT_FALLBACK_MODEL`). Still down → `Unavailable` → the job is given back and retried after 15, 30, 60 and 120 s (`Lease.RETRY_DELAYS_SECONDS`); on the 5th attempt it fails `unavailable` |
-| Telling the UI (D16) | Each give-back stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan is queued or running. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503, no AI slot free) or `ai_timed_out`; null for a store outage. An AI outage in the evidence search (intelligence on) is told the same way. A hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
+| AI busy or down | 3 quick retries 0.5, 1 and 2 s apart (`call_with_retries`); an HTTP 429 (rate limited) waits and asks the same model again (section 15); a timeout goes straight to the fallback model (`CII_CHAT_FALLBACK_MODEL`). Still down → `Unavailable` → the job is given back and retried after 15, 30, 60 and 120 s (`Lease.RETRY_DELAYS_SECONDS`); on the 5th attempt it fails `unavailable` |
+| Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan is queued or running. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503, no AI slot, request turn or fallback slot free in time) or `ai_timed_out`; null for a store outage. An AI outage in the evidence search (intelligence on) is told the same way. A hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
 | Answer with problems | asked again once with the problems; still wrong on a normal attempt → `Unavailable` (job retried); on the last attempt → that batch or proposal is skipped and planning goes on (`_retry_or_skip`) |
-| Answer cut off, or prompt too long | `TruncatedAiAnswer`: skipped on any attempt, never retried |
+| Answer cut off, or prompt too long | a reply cut off at the task's `max_tokens` is asked once more at the model's full limit (section 15); still cut off, or a prompt too long → `TruncatedAiAnswer`: skipped on any attempt, never retried |
+| Delivery retried or re-sent | the gate and gap-fill answers the job already accepted are reused from `tsg_ai_calls` (5.6) |
 | No batch of any kind answered | `Unavailable` with *"The AI could not answer. Start a new session later."*, retried like an outage; after the 5th attempt the session fails with that message |
 | SQL Server down | the last loaded library keeps serving; only a process's first load fails (`Unavailable`, retried) |
 | MongoDB down at the claim | nothing is owned yet: the same message is retried after 15 s (`_claim_or_ignore`) |
@@ -1504,8 +1518,8 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 
 ## 6. Step 3: the write job
 
-> **In plain words:** The write job turns the plan into scenarios, a few attack paths at a time (at most four
-> together). For each group it first skips anything already written or repeated within this session, looks up
+> **In plain words:** The write job turns the plan into scenarios, a few attack paths at a time (at most six
+> together, so a set of six is written in one round). For each group it first skips anything already written or repeated within this session, looks up
 > real-world evidence once for the whole group, then writes the scenarios side by side and saves each one the
 > moment it is ready. If a service it needs is down, it waits and tries again later rather than write a scenario
 > without its evidence; when the set is done it says whether every scenario was delivered.
@@ -1513,13 +1527,13 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 ```mermaid
 flowchart TB
     A["Claim the lease<br/>tsg_write_scenarios"] --> B["Load run and library<br/>read the switch once"]
-    B --> C["Batch from job.batch<br/>at most 4 paths"]
+    B --> C["Batch from job.batch<br/>at most 6 paths"]
     C --> D["Skip paths already written"]
     D --> E["Pre-AI repeat check<br/>(not on a regenerate)"]
     E --> F["One evidence search for the batch<br/>(intelligence on, section 7)"]
     F --> G["Hold back paths<br/>whose search failed"]
-    G --> H["Write up to 4 at once<br/>save each as it ends"]
-    H --> I["Send tsg_map_controls once"]
+    G --> H["Write up to 6 at once<br/>save each as it ends,<br/>sending tsg_map_controls"]
+    H --> I["Send tsg_map_controls<br/>once more for the batch"]
     I --> J{"A path held by an outage?"}
     J -- "yes, not the last try" --> R["Give the job back:<br/>retried later"]
     J -- "last try, others served" --> FC["A failure card<br/>for each held path"]
@@ -1546,7 +1560,7 @@ checks are §8; saving one scenario is §9.
    (`_precedent` finds no entry). That is known only after the search (step 7).
 5. **The batch** is `run["job"]["batch"]`. `next_paths_to_write` (`app/domain/scenario/plan.py`) filled it: the
    set's paths that are selected, not served and not given up, never-tried first, then by rank, at most
-   `Generation.WRITER_BATCH` = 4. The plan job sets the first set and batch (`set_and_first_batch`, §5.14); each later
+   `Generation.WRITER_BATCH` = 6. The plan job sets the first set and batch (`set_and_first_batch`, §5.14); each later
    batch comes from `PlanProgress.continue_or_finish` (step 11); a next set comes from the API.
 6. **Skip what is written.** `PathSaver.to_write` (`app/worker/scenario/path_writing.py`): a path whose `done`
    scenario an earlier delivery already saved is marked served, with no AI call. On a regenerate,
@@ -1562,11 +1576,13 @@ checks are §8; saving one scenario is §9.
    with a `failure`, or a search that named no snapshot, the path is not written now. It joins the batch's
    outages as `Unavailable("The evidence search could not be made for this attack path: …")`.
 10. **Write in parallel, save as each ends.** `write_at_once` runs `PathWriter.write` (brief, writer and checks,
-    §8) for each path in a `ThreadPoolExecutor` of `min(4, paths)` threads. Each outcome is saved in the job's own
-    thread by `PathSaver.save` as soon as it completes (§9). An outage in one path is collected, never raised
-    there.
+    §8) for each path in a `ThreadPoolExecutor` of `min(6, paths)` threads (`Generation.WRITER_BATCH`). Each
+    outcome is saved in the job's own thread by `PathSaver.save` as soon as it completes (§9), and a saved
+    scenario that serves its path sends `tsg_map_controls` at once (`BatchWriter._save`), so its controls are
+    mapped while the other paths are still being written. An outage in one path is collected, never raised there.
 11. **After the batch.**
-    - `send_job(tsg_map_controls)` once, if any path of the batch is served (§10).
+    - `send_job(tsg_map_controls)` once more, if any path of the batch is served (§10): a delivery that died
+      after saving never leaves its controls to the sweep.
     - `_settle_outages`: the job is given back and retried (after 15, 30, 60, 120 s). On the last attempt
       (`Lease.MAX_ATTEMPTS` = 5), when every outage is `Unavailable` and another path of the batch was served (or
       it is a regenerate), each waiting path is saved as a failure card `unavailable`; an evidence outage keeps its
@@ -1716,7 +1732,7 @@ flowchart TB
 | Exact match | `HybridIndex.search` | A row whose tokenized text equals the tokenized query comes first, whatever its scores | not visible in the stored search |
 | Embedding model | `CII_EMBEDDING_MODEL` (required, no default); `embed_search_queries` (`app/ai/embeddings.py`) | One call per batch for every search with at least one allowed row; query vectors cached `Cache.QUERY_VECTOR_DAYS = 14` days in `tsg_query_vectors` (only the text's hash is stored) | `openai/text-embedding-3-large` (`plan.made_with`) |
 | Reranker model | `CII_RERANK_MODEL` (required); `CII_RERANK_BASE_URL` default `""` = a local model; `RerankModel.score_relevance` (`app/ai/rerank.py`) | Remote: one 0-1 score per document, checked, × 100. Local: `CrossEncoder.predict` (a sigmoid for a one-label model) × 100, 6 documents per turn (`AiLimits.LOCAL_RERANK_TURN_DOCUMENTS`). The scorer reads `scoring_text(hit)`: a technique's name and description without its id and its Tactics / Platforms / Mitigations lists, a sub-technique's name after its parent's (for example "Unauthorized Message: Command Message"); other kinds whole | local `…/bge-reranker-v2-m3` (`intel_search.rerank_model`) |
-| Rerank parallelism | `EvidenceLimits.SEARCHES_AT_ONCE = 8`: at most 8 threads per batch (one per threat, `run_in_parallel`); `rerank_gate_for` (`app/domain/external_intelligence/rerank_gate.py`): remote `RerankGateLimits.RERANKS_AT_ONCE = 4` places and `GATE_WAIT_SECONDS = 60`; local `LOCAL_RERANKS_AT_ONCE = 1`, no time limit; the lease is checked every 2 s | A threat waiting longer than 60 s for a remote place gets `Unavailable`; a lost lease ends any wait | batch 2: 2 threads; 1 local place |
+| Rerank parallelism | `EvidenceLimits.SEARCHES_AT_ONCE = 8`: at most 8 threads per batch (one per threat, `run_in_parallel`); `rerank_gate_for` (`app/domain/external_intelligence/rerank_gate.py`): remote `RerankGateLimits.RERANKS_AT_ONCE = 6` places and `GATE_WAIT_SECONDS = 300`; local `LOCAL_RERANKS_AT_ONCE = 1`, no time limit; the lease is checked every 2 s. `EvidenceFinder._rerank` keeps each answered rerank by snapshot, model, query and candidates (`EvidenceLimits.RERANKS_KEPT` = 2,000 per process, oldest dropped first) | A threat waiting longer than 300 s for a remote place gets `Unavailable` (its rerank also waits its turn under the reranker's own `CII_RERANK_REQUESTS_PER_MINUTE`); a lost lease ends any wait. The same rerank asked again (another path of the threat, a later set, a retry, another run) is taken from memory, with no call | batch 2: 2 threads; 1 local place |
 | Threshold | `EVIDENCE_SIMILARITY_THRESHOLD` (`Settings.evidence_similarity_threshold`, `app/core/config.py`): code default **1.0**, range 0-100; outside dev with intelligence on it must be set or start-up stops (`refuse_unset_evidence_threshold`); `.env.example` 30 for the local bge-reranker-v2-m3, calibrated 2026-10-19 on 36 labelled threats with the clean scoring text (`EVIDENCE_THRESHOLD_CALIBRATED_ON`); UAT's qwen3 reranker needs its own value | First pass: a candidate scoring under it is left out (`below_threshold`) | **20.0** in this run (`intel_search.threshold`); 30 from now on in dev |
 | Recorded products | `RecordedFields` (`app/core/constants/evidence.py`): vendor `vendor_name`; product `technology_used`, `operating_system`; version `product_version`, `firmware_version`, `software_version` | Read from the asset's facts (`asset_context`) and each of the threat's systems (`_recorded`); used only for vulnerabilities and advisories (product link, applicability) | none of the six fields on the asset or its four systems → any vulnerability or advisory gets `no_product_link` |
 | Per threat | `EVIDENCE_KEPT_PER_THREAT` (`Settings.evidence_kept_per_threat`, `app/core/config.py`): default **3**, range 1-10; `choose_within_limit` | Best N (3 by default); then a later entry of a missing kind replaces the lowest-scored entry of a kind held more than once | 1 kept |
@@ -2117,7 +2133,7 @@ says nothing, rather than invent a precedent.
 
 All of this runs for one attack path inside one pool thread. `write_at_once`
 (`app/worker/scenario/write_job.py`) runs `PathWriter.write` (`app/worker/scenario/path_writing.py`) for up to
-4 paths at once (`Generation.WRITER_BATCH`), one thread each. When a path's work is done, its result goes back to
+6 paths at once (`Generation.WRITER_BATCH`), one thread each. When a path's work is done, its result goes back to
 the job's own thread to be saved (section 9).
 
 ```mermaid
@@ -2292,8 +2308,8 @@ Where each key came from:
 4. **Temperature.** `CHAT_TEMPERATURES` (`app/core/constants/common.py`) maps `write_scenario` to `None`, so
    `_build_request_options` sends no temperature and the provider's default applies. The other tasks
    (relevance gate, gap fill, plan check, remediation plan) are sent 0.0. The model's profile adds the rest; for
-   `openai/Kimi-K2.6` (`app/ai/profiles.py`): `max_tokens` 12,288, a 90 s timeout, JSON mode and
-   `reasoning_effort` "none".
+   `openai/Kimi-K2.6` (`app/ai/profiles.py`): a 90 s timeout, JSON mode and `reasoning_effort` "none";
+   `max_tokens` is the task's 3,072 (`CHAT_MAX_OUTPUT_TOKENS`), or the model's 12,288 while its thinking is on.
 5. **The prompt's stable structure.** `writer.txt` has uncommitted edits by the owner, so only the parts that
    stay the same are described here:
    - Exactly eight JSON fields, nothing else (table below).
@@ -2389,15 +2405,23 @@ The writer's answer (pretty-printed; the two long statements trimmed with `…`)
    `generation_failed` (section 9).
 6. **The `ChatModel` wrapper**, briefly:
    - A prompt longer than the smallest `max_input_chars` raises `TruncatedAiAnswer` before any call.
-   - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of `CII_MAX_CONCURRENT_AI_CALLS` (16),
-     shared by every pod. A worker waits up to 300 s (`AiLimits.WORKER_SLOT_WAIT_SECONDS`), else `Unavailable`.
+   - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of `CII_MAX_CONCURRENT_AI_CALLS` (16; 0 in
+     UAT, no limit), shared by every pod. A worker waits up to 300 s (`AiLimits.WORKER_SLOT_WAIT_SECONDS`), else
+     `Unavailable`.
+   - Every request, each retry included, first waits its turn under its model's own limit:
+     `CII_CHAT_REQUESTS_PER_MINUTE`, or the fallback's `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE` (`AiRequestRate`,
+     section 15).
    - `_call_first_available_model` tries `CII_CHAT_MODEL`, then `CII_CHAT_FALLBACK_MODEL` only when the first
-     is busy or down. Each model uses its own profile.
+     is busy or down, within `CII_MAX_CONCURRENT_FALLBACK_CALLS`. A model that timed out, or stayed rate-limited,
+     is asked last for the next 120 s in that process (`AiLimits.MODEL_COOL_DOWN_SECONDS`). Each model uses its own profile.
    - `call_with_retries` (`app/ai/common.py`) makes 3 quick retries, 0.5, 1 and 2 s apart, when the provider is
-     busy or unreachable. A timeout is not retried there; the fallback model answers instead.
-   - An answer cut off at its length limit (`finish_reason` "length") raises `TruncatedAiAnswer`, which also
-     becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused key or an
-     unknown model fails the whole job (`ai_misconfigured`).
+     busy or unreachable; an HTTP 429 waits longer and asks the same model again. A timeout is not retried
+     there; the fallback model answers instead.
+   - `max_tokens` is the task's own cap (`CHAT_MAX_OUTPUT_TOKENS`: `write_scenario` 3,072, `plan_check` 2,048),
+     the model's limit while its thinking is on. An answer cut off at the cap (`finish_reason` "length", outcome
+     `truncated`) is asked once more at the model's full limit; cut off again, it raises `TruncatedAiAnswer`,
+     which also becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused
+     key or an unknown model fails the whole job (`ai_misconfigured`).
    - Every answered call is copied to `tsg_ai_calls` (14 days).
 7. An outage (`Unavailable`) is raised out of `PathWriter.write`: the path waits and the job is retried
    (section 6). `JobFailed` and `LeaseLost` are raised too. Any other error in this one path becomes a
@@ -2813,23 +2837,23 @@ scenarios that tell the same threat as the same kind of attack.
 > intelligence writes or invents a control: every control comes from the library, and the exact search,
 > models and library version are recorded with it.
 
-**Task:** `tsg_map_controls` on queue `tsg_scenarios` → `map_controls` (`app/worker/scenario/tasks.py`) →
-`ControlsJob.map_threat_scenario_controls` and `RunControls.map_all` (`app/worker/scenario/controls_job.py`) →
-`ControlMapper.map_controls` (`app/domain/scenario/controls.py`).
+**Task:** `tsg_map_controls` on queue `tsg_controls` (its own worker, `worker-controls`) → `map_controls`
+(`app/worker/scenario/tasks.py`) → `ControlsJob.map_threat_scenario_controls` and `RunControls.map_all`
+(`app/worker/scenario/controls_job.py`) → `ControlMapper.map_controls` (`app/domain/scenario/controls.py`).
 
 ```mermaid
 flowchart TB
-    M["tsg_map_controls<br/>after a write batch, a hand-over,<br/>the sweep, or a resume"] --> L{"Session's delivery lease free?<br/>claim_controls_delivery"}
+    M["tsg_map_controls<br/>as each scenario is saved, after a write batch,<br/>a hand-over, the sweep, or a resume"] --> L{"Session's delivery lease free?<br/>claim_controls_delivery"}
     L -- no --> X["Return 0<br/>the holder maps it"]
-    L -- yes --> C{"Oldest waiting scenario?<br/>claim_scenario_controls"}
+    L -- yes --> C{"Waiting scenarios?<br/>claim up to 6, oldest first<br/>(1 on a local reranker)"}
     C -- "none waits" --> RL["Release the lease"]
-    C -- found --> F["Asset-type filter<br/>place_asset_types"]
+    C -- found --> F["Each claimed scenario at once:<br/>asset-type filter, place_asset_types"]
     F --> Q["Query text<br/>control_query"]
     Q --> S["Hybrid search<br/>CONTROL_CANDIDATES"]
     S --> R["Rerank 0-100"]
     R --> K["select_controls<br/>strong at or above the threshold, at most MAX_CONTROLS<br/>else fallback up to MIN_CONTROLS"]
     K --> V["Save controls_record<br/>controls.status done"]
-    V --> N{"4 mapped this turn?"}
+    V --> N{"6 mapped this turn?"}
     N -- no --> C
     N -- yes --> HO["Hand over:<br/>send tsg_map_controls again"]
 ```
@@ -2841,10 +2865,13 @@ flowchart TB
 > worker stops, its claim runs out after two minutes and the work is picked up again.
 
 **How**
-1. `tsg_map_controls` is sent (`send_job(TaskName.MAP_CONTROLS, …)`) from five places. The epoch it carries
+1. `tsg_map_controls` is sent (`send_job(TaskName.MAP_CONTROLS, …)`) from six places. The epoch it carries
    is never checked for controls.
-   - `BatchWriter.write` (`app/worker/scenario/write_job.py`): once at the end of a write batch when any path
-     of the batch is served (`_served_paths`), before an outage can raise. A regenerate batch counts too.
+   - `BatchWriter._save` (`app/worker/scenario/write_job.py`): as each scenario that serves its path is saved,
+     while the batch's other paths are still being written (a message that finds the session being mapped
+     costs one update).
+   - `BatchWriter.write`: once more at the end of a write batch when any path of the batch is served
+     (`_served_paths`), before an outage can raise. A regenerate batch counts too.
    - `RunControls.map_all`: when a delivery used its whole turn (the hand-over, step 4).
    - `RunControls._release`: when a scenario was written while another delivery held the session.
    - `ControlsJob.retry_stalled_controls`: the sweep (10.5).
@@ -2857,9 +2884,13 @@ flowchart TB
    120 s}` (`Controls.LEASE_SECONDS`) in one conditional update. It wins only when the lease is free, expired,
    handed over (`task_id` null) or already its own, and never for a cancelled session. Otherwise it returns
    0 and does nothing: the holder maps every waiting scenario.
-3. `RunControls.map_all` loops up to `Controls.PER_DELIVERY` (= `Generation.WRITER_BATCH`, 4) times:
+3. `RunControls.map_all` maps up to `Controls.PER_DELIVERY` (= `Generation.WRITER_BATCH`, 6) scenarios a turn.
+   With a remote reranker (`CII_RERANK_BASE_URL` set) it claims up to 6 at once and maps them in parallel
+   (`run_in_parallel`); the local CPU model predicts one at a time, so there it claims and maps one by one. All
+   are claimed before any is mapped, so a scenario an outage gives back is never claimed again in the same turn,
+   and a failure is raised only once the scenarios beside it are saved.
    1. `ThreatScenarioRepository.claim_scenario_controls` claims the session's **oldest** waiting scenario
-      (sorted by `created_at`). Waiting means `controls.status` is `queued`, or `running` with an expired
+      (sorted by `created_at`), once per scenario of the turn. Waiting means `controls.status` is `queued`, or `running` with an expired
       lease and attempts left. Only written (`done`) versions are mapped: a path's newest version, or an
       older one a reviewer accepted (`MAPPED_VERSIONS`). The claim sets `running`, `task_id`, a 120 s lease, `last_attempt_at` and
       `attempts + 1`.
@@ -2868,8 +2899,8 @@ flowchart TB
       `background_reranks()` lets a waiting foreground rerank go first on a local reranker.
    3. After each scenario, `update_scenario_session_counts(controls_seconds=…)` adds the time to
       `timings.controls_s`, and `publish_session_status` sends a live update.
-   4. Nothing left to claim: `_release` ends the lease, and sends a new message if a scenario is waiting.
-4. After 4 scenarios, `update_controls_delivery(hand_over=True)` leaves the lease with no holder for 600 s
+   4. Fewer claimed than asked for: `_release` ends the lease, and sends a new message if a scenario is waiting.
+4. After 6 scenarios, `update_controls_delivery(hand_over=True)` leaves the lease with no holder for 600 s
    (`Controls.RESEND_QUEUED_AFTER_SECONDS`) and sends a new `tsg_map_controls`. The session's next turn
    queues behind other work.
 5. One scenario's failure (`_map_one`):
@@ -3043,10 +3074,15 @@ Where each line comes from:
      (1 decimal), `match`, `tier`, `rationale`;
    - `warning`, `shortfall`, `left_out_over_max`;
    - `query`: the text that was searched and reranked;
-   - `made_with`: `rerank_model`, `embedding_model`, `library` (the `Control_Library` stamp), `threshold`,
-     `candidates`, `min_controls`, `max_controls`, `query_shortened`, `mitigations`, `ai_controls`.
-4. The results routes show the controls, but not `controls.query` or `controls.made_with` (the `shown`
-   field list). Those stay in MongoDB, for audit.
+   - `shortlist[]`: every candidate reranked, `control_id` and `score` (0-100), which the remediation plan
+     reuses for its alternatives;
+   - `made_with`: `rerank_model`, `embedding_model`, `query_instruction` (what the query was embedded after;
+     null for a model that takes none), `library` (the `Control_Library` stamp), `threshold`, `candidates`,
+     `min_controls`, `max_controls`, `query_shortened`, `mitigations`, `ai_controls`. The shortlist is reused
+     only while the query, `rerank_model`, `embedding_model`, `query_instruction`, `library`, `candidates`
+     and `ai_controls` match.
+4. The results routes show the controls, but not `controls.query`, `controls.shortlist` or
+   `controls.made_with` (the `shown` field list). Those stay in MongoDB, for audit.
 
 **In the example**
 
@@ -3107,7 +3143,7 @@ Hand-written scenarios (`source` `manual`) are never swept (`SWEPT`).
 - The example's values are read from the scenario's stored `made_with`, which records the settings of the
   laptop that ran it. They differ from the code defaults.
 - Fixed in code (`Controls`, `app/core/constants/planning.py`): `QUERY_MAX_CHARS` 4000, `QUERY_MITIGATIONS`
-  6, `LEASE_SECONDS` 120, `PER_DELIVERY` 4, `MAX_ATTEMPTS` 5, `SWEEP_EVERY_SECONDS` 300,
+  6, `LEASE_SECONDS` 120, `PER_DELIVERY` 6, `MAX_ATTEMPTS` 5, `SWEEP_EVERY_SECONDS` 300,
   `RESEND_QUEUED_AFTER_SECONDS` 600, `RETRY_FAILED_AFTER_SECONDS` 1800.
 
 **Why this matters:** every control on a scenario is a real library control with its score, the rule that
@@ -3357,7 +3393,7 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
 
 **How: the worker** (the write job, with these differences)
 
-8. `BatchWriter.write`: the whole regenerate batch is one job that never hands over. Up to 4 paths are
+8. `BatchWriter.write`: the whole regenerate batch is one job that never hands over. Up to 6 paths are
    written at once (`write_at_once`). There is no pre-AI repeat check.
 9. `PathSaver._versions_to_write` reads every written version of the target paths, in version order.
    - A target whose next version (`scenario_id(session, path, version + 1)`) is not saved yet is written.
@@ -3434,7 +3470,7 @@ The matching audit rows, in order:
    - `next_set_paths`: the selected paths still to write (`is_still_to_write`: not served, not given up),
      sorted by `rank`, the first `NEXT_SET_SIZE` (default 6);
    - `next_paths_to_write`: the first batch of that set, never-tried paths first, then by rank, at most
-     `Generation.WRITER_BATCH` (4).
+     `Generation.WRITER_BATCH` (6).
 4. Paths found → `_queue_write_job(…, RunActionKind.NEXT_SET, batch, asked)`, as for a regenerate, except:
    - `job.set` holds the set and `job.batch` the first batch;
    - `last_next_set {outcome: running, requested, delivered: null, reason: null, remaining: null, epoch}`;
@@ -3535,7 +3571,7 @@ one scenario, and the version cap bounds the cost of asking for rewrites.
 ```mermaid
 flowchart LR
     RQ["POST /v1/remediation<br/>accepted scenario, or a hand-written one"] --> SV["Save plan request<br/>tsg_remediations, version 1"]
-    SV --> JB["tsg_write_plan<br/>(queue tsg_scenarios)"]
+    SV --> JB["tsg_write_plan<br/>(queue tsg_remediation)"]
     JB --> IN["Build the input<br/>attacker and threat proposal for a hand-written scenario,<br/>map controls if none usable yet, affected systems,<br/>status per system, 5 library alternatives"]
     IN --> AIP["Plan writer (AI)<br/>checks each control: retained / replaced / flagged,<br/>one call, one re-ask for a fault"]
     AIP --> FIX["Code fixes the plan<br/>gaps only, coverage, control_assessment, systems,<br/>unresolved gaps, dates, critical path, warnings"]
@@ -3548,10 +3584,12 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
 1. **Request:** `POST /v1/remediation` (202). With `is_manual=false` it needs an accepted generated
    scenario. With `is_manual=true` it takes a **hand-written scenario** (with an `Idempotency-Key`): it is
    checked against the library, saved already accepted, and needs no evidence. One plan per scenario.
-2. **Job:** `tsg_write_plan` (leased; the version number is its epoch). It completes the inputs. For a
+2. **Job:** `tsg_write_plan` on queue `tsg_remediation` (its own worker, `worker-remediation`; leased; the version
+   number is its epoch). It completes the inputs. For a
    hand-written scenario it ranks the attackers and proposes a new threat wording to the curators
    (`tsg_ResolveThreat`). If the scenario has no usable mapped controls (none, or only retired ones), it maps
-   them; when another job is mapping them, the plan job is given back and tries again (no attempt used). It
+   them itself, inline; when another job is mapping them, the plan job is given back and tries again 15 s later
+   (no attempt used). It
    then works out where the risk is and where each control already stands (D19, D20):
    - **Affected systems:** every supporting system linked to the asset when `all_supporting_systems_applicable`
      is 1 (the run's `asset_systems`, as of its start; a run stored before D20: its own systems), else the
@@ -3565,8 +3603,9 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
      takes every control; none fits, every affected system).
    - **Status:** `implemented` (on every one of those systems), `partially_implemented` (on some),
      `not_implemented` (on none, or not in the register).
-   - **Alternatives:** one more library search, with the mapping's search and reranker, for 5 controls not
-     already identified.
+   - **Alternatives:** the 5 best controls not already identified, from the mapping's reranked `shortlist`
+     while its query, `Control_Library` stamp, models, candidate count and AI rule still match; else one more
+     library search with the mapping's search and reranker.
 
    It stores the input as the version's snapshot.
 3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-4`). It checks every identified
@@ -3576,8 +3615,6 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    `total_days` when the request gives one. A first answer is asked again once when it:
    - leaves a check or a required gap out, or replaces with a code outside the alternatives;
    - lists an implemented control;
-   - restates the schedule in `action_plan` (order, parallel work, days, dates, critical path, window or
-     deadline) or mentions the library;
    - describes a partial control as new or a missing one as extended;
    - (every control implemented) has an interim action.
 
@@ -3591,7 +3628,7 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    `control_assessment` lists every identified control and chosen replacement with its status, check, reason
    and systems; `unresolved_gaps` lists flagged controls, one `no_validated_control` entry when no identified control or
    replacement passed the check, and the AI's uncovered risks (the systems a control still needs are on its
-   `required_systems`); an `action_plan` sentence still stating the schedule or the library is dropped; the title is code's,
+   `required_systems`); an `action_plan` sentence stating the schedule or the library is dropped, never asked again; the title is code's,
    "<domains> Remediation" (covered: "Verification") from the controls' domains; schedule dates and the critical
    path. Example: affected systems A, B and C, DoS protection in the register on A only →
    `partially_implemented`, already on A, still needed on B and C.
@@ -3648,20 +3685,56 @@ stateDiagram-v2
   write is fenced on the record's id, `running` status, task id, epoch and attempt. A stale or duplicate
   delivery finds nothing to claim and is ignored. A delivery whose job was cancelled, deleted or taken over
   raises `LeaseLost` at its next write or AI call, and stops without writing.
+- **Queue order:** each queue is two Redis lists, served in priority order. A run's next stage (`hand_over`), a
+  retry and a reaper re-send go first (`Worker.NEXT_STAGE_PRIORITY`, 0); every other send waits behind them
+  (`Worker.NEW_WORK_PRIORITY`, 3). So a run already started finishes before new runs take the workers.
+  `tsg_job_queue_wait_seconds{task}` records how long each claimed job waited after it was due.
 - **Retries:** temporary errors (AI outage, MongoDB or Redis down, an SQL operation in progress) give the
   job back and retry after 15, 30, 60, 120 s; the 5th attempt fails it as `unavailable`. Refusals (a
   `JobFailed`, for example `actor_library_empty`, `ai_misconfigured`, `ai_answer_unusable`) fail at once,
-  never retried.
+  never retried. A job waiting for another job's work (a plan waiting for its scenario's control mapping) is
+  given back without using an attempt and looks again every 15 s. A wait is not an outage: it logs
+  `job.waiting` (info, not the `job.retry_scheduled` warning), counts as `waiting` in `tsg_jobs_total` (never
+  `retry`), adds no job time to `tsg_job_seconds` and leaves no retry notice. A retry delivered early (Celery counts its
+  delay on its own pod's clock, the job's due time is MongoDB's) is sent again for its due time instead of
+  dropped, when that is at most 125 s away (`Lease.RESEND_EARLY_WITHIN_SECONDS`); nothing is written, so no
+  attempt is used, and the log line `job.not_claimed` says `sent_again`.
 - **Reaper** (`tsg_reap`, beat every 60 s): re-queues a job whose lease expired (fails it after 5 attempts,
   `job_abandoned`), and re-sends a job still queued after 120 s when its queue is empty (or after 15 minutes
   anyway); a job that never starts after 5 sends fails.
 - **AI calls:** LiteLLM for chat and embeddings, and for rerank when `CII_RERANK_BASE_URL` is set (empty in
-  dev: a local rerank model). Three quick retries (0.5, 1, 2 s) when the provider is busy or unreachable or
-  the answer came back short; a timeout is not retried there and goes to the fallback model
-  (`CII_CHAT_FALLBACK_MODEL`). An unreadable answer is asked again once. At most
-  `CII_MAX_CONCURRENT_AI_CALLS` (16) calls run at once across all pods (Redis slots). Every chat call that
-  gets an answer is copied to `tsg_ai_calls`; every AI call (chat, embedding, rerank) is counted in
-  `tsg_ai_calls_total`.
+  dev: a local rerank model). In UAT one gateway key serves chat, embedding and rerank
+  for every pod, and each model has its own requests-a-minute limit on it (kimi-k2.5: 192).
+  - **Request rate:** every request, each retry included, first waits its turn at its model's own limiter:
+    N a minute spaces that model's requests 60 / N s apart across all pods (`AiRequestRate`, one Redis key per
+    model, `tsg:ai_next_request:{model}`, timed by the Redis server's clock), so one model's queue never delays
+    another's. `CII_CHAT_REQUESTS_PER_MINUTE` (UAT: 180, a margin under kimi-k2.5's 192, assuming nothing else
+    uses kimi on the key), `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
+    `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0 until the gateway admin gives each model's limit). A turn further
+    away than the process waits (a worker 300 s, the API 30 s) is an outage (`ai_busy`); a job whose lease is
+    lost stops waiting. `tsg_ai_request_rate_wait_seconds{model}` records every request's wait, 0 included.
+    0 = no limit.
+  - **At once:** at most `CII_MAX_CONCURRENT_AI_CALLS` calls across all pods (Redis slots, `tsg:ai_slots`): 16
+    by default, 0 (no limit) in UAT, where each model's request rate is the limit.
+  - **Busy or down:** three quick retries (0.5, 1, 2 s) when the provider is busy or unreachable or the answer
+    came back short. An HTTP 429 (rate limited, counted in `tsg_ai_rate_limited_total{model}`) asks the same
+    model again, since the fallback takes 55-99 s: after its Retry-After (at most 15 s), else after 2, 5, 10
+    and 15 s (±20 %), at most 35 s of waits in all; the API, which answers a caller, retries a 429 as any busy
+    answer. A timeout is not retried there.
+  - **Fallback:** `CII_CHAT_FALLBACK_MODEL` answers when the first model is busy, down or timed out, at most
+    `CII_MAX_CONCURRENT_FALLBACK_CALLS` calls at once across all pods (Redis slots `tsg:ai_fallback_slots`; 16
+    in UAT, 0 = no limit; the first model is never capped by it). A model that timed out, or stayed
+    rate-limited through its waits, is asked last for the next 120 s in that process
+    (`AiLimits.MODEL_COOL_DOWN_SECONDS`), so its calls do not each wait for it first.
+  - **Answer length:** each chat task asks for at most its own `max_tokens` (`CHAT_MAX_OUTPUT_TOKENS`:
+    `relevance_gate` 8,192, `service_mapper` 4,096, `write_scenario` 3,072, `plan_check` 2,048, about twice the
+    most an answered call used); other tasks, and a model whose thinking is on, ask for the model's limit. An
+    answer cut off at its cap is recorded with outcome `truncated` and asked once more at the model's limit.
+  - **Answers:** an unreadable answer is asked again once. Every chat call that gets an answer is copied to
+    `tsg_ai_calls`, where any later delivery of a plan job finds its accepted answers (5.6); every AI call
+    (chat, embedding, rerank) is counted in `tsg_ai_calls_total`.
+  - **Embeddings:** processes building the same index at once share its batches: each sends them in its own
+    order and skips a batch another process has already stored.
 - **Cancel and delete** are fenced the same way: a cancel stops the job at its next renewal, AI call or save;
   a delete is refused with 409 `cancel_first` while anything of the session is queued or running.
 
@@ -3670,20 +3743,25 @@ stateDiagram-v2
 ## 16. Operations: health, logs, metrics, deployment
 
 - **Health:** `GET /health` (always 200) and `GET /ready` (200 only when MongoDB and Redis answer and each
-  queue `tsg_threats`, `tsg_scenarios`, `tsg_maintenance` has a live worker; SQL Server is reported).
-  Workers send a heartbeat to Redis every 20 s.
+  routed queue, `tsg_threats`, `tsg_scenarios`, `tsg_controls`, `tsg_remediation`, `tsg_servicemapper` and
+  `tsg_maintenance`, has a live worker; SQL Server is reported). Workers send a heartbeat to Redis every 20 s.
+  OpenShift checks each worker with `celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10`
+  (startup and liveness): `app/probe.py` holds only the broker settings, so a check costs about 36 MB and
+  0.3 s of CPU, where loading the whole worker app cost about 230 MB and 5-6 s.
 - **Logs:** one JSON line per event (structlog) to stdout, secrets masked; Celery's and the libraries' lines
   too, a traceback inside its line; locally also to `logs/<role>.log`. Alloy ships them to Loki (kept 7 days).
   Every API call writes one `http.request` line (path, status, time, caller, request id; for an error, the
   error answer in full: code, detail, reason). Every job that fails for good writes one `job.failed` line
   (job type, run id, code, reason, message); a bug also writes `job.unexpected_error` with its traceback.
 - **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; the local
-  maintenance worker uses 9102): HTTP requests, jobs by task and outcome, runs, scenarios by outcome,
-  decisions, plans, AI calls, AI outages by reason (`tsg_ai_outages_total`), tokens and seconds, dependencies
-  up, workers online, AI slots, audit and library-check failures.
+  maintenance worker uses 9102): HTTP requests, jobs by task and outcome, how long each job waited in its
+  queue (`tsg_job_queue_wait_seconds`), runs, scenarios by outcome, decisions, plans, AI calls, AI outages by
+  reason (`tsg_ai_outages_total`), HTTP 429 answers (`tsg_ai_rate_limited_total`), each request's wait for its
+  model's turn (`tsg_ai_request_rate_wait_seconds{model}`), tokens and seconds, dependencies up, workers online, AI slots,
+  audit and library-check failures.
 - **Alerts** (`observability/prometheus/rules.yml`): API errors, API bugs (500) and latency, failing jobs, the
   reaper, queue backlog and unknown queue depth, missing workers, stores down, the AI error rate, the AI not
-  answering (by reason) and AI slots saturated, audit-write and library-check failures, scrape targets down,
+  answering (by reason), AI slots saturated and a model's AI requests waiting long for their turn, audit-write and library-check failures, scrape targets down,
   and pods (not starting, restarting, out of memory). Each has a plain summary and a description saying what
   to do. Alertmanager has no receiver yet.
 - **Seeing jobs:** `GET /v1/admin/jobs` (admin key) lists every job of every kind (runs, plans, service
@@ -3702,17 +3780,22 @@ stateDiagram-v2
   jobs and failed API calls; what the workers are doing (with "Jobs now"); what is slow; and "Follow one run
   or request": every id on the page is a link to all log lines of that run or request. Flower shows the
   Celery tasks.
-- **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the worker
-  (`tsg_threats,tsg_scenarios`), the maintenance worker and beat, starts the monitoring tools, and waits for
-  `/ready`. `.\run.ps1 stop` stops them cleanly.
+- **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the job worker
+  (`tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation`), the service-mapper worker (`tsg_servicemapper`), the
+  maintenance worker and beat, starts the monitoring tools, and waits for `/ready`. `.\run.ps1 stop` stops them
+  cleanly.
 - **OpenShift:** plain YAML applied with `oc apply -f` (D25). `deploy/deploy_threatgen.yaml` runs the API
   (2 replicas), one worker per queue and beat in project `ai-threatgen`; `deploy/deploy_remediation.yaml` adds a
-  second worker for every queue in project `ai-remediation`; `deploy/deploy_common.yaml` runs the monitoring and
+  twin of every worker in project `ai-remediation`. The workers (D29; threads, CPU and memory limits):
+  `worker-threats` 2, 1 CPU, 1536Mi; `worker-scenarios` 2, 1 CPU, 2Gi (the only one holding the evidence
+  index); `worker-controls` 1, 250m, 1Gi; `worker-remediation` 2, 500m, 1Gi; `worker-service-mapper` 2, 500m,
+  1Gi; `worker-maintenance` 3, 250m, 1536Mi; the API 750m, 1Gi each, beat 250m, 512Mi. The image runs numpy's maths
+  libraries on one thread (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, `Dockerfile`). `deploy/deploy_common.yaml` runs the monitoring and
   Flower in project `ai-common`, which TSG shares with the chatbot (D24). Settings are `deploy/configmap.yaml`
   (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
   (Secret `tsg-secrets`, copied from `deploy/secrets.example.yaml`, never committed); network rules are
   `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
-  settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each rollout awaited.
+  settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each project's rollouts awaited by their `part-of` label.
   `deploy/DEPLOYMENT_GUIDE.md` has every step and check.
 
 ---
@@ -3749,7 +3832,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | MongoDB `tsg_embeddings`, `tsg_query_vectors` | vector cache |
 | MongoDB `tsg_api_clients`, `tsg_admin_jobs`, `tsg_audit`, `tsg_ai_calls`, `tsg_sql_operations` | keys, admin jobs, audit, AI call log, SQL write safety |
 | SQL Server | threat and control library, asset context, curation (stored procedures only) |
-| Redis | Celery broker (`tsg:` prefix), live events, AI slots, worker heartbeats |
+| Redis | Celery broker (`tsg:` prefix, two lists per queue: next stages and retries first, then new work), live events, AI slots and request rate, worker heartbeats |
 
 ### 17.4 Key settings
 | Setting | Default | Controls |
@@ -3768,7 +3851,10 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `EVIDENCE_KEPT_PER_THREAT` | 3 (1-10) | intelligence records kept per threat; the writer sees them all and cites one (section 7.3) |
 | `THREAT_CONTEXT_COUNTRY` | United Arab Emirates | the country an evidence story reads |
 | `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5) |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 16 | AI calls at once, all pods |
+| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0, no limit) | AI calls at once, all pods |
+| `CII_CHAT_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 180) | requests a minute to `CII_CHAT_MODEL`, all pods, retries included: that model's own limit, kimi-k2.5's 192 in UAT (section 15) |
+| `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the fallback chat model, the embedding model and the reranker, each its own |
+| `CII_MAX_CONCURRENT_FALLBACK_CALLS` | 0, no limit (UAT: 16) | calls at once to the fallback chat model, all pods |
 | `CII_CHAT_MODEL`, `CII_CHAT_FALLBACK_MODEL` | - | the chat model and its fallback |
 | `CII_CHAT_MODEL_THINKING`, `CII_CHAT_FALLBACK_MODEL_THINKING` | false | each chat model's thinking (LiteLLM gateway models): false = off |
 
@@ -3791,7 +3877,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | Attack path | One planned scenario: one threat, one kind of attack, on the systems it involves. |
 | Entry point (way in) | The system an attacker would get in through. Code assigns one per path, in turns over the systems. |
 | Already held | A scenario the asset already has from an earlier assessment. It is not planned again. |
-| Set / batch | Scenarios are written in sets of 6 (the reviewer asks for more), each set in batches of up to 4 at once. |
+| Set / batch | Scenarios are written in sets of 6 (the reviewer asks for more), each set in batches of up to 6 at once. |
 | Evidence | A record from a trusted public source showing that a technique or weakness has been used in real attacks. |
 | External intelligence | The six public sources TSG imports and searches: MITRE ATT&CK (IT and industrial techniques), CISA KEV (weaknesses exploited in real attacks), CISA ICS advisories (industrial product weaknesses), NIST NVD (vulnerability details), FIRST EPSS (how likely a weakness is to be exploited). |
 | Snapshot | A checked, frozen copy of the imported intelligence. Searches always use the current snapshot. |

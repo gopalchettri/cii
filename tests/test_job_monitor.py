@@ -84,7 +84,7 @@ def test_every_job_its_queue_and_its_worker_in_one_call(client: TestClient, monk
 
 def test_the_api_request_id_travels_with_the_job_and_its_start_and_finish_are_logged(monkeypatch) -> None:
     sent: list[dict] = []
-    monkeypatch.setattr(celery_app, "send_task", lambda task, args, headers: sent.append(headers))
+    monkeypatch.setattr(celery_app, "send_task", lambda task, args, headers, priority: sent.append(headers))
     structlog.contextvars.bind_contextvars(request_id="req-42")
     try:
         send_job(TaskName.MAP_SERVICES, "mapping-1", 1)

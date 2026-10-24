@@ -25,8 +25,8 @@ UAT may run the old version (v1) or the new one (v2). Step 1 tells you which.
 
 | Project | v1 names: change these | v2 names: change these | Never change |
 |---|---|---|---|
-| `ai-threatgen` | `tsg-api`, `celery-worker`, `celery-worker-admin`, `tsg-beat` | `api`, `worker-threats`, `worker-scenarios`, `worker-service-mapper`, `worker-maintenance`, `beat` | `tsg-flower`, `flower`, and the monitoring |
-| `ai-remediation` | `celery-worker` | `worker-threats`, `worker-scenarios`, `worker-service-mapper`, `worker-maintenance` | `celery-exporter`, `mssql-exporter`, `mongodb-exporter`, `flower`, and the monitoring (Prometheus, Grafana, Loki, Alloy, Alertmanager, exporters) |
+| `ai-threatgen` | `tsg-api`, `celery-worker`, `celery-worker-admin`, `tsg-beat` | `api`, `worker-threats`, `worker-scenarios`, `worker-controls`, `worker-remediation`, `worker-service-mapper`, `worker-maintenance`, `beat` | `tsg-flower`, `flower`, and the monitoring |
+| `ai-remediation` | `celery-worker` | `worker-threats`, `worker-scenarios`, `worker-controls`, `worker-remediation`, `worker-service-mapper`, `worker-maintenance` | `celery-exporter`, `mssql-exporter`, `mongodb-exporter`, `flower`, and the monitoring (Prometheus, Grafana, Loki, Alloy, Alertmanager, exporters) |
 
 "The monitoring" means Prometheus, Grafana, Loki, Alloy, Alertmanager, kube-state-metrics and the exporters. If
 step 1 shows an app deployment that is in neither list, change it too and tell us its name.
@@ -235,8 +235,9 @@ Then do step 4 again. Once the cause is fixed, do 5.2 again (leave out its first
 
 ## Step 6: final check
 
-1. **Run step 2 for each new deployment**: `api`, `worker-threats`, `worker-scenarios`, `worker-service-mapper`,
-   `worker-maintenance`, `beat` in `ai-threatgen`, and the four workers in `ai-remediation`. Each must show
+1. **Run step 2 for each new deployment**: `api`, `worker-threats`, `worker-scenarios`, `worker-controls`,
+   `worker-remediation`, `worker-service-mapper`, `worker-maintenance`, `beat` in `ai-threatgen`, and the six workers
+   in `ai-remediation`. Each must show
    `default:200,exit=0`. The new deployments already list the AI service on `NO_PROXY`.
 2. **Each worker logs, at start-up, how it reaches the AI service.** Check one worker in each project:
 

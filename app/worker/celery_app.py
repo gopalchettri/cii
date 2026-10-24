@@ -14,6 +14,7 @@ import structlog
 from celery import Celery, current_task
 from kombu.exceptions import OperationalError as BrokerUnavailable
 
+from app.core.broker import shared_celery_conf
 from app.core.config import get_settings
 from app.core.constants import (
     TASK_ROUTES,
@@ -24,7 +25,6 @@ from app.core.constants import (
     LogEvent,
     Queue,
     TaskName,
-    Timeouts,
     Worker,
 )
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, JobFailed
@@ -45,10 +45,9 @@ TASK_MODULES = [
 
 celery_app = Celery("tsg", broker=settings.redis_celery_broker_url, include=TASK_MODULES)
 celery_app.conf.update(
+    shared_celery_conf(),  # the probe's too (app/probe.py): encoding and broker options
     task_routes=TASK_ROUTES,
     task_default_queue=Queue.MAINTENANCE,
-    task_serializer="json",
-    accept_content=["json"],
     task_acks_late=True,  # acknowledged when the task ends: a worker that dies mid-task loses nothing
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,  # a busy worker never holds messages another worker could run
@@ -70,12 +69,6 @@ celery_app.conf.update(
     task_send_sent_event=True,
     worker_hijack_root_logger=False,
     broker_connection_retry_on_startup=True,
-    broker_transport_options={
-        "visibility_timeout": Worker.BROKER_VISIBILITY_SECONDS,
-        "global_keyprefix": Worker.BROKER_KEY_PREFIX,
-        "socket_timeout": Timeouts.REDIS_SECONDS,
-        "socket_connect_timeout": Timeouts.REDIS_SECONDS,
-    },
     beat_schedule={
         TaskName.REAP: {
             "task": TaskName.REAP,
@@ -115,8 +108,9 @@ def queue_of(task: str) -> str:
 
 
 def count_waiting_messages(queue: str) -> int:
-    """Messages waiting in a queue, not yet taken by a worker. kombu counts the queue's Redis lists through
-    the broker connection (key prefix included); declaring a Redis queue creates nothing."""
+    """Messages waiting in a queue, not yet taken by a worker. kombu counts the queue's Redis lists, one per
+    priority step, through the broker connection (key prefix included); declaring a Redis queue creates
+    nothing."""
     with celery_app.connection_for_read() as connection:
         return int(connection.default_channel.queue_declare(queue=queue).message_count)
 
@@ -149,10 +143,10 @@ def send_admin_job(task: TaskName, job_id: str) -> bool:
     return True
 
 
-def send_job(task: TaskName, record_id: str, epoch: int) -> None:
+def send_job(task: TaskName, record_id: str, epoch: int, priority: int = Worker.NEW_WORK_PRIORITY) -> None:
     """Queue a job whose record already says queued: ids only, the record holds the data. A failed send is
     only logged, because the reaper re-sends every record left queued (Lease.REQUEUE_QUEUED_AFTER_SECONDS)."""
     try:
-        celery_app.send_task(task, args=[record_id, epoch], headers=_request_id_header())
+        celery_app.send_task(task, args=[record_id, epoch], headers=_request_id_header(), priority=priority)
     except (BrokerUnavailable, *REDIS_UNAVAILABLE_ERRORS):
         log.warning(LogEvent.JOB_SEND_FAILED, task=task, record_id=record_id, exc_info=True)

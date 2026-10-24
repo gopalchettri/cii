@@ -109,8 +109,8 @@ def _deliver(record_id: str, epoch: int) -> int:
 
 @pytest.fixture
 def writer_batch_of_six(monkeypatch: pytest.MonkeyPatch) -> None:
-    """These waves were counted with a write batch of 6 (Generation.WRITER_BATCH is 4 since the AI fan-out
-    was matched to the slot cap); the rule they check does not depend on the size."""
+    """These waves were counted with a write batch of 6, kept here should Generation.WRITER_BATCH change; the
+    rule they check does not depend on the size."""
     monkeypatch.setattr(Generation, "WRITER_BATCH", 6)
 
 

@@ -70,6 +70,26 @@ def test_an_it_asset_sees_it_and_it_ot_records_and_an_ot_asset_ot_and_it_ot() ->
     assert refs(result) == {"T2", "T3"} and set(result.search.asset_types) == OT
 
 
+def test_a_rerank_asked_again_is_answered_from_memory_once_it_succeeded() -> None:
+    """Another path of the same threat, a later set or a retry: the same query over the same candidates of the
+    same snapshot is scored once; a failed call is never kept, and another query is scored on its own."""
+
+    class DownOnce(ScoredBy):
+        def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+            scores = super().score_relevance(query, documents)
+            if len(self.calls) == 1:
+                raise Unavailable("down")
+            return scores
+
+    rerank = DownOnce()
+    finder, _ = finder_of([technique_doc("T1"), technique_doc("T2")], rerank)
+    assert one(finder, request_of())[0].search.failure is not None
+    first, again = (one(finder, request_of())[0] for _ in range(2))
+    assert len(rerank.calls) == 2 and first == again and refs(first) == {"T1", "T2"}
+    one(finder, request_of("Threat: Phishing of the operators"))
+    assert len(rerank.calls) == 3
+
+
 def test_the_finder_reranks_at_most_its_candidates() -> None:
     docs = [technique_doc(f"T{n}") for n in range(1, 6)]
     for candidates in (2, 30):

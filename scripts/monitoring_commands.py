@@ -25,9 +25,18 @@ FIXED_GRAFANA_SETTINGS = (
     "GF_LOG_MODE",
     "GF_PATHS_",
 )
-# Keep in step with app/core/constants.py Queue for queue-depth monitoring.
-QUEUES = ("tsg_threats", "tsg_scenarios", "tsg_servicemapper", "tsg_maintenance")
-QUEUE_KEY_PREFIX = "tsg:"  # app/core/constants.py Worker.BROKER_KEY_PREFIX
+# Keep in step with app/core/constants/jobs.py Queue for queue-depth monitoring.
+QUEUES = (
+    "tsg_threats",
+    "tsg_scenarios",
+    "tsg_controls",
+    "tsg_remediation",
+    "tsg_servicemapper",
+    "tsg_maintenance",
+)
+QUEUE_KEY_PREFIX = "tsg:"  # app/core/constants/jobs.py Worker.BROKER_KEY_PREFIX
+#: Each queue's two lists (next stages, new work): Worker.*_PRIORITY in app/core/constants, named by kombu.
+QUEUE_PRIORITY_SUFFIXES = ("", "\x06\x163")
 Command = tuple[list[str], dict[str, str]]  # (command line, extra environment)
 
 
@@ -119,7 +128,9 @@ def _redis_exporter() -> Command:
     if not broker:
         raise SystemExit("CII_REDIS_CELERY_BROKER_URL is not set in .env")
     db = urlparse(broker).path.strip("/") or "0"
-    keys = ",".join(f"db{db}={QUEUE_KEY_PREFIX}{queue}" for queue in QUEUES)
+    keys = ",".join(
+        f"db{db}={QUEUE_KEY_PREFIX}{queue}{suffix}" for queue in QUEUES for suffix in QUEUE_PRIORITY_SUFFIXES
+    )
     env = {
         "REDIS_ADDR": broker,
         "REDIS_EXPORTER_CHECK_SINGLE_KEYS": keys,

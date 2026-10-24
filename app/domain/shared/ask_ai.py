@@ -22,12 +22,18 @@ def ask_ai_and_check(
     prompt: ChatPrompt,
     read_answer: _AnswerReader,
     first_answer_check: Callable[[dict[str, Any]], list[str]] | None = None,
+    reuse_earlier_answer: bool = False,
 ) -> Any:
     """What a checked answer means. An answer with problems is asked again once with them; raises
     UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
-    `first_answer_check` also judges a usable first answer (see ChatModel.ask_for_checked_json)."""
+    `first_answer_check` also judges a usable first answer, and `reuse_earlier_answer` takes this job's
+    earlier answers (see ChatModel.ask_for_checked_json)."""
     answer = chat.ask_for_checked_json(
-        task, *prompt, lambda candidate: read_answer(candidate)[1], first_answer_check=first_answer_check
+        task,
+        *prompt,
+        lambda candidate: read_answer(candidate)[1],
+        first_answer_check=first_answer_check,
+        reuse_earlier_answer=reuse_earlier_answer,
     )
     meaning, _ = read_answer(answer)
     return meaning

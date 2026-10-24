@@ -52,10 +52,18 @@
      ]
     ]
    },
-   "task_id_1_prompt_hash_1": {
+   "record_id_1_epoch_1_job_task_1_prompt_hash_1": {
     "key": [
      [
-      "task_id",
+      "record_id",
+      1
+     ],
+     [
+      "epoch",
+      1
+     ],
+     [
+      "job_task",
       1
      ],
      [

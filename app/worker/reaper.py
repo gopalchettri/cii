@@ -11,7 +11,16 @@ import structlog
 
 from app.core import metrics
 from app.core.clock import utc_now
-from app.core.constants import ADMIN_JOB_TASKS, ErrorCode, ErrorMessage, Lease, LogEvent, TaskName, module_of
+from app.core.constants import (
+    ADMIN_JOB_TASKS,
+    ErrorCode,
+    ErrorMessage,
+    Lease,
+    LogEvent,
+    TaskName,
+    Worker,
+    module_of,
+)
 from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, REDIS_UNAVAILABLE_ERRORS
 from app.data_access.admin.admin_job_repository import AdminJobRepository
@@ -144,7 +153,7 @@ def _settle_expired_job(
         if not jobs.requeue_or_fail_expired_job(record, now):
             return  # its worker renewed or finished in between
         job_log.info(LogEvent.JOB_REQUEUED, reason="lease_expired", attempts=attempts)
-        send_job(job["task"], record["_id"], job["epoch"])
+        send_job(job["task"], record["_id"], job["epoch"], priority=Worker.NEXT_STAGE_PRIORITY)
     publish(record["_id"])
 
 
@@ -177,4 +186,4 @@ def _resend_queued_job(
     # Moving due_at forward first means one re-send per REQUEUE_QUEUED_AFTER_SECONDS, never one per minute.
     if jobs.resend_or_fail_unsent_job(record, now, counted=counted):
         job_log.info(LogEvent.JOB_REQUEUED, reason="never_picked_up", sends=sends + counted)
-        send_job(job["task"], record["_id"], job["epoch"])
+        send_job(job["task"], record["_id"], job["epoch"], priority=Worker.NEXT_STAGE_PRIORITY)

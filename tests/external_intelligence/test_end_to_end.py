@@ -64,7 +64,7 @@ def jobs_faked(
     get_mongodb()[Collection.SESSIONS].delete_many({"entity_id": 86, "asset_id": 103})
     get_mongodb()[Collection.SCENARIOS].delete_many({"entity_id": 86, "asset_id": 103})
     sent: list[tuple[Any, ...]] = []
-    record = lambda *args: sent.append(args)  # noqa: E731 - every job message, in order
+    record = lambda *args, **_priority: sent.append(args)  # noqa: E731 - every job message, in order
     for module in (jobs, write_job, controls_job):
         monkeypatch.setattr(module, "send_job", record)
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, lambda _session_id: None)

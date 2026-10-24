@@ -154,18 +154,20 @@ def _stop(message: str) -> None:
     pytest.exit(message, returncode=3)
 
 
-@pytest.fixture(autouse=True)
-def loggers_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(scope="session", autouse=True)
+def loggers_never_cached() -> Iterator[None]:
     """The app caches each module's logger on first use (cache_logger_on_first_use, for speed): a logger first
     used inside a test's capture_logs kept writing to that capture, so a later test saw none of its lines
     (2026-10-12: test_library's warning after test_asset_types). In tests a logger is never cached, also once
     a test starts a worker or the app: configure_logging turned caching back on mid-test, and lifecycle's
-    logger stayed bound to that test's set-up (2026-10-23: test_job_monitor's job lines after test_worker)."""
+    logger stayed bound to that test's set-up (2026-10-23: test_job_monitor's job lines after test_worker).
+    For the whole run, so also while a session fixture starts the app (`client`) before any test begins."""
     configure = structlog.configure
     configure(cache_logger_on_first_use=False)
-    monkeypatch.setattr(
-        structlog, "configure", lambda **options: configure(**options | {"cache_logger_on_first_use": False})
-    )
+    never_cached = {"cache_logger_on_first_use": False}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(structlog, "configure", lambda **options: configure(**options | never_cached))
+        yield
 
 
 @pytest.fixture(autouse=True)

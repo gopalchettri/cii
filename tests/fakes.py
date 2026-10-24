@@ -58,6 +58,7 @@ class FakeChatModel:
         user_prompt: str,
         check_answer: Callable[[dict[str, Any]], list[str]],
         first_answer_check: Callable[[dict[str, Any]], list[str]] | None = None,
+        reuse_earlier_answer: bool = False,  # noqa: ARG002 - the real model's option; no records here
     ) -> dict[str, Any]:
         first = self._answer(task, user_prompt)
         usable = None if check_answer(first) else first
@@ -111,6 +112,7 @@ class FakeEmbeddings:
     def __init__(self, words: tuple[str, ...] = WORDS) -> None:
         self.words = words
         self.calls: list[str] = []  # the corpus of every library call, "query" for search queries, in order
+        self.query_corpora: list[str] = []  # the corpus each search query call searched
         self.sources: dict[str, list[dict]] = {}  # the rows given with each corpus
         self.queries_down = False  # True: a query call raises Unavailable, as an outage would
 
@@ -119,10 +121,15 @@ class FakeEmbeddings:
         self.sources[corpus] = sources
         return self._vectors(texts)
 
-    def embed_search_queries(self, texts: list[str]) -> np.ndarray:
+    def embed_search_queries(self, texts: list[str], corpus: str) -> np.ndarray:
         if self.queries_down:  # as the embedding gateway raises a lost connection
             raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.UNREACHABLE], reason=AiOutage.UNREACHABLE)
         self.calls.append("query")
+        self.query_corpora.append(corpus)
+        return self._vectors(texts)
+
+    def embed_texts_to_compare(self, texts: list[str]) -> np.ndarray:
+        self.calls.append("compare")
         return self._vectors(texts)
 
     def _vectors(self, texts: list[str]) -> np.ndarray:

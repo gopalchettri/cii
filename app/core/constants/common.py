@@ -88,6 +88,7 @@ class AiOutcome(StrEnum):
     OK = "ok"
     UNAVAILABLE = "unavailable"  # the provider busy or unreachable, after the retries
     UNREADABLE = "unreadable"  # an answer that cannot be used
+    TRUNCATED = "truncated"  # an answer cut off at its length limit
     ERROR = "error"  # anything else: a refused key, a bad request, a local model that would not load
 
 
@@ -103,8 +104,7 @@ class AiOutage(StrEnum):
 #: A failure card's message when an AI outage cost its path on the job's last try: the outage, then the tries.
 AI_PATH_OUTAGE_MESSAGE: Final = "{outage} This attack path got no answer in {tries} tries."
 
-#: HTTP statuses that tell the outage when the provider error's class does not: a request, gateway or origin
-#: timeout (408, 504, 524, 598, 599); an overloaded provider (503, and 529, Anthropic's "overloaded").
+#: HTTP statuses telling the outage when the error's class does not: a timeout, or an overloaded provider.
 AI_TIMED_OUT_STATUSES: Final = frozenset({408, 504, 524, 598, 599})
 AI_BUSY_STATUSES: Final = frozenset({503, 529})
 
@@ -140,6 +140,15 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.WRITE_SCENARIO: None,
 }
 
+#: Most answer tokens per chat task: twice the most an ok call used (dev, thinking off), at least 2048,
+#: rounded up to 1024; an answer cut off at it is asked once more at the model's limit. Not listed, or a model
+#: thinking: the model's limit. remediation_plan: ~140 tokens a control (2601 at dev's most, 10; up to 50).
+CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
+    AiTask.RELEVANCE_GATE: 8192,  # most used: 3642 by a batch of 20 threats, 1877 by one of 10
+    AiTask.SERVICE_MAPPER: 4096,  # 1997, at 10 upstream and 10 downstream (SERVICE_MAPPER_*_TOTAL_COUNT)
+    AiTask.WRITE_SCENARIO: 3072,  # 1158
+    AiTask.PLAN_CHECK: 2048,  # 478
+}
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
 #: Thinking off in the gateway models' chat templates (UAT probe, 2026-10-23): Kimi reads "thinking", GLM
@@ -152,11 +161,20 @@ class AiLimits:
 
     RETRIES: Final = 3  # a busy or unreachable provider is retried this many times, with back-off
     RETRY_FIRST_WAIT_SECONDS: Final = 0.5  # then doubling
+    # A worker asks a rate-limited (HTTP 429) model again, not its fallback (55-99 s), as rate_limited_wait
+    # says; the API retries a 429 as any busy answer.
+    RATE_LIMITED_WAITS_SECONDS: Final = (2, 5, 10, 15)
+    RATE_LIMITED_JITTER: Final = 0.2
+    RATE_LIMITED_MAX_WAIT_SECONDS: Final = 15
+    RATE_LIMITED_TOTAL_WAIT_SECONDS: Final = 35
+    LEASE_CHECK_SECONDS: Final = 1.0  # a job waiting to ask the AI checks its lease this often
     CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
-    # Prompt characters counted per token: real prompts measured 4.3-6.1 on Kimi-K2.6 (dev, 2026-10-23); 3
-    # leaves room for another tokenizer (glm) and non-English text.
+    # Prompt characters per token: 4.3-6.1 measured on Kimi-K2.6; 3 leaves room for glm and non-English text.
     PROMPT_CHARS_PER_TOKEN: Final = 3
+    MODEL_COOL_DOWN_SECONDS: Final = 120  # a timed-out or still rate-limited model is asked last this long
     SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod
+    FALLBACK_SLOTS_KEY: Final = "tsg:ai_fallback_slots"  # the same for the fallback model's calls alone
+    REQUEST_RATE_KEY: Final = "tsg:ai_next_request:{model}"  # when that model's next request may be sent
     API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
     WORKER_SLOT_WAIT_SECONDS: Final = 300
     SLOT_GRACE_SECONDS: Final = 30  # a slot outlives its call's longest run by this much
@@ -214,7 +232,10 @@ class LogEvent(StrEnum):
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
     AI_CALL_UNAVAILABLE = "ai.call_unavailable"
+    AI_ANSWER_REUSED = "ai.answer_reused"  # this job got this exact conversation's answer before: no call
+    AI_ANSWER_LOOKUP_FAILED = "ai.answer_lookup_failed"  # the AI is asked instead
     AI_GATEWAY_ROUTE = "ai.gateway_route"
+    AI_REQUEST_RATE_BUSY = "ai.request_rate_busy"
     AI_SLOTS_BUSY = "ai.slots_busy"
     AI_SLOT_FREE_FAILED = "ai.slot_free_failed"
     LIBRARY_RELOADED = "library.reloaded"
@@ -248,6 +269,7 @@ class LogEvent(StrEnum):
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted
     JOB_LEASE_RENEW_FAILED = "job.lease_renew_failed"
     JOB_RETRY_SCHEDULED = "job.retry_scheduled"
+    JOB_WAITING = "job.waiting"  # given back to look again: another job holds what it needs (not an outage)
     JOB_FAILED = "job.failed"
     JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
     JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback

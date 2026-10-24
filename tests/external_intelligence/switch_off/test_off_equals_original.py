@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     AuditAction,
     Collection,
+    Queue,
     TaskName,
 )
 from app.core.database import get_mongodb
@@ -23,6 +24,7 @@ from app.worker.celery_app import celery_app
 from app.worker.external_intelligence.refresh_task import refresh_external_intelligence
 from tests.external_intelligence.conftest import Intel
 from tests.planner_samples import planned
+from tests.test_worker import _worker_starting
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _deliver_until_done,
     _queued_run,
@@ -158,7 +160,7 @@ def test_no_refresh_is_scheduled_and_a_stray_one_does_nothing_while_off() -> Non
 
 def test_the_worker_warm_up_does_nothing_while_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(container, "get_evidence_index_keeper", Untouched)
-    lifecycle.warm_up_external_intelligence()
+    lifecycle.warm_up_external_intelligence(_worker_starting("threads", Queue.SCENARIOS))
     assert container.get_intelligence_switch().is_on() is False
 
 

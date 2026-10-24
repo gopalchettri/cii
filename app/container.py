@@ -8,7 +8,7 @@ from app.ai.chat import ChatModel, chat_model_from
 from app.ai.common import apply_proxy_settings
 from app.ai.embeddings import EmbeddingModel, embedding_model_from
 from app.ai.rerank import RerankModel, rerank_model_from
-from app.ai.slots import AiSlots
+from app.ai.slots import AiRequestRate, AiSlots
 from app.core.config import get_settings
 from app.core.constants import ROUTED_QUEUES, AiLimits
 from app.core.database import get_mongodb, get_redis_client, get_stored_procedure_client
@@ -68,9 +68,12 @@ from app.worker.scenario.write_job import ScenarioWriteJob
 from app.worker.service_mapper.catalog_provider import ServiceCatalogProvider
 from app.worker.service_mapper.job import ServiceMapperJob
 
-#: How long this process waits for a free AI slot: the API answers callers, so it waits briefly; a worker
-#: waits longer, because its job would otherwise only be retried later (set_up_worker).
+#: How long this process waits for a free AI slot or request turn, and whether it waits out a rate-limited
+#: (HTTP 429) request: the API answers callers, so it waits briefly and retries a 429 as any busy answer; a
+#: worker waits longer and waits out a 429, because its job would otherwise only be retried later
+#: (set_up_worker).
 _ai_slot_wait_seconds: float = AiLimits.API_SLOT_WAIT_SECONDS
+_waits_out_rate_limits = False
 
 
 # --- AI gateways
@@ -86,6 +89,19 @@ def apply_proxy_once() -> None:
 def get_ai_slots() -> AiSlots:
     cap = get_settings().max_concurrent_ai_calls
     return AiSlots(get_redis_client() if cap else None, cap, _ai_slot_wait_seconds)
+
+
+@singleton
+def get_ai_fallback_slots() -> AiSlots:
+    cap = get_settings().max_concurrent_fallback_calls
+    redis = get_redis_client() if cap else None
+    return AiSlots(redis, cap, _ai_slot_wait_seconds, AiLimits.FALLBACK_SLOTS_KEY)
+
+
+def ai_request_rate_for(model: str, per_minute: int) -> AiRequestRate:
+    """`model`'s own request-rate limiter, with this process's waits; each gateway builds its model's once."""
+    redis = get_redis_client() if per_minute else None
+    return AiRequestRate(redis, model, per_minute, _ai_slot_wait_seconds, _waits_out_rate_limits)
 
 
 @singleton
@@ -106,21 +122,36 @@ def get_embedding_repository() -> EmbeddingRepository:
 @singleton
 def get_chat_model() -> ChatModel:
     apply_proxy_once()
-    return chat_model_from(get_settings(), get_ai_call_repository(), get_ai_slots())
+    settings = get_settings()
+    return chat_model_from(
+        settings,
+        get_ai_call_repository(),
+        get_ai_slots(),
+        ai_request_rate_for(settings.chat_model, settings.chat_requests_per_minute),
+        get_ai_fallback_slots(),
+        ai_request_rate_for(settings.chat_fallback_model, settings.chat_fallback_requests_per_minute),
+    )
 
 
 @singleton
 def get_embedding_model() -> EmbeddingModel:
     apply_proxy_once()
+    settings = get_settings()
     return embedding_model_from(
-        get_settings(), get_embedding_repository(), get_query_vector_repository(), get_ai_slots()
+        settings,
+        get_embedding_repository(),
+        get_query_vector_repository(),
+        get_ai_slots(),
+        ai_request_rate_for(settings.embedding_model, settings.embedding_requests_per_minute),
     )
 
 
 @singleton
 def get_rerank_model() -> RerankModel:
     apply_proxy_once()
-    return rerank_model_from(get_settings(), get_ai_slots())
+    settings = get_settings()
+    request_rate = ai_request_rate_for(settings.rerank_model, settings.rerank_requests_per_minute)
+    return rerank_model_from(settings, get_ai_slots(), request_rate)
 
 
 # --- library and admin
@@ -493,9 +524,10 @@ def set_up_api() -> None:
 
 def set_up_worker(job_collections: Iterable[str]) -> None:
     """A worker's start-up, as the API's: every index (the reaper's scans included), then the AI gateways,
-    which take the worker's longer AI slot wait."""
-    global _ai_slot_wait_seconds
+    which take the worker's longer AI slot wait and wait out a rate-limited request."""
+    global _ai_slot_wait_seconds, _waits_out_rate_limits
     _ai_slot_wait_seconds = AiLimits.WORKER_SLOT_WAIT_SECONDS
+    _waits_out_rate_limits = True
     create_all_indexes(job_collections)
     get_chat_model()
     get_embedding_model()

@@ -2,6 +2,7 @@
 corrective re-ask for a task that checks its answer, and one record per call (metrics, log line, audit copy in
 tsg_ai_calls)."""
 
+import math
 import time
 from collections.abc import Callable
 from functools import partial
@@ -11,7 +12,10 @@ import litellm
 
 from app.ai.chat_messages import (
     build_conversation,
+    build_request_options,
     count_prompt_chars,
+    find_earlier_answer,
+    max_answer_tokens,
     parse_json_object,
     record_chat_call,
     update_call_metrics,
@@ -23,13 +27,17 @@ from app.ai.common import (
     count_and_convert_ai_errors,
 )
 from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
-from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
+from app.ai.slots import (
+    UNLIMITED_AI_REQUEST_RATE,
+    UNLIMITED_AI_SLOTS,
+    AiRequestRate,
+    AiSlots,
+    max_slot_hold_seconds,
+)
 from app.core.config import Settings
 from app.core.constants import (
-    CHAT_TEMPERATURES,
-    LITELLM_MODEL_PREFIX,
-    THINKING_OFF_TEMPLATE_KWARGS,
     AiLimits,
+    AiOutage,
     AiOutcome,
     AiTask,
     ErrorMessage,
@@ -58,39 +66,10 @@ def _reask_build_correction_message(problems: list[str]) -> str:
     return AiLimits.REASK_MESSAGE.format(problems="\n".join(lines))
 
 
-def _build_request_options(
-    profile: ChatModelProfile, task: AiTask, model: str, thinking: bool
-) -> dict[str, Any]:
-    """The request options this model accepts (its profile) for this task (its temperature, R-2), with its
-    thinking switched off unless `thinking` (CII_*_MODEL_THINKING)."""
-    # stream=False on the wire: a proxy entry pinning stream=true (UAT glm-5.3's) would otherwise
-    # pick the shape.
-    options: dict[str, Any] = {
-        "max_tokens": profile.max_output_tokens,
-        "timeout": profile.timeout_seconds,
-        "stream": False,
-    }
-    if profile.supports_json_mode:
-        options["response_format"] = {"type": "json_object"}
-    temperature = CHAT_TEMPERATURES.get(task)
-    if temperature is not None:  # None: not sent at all, so the provider's default applies (as v1)
-        options["temperature"] = temperature
-    if profile.reasoning_effort is not None:
-        # allowed_openai_params is load-bearing: without it litellm may drop a parameter its own model
-        # table thinks unsupported (v1 saw this on openai/Kimi-K2.6), and thinking silently stays on.
-        options["reasoning_effort"] = profile.reasoning_effort
-        options["allowed_openai_params"] = ["reasoning_effort"]
-    if not thinking and model.startswith(LITELLM_MODEL_PREFIX):
-        # The gateway's vLLM models switch thinking in their chat template (UAT probe). Gateway models only:
-        # another provider (dev Azure) may refuse a parameter it does not know.
-        options["extra_body"] = {"chat_template_kwargs": dict(THINKING_OFF_TEMPLATE_KWARGS)}
-    return options
-
-
 class ChatModel:
-    """JSON answers from the configured model; the fallback model answers only when the first is busy/down.
-    Each model is called with ITS OWN profile (litellm's built-in fallbacks would reuse the first's
-    options)."""
+    """JSON answers from the configured model; the fallback model answers only when the first is busy/down
+    (or cooling down). Each model is called with ITS OWN profile (litellm's built-in fallbacks would reuse the
+    first's options)."""
 
     def __init__(
         self,
@@ -101,16 +80,23 @@ class ChatModel:
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
         thinking_on: frozenset[str] = frozenset(),
+        request_rate: AiRequestRate = UNLIMITED_AI_REQUEST_RATE,
+        fallback_slots: AiSlots = UNLIMITED_AI_SLOTS,
+        fallback_request_rate: AiRequestRate = UNLIMITED_AI_REQUEST_RATE,
     ):
         self._models = models
+        self._fallback_slots = fallback_slots
+        self._cooling_until: dict[str, float] = {}  # model -> time.monotonic() its cool-down ends
+        self._request_rates = dict.fromkeys(dict(models), fallback_request_rate)  # each model's own limiter
+        self._request_rates[models[0][0]] = request_rate
         self._thinking_on = thinking_on  # models whose thinking stays on; every other one's is switched off
-        self._base_url = base_url
-        self._api_key = api_key
+        # num_retries=0: call_with_retries is the only retry (litellm's own needs tenacity).
+        self._connection = {"api_base": base_url, "api_key": api_key, "num_retries": 0}
+        self._connection |= build_api_key_header(key_header, api_key)
         self._call_records = call_records
-        self._key_header = build_api_key_header(key_header, api_key)
         self._slots = slots
         # One slot covers the whole request, fallback included: the cap counts calls, not models.
-        self._slot_hold = sum(max_slot_hold_seconds(profile.timeout_seconds) for _, profile in models)
+        self._slot_hold = _whole_request_hold_seconds(models, self._request_rates, fallback_slots)
         self._max_input_chars = min(profile.max_input_chars for _, profile in models)
 
     def ask_for_checked_json(
@@ -120,12 +106,16 @@ class ChatModel:
         user_prompt: str,
         check_answer: AnswerChecker,
         first_answer_check: AnswerChecker | None = None,
+        reuse_earlier_answer: bool = False,
     ) -> dict[str, Any]:
         """A JSON answer `check_answer` accepts. A rejected first answer is asked again once, in the same
         conversation, with its problems (§9); a second rejection raises UnreadableAiAnswer. A usable first
-        answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable."""
+        answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable.
+        `reuse_earlier_answer`: an ask this job already got an answer to that `check_answer` accepts (any
+        delivery of the same record, epoch and stage) takes that answer from tsg_ai_calls, with no AI call."""
         messages = build_conversation(system_prompt, user_prompt)
-        answer, reply = self._ask_and_read_answer(task, messages)
+        reuse_check = check_answer if reuse_earlier_answer else None
+        answer, reply, capped = self._ask_and_read_answer(task, messages, reuse_check, capped=True)
         problems = _find_answer_problems(answer, check_answer)
         usable = answer if answer is not None and not problems else None
         if usable is not None:
@@ -133,8 +123,8 @@ class ChatModel:
             if not problems:
                 return usable
         correction = _with_correction_turn(messages, reply, problems, self._max_input_chars)
-        try:
-            answer, _ = self._ask_and_read_answer(task, correction)
+        try:  # a first answer cut off at the task's cap: the re-ask goes at the model's own limit at once
+            answer, _, _ = self._ask_and_read_answer(task, correction, reuse_check, capped)
         except (UnreadableAiAnswer, TruncatedAiAnswer):
             if usable is None:
                 raise
@@ -154,64 +144,91 @@ class ChatModel:
         return self._max_input_chars
 
     def _ask_and_read_answer(
-        self, task: AiTask, messages: list[dict[str, str]]
-    ) -> tuple[dict[str, Any] | None, str]:
-        """(the answer's JSON object or None, the raw reply), recorded once with its outcome."""
-        prompt_chars = count_prompt_chars(messages)
-        if prompt_chars > self._max_input_chars:
-            raise TruncatedAiAnswer(
-                ErrorMessage.AI_PROMPT_TOO_LONG.format(
-                    task=task, chars=prompt_chars, limit=self._max_input_chars
-                )
-            )
-        model, response, seconds = self._call_first_available_model(task, messages)
-        if not response.choices:
-            update_call_metrics(task, model, AiOutcome.UNREADABLE, 0, 0, seconds)
-            raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error="no choices"))
-        choice = response.choices[0]
-        reply = choice.message.content or ""
-        if getattr(choice, "finish_reason", None) == "length":
-            record_chat_call(
-                self._call_records, task, model, messages, response, seconds, AiOutcome.UNREADABLE
-            )
-            raise TruncatedAiAnswer(ErrorMessage.AI_ANSWER_TRUNCATED.format(task=task, model=model))
+        self, task: AiTask, messages: list[dict[str, str]], reuse_check: AnswerChecker | None, capped: bool
+    ) -> tuple[dict[str, Any] | None, str, bool]:
+        """(the answer's JSON object or None, the raw reply, still capped), recorded once with its outcome;
+        with `reuse_check`, this job's earlier answer to these messages it accepts, when there is one."""
+        prompt_chars, limit = count_prompt_chars(messages), self._max_input_chars
+        if prompt_chars > limit:
+            too_long = ErrorMessage.AI_PROMPT_TOO_LONG.format(task=task, chars=prompt_chars, limit=limit)
+            raise TruncatedAiAnswer(too_long)
+        if reuse_check and (earlier := find_earlier_answer(self._call_records, task, messages, reuse_check)):
+            return *earlier, capped
+        model, response, seconds, capped = self._ask_for_whole_answer(task, messages, capped)
+        reply = response.choices[0].message.content or ""
         answer = parse_json_object(reply)
         # One outcome per call in the metrics, never "ok" AND "unreadable".
         outcome = AiOutcome.UNREADABLE if answer is None else AiOutcome.OK
         record_chat_call(self._call_records, task, model, messages, response, seconds, outcome)
-        return answer, reply
+        return answer, reply, capped
 
-    def _call_first_available_model(self, task: AiTask, messages: list[dict]) -> tuple[str, Any, float]:
-        """(model that answered, its response, seconds). Tries each model in order, each with its retries."""
+    def _ask_for_whole_answer(
+        self, task: AiTask, messages: list[dict], capped: bool
+    ) -> tuple[str, Any, float, bool]:
+        """(model, response, seconds, capped) of an answer not cut off: one cut off at the cap is recorded
+        truncated and asked once more at the model's own limit (TruncatedAiAnswer when cut off there too)."""
+        model, response, seconds = self._call_first_available_model(task, messages, capped)
+        if not response.choices:
+            update_call_metrics(task, model, AiOutcome.UNREADABLE, 0, 0, seconds)
+            raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error="no choices"))
+        if getattr(response.choices[0], "finish_reason", None) != "length":
+            return model, response, seconds, capped
+        record_chat_call(self._call_records, task, model, messages, response, seconds, AiOutcome.TRUNCATED)
+        profile, thinking = dict(self._models)[model], model in self._thinking_on
+        if capped and max_answer_tokens(profile, task, thinking) < profile.max_output_tokens:
+            return self._ask_for_whole_answer(task, messages, capped=False)
+        raise TruncatedAiAnswer(ErrorMessage.AI_ANSWER_TRUNCATED.format(task=task, model=model))
+
+    def _call_first_available_model(
+        self, task: AiTask, messages: list[dict], capped: bool
+    ) -> tuple[str, Any, float]:
+        """(model that answered, its response, seconds). Tries each model in order, each with its retries; one
+        timed out or still rate-limited (each has its own limit) goes last for MODEL_COOL_DOWN_SECONDS."""
         outage: Unavailable | None = None
+        now = time.monotonic()
+        in_order = sorted(self._models, key=lambda pair: self._cooling_until.get(pair[0], 0) > now)
         with self._slots.hold_slot(self._slot_hold):
-            for model, profile in self._models:
-                started = time.perf_counter()
-                thinking = model in self._thinking_on
-                options = self._key_header | _build_request_options(profile, task, model, thinking)
-                try:
-                    with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
-                        # num_retries=0: call_with_retries is the only retry (litellm's own needs tenacity).
-                        response = call_with_retries(
-                            partial(
-                                litellm.completion,
-                                model=model,
-                                messages=messages,
-                                api_base=self._base_url,
-                                api_key=self._api_key,
-                                num_retries=0,
-                                **options,
-                            )
-                        )
+            for model, profile in in_order:
+                slots = UNLIMITED_AI_SLOTS if model == self._models[0][0] else self._fallback_slots
+                hold = max_slot_hold_seconds(profile.timeout_seconds, self._request_rates[model].wait_seconds)
+                try:  # only the last model left waits for a fallback slot: one still to try answers sooner
+                    with slots.hold_slot(hold, waits=model == in_order[-1][0]):
+                        response, seconds = self._call_model(task, messages, model, profile, capped)
                 except Unavailable as exc:  # busy or down after its retries: the next model answers
+                    if exc.reason == AiOutage.TIMED_OUT or isinstance(exc.__cause__, litellm.RateLimitError):
+                        self._cooling_until[model] = time.monotonic() + AiLimits.MODEL_COOL_DOWN_SECONDS
                     outage = exc
                     continue
-                except AI_REFUSED_REPLY_ERRORS as exc:  # an answer, if a refusal: no other model is asked
-                    refused = ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error=type(exc).__name__)
-                    raise UnreadableAiAnswer(refused) from exc
-                return model, response, time.perf_counter() - started
+                self._cooling_until.pop(model, None)
+                return model, response, seconds
         assert outage is not None  # at least one model is configured
         raise outage
+
+    def _call_model(
+        self, task: AiTask, messages: list[dict], model: str, profile: ChatModelProfile, capped: bool
+    ) -> tuple[Any, float]:
+        """One model's response and seconds, with retries."""
+        options = build_request_options(profile, task, model, model in self._thinking_on, capped)
+        request = partial(litellm.completion, model=model, messages=messages, **self._connection, **options)
+        try:
+            with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
+                return call_with_retries(request, self._request_rates[model], model=model)
+        except AI_REFUSED_REPLY_ERRORS as exc:  # an answer, if a refusal: no other model is asked
+            refused = ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error=type(exc).__name__)
+            raise UnreadableAiAnswer(refused) from exc
+
+
+def _whole_request_hold_seconds(
+    models: list[tuple[str, ChatModelProfile]],
+    request_rates: dict[str, AiRequestRate],
+    fallback_slots: AiSlots,
+) -> int:
+    """The request's one slot outlives every model's longest run, the wait for a fallback slot too."""
+    runs = sum(
+        max_slot_hold_seconds(profile.timeout_seconds, request_rates[model].wait_seconds)
+        for model, profile in models
+    )
+    return runs + math.ceil(fallback_slots.wait_seconds)
 
 
 def _with_correction_turn(
@@ -231,8 +248,15 @@ def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChe
     return [ErrorMessage.AI_REPLY_NOT_A_JSON_OBJECT] if answer is None else check_answer(answer)
 
 
-def chat_model_from(settings: Settings, calls: AiCallRepository, slots: AiSlots) -> ChatModel:
-    """The chat model the settings name, with its fallback, its call records and its limiter."""
+def chat_model_from(
+    settings: Settings,
+    calls: AiCallRepository,
+    slots: AiSlots,
+    request_rate: AiRequestRate,
+    fallback_slots: AiSlots,
+    fallback_request_rate: AiRequestRate,
+) -> ChatModel:
+    """The chat model the settings name, with its fallback, its call records and its limiters."""
     model_names = [settings.chat_model] + (
         [settings.chat_fallback_model] if settings.chat_fallback_model else []
     )
@@ -252,4 +276,7 @@ def chat_model_from(settings: Settings, calls: AiCallRepository, slots: AiSlots)
         settings.ai_key_header,
         slots,
         frozenset(thinking_on),
+        request_rate,
+        fallback_slots,
+        fallback_request_rate,
     )

@@ -33,6 +33,18 @@ class EmbeddingModelProfile:
     # Raise by 1 when the provider re-points this model name to other weights of the same size: every stored
     # vector is then made again, instead of new and old vectors being compared (silently wrong rankings).
     revision: int = 1
+    # What a search query is sent after, `{task}` the search's task (QUERY_TASKS), as the model card asks;
+    # None: the model takes queries plain. Library texts are always sent plain.
+    query_instruction: str | None = None
+
+    def instruction_for(self, task: str) -> str | None:
+        """The instruction a query of `task` is sent after; None when the model takes queries plain."""
+        return None if self.query_instruction is None else self.query_instruction.format(task=task)
+
+    def query_as_sent(self, query: str, task: str) -> str:
+        """The query after its instruction, the query (never the instruction) cut to fit max_text_chars."""
+        instruction = self.instruction_for(task) or ""
+        return instruction + query[: self.max_text_chars - len(instruction)]
 
 
 @dataclass(frozen=True)

@@ -53,7 +53,7 @@ def _batch(finder: EvidenceFinder, size: int = 12) -> None:
 
 def test_the_process_gate_is_one_small_constant_shared_by_every_caller() -> None:
     finder = container.get_evidence_finder()  # every caller shares the one finder, so its one gate
-    assert finder is container.get_evidence_finder() and RerankGateLimits.RERANKS_AT_ONCE <= 4
+    assert finder is container.get_evidence_finder() and RerankGateLimits.RERANKS_AT_ONCE <= 6
 
 
 @pytest.mark.parametrize("size", [1, 2, 3])

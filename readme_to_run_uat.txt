@@ -8,6 +8,10 @@ cd "C:\GopalChettri\Projects\desc-ai-modules\cii"
 # Local MongoDB / Redis / SQL Server are NOT needed - the UAT ones are used.
 # Behind a proxy? Nothing to do: CII_AI_BYPASS_PROXY=true in .env sends the AI calls direct (v1's LITELLM_BYPASS_PROXY).
 # v1 must be STOPPED first (v1 and v2 share the Redis keys "tsg:*" on the same databases).
+# The OpenShift v2 pods must be scaled to 0 first too: they share the Redis queues and would take this laptop's jobs:
+#   oc -n ai-threatgen scale deployment -l part-of=tsg --replicas=0
+#   oc -n ai-remediation scale deployment -l part-of=tsg --replicas=0
+#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md steps 10 and 11)
 # The DBA must already have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
 
 # The env MUST be named .venv (dot-prefixed).
@@ -42,17 +46,17 @@ Copy-Item .env.uat .env -Force
 #      CII_CORS_ORIGINS=*   is REFUSED when CII_ENV=uat -> put the real origin(s), comma-separated,
 #                           e.g. https://threatgen-api.apps.dda-desc-az1-01.desccii.local  (empty = none)
 #      CII_ENV              must be uat (not dev)
-#      CII_MONGO_DB         must be cii_tsg_test (the UAT database name, confirmed by the owner)
+#      CII_CHAT_REQUESTS_PER_MINUTE  must be 180 (kimi-k2.5 takes 192 a minute)
 #      CII_ADMIN_API_KEY    must be at least 32 characters (outside dev)
 #    Change .env BEFORE starting any worker/beat/API; after any later change, restart all of them.
 #      EVIDENCE_SIMILARITY_THRESHOLD must be set while EXTERNAL_INTELLIGENCE_ENABLED=true (it is: 50)
 
 # 7. Check the settings and that the three stores answer (all must be True; a False names the store)
 python -c "from app.core.config import get_settings; s = get_settings(); print(s.env, s.chat_model, s.mongo_db)"
-#    expected: uat litellm_proxy/kimi-k2.5 cii_tsg_test
+#    expected: uat litellm_proxy/kimi-k2.5 cii_uat
 #    The first word must be uat. If it says dev, fix CII_ENV in .env.
-#    WARNING: never run the test suite (pytest) on this machine - it empties cii_tsg_test.
-python -c "from app.services.readiness import check_readiness; print(check_readiness()[0])"
+#    WARNING: never run pytest on this machine: it would use the UAT MongoDB and Redis.
+python -c "from app.core.readiness import check_readiness; print(check_readiness()[0])"
 
 # 8. Start in this order: workers and beat FIRST, the API LAST
 #    (the API is "ready" only when every queue has a worker).
@@ -61,9 +65,9 @@ python -c "from app.services.readiness import check_readiness; print(check_readi
 #   The AI calls skip the corporate proxy by themselves: .env has CII_AI_BYPASS_PROXY=true (as v1's
 #   TSG_LITELLM_BYPASS_PROXY). Keep CII_LOG_LEVEL=INFO: DEBUG is for a short diagnosis only.
 
-# Window 1 - job worker (threat finding, scenarios, controls).
+# Window 1 - job worker (threat finding, scenarios, controls, remediation plans).
 #   --pool=threads is REQUIRED: gevent / prefork are refused at start-up on purpose.
-celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios -n scenarios@%h --loglevel=INFO
+celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation -n scenarios@%h --loglevel=INFO
 
 # Window 2 - Service Mapper worker (its own queue, 2 mappings at once; as run.ps1 does locally).
 #   !! RUN BOTH LINES, in this order, in the SAME window: its own metrics port (9103), never the job worker's 9100.
@@ -171,12 +175,12 @@ python scripts/monitoring.py status
 #      - Stop it:  python scripts/monitoring.py stop
 
 # 13. Check that every celery worker is working (new window, .venv activated):
-python -c "from app.worker.heartbeat import count_online_workers; from app.worker import ROUTED_QUEUES; print(count_online_workers(ROUTED_QUEUES))"
-#    each of tsg_threats, tsg_scenarios, tsg_servicemapper, tsg_maintenance must show at least 1 (wait up to 20 s after start)
+python -c "from app.core.readiness import count_online_workers; from app.worker import ROUTED_QUEUES; print(count_online_workers(ROUTED_QUEUES))"
+#    each of tsg_threats, tsg_scenarios, tsg_controls, tsg_remediation, tsg_servicemapper, tsg_maintenance must show at least 1 (wait up to 20 s after start)
 celery -A app.worker inspect ping
 #    must answer pong from scenarios@..., mapper@... and maintenance@...
 celery -A app.worker inspect active_queues
-#    scenarios@... serves tsg_threats + tsg_scenarios; mapper@... serves tsg_servicemapper; maintenance@... serves
+#    scenarios@... serves tsg_threats + tsg_scenarios + tsg_controls + tsg_remediation; mapper@... serves tsg_servicemapper; maintenance@... serves
 #    tsg_maintenance (intelligence refresh, embeddings builds, the reaper). Each worker is named by its module:
 #    its log file is logs/worker-<name>.log, and every job line carries module=<module> and worker=<name>@<host>.
 #    Beat is not in these checks: about 1 minute after it starts, the maint window must log tsg_reap, every minute.

@@ -2,8 +2,8 @@
 value written in it: deploy_threatgen.yaml (ai-threatgen), deploy_remediation.yaml (ai-remediation),
 deploy_common.yaml (the monitoring and Flower in ai-common), the two networkpolicy files, configmap.yaml
 and secrets.example.yaml (the template of the git-ignored secrets.yaml). The settings the pods load, each
-project's quota, the owner's two file rules (no kubernetes.io, a comment on every line) and what goes into
-the image.
+project's quota, the owner's two file rules (no kubernetes.io but the node label that spreads the pods, a
+comment on every line), the spreading over nodes and what goes into the image.
 A broken file must fail here, not halfway through a rollout."""
 
 import math
@@ -19,7 +19,7 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import LITELLM_MODEL_PREFIX, Generation, Lease, Queue, ThreatFinding, Worker
+from app.core.constants import LITELLM_MODEL_PREFIX, Controls, Generation, Lease, Queue, ThreatFinding
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -106,6 +106,12 @@ REFERENCES = {
     "secretKeyRef": "Secret",
 }
 BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
+CHAT_MODEL_REQUESTS_PER_MINUTE = 192  # kimi-k2.5's own limit on UAT's gateway key (owner, 2026-10-24)
+#: Every worker's startup and liveness probe: the light app.probe module pings this very worker.
+WORKER_PING = ["sh", "-c", 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10']
+KUBERNETES_IO = "kubernetes.io"
+#: The owner's one exception to "no kubernetes.io" (2026-10-24): the node label as a spreading rule's key.
+NODE_TOPOLOGY = ("topologyKey", "kubernetes.io/hostname")
 
 
 def _objects(*paths: Path, kind: str = "") -> list[dict]:
@@ -266,6 +272,15 @@ def _uncommented_lines(path: Path) -> list[str]:
     return found
 
 
+def _scalars(node: object, key: object = None) -> list[tuple[object, object]]:
+    """Every scalar of a parsed YAML tree, each key too, with the key it sits under."""
+    if isinstance(node, dict):
+        return [found for name, value in node.items() for found in [(key, name), *_scalars(value, name)]]
+    if isinstance(node, list):
+        return [found for item in node for found in _scalars(item, key)]
+    return [(key, node)]
+
+
 def _reads(deployment: dict) -> set[tuple[str, str, str]]:
     """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes, and
     its volume claims; key "" = the whole object."""
@@ -289,9 +304,22 @@ def _reads(deployment: dict) -> set[tuple[str, str, str]]:
 
 
 @pytest.mark.parametrize("path", YAML_FILES, ids=lambda path: path.name)
-def test_no_deploy_file_names_kubernetes_io(path: Path) -> None:
-    """The owner's rule: no kubernetes.io anywhere, not in a label, selector, Secret type or comment."""
-    assert "kubernetes.io" not in path.read_text(encoding="utf-8")
+def test_no_deploy_file_names_kubernetes_io_but_the_node_label_that_spreads_pods(path: Path) -> None:
+    """The owner's rule: no kubernetes.io anywhere, not in a label, selector, Secret type or comment, with one
+    exception (2026-10-24): kubernetes.io/hostname as a topologyKey value, alone on its line bar a comment."""
+    text = path.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if KUBERNETES_IO in line]
+    for line in lines:
+        assert line.split(" #")[0].strip() == ": ".join(NODE_TOPOLOGY), line
+        assert line.count(KUBERNETES_IO) == 1, line  # not in the line's comment
+    parsed = [
+        found
+        for document in yaml.safe_load_all(text)
+        for found in _scalars(document)
+        if KUBERNETES_IO in str(found[1])
+    ]
+    # Each such line is a real topologyKey, not text inside a string (an embedded file, say).
+    assert parsed == [NODE_TOPOLOGY] * len(lines)
 
 
 @pytest.mark.parametrize("path", YAML_FILES, ids=lambda path: path.name)
@@ -355,8 +383,10 @@ def test_every_queue_has_a_worker_in_each_app_project() -> None:
                 assert "--pool=threads" in command  # the worker refuses any other pool at start-up
                 # Ready only once it answers its own ping, so rollout status waits until the queue is served.
                 container = _container(deployment)
-                assert container["startupProbe"]["exec"] == container["livenessProbe"]["exec"], namespace
+                for probe in ("startupProbe", "livenessProbe"):
+                    assert container[probe]["exec"]["command"] == WORKER_PING, (namespace, probe)
                 queues.setdefault(namespace, []).append(command[command.index("-Q") + 1])
+    assert (REPO / "app" / "probe.py").is_file()  # the module the probes load
     assert sorted(queues["ai-threatgen"]) == sorted(queues["ai-remediation"]) == sorted(ROUTED_QUEUES)
 
 
@@ -381,6 +411,29 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
             assert deployment["spec"]["strategy"]["rollingUpdate"] == expected, deployment["metadata"]
         else:
             assert deployment["metadata"]["name"] == "beat"
+
+
+def test_every_worker_and_the_api_prefer_a_node_without_another_copy_of_themselves() -> None:
+    """A worker and its twin in the other project, or the two API pods, on one node both stop when it fails.
+    Preferred, never required: a pod must still start on a small or busy cluster and as the API's surge pod.
+    The API names no namespaces (its own project), so a CrossNamespacePodAffinity quota never refuses it."""
+    spread = set()
+    for deployment in _app_deployments():
+        name, namespace = deployment["metadata"]["name"], deployment["metadata"]["namespace"]
+        affinity = deployment["spec"]["template"]["spec"].get("affinity")
+        if name == "beat":
+            assert affinity is None  # a single pod: nothing to keep apart
+            continue
+        term = {"labelSelector": {"matchLabels": {"app": name}}, "topologyKey": NODE_TOPOLOGY[1]}
+        if name != "api":
+            term["namespaces"] = list(APP_FILES)  # the twin runs in the other project
+        assert affinity == {
+            "podAntiAffinity": {
+                "preferredDuringSchedulingIgnoredDuringExecution": [{"weight": 100, "podAffinityTerm": term}]
+            }
+        }, (namespace, name)
+        spread.add((namespace, name))
+    assert ("ai-threatgen", "api") in spread and len(spread) == 1 + 2 * len(ROUTED_QUEUES)
 
 
 def test_every_project_stays_within_its_quota_during_an_update() -> None:
@@ -640,25 +693,31 @@ def test_the_image_gets_only_what_it_runs() -> None:
 
 
 def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
-    """Threads x AI calls per job x replicas near CII_MAX_CONCURRENT_AI_CALLS, in each project (either one
-    alone serves every queue while its twin restarts): more only waits on a slot (and times out the job), far
-    fewer leaves the cap unused."""
-    cap = int(_settings()["CII_MAX_CONCURRENT_AI_CALLS"])
+    """Each AI worker's own threads x AI calls per job x replicas, summed over a project, near
+    CII_MAX_CONCURRENT_AI_CALLS (either project alone serves every queue while its twin restarts): more only
+    waits on a slot (and times out the job), far fewer leaves the cap unused. With no cap (0), the chat
+    model's requests-a-minute limit paces the calls: it is set, and within what kimi-k2.5 takes."""
+    settings = _settings()
+    cap = int(settings["CII_MAX_CONCURRENT_AI_CALLS"])
+    if cap == 0:
+        assert 0 < int(settings["CII_CHAT_REQUESTS_PER_MINUTE"]) <= CHAT_MODEL_REQUESTS_PER_MINUTE
+        return
     calls_per_job = {
         Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,
         Queue.SCENARIOS: Generation.WRITER_BATCH,
+        Queue.CONTROLS: Controls.PER_DELIVERY,
     }
     for namespace, path in APP_FILES.items():
-        checked = set()
+        asked, checked = 0, set()
         for deployment in _objects(path, kind="Deployment"):
             command = _container(deployment)["command"]
             queue = command[command.index("-Q") + 1] if "-Q" in command else None
             if queue in calls_per_job:
                 threads = int(command[command.index("-c") + 1])
-                asked = threads * calls_per_job[queue] * deployment["spec"]["replicas"]
-                assert threads == Worker.THREADS and cap / 2 < asked <= cap, (namespace, queue, asked, cap)
+                asked += threads * calls_per_job[queue] * deployment["spec"]["replicas"]
                 checked.add(queue)
         assert checked == set(calls_per_job), namespace
+        assert cap / 2 < asked <= cap, (namespace, asked, cap)
 
 
 def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:

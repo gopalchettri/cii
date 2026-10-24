@@ -63,6 +63,7 @@ class ControlMapping:
     query_shortened: tuple[str, ...] = ()  # the query's parts cut to fit QUERY_MAX_CHARS (labels only)
     mitigations: tuple[str, ...] = ()  # the evidence's mitigations that guided the search
     ai_controls: bool = True  # False when the card's threat is not about AI (no AI-domain control)
+    shortlist: tuple[tuple[int, float], ...] = ()  # every candidate reranked: (control_id, 0-100 score)
 
 
 @dataclass(frozen=True)

@@ -7,9 +7,11 @@ from dataclasses import replace
 from typing import Any
 
 from app.ai import RerankModel
-from app.core.config import get_settings
+from app.ai.profiles import EMBEDDING_MODEL_PROFILES, find_model_profile
+from app.core.config import Settings, get_settings
 from app.core.constants import (
     EMBEDDING_SOURCE_TABLE,
+    QUERY_TASKS,
     REAL_WORLD_USER,
     ControlMatch,
     ControlMessage,
@@ -54,7 +56,11 @@ class ControlMapper:
         scored, query, other_type, about_ai = self._scored_candidates(scenario, context, snapshot, rule)
         mapping = select_controls(scored, rule, query.text, other_type)
         return replace(
-            mapping, query_shortened=query.shortened, mitigations=query.mitigations, ai_controls=about_ai
+            mapping,
+            query_shortened=query.shortened,
+            mitigations=query.mitigations,
+            ai_controls=about_ai,
+            shortlist=tuple((control.control_id, score) for control, score in scored),
         )
 
     def find_alternatives(
@@ -64,12 +70,16 @@ class ControlMapper:
         snapshot: LibrarySnapshot,
         identified: Collection[int],
         count: int,
+        mapped: dict[str, Any] | None = None,
     ) -> _Scored:
         """The `count` best-scored library controls for the scenario that are not `identified` nor one's twin:
-        what a remediation plan may put in place of an identified control that does not fit its risk."""
+        what a remediation plan may put in place of an identified control that does not fit its risk.
+        `mapped`: the scenario's controls record, whose reranked shortlist is reused when it still applies."""
         if not snapshot.library.control_library:
             return []
-        scored, _, _, _ = self._scored_candidates(scenario, context, snapshot, _control_rule())
+        scored = _stored_shortlist(mapped or {}, scenario, context, snapshot)
+        if scored is None:
+            scored, _, _, _ = self._scored_candidates(scenario, context, snapshot, _control_rule())
         taken = {
             name_match_key(describe_control(control))
             for control in snapshot.library.control_library
@@ -129,24 +139,63 @@ def _scenario_systems(content: dict[str, Any], context: FrozenContext) -> list[d
     return [system for system in context.systems if system["id"] in ids]
 
 
-def controls_record(mapping: ControlMapping, snapshot: LibrarySnapshot) -> dict[str, Any]:
-    """What a scenario keeps of its mapping: the controls, the warning, and what was searched with what (the
-    query, the models, the library version and the rule)."""
-    settings = get_settings()
+def _control_library_stamp(snapshot: LibrarySnapshot) -> dict[str, str | None]:
+    """The control library table's version, as a mapping record keeps it."""
     table = EMBEDDING_SOURCE_TABLE[EmbeddingCorpus.CONTROL]
-    stamp = {
+    return {
         name: digest.hex() if digest else None for name, digest in snapshot.library.stamp if name == table
     }
+
+
+def control_query_instruction(settings: Settings) -> str | None:
+    """What the control query is embedded after (None: sent plain), as the embedding gateway sends it."""
+    profile = find_model_profile(EMBEDDING_MODEL_PROFILES, settings.embedding_model)
+    return profile.instruction_for(QUERY_TASKS[EmbeddingCorpus.CONTROL])
+
+
+def _stored_shortlist(
+    mapped: dict[str, Any], scenario: dict[str, Any], context: FrozenContext, snapshot: LibrarySnapshot
+) -> _Scored | None:
+    """The mapping's reranked shortlist when it was searched by the same query (as embedded: its instruction
+    too), library, models, candidate count and AI rule the scenario has now; None otherwise, or when the
+    record keeps none."""
+    shortlist = mapped.get("shortlist")
+    if not shortlist:
+        return None
+    settings, content = get_settings(), scenario["content"]
+    searched_now = {
+        "rerank_model": settings.rerank_model,
+        "embedding_model": settings.embedding_model,
+        "query_instruction": control_query_instruction(settings),
+        "library": _control_library_stamp(snapshot),
+        "candidates": settings.control_candidates,
+        "ai_controls": is_about_ai(content),
+    }
+    made_with = mapped.get("made_with") or {}
+    if any(made_with.get(key) != value for key, value in searched_now.items()):
+        return None
+    if mapped.get("query") != control_query(content, context, _scenario_systems(content, context)).text:
+        return None
+    by_id = {control.control_id: control for control in snapshot.library.control_library}
+    return [(by_id[entry["control_id"]], entry["score"]) for entry in shortlist]
+
+
+def controls_record(mapping: ControlMapping, snapshot: LibrarySnapshot) -> dict[str, Any]:
+    """What a scenario keeps of its mapping: the controls, the warning, every candidate reranked with its
+    score, and what was searched with what (the query, the models, the library version and the rule)."""
+    settings = get_settings()
     return {
         "items": [item.to_record() for item in mapping.items],
         "warning": mapping.warning,
         "shortfall": mapping.shortfall,
         "left_out_over_max": mapping.left_out,
         "query": mapping.query,
+        "shortlist": [{"control_id": control_id, "score": score} for control_id, score in mapping.shortlist],
         "made_with": {
             "rerank_model": settings.rerank_model,
             "embedding_model": settings.embedding_model,
-            "library": stamp,
+            "query_instruction": control_query_instruction(settings),
+            "library": _control_library_stamp(snapshot),
             "threshold": settings.control_similarity_threshold,
             "candidates": settings.control_candidates,
             "min_controls": settings.min_controls,

@@ -128,14 +128,15 @@ class RemediationPlanJob:
                 raise LeaseLost(lease.record_id)
         controls = library.library.control_library
         by_id = {row.control_id: row for row in controls}
-        items = self._mapped_items(lease, scenario, context, library, by_id)
+        mapped = self._mapped_controls(lease, scenario, context, library, by_id)
+        items = mapped["items"]
         register = lease.record["register"]
         systems, affected = risk_scope(scenario, context, register)
         categories = context.system_categories()
         library_mapped, warnings = assess_controls(items, register, controls, systems, affected, categories)
         identified = [item["control_id"] for item in items]
         found = self._mapper.find_alternatives(
-            scenario, context, library, identified, Remediation.ALTERNATIVES
+            scenario, context, library, identified, Remediation.ALTERNATIVES, mapped
         )
         alternatives = assess_alternatives(found, register, controls, systems, affected, categories)
         snapshot = build_snapshot(
@@ -144,32 +145,31 @@ class RemediationPlanJob:
         self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot})
         return snapshot
 
-    def _mapped_items(
+    def _mapped_controls(
         self,
         lease: JobLease,
         scenario: dict[str, Any],
         context: FrozenContext,
         library: LibrarySnapshot,
         by_id: dict[int, LibraryControl],
-    ) -> list[dict[str, Any]]:
-        """The scenario's mapped control items: as stored, mapped here, or mapped by another job."""
+    ) -> dict[str, Any]:
+        """The scenario's controls record (its items, query and shortlist): as stored, mapped here, or mapped
+        by another job."""
         if active_mapped_controls(scenario, by_id):
-            return scenario["controls"]["items"]
+            return scenario["controls"]
         scenario_id, task_id = scenario["_id"], f"{lease.task_id}:plan"
         remap = (scenario.get("controls") or {}).get("status") == Status.DONE  # mapped, but nothing active
         claimed = self._scenarios.claim_scenario_controls_by_id(scenario_id, task_id, remap)
         if claimed is not None:
             return self._map(claimed, task_id, context, library)
-        mapped = self._scenarios.get(
-            ["controls.status", "controls.items"], _id=scenario_id, controls_mapped=True
-        )
+        mapped = self._scenarios.get(["controls"], _id=scenario_id, controls_mapped=True)
         if mapped is None or not active_mapped_controls(mapped, by_id):  # given back: no attempt used
             raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED)
-        return mapped["controls"]["items"]
+        return mapped["controls"]
 
     def _map(
         self, claimed: dict[str, Any], task_id: str, context: FrozenContext, library: LibrarySnapshot
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Maps and saves the claimed scenario's controls under its lease; gives them back on a failure."""
         scenario_id, attempts, started = claimed["_id"], claimed["controls"]["attempts"], time.perf_counter()
         try:
@@ -204,7 +204,7 @@ class RemediationPlanJob:
             raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED)
         self._settle(claimed, time.perf_counter() - started)
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=True)
-        return record["items"]
+        return record
 
     def _settle(self, claimed: dict[str, Any], seconds: float = 0.0) -> None:
         """Updates the run's counts and tells its watchers after a scenario's controls changed state."""
