@@ -1,32 +1,32 @@
 # TSG v2 image. The API, every worker, beat and Flower run from this one image; the command in
-# deploy/app.yaml (and deploy/observability.yaml for Flower) picks the role. Build and push with
-# deploy/build-image.ps1, which tags it with the git commit.
+# deploy/deploy_threatgen.yaml, deploy_remediation.yaml and deploy_common.yaml picks the role.
+# Built, checked and pushed by deploy\build-image.bat.
 #
-# Bookworm by name: Microsoft's ODBC Driver 17 package below is published for Debian 12, and the UAT
-# connection string names Driver 17 (as v1's does). A plain python:3.12-slim follows Debian's newest release.
-FROM python:3.12-slim-bookworm
+# UBI 9: the cluster pulls only Red Hat images and our own. Python 3.12 comes from the UBI repos, ODBC
+# Driver 17 (the UAT connection string names it) from Microsoft's RHEL 9 repo.
+FROM registry.access.redhat.com/ubi9:latest
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
     PYTHONPATH=/app
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
- && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
-        > /etc/apt/sources.list.d/mssql-release.list \
- && apt-get update \
- && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 \
- && rm -rf /var/lib/apt/lists/*
+# Python 3.12 as "python" and "pip", and Microsoft's ODBC Driver 17 (unixODBC from UBI AppStream).
+RUN dnf install -y python3.12 python3.12-pip \
+ && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+ && ln -sf /usr/bin/pip3.12 /usr/local/bin/pip \
+ && curl -fsSL -o /etc/yum.repos.d/mssql-release.repo https://packages.microsoft.com/config/rhel/9/prod.repo \
+ && ACCEPT_EULA=Y dnf install -y msodbcsql17 \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf
 
 WORKDIR /app
 # The dependencies alone, at the versions the tests passed on (requirements.txt): their own layer, so a code
 # change does not reinstall them. The app itself is not installed as a package: it runs from /app
 # (PYTHONPATH), where its sources are replaced by bytecode below. No `local` extra: UAT and production use
-# the proxy's reranker, so no torch and no model files.
+# the proxy's reranker, so no torch and no model files. pip puts uvicorn and celery in /usr/local/bin.
 COPY pyproject.toml requirements.txt ./
 RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" \
         > /tmp/dependencies.txt \

@@ -51,11 +51,15 @@ if not defined TAG for /f %%D in ('powershell -NoProfile -Command "(Get-Date).To
 if not defined TAG (echo ERROR: could not read today's date from PowerShell. Pass the tag: deploy\build-image.bat 24-Oct-2026 & goto fail)
 set "IMAGE=%REGISTRY%/%REPOSITORY%:%TAG%"
 
-rem 4. Never overwrite a tag in Quay: the pods would keep running the old image.
+rem 4. Never overwrite a tag in Quay: the pods would keep running the old image. Only "no such manifest" means
+rem    it is not there; any other error (certificate, network) stops the build rather than risk an overwrite.
 if "%PUSH%"=="0" goto build
-call docker manifest inspect "%IMAGE%" >nul 2>&1
-if errorlevel 1 goto build
-echo ERROR: %IMAGE% is already in Quay. Use a new tag, e.g.: deploy\build-image.bat %TAG%-2
+set "OUT=%TEMP%\build-image-manifest.txt"
+call docker manifest inspect "%IMAGE%" >"%OUT%" 2>&1
+if not errorlevel 1 (echo ERROR: %IMAGE% is already in Quay. Use a new tag, e.g.: deploy\build-image.bat %TAG%-2 & goto fail)
+findstr /l /c:"no such manifest:" "%OUT%" >nul && goto build
+type "%OUT%"
+echo ERROR: cannot check whether %IMAGE% is already in Quay: fix the error above, or use --no-push.
 goto fail
 
 rem 5. Build the image.

@@ -13,7 +13,10 @@ Run every command in PowerShell, in the `cii` folder. Replace `<...>` with your 
 - `oc login --server=<cluster API address>`, with admin rights in the three projects.
 - `docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local`
 - The DBA has installed `scripts\sql\tsg_*.sql`, then `scripts\sql\grants.sql`.
-- The monitoring images are in Quay (the `image:` lines in `deploy\deploy_common.yaml`).
+- The monitoring images are in Quay (the `image:` lines in `deploy\deploy_common.yaml`): build them once with
+  `deploy\build-monitoring-images.bat` (it takes a while the first time), and after a version change the changed
+  one, e.g. `deploy\build-monitoring-images.bat grafana` (a new kube-state-metrics tag also needs `SRC_SHA256` in
+  `deploy\images\kube-state-metrics\Dockerfile`: the sha256 of that tag's source archive).
 - First deploy? Do [First time only](#first-time-only) before step 5.
 
 ## 1. Build and push the image
@@ -184,7 +187,7 @@ Steps 1 and 2. Steps 3 and 4 only if `secrets.example.yaml` or `configmap.yaml` 
 
 | You see | Do this |
 |---|---|
-| `ImagePullBackOff` | The tag is not in Quay (step 1, 2) or `quay-pull` is missing (First time only a). |
+| `ImagePullBackOff` | The tag is not in Quay (step 1, 2; a monitoring image: `deploy\build-monitoring-images.bat`) or `quay-pull` is missing (First time only a). |
 | `exceeded quota` | Wait 2 minutes (an old pod is still stopping). Still failing: `oc -n <project> describe quota`. |
 | `CreateContainerConfigError` | Apply `secrets.yaml` and `configmap.yaml` (steps 3, 4). |
 | `field is immutable` | An old Deployment is still there: First time only b. |

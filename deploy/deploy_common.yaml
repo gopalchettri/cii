@@ -19,20 +19,12 @@
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
 # New release: Flower runs from the app image, so its tag (24-Oct-2026) changes with the deploy_*.yaml files.
 #
-# BEFORE THE FIRST APPLY - images. The cluster pulls only from the Quay mirror
-# <mirror> = quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc. Copy each monitoring image there from
-# a machine with internet access, before the first apply and after any version change below:
-#   docker.io/prom/prometheus:v3.15.0                             -> <mirror>/prometheus:v3.15.0
-#   docker.io/prom/alertmanager:v0.34.1                           -> <mirror>/alertmanager:v0.34.1
-#   docker.io/grafana/loki:3.7.8                                  -> <mirror>/loki:3.7.8
-#   docker.io/grafana/alloy:v1.20.1                               -> <mirror>/alloy:v1.20.1
-#   docker.io/grafana/grafana:12.4.12                             -> <mirror>/grafana:12.4.12
-#   docker.io/oliver006/redis_exporter:v1.93.0                    -> <mirror>/redis_exporter:v1.93.0
-#   registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0 -> <mirror>/kube-state-metrics:v2.20.0
-# For each one, e.g.:
-#   podman pull --platform linux/amd64 docker.io/prom/prometheus:v3.15.0
-#   podman tag  docker.io/prom/prometheus:v3.15.0 <mirror>/prometheus:v3.15.0
-#   podman push <mirror>/prometheus:v3.15.0
+# BEFORE THE FIRST APPLY - images. The cluster pulls only from Quay
+# (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc). The 7 monitoring images are built on Red Hat
+# UBI 9 (registry.access.redhat.com/ubi9:latest) by deploy\build-monitoring-images.bat from each program's
+# official release (kube-state-metrics from its source), and pushed to Quay under the names below.
+# Change a version by changing its image: line, then run: deploy\build-monitoring-images.bat <name>
+# (kube-state-metrics also needs SRC_SHA256 in deploy/images/kube-state-metrics/Dockerfile: the new tag's sha256).
 # The version on each image line is the one pin: scripts/monitoring.py installs the same versions on a laptop.
 #
 # FIRST TIME ONLY: the old monitoring ran in ai-remediation, and a Deployment's selector cannot change. Delete it
@@ -267,7 +259,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (Quay)
       containers:                                # the programs in the pod
         - name: prometheus                       # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/prometheus:v3.15.0   # the mirrored Prometheus image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/prometheus:v3.15.0   # Prometheus, built on UBI 9 (deploy\build-monitoring-images.bat)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -338,7 +330,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: alertmanager                     # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alertmanager:v0.34.1   # the mirrored Alertmanager image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alertmanager:v0.34.1   # Alertmanager, built on UBI 9 (deploy\build-monitoring-images.bat)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -409,7 +401,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: loki                             # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/loki:3.7.8   # the mirrored Loki image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/loki:3.7.8   # Loki, built on UBI 9 (deploy\build-monitoring-images.bat)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -481,7 +473,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: alloy                            # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alloy:v1.20.1   # the mirrored Alloy image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/alloy:v1.20.1   # Alloy, built on UBI 9 (deploy\build-monitoring-images.bat)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -562,7 +554,7 @@ spec:                                            # what to run
             limits: { cpu: 200m, memory: 256Mi }   # the most it may use
       containers:                                # the programs in the pod
         - name: grafana                          # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/grafana:12.4.12   # the mirrored Grafana image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/grafana:12.4.12   # Grafana, built on UBI 9 (deploy\build-monitoring-images.bat)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -647,7 +639,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: redis-exporter                   # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/redis_exporter:v1.93.0   # the mirrored redis_exporter image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/redis_exporter:v1.93.0   # redis_exporter, built on UBI 9 (deploy\build-monitoring-images.bat)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -694,7 +686,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: kube-state-metrics               # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/kube-state-metrics:v2.20.0   # the mirrored kube-state-metrics image
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/kube-state-metrics:v2.20.0   # kube-state-metrics, built on UBI 9 (deploy\build-monitoring-images.bat)
           imagePullPolicy: IfNotPresent          # pull only if missing
           args: ["--namespaces=ai-threatgen,ai-remediation,ai-common", --resources=pods]   # the pods of the app's two projects and this one (restarts, OOM kills, pods that never start)
           ports: [{ name: metrics, containerPort: 8080 }]   # its metrics port
