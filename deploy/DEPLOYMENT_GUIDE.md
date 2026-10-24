@@ -13,10 +13,6 @@ Run every command in PowerShell, in the `cii` folder. Replace `<...>` with your 
 - `oc login --server=<cluster API address>`, with admin rights in the three projects.
 - `docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local`
 - The DBA has installed `scripts\sql\tsg_*.sql`, then `scripts\sql\grants.sql`.
-- The monitoring images are in Quay (the `image:` lines in `deploy\deploy_common.yaml`): build them once with
-  `deploy\build-monitoring-images.bat` (it takes a while the first time), and after a version change the changed
-  one, e.g. `deploy\build-monitoring-images.bat grafana` (a new kube-state-metrics tag also needs `SRC_SHA256` in
-  `deploy\images\kube-state-metrics\Dockerfile`: the sha256 of that tag's source archive).
 - First deploy? Do [First time only](#first-time-only) before step 5.
 
 ## 1. Build and push the image
@@ -120,7 +116,16 @@ https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/ and Flower
 
 ## First time only
 
-**a) Image pull secret** in the two other projects (copied from `ai-threatgen`):
+**a) Build and push the 7 monitoring images** (Prometheus, Alertmanager, Loki, Alloy, Grafana, redis-exporter,
+kube-state-metrics). It takes a while the first time:
+
+```powershell
+deploy\build-monitoring-images.bat
+```
+
+Check: the last lines list the 7 images, and it ends without `ERROR`.
+
+**b) Image pull secret** in the two other projects (copied from `ai-threatgen`):
 
 ```powershell
 oc -n ai-threatgen extract secret/quay-pull --keys=.dockerconfigjson "--to=$env:TEMP" --confirm
@@ -129,7 +134,7 @@ oc -n ai-common create secret generic quay-pull --type=kubernetes.io/dockerconfi
 Remove-Item "$env:TEMP\.dockerconfigjson"
 ```
 
-**b) Remove the old deploy** (the API is down for a few minutes until step 7 finishes). "NotFound" is fine.
+**c) Remove the old deploy** (the API is down for a few minutes until step 7 finishes). "NotFound" is fine.
 
 ```powershell
 oc -n ai-threatgen scale deployment tsg-api celery-worker celery-worker-admin tsg-beat tsg-flower --replicas=0
@@ -146,7 +151,7 @@ Then check that no other Route uses the two addresses; delete any old one you fi
 foreach ($p in 'ai-threatgen', 'ai-remediation', 'ai-common') { "== $p"; oc -n $p get route | findstr threatgen }
 ```
 
-**c) After step 9: an API key for each calling system** (shown once: copy it):
+**d) After step 9: an API key for each calling system** (shown once: copy it):
 
 ```powershell
 $adminKey = Read-Host 'Admin key (CII_ADMIN_API_KEY)'
@@ -155,7 +160,7 @@ curl.exe -sk -X POST https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1
 Remove-Item client.json
 ```
 
-**d) First import of the outside intelligence:**
+**e) First import of the outside intelligence:**
 
 ```powershell
 curl.exe -sk -X POST https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/intel/refresh
@@ -181,15 +186,20 @@ oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --timeout=10
 
 ## New release
 
-Steps 1 and 2. Steps 3 and 4 only if `secrets.example.yaml` or `configmap.yaml` changed. Then steps 6, 7, 8 and 9.
+1. Steps 1 and 2.
+2. Only if a monitoring version changed (an `image:` line in `deploy\deploy_common.yaml`): build that image, e.g.
+   `deploy\build-monitoring-images.bat grafana`. A new kube-state-metrics version also needs its `SRC_SHA256` in
+   `deploy\images\kube-state-metrics\Dockerfile` (the sha256 of that version's source archive).
+3. Only if `secrets.example.yaml` or `configmap.yaml` changed: steps 3 and 4.
+4. Steps 6, 7, 8 and 9.
 
 ## If something fails
 
 | You see | Do this |
 |---|---|
-| `ImagePullBackOff` | The tag is not in Quay (step 1, 2; a monitoring image: `deploy\build-monitoring-images.bat`) or `quay-pull` is missing (First time only a). |
+| `ImagePullBackOff` | The tag is not in Quay (step 1, 2; a monitoring image: First time only a) or `quay-pull` is missing (First time only b). |
 | `exceeded quota` | Wait 2 minutes (an old pod is still stopping). Still failing: `oc -n <project> describe quota`. |
 | `CreateContainerConfigError` | Apply `secrets.yaml` and `configmap.yaml` (steps 3, 4). |
-| `field is immutable` | An old Deployment is still there: First time only b. |
+| `field is immutable` | An old Deployment is still there: First time only c. |
 | `/ready` answers 503 | The answer names the missing store or worker: `oc -n <project> logs deploy/<name>`. |
 | `CrashLoopBackOff` | `oc -n <project> logs deploy/<name> --previous` shows why (often a setting). |
