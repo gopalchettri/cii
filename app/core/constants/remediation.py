@@ -143,6 +143,10 @@ class RemediationMessage(StrEnum):
         "started: {known})."
     )
     REGISTER_SYSTEMS_INVALID = "A supporting system list names a system the scenario's asset does not have."
+    SYSTEM_FLAG_REMOVED = (
+        "{flag} is no longer accepted: send {replacement}, the list of the asset's supporting system ids, "
+        "instead."
+    )
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
     REFERENCES_INVALID = "Some control references cannot be resolved."

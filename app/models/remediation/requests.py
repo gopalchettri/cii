@@ -12,14 +12,15 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    StrictInt,
     StringConstraints,
+    ValidationError,
     WithJsonSchema,
     field_validator,
     model_validator,
 )
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
-from app.core.constants import Decision, Limits, Remediation, RemediationMessage, Review, YesNo
+from app.core.constants import Decision, Limits, Remediation, RemediationMessage, Review
 from app.models.scenario.views import SqlId, StartRunRequest
 
 #: What a library control code looks like ("CII-CID-202"): groups joined by separators, with a digit. It only
@@ -72,8 +73,6 @@ _RecordId = Annotated[Annotated[str, Field(max_length=Review.MAX_ID_CHARS)] | No
 _Comment = Annotated[Annotated[str, Field(max_length=Remediation.COMMENT_MAX_CHARS)] | None, Blank]
 #: A library row's id: blank means not given.
 _LibraryId = Annotated[Annotated[int, Field(gt=0, le=Limits.MAX_SQL_INT)] | None, Blank]
-#: A register flag, 1 yes or 0 no, as a JSON integer: true, "1" and 1.0 are refused (422).
-_Flag = Annotated[StrictInt, Field(ge=0, le=1)]
 
 
 class ControlRef(BaseModel):
@@ -162,6 +161,12 @@ _SystemIds = Annotated[
 ]
 #: The register's two lists of the asset's supporting systems: of the risk, of the existing controls.
 SYSTEM_LISTS = ("supporting_systems_applicable_to_risk", "supporting_systems_applicable_to_existing_controls")
+#: The old yes/no flags the two lists replace, each refused with the list to send instead.
+_REMOVED_FLAGS = {
+    "all_supporting_systems_applicable": SYSTEM_LISTS[0],
+    "existing_controls_all_supporting_system_applicable": SYSTEM_LISTS[1],
+    "existing_controls_all_subsystems": SYSTEM_LISTS[1],
+}
 #: Repeats kept, so a 422 names the entry's place in the request; resolving them keeps each library row once.
 ScenarioControls = Annotated[
     list[ControlRef], BeforeValidator(_drop_blank_entries), Field(max_length=Remediation.MAX_CONTROL_REFS)
@@ -281,15 +286,6 @@ class PlanRequest(BaseModel):
         "for them all; none (null, blank or []): they are on no supporting system. Only the systems the risk "
         "applies to count; a repeat is dropped.",
     )
-    all_supporting_systems_applicable: Annotated[_Flag | None, Blank] = Field(
-        None,
-        description="Kept for older callers and not used: supporting_systems_applicable_to_risk decides.",
-    )
-    existing_controls_all_supporting_system_applicable: Annotated[_Flag | None, Blank] = Field(
-        None,
-        description="Kept for older callers and not used: supporting_systems_applicable_to_existing_controls "
-        "decides.",
-    )
     existing_controls: Annotated[RegisterControls | None, Blank] = None
     likelihood_rating: Rating = None
     impact_rating: Rating = None
@@ -298,11 +294,6 @@ class PlanRequest(BaseModel):
     risk_identification_date: Annotated[datetime | None, Blank] = None
     risk_owner: _Name = None
     impacted_business_division: _Name = None
-    existing_controls_all_subsystems: Annotated[YesNo | None, Blank] = Field(
-        None,
-        description="Kept for older callers and not used: supporting_systems_applicable_to_existing_controls "
-        "decides.",
-    )
     existing_controls_all_subsystems_justification: _Justification = None
     mitigation_start_date: CalendarDate = None
     mitigation_end_date: CalendarDate = None
@@ -315,6 +306,30 @@ class PlanRequest(BaseModel):
     manual_scenario: ManualScenario | None = Field(
         None, description="is_manual=true only: the scenario a person wrote."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_the_old_flags(cls, value: Any) -> Any:
+        """An old yes/no flag, whatever its value, is refused on its field with the list to send instead."""
+        sent = [flag for flag in _REMOVED_FLAGS if isinstance(value, dict) and flag in value]
+        if sent:
+            raise ValidationError.from_exception_data(
+                cls.__name__,
+                [
+                    InitErrorDetails(
+                        type=PydanticCustomError(
+                            "flag_removed",
+                            RemediationMessage.SYSTEM_FLAG_REMOVED.format(
+                                flag=flag, replacement=_REMOVED_FLAGS[flag]
+                            ),
+                        ),
+                        loc=(flag,),
+                        input=value[flag],
+                    )
+                    for flag in sent
+                ],
+            )
+        return value
 
     @field_validator("risk_identification_date")
     @classmethod

@@ -159,8 +159,8 @@ UAT works again here. But a later deployment would bring back the old settings, 
   - prompt `remediation-5` (D34), and at most 5 controls per scenario (D22);
   - the plan request names supporting systems once per request (D34): the platform sends
     `supporting_systems_applicable_to_risk` and `supporting_systems_applicable_to_existing_controls`.
-    `supporting_system_ids` inside an existing control is now a 422, and the 0/1 flags are ignored (a request with
-    only the flags gets a plan at the asset level). Tell the platform team before the release.
+    `supporting_system_ids` inside an existing control is now a 422, and so is any of the old flags (the message
+    names the list to send instead). Tell the platform team before the release.
 - **It causes downtime.** Guide step 9 stops v1 and deletes the old v2 Deployments; UAT is down until the new API is
   running (guide step 12). Agree the release and a downtime window first.
 - **The DBA goes first.** The DBA must install every `scripts\sql\tsg_*.sql` in the UAT database, then

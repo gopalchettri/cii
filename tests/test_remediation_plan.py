@@ -349,14 +349,14 @@ NO_SYSTEM = pytest.mark.parametrize("none", [None, "", []], ids=["null", "blank"
 @NO_SYSTEM
 def test_existing_controls_on_no_supporting_system_are_needed_wherever_the_risk_is(none: Any) -> None:
     """The risk on both systems, the existing-controls list naming none: CII-CID-5, an existing control, is
-    not implemented and still needed on both, like CII-CID-6, which no one has; an older caller's flags
-    saying "on every system" never decide, even for a register without that list."""
+    not implemented and still needed on both, like CII-CID-6, which no one has; old flags stored with the risk
+    list saying "on every system" never decide, even for a register without the existing-controls list."""
     legacy = {
         "existing_controls_all_supporting_system_applicable": 1,
         "existing_controls_all_subsystems": "Yes",
     }
     lists = {"supporting_systems_applicable_to_existing_controls": none}
-    stored = _register(existing_controls=["CII-CID-5"], **lists, **legacy)
+    stored = _register(existing_controls=["CII-CID-5"], **lists) | legacy
     without_the_list = {key: value for key, value in stored.items() if key not in lists}
     for register in (stored, without_the_list):
         library_mapped, _ = _assessed([_item(5), _item(6)], register)

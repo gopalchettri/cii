@@ -587,8 +587,6 @@ Headers: identity headers, `Content-Type`; `Idempotency-Key` required when `is_m
 | `existing_controls[].control_id` | int | one of id/code/name | library id |
 | `existing_controls[].control_code` | string ≤ 100 | one of id/code/name | e.g. `CID-0446` |
 | `existing_controls[].control_name` | string ≤ 500 | one of id/code/name | |
-| `all_supporting_systems_applicable` | int `0`/`1` | no | legacy: stored, never used |
-| `existing_controls_all_supporting_system_applicable` | int `0`/`1` | no | legacy: stored, never used |
 | `likelihood_rating` | number ≥ 0 | no | ≤ 15 digits, ≤ 4 decimals |
 | `impact_rating` | number ≥ 0 | no | same |
 | `final_risk_rating` | number ≥ 0 | no | stored as sent |
@@ -596,7 +594,6 @@ Headers: identity headers, `Content-Type`; `Idempotency-Key` required when `is_m
 | `risk_identification_date` | datetime | no | naive = UTC |
 | `risk_owner` | string ≤ 200 | no | |
 | `impacted_business_division` | string ≤ 200 | no | |
-| `existing_controls_all_subsystems` | `"Yes"`/`"No"` | no | legacy, ignored |
 | `existing_controls_all_subsystems_justification` | string ≤ 1000 | no | |
 | `mitigation_start_date` | date | no, but both or neither | `YYYY-MM-DD` (a date-time's date part is used) |
 | `mitigation_end_date` | date | no, but both or neither | on or after start |
@@ -694,7 +691,7 @@ Hand-written scenario (with `Idempotency-Key`):
 
 | Status | Reason | Fix |
 | --- | --- | --- |
-| 422 | — | field errors: an id in either supporting system list that is not a positive integer; `supporting_system_ids` inside an existing control (an unknown field); a legacy flag not integer 0/1; unknown field; kinds mixed; window dates unpaired or reversed; existing control with no id/code/name |
+| 422 | — | field errors: an id in either supporting system list that is not a positive integer; `supporting_system_ids` inside an existing control (an unknown field); an old flag (see the notes); unknown field; kinds mixed; window dates unpaired or reversed; existing control with no id/code/name |
 | 422 | — | `is_manual=true` without `Idempotency-Key` (field `header.Idempotency-Key`) |
 | 422 | — | `supporting_systems_applicable_to_risk[n]` or `supporting_systems_applicable_to_existing_controls[n]` is not a supporting system of the scenario's asset (`n` is the place in the list as sent, repeats counted; the message lists the asset's systems) |
 | 422 | — / `type_mismatch` | manual: threat, type or category does not match the library |
@@ -715,7 +712,8 @@ Notes:
 - With a risk list, the existing-controls list empty → every control is `not_implemented`, needed on every affected system (with the risk list empty too, see the next bullet).
 - The risk list empty → the risk is on the asset itself: an existing control is `implemented`, any other is `not_implemented`, `protected_systems` and `required_systems` are `[]`, and the plan's actions name no supporting system.
 - `plan.applicable_to_all_subsystems` is `Yes` only when the risk list names every supporting system of the asset.
-- `is_manual` is a normal boolean. The legacy flags, when sent, are JSON integers `1`/`0` (`true`, `"1"`, `1.0` → 422); TSG stores them and never uses them. A plan stored before the two lists regenerates as before, from its flags.
+- `is_manual` is a normal boolean.
+- The old flags are refused: `all_supporting_systems_applicable`, `existing_controls_all_supporting_system_applicable` and `existing_controls_all_subsystems`. Sending one, with any value (`0`, `1`, a list, `null`, `""`), is a 422 on that field (for example `body.all_supporting_systems_applicable`). The message names the list to send instead: `supporting_systems_applicable_to_risk` for the first, `supporting_systems_applicable_to_existing_controls` for the other two. When the body also has other mistakes, only the old flags are reported; the others show on the next try. A plan stored before the two lists still regenerates as before, from its stored flags.
 - `is_manual=true`: do not send `session_id` / `scenario_id` (422); TSG creates them and returns them.
 
 **How TSG uses the two lists.** Example: the asset has four supporting systems, 1 historian, 2 workstation, 3 SCADA and 4 firewall, all of one type (so every control counts on all four). The table shows what TSG decides for an existing control (one listed in `existing_controls`); a control that is not an existing control is always `not_implemented`, needed on every system the risk applies to.

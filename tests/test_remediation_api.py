@@ -220,6 +220,10 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     assert (second.status_code, second.json()["reason"]) == (409, ConflictReason.PLAN_ALREADY_EXISTS)
     assert second.json()["details"] == {"remediation_id": first}
     assert _request(client, api_key, generated(accepted, risk_levl="High")).status_code == 422
+    old_flag = _request(client, api_key, generated(accepted, all_supporting_systems_applicable=1))
+    assert [error["field"] for error in old_flag.json().get("errors", [])] == [
+        "body.all_supporting_systems_applicable"
+    ]
     manual = {
         "is_manual": True,
         "manual_scenario": {

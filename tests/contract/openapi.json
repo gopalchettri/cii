@@ -3164,20 +3164,6 @@
      }
     ],
     "properties": {
-     "all_supporting_systems_applicable": {
-      "anyOf": [
-       {
-        "maximum": 1.0,
-        "minimum": 0.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "description": "Kept for older callers and not used: supporting_systems_applicable_to_risk decides.",
-      "title": "All Supporting Systems Applicable"
-     },
      "existing_controls": {
       "anyOf": [
        {
@@ -3193,17 +3179,6 @@
       ],
       "title": "Existing Controls"
      },
-     "existing_controls_all_subsystems": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/YesNo"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "description": "Kept for older callers and not used: supporting_systems_applicable_to_existing_controls decides."
-     },
      "existing_controls_all_subsystems_justification": {
       "anyOf": [
        {
@@ -3215,20 +3190,6 @@
        }
       ],
       "title": "Existing Controls All Subsystems Justification"
-     },
-     "existing_controls_all_supporting_system_applicable": {
-      "anyOf": [
-       {
-        "maximum": 1.0,
-        "minimum": 0.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "description": "Kept for older callers and not used: supporting_systems_applicable_to_existing_controls decides.",
-      "title": "Existing Controls All Supporting System Applicable"
      },
      "final_risk_rating": {
       "minimum": 0.0,

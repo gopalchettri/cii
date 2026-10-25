@@ -3629,6 +3629,8 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    then works out where the risk is and where each control already stands (D19, D20, D34). The request sends
    the systems once, for the whole request: `supporting_systems_applicable_to_risk` and
    `supporting_systems_applicable_to_existing_controls`, both optional (null, `""` and `[]` mean no system).
+   The old flags (`all_supporting_systems_applicable`, `existing_controls_all_supporting_system_applicable`,
+   `existing_controls_all_subsystems`) are refused: any value is a 422 on that field naming the list to send.
    - **Affected systems:** the asset's supporting systems that `supporting_systems_applicable_to_risk` lists,
      in the asset's order (the run's `asset_systems` as of its start; a run stored before D20: its own
      systems). The list empty: none; the risk is on the asset itself and the plan is at the asset level. A

@@ -154,7 +154,6 @@ def test_a_hand_written_scenario_names_its_library_rows_and_has_no_title() -> No
     for wrong in (
         {"scenario_id": "s1", "session_id": "r1"},  # is_manual is required
         GENERATED | {"strategy": "Accept"},
-        GENERATED | {"existing_controls_all_subsystems": "yes"},
         {"is_manual": True, "manual_scenario": no_entity},
         *(
             {"is_manual": True, "manual_scenario": MANUAL | changes}
@@ -406,18 +405,53 @@ BASES = {"generated": GENERATED, "hand-written": HAND_WRITTEN}
             {"existing_controls": [{"control_code": "CII-CID-1", "supporting_system_ids": [322]}]},
             ("existing_controls", 0, "supporting_system_ids"),
         ),
-        ({"all_supporting_systems_applicable": 2}, ("all_supporting_systems_applicable",)),
     ],
-    ids=["bad-risk-id", "bad-existing-id", "systems-inside-a-control", "legacy-flag-not-0-or-1"],
+    ids=["bad-risk-id", "bad-existing-id", "systems-inside-a-control"],
 )
 def test_the_supporting_system_lists_are_refused_when_wrong(
     kind: str, changes: dict[str, Any], loc: tuple[Any, ...]
 ) -> None:
-    """An impossible id in either list, an existing control naming its own systems (an unknown field) and an
-    older caller's flag other than 0 or 1 are refused."""
+    """An impossible id in either list and an existing control naming its own systems (an unknown field) are
+    refused."""
     with pytest.raises(ValidationError) as refused:
         PlanRequest.model_validate(BASES[kind] | changes)
     assert [error["loc"] for error in refused.value.errors()] == [loc]
+
+
+#: The old yes/no flags, each with the list a caller sends instead.
+OLD_FLAGS = {
+    "all_supporting_systems_applicable": "supporting_systems_applicable_to_risk",
+    "existing_controls_all_supporting_system_applicable": SYSTEM_LISTS[1],
+    "existing_controls_all_subsystems": SYSTEM_LISTS[1],
+}
+
+
+@pytest.mark.parametrize("kind", BASES)
+@pytest.mark.parametrize("flag", OLD_FLAGS)
+@pytest.mark.parametrize(
+    "value", [0, 1, [321], None, "", "Yes"], ids=["0", "1", "list", "null", "blank", "yes"]
+)
+def test_an_old_supporting_system_flag_is_refused_naming_the_list_to_send(
+    kind: str, flag: str, value: Any
+) -> None:
+    """Any value of an old flag, with the two lists or without them, is refused on that field with a message
+    naming the list to send instead."""
+    message = RemediationMessage.SYSTEM_FLAG_REMOVED.format(flag=flag, replacement=OLD_FLAGS[flag])
+    for lists in ({}, dict.fromkeys(SYSTEM_LISTS, [321])):
+        with pytest.raises(ValidationError) as refused:
+            PlanRequest.model_validate(BASES[kind] | lists | {flag: value})
+        assert [(error["loc"], error["msg"]) for error in refused.value.errors()] == [((flag,), message)]
+
+
+@pytest.mark.parametrize("kind", BASES)
+def test_old_flags_sent_together_are_each_refused_on_their_own_field(kind: str) -> None:
+    """All three old flags in one body give three errors, one per flag, each naming its own list."""
+    with pytest.raises(ValidationError) as refused:
+        PlanRequest.model_validate(BASES[kind] | dict.fromkeys(OLD_FLAGS, 1))
+    assert [(error["loc"], error["msg"]) for error in refused.value.errors()] == [
+        ((flag,), RemediationMessage.SYSTEM_FLAG_REMOVED.format(flag=flag, replacement=list_to_send))
+        for flag, list_to_send in OLD_FLAGS.items()
+    ]
 
 
 MISSING = object()
@@ -442,8 +476,7 @@ def test_a_list_naming_no_system_is_accepted_and_stored_empty(kind: str, none: A
 @pytest.mark.parametrize("kind", BASES)
 def test_the_lists_drop_repeats_when_stored_and_a_wrong_id_is_named_where_it_was_sent(kind: str) -> None:
     """A repeated system is stored once, in the order given, while a system the asset lacks is named at each
-    place the request sent it; an older caller's flags are accepted, stored and never decide; a repeated
-    control keeps its first entry."""
+    place the request sent it; no old flag is stored; a repeated control keeps its first entry."""
     lists = {
         "supporting_systems_applicable_to_risk": [324, 321, 324, 322, 321],
         "supporting_systems_applicable_to_existing_controls": [322, 322, 321],
@@ -451,8 +484,6 @@ def test_the_lists_drop_repeats_when_stored_and_a_wrong_id_is_named_where_it_was
             {"control_code": "CII-CID-1"},
             {"control_code": "cii-cid-1", "control_name": "x"},
         ],
-        "all_supporting_systems_applicable": 0,
-        "existing_controls_all_supporting_system_applicable": 1,
     }
     request = PlanRequest.model_validate(BASES[kind] | lists)
     stored = request.register()
@@ -461,11 +492,7 @@ def test_the_lists_drop_repeats_when_stored_and_a_wrong_id_is_named_where_it_was
     assert stored["existing_controls"] == [
         {"control_id": None, "control_code": "CII-CID-1", "control_name": None}
     ]
-    flags = (
-        stored["all_supporting_systems_applicable"],
-        stored["existing_controls_all_supporting_system_applicable"],
-    )
-    assert flags == (0, 1)
+    assert not set(OLD_FLAGS) & set(stored)
     with pytest.raises(Invalid) as refused:
         check_register_systems(request, [321, 322])
     assert [error["field"] for error in refused.value.errors or []] == [
