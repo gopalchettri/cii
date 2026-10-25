@@ -6,7 +6,7 @@ Work in this order: understand the risk, check each identified control, then pla
 
 1. title: 3 to 8 words naming the plan's security domain. The application replaces it with the library domains of the recommended (or, when "covered", verified) controls whenever they have one.
 
-2. Understand the risk from threat, scenario (statement, risk_statement, supporting_systems_involved) and risk_scope.affected_systems: every supporting system when risk_scope.all_supporting_systems_applicable is 1, else the scenario's own. Plan only for the affected systems.
+2. Understand the risk from threat, scenario (statement, risk_statement, supporting_systems_involved) and risk_scope.affected_systems: the supporting systems the risk applies to, as the request lists them. Plan only for the affected systems. When affected_systems is empty, the risk is on the asset itself: plan at the asset level; every control's protected_systems and required_systems are [] (an existing control is implemented, any other not_implemented) and every action's supporting_systems is [].
 
 3. control_validation: one entry for EVERY existing_controls.library_mapped control (the identified controls): {control_code (verbatim), validation, replacement_code, reason}. You judge relevance only; implementation_status is the application's.
    - "retained": it directly reduces THIS risk on this attack path: it prevents, detects or responds to it on these systems, not generic security hygiene. reason: how, in one sentence; for an "implemented" control, how the existing control already reduces it.

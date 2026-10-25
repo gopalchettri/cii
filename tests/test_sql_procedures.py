@@ -17,6 +17,8 @@ from app.core.exceptions import Invalid, SetupError, Unavailable
 from app.data_access.library.control_repository import ControlRepository
 from app.data_access.library.sql_operation_repository import SqlOperationRepository
 from app.data_access.library.threat_repository import ThreatRepository
+from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
+from app.domain.service_mapper.catalog import build_catalog
 from app.models.library.library import LoadedLibraries, PendingLibraryRow, RejectedLibraryThreat
 from app.search.library_cache import load_libraries
 from tests.sql_test_database import REPO, procedure_files
@@ -346,11 +348,7 @@ def test_grants_name_every_tsg_procedure_and_nothing_else() -> None:
     grants = (REPO / "scripts" / "sql" / "grants.sql").read_text(encoding="utf-8")
     granted = set(re.findall(r"GRANT EXECUTE ON dbo\.(\w+) TO", grants))
     shipped = {path.stem for path in procedure_files()}
-    external = {
-        StoredProcedure.GET_SECTORS_AND_SUBSECTORS.value,
-        StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS.value,
-        StoredProcedure.GET_SERVICES_WITH_SECTOR_DETAILS.value,
-    }
+    external = {StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS.value}  # the onboarding platform's own
     assert shipped == {procedure.value for procedure in StoredProcedure} - external
     assert granted == {procedure.value for procedure in StoredProcedure}
 
@@ -363,6 +361,31 @@ def test_service_mapper_associations_keep_exact_hierarchy_and_filter_deleted_row
     assert next(row for row in sectors if row["sector_id"] == 11)["parent_sector_id"] == 10
     assert links == [{"service_id": 1, "sector_id": 11}, {"service_id": 2, "sector_id": 10}]
     assert entities == [{"service_id": 1, "sector_id": 11, "entity_id": 86, "entity_name": "Test Entity"}]
+
+
+def test_the_onboarding_procedures_tsg_ships_feed_the_service_mapper_catalog(
+    procedures: StoredProcedureClient,
+) -> None:
+    """TSG's own tsg_Onboarding_* procedures return what the catalog reads, without deleted rows, and agree
+    with tsg_GetServiceMapperAssociations on the live top-level sectors (else the catalog is refused)."""
+    (summary,) = procedures.execute_procedure(StoredProcedure.GET_SECTORS_AND_SUBSECTORS)
+    (services,) = procedures.execute_procedure(StoredProcedure.GET_SERVICES_WITH_SECTOR_DETAILS)
+    assert summary == [{"SectorName": "Energy", "SubsectorList": "Electricity"}]
+    assert [row["service_name"] for row in services] == ["Customer billing", "Electricity transmission"]
+    transmission = next(row for row in services if row["service_id"] == 1)
+    assert transmission["upstream_dependencies"] == "Customer billing"
+    assert transmission["downstream_dependencies"] == "Test Entity"
+
+    class _NoOldMappings:  # the platform's own Onboarding_GetSectorServiceMappings is not in this database
+        def execute_procedure(self, procedure: StoredProcedure) -> list[list[dict[str, Any]]]:
+            if procedure is StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS:
+                return [[]]
+            return procedures.execute_procedure(procedure)
+
+    catalog = build_catalog(ServiceCatalogRepository(_NoOldMappings()).load())  # type: ignore[arg-type]
+    assert catalog.sector_names == ("Energy",)
+    names = [service.service_name for service in catalog.services]
+    assert names == ["Electricity transmission", "Customer billing"]
 
 
 def test_a_backup_copy_beside_a_procedure_is_never_installed_or_granted(tmp_path: Path) -> None:

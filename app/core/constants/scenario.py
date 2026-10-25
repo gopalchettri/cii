@@ -124,7 +124,7 @@ class TargetProblem(StrEnum):
     """Why one scenario id of a review call is refused (`errors[].reason`) or skipped (`skipped[].reason`)."""
 
     UNKNOWN = "unknown"  # not a served scenario of this run
-    FAILURE_SCENARIO = "failure_scenario"  # a failure card: the write job retries its path
+    FAILURE_SCENARIO = "failure_scenario"  # a failure card (on regenerate, only one naming no AI outage)
     ALREADY_REJECTED = "already_rejected"  # decisions are final; regenerate to get a new version
     ALREADY_ACCEPTED = "already_accepted"
     DUPLICATE_VERSION = "duplicate_version"  # two versions of one path, or another version already accepted

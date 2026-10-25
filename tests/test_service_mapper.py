@@ -251,9 +251,13 @@ class _Chat:
         self.answers = list(answers)
         self.prompts: list[dict[str, Any]] = []
         self.problems: list[str] = []
+        self.reuse_earlier_answer = False
 
-    def ask_for_checked_json(self, _task, _system, prompt, check, first_answer_check):
+    def ask_for_checked_json(
+        self, _task, _system, prompt, check, first_answer_check, reuse_earlier_answer=False
+    ):
         self.prompts.append(json.loads(prompt))
+        self.reuse_earlier_answer = reuse_earlier_answer
         first = self.answers.pop(0)
         assert check(first) == []
         self.problems = first_answer_check(first)
@@ -276,6 +280,14 @@ def test_a_short_answer_with_nothing_dropped_makes_one_ai_call() -> None:
     result = generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
     assert len(chat.prompts) == 1 and chat.problems == []
     assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (1, 0)
+
+
+def test_a_retry_of_the_same_generation_reuses_its_earlier_ai_answer() -> None:
+    """The job's epoch is the generation: a delivery retried after an outage takes the answer it already got,
+    so a busy gateway is not asked again; a regenerate is the next epoch and asks afresh."""
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
+    assert chat.reuse_earlier_answer is True
 
 
 def test_a_first_answer_with_dropped_items_is_asked_again_with_why() -> None:
@@ -427,7 +439,7 @@ def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
     class Chat:
         max_prompt_chars = 200_000
 
-        def ask_for_checked_json(self, *_args):
+        def ask_for_checked_json(self, *_args, **_options):
             raise TruncatedAiAnswer("cut off at the length limit")
 
     class Catalog:

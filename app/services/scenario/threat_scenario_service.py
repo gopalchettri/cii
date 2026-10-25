@@ -490,7 +490,8 @@ class ThreatScenarioService:
     def regenerate_threat_scenarios(
         self, principal: Principal, run: SessionStatus, request: ScenarioIdsRequest
     ) -> RunActionStarted:
-        """Queues a new version of each chosen scenario; 409 scenarios_not_regenerable names each bad id."""
+        """Queues a new version of each chosen scenario, or an AI outage's failure card written again in its
+        place; 409 scenarios_not_regenerable names each bad id."""
         check_review_open(run)
         targets = self._list_review_targets(run.session_id, request.scenario_ids)
         batch = regenerate_batch(request.scenario_ids, targets)

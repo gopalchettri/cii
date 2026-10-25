@@ -17,19 +17,26 @@ from app.core.constants import (
     RemediationProgress,
     Status,
 )
-from app.core.exceptions import Conflict, NotFound
-from app.domain.remediation.rules import decidable_version, decision_change, newest_done_version
+from app.core.exceptions import Conflict, Invalid, NotFound
+from app.domain.remediation.rules import (
+    check_register_systems,
+    decidable_version,
+    decision_change,
+    newest_done_version,
+)
 from app.models.remediation.plan import PlanDraft, RemediationResult, RemediationStatus, shown_item
 from app.models.remediation.requests import (
     PLAN_REQUEST_EXAMPLES,
+    SYSTEM_LISTS,
     PlanRequest,
     RegenerateRequest,
     ReviewRequest,
 )
 
 NOW = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
-FLAGS = {"all_supporting_systems_applicable": 1, "existing_controls_all_supporting_system_applicable": 1}
-GENERATED: dict[str, Any] = {"is_manual": False, "session_id": "r1", "scenario_id": "s1", **FLAGS}
+#: The two supporting system lists as stored when none is sent: the risk and the existing controls on none.
+NO_SYSTEM = dict.fromkeys(SYSTEM_LISTS, [])
+GENERATED: dict[str, Any] = {"is_manual": False, "session_id": "r1", "scenario_id": "s1"}
 MANUAL: dict[str, Any] = {
     "asset_id": 103,
     "entity_id": 7,
@@ -39,14 +46,13 @@ MANUAL: dict[str, Any] = {
     "threat_scenario": "An insider could upload altered logic to the PLC.",
     "risk_statement": "Loss of trusted control could stop the substation.",
 }
-HAND_WRITTEN: dict[str, Any] = {"is_manual": True, "manual_scenario": MANUAL, **FLAGS}
-#: The register fields a form may leave blank: all but the two mandatory flags.
+HAND_WRITTEN: dict[str, Any] = {"is_manual": True, "manual_scenario": MANUAL}
+#: The register fields a form may leave blank: all of them.
 REGISTER_FIELDS = set(PlanRequest.model_fields) - {
     "is_manual",
     "session_id",
     "scenario_id",
     "manual_scenario",
-    *FLAGS,
 }
 BY = {"decided_by": "u1", "decided_by_client": "c1"}
 
@@ -57,9 +63,9 @@ def _register(**fields: Any) -> PlanRequest:
 
 
 def test_blank_register_fields_mean_not_given() -> None:
-    """The platform's form sends "" for an empty field; it is never a 422."""
+    """The platform's form sends "" for an empty field; it is never a 422 (an empty system list is [])."""
     stored = _register(**dict.fromkeys(REGISTER_FIELDS, " ")).register()
-    assert stored == dict.fromkeys(REGISTER_FIELDS) | FLAGS
+    assert stored == dict.fromkeys(REGISTER_FIELDS) | NO_SYSTEM
 
 
 def test_ratings_are_exact_decimals_stored_as_text() -> None:
@@ -125,9 +131,9 @@ def test_register_controls_take_plain_strings_drop_blanks_and_keep_the_first_of_
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        ({"is_manual": True, **FLAGS}, RemediationMessage.MANUAL_NEEDS_SCENARIO),
+        ({"is_manual": True}, RemediationMessage.MANUAL_NEEDS_SCENARIO),
         (HAND_WRITTEN | {"scenario_id": "s1"}, RemediationMessage.MANUAL_SENDS_NO_IDS),
-        ({"is_manual": False, "scenario_id": "s1", **FLAGS}, RemediationMessage.GENERATED_NEEDS_IDS),
+        ({"is_manual": False, "scenario_id": "s1"}, RemediationMessage.GENERATED_NEEDS_IDS),
         (GENERATED | {"manual_scenario": MANUAL}, RemediationMessage.GENERATED_SENDS_NO_SCENARIO),
     ],
 )
@@ -172,9 +178,14 @@ def test_a_hand_written_scenario_names_its_library_rows_and_has_no_title() -> No
 
 
 def test_every_published_example_is_valid() -> None:
-    """Swagger's two examples (one per kind) can never drift from the model."""
-    kinds = [PlanRequest.model_validate(example).is_manual for example in PLAN_REQUEST_EXAMPLES]
-    assert kinds == [False, True]
+    """Swagger's two examples (one per kind) can never drift from the model; each shows both system lists."""
+    requests = [PlanRequest.model_validate(example) for example in PLAN_REQUEST_EXAMPLES]
+    assert [request.is_manual for request in requests] == [False, True]
+    for request in requests:
+        register = request.register()
+        assert (
+            register["existing_controls"] and register["supporting_systems_applicable_to_existing_controls"]
+        )
 
 
 def test_review_and_regenerate_bodies_refuse_unknown_fields() -> None:
@@ -379,48 +390,85 @@ def test_the_decided_version_defaults_to_the_newest_done_and_must_be_done() -> N
         assert refused.value.reason == ConflictReason.NOT_COMPLETE
 
 
+BASES = {"generated": GENERATED, "hand-written": HAND_WRITTEN}
+
+
+@pytest.mark.parametrize("kind", BASES)
 @pytest.mark.parametrize(
-    "flags",
+    ("changes", "loc"),
     [
-        {},  # both mandatory
-        {"all_supporting_systems_applicable": 1},
-        {"existing_controls_all_supporting_system_applicable": 1},
-        FLAGS | {"all_supporting_systems_applicable": 2},
-        FLAGS | {"all_supporting_systems_applicable": "1"},  # an integer, never text
-        FLAGS | {"all_supporting_systems_applicable": True},
-        FLAGS | {"all_supporting_systems_applicable": 1.0},
-        FLAGS | {"existing_controls_all_supporting_system_applicable": ""},
+        ({"supporting_systems_applicable_to_risk": [0]}, ("supporting_systems_applicable_to_risk", 0)),
+        (
+            {"supporting_systems_applicable_to_existing_controls": [322, 0]},
+            ("supporting_systems_applicable_to_existing_controls", 1),
+        ),
+        (
+            {"existing_controls": [{"control_code": "CII-CID-1", "supporting_system_ids": [322]}]},
+            ("existing_controls", 0, "supporting_system_ids"),
+        ),
+        ({"all_supporting_systems_applicable": 2}, ("all_supporting_systems_applicable",)),
     ],
-    ids=["neither", "no-existing-flag", "no-risk-flag", "two", "text", "boolean", "float", "blank"],
+    ids=["bad-risk-id", "bad-existing-id", "systems-inside-a-control", "legacy-flag-not-0-or-1"],
 )
-def test_the_two_flags_are_mandatory_integers_0_or_1(flags: dict[str, Any]) -> None:
-    body = {"is_manual": False, "session_id": "r1", "scenario_id": "s1"} | flags
-    with pytest.raises(ValidationError):
-        PlanRequest.model_validate(body)
+def test_the_supporting_system_lists_are_refused_when_wrong(
+    kind: str, changes: dict[str, Any], loc: tuple[Any, ...]
+) -> None:
+    """An impossible id in either list, an existing control naming its own systems (an unknown field) and an
+    older caller's flag other than 0 or 1 are refused."""
+    with pytest.raises(ValidationError) as refused:
+        PlanRequest.model_validate(BASES[kind] | changes)
+    assert [error["loc"] for error in refused.value.errors()] == [loc]
 
 
-def test_existing_controls_name_their_systems_when_not_on_all_and_a_repeat_adds_its_systems() -> None:
-    """Flag 0: every existing control lists supporting_system_ids (422 naming the one that does not);
-    flag 1: none is needed; one control listed twice is one entry with both lists' systems."""
-    by_system = GENERATED | {"existing_controls_all_supporting_system_applicable": 0}
-    with pytest.raises(ValidationError) as missing:
-        PlanRequest.model_validate(
-            by_system
-            | {
-                "existing_controls": [
-                    {"control_code": "CII-CID-1", "supporting_system_ids": [321]},
-                    "Backup policy",
-                ]
-            }
-        )
-    expected = RemediationMessage.SYSTEMS_REQUIRED.format(position=1, control="Backup policy")
-    assert expected in str(missing.value)
-    assert _register(existing_controls=["CII-CID-1"]).existing_controls is not None  # flag 1: no ids needed
-    twice = [
-        {"control_code": "CII-CID-1", "supporting_system_ids": [321]},
-        {"control_code": "cii-cid-1", "supporting_system_ids": [322, 321]},
+MISSING = object()
+
+
+@pytest.mark.parametrize("kind", BASES)
+@pytest.mark.parametrize("none", [None, "", [], MISSING], ids=["null", "blank", "empty", "missing"])
+def test_a_list_naming_no_system_is_accepted_and_stored_empty(kind: str, none: Any) -> None:
+    """null, "" and [] (or no list) mean no supporting system, for either list, with existing controls named
+    or not: accepted and stored as [], never None."""
+    for listed, other in (SYSTEM_LISTS, SYSTEM_LISTS[::-1]):
+        sent = {} if none is MISSING else {listed: none}
+        for existing in (None, ["CII-CID-1"]):
+            body = BASES[kind] | {"existing_controls": existing, other: [321]} | sent
+            stored = PlanRequest.model_validate(body).register()
+            assert (stored[listed], stored[other]) == ([], [321])
+    both = {} if none is MISSING else dict.fromkeys(SYSTEM_LISTS, none)
+    stored = PlanRequest.model_validate(BASES[kind] | both | {"existing_controls": ["CII-CID-1"]}).register()
+    assert {listed: stored[listed] for listed in SYSTEM_LISTS} == NO_SYSTEM
+
+
+@pytest.mark.parametrize("kind", BASES)
+def test_the_lists_drop_repeats_when_stored_and_a_wrong_id_is_named_where_it_was_sent(kind: str) -> None:
+    """A repeated system is stored once, in the order given, while a system the asset lacks is named at each
+    place the request sent it; an older caller's flags are accepted, stored and never decide; a repeated
+    control keeps its first entry."""
+    lists = {
+        "supporting_systems_applicable_to_risk": [324, 321, 324, 322, 321],
+        "supporting_systems_applicable_to_existing_controls": [322, 322, 321],
+        "existing_controls": [
+            {"control_code": "CII-CID-1"},
+            {"control_code": "cii-cid-1", "control_name": "x"},
+        ],
+        "all_supporting_systems_applicable": 0,
+        "existing_controls_all_supporting_system_applicable": 1,
+    }
+    request = PlanRequest.model_validate(BASES[kind] | lists)
+    stored = request.register()
+    assert stored["supporting_systems_applicable_to_risk"] == [324, 321, 322]
+    assert stored["supporting_systems_applicable_to_existing_controls"] == [322, 321]
+    assert stored["existing_controls"] == [
+        {"control_id": None, "control_code": "CII-CID-1", "control_name": None}
     ]
-    request = PlanRequest.model_validate(by_system | {"existing_controls": twice})
-    assert request.existing_controls is not None
-    assert [entry.supporting_system_ids for entry in request.existing_controls] == [[321, 322]]
-    assert request.register()["existing_controls"][0]["supporting_system_ids"] == [321, 322]
+    flags = (
+        stored["all_supporting_systems_applicable"],
+        stored["existing_controls_all_supporting_system_applicable"],
+    )
+    assert flags == (0, 1)
+    with pytest.raises(Invalid) as refused:
+        check_register_systems(request, [321, 322])
+    assert [error["field"] for error in refused.value.errors or []] == [
+        "body.supporting_systems_applicable_to_risk[0]",
+        "body.supporting_systems_applicable_to_risk[2]",
+    ]

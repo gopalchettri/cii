@@ -429,8 +429,10 @@ def evidence_problem(threat: dict[str, Any]) -> Unavailable | None:
     search = threat.get("intel_search")
     if search is None or search.get("failure") is not None or search.get("snapshot_id") is None:
         outage = (search or {}).get("outage")
-        if outage and outage in AiOutage:  # the AI did not answer the search: the UI is told which outage
-            return Unavailable(AI_OUTAGE_MESSAGES[AiOutage(outage)], reason=outage)
+        if outage and outage in AiOutage:  # the AI did not answer the search: the UI is told which outage,
+            # in the refusal's own words (a reranker wait is not the gateway's "busy")
+            message = (search or {}).get("outage_message") or AI_OUTAGE_MESSAGES[AiOutage(outage)]
+            return Unavailable(message, reason=outage)
         failure = (search or {}).get("failure") or EvidenceSearchFailure.NO_SNAPSHOT
         return Unavailable(ErrorMessage.EVIDENCE_SEARCH_UNAVAILABLE.format(reason=failure))
     return None

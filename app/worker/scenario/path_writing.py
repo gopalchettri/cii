@@ -15,7 +15,7 @@ from app.core.constants import (
     AiOutage,
     ErrorCode,
     ErrorMessage,
-    Generation,  # noqa: F401 - the writer's own retry, commented out below, reads it
+    Generation,
     LogEvent,
     ScenarioOutcome,
     ScenarioStatus,
@@ -132,6 +132,19 @@ def _near_copy_held_now(
     return duplicate_of(record["content"], record["path_id"], own)
 
 
+def _served_by(scenario: str) -> dict[str, Any]:
+    """A path's state once `scenario` serves it: a written path is never given up."""
+    return {"served": scenario, "abandoned": False}
+
+
+def _log_saved(record: dict[str, Any], saved: bool, reason: str) -> None:
+    """Log one saved record and count it."""
+    shown = {"path_id": record["path_id"], "status": record["status"], "replaces": record.get("replaces")}
+    log.info(LogEvent.WRITER_SCENARIO_SAVED, saved=saved, blocker=reason, **shown)
+    if saved:
+        metrics.SCENARIOS.labels(_OUTCOMES[record["status"]]).inc()
+
+
 class PathSaver:
     """Each outcome of one delivery saved in the job's thread once the job still owns the run: a first write's
     scenario or card, then its path's state. A regenerate keeps version n current until n+1 is saved (a crash
@@ -149,20 +162,25 @@ class PathSaver:
         self._threats, self._scenarios = threats, scenarios
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
-    def to_write(self, batch: list[str], replaces: dict[str, str]) -> dict[str, tuple[str, ...]]:
+    def to_write(
+        self, batch: list[str], replaces: dict[str, str], regenerate: bool
+    ) -> dict[str, tuple[str, ...]]:
         """The batch's paths still to write, each with the statements it must differ from; a path an earlier
-        delivery wrote is served here with no AI call (`replaces`: a regenerate's targets)."""
-        if replaces:
-            return self._versions_to_write(replaces)
+        delivery wrote is served here with no AI call (`replaces`: a regenerate's versions to replace; its
+        other paths are outage cards' paths, written again even once given up)."""
+        to_write = self._versions_to_write(replaces) if replaces else {}
         paths, run_id = self._progress.paths, self._run["_id"]
-        open_paths = [path_id for path_id in batch if is_still_to_write(paths[path_id])]
+        first_writes = [key for key in batch if key not in replaces]
+        open_paths = [key for key in first_writes if is_still_to_write(paths[key], reopen=regenerate)]
+        if not open_paths:
+            return to_write
         done = ScenarioStatus.DONE
         written = self._scenarios.list(
             fields="path_id", session_id=run_id, path_id_in=open_paths, status=done, newest=True
         )
         if written:
-            self._progress.record({row["path_id"]: {"served": row["_id"]} for row in written})
-        return {path_id: () for path_id in open_paths if is_still_to_write(paths[path_id])}
+            self._progress.record({row["path_id"]: _served_by(row["_id"]) for row in written})
+        return to_write | {key: () for key in open_paths if is_still_to_write(paths[key], reopen=regenerate)}
 
     def save(self, path_id: str, outcome: PathOutcome, started_at: datetime | None = None) -> None:
         """Save one path's outcome, then its state on the plan. `started_at`: when its AI work began (None:
@@ -178,15 +196,18 @@ class PathSaver:
             record = failure_record(self._run, path, threat, outcome)
             record["generation"] = generation_stamp(self._lease.epoch, started_at, record)
             saved, reason, final = self._scenarios.save_scenario(record), str(outcome.code), outcome.final
-            self._log_saved(record, saved, reason)
+            _log_saved(record, saved, reason)
         else:
             record, saved, written = self._save_written(path, *outcome, started_at)
             reason, final = blocking_finding_code(written), is_final(written)  # noqa: F841 - retry below
         if not saved or record["status"] == ScenarioStatus.DONE:  # not saved: its scenario was already there
-            self._progress.record({path_id: {"served": record["_id"]}})
+            self._progress.record({path_id: _served_by(record["_id"])})
             return
         # The next attempt's card replaces this one (the same id): why this one was rejected stays here.
         state = {"attempts": path["attempts"] + 1, "last_blocker": reason}
+        if reason == ErrorCode.UNAVAILABLE and state["attempts"] < Generation.MAX_PATH_ATTEMPTS:
+            self._progress.leave_for_next_set(path_id, state)  # an outage passes: a later set writes it
+            return
         # The writer's own retry is off; uncomment to retry a blocked path later, up to MAX_PATH_ATTEMPTS.
         # if not (final or state["attempts"] >= Generation.MAX_PATH_ATTEMPTS):
         #     self._progress.record({path_id: state | {"abandoned": False}})
@@ -262,15 +283,8 @@ class PathSaver:
             written = dataclasses.replace(written, findings=(*written.findings, copy))
             record = build(written)
         saved = save_with_unique_title(self._scenarios, record, written.title_qualifier)
-        self._log_saved(record, saved, blocking_finding_code(written))
+        _log_saved(record, saved, blocking_finding_code(written))
         return record, saved, written
-
-    def _log_saved(self, record: dict[str, Any], saved: bool, reason: str) -> None:
-        """Log one saved record and count it."""
-        shown = {"path_id": record["path_id"], "status": record["status"], "replaces": record.get("replaces")}
-        log.info(LogEvent.WRITER_SCENARIO_SAVED, saved=saved, blocker=reason, **shown)
-        if saved:
-            metrics.SCENARIOS.labels(_OUTCOMES[record["status"]]).inc()
 
     def _note_failure(
         self, target_id: str, code: ErrorCode, message: str, reason: AiOutage | None = None

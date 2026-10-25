@@ -95,7 +95,8 @@ class PlanRequested(BaseModel):
 
 
 class PlanStarted(PlanRequested):
-    """202 of `POST /v1/remediation` (200 on a replay of a hand-written request), with v1's two flags."""
+    """202 of `POST /v1/remediation` (200 on a replay of a hand-written request; 202 when that replay writes
+    an outage-failed version again), with v1's two flags."""
 
     is_manual: bool  # the scenario's own kind (a person wrote it), not an echo of the request
     replayed: bool = False  # this Idempotency-Key had already saved this scenario: nothing new was saved

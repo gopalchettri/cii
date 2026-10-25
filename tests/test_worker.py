@@ -212,11 +212,11 @@ def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(publishe
     assert published == [record_id, record_id]  # running, then queued again
 
 
-def test_an_ai_outage_leaves_a_retry_notice_until_the_stage_hands_over(
+def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(
     published: list[str], sent: list[tuple]
 ) -> None:
-    """The status tells the UI why a stage waits and which try comes when (owner 2026-10-20); the attempt
-    that moves the job on clears it."""
+    """The status tells the UI why a stage waits and which try comes when; the claim of that try clears it,
+    so a running retry never shows the old outage."""
     record_id = _insert_job()
 
     def busy(_lease: JobLease) -> None:
@@ -239,13 +239,15 @@ def test_an_ai_outage_leaves_a_retry_notice_until_the_stage_hands_over(
     _records().update_one(
         {"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}}
     )  # its back-off ended
-    jobs.run_leased_job(
-        _task("task-2"),
-        Collection.SESSIONS,
-        record_id,
-        1,
-        lambda lease: jobs.hand_over(lease, TaskName.WRITE_SCENARIOS),
-    )
+    shown_while_retrying: list[Any] = []
+
+    def retry_runs(lease: JobLease) -> None:
+        status = session_status_from_record(sessions.get("status", _id=record_id))
+        shown_while_retrying.append(build_board(status).progress.retrying)
+        jobs.hand_over(lease, TaskName.WRITE_SCENARIOS)
+
+    jobs.run_leased_job(_task("task-2"), Collection.SESSIONS, record_id, 1, retry_runs)
+    assert shown_while_retrying == [None]
     assert _records().find_one({"_id": record_id})["job"]["retry"] is None
 
 

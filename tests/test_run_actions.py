@@ -45,7 +45,7 @@ from app.data_access.jobs.job_repository import (
     JobRepository,
     failed_job_fields,
 )
-from app.domain.scenario.review import why_ids_cannot_be_regenerated
+from app.domain.scenario.review import regenerate_batch, why_ids_cannot_be_regenerated
 from app.domain.scenario.write import _newest_within, scenario_id
 from app.models.admin.api_clients import Principal
 from app.models.scenario.views import ScenarioIdsRequest, SessionStatus, session_status_from_record
@@ -586,8 +586,8 @@ def test_a_crash_between_the_two_writes_is_healed_without_an_ai_call(
 def test_regenerate_names_every_id_it_cannot_take(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]]
 ) -> None:
-    """T-SCN-27: unknown, a failure card (the write job retries it), an older version → one 409 with every
-    id; nothing queued; while a job runs → 409 generation_in_progress."""
+    """T-SCN-27: unknown, a failure card naming no AI outage, an older version → one 409 with every id;
+    nothing queued; while a job runs → 409 generation_in_progress."""
     record_id = _written_run(["Threat 1", "Threat 2"])
     first, second = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
     newer = _scenarios().find_one({"_id": second}) | {"_id": "newer", "version": 2, "title_key": "newer"}
@@ -616,6 +616,23 @@ def test_regenerate_refuses_two_versions_of_one_path() -> None:
     }
     errors = why_ids_cannot_be_regenerated(["v1", "v2"], targets)
     assert [error["reason"] for error in errors] == [TargetProblem.DUPLICATE_VERSION] * 2
+
+
+def test_regenerate_takes_an_ai_outage_card_and_writes_it_in_place() -> None:
+    """Owner: a card an AI outage left is written again under its own id (no version replaced); a card naming
+    no outage, or another failure, is still refused as a failure card."""
+    card = {"path_id": "p1", "status": ScenarioStatus.FAILED, "superseded_by": None}
+    targets = {
+        "busy": card | {"failure": {"code": ErrorCode.UNAVAILABLE, "reason": AiOutage.BUSY}},
+        "no_reason": card | {"path_id": "p2", "failure": {"code": ErrorCode.UNAVAILABLE}},
+        "unreadable": card | {"path_id": "p3", "failure": {"code": ErrorCode.GENERATION_FAILED}},
+    }
+    errors = why_ids_cannot_be_regenerated(list(targets), targets)
+    assert {error["scenario_id"]: error["reason"] for error in errors} == {
+        "no_reason": TargetProblem.FAILURE_SCENARIO,
+        "unreadable": TargetProblem.FAILURE_SCENARIO,
+    }
+    assert regenerate_batch(["busy"], targets) == [{"path_id": "p1", "replaces": None}]
 
 
 def test_the_writer_sees_the_newest_versions_that_fit() -> None:

@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.core.constants import (
     AuditAction,
     AuditTarget,
+    ErrorCode,
     MapperConflict,
     MapperDecisionFailure,
     MapperMessage,
@@ -68,7 +69,7 @@ class ServiceMapperService:
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         key_hash = _key_hash(idempotency_key)
         if key_hash and (earlier := self._created_with_key(principal, key_hash)):
-            return self._replay_create(earlier, fingerprint), False
+            return self._replay_create(principal, earlier, fingerprint)
         mapping_id = uuid4().hex
         record = _new_record(mapping_id, principal, request, fingerprint, key_hash, self._limits())
         try:
@@ -76,7 +77,7 @@ class ServiceMapperService:
         except DuplicateRecord:
             if not key_hash or not (earlier := self._created_with_key(principal, key_hash)):
                 raise
-            return self._replay_create(earlier, fingerprint), False
+            return self._replay_create(principal, earlier, fingerprint)
         self._send_job(TaskName.MAP_SERVICES, mapping_id, 1)
         self._record_change(AuditAction.MAPPING_STARTED, principal, mapping_id, {"generation": 1})
         return MappingAccepted(mapping_id=mapping_id, status=Status.QUEUED, generation=1), True
@@ -144,14 +145,23 @@ class ServiceMapperService:
         mapping_id: str,
         idempotency_key: str | None,
     ) -> tuple[MappingAccepted, bool]:
-        key_hash = _key_hash(idempotency_key)
+        return self._next_generation(principal, mapping_id, _key_hash(idempotency_key), None)
+
+    def _next_generation(
+        self, principal: Principal, mapping_id: str, key_hash: str | None, unlisted_generation: int | None
+    ) -> tuple[MappingAccepted, bool]:
+        """The next generation, or a replay of the one `key_hash` started (`unlisted_generation` when not in
+        regen_keys); a replay of the latest generation that failed for an outage is a new try instead."""
         for _attempt in range(3):
             record = self._owned(principal, mapping_id)
-            if key_hash and key_hash in record.get("regen_keys", {}):
+            key_generation = (
+                record.get("regen_keys", {}).get(key_hash, unlisted_generation) if key_hash else None
+            )
+            if key_generation is not None and not _failed_for_outage(record, key_generation):
                 return MappingAccepted(
                     mapping_id=mapping_id,
                     status=Status.QUEUED,
-                    generation=record["regen_keys"][key_hash],
+                    generation=key_generation,
                 ), False
             if record["status"] in (Status.QUEUED, Status.RUNNING):
                 raise Conflict(MapperMessage.ROUND_RUNNING, reason=MapperConflict.GENERATION_IN_PROGRESS)
@@ -225,11 +235,13 @@ class ServiceMapperService:
             tenant_id=principal.tenant_id, entity_id=principal.entity_id, create_key=key_hash
         )
 
-    @staticmethod
-    def _replay_create(record: dict, fingerprint: str) -> MappingAccepted:
+    def _replay_create(
+        self, principal: Principal, record: dict, fingerprint: str
+    ) -> tuple[MappingAccepted, bool]:
+        """The mapping this key created, or a new try of it when the key's generation failed for an outage."""
         if record["input_hash"] != fingerprint:
             raise Conflict(MapperMessage.IDEMPOTENCY_KEY_CONFLICT)
-        return MappingAccepted(mapping_id=record["_id"], status=Status.QUEUED, generation=1)
+        return self._next_generation(principal, record["_id"], record["create_key"], 1)
 
     def _archive_pending(self, record: dict) -> None:
         if frozen := record.get("pending_archive"):
@@ -292,6 +304,16 @@ def _new_record(
 
 def _key_hash(value: str | None) -> str | None:
     return hashlib.sha256(value.encode()).hexdigest() if value else None
+
+
+def _failed_for_outage(record: dict, generation: int) -> bool:
+    """Whether `generation` is the latest and failed for an AI or store outage: its key starts a new try."""
+    error = record["job"].get("error") or {}
+    return (
+        record["generation"] == generation
+        and record["status"] == Status.FAILED
+        and error.get("code") == ErrorCode.UNAVAILABLE
+    )
 
 
 def _sort_decisions(

@@ -123,30 +123,45 @@ def _drop_blank_entries(entries: Any) -> Any:
     return [entry for entry in entries if _blank_is_absent(entry) is not None]
 
 
-class RegisterControlRef(ControlRef):
-    """An existing control in the register: the control, and the supporting systems it is on (required when
-    existing_controls_all_supporting_system_applicable is 0)."""
-
-    supporting_system_ids: Annotated[list[SqlId] | None, Blank] = None
-
-
-def _first_of_each(entries: list[RegisterControlRef]) -> list[RegisterControlRef]:
-    """A control listed twice is one control: the first entry kept, with every system either one names."""
-    kept: dict[tuple[str, Any], RegisterControlRef] = {}
+def _first_of_each(entries: list[ControlRef]) -> list[ControlRef]:
+    """A control listed twice is one control: the first entry kept."""
+    kept: dict[tuple[str, Any], ControlRef] = {}
     for entry in entries:
-        first = kept.setdefault(entry.key(), entry)
-        if first is not entry and entry.supporting_system_ids:
-            merged = dict.fromkeys([*(first.supporting_system_ids or []), *entry.supporting_system_ids])
-            kept[entry.key()] = first.model_copy(update={"supporting_system_ids": list(merged)})
+        kept.setdefault(entry.key(), entry)
     return list(kept.values())
 
 
+def _none_is_empty(value: Any) -> Any:
+    """null and "" mean no supporting system, as [] does."""
+    return [] if _blank_is_absent(value) is None else value
+
+
+#: The register's existing controls, each once; an entry naming its own systems is refused (an unknown field).
 RegisterControls = Annotated[
-    list[RegisterControlRef],
+    list[ControlRef],
     BeforeValidator(_drop_blank_entries),
     AfterValidator(_first_of_each),
     Field(max_length=Remediation.MAX_CONTROL_REFS),
 ]
+#: Supporting systems of the scenario's asset as sent, repeats kept so a 422 names the place in the request
+#: (the service checks they are the asset's; the stored register keeps each once).
+_SystemIds = Annotated[
+    list[SqlId],
+    BeforeValidator(_none_is_empty),
+    WithJsonSchema(
+        {
+            "anyOf": [
+                {
+                    "type": "array",
+                    "items": {"type": "integer", "exclusiveMinimum": 0, "maximum": Limits.MAX_SQL_INT},
+                },
+                {"type": "null"},
+            ]
+        }
+    ),
+]
+#: The register's two lists of the asset's supporting systems: of the risk, of the existing controls.
+SYSTEM_LISTS = ("supporting_systems_applicable_to_risk", "supporting_systems_applicable_to_existing_controls")
 #: Repeats kept, so a 422 names the entry's place in the request; resolving them keeps each library row once.
 ScenarioControls = Annotated[
     list[ControlRef], BeforeValidator(_drop_blank_entries), Field(max_length=Remediation.MAX_CONTROL_REFS)
@@ -201,10 +216,11 @@ class ManualScenario(StartRunRequest):
         return self
 
 
-#: The register's data, as the platform sends it with either kind.
+#: The register's data, as the platform sends it with either kind: the risk on the asset's four supporting
+#: systems, the existing controls on two of them (so partially implemented, still needed on the other two).
 _REGISTER_EXAMPLE: dict[str, Any] = {
-    "all_supporting_systems_applicable": 1,
-    "existing_controls_all_supporting_system_applicable": 1,
+    "supporting_systems_applicable_to_risk": [2301, 2302, 2303, 2304],
+    "supporting_systems_applicable_to_existing_controls": [2302, 2303],
     "existing_controls": [{"control_code": "CII-CID-202"}, "User Awareness"],
     "likelihood_rating": 4,
     "impact_rating": 5,
@@ -216,15 +232,6 @@ _REGISTER_EXAMPLE: dict[str, Any] = {
     "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
     "mitigation_start_date": "2026-10-01",
     "mitigation_end_date": "2026-12-31",
-}
-#: With existing_controls_all_supporting_system_applicable 0, each existing control names its systems.
-_REGISTER_BY_SYSTEM_EXAMPLE: dict[str, Any] = _REGISTER_EXAMPLE | {
-    "all_supporting_systems_applicable": 0,
-    "existing_controls_all_supporting_system_applicable": 0,
-    "existing_controls": [
-        {"control_code": "CII-CID-202", "supporting_system_ids": [2301]},
-        {"control_name": "User Awareness", "supporting_system_ids": [2301, 2302]},
-    ],
 }
 
 #: The two published bodies of `POST /v1/remediation` (Swagger's example picker), one per kind of scenario.
@@ -250,7 +257,7 @@ PLAN_REQUEST_EXAMPLES: list[JsonValue] = [
             "risk_statement": "Operators lose process history and plant reporting stops for days.",
             "mapped_controls": [{"control_code": "CII-CID-213"}],
         },
-        **_REGISTER_BY_SYSTEM_EXAMPLE,
+        **_REGISTER_EXAMPLE,
     },
 ]
 #: The request fields that name the scenario; every other PlanRequest field is the register's.
@@ -263,13 +270,25 @@ class PlanRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": PLAN_REQUEST_EXAMPLES})
 
-    all_supporting_systems_applicable: _Flag = Field(
-        description="1: the risk applies to every supporting system linked to the asset; 0: only to the "
-        "scenario's own systems."
+    supporting_systems_applicable_to_risk: _SystemIds = Field(
+        default_factory=list,
+        description="The supporting systems of the scenario's asset the risk applies to; none (null, blank "
+        "or []): the risk is on the asset itself, on no supporting system. A repeat is dropped.",
     )
-    existing_controls_all_supporting_system_applicable: _Flag = Field(
-        description="1: the existing controls are on every supporting system linked to the asset; 0: each "
-        "existing control lists the asset's supporting systems it is on (supporting_system_ids)."
+    supporting_systems_applicable_to_existing_controls: _SystemIds = Field(
+        default_factory=list,
+        description="The supporting systems of the scenario's asset the existing controls are on, one list "
+        "for them all; none (null, blank or []): they are on no supporting system. Only the systems the risk "
+        "applies to count; a repeat is dropped.",
+    )
+    all_supporting_systems_applicable: Annotated[_Flag | None, Blank] = Field(
+        None,
+        description="Kept for older callers and not used: supporting_systems_applicable_to_risk decides.",
+    )
+    existing_controls_all_supporting_system_applicable: Annotated[_Flag | None, Blank] = Field(
+        None,
+        description="Kept for older callers and not used: supporting_systems_applicable_to_existing_controls "
+        "decides.",
     )
     existing_controls: Annotated[RegisterControls | None, Blank] = None
     likelihood_rating: Rating = None
@@ -281,7 +300,7 @@ class PlanRequest(BaseModel):
     impacted_business_division: _Name = None
     existing_controls_all_subsystems: Annotated[YesNo | None, Blank] = Field(
         None,
-        description="Kept for older callers and not used: existing_controls_all_supporting_system_applicable "
+        description="Kept for older callers and not used: supporting_systems_applicable_to_existing_controls "
         "decides.",
     )
     existing_controls_all_subsystems_justification: _Justification = None
@@ -330,24 +349,15 @@ class PlanRequest(BaseModel):
                 raise ValueError(RemediationMessage.GENERATED_SENDS_NO_SCENARIO)
         return self
 
-    @model_validator(mode="after")
-    def check_existing_control_systems(self) -> "PlanRequest":
-        """Existing controls not on all supporting systems each say which systems they are on."""
-        if self.existing_controls_all_supporting_system_applicable == 0:
-            for position, ref in enumerate(self.existing_controls or []):
-                if not ref.supporting_system_ids:
-                    control = ref.control_code or ref.control_name or f"control_id {ref.control_id}"
-                    raise ValueError(
-                        RemediationMessage.SYSTEMS_REQUIRED.format(position=position, control=control)
-                    )
-        return self
-
     def register(self) -> dict[str, Any]:
-        """The register half as stored: ratings as exact decimal strings, dates as ISO text."""
+        """The register half as stored: ratings as exact decimal strings, dates as ISO text, each listed
+        system once in the order given."""
         stored = self.model_dump(mode="json", exclude=_SCENARIO_FIELDS)
         for rating in ("likelihood_rating", "impact_rating", "final_risk_rating"):
             value = getattr(self, rating)
             stored[rating] = None if value is None else str(value)
+        for listed in SYSTEM_LISTS:
+            stored[listed] = list(dict.fromkeys(stored[listed]))
         return stored
 
 

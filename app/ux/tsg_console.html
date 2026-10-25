@@ -324,8 +324,6 @@
   .pd-tbl th, .pd-tbl td { padding: 7px 8px; }
   .grid.pd-g4 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
   .pd-wide { grid-column: 1 / -1; }
-  .pd-span2 { grid-column: span 2; }
-  @media (max-width: 640px) { .pd-span2 { grid-column: auto; } }
 
   /* ---------- module: register_manual ---------- */
   .rm-f { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -1073,8 +1071,9 @@ $(function () {
     if (s.session_status === "failed") out.push(["err", "The run failed: " + why]);
     else if (scnRunning()) out.push(["info", "Scenarios are being written (stage 3). New cards appear here as each one is saved."]);
     if (n.failed) {
-      out.push(["warn", n.failed + (n.failed === 1 ? " card" : " cards") + " could not be written. A failed card is not regenerated " +
-                "(409 failure_scenario): the writer retries its scenario itself until it is written or abandoned after 5 attempts."]);
+      out.push(["warn", n.failed + (n.failed === 1 ? " card" : " cards") + " could not be written. A card the AI did not answer (busy, down, " +
+                "unreachable or timed out) can be written again: Regenerate on it, or the next set. Any other failed card is not " +
+                "regenerated (409 failure_scenario)."]);
     }
     if (!scnRunning() && s.session_status !== "failed" && why) out.push(["warn", "Notes from the run: " + why]);
     if (!scnRunning() && p.last_next_set && p.last_next_set.outcome !== "complete") out.push(["warn", "The last next set: " + lastText(p.last_next_set, "delivered") + "."]);
@@ -1090,7 +1089,7 @@ $(function () {
     var why = s.controls_error ? " &mdash; " + esc(s.controls_error.message) : "";
     if (st === "queued" && why) return '<div class="scn-st warn"><span class="scn-spin"></span>Controls wait to be tried again' + why + "</div>";
     if (st === "queued" || st === "running") return '<div class="scn-st"><span class="scn-spin"></span>Controls are being mapped&hellip;</div>';
-    if (st === "failed") return '<div class="scn-st warn">Control mapping failed: the sweep retries it after 30 minutes' + why + "</div>";
+    if (st === "failed") return '<div class="scn-st warn">Control mapping failed: request or regenerate a treatment plan for this scenario to try again' + why + "</div>";
     return (s.controls || []).length ? "" : '<div class="scn-st">No matching library controls</div>';
   }
   function scnChips(s) {
@@ -1161,7 +1160,7 @@ $(function () {
     }
     var gap = '<span class="scn-gap"></span>', det = b("details", "ghost", "Details");
     var regen = s.scenario_source === "manual" ? "" : b("regen", "", "Regenerate", lock);   // 409 hand_written for a manual scenario
-    if (st === "failed") return gap + det;
+    if (st === "failed") return ((s.failure || {}).reason ? regen : "") + gap + det;   // only an AI outage's card (failure.reason)
     if (st === "rejected") return regen + gap + det;
     if (st === "accepted") {
       var plan = planOf(id);
@@ -1274,6 +1273,7 @@ $(function () {
     list.forEach(function (s) { ids[s.scenario_id] = 1; n[scnStatus(s)]++; });
     // A regenerating mark ends when its card is superseded, or once the run is no longer queued/running (every
     // target failed: the old version is kept with regenerate_error). The 5 s grace skips a status read before the click.
+    // An outage card written in place is never superseded: its mark ends by the second rule.
     $.each(mem.regen, function (id, m) {
       var s = scnFind(id);
       if (!ids[id] || (s && s.replaced_by) || (!scnRunning() && Date.now() - m.t > 5000)) delete mem.regen[id];
@@ -1347,7 +1347,8 @@ $(function () {
     withBusy($btn, api("POST", scnPath("/regenerate/scenarios"), { scenario_ids: [id] })).always(function () { delete mem.busy[id]; })
       .done(function () {
         mem.regen[id] = { t: Date.now() };
-        toast("Regenerating…", "A new version is written for this scenario (stage 5.6); it appears as its own card.");
+        toast("Regenerating…", scnStatus(s) === "failed" ? "This card's scenario is written again in its place (stage 5.6)."
+                                                         : "A new version is written for this scenario (stage 5.6); it appears as its own card.");
         refreshBoard(); soonResults();
       }).always(renderScenarios);
   }
@@ -1675,7 +1676,9 @@ $(function () {
   function plRegenerate(ctx) {
     plStep(ctx, "Regenerate plan — " + ctx.title,
       '<p style="margin-top:0">Writes a new version of the same plan (<code>POST &hellip;/treatment-plan/regenerate {}</code>, stage 7.3). ' +
-      "The snapshot is rebuilt from the stored register data; earlier versions stay in the history and the id does not change.</p>",
+      "The snapshot is rebuilt from the stored register data; earlier versions stay in the history and the id does not change. " +
+      "If the latest version failed for an AI or store outage, that same version is written again instead (no new version, the " +
+      "version limit does not apply).</p>",
       "Regenerate plan", "primary",
       function () {
         return api("POST", planPath(ctx.sid, ctx.scn, "/regenerate"), {}).done(function (r) {
@@ -1712,8 +1715,11 @@ $(function () {
       '</div><div class="section-title">Existing controls</div><div class="grid">' +
         f("pdCtl", "Controls already in place", '<textarea id="pdCtl" placeholder="CII-CID-213&#10;Perimeter firewall between IT and OT"></textarea>',
           "One per line: a control code, a name, or a description. Up to 50. Matched to the library by id, code, then name (stage 6.2).", "pd-wide") +
-        f("pdAll", "They cover all subsystems", '<select id="pdAll">' + opts(["", "Yes", "No"], "No") + "</select>") +
-        f("pdWhy", "Justification", '<input id="pdWhy" type="text">', "", "pd-span2") +
+        f("pdRisk", "Risk applies to systems", '<input id="pdRisk" type="text" placeholder="1448, 1449, 1450, 1451">',
+          "Supporting system ids of the asset, comma-separated. Blank: none, the risk is on the asset itself.") +
+        f("pdOn", "Existing controls are on systems", '<input id="pdOn" type="text" placeholder="1449, 1450">',
+          "Supporting system ids, comma-separated. Blank: none (with risk systems listed, every control is not implemented). Only systems the risk applies to count.") +
+        f("pdWhy", "Justification", '<input id="pdWhy" type="text">', "", "pd-wide") +
       '</div><div class="section-title">Mitigation window</div><div class="grid">' +
         f("pdStart", "Mitigation start", '<input id="pdStart" type="date">', "Anchors the schedule's dates (stage 6.9)") +
         f("pdEnd", "Mitigation end", '<input id="pdEnd" type="date">', "Set both dates or neither") +
@@ -1736,13 +1742,20 @@ $(function () {
     var ctl = val("pdCtl").split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
     if (ctl.length > 50) errs.push("At most 50 existing controls, one per line (there are " + ctl.length + ").");
     else if (ctl.length) body.existing_controls = ctl;
+    var ids = function (id) { return val(id).split(/[\s,]+/).filter(Boolean); };   // blank: [] (no system)
+    var risk = ids("pdRisk"), on = ids("pdOn");
+    if (risk.concat(on).some(function (x) { return !/^[1-9]\d*$/.test(x); })) errs.push("Supporting system ids are whole numbers, comma-separated.");
+    else {
+      body.supporting_systems_applicable_to_risk = risk.map(Number);
+      body.supporting_systems_applicable_to_existing_controls = on.map(Number);
+    }
     [["likelihood_rating", "pdL", "Likelihood"], ["impact_rating", "pdI", "Impact"], ["final_risk_rating", "pdF", "Final risk rating"]].forEach(function (x) {
       var el = $("#" + x[1])[0], v = el.value.trim();
       if ((el.validity && el.validity.badInput) || (v && !/^\d+(\.\d{1,4})?$/.test(v))) errs.push(x[2] + " must be a number of 0 or more, with at most 4 decimals.");
       else if (v) body[x[0]] = Number(v);
     });
     [["risk_level", "pdLevel"], ["risk_owner", "pdOwner"], ["impacted_business_division", "pdDiv"],
-     ["existing_controls_all_subsystems", "pdAll"], ["existing_controls_all_subsystems_justification", "pdWhy"]]
+     ["existing_controls_all_subsystems_justification", "pdWhy"]]
       .forEach(function (x) { var v = val(x[1]); if (v) body[x[0]] = v; });
     var ident = val("pdIdent"), d = new Date(ident);
     if (ident && isNaN(d)) errs.push("Risk identification date is not a valid date.");
@@ -1991,6 +2004,7 @@ $(function () {
       },
       likelihood_rating: 3, impact_rating: 4, final_risk_rating: 12, risk_level: "High",
       risk_owner: "Head of OT Operations", impacted_business_division: "Operations",
+      supporting_systems_applicable_to_risk: [1550, 1551], supporting_systems_applicable_to_existing_controls: [1550],
       existing_controls: ["Perimeter firewall between IT and OT"],
       mitigation_start_date: "2026-10-15", mitigation_end_date: "2026-12-31"
     };

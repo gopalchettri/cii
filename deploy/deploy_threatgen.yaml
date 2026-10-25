@@ -6,8 +6,9 @@
 #   oc apply -f deploy/deploy_threatgen.yaml
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 # New release: replace the image tag (24-Oct-2026) everywhere in deploy_*.yaml with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5.25 CPU and 10.5 Gi; an API update adds one API pod
-# (6 CPU, 11.5 Gi). A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
+# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5.2 CPU and 10.5 Gi, with the monitoring proxy
+# (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an API update adds one API pod (6 CPU, 11.56 Gi).
+# A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
 # A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
 # update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
 # once the old pod is gone: rollout status only takes longer. A worker is ready once it answers a ping (startupProbe).
@@ -553,7 +554,7 @@ spec:                                            # what to run
           volumeMounts: [{ name: schedule, mountPath: /tmp/beat }]   # where the schedule file is written
           resources:                             # CPU and memory
             requests: { cpu: 50m, memory: 320Mi }  # reserved for the pod
-            limits: { cpu: 250m, memory: 512Mi }   # the most it may use
+            limits: { cpu: 200m, memory: 512Mi }   # the most it may use (it only sends the timed jobs; this leaves room in the quota for the monitoring proxy)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -582,7 +583,7 @@ metadata:                                        # the object's name and place
   labels: { part-of: tsg }                       # marks it as TSG's
 spec:                                            # what it does
   host: threatgen-api.apps.dda-desc-az1-01.desccii.local   # the address callers use
-  path: /                                        # every path
+  path: /                                        # every path but /grafana and /flower (the monitoring proxy's Routes, deploy_common.yaml)
   to: { kind: Service, name: api }               # forwards to the api Service
   port: { targetPort: http }                     # on its http port
   tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https

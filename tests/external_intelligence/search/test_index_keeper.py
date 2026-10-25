@@ -91,20 +91,22 @@ def test_a_failed_build_keeps_the_old_index_then_tries_again_after_a_growing_pau
     assert keeper.current_index() is not first and len(pointer.saved) == 2
 
 
+class Down(TextEmbeddings):
+    """The library's embedding call refused as an AI outage while `down`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.down = True
+
+    def embed_library_texts(self, corpus, texts, sources):
+        if self.down:
+            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
+        return super().embed_library_texts(corpus, texts, sources)
+
+
 def test_a_first_build_the_ai_stopped_leaves_writes_waiting_for_that_outage() -> None:
     """Owner 2026-10-20: until a first build ends, writes wait for a snapshot; when the AI stopped it, the
     placeholder names which AI outage, so the wait is told as that outage. The next build clears it."""
-
-    class Down(TextEmbeddings):
-        def __init__(self) -> None:
-            super().__init__()
-            self.down = True
-
-        def embed_library_texts(self, corpus, texts, sources):
-            if self.down:
-                raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
-            return super().embed_library_texts(corpus, texts, sources)
-
     clock, embeddings = Clock(), Down()
     keeper, *_ = _keeper([technique_doc("T1")], embeddings, clock=clock)
     with pytest.raises(Unavailable):
@@ -120,9 +122,22 @@ def test_a_first_build_the_ai_stopped_leaves_writes_waiting_for_that_outage() ->
 def test_the_pause_doubles_with_each_failure() -> None:
     clock = Clock()
     keeper, _, _, embeddings = _keeper([technique_doc("T1")], clock=clock)
-    embeddings.fail = True
+    embeddings.fail = True  # not an outage: the placeholder's short pause is not for it
     for failures in (1, 2):
         with pytest.raises(RuntimeError):
+            keeper.rebuild_index().result(10)
+        assert keeper._retry_at == clock.now + RETRY_FIRST_SECONDS * 2 ** (failures - 1)  # noqa: SLF001
+
+
+def test_once_an_index_serves_the_pause_doubles_with_each_outage_too() -> None:
+    clock, embeddings = Clock(), Down()
+    embeddings.down = False
+    keeper, records, *_ = _keeper([technique_doc("T1")], embeddings, clock=clock)
+    keeper.rebuild_index().result(10)
+    records.docs.append(technique_doc("T2"))  # a changed corpus: the rebuild embeds again
+    embeddings.down = True
+    for failures in (1, 2):
+        with pytest.raises(Unavailable):
             keeper.rebuild_index().result(10)
         assert keeper._retry_at == clock.now + RETRY_FIRST_SECONDS * 2 ** (failures - 1)  # noqa: SLF001
 

@@ -1288,9 +1288,9 @@ def _path_record(path: AttackPath, rank: int, category_ids: dict[str, int]) -> d
 # --- a frozen plan's progress: open paths, next sets and reserves
 
 
-def is_still_to_write(path: dict[str, Any]) -> bool:
-    """Not written yet and not given up."""
-    return not path["served"] and not path["abandoned"]
+def is_still_to_write(path: dict[str, Any], reopen: bool = False) -> bool:
+    """Not written yet, and not given up unless `reopen`."""
+    return not path["served"] and (reopen or not path["abandoned"])
 
 
 def next_set_paths(paths: Iterable[dict[str, Any]], size: int) -> list[str]:

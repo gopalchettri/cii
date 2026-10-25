@@ -24,7 +24,10 @@ JOB_QUEUE_WAIT = Histogram(
     buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800),
 )
 AI_CALLS = Counter("tsg_ai_calls_total", "AI calls by outcome", ["task", "model", "outcome"])
-AI_OUTAGES = Counter("tsg_ai_outages_total", "AI calls with no answer, by reason", ["task", "reason"])
+#: source: the gateway refused, or TSG's own limiter did (app/core/constants AiOutageSource).
+AI_OUTAGES = Counter(
+    "tsg_ai_outages_total", "AI calls with no answer, by reason and source", ["task", "reason", "source"]
+)
 AI_TOKENS = Counter("tsg_ai_tokens_total", "AI tokens", ["task", "model", "direction"])
 #: Up to the longest AI timeout (90-120 s, app/ai/profiles.py): the default buckets stop at 10 s.
 AI_SECONDS = Histogram(
@@ -59,10 +62,13 @@ REAPER_LAST_PASS = Gauge(
 WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbeat", ["queue"])
 #: MongoDB's clock minus this process's clock (app/core/clock.py): ClockSkew fires when a pod is far off.
 CLOCK_OFFSET = Gauge("tsg_clock_offset_seconds", "MongoDB's clock minus this process's clock")
-#: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress): every pod reports the same
-#: total.
+#: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress, current_limit): every pod
+#: reports the same numbers.
 AI_SLOTS_IN_USE = Gauge("tsg_ai_slots_in_use", "AI calls in progress across all pods")
-AI_SLOTS_CAP = Gauge("tsg_ai_slots_cap", "CII_MAX_CONCURRENT_AI_CALLS (0 = no limit)")
+AI_SLOTS_CAP = Gauge(
+    "tsg_ai_slots_cap",
+    "The limit on AI calls at once: CII_MAX_CONCURRENT_AI_CALLS or a 429's, the lower (0 = none)",
+)
 AUDIT_FAILURES = Counter("tsg_audit_failures_total", "Audit records that could not be written")
 LIBRARY_CHECK_FAILURES = Counter(
     "tsg_library_check_failures_total", "Library checks that failed (the last loaded library is served)"

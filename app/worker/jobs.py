@@ -275,8 +275,8 @@ def _give_back(lease: JobLease, due_at: datetime, changes: dict[str, Any]) -> bo
 
 
 def _retry_notice(lease: JobLease, exc: Exception, retry_at: datetime) -> dict[str, Any]:
-    """What the status shows until the stage ends (a RetryNotice but its stage): why it waits, which try comes
-    when."""
+    """What the status shows until the next try is claimed (a RetryNotice but its stage): why it waits, which
+    try comes when."""
     return {
         "reason": outage_reason(exc),
         "message": describe_outage(exc),

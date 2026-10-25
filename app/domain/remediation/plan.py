@@ -35,7 +35,7 @@ from app.domain.shared.names import name_match_key, shorten_text
 from app.domain.shared.prompt_redaction import drop_database_ids, facts_safe_for_prompt
 from app.models.library.library import LibraryControl
 from app.models.remediation.plan import DraftValidation, PlanDraft
-from app.models.remediation.requests import ControlRef, RegisterControlRef
+from app.models.remediation.requests import ControlRef
 from app.models.scenario.asset_context import FrozenContext
 from app.search.texts import describe_control
 
@@ -50,6 +50,12 @@ _CONTEXT_PREFIX = (
 _NOT_SHOWN = ("register", "warnings")
 _RATINGS = ("likelihood_rating", "impact_rating", "final_risk_rating")
 _SYSTEM_LISTS = ("protected_systems", "required_systems")
+#: (the request's list of systems, the flag a register stored before that list holds instead).
+_RISK_SYSTEMS = ("supporting_systems_applicable_to_risk", "all_supporting_systems_applicable")
+_EXISTING_SYSTEMS = (
+    "supporting_systems_applicable_to_existing_controls",
+    "existing_controls_all_supporting_system_applicable",
+)
 _STAMPED = (
     "control_id",
     "control_code",
@@ -148,9 +154,13 @@ def active_mapped_controls(
 def risk_scope(
     scenario: dict[str, Any], context: FrozenContext, register: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(the asset's supporting systems, the ones the risk affects) as {supporting_system_id, name}: every
-    one when all_supporting_systems_applicable is 1, else the scenario's own (the run's if it names none)."""
+    """(the asset's supporting systems, the ones the risk affects) as {supporting_system_id, name}: those the
+    request lists; a register stored before that list: every one when all_supporting_systems_applicable is 1,
+    else the scenario's own (the run's if it names none)."""
     systems = [{"supporting_system_id": s["id"], "name": s["name"]} for s in context.linked_systems()]
+    listed = register.get("supporting_systems_applicable_to_risk")
+    if listed is not None:
+        return systems, [system for system in systems if system["supporting_system_id"] in listed]
     if register.get("all_supporting_systems_applicable") == 1:
         return systems, systems
     run = {system["id"] for system in context.systems}
@@ -161,20 +171,29 @@ def risk_scope(
 def _protected_systems(
     register: dict[str, Any], controls: Sequence[LibraryControl], system_ids: Sequence[int]
 ) -> tuple[dict[str, set[int]], list[str]]:
-    """Each register control's twin key with the systems it is on (all of them when the existing flag is 1,
-    else its own supporting_system_ids); the warnings for entries naming no library control."""
-    everywhere = register.get("existing_controls_all_supporting_system_applicable")
-    if everywhere is None:  # a register stored before the flag: its Yes/No said the same
-        everywhere = int(register.get("existing_controls_all_subsystems") == YesNo.YES)
+    """Each register control's twin key with the systems it is on: those the request lists for the existing
+    controls (none when it lists none); a register stored before the lists: all of them when the existing
+    flag is 1, else the control's own supporting_system_ids. The warnings for entries naming no library
+    control."""
+    shared: Sequence[int] | None = register.get("supporting_systems_applicable_to_existing_controls") or []
+    if register.get("supporting_systems_applicable_to_risk") is None:  # stored before the lists
+        everywhere = register.get("existing_controls_all_supporting_system_applicable")
+        if everywhere is None:  # a register stored before the flag: its Yes/No said the same
+            everywhere = int(register.get("existing_controls_all_subsystems") == YesNo.YES)
+        shared = system_ids if everywhere == 1 else None
     protected: dict[str, set[int]] = {}
     warnings: list[str] = []
     for entry in register.get("existing_controls") or []:
-        ref = RegisterControlRef.model_validate(entry)
+        own: list[int] = []
+        if isinstance(entry, dict):  # stored before the lists, an entry named the systems it was on
+            entry = dict(entry)
+            own = entry.pop("supporting_system_ids", None) or []
+        ref = ControlRef.model_validate(entry)
         named, unresolved = resolve_control_refs([ref], controls)
         if unresolved:
             warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=describe_ref(ref)))
             continue
-        on = system_ids if everywhere == 1 else ref.supporting_system_ids or []
+        on = own if shared is None else shared
         protected.setdefault(name_match_key(describe_control(named[0])), set()).update(on)  # IT/OT twins: one
     return protected, warnings
 
@@ -198,7 +217,7 @@ def assess_controls(
         if row is None:
             warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=item.get("code")))
             continue
-        on = protected.get(name_match_key(describe_control(row)), set())
+        on = protected.get(name_match_key(describe_control(row)))
         library_mapped.append(_assessed_row(row, item, _of_its_type(row, affected, categories), on))
     return library_mapped, warnings
 
@@ -241,14 +260,15 @@ def _applies(asset_type: str | None, category: str | None) -> bool:
 
 
 def _assessed_row(
-    row: LibraryControl, item: dict[str, Any], affected: list[dict[str, Any]], on: set[int]
+    row: LibraryControl, item: dict[str, Any], affected: list[dict[str, Any]], on: set[int] | None
 ) -> dict[str, Any]:
-    """One mapped control: its library details, the affected systems an existing control is `on` and those it
-    is still needed on, and its status from them (on every one, on some, on none)."""
-    covered = [system for system in affected if system["supporting_system_id"] in on]
-    needed = [system for system in affected if system["supporting_system_id"] not in on]
+    """One mapped control: its library details, the affected systems an existing control is `on` (None: not
+    an existing control) and those it is still needed on, and its status from them (on every one, on some, on
+    none). No affected system: the risk is on the asset itself, and an existing control is implemented."""
+    covered = [system for system in affected if system["supporting_system_id"] in (on or ())]
+    needed = [system for system in affected if system["supporting_system_id"] not in (on or ())]
     status = ImplementationStatus.NOT_IMPLEMENTED
-    if covered:
+    if covered or (not affected and on is not None):
         status = ImplementationStatus.PARTIALLY_IMPLEMENTED if needed else ImplementationStatus.IMPLEMENTED
     return {
         "control_id": row.control_id,
@@ -287,10 +307,10 @@ def build_snapshot(
         "threat": _threat(content),
         "scenario": _scenario(content),
         "risk_scope": {
-            "all_supporting_systems_applicable": register.get("all_supporting_systems_applicable"),
+            "all_supporting_systems_applicable": _on_every_system(register, context, *_RISK_SYSTEMS),
             "affected_systems": affected,
         },
-        "existing_controls": _existing(register, library_mapped, alternatives),
+        "existing_controls": _existing(register, context, library_mapped, alternatives),
         "risk_assessment": _assessment(register),
         "treatment_strategy": Remediation.STRATEGY,
         # The facts code copies into the plan and the AI never sees (the risk owner is a person).
@@ -304,18 +324,28 @@ def build_snapshot(
 
 
 def _existing(
-    register: dict[str, Any], library_mapped: list[dict[str, Any]], alternatives: list[dict[str, Any]]
+    register: dict[str, Any],
+    context: FrozenContext,
+    library_mapped: list[dict[str, Any]],
+    alternatives: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """The scenario's identified controls and the library alternatives that may replace one, each assessed
-    against the register; the register's flag for its controls and its justification."""
+    against the register; whether the existing controls are on every system, and the justification."""
     return {
         "library_mapped": library_mapped,
         "library_alternatives": alternatives,
-        "all_supporting_systems_applicable": register.get(
-            "existing_controls_all_supporting_system_applicable"
-        ),
+        "all_supporting_systems_applicable": _on_every_system(register, context, *_EXISTING_SYSTEMS),
         "justification": clip(register.get("existing_controls_all_subsystems_justification")),
     }
+
+
+def _on_every_system(register: dict[str, Any], context: FrozenContext, listed: str, flag: str) -> int | None:
+    """1 when the request's list `listed` names a system and every supporting system of the asset, else 0; a
+    register stored before the lists: its own `flag`."""
+    if register.get("supporting_systems_applicable_to_risk") is None:
+        return register.get(flag)
+    every, named = {system["id"] for system in context.linked_systems()}, set(register.get(listed) or [])
+    return int(bool(named) and every <= named)
 
 
 def _threat(content: dict[str, Any]) -> dict[str, Any]:

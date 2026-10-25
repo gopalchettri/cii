@@ -180,7 +180,8 @@ def regenerate_scenarios(
     body: ScenarioIdsRequest, run: CallersRun, principal: Caller, scenarios: Scenarios
 ) -> RunActionStarted:
     """Send `{"scenario_ids": ["..."]}`: each is written again in the background (202); follow it with
-    `GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`)."""
+    `GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`). A card
+    that failed because the AI did not answer is written again in its place."""
     return scenarios.regenerate_threat_scenarios(principal, run, body)
 
 

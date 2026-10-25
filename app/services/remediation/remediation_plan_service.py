@@ -54,7 +54,9 @@ from app.domain.remediation.rules import (
     decision_change,
     new_plan_record,
     new_version,
+    outage_failed,
     plan_exists,
+    still_accepted,
     version_in_progress,
 )
 from app.domain.scenario.plan import freeze_context
@@ -68,7 +70,7 @@ from app.models.remediation.plan import (
     RemediationStatus,
     RemediationSummary,
 )
-from app.models.remediation.requests import ManualScenario, PlanRequest, ReviewRequest
+from app.models.remediation.requests import SYSTEM_LISTS, ManualScenario, PlanRequest, ReviewRequest
 from app.models.scenario.asset_context import FrozenContext
 from app.search.library_cache import LibraryCache
 
@@ -103,44 +105,26 @@ class RemediationPlanService:
     def create_remediation_plan(
         self, principal: Principal, body: PlanRequest, idempotency_key: str | None
     ) -> tuple[PlanStarted, bool]:
-        """Starts a plan for an accepted scenario: (the plan, True when created now, False for a replay)."""
+        """Starts a plan for an accepted scenario: (the plan, True when work started now, False for a plain
+        replay)."""
         if body.is_manual:
             return self._create_manual_remediation_plan(principal, body, idempotency_key)
         assert body.session_id is not None and body.scenario_id is not None  # PlanRequest: is_manual=false
         scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=body.scenario_id)
         checked = check_plannable_scenario(scenario, body.session_id, body.scenario_id, principal.entity_id)
+        self._check_register_systems(body, checked["session_id"])
         return self._plan_scenario(principal, body.register(), checked), True
 
     def regenerate_remediation_plan(self, principal: Principal, remediation_id: str) -> PlanRequested:
-        """Starts the plan's next version, unless its run is being deleted or its latest one still runs."""
+        """Starts the plan's next version, or writes a latest one that failed for an outage again in place
+        (no version used), unless its run is being deleted or its latest one still runs."""
         read = self._read_changeable(principal, remediation_id)
-        latest = read["job"]["epoch"]
-        version = check_regenerable(read, remediation_id, get_settings().regenerations_max_version_count)
-        if self._sessions.is_being_deleted(read["session_id"]):
-            raise run_being_deleted(read["session_id"])
-        check_control_library(self._library.get_loaded_libraries().control_library)
-        now = utc_now()
-        job, item = new_job(TaskName.WRITE_PLAN, version, now), new_version(version, principal, now)
-        if not self._remediations.create_remediation_plan_version(remediation_id, latest, item, job, now):
+        latest, in_place = read["job"]["epoch"], outage_failed(read)
+        max_versions = get_settings().regenerations_max_version_count
+        version = latest if in_place else check_regenerable(read, remediation_id, max_versions)
+        if (requested := self._start_version(principal, read, version, in_place)) is None:
             raise version_in_progress(remediation_id, latest)  # another regenerate made it first
-        # Checked again after the append: either this sees the delete's mark or the delete sees the version.
-        if self._sessions.is_being_deleted(read["session_id"]):
-            self._remediations.stop_remediation_plan_version(remediation_id, version)
-            self._publish_remediation_status(remediation_id)
-            raise run_being_deleted(read["session_id"])
-        self._send_job(TaskName.WRITE_PLAN, remediation_id, version)
-        target = audit_target(AuditTarget.REMEDIATION, remediation_id)
-        self._audit.create_audit_record(
-            AuditAction.PLAN_REGENERATED, caller_actor(principal), target, after={"version": version}
-        )
-        self._publish_remediation_status(remediation_id)
-        return PlanRequested(
-            remediation_id=remediation_id,
-            session_id=read["session_id"],
-            scenario_id=read["scenario_id"],
-            version=version,
-            status=Status.QUEUED,
-        )
+        return requested
 
     def review_remediation_plan(
         self, principal: Principal, remediation_id: str, body: ReviewRequest
@@ -227,8 +211,9 @@ class RemediationPlanService:
     def _create_manual_remediation_plan(
         self, principal: Principal, body: PlanRequest, key: str | None
     ) -> tuple[PlanStarted, bool]:
-        """A hand-written scenario's plan: the same key and body replay the first answer; the key of another
-        request is 409; a first request saves the scenario, then plans it as a generated one."""
+        """A hand-written scenario's plan: the same key and body replay the first answer (a plan that failed
+        for an outage is written again); the key of another request is 409; a first request saves the
+        scenario, then plans it as a generated one."""
         manual = check_manual_request(principal, body, key)
         assert key is not None  # check_manual_request refused a missing one
         fingerprint = manual_request_fingerprint(body)
@@ -238,26 +223,27 @@ class RemediationPlanService:
             check_same_manual_request(earlier, fingerprint)
             scenario_id = manual_ids(principal.entity_id, key)[1]
             scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
-        if scenario is not None and (replayed := self._replayed(scenario["_id"])) is not None:
-            return replayed, False
+        if scenario is not None and (replayed := self._replayed(principal, scenario)) is not None:
+            return replayed
         saved_before = scenario is not None  # an earlier call saved it, then stopped
-        if scenario is None:
-            scenario = self._save_manual_scenario(principal, manual, body.register(), key, fingerprint)
+        if scenario is None:  # its lists checked against SQL as it is saved (a retry sends the same body)
+            scenario = self._save_manual_scenario(principal, manual, body, key, fingerprint)
         try:
             started = self._plan_scenario(principal, body.register(), scenario)
             return started.model_copy(update={"replayed": saved_before}), True
         except Conflict as clash:  # the same request made at the same moment won: its answer, replayed
-            replayed = self._replayed(scenario["_id"])
-            if clash.reason != ConflictReason.PLAN_ALREADY_EXISTS or replayed is None:
+            if (
+                clash.reason != ConflictReason.PLAN_ALREADY_EXISTS
+                or (replayed := self._replayed(principal, scenario)) is None
+            ):
                 raise
-            return replayed, False
+            return replayed
 
     def _plan_scenario(
         self, principal: Principal, register: dict[str, Any], scenario: dict[str, Any]
     ) -> PlanStarted:
         """One plan per scenario (the unique index decides): version 1 queued, its job sent and audited."""
         check_control_library(self._library.get_loaded_libraries().control_library)
-        self._check_register_systems(register, scenario["session_id"])
         now = utc_now()
         record = new_plan_record(principal, register, scenario, new_job(TaskName.WRITE_PLAN, 1, now), now)
         try:
@@ -292,25 +278,25 @@ class RemediationPlanService:
             is_manual=record["source"] == RunKind.MANUAL,
         )
 
-    def _check_register_systems(self, register: dict[str, Any], session_id: str) -> None:
-        """422 for an existing control on a system its asset does not have; the run is read only when one
-        names its systems."""
-        if any(entry.get("supporting_system_ids") for entry in register.get("existing_controls") or []):
+    def _check_register_systems(self, body: PlanRequest, session_id: str) -> None:
+        """422 for a listed supporting system the run's asset does not have; the run is read only when a
+        list names one."""
+        if any(getattr(body, listed) for listed in SYSTEM_LISTS):
             context = FrozenContext.from_record(self._sessions.get_scenario_session_context(session_id))
-            check_register_systems(register, [system["id"] for system in context.linked_systems()])
+            check_register_systems(body, [system["id"] for system in context.linked_systems()])
 
     def _save_manual_scenario(
         self,
         principal: Principal,
         manual: ManualScenario,
-        register: dict[str, Any],
+        body: PlanRequest,
         key: str,
         request_hash: str,
     ) -> dict[str, Any]:
         """Saves the scenario (accepted by its writer) and its run; everything a 422 or 409 could refuse is
         checked before the first write, and no AI is called."""
         context = freeze_context(manual, self._assets.get_asset_context(principal.entity_id, manual))
-        check_register_systems(register, [system["id"] for system in context.linked_systems()])
+        check_register_systems(body, [system["id"] for system in context.linked_systems()])
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()
         check_actor_library(loaded.threat_library.actors)
@@ -340,12 +326,59 @@ class RemediationPlanService:
         self._sessions.update_scenario_session_counts(ids[0])
         return scenario
 
-    def _replayed(self, scenario_id: str) -> PlanStarted | None:
-        """The answer a hand-written request's first call gave, read back from its plan; None without one."""
-        status = self._status(scenario_id=scenario_id)
-        if status is None:
+    def _start_version(
+        self, principal: Principal, read: dict[str, Any], version: int, in_place: bool
+    ) -> PlanRequested | None:
+        """Queues `version`, the failed latest one again `in_place` or else appended, then sends, audits and
+        publishes it; None when another request made it first, 409 while its run is being deleted."""
+        remediation_id, latest = read["_id"], read["job"]["epoch"]
+        if self._sessions.is_being_deleted(read["session_id"]):
+            raise run_being_deleted(read["session_id"])
+        check_control_library(self._library.get_loaded_libraries().control_library)
+        now = utc_now()
+        job = new_job(TaskName.WRITE_PLAN, version, now)
+        if in_place:
+            started = self._remediations.retry_remediation_plan_version(remediation_id, version, job, now)
+        else:
+            item = new_version(version, principal, now)
+            started = self._remediations.create_remediation_plan_version(
+                remediation_id, latest, item, job, now
+            )
+        if not started:
             return None
-        return PlanStarted(
+        # Checked again after the write: either this sees the delete's mark or the delete sees the version.
+        if self._sessions.is_being_deleted(read["session_id"]):
+            outage = read["job"]["error"] if in_place else None  # still retryable in place afterwards
+            self._remediations.stop_remediation_plan_version(remediation_id, version, outage)
+            self._publish_remediation_status(remediation_id)
+            raise run_being_deleted(read["session_id"])
+        self._send_job(TaskName.WRITE_PLAN, remediation_id, version)
+        target = audit_target(AuditTarget.REMEDIATION, remediation_id)
+        self._audit.create_audit_record(
+            AuditAction.PLAN_REGENERATED, caller_actor(principal), target, after={"version": version}
+        )
+        self._publish_remediation_status(remediation_id)
+        return PlanRequested(
+            remediation_id=remediation_id,
+            session_id=read["session_id"],
+            scenario_id=read["scenario_id"],
+            version=version,
+            status=Status.QUEUED,
+        )
+
+    def _replayed(self, principal: Principal, scenario: dict[str, Any]) -> tuple[PlanStarted, bool] | None:
+        """A hand-written request's plan for a repeat of it: written again in place as a regenerate does when
+        it failed for an outage (True), else its first call's answer read back (False); None without one."""
+        record = self._remediations.get(fields="status", scenario_id=scenario["_id"])
+        if record is not None and outage_failed(record) and still_accepted(scenario):
+            retried = self._start_version(principal, record, record["job"]["epoch"], in_place=True)
+            if retried is not None:
+                return PlanStarted(**retried.model_dump(), is_manual=True, replayed=True), True
+            record = self._remediations.get(fields="status", _id=record["_id"])  # another repeat retried it
+        if record is None:
+            return None
+        status = RemediationStatus.from_record(record)
+        replayed = PlanStarted(
             remediation_id=status.remediation_id,
             session_id=status.session_id,
             scenario_id=status.scenario_id,
@@ -354,6 +387,7 @@ class RemediationPlanService:
             is_manual=True,
             replayed=True,
         )
+        return replayed, False
 
     def _read_changeable(self, principal: Principal, remediation_id: str) -> dict[str, Any]:
         """The plan a regenerate or a review changes: 404 unknown, 403 another entity's, 409 read-only."""

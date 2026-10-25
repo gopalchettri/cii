@@ -55,7 +55,7 @@ class ErrorMessage(StrEnum):
     AI_ANSWER_TRUNCATED = "The AI answer for '{task}' from '{model}' was cut off at its length limit."
     AI_PROMPT_TOO_LONG = "The prompt for '{task}' has {chars} characters; the model takes at most {limit}."
     AI_BUSY = "Every AI slot stayed busy for {seconds} s. Try again shortly."
-    RERANK_BUSY = "The evidence reranker stayed busy for {seconds} s: this threat goes without evidence."
+    RERANK_BUSY = "The evidence reranker stayed busy for {seconds} s."
     MODEL_PROFILE_MISSING = "No profile for AI model '{model}': add it to app/ai/profiles.py or fix .env."
     EMBEDDING_SIZE_MISMATCH = (
         "Embedding model '{model}' returned {received} numbers per text, not {expected}."
@@ -259,7 +259,7 @@ class MapperMessage(StrEnum):
         "SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT."
     )
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another mapping input."
-    MAPPING_NOT_READY = "The mapping has not finished generating."
+    MAPPING_NOT_READY = "The mapping is not done: wait while it generates, or regenerate it if it failed."
     DEPENDENCY_NOT_FOUND = "No such dependency in the current generation."
     NOTHING_TO_DECIDE = "Name at least one dependency_id in accept or reject."
     ACCEPTED_AND_REJECTED = "A dependency_id cannot be both accepted and rejected: {ids}."

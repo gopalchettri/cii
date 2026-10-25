@@ -156,39 +156,6 @@ LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
 THINKING_OFF_TEMPLATE_KWARGS: Final = {"thinking": False, "enable_thinking": False}
 
 
-class AiLimits:
-    """The same for every model; per-model values live in app/ai/profiles.py."""
-
-    RETRIES: Final = 3  # a busy or unreachable provider is retried this many times, with back-off
-    RETRY_FIRST_WAIT_SECONDS: Final = 0.5  # then doubling
-    # A worker asks a rate-limited (HTTP 429) model again, not its fallback (55-99 s), as rate_limited_wait
-    # says; the API retries a 429 as any busy answer.
-    RATE_LIMITED_WAITS_SECONDS: Final = (2, 5, 10, 15)
-    RATE_LIMITED_JITTER: Final = 0.2
-    RATE_LIMITED_MAX_WAIT_SECONDS: Final = 15
-    RATE_LIMITED_TOTAL_WAIT_SECONDS: Final = 35
-    LEASE_CHECK_SECONDS: Final = 1.0  # a job waiting to ask the AI checks its lease this often
-    CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
-    # Prompt characters per token: 4.3-6.1 measured on Kimi-K2.6; 3 leaves room for glm and non-English text.
-    PROMPT_CHARS_PER_TOKEN: Final = 3
-    MODEL_COOL_DOWN_SECONDS: Final = 120  # a timed-out or still rate-limited model is asked last this long
-    SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod
-    FALLBACK_SLOTS_KEY: Final = "tsg:ai_fallback_slots"  # the same for the fallback model's calls alone
-    REQUEST_RATE_KEY: Final = "tsg:ai_next_request:{model}"  # when that model's next request may be sent
-    API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
-    WORKER_SLOT_WAIT_SECONDS: Final = 300
-    SLOT_GRACE_SECONDS: Final = 30  # a slot outlives its call's longest run by this much
-    SLOT_FIRST_PAUSE_SECONDS: Final = 0.05  # polls for a free slot start this often, doubling ...
-    SLOT_MAX_PAUSE_SECONDS: Final = 1.0  # ... up to this
-    LOCAL_RERANK_TURN_DOCUMENTS: Final = 6  # documents one turn at the local CPU reranker scores
-    REASK_MAX_PROBLEMS: Final = 20  # the one corrective re-ask lists at most this many problems ...
-    REASK_PROBLEM_CHARS: Final = 200  # ... each cut to this
-    REASK_MESSAGE: Final = (
-        "Your previous reply was rejected:\n{problems}\n"
-        "Return the corrected JSON object only, in exactly the requested format."
-    )
-
-
 class EmbeddingCorpus(StrEnum):
     """What a vector was made from (tsg_embeddings.corpus): each kind is embedded and searched on its own."""
 
@@ -234,10 +201,15 @@ class LogEvent(StrEnum):
     AI_CALL_UNAVAILABLE = "ai.call_unavailable"
     AI_ANSWER_REUSED = "ai.answer_reused"  # this job got this exact conversation's answer before: no call
     AI_ANSWER_LOOKUP_FAILED = "ai.answer_lookup_failed"  # the AI is asked instead
+    AI_FIRST_ANSWER_KEPT = "ai.first_answer_kept"  # a re-ask failed: the usable first answer, faults and all
     AI_GATEWAY_ROUTE = "ai.gateway_route"
     AI_REQUEST_RATE_BUSY = "ai.request_rate_busy"
     AI_SLOTS_BUSY = "ai.slots_busy"
     AI_SLOT_FREE_FAILED = "ai.slot_free_failed"
+    # Redis failed: at cap 0 AI calls go ahead uncounted and unlimited; at any cap a 429 or an answer could
+    # not change the limit
+    AI_SLOTS_UNTRACKED = "ai.slots_untracked"
+    AI_LIMIT_CUT = "ai.limit_cut"  # a gateway 429 set the limit on AI calls in flight
     LIBRARY_RELOADED = "library.reloaded"
     LIBRARY_RETIRED_CONTROLS_MISSING = "library.retired_controls_missing"  # an old tsg_GetControlLibrary
     LIBRARY_THREAT_ASSET_TYPE_MISSING = "library.threat_asset_type_missing"  # an old tsg_GetThreatLibrary

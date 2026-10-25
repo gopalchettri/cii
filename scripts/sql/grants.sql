@@ -12,7 +12,7 @@ GRANT EXECUTE ON dbo.tsg_ListPendingThreats TO [$(AppUser)];
 GRANT EXECUTE ON dbo.tsg_DecidePendingThreats TO [$(AppUser)];
 GRANT EXECUTE ON dbo.tsg_ImportThreatLibrary TO [$(AppUser)];
 GRANT EXECUTE ON dbo.tsg_GetServiceMapperAssociations TO [$(AppUser)];
-GRANT EXECUTE ON dbo.Onboarding_GetSectorsAndSubsectorsList TO [$(AppUser)];
+GRANT EXECUTE ON dbo.tsg_Onboarding_GetSectorsAndSubsectorsList TO [$(AppUser)];
 GRANT EXECUTE ON dbo.Onboarding_GetSectorServiceMappings TO [$(AppUser)];
-GRANT EXECUTE ON dbo.Onboarding_GetServicesWithSectorDetails TO [$(AppUser)];
+GRANT EXECUTE ON dbo.tsg_Onboarding_GetServicesWithSectorDetails TO [$(AppUser)];
 GO

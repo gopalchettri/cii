@@ -35,8 +35,8 @@ WHY_APPLIES = "Vendor firmware sessions make this asset's control logic a place 
 
 class FakeChatModel:
     """ChatModel's planner surface. Per task, queued answers are used first, then the task's responder; a
-    rejected first answer is re-asked once, and a usable first answer is kept when the re-ask is not, as the
-    real model does (ask_for_checked_json)."""
+    rejected first answer is re-asked once, and a usable first answer is kept when the re-ask is unusable or
+    finds the AI unavailable, as the real model does (ask_for_checked_json)."""
 
     def __init__(self, max_prompt_chars: int = 60_000) -> None:
         self._input_limit = max_prompt_chars
@@ -66,7 +66,7 @@ class FakeChatModel:
             return usable
         try:
             answer = self._answer(task, user_prompt)
-        except (UnreadableAiAnswer, TruncatedAiAnswer):
+        except (UnreadableAiAnswer, TruncatedAiAnswer, Unavailable):
             if usable is None:
                 raise
             return usable

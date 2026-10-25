@@ -335,8 +335,9 @@ never become rows; they are joined by CVE id into the KEV entry's `data`:
    `scores_unmatched`, `details_joined`, `details_unmatched`), `checksum`, `parser_version`, `embedding_model` and
    `rerank_model`. `activate_intel_snapshot` then moves the `_id: "active"` pointer, forward only: never to an
    older build.
-5. A failed build keeps the old index and is retried after 30 s, doubling up to 900 s. Approved sources that hold
-   nothing fail the build; a process that never built serves the settled empty index. When every source is
+5. A failed build keeps the old index. While no first index has been built, an AI or store outage retries after
+   30 s every time, since every batch waits for it. Any other failure, and every failure once an index serves,
+   doubles the pause from 30 s up to 900 s. Approved sources that hold nothing fail the build; a process that never built serves the settled empty index. When every source is
    revoked, an empty index is published, so every process drops the data.
 6. **Each searching process follows the pointer.** Only a worker that takes `tsg_scenarios` (the write job, the
    index's only reader) warms the index up and follows it: such a worker holds about 450 MB, against about 220 MB
@@ -1500,7 +1501,7 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 | Case | What happens (code) |
 |---|---|
 | AI busy or down | 3 quick retries 0.5, 1 and 2 s apart (`call_with_retries`); an HTTP 429 (rate limited) waits and asks the same model again (section 15); a timeout goes straight to the fallback model (`CII_CHAT_FALLBACK_MODEL`). Still down → `Unavailable` → the job is given back and retried after 15, 30, 60 and 120 s (`Lease.RETRY_DELAYS_SECONDS`); on the 5th attempt it fails `unavailable` |
-| Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan is queued or running. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503, no AI slot, request turn or fallback slot free in time) or `ai_timed_out`; null for a store outage. An AI outage in the evidence search (intelligence on) is told the same way. A hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
+| Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan waits for its next try. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503, no AI slot, request turn or fallback slot free in time) or `ai_timed_out`; null for a store outage. An AI outage in the evidence search (intelligence on) is told the same way. The claim of the next try, a hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
 | Answer with problems | asked again once with the problems; still wrong on a normal attempt → `Unavailable` (job retried); on the last attempt → that batch or proposal is skipped and planning goes on (`_retry_or_skip`) |
 | Answer cut off, or prompt too long | a reply cut off at the task's `max_tokens` is asked once more at the model's full limit (section 15); still cut off, or a prompt too long → `TruncatedAiAnswer`: skipped on any attempt, never retried |
 | Delivery retried or re-sent | the gate and gap-fill answers the job already accepted are reused from `tsg_ai_calls` (5.6) |
@@ -1574,7 +1575,8 @@ checks are §8; saving one scenario is §9.
 8. **Evidence.** `EvidenceAtWrite.attach(to_write)` runs **once for the batch** (§7).
 9. **Held back by an outage.** `_held_back` → `evidence_problem`: when a path's threat has no search, a search
    with a `failure`, or a search that named no snapshot, the path is not written now. It joins the batch's
-   outages as `Unavailable("The evidence search could not be made for this attack path: …")`.
+   outages as `Unavailable("The evidence search could not be made for this attack path: …")`; when the AI stopped
+   the search, as that outage (`intel_search.outage`) in its own words (`outage_message`).
 10. **Write in parallel, save as each ends.** `write_at_once` runs `PathWriter.write` (brief, writer and checks,
     §8) for each path in a `ThreadPoolExecutor` of `min(6, paths)` threads (`Generation.WRITER_BATCH`). Each
     outcome is saved in the job's own thread by `PathSaver.save` as soon as it completes (§9), and a saved
@@ -1587,7 +1589,8 @@ checks are §8; saving one scenario is §9.
       (`Lease.MAX_ATTEMPTS` = 5), when every outage is `Unavailable` and another path of the batch was served (or
       it is a regenerate), each waiting path is saved as a failure card `unavailable`; an evidence outage keeps its
       own reason. Otherwise the job raises, and after its last attempt the session fails.
-    - A regenerate ends with `finish_regenerate`. Otherwise `PlanProgress.continue_or_finish` asks
+    - A regenerate ends with `finish_regenerate` (known from `last_action.kind` too, so a batch of outage cards
+      only also ends there; `requested` = the batch size). Otherwise `PlanProgress.continue_or_finish` asks
       `next_paths_to_write` over the set's paths. With paths left, `hand_over` queues the same task with the same
       epoch, the new `job.batch` and `attempts` 0, and sends it. With none left, the set ends:
       `last_action.outcome` `complete` (or `partial` when a path of the set was given up and no spare replaced it),
@@ -1876,18 +1879,22 @@ whichever path or kind of attack it is written for.
     row keeps the below-threshold reason.
 12. **What is recorded**: `EvidenceSearchRecord.as_doc` (`app/models/external_intelligence/evidence.py`) plus
     `searched_at` becomes the threat's `intel_search`: `query`, `asset_types`, `snapshot_id`, `threshold`,
-    `considered` (one `{ref, score, decision, reason}` per candidate), `stale`, `failure`, `rerank_model`. The kept
+    `considered` (one `{ref, score, decision, reason}` per candidate), `stale`, `failure`, `rerank_model`, and
+    `outage` and `outage_message` only when the AI stopped the search. The kept
     entries become the threat's `evidence`, in memory only. `_audit_batch` writes **one**
     `external_intelligence.evidence_used` audit row per searched batch: actor `{"system": "tsg_write_scenarios"}`,
     target the session, and `after` holding `snapshot_id`, `source_versions`, `threats_searched`,
     `threats_with_evidence`, `evidence_used` and `stale`.
 13. **Outages.** An embedding outage gives every threat of the batch `failure: "evidence_search_unavailable"`; a
-    reranker outage (or a remote gate wait over 60 s) gives it to that threat only. Another temporary error while
+    reranker outage, or a remote gate wait over 300 s (`RerankGateLimits.GATE_WAIT_SECONDS`), gives it to that
+    threat only: that search fails, so its path waits and is tried again. Another temporary error while
     the batch's search runs (for example MongoDB down when the source health is read for the stale flag, or
     when the audit row is written) sets `intel_search = {"failure": "<type>: <message>"}` on every threat. An
     error while the approved sources are read comes before this guard: it is raised and the job is retried. A failed search, or one with no snapshot,
     holds its path back (`evidence_problem`, §6 step 9); the job is retried. On its last try, when another path of the
-    batch was served, the held path gets an `unavailable` failure card with the evidence reason. A settled empty index is not an outage: its paths have
+    batch was served, the held path gets an `unavailable` failure card with the evidence reason. An AI outage in the
+    search keeps the refusal's own message (`outage_message`, for example the reranker's or the AI slot wait's) as
+    the notice and card text, and the reason stays the outage. A settled empty index is not an outage: its paths have
     nothing citable and are written in the original style (`evidence_mode` `inferred`).
 
 ### 7.6 What counts as evidence
@@ -2406,8 +2413,8 @@ The writer's answer (pretty-printed; the two long statements trimmed with `…`)
 6. **The `ChatModel` wrapper**, briefly:
    - A prompt longer than the smallest `max_input_chars` raises `TruncatedAiAnswer` before any call.
    - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of `CII_MAX_CONCURRENT_AI_CALLS` (16; 0 in
-     UAT, no limit), shared by every pod. A worker waits up to 300 s (`AiLimits.WORKER_SLOT_WAIT_SECONDS`), else
-     `Unavailable`.
+     UAT: no fixed limit, only the one a gateway 429 sets, section 15), shared by every pod. A worker waits up to
+     300 s (`AiLimits.WORKER_SLOT_WAIT_SECONDS`), else `Unavailable`.
    - Every request, each retry included, first waits its turn under its model's own limit:
      `CII_CHAT_REQUESTS_PER_MINUTE`, or the fallback's `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE` (`AiRequestRate`,
      section 15).
@@ -2423,6 +2430,9 @@ The writer's answer (pretty-printed; the two long statements trimmed with `…`)
      which also becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused
      key or an unknown model fails the whole job (`ai_misconfigured`).
    - Every answered call is copied to `tsg_ai_calls` (14 days).
+   - A task that also judges a usable first answer (the treatment plan, the service mapper) asks again for
+     its faults. An unusable re-ask, or one that finds the AI busy or down, keeps the first answer
+     (`ai.first_answer_kept`). The writer has no such check: its re-ask is only for an answer it cannot use.
 7. An outage (`Unavailable`) is raised out of `PathWriter.write`: the path waits and the job is retried
    (section 6). `JobFailed` and `LeaseLost` are raised too. Any other error in this one path becomes a
    failure with code `internal_error`, so the other paths of the batch go on.
@@ -2620,7 +2630,8 @@ reader, and it always comes with a link to that source.
 > **In plain words:** Each finished scenario is saved once, and only while the job still owns the session, so a
 > cancelled or deleted session never receives late results. Right before saving, code checks that the asset
 > does not already hold the same scenario. This is an exact comparison, not an AI guess. The plan then records
-> the path as delivered, or as given up, in which case a spare path may take its place.
+> the path as delivered, or as given up, in which case a spare path may take its place. A path an outage
+> stopped is not given up: the next set writes it again, up to 5 tries.
 
 **Where:** `PathSaver.save(path_id, outcome, started_at)` (`app/worker/scenario/path_writing.py`), in the job's
 own thread, as each path's work finishes.
@@ -2638,8 +2649,11 @@ flowchart TB
     T --> D{"Done, or already saved?"}
     SV --> D
     D -- yes --> SERVED["Path served"]
-    D -- no --> AB["Path given up<br/>a spare if the budget allows"]
+    D -- no --> O{"An outage card,<br/>attempts under 5?"}
+    O -- yes --> NS["Path left open<br/>out of job.set, for the next set"]
+    O -- no --> AB["Path given up<br/>a spare if the budget allows"]
     SERVED --> FW["One fenced write: paths, counts, plan note<br/>then the live event"]
+    NS --> FW
     AB --> FW
 ```
 
@@ -2707,11 +2721,18 @@ flowchart TB
    `app/data_access/scenario/threat_scenario_repository.py`). It is an upsert by `_id` that replaces an
    existing card only when that card is not `done`. A failed or blocked card with the same id is replaced; a
    `done` card is never overwritten, and the call returns false.
-9. **Served or given up.** When the card is `done`, or was not saved because a `done` card already held its id,
-   the path is **served**: `progress.record({path_id: {"served": <id>}})`. Otherwise the path is **given up**
-   at once: `attempts` + 1, `last_blocker` (the failure code, or the blocking finding's code, a final one
-   first) and `abandoned: true`. The
-   writer's own retry, up to `Generation.MAX_PATH_ATTEMPTS` (5), is commented out in `PathSaver.save`.
+9. **Served, left for the next set, or given up.** When the card is `done`, or was not saved because a `done`
+   card already held its id, the path is **served**: `progress.record({path_id: {"served": <id>}})`. Otherwise
+   `attempts` + 1 and `last_blocker` (the failure code, or the blocking finding's code, a final one first) are
+   recorded, and:
+   - an `unavailable` card whose `attempts` stay under `Generation.MAX_PATH_ATTEMPTS` (5) **leaves the path for
+     the next set** (`PlanProgress.leave_for_next_set`): `abandoned: false`, and the path leaves `job.set` in the
+     same fenced write, so its own set never writes it again. The next set picks it like any open path and its
+     new scenario replaces the card under the same id. No spare is taken;
+   - any other card, or the 5th outage, **gives the path up** at once: `abandoned: true`.
+
+   The writer's own retry of a blocked path, up to `Generation.MAX_PATH_ATTEMPTS` (5), is commented out in
+   `PathSaver.save`.
 10. **The spare** (`PlanProgress.abandon`). While `budget_left` (`app/domain/scenario/plan.py`) allows,
     `best_reserve` picks a replacement: the best-ranked path whose attacker is supported, first one the scenario
     count left out (`target_reached`), else a later set's open path. The budget rule: the set's write calls so far
@@ -3109,16 +3130,17 @@ The rest: `status` `done`, `attempts` 1, `queued_at` 08:18:35.362 (the moment th
 ### 10.5 The sweep (`tsg_retry_controls`)
 
 > **In plain words:** Every five minutes a background check looks for matching work that stalled or was
-> lost, and queues it again. Work for a cancelled session is stopped. Work that failed five times is marked
-> failed for good, so nothing loops forever.
+> lost, and queues it again. Work for a cancelled session is stopped. Work that failed five times stays
+> failed and is never retried by the sweep, so nothing loops forever: a plan request or a plan regenerate
+> maps those controls again.
 
 **How:** beat runs `tsg_retry_controls` on queue `tsg_maintenance` every 300 s
 (`Controls.SWEEP_EVERY_SECONDS`) → `ControlsJob.retry_stalled_controls` →
 `WorkControlRepository.sweep_stalled_controls` (`app/data_access/jobs/work_control_repository.py`):
 1. `settle_stopped_scenario_sessions`: waiting controls of a cancelled session become `cancelled` (never
    one a live lease holds); every scenario of a deleted session is removed.
-2. `fail_abandoned_controls`: controls still `running` with an expired lease after 5 attempts fail for good
-   (`job_abandoned`).
+2. `fail_abandoned_controls`: controls still `running` with an expired lease after 5 attempts fail
+   (`job_abandoned`); only a plan request or a plan regenerate maps them again.
 3. `requeue_stalled_controls`: controls queued for over 600 s, running with an expired lease, or failed over
    1800 s ago (`Controls.RETRY_FAILED_AFTER_SECONDS`) with attempts left go back to `queued`. Attempts are
    kept.
@@ -3352,7 +3374,7 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
    | Reason | When |
    |---|---|
    | `unknown` | not a served scenario of this session |
-   | `failure_scenario` | a failure card: the write job retries its path itself |
+   | `failure_scenario` | a failure card that names no AI outage. An outage's card (`failure.reason`) is accepted: its path is written again in place |
    | `hand_written` | `source` is `manual`: there is no plan path to write again |
    | `version_not_current` | a newer version replaced it (`superseded_by` is set) |
    | `duplicate_version` | two versions of one path in the same call |
@@ -3360,7 +3382,8 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
    The decision is not checked: a pending, accepted or rejected version can be regenerated.
 4. **The version cap.** Each target's stored `version` (version 1 is the first write) is compared with
    `REGENERATIONS_MAX_VERSION_COUNT` (default 10, allowed 1-40; the same setting caps treatment-plan
-   versions).
+   versions, but a treatment-plan version that failed for an outage is written again in place and uses no
+   version).
    - `version >= max` → 409 `version_limit_reached`, with `details.scenario_ids` listing those ids in
      request order (message `ReviewMessage.VERSION_LIMIT_REACHED`).
    - With the default, version 9 can become version 10; version 10 cannot be regenerated.
@@ -3371,7 +3394,8 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
 
    > Note: the cap comes from commit `b750eee`, which is not merged yet. It adds `version` to the repository's `target` field list
    > and passes `get_settings().regenerations_max_version_count` to `regenerate_batch`.
-5. The batch: `[{path_id, replaces: scenario_id}, …]`, one item per id, in request order.
+5. The batch: `[{path_id, replaces: scenario_id or null}, …]`: null for an AI outage's failure card (the
+   path's first write again, same id, version 1), one item per id, in request order.
 6. `_queue_write_job(…, RunActionKind.REGENERATE, batch)`:
    1. `_refuse_without_intel_data`: 409 `intel_no_data` when intelligence is on and the active snapshot
       holds no records.
@@ -3394,7 +3418,11 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
 **How: the worker** (the write job, with these differences)
 
 8. `BatchWriter.write`: the whole regenerate batch is one job that never hands over. Up to 6 paths are
-   written at once (`write_at_once`). There is no pre-AI repeat check.
+   written at once (`write_at_once`). The pre-AI repeat check (`held_repeat_of`) runs on the outage cards'
+   paths only, never on a version path. A path it gives up pulls no spare, because a regenerate has no set.
+   The given-up path's failure card has its `failure` replaced by `{code: near_duplicate, message naming the
+   held scenario}`, with no reason, so review refuses it from then on (`failure_scenario`). The next set does
+   the same to an outage card it gives up as a repeat.
 9. `PathSaver._versions_to_write` reads every written version of the target paths, in version order.
    - A target whose next version (`scenario_id(session, path, version + 1)`) is not saved yet is written.
      The writer gets every older version's narrative (`narrative_of`, without its evidence passage) as
@@ -3402,6 +3430,9 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
      budget, with cited sentences removed (`_without_citations`, `_newest_within`).
    - A next version an earlier delivery already saved is finished here (superseded and served), with no AI
      call.
+   - An outage card's path goes through `PathSaver.to_write` as the next set's would, even when the path was
+     given up after `MAX_PATH_ATTEMPTS` (`is_still_to_write(path, reopen=True)`). Once served it is
+     `abandoned: false`. A version 1 an earlier delivery saved is served with no AI call.
 10. `PathSaver._save_version`, after the writer, the checks and the reviewer:
     - **failure:** no card is saved. `_note_failure` puts `regenerate_error {code, message, at}` on the old
       version, which stays current;
@@ -3410,12 +3441,15 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
     - **done:** `save_with_unique_title` saves version n+1 (`replaces` = the old id) first. Then
       `supersede_scenario_version` sets `superseded_by` on the old version and clears its
       `regenerate_error`. The path is served by the new id.
-    - The path is never given up on a regenerate.
-11. `tsg_map_controls` is sent once if any target got its new version (10.1).
+    - A version path is never given up on a regenerate. An outage card's path follows the first-write rules:
+      another outage counts one more attempt and the card keeps its reason; at 5 attempts it is given up
+      again, with no spare.
+11. `tsg_map_controls` is sent once (10.1) if any target was written: a new version, or an outage card's
+    scenario in place.
 12. `PlanProgress.finish_regenerate(replaced, requested)` ends the job `done`:
-    - `last_action.outcome` and `last_regen.outcome`: `complete` when every target got its new version,
-      else `partial`;
-    - `last_regen.replaced`: how many did;
+    - `last_action.outcome` and `last_regen.outcome`: `complete` when every target was written that way, else
+      `partial`;
+    - `last_regen.replaced`: how many were, both kinds counted;
     - `timings.scenarios_s`: timed from the click.
 
 **In the example:** session `c21b4a67…` (another run on the same asset, older code), path
@@ -3489,7 +3523,9 @@ The matching audit rows, in order:
    And 409 `run_being_deleted` while the session is being deleted.
 6. The write job writes the set batch by batch, handing over to itself. When the set ends,
    `continue_or_finish` fills `last_next_set` from `set_summary`: `outcome` (`complete` or `partial`),
-   `delivered`, `reason` and `remaining`.
+   `delivered`, `reason` and `remaining`. A path left for the next set by an outage (section 9.1, step 9) is no
+   longer in the set, so the set can end `complete` with `delivered` below `requested` and `reason` null;
+   `remaining` counts that path.
 
 **In the example**
 
@@ -3590,25 +3626,40 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    (`tsg_ResolveThreat`). If the scenario has no usable mapped controls (none, or only retired ones), it maps
    them itself, inline; when another job is mapping them, the plan job is given back and tries again 15 s later
    (no attempt used). It
-   then works out where the risk is and where each control already stands (D19, D20):
-   - **Affected systems:** every supporting system linked to the asset when `all_supporting_systems_applicable`
-     is 1 (the run's `asset_systems`, as of its start; a run stored before D20: its own systems), else the
-     scenario's own (the run's when it names none).
-   - **Where an existing control is:** on every system of the asset when
-     `existing_controls_all_supporting_system_applicable` is 1, else on its own `supporting_system_ids`, each of
-     which must be one of the asset's systems (else 422, checked before anything is saved, a hand-written
-     scenario included). Existing controls match by id, code, name or a "CODE · Name" label.
+   then works out where the risk is and where each control already stands (D19, D20, D34). The request sends
+   the systems once, for the whole request: `supporting_systems_applicable_to_risk` and
+   `supporting_systems_applicable_to_existing_controls`, both optional (null, `""` and `[]` mean no system).
+   - **Affected systems:** the asset's supporting systems that `supporting_systems_applicable_to_risk` lists,
+     in the asset's order (the run's `asset_systems` as of its start; a run stored before D20: its own
+     systems). The list empty: none; the risk is on the asset itself and the plan is at the asset level. A
+     register stored before D34 (no lists): every system when `all_supporting_systems_applicable` is 1, else
+     the scenario's own (the run's when it names none).
+   - **Where an existing control is:** every existing control is on the systems
+     `supporting_systems_applicable_to_existing_controls` lists (none when it is empty), and only those the
+     risk applies to count. `existing_controls` only names the controls; an entry with `supporting_system_ids`
+     is a 422. Each id in both lists must be one of the asset's systems, else a 422 naming the field and its
+     place as sent (`body.supporting_systems_applicable_to_risk[1]`), checked before anything is saved (a
+     hand-written scenario included). A register stored before D34: on every system when
+     `existing_controls_all_supporting_system_applicable` is 1 (before that flag, the Yes/No), else on its own
+     `supporting_system_ids`. Existing controls match by id, code, name or a "CODE · Name" label.
    - **Of its type** (D21): a control counts only on the affected systems of its asset type (an IT control on
      the IT systems, an OT one on the OT systems, IT\OT or untyped on all; a system of no recorded category
      takes every control; none fits, every affected system).
    - **Status:** `implemented` (on every one of those systems), `partially_implemented` (on some),
-     `not_implemented` (on none, or not in the register).
+     `not_implemented` (on none, or not in the register). With no affected system (the risk list empty), an
+     existing control is `implemented` and any other `not_implemented`, both with no protected or required
+     system, and every action names no system. `applicable_to_all_subsystems` is `Yes` only when the risk
+     list names every supporting system of the asset.
+   - **Example** (Prashant's): the asset has 1 historian, 2 workstation, 3 SCADA and 4 firewall. Risk
+     `[1, 2, 3, 4]`, existing controls on `[2, 3]` → each existing control is `partially_implemented`,
+     already on 2 and 3, still needed on 1 and 4. Existing controls on `[]` → `not_implemented` on all four.
+     Risk `[]` → the plan is at the asset level.
    - **Alternatives:** the 5 best controls not already identified, from the mapping's reranked `shortlist`
      while its query, `Control_Library` stamp, models, candidate count and AI rule still match; else one more
      library search with the mapping's search and reranker.
 
    It stores the input as the version's snapshot.
-3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-4`). It checks every identified
+3. **AI:** one call, `remediation_plan` (temperature 0, prompt `remediation-5`). It checks every identified
    control for relevance only: `retained`, `replaced` by one of the alternatives, or `flagged_for_review`. It
    writes only the not implemented (implement) and partially implemented (extend) controls that passed, each
    action with its supporting systems, and the parts of the risk no control covers. It sees the window's
@@ -3618,6 +3669,7 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    - describes a partial control as new or a missing one as extended;
    - (every control implemented) has an interim action.
 
+   An unusable re-ask, or one that finds the AI busy or down, keeps the first answer (`ai.first_answer_kept`).
    A check still left out or refused flags that control; a gap still left out keeps the plan with
    `GAP_NOT_ADDRESSED`. An unusable answer (`action_plan` left out included) is asked again once; still
    unusable, the version fails `generation_failed` (a plan with no action fails `invalid_plan`).
@@ -3630,13 +3682,15 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    replacement passed the check, and the AI's uncovered risks (the systems a control still needs are on its
    `required_systems`); an `action_plan` sentence stating the schedule or the library is dropped, never asked again; the title is code's,
    "<domains> Remediation" (covered: "Verification") from the controls' domains; schedule dates and the critical
-   path. Example: affected systems A, B and C, DoS protection in the register on A only →
-   `partially_implemented`, already on A, still needed on B and C.
+   path. Example: risk on 1, 2, 3 and 4, an existing control on 2 and 3 → `partially_implemented`, already
+   on 2 and 3, still needed on 1 and 4.
 5. **Later:** `GET .../treatment-plan` (and `/status`), `POST .../review` (accept or reject a version),
-   `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10), `.../cancel`; live updates on
-   `.../treatment-plan/events`. The prefix is `/v1/sessions/{sid}/scenarios/{scid}/treatment-plan`. Lists:
-   `GET /v1/sessions/{sid}/treatment-plans` and `GET /v1/entities/{eid}/treatment-plans` (the register),
-   filtered by `status`, `decision` and `risk_level`.
+   `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10; a version that failed for an outage
+   is written again in place and uses no version), `.../cancel`; live updates on `.../treatment-plan/events`.
+   A hand-written request sent again with the same `Idempotency-Key` and body after an outage failure writes its
+   latest version again in the same way (202). The prefix is
+   `/v1/sessions/{sid}/scenarios/{scid}/treatment-plan`. Lists: `GET /v1/sessions/{sid}/treatment-plans` and
+   `GET /v1/entities/{eid}/treatment-plans` (the register), filtered by `status`, `decision` and `risk_level`.
 
 ---
 
@@ -3653,7 +3707,9 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
   switch, the import (refresh), health, and revoking or approving a source (section 2.3).
 - **Audit and AI logs:** `tsg_audit` is append-only and kept 365 days; it has no read route. The AI call log
   `tsg_ai_calls` is kept 14 days.
-- **Service mapper:** a stub with canned answers (real authentication and validation, nothing stored).
+- **Service mapper** (`docs/service_mapper/SERVICE_MAPPER.md`): one AI call per generation, on queue
+  `tsg_servicemapper`. A generation that failed for an outage is tried again by a regenerate, or by the same
+  `Idempotency-Key` while that key's generation is still the latest.
 
 ---
 
@@ -3715,12 +3771,33 @@ stateDiagram-v2
     lost stops waiting. `tsg_ai_request_rate_wait_seconds{model}` records every request's wait, 0 included.
     0 = no limit.
   - **At once:** at most `CII_MAX_CONCURRENT_AI_CALLS` calls across all pods (Redis slots, `tsg:ai_slots`): 16
-    by default, 0 (no limit) in UAT, where each model's request rate is the limit.
+    by default, 0 in UAT: no fixed limit, so each model's request rate is the limit until the gateway answers
+    429.
+    - **The 429 limit:** a gateway 429 then sets one limit for every pod (`tsg:ai_slots:limit`,
+      `AiSlots.note_rate_limited`): half the calls in flight at that moment, never below 4
+      (`AiLimits.ADAPTIVE_LIMIT_FLOOR`), at most one cut every 5 s. A cut never raises the limit: when half is
+      not lower, the limit stays. Each answered call raises it by 1 / limit, and it is gone 180 s after the last
+      429 (`ADAPTIVE_LIMIT_TTL_SECONDS`). Above 0, the setting is a fixed ceiling, and a 429's limit applies
+      only when lower.
+    - **Leased slots:** each call's slot is a 60 s lease that its process renews every 20 s
+      (`AiLimits.SLOT_LEASE_SECONDS`, `SLOT_RENEW_SECONDS`), so a pod killed mid-call stops counting within a
+      minute.
+    - **Redis IO:** an answered call costs two Redis round trips (take; free, which also raises a 429's limit).
+      A request that no model answered never raises the limit. At cap 0, a Redis failure makes the call
+      limiter (the slots) skip Redis for 30 s (`REDIS_SKIP_SECONDS`). A model's request-rate turn still asks
+      Redis on every request.
+    - **Gauges:** `tsg_ai_slots_in_use` and `tsg_ai_slots_cap` (the limit in force:
+      `CII_MAX_CONCURRENT_AI_CALLS` or the one a gateway 429 set, the lower; 0 = none) show NaN when Redis
+      cannot say.
+    - **Source label:** a call refused by TSG's own limiter (no slot or request turn within the wait) is an
+      `ai_busy` outage counted with `source="limiter"` in `tsg_ai_outages_total`; the gateway's own refusals
+      carry `source="gateway"`, and only those raise the `AiNotAnswering` alert.
   - **Busy or down:** three quick retries (0.5, 1, 2 s) when the provider is busy or unreachable or the answer
     came back short. An HTTP 429 (rate limited, counted in `tsg_ai_rate_limited_total{model}`) asks the same
-    model again, since the fallback takes 55-99 s: after its Retry-After (at most 15 s), else after 2, 5, 10
-    and 15 s (±20 %), at most 35 s of waits in all; the API, which answers a caller, retries a 429 as any busy
-    answer. A timeout is not retried there.
+    model again, since the fallback takes 55-99 s: after 2, 5, 10 and 15 s (±20 %), or after its Retry-After
+    when that is longer (at most 60 s; a shorter one is not asked again sooner), at most 60 s of waits in all,
+    then the fallback; the API, which answers a caller, retries a 429 as any busy answer. A timeout is not
+    retried there.
   - **Fallback:** `CII_CHAT_FALLBACK_MODEL` answers when the first model is busy, down or timed out, at most
     `CII_MAX_CONCURRENT_FALLBACK_CALLS` calls at once across all pods (Redis slots `tsg:ai_fallback_slots`; 16
     in UAT, 0 = no limit; the first model is never capped by it). A model that timed out, or stayed
@@ -3730,9 +3807,10 @@ stateDiagram-v2
     `relevance_gate` 8,192, `service_mapper` 4,096, `write_scenario` 3,072, `plan_check` 2,048, about twice the
     most an answered call used); other tasks, and a model whose thinking is on, ask for the model's limit. An
     answer cut off at its cap is recorded with outcome `truncated` and asked once more at the model's limit.
-  - **Answers:** an unreadable answer is asked again once. Every chat call that gets an answer is copied to
-    `tsg_ai_calls`, where any later delivery of a plan job finds its accepted answers (5.6); every AI call
-    (chat, embedding, rerank) is counted in `tsg_ai_calls_total`.
+  - **Answers:** an unreadable answer is asked again once. A usable first answer that a task re-asks for its
+    faults is kept when the re-ask is unusable or finds the AI busy or down. Every chat call that gets an
+    answer is copied to `tsg_ai_calls`, where any later delivery of a plan job finds its accepted answers
+    (5.6); every AI call (chat, embedding, rerank) is counted in `tsg_ai_calls_total`.
   - **Embeddings:** processes building the same index at once share its batches: each sends them in its own
     order and skips a batch another process has already stored.
 - **Cancel and delete** are fenced the same way: a cancel stops the job at its next renewal, AI call or save;
@@ -3756,8 +3834,9 @@ stateDiagram-v2
 - **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; the local
   maintenance worker uses 9102): HTTP requests, jobs by task and outcome, how long each job waited in its
   queue (`tsg_job_queue_wait_seconds`), runs, scenarios by outcome, decisions, plans, AI calls, AI outages by
-  reason (`tsg_ai_outages_total`), HTTP 429 answers (`tsg_ai_rate_limited_total`), each request's wait for its
-  model's turn (`tsg_ai_request_rate_wait_seconds{model}`), tokens and seconds, dependencies up, workers online, AI slots,
+  reason and source (`tsg_ai_outages_total`: `gateway`, or `limiter` for TSG's own limiter), HTTP 429 answers
+  (`tsg_ai_rate_limited_total`), each request's wait for its model's turn
+  (`tsg_ai_request_rate_wait_seconds{model}`), tokens and seconds, dependencies up, workers online, AI slots,
   audit and library-check failures.
 - **Alerts** (`observability/prometheus/rules.yml`): API errors, API bugs (500) and latency, failing jobs, the
   reaper, queue backlog and unknown queue depth, missing workers, stores down, the AI error rate, the AI not
@@ -3789,9 +3868,12 @@ stateDiagram-v2
   twin of every worker in project `ai-remediation`. The workers (D29; threads, CPU and memory limits):
   `worker-threats` 2, 1 CPU, 1536Mi; `worker-scenarios` 2, 1 CPU, 2Gi (the only one holding the evidence
   index); `worker-controls` 1, 250m, 1Gi; `worker-remediation` 2, 500m, 1Gi; `worker-service-mapper` 2, 500m,
-  1Gi; `worker-maintenance` 3, 250m, 1536Mi; the API 750m, 1Gi each, beat 250m, 512Mi. The image runs numpy's maths
+  1Gi; `worker-maintenance` 3, 250m, 1536Mi; the API 750m, 1Gi each, beat 200m, 512Mi. The image runs numpy's maths
   libraries on one thread (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, `Dockerfile`). `deploy/deploy_common.yaml` runs the monitoring and
-  Flower in project `ai-common`, which TSG shares with the chatbot (D24). Settings are `deploy/configmap.yaml`
+  Flower in project `ai-common`, which TSG shares with the chatbot (D24), and the monitoring proxy (nginx, 50m and
+  64Mi, requests = limits) in `ai-threatgen`: Grafana and Flower are on the API's host at `/grafana` and `/flower`,
+  without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus
+  and Alertmanager have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
   (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
   (Secret `tsg-secrets`, copied from `deploy/secrets.example.yaml`, never committed); network rules are
   `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
@@ -3817,7 +3899,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 ### 17.2 Scenario status and decision
 | Field | Values |
 |---|---|
-| `status` | `done` (served); `blocked` (a blocker; audit only; the path is given up, a spare may replace it); `failed` (no scenario could be written; a visible failure card; the path is given up) |
+| `status` | `done` (served); `blocked` (a blocker; audit only; the path is given up, a spare may replace it); `failed` (no scenario could be written; a visible failure card). After an outage (`failure.code` `unavailable`) the next set writes its path again, up to 5 tries. An AI outage's card (`failure.reason` set) can also be regenerated (section 12.5), even after 5 tries. Any other failed card's path is given up |
 | `decision` | `pending`, `accepted`, `rejected` |
 | `evidence_mode` | `source-documented`, `nearest`, `inferred` |
 | `controls.status` | `queued`, `running`, `done`, `failed`, `cancelled` |
@@ -3850,8 +3932,8 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `EVIDENCE_CANDIDATES` | 30 (1-100) | intelligence records the reranker scores per threat (section 7.3) |
 | `EVIDENCE_KEPT_PER_THREAT` | 3 (1-10) | intelligence records kept per threat; the writer sees them all and cites one (section 7.3) |
 | `THREAT_CONTEXT_COUNTRY` | United Arab Emirates | the country an evidence story reads |
-| `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5) |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0, no limit) | AI calls at once, all pods |
+| `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5); a treatment-plan version that failed for an outage is written again in place and uses no version |
+| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | AI calls at once, all pods |
 | `CII_CHAT_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 180) | requests a minute to `CII_CHAT_MODEL`, all pods, retries included: that model's own limit, kimi-k2.5's 192 in UAT (section 15) |
 | `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the fallback chat model, the embedding model and the reranker, each its own |
 | `CII_MAX_CONCURRENT_FALLBACK_CALLS` | 0, no limit (UAT: 16) | calls at once to the fallback chat model, all pods |

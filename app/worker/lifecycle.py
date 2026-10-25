@@ -75,10 +75,9 @@ def _prepare_stores_and_models() -> None:
         container.set_up_worker(JOB_COLLECTIONS)
     except Exception as exc:  # noqa: BLE001 — any start-up failure must stop the worker (SystemExit below)
         raise SystemExit(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
-    metrics.AI_SLOTS_IN_USE.set_function(
-        container.get_ai_slots().count_calls_in_progress
-    )  # AiSlotsSaturated reads both
-    metrics.AI_SLOTS_CAP.set(settings.max_concurrent_ai_calls)
+    slots = container.get_ai_slots()  # AiSlotsSaturated reads both gauges
+    metrics.AI_SLOTS_IN_USE.set_function(slots.count_calls_in_progress)
+    metrics.AI_SLOTS_CAP.set_function(slots.current_limit)
 
 
 @signals.beat_init.connect

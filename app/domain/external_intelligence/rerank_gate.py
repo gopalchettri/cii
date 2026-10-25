@@ -1,5 +1,6 @@
 """The process-wide limit on evidence reranks, always taken before the AI slot so the two never deadlock. A
-wait that ends is Unavailable (that request goes without evidence); a lost lease ends it too."""
+wait that ends is Unavailable (that search fails, so its path waits and is tried again); a lost lease ends
+it too."""
 
 import threading
 import time
