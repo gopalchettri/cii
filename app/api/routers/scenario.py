@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from functools import partial
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi import Header as HeaderParam
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
@@ -32,6 +32,7 @@ from app.core.constants import (
     Limits,
 )
 from app.models.scenario.views import (
+    ACCEPT_REQUEST_EXAMPLES,
     AcceptRequest,
     AcceptResult,
     PlanTraceView,
@@ -153,10 +154,15 @@ def get_plan_trace(run: CallersRun, scenarios: Scenarios) -> PlanTraceView:
     "/v1/sessions/{session_id}/accept", response_model=AcceptResult, summary="1. Accept scenarios"
 )
 def accept_scenarios(
-    body: AcceptRequest, run: CallersRun, principal: Caller, scenarios: Scenarios
+    body: Annotated[AcceptRequest, Body(openapi_examples=ACCEPT_REQUEST_EXAMPLES)],
+    run: CallersRun,
+    principal: Caller,
+    scenarios: Scenarios,
 ) -> AcceptResult:
-    """Send `{"scenario_ids": ["..."]}` or `{"scenario_ids": "all"}`. An accepted scenario can get a
-    remediation plan (group 7). `replace_accepted: true` lets a newer version replace an accepted one."""
+    """Send `{"mode": "subset", "scenario_ids": ["..."]}`, `{"mode": "all"}` or `{"mode": "none"}` (decides
+    nothing), as TSG v1 does; `replace_accepted: true` (optional, with subset) lets a newer version replace an
+    accepted one. The v2 body is also accepted: `{"scenario_ids": ["..."]}` or `{"scenario_ids": "all"}`. An
+    accepted scenario can get a remediation plan (group 7)."""
     return scenarios.accept_threat_scenarios(principal, run, body)
 
 

@@ -342,6 +342,8 @@ class ThreatScenarioService:
     ) -> AcceptResult:
         """Accepts the chosen scenarios, or every acceptable one ("all")."""
         check_review_open(run)
+        if request.scenario_ids is None:  # v1's mode "none": decides nothing, writes nothing
+            return AcceptResult(accepted=[], replaced=[], skipped=[], controls_pending=[])
         replaced: list[str] = []
         if request.scenario_ids == "all":
             targets, skipped = self._everything_acceptable(run.session_id)

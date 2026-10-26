@@ -417,16 +417,44 @@ Headers: identity headers, `Content-Type`.
 | --- | --- |
 | `session_id` | string ≤ 64 |
 
-**Body** (`AcceptRequest`)
+**Body** (`AcceptRequest`), the TSG v1 format:
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `scenario_ids` | string[] (1-50, unique, each ≤ 64) **or** the string `"all"` | yes | what to accept |
-| `replace_accepted` | bool | no (default `false`) | let a newer version replace an already accepted version of the same attack path |
+| `mode` | `all` / `subset` / `none` | yes (v1 body) | `all`: accept every scenario; `subset`: accept `scenario_ids`; `none`: accept nothing |
+| `scenario_ids` | string[] (1-50, unique, each ≤ 64) | with `subset` only | what to accept; left out with `all` and `none` |
+| `replace_accepted` | bool | no (default `false`) | with `subset`: let a newer version replace an already accepted version of the same attack path |
 
 ```json
-{ "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"], "replace_accepted": false }
+{ "mode": "subset", "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"] }
 ```
+```json
+{ "mode": "all" }
+```
+```json
+{ "mode": "subset", "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"], "replace_accepted": true }
+```
+```json
+{ "mode": "none" }
+```
+
+`{"mode": "none"}` decides nothing: `200` with four empty lists, and every scenario stays pending. With `mode`,
+`scenario_ids` is sent only with `subset` (a list, not `"all"`), and so is `replace_accepted: true`. Anything else →
+`422`. Swagger's example list shows each of these bodies.
+
+**The v2 body is also accepted** (no `mode`); the response is the same `AcceptResult`:
+
+| v2 body | Same as |
+| --- | --- |
+| `{"scenario_ids": [...]}` (+ `"replace_accepted": true`) | `{"mode": "subset", "scenario_ids": [...]}` (+ `"replace_accepted": true`) |
+| `{"scenario_ids": "all"}` | `{"mode": "all"}` |
+
+Notes for a TSG v1 client:
+- v1 ignored unknown fields; here an unknown field, an id over 64 characters and a repeated id are each a `422`.
+- The response is `AcceptResult` (below), not v1's `{session_id, user_id, status, accepted_count, replaced[{scenario_id, replaced_scenario_id}]}`: count `accepted`, and `replaced` lists the old ids only.
+- The error body is the one in 1 (Error body), not v1's `{error_code, message, details}`: read `reason` and `errors[]`.
+- Reasons changed: v1's `duplicate_identity` is now `duplicate_version`; an already rejected id was a `404`, now a `409 scenarios_not_decidable` with `already_rejected`. v1's `session_completed`, `session_cancelled`, `generation_abandoned` and `asset_busy` are gone; `run_failed`, `run_cancelled` and `nothing_to_accept` are new.
+- `{"mode": "none"}` writes nothing: no decision and no audit entry.
 
 **Response** `200`: `AcceptResult`
 
@@ -450,7 +478,7 @@ Headers: identity headers, `Content-Type`.
 
 | Status | Reason | Fix |
 | --- | --- | --- |
-| 422 | — | empty list, > 50 ids, repeated id, unknown field |
+| 422 | — | empty list, > 50 ids, repeated id, unknown field, a v1 `mode` rule broken |
 | 409 | `generation_in_progress` | a start, regenerate or next-set job is queued/running: wait until `session_status` is not `active` |
 | 409 | `run_failed` / `run_cancelled` | the run failed / was cancelled before any scenario; start a new run |
 | 404 / 403 | — | as 3.2 |

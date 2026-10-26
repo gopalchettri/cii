@@ -3256,7 +3256,7 @@ version; accepted counts any version.
 **How**
 1. `POST /v1/sessions/{id}/accept` → `ThreatScenarioService.accept_threat_scenarios`.
 2. The body `AcceptRequest`: `scenario_ids` (a list of ids, or `"all"`) and `replace_accepted` (default
-   false).
+   false), or TSG v1's `mode` body, turned into `scenario_ids` in the model; `mode: "none"` decides nothing.
 3. `check_review_open` (12.1).
 4. **The chosen ids:** `_chosen` → `decidable_targets` → `why_ids_cannot_be_decided`. Any fault is a 409
    `scenarios_not_decidable` with `errors[] {scenario_id, reason}`:

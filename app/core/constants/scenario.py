@@ -146,6 +146,9 @@ class PromotionOutcome(StrEnum):
 
 class ReviewMessage(StrEnum):
     IDS_REPEATED = "Each scenario may be sent only once."
+    SUBSET_NEEDS_IDS = "mode 'subset' needs scenario_ids: a list of scenario ids."
+    ONLY_WITH_SUBSET = "{field} is sent only with mode 'subset'."
+    MODE_VALUES = "mode is 'all', 'subset' or 'none': leave it out to send the v2 body."
     GENERATION_IN_PROGRESS = "Run '{session_id}' is still generating: try again once it is done."
     RUN_FAILED = "Run '{session_id}' failed before any scenario was written."
     RUN_CANCELLED = (

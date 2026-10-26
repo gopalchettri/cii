@@ -3,8 +3,54 @@
   "schemas": {
    "AcceptRequest": {
     "additionalProperties": false,
-    "description": "Body of accept. An unknown field is refused (422): a misspelt `replace_acepted` must not pass.",
+    "description": "Body of accept: TSG v1's `mode` body, or the v2 body (`scenario_ids` alone); an unknown field: 422.",
+    "examples": [
+     {
+      "mode": "subset",
+      "scenario_ids": [
+       "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+      ]
+     },
+     {
+      "mode": "all"
+     },
+     {
+      "mode": "subset",
+      "replace_accepted": true,
+      "scenario_ids": [
+       "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+      ]
+     },
+     {
+      "mode": "none"
+     },
+     {
+      "scenario_ids": [
+       "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+      ]
+     },
+     {
+      "scenario_ids": "all"
+     }
+    ],
     "properties": {
+     "mode": {
+      "anyOf": [
+       {
+        "enum": [
+         "all",
+         "subset",
+         "none"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "all: accept every scenario; subset: accept the scenario_ids; none: accept nothing. Leave it out to send the v2 body (scenario_ids alone).",
+      "title": "Mode"
+     },
      "replace_accepted": {
       "default": false,
       "title": "Replace Accepted",
@@ -25,14 +71,15 @@
        {
         "const": "all",
         "type": "string"
+       },
+       {
+        "type": "null"
        }
       ],
+      "description": "With mode subset: the ids to accept; left out with mode all or none. Without mode (the v2 body): required, a list or \"all\".",
       "title": "Scenario Ids"
      }
     },
-    "required": [
-     "scenario_ids"
-    ],
     "title": "AcceptRequest",
     "type": "object"
    },
@@ -8506,7 +8553,7 @@
   },
   "/v1/sessions/{session_id}/accept": {
    "post": {
-    "description": "Send `{\"scenario_ids\": [\"...\"]}` or `{\"scenario_ids\": \"all\"}`. An accepted scenario can get a\nremediation plan (group 7). `replace_accepted: true` lets a newer version replace an accepted one.",
+    "description": "Send `{\"mode\": \"subset\", \"scenario_ids\": [\"...\"]}`, `{\"mode\": \"all\"}` or `{\"mode\": \"none\"}` (decides\nnothing), as TSG v1 does; `replace_accepted: true` (optional, with subset) lets a newer version replace an\naccepted one. The v2 body is also accepted: `{\"scenario_ids\": [\"...\"]}` or `{\"scenario_ids\": \"all\"}`. An\naccepted scenario can get a remediation plan (group 7).",
     "operationId": "accept_scenarios_v1_sessions__session_id__accept_post",
     "parameters": [
      {
@@ -8591,6 +8638,53 @@
     "requestBody": {
      "content": {
       "application/json": {
+       "examples": {
+        "v1_all": {
+         "summary": "Accept all (v1)",
+         "value": {
+          "mode": "all"
+         }
+        },
+        "v1_none": {
+         "summary": "Accept nothing (v1)",
+         "value": {
+          "mode": "none"
+         }
+        },
+        "v1_replace": {
+         "summary": "Accept a newer version in place of the accepted one (v1)",
+         "value": {
+          "mode": "subset",
+          "replace_accepted": true,
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        },
+        "v1_subset": {
+         "summary": "Accept some (v1)",
+         "value": {
+          "mode": "subset",
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        },
+        "v2_all": {
+         "summary": "Accept all (v2, also accepted)",
+         "value": {
+          "scenario_ids": "all"
+         }
+        },
+        "v2_subset": {
+         "summary": "Accept some (v2, also accepted)",
+         "value": {
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        }
+       },
        "schema": {
         "$ref": "#/components/schemas/AcceptRequest"
        }
