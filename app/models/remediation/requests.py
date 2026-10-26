@@ -221,21 +221,23 @@ class ManualScenario(StartRunRequest):
         return self
 
 
-#: The register's data, as the platform sends it with either kind: the risk on the asset's four supporting
-#: systems, the existing controls on two of them (so partially implemented, still needed on the other two).
+#: The supporting systems as the platform sends them with either kind: the risk on two of the asset's
+#: supporting systems, the existing controls on one of them (partially implemented, needed on the other).
+_SYSTEMS_EXAMPLE: dict[str, Any] = {
+    "supporting_systems_applicable_to_risk": [214, 215],
+    "supporting_systems_applicable_to_existing_controls": [214],
+}
+#: The rest of the register's data, as the platform sends it with either kind.
 _REGISTER_EXAMPLE: dict[str, Any] = {
-    "supporting_systems_applicable_to_risk": [2301, 2302, 2303, 2304],
-    "supporting_systems_applicable_to_existing_controls": [2302, 2303],
-    "existing_controls": [{"control_code": "CII-CID-202"}, "User Awareness"],
     "likelihood_rating": 4,
     "impact_rating": 5,
     "final_risk_rating": 20,
     "risk_level": "Critical",
-    "risk_identification_date": "2026-09-15T09:30:00Z",
+    "risk_identification_date": "2026-10-26",
     "risk_owner": "Head of OT Operations",
     "impacted_business_division": "Power Generation Operations",
     "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
-    "mitigation_start_date": "2026-10-01",
+    "mitigation_start_date": "2026-11-01",
     "mitigation_end_date": "2026-12-31",
 }
 
@@ -246,22 +248,31 @@ PLAN_REQUEST_EXAMPLES: list[JsonValue] = [
         "is_manual": False,
         "session_id": "<session_id>",
         "scenario_id": "<accepted scenario_id>",
+        **_SYSTEMS_EXAMPLE,
+        "existing_controls": [
+            {"control_code": "CID-0365", "control_name": "Denial of Service (DoS) Protection"}
+        ],
         **_REGISTER_EXAMPLE,
     },
     # A hand-written scenario (send an Idempotency-Key header with it): TSG saves it, accepts it and plans it.
     {
         "is_manual": True,
         "manual_scenario": {
-            "asset_id": 1166,
-            "entity_id": 1,
-            "supporting_system_id": [2301, 2302],
+            "asset_id": 88,
+            "entity_id": 69,
+            "supporting_system_id": [214, 215],
             "threat_category_name": "Tampering",
             "threat_type_name": "Malware/Ransomware",
             "threat_name": "Ransomware encrypts the historian server",
             "threat_scenario": "An attacker phishes an engineer, moves to the historian and encrypts it.",
             "risk_statement": "Operators lose process history and plant reporting stops for days.",
-            "mapped_controls": [{"control_code": "CII-CID-213"}],
+            "mapped_controls": [{"control_code": "CID-0005", "control_name": "Decommissioning"}],
         },
+        **_SYSTEMS_EXAMPLE,
+        "existing_controls": [
+            {"control_code": "CID-0001", "control_name": "Asset Inventories"},
+            {"control_code": "CID-0002", "control_name": "Asset Governance"},
+        ],
         **_REGISTER_EXAMPLE,
     },
 ]

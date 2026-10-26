@@ -626,7 +626,10 @@ Generated scenario:
   "scenario_id": "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3",
   "supporting_systems_applicable_to_risk": [1448, 1449, 1450, 1451],
   "supporting_systems_applicable_to_existing_controls": [1449, 1450],
-  "existing_controls": [{ "control_code": "CID-0446" }, { "control_code": "CID-0995" }],
+  "existing_controls": [
+    { "control_code": "CID-0446", "control_name": "Risk Assessment" },
+    { "control_code": "CID-0995", "control_name": "Identity Threat Detection & Response" }
+  ],
   "likelihood_rating": 4,
   "impact_rating": 5,
   "final_risk_rating": 20,
@@ -655,11 +658,13 @@ Hand-written scenario (with `Idempotency-Key`):
     "threat_name": "Ransomware with data theft extortion",
     "threat_scenario": "An affiliate phishes an operator, reaches the SCADA server and encrypts it after stealing historian data.",
     "risk_statement": "Signal control is lost for days and stolen data is used for extortion.",
-    "mapped_controls": [{ "control_code": "CID-0446" }]
+    "mapped_controls": [{ "control_code": "CID-0446", "control_name": "Risk Assessment" }]
   },
   "supporting_systems_applicable_to_risk": [1448, 1451],
   "supporting_systems_applicable_to_existing_controls": [1448, 1451],
-  "existing_controls": ["CID-0995"]
+  "existing_controls": [
+    { "control_code": "CID-0995", "control_name": "Identity Threat Detection & Response" }
+  ]
 }
 ```
 

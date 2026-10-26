@@ -3087,9 +3087,9 @@
      {
       "existing_controls": [
        {
-        "control_code": "CII-CID-202"
-       },
-       "User Awareness"
+        "control_code": "CID-0365",
+        "control_name": "Denial of Service (DoS) Protection"
+       }
       ],
       "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
       "final_risk_rating": 20,
@@ -3098,29 +3098,30 @@
       "is_manual": false,
       "likelihood_rating": 4,
       "mitigation_end_date": "2026-12-31",
-      "mitigation_start_date": "2026-10-01",
-      "risk_identification_date": "2026-09-15T09:30:00Z",
+      "mitigation_start_date": "2026-11-01",
+      "risk_identification_date": "2026-10-26",
       "risk_level": "Critical",
       "risk_owner": "Head of OT Operations",
       "scenario_id": "<accepted scenario_id>",
       "session_id": "<session_id>",
       "supporting_systems_applicable_to_existing_controls": [
-       2302,
-       2303
+       214
       ],
       "supporting_systems_applicable_to_risk": [
-       2301,
-       2302,
-       2303,
-       2304
+       214,
+       215
       ]
      },
      {
       "existing_controls": [
        {
-        "control_code": "CII-CID-202"
+        "control_code": "CID-0001",
+        "control_name": "Asset Inventories"
        },
-       "User Awareness"
+       {
+        "control_code": "CID-0002",
+        "control_name": "Asset Governance"
+       }
       ],
       "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
       "final_risk_rating": 20,
@@ -3129,17 +3130,18 @@
       "is_manual": true,
       "likelihood_rating": 4,
       "manual_scenario": {
-       "asset_id": 1166,
-       "entity_id": 1,
+       "asset_id": 88,
+       "entity_id": 69,
        "mapped_controls": [
         {
-         "control_code": "CII-CID-213"
+         "control_code": "CID-0005",
+         "control_name": "Decommissioning"
         }
        ],
        "risk_statement": "Operators lose process history and plant reporting stops for days.",
        "supporting_system_id": [
-        2301,
-        2302
+        214,
+        215
        ],
        "threat_category_name": "Tampering",
        "threat_name": "Ransomware encrypts the historian server",
@@ -3147,19 +3149,16 @@
        "threat_type_name": "Malware/Ransomware"
       },
       "mitigation_end_date": "2026-12-31",
-      "mitigation_start_date": "2026-10-01",
-      "risk_identification_date": "2026-09-15T09:30:00Z",
+      "mitigation_start_date": "2026-11-01",
+      "risk_identification_date": "2026-10-26",
       "risk_level": "Critical",
       "risk_owner": "Head of OT Operations",
       "supporting_systems_applicable_to_existing_controls": [
-       2302,
-       2303
+       214
       ],
       "supporting_systems_applicable_to_risk": [
-       2301,
-       2302,
-       2303,
-       2304
+       214,
+       215
       ]
      }
     ],
