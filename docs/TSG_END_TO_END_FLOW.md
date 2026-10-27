@@ -255,7 +255,8 @@ key; every change is audited under `X-User-Id` (else "admin").
 `refresh_external_intelligence` in `app/worker/external_intelligence/refresh_task.py`, `SourceRefresher` in
 `refresh_sources.py`). It is queued by beat every hour (`IntelLimits.CHECK_EVERY_SECONDS` = 3600) while the
 master switch is on, by `POST /v1/tsg/intel/refresh` (every due source, or one named source), by turning the
-runtime switch on, and by approving a source. The hourly task runs only while both switches are on (else it logs
+runtime switch on, and by approving a source (when that import cannot be queued, the switch or the
+approval still stands and the answer says the refresh was not queued; never a 503). The hourly task runs only while both switches are on (else it logs
 `external_intelligence.refresh_skipped`). A refresh call is an admin job: one at a time (409 `job_in_progress`),
 and its worker checks only the master switch.
 1. **Order** (`SourceCatalogue.fetchers`): `cisa_kev`, `mitre_attack_enterprise`, `mitre_attack_ics`,
@@ -762,7 +763,7 @@ already holds, and every number above can be checked against a stored record.
     | `plan_note` | `null` |
     | `last_action` | `{kind: "start", outcome: "running", reason: null, started_at: now}` (`running_action`) |
     | `counts` | 10 counters at 0: `planned`, `written`, `remaining`, `failed`, `abandoned`, `accepted`, `rejected`, `pending`, `controls_waiting`, `controls_failed` |
-    | `job` | `{task: "tsg_find_threats", epoch: 1, task_id: null, attempts: 0, due_at: now, lease_until: null, resends: 0, error: null}` (`new_job`) |
+    | `job` | `{task: "tsg_find_threats", epoch: 1, task_id: null, attempts: 0, due_at: now, lease_until: null, resends: 0, error: null, request_id: <the API call's>}` (`new_job`) |
     | `created_at`, `updated_at` | now |
     | `idempotency_key` | only when one was sent |
     | `schema_version` | `1`, stamped by the repository |
@@ -1025,7 +1026,7 @@ flowchart TB
 
    "Now" is MongoDB's clock, not the pod's. Every pod reads the time through `app/core/clock.py` (`utc_now`, `epoch_seconds`), which corrects its own clock by the difference to MongoDB's, measured every minute. Pods whose clocks disagree therefore still agree on due times, leases and heartbeats (UAT, 2026-10-24: a worker 76 s behind dropped every job; `docs/UAT_CLOCK_SKEW_RUNBOOK.md`).
 
-   The update sets `status=running`, `job.task_id`, `job.lease_until` = now + 120 s (`Lease.SECONDS`) and `job.resends=0`, and adds 1 to `job.attempts`. No match means a stale, duplicate or early delivery: it logs `job.not_claimed` with its `reason` (`not_due` with `due_in_seconds`, `missing`, `other_epoch`, `other_task`, `leased` or `status_<x>`) and ends with Celery `Ignore`.
+   The update sets `status=running`, `job.task_id`, `job.lease_until` = now + 120 s (`Lease.SECONDS`) and `job.resends=0`, and adds 1 to `job.attempts`; the worker then binds the record's `job.request_id` to its log lines, so a delivery without the Celery header (a reaper or sweep re-send) still traces to the API call. An expired lease is claimed only while `job.attempts` is below 5 (`Lease.MAX_ATTEMPTS`). No match means a stale, duplicate or early delivery: it logs `job.not_claimed` with its `reason` (`not_due` with `due_in_seconds`, `missing`, `other_epoch`, `other_task`, `leased` or `status_<x>`) and ends with Celery `Ignore`.
 4. `keep_lease_alive` renews the lease every 30 s (`Lease.RENEW_EVERY_SECONDS`) from a background thread, for at most 1 hour (`Lease.MAX_JOB_SECONDS`). Every write is fenced on `_id`, `status=running`, `job.task_id`, `job.epoch` and `job.attempts` (`JobLease.fence`). A lost lease (a cancel, a delete, or another delivery taking over) raises `LeaseLost` at the next write or AI call, and the job stops without writing.
 5. `PlanJob.plan_threat_scenario_session` then does the following:
    - reads the frozen context with `FrozenContext.from_record`; SQL Server is not read again;
@@ -1202,7 +1203,7 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
 5. **Retry or skip** (`_retry_or_skip`):
    - An `UnreadableAiAnswer` on a normal attempt raises `Unavailable`, so the whole job is retried later.
    - A `TruncatedAiAnswer` (reply cut off even when asked again at the model's full limit, or prompt too long) on any attempt skips that batch, and so does any bad answer on the last attempt. The skip is logged as `planner.threats_not_judged`.
-   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer the job already got and accepted from `tsg_ai_calls` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
+   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer (in a writing job also the threat-action split and the reviewer's answers; in a remediation job the plan) the job already got and accepted from `tsg_ai_calls` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
    - If the buckets held threats but no batch of any kind was answered, it raises `Unavailable` ("The AI could not answer. Start a new session later.").
 6. **Sorting** (`judge_category`):
    - no verdict (batch skipped) → `not_judged`;
@@ -3019,7 +3020,14 @@ flowchart TB
 5. One scenario's failure (`_map_one`):
    - `ControlsNotMapped` (`control_library_empty`) fails its controls.
    - An outage gives it back as `queued`, and the Celery task retries after 15, 30, 60, 120 s
-     (`Lease.RETRY_DELAYS_SECONDS`). After `Controls.MAX_ATTEMPTS` (5) it is `failed`.
+     (`Lease.RETRY_DELAYS_SECONDS`). After `Controls.MAX_ATTEMPTS` (5) it is `failed`
+     (`controls_mapping_exhausted` only then).
+   - Every change of a scenario's controls state (mapped, failed on its last attempt, failed with `JobFailed`,
+     or changed by the sweep) recounts the session and publishes its status, so the run never shows
+     "controls running" after the last mapping ended.
+   - An outage before any claim retries the message at most 3 times (`Controls.MAX_MESSAGE_RETRIES`), then
+     stops with a log line; the sweep re-sends later. The delivery binds the run's `job.request_id`, so a
+     sweep re-send keeps it.
    - `JobFailed` fails its controls and is raised.
    - Any other error fails only that scenario's controls (`internal_error`).
    - A lost lease skips it.
@@ -3238,6 +3246,8 @@ The rest: `status` `done`, `attempts` 1, `queued_at` 08:18:35.362 (the moment th
    kept.
 4. One `tsg_map_controls` is sent for each of those sessions that no live delivery serves
    (`list_scenario_sessions_with_live_delivery`).
+5. Each changed session is recounted and published, and `controls.swept` logs the requeued and abandoned
+   mappings per run.
 
 Hand-written scenarios (`source` `manual`) are never swept (`SWEPT`).
 
@@ -3273,7 +3283,8 @@ is there.
 - Each API process has one `EventHub` subscribed to `tsg:events:*`.
 - `GET /v1/sessions/{id}/events` (SSE): the stream subscribes first, then reads the status from MongoDB, and
   sends `session.updated` only when the status changed (`session.deleted` once if it is gone). It reads again
-  every 30 s anyway, and ends quietly if the API key is revoked.
+  every 30 s anyway, and ends quietly if the API key is revoked. A MongoDB blip during that re-check skips
+  the round and the stream goes on.
 - Polling alternative: `GET /v1/sessions/{id}` (the status board) and `GET /v1/jobs`.
 
 ---
@@ -3816,7 +3827,7 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
 stateDiagram-v2
     [*] --> queued: save record, send job
     queued --> running: claim (epoch and task match, due)
-    running --> running: a redelivery claims an expired lease (attempt + 1)
+    running --> running: a redelivery claims an expired lease (attempt + 1, below 5 attempts)
     running --> queued: temporary error (retry in 15/30/60/120 s)
     running --> queued: hand over to the next task (same epoch)
     running --> queued: lease expired (reaper)
@@ -3842,7 +3853,8 @@ stateDiagram-v2
   retry and a reaper re-send go first (`Worker.NEXT_STAGE_PRIORITY`, 0); every other send waits behind them
   (`Worker.NEW_WORK_PRIORITY`, 3). So a run already started finishes before new runs take the workers.
   `tsg_job_queue_wait_seconds{task}` records how long each claimed job waited after it was due.
-- **Retries:** temporary errors (AI outage, MongoDB or Redis down, an SQL operation in progress) give the
+- **Retries:** temporary errors (AI outage, MongoDB or Redis down, Redis read-only after a failover
+  (`READONLY`) or out of memory (`OOM`), an SQL operation in progress) give the
   job back and retry after 15, 30, 60, 120 s; the 5th attempt fails it as `unavailable`. Refusals (a
   `JobFailed`, for example `actor_library_empty`, `ai_misconfigured`, `ai_answer_unusable`) fail at once,
   never retried. A job waiting for another job's work (a plan waiting for its scenario's control mapping) is
@@ -3852,9 +3864,17 @@ stateDiagram-v2
   delay on its own pod's clock, the job's due time is MongoDB's) is sent again for its due time instead of
   dropped, when that is at most 125 s away (`Lease.RESEND_EARLY_WITHIN_SECONDS`); nothing is written, so no
   attempt is used, and the log line `job.not_claimed` says `sent_again`.
-- **Reaper** (`tsg_reap`, beat every 60 s): re-queues a job whose lease expired (fails it after 5 attempts,
-  `job_abandoned`), and re-sends a job still queued after 120 s when its queue is empty (or after 15 minutes
-  anyway); a job that never starts after 5 sends fails.
+- **Reaper** (`tsg_reap`, beat every 60 s; its message expires after 180 s, 3 times the interval, and the
+  controls sweep's likewise, so clock skew does not drop a pass): re-queues a job whose lease expired (fails it
+  after 5 attempts, `job_abandoned`; the dead delivery's `job.task_id` and `job.worker` are cleared), and
+  re-sends a job still queued after 120 s when its queue is empty (or after 15 minutes anyway). `send_job`
+  returns True when the broker took the message, False when it did not; the reaper counts `job.resends` only
+  for a re-send that was sent, so a job fails as never started only after 5 sends that reached Redis. Its log
+  lines name the dead job's own `task_id`, `worker`, `epoch` and `request_id`, not the reaper's.
+- **Redis client:** no hidden retries (redis-py's default retries with backoff are off); a call fails after
+  its timeout, so a best-effort call never blocks for seconds.
+- **Shared library build:** the library index build that several jobs wait on runs outside any job's lease:
+  one job's cancel stops only that job, never the others waiting on the same build.
 - **AI calls:** LiteLLM for chat and embeddings, and for rerank when `CII_RERANK_BASE_URL` is set (empty in
   dev: a local rerank model). In UAT one gateway key serves chat, embedding and rerank
   for every pod, and each model has its own requests-a-minute limit on it (kimi-k2.5: 192).
@@ -3917,20 +3937,27 @@ stateDiagram-v2
 
 ## 16. Operations: health, logs, metrics, deployment
 
-- **Health:** `GET /health` (always 200) and `GET /ready` (200 only when MongoDB and Redis answer and each
-  routed queue, `tsg_threats`, `tsg_scenarios`, `tsg_controls`, `tsg_remediation`, `tsg_servicemapper` and
-  `tsg_maintenance`, has a live worker; SQL Server is reported). Workers send a heartbeat to Redis every 20 s.
-  OpenShift checks each worker with `celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10`
-  (startup and liveness): `app/probe.py` holds only the broker settings, so a check costs about 36 MB and
-  0.3 s of CPU, where loading the whole worker app cost about 230 MB and 5-6 s.
+- **Health:** `GET /health` (always 200) and `GET /ready` (200 when MongoDB answers; Redis, SQL Server and
+  the live workers of each routed queue, `tsg_threats`, `tsg_scenarios`, `tsg_controls`, `tsg_remediation`,
+  `tsg_servicemapper` and `tsg_maintenance`, are reported in the body but never fail it, so a Redis outage or
+  a queue without a worker does not take the API out of service). Workers send a heartbeat to Redis every
+  20 s, and at start and at every heartbeat touch `/tmp/tsg-worker-alive` (`Worker.LIVENESS_FILE`), whether
+  the Redis write worked or not. OpenShift's worker liveness probe fails when that file is older than 180 s
+  (`Worker.LIVENESS_MAX_AGE_SECONDS`); the startup probe waits for the file. No probe uses the broker, so a
+  Redis outage does not restart the workers.
 - **Logs:** one JSON line per event (structlog) to stdout, secrets masked; Celery's and the libraries' lines
   too, a traceback inside its line; locally also to `logs/<role>.log`. Alloy ships them to Loki (kept 7 days).
   Every API call writes one `http.request` line (path, status, time, caller, request id; for an error, the
-  error answer in full: code, detail, reason). Every job that fails for good writes one `job.failed` line
-  (job type, run id, code, reason, message); a bug also writes `job.unexpected_error` with its traceback.
-- **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; the local
-  maintenance worker uses 9102): HTTP requests, jobs by task and outcome, how long each job waited in its
-  queue (`tsg_job_queue_wait_seconds`), runs, scenarios by outcome, decisions, plans, AI calls, AI outages by
+  error answer in full: code, detail, reason). A job whose failure is saved writes one `job.failed` line
+  (job type, run id, code, reason, message), an admin job too (task, module, code, message); a bug also
+  writes `job.unexpected_error` with its traceback. A failure that could not be saved (MongoDB down too)
+  writes only `job.failure_not_saved` (code, message): the record stays running and the reaper settles it.
+  Error text (exception messages, `error` and `message` fields) is redacted before it is written. AI lines
+  name the AI step `ai_task` (the job's `task` stays the Celery task), and the limiter's lines `limiter`.
+- **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; locally
+  the maintenance worker uses 9102, the service-mapper worker 9103, and 9101 is the VS Code debug worker's):
+  HTTP requests, jobs by task and outcome, how long each job ran (`tsg_job_seconds`, buckets up to 3600 s)
+  and waited in its queue (`tsg_job_queue_wait_seconds`, the same top bucket), runs, scenarios by outcome, decisions, plans, AI calls, AI outages by
   reason and source (`tsg_ai_outages_total`: `gateway`, or `limiter` for TSG's own limiter), HTTP 429 answers
   (`tsg_ai_rate_limited_total`), each request's wait for its model's turn
   (`tsg_ai_request_rate_wait_seconds{model}`), tokens and seconds, dependencies up, workers online, AI slots,
@@ -3938,17 +3965,22 @@ stateDiagram-v2
 - **Alerts** (`observability/prometheus/rules.yml`): API errors, API bugs (500) and latency, failing jobs, the
   reaper, queue backlog and unknown queue depth, missing workers, stores down, the AI error rate, the AI not
   answering (by reason), AI slots saturated and a model's AI requests waiting long for their turn, audit-write and library-check failures, scrape targets down,
-  and pods (not starting, restarting, out of memory). Each has a plain summary and a description saying what
+  Redis evicting keys, jobs retrying a lot, a long queue wait (p95 of `tsg_job_queue_wait_seconds`), and
+  pods (not starting, restarting, out of memory). Failing jobs count admin builds
+  (`tsg_build_library_indexes`) and leave out the timer tasks (`tsg_retry_controls`, the scheduled
+  intelligence refresh). Each has a plain summary and a description saying what
   to do. Alertmanager has no receiver yet.
 - **Seeing jobs:** `GET /v1/admin/jobs` (admin key) lists every job of every kind (runs, plans, service
   mappings, intelligence refreshes, embeddings builds) with its `module` (threat_scenarios, remediation,
   service_mapper, external_intelligence, library_embeddings, maintenance), its status, the retry it waits for, its error and
-  the worker running it, plus each queue's waiting messages and workers online; filter with `module`,
-  `status`, `kind` and `hours`. Workers are named by module (`scenarios@`, `mapper@`, `maintenance@`), so each
+  the worker running it, its `request_id`, `lease_until` and `resends`, plus each queue's waiting messages
+  and workers online (a Redis outage leaves the counts empty, never a 503); filter with `module`, `status`,
+  `kind`, `hours` and `request_id`. Workers are named by module (`scenarios@`, `mapper@`, `maintenance@`), so each
   writes `logs/worker-<name>.log`. Each task logs `job.started` and `job.finished` (outcome, seconds) with its `record_id`, its
-  `worker` and the `request_id` of the API call that sent it: searching that id in Loki (or
+  `worker` and the `request_id` of the API call that sent it (stored on the record as `job.request_id` and
+  bound at the claim, so every later stage and every re-send keeps it): searching that id in Loki (or
   `scripts/debug_tools.py find <id>`) shows the API call and all its worker lines. The reaper also fails an
-  admin job still running after an hour, and sets `tsg_jobs_current{kind,status}` for Grafana's "Jobs now"
+  admin job still running an hour after it started (`started_at`; time queued does not count), and sets `tsg_jobs_current{kind,status}` for Grafana's "Jobs now"
   panel.
 - **Dashboards:** Grafana's home, "TSG — is everything working?", for operations, support and developers:
   a green/red tile for every part (API, each worker queue, beat, MongoDB, SQL Server, Redis, the AI service,
@@ -3969,8 +4001,8 @@ stateDiagram-v2
   libraries on one thread (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, `Dockerfile`). `deploy/deploy_common.yaml` runs the monitoring and
   Flower in project `ai-common`, which TSG shares with the chatbot (D24), and the monitoring proxy (nginx, 50m and
   64Mi, requests = limits) in `ai-threatgen`: Grafana and Flower are on the API's host at `/grafana` and `/flower`,
-  without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus
-  and Alertmanager have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
+  without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus,
+  Alertmanager and Loki have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
   (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
   (Secret `tsg-secrets`, copied from `deploy/secrets.example.yaml`, never committed); network rules are
   `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and

@@ -1,6 +1,7 @@
 # Loki, UAT and laptop: one process (all parts in one binary), files on local disk, logs kept 7 days (D-07).
 # Started with -config.expand-env=true: LOKI_DATA is the data folder (UAT: the /loki volume; laptop: set by
-# scripts/monitoring.py). Its API is public under /loki/api/v1/… (owner, 2026-10-08) — read it through Grafana.
+# scripts/monitoring.py). No public address in UAT (D31: oc port-forward); read it through Grafana, whose
+# anonymous Viewer can query it (POST /grafana/api/ds/query).
 # ponytail: one pod; split into Loki's separate parts only when log volume, not queries, is the problem.
 
 auth_enabled: false
@@ -46,7 +47,7 @@ limits_config:
   reject_old_samples: true
   reject_old_samples_max_age: 168h
   volume_enabled: true
-  # Its API is public (owner decision): nobody may delete logs through it. Retention still deletes old logs.
+  # Anyone who can query it (Grafana has no login) must not delete logs. Retention still deletes old logs.
   deletion_mode: disabled
 
 compactor:
