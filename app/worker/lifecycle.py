@@ -48,8 +48,6 @@ def prepare_worker(sender: Any, **_: object) -> None:
     except OSError as exc:
         raise _start_failed(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
     metrics.start_job_counters(TaskName)
-    if queue_of(TaskName.REAP) in sender.app.amqp.queues.consume_from:  # -Q is read before worker_init
-        metrics.start_reaper_clock()
     _serve_metrics(pool)
     _prepare_stores_and_models()
     log_mongodb_topology()
@@ -156,11 +154,21 @@ def record_job_outcome(
     if outcome == "ignored":
         log.info(LogEvent.JOB_FINISHED, outcome=outcome)  # another delivery owns the job: no job done
         return  # a delivery that found its job owned by another did no job: no outcome, no duration
-    metrics.JOBS.labels(task.name, outcome).inc()
+    metrics.count_job(task.name, outcome)
     seconds = None if started is None else time.perf_counter() - started
     if seconds is not None and outcome != "waiting":  # a look for another job's work, not a job's run
-        metrics.JOB_SECONDS.labels(task.name).observe(seconds)
+        metrics.record_job_seconds(task.name, seconds)
     log.info(LogEvent.JOB_FINISHED, outcome=outcome, seconds=None if seconds is None else round(seconds, 1))
+
+
+@signals.task_revoked.connect
+def record_expired_delivery(sender: Task, request: Any = None, expired: bool = False, **_: object) -> None:
+    """Counts a timer message the worker dropped unrun because it arrived after its expiry (beat's clock
+    behind the worker's, or its worker stuck). Runs on the consumer thread: nothing of the task is bound."""
+    if expired:
+        metrics.count_job(sender.name, "expired")
+        job = {"task": sender.name, "module": module_of(sender.name), "task_id": getattr(request, "id", None)}
+        log.warning(LogEvent.JOB_FINISHED, outcome="expired", **job)
 
 
 @signals.worker_shutdown.connect

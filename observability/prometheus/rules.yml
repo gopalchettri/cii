@@ -45,7 +45,8 @@ groups:
       # Every `failure` outcome of a run job is final: a retry is counted as `retry`, so a failure is either
       # "failed after Lease.MAX_ATTEMPTS outage retries" or an unexpected error. Both leave a user with a failed
       # run. The timer jobs are left out: a failed reaper pass, control-mapping sweep or scheduled intel refresh
-      # simply runs again on its timer (ReaperNotRunning watches the reaper). An index build counts: an admin may
+      # simply runs again on its timer (ReaperNotRunning and ReaperFailing watch the reaper). An index build
+      # counts: an admin may
       # have asked for it.
       - alert: JobsFailing
         expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_retry_controls|tsg_refresh_external_intelligence"}[15m])) > 0
@@ -76,13 +77,14 @@ groups:
 
       # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
       # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
-      # The age of the last pass, not a rise in tsg_jobs_total: the first pass after a start comes before
+      # The age of the last start, not a rise in tsg_jobs_total: the first pass after a start comes before
       # Prometheus' first scrape, so a rise was never seen and every start showed this for a minute. Only the
-      # worker that runs the reaper exports it; none for 10 minutes (that worker gone) is the same problem.
+      # worker that runs the reaper exports it, from its first pass on; none for 10 minutes (that worker gone,
+      # or restarted and never sent the reaper) is the same problem. Passes that start but fail: ReaperFailing.
       - alert: ReaperNotRunning
         expr: >-
-          time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
-          or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+          time() - max(tsg_reaper_last_start_timestamp_seconds) > 600
+          or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
         for: 5m
         labels: { severity: critical }
         annotations:
@@ -128,6 +130,49 @@ groups:
         annotations:
           summary: No worker is taking {{ $labels.queue }} jobs; they wait until one starts.
           description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
+
+  # Jobs that never ran or never ended: the job outcomes alone cannot show them.
+  - name: tsg-jobs-unfinished
+    rules:
+      # Beat sends the reaper (ReaperNotRunning is quiet) but no pass ends: each fails (MongoDB down) or hangs.
+      # A pass that never finished is exported nowhere, so none for 10 minutes counts too.
+      - alert: ReaperFailing
+        expr: >-
+          (time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
+          or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m]))
+          and time() - max(tsg_reaper_last_start_timestamp_seconds) <= 600
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: The reaper starts but no pass has finished for 15 minutes; stuck jobs are not repaired.
+          description: >-
+            Its passes fail or hang. Check MongoDB first (the stores' tiles); the "Errors and exceptions" table
+            shows why tsg_reap failed. If nothing fails, restart the worker that runs the reaper.
+
+      # Beat's timer messages (reaper, control-mapping sweep, index build, intel check) carry an expiry, which
+      # Celery stamps on beat's clock and checks on the worker's: a beat clock behind, or a stuck worker, drops
+      # them unrun. Each drop is counted as outcome="expired" (app/worker/lifecycle.py).
+      - alert: ScheduledJobsExpiring
+        expr: sum by (task) (increase(tsg_jobs_total{outcome="expired"}[15m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.task }} timer jobs were dropped unrun: they reached a worker after their expiry."
+          description: >-
+            Check that the worker taking them is not stuck or too busy, then the clock of beat's node against
+            the workers': oc debug node/<node> -- chroot /host chronyc tracking.
+
+      # A job past its time limit stops renewing its lease (app/worker/lease_renewal.py): the reaper gives it to
+      # another worker, but its thread may still hold a worker slot.
+      - alert: JobHung
+        expr: sum(increase(tsg_jobs_hung_total[1h])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: A job ran past its time limit and was stopped as hung in the last hour.
+          description: >-
+            Grafana Explore, Loki: {app="tsg"} |= "job.too_long" names it (record_id, task). The reaper runs it
+            again on another worker; if it hangs again, restart the worker it ran on.
 
   - name: tsg-dependencies
     rules:

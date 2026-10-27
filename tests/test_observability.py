@@ -68,6 +68,10 @@ BUILT_ALERTS = {
     "RedisEvictingKeys",
     "JobsRetrying",
     "JobQueueWaitHigh",
+    # Reaper passes that start but never finish; timer messages dropped unrun; a job stopped as hung.
+    "ReaperFailing",
+    "ScheduledJobsExpiring",
+    "JobHung",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
@@ -331,13 +335,13 @@ def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() 
 def test_a_fresh_start_never_reads_as_the_reaper_not_running() -> None:
     """Before: ReaperNotRunning and the beat tile read a rise in tsg_jobs_total. The first pass after a start
     comes before Prometheus' first scrape, so for a minute after every start the alert was pending and the
-    tile DOWN. Both read the age of the last pass now, and rules.test.yml checks that exact expression right
+    tile DOWN. Both read the age of the last start now, and rules.test.yml checks that exact expression right
     after a start (promtool runs it)."""
     [rule] = [rule for rule in _rules() if rule["alert"] == "ReaperNotRunning"]
     [tiles] = [panel for panel in _panels() if panel["title"] == "Parts of the system"]
     [beat] = [target["expr"] for target in tiles["targets"] if target["legendFormat"] == "Scheduler (beat)"]
     for expr in (rule["expr"], beat):
-        assert "tsg_reaper_last_pass_timestamp_seconds" in expr and "increase(" not in expr, expr
+        assert "tsg_reaper_last_start_timestamp_seconds" in expr and "increase(" not in expr, expr
     cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
     after_a_start = [
         test for case in cases for test in case.get("promql_expr_test", []) if test["expr"] == rule["expr"]

@@ -11,6 +11,7 @@ from typing import Protocol
 
 import structlog
 
+from app.core import metrics
 from app.core.constants import Lease, LogEvent
 from app.core.lease_signal import lease_lost_signal
 
@@ -39,6 +40,7 @@ def keep_lease_alive(lease: RenewableLease, *, watch_progress: bool = True) -> G
         while not stopped.wait(Lease.RENEW_EVERY_SECONDS):
             if time.monotonic() >= deadline:
                 log.warning(LogEvent.JOB_TOO_LONG, record_id=lease.record_id, seconds=Lease.MAX_JOB_SECONDS)
+                metrics.JOBS_HUNG.inc()
                 lost.set()  # no more AI calls; its writes fail (LeaseLost) once the reaper takes the job over
                 return
             try:

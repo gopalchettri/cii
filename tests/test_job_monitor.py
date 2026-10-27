@@ -119,7 +119,11 @@ def test_the_reaper_fails_an_admin_job_left_running_and_leaves_a_fresh_one(monke
     base = {"status": Status.RUNNING, "active": True}
     jobs.create(base | {"_id": stuck, "kind": AdminJobKind.INTEL_REFRESH, "created_at": long_ago})
     jobs.create(base | {"_id": fresh, "kind": "fresh_kind", "created_at": datetime.now(UTC)})
-    failures = {"task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE, "outcome": "failure"}
+    failures = {
+        "task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+        "module": "external_intelligence",
+        "outcome": "failure",
+    }
     before = REGISTRY.get_sample_value("tsg_jobs_total", failures) or 0.0
     try:
         with capture_logs() as logs:

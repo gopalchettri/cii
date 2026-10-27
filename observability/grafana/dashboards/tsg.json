@@ -197,7 +197,7 @@
       "id": 4,
       "type": "stat",
       "title": "Parts of the system",
-      "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = library search, threat intelligence; reaper = the reaper and the controls retry sweep). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+      "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = library search, threat intelligence; reaper = the reaper and the controls retry sweep). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper started a pass in the last 5 minutes (one started before its worker restarted counts). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -305,7 +305,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(time() - max(tsg_reaper_last_pass_timestamp_seconds) < 300) * 0 + 1 or vector(0)",
+          "expr": "(time() - max(max_over_time(tsg_reaper_last_start_timestamp_seconds[10m])) < 300) * 0 + 1 or vector(0)",
           "legendFormat": "Scheduler (beat)",
           "instant": true,
           "range": false,
@@ -625,6 +625,18 @@
                       "RedisEvictingKeys": {
                         "text": "Redis is full and drops keys: waiting jobs can be lost",
                         "index": 26
+                      },
+                      "ReaperFailing": {
+                        "text": "The reaper starts but fails: stuck jobs are not repaired",
+                        "index": 27
+                      },
+                      "ScheduledJobsExpiring": {
+                        "text": "Timer jobs are dropped unrun: a clock is off or a worker is stuck",
+                        "index": 28
+                      },
+                      "JobHung": {
+                        "text": "A job hung and was stopped: it runs again on another worker",
+                        "index": 29
                       }
                     }
                   }

@@ -118,11 +118,11 @@ tests:
               summary: "tsg_find_threats jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
               description: "The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy."
 
-  # The reaper's last pass as Unix time (promtool's clock starts at 0), from the one worker that runs it:
-  # a pass every minute for 10 minutes, then none.
+  # The reaper's last start as Unix time (promtool's clock starts at 0), from the one worker that runs it:
+  # a start every minute for 10 minutes, then none.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
         values: 0+60x10 600x30
     alert_rule_test:
       - eval_time: 9m
@@ -136,46 +136,48 @@ tests:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
               description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
-  # A start after the stack was down from 6 to 19 minutes: its first pass comes a second after the start, before
-  # Prometheus' first scrape. Quiet from that first scrape on. Before, the alert read a rise in tsg_jobs_total,
-  # which a first scrape cannot show, and every start showed it (and the beat tile DOWN) for a minute.
+  # A start after the stack was down from 6 to 20 minutes: the new worker exports nothing until its first pass
+  # starts, a minute later. Quiet from then on. Before, the alert read a rise in tsg_jobs_total, which a first
+  # scrape cannot show, and every start showed it (and the beat tile DOWN) for a minute.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
-        values: 0+60x5 _x14 1201+60x10
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
+        values: 0+60x5 _x15 1260+60x9
     promql_expr_test:
-      - expr: time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
-        eval_time: 20m
-        exp_samples: []
-      - expr: time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+      - expr: time() - max(tsg_reaper_last_start_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
         eval_time: 21m
+        exp_samples: []
+      - expr: time() - max(tsg_reaper_last_start_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
+        eval_time: 22m
         exp_samples: []
     alert_rule_test:
       - eval_time: 30m
         alertname: ReaperNotRunning
         exp_alerts: []
 
-  # A start whose scheduler never sends the reaper: on time from the worker's start (at 5 minutes), then due.
+  # The reaper's worker restarted at 10 minutes (a deploy): the old pod's series ends, and the new pod reports
+  # its first start 2 minutes later. Quiet throughout, with no made-up start: before, every start reported one,
+  # and a pod restarting every few minutes hid a dead beat for ever.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
-        values: _x5 300x30
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance-old"}
+        values: 0+60x10 stale
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance-new"}
+        values: _x12 720+60x10
+    promql_expr_test:
+      - expr: time() - max(tsg_reaper_last_start_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
+        eval_time: 11m
+        exp_samples: []
     alert_rule_test:
-      - eval_time: 12m
+      - eval_time: 20m
         alertname: ReaperNotRunning
         exp_alerts: []
-      - eval_time: 25m
-        alertname: ReaperNotRunning
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
-              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
-  # The worker that runs the reaper gone at 5 minutes: nothing reports a pass any more.
+  # The worker that runs the reaper gone at 5 minutes, or restarted and never sent the reaper: nothing reports
+  # a start any more.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
         values: 0+60x5
     alert_rule_test:
       - eval_time: 12m
@@ -188,6 +190,80 @@ tests:
             exp_annotations:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
               description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+
+  # Beat sends the reaper every minute, but from 5 minutes on no pass finishes (MongoDB down): the reaper is
+  # failing, not beat.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
+        values: 0+60x30
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 0+60x5 300x25
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReaperFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperFailing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "The reaper starts but no pass has finished for 15 minutes; stuck jobs are not repaired."
+              description: "Its passes fail or hang. Check MongoDB first (the stores' tiles); the \"Errors and exceptions\" table shows why tsg_reap failed. If nothing fails, restart the worker that runs the reaper."
+
+  # Every pass finishes: no reaper alert.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
+        values: 0+60x30
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 1+60x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ReaperFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+
+  # A reaper message that reached its worker after its expiry (beat's clock behind) is dropped unrun.
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_total{task="tsg_reap",module="maintenance",outcome="expired"}
+        values: 0x5 1+1x20
+      - series: tsg_jobs_total{task="tsg_retry_controls",module="threat_scenarios",outcome="expired"}
+        values: 0x25
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ScheduledJobsExpiring
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ScheduledJobsExpiring
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_reap }
+            exp_annotations:
+              summary: "tsg_reap timer jobs were dropped unrun: they reached a worker after their expiry."
+              description: "Check that the worker taking them is not stuck or too busy, then the clock of beat's node against the workers': oc debug node/<node> -- chroot /host chronyc tracking."
+
+  # One job stopped as hung at 5 minutes: named for the hour after.
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_hung_total{instance="worker-threats"}
+        values: 0x5 1x30
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: JobHung
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: JobHung
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "A job ran past its time limit and was stopped as hung in the last hour."
+              description: "Grafana Explore, Loki: {app=\"tsg\"} |= \"job.too_long\" names it (record_id, task). The reaper runs it again on another worker; if it hangs again, restart the worker it ran on."
 
   # The UAT case (2026-10-24): one worker 76 s behind MongoDB, another 0.2 s. Quiet for the first 5 minutes,
   # then only the far one is named; a pod off by under 5 s never is.

@@ -218,7 +218,7 @@ def _claim_or_ignore(
         raise Ignore
     if due_at := lease.record["job"].get("due_at"):
         waited = (utc_now() - due_at).total_seconds()
-        metrics.JOB_QUEUE_WAIT.labels(task.name).observe(max(waited, 0.0))
+        metrics.record_queue_wait(task.name, waited)
     if request_id := lease.record["job"].get("request_id"):
         structlog.contextvars.bind_contextvars(request_id=request_id)  # also for a re-send without header
     return lease

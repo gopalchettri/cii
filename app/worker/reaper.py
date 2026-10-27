@@ -35,6 +35,7 @@ log = structlog.get_logger(__name__)
 def reap_jobs() -> None:
     """Every minute: give back jobs whose worker stopped renewing the lease (or fail them after
     Lease.MAX_ATTEMPTS), and re-send jobs left queued (a send that never reached the broker)."""
+    metrics.record_reaper_time(metrics.REAPER_LAST_START)  # a pass that fails or hangs still started
     now = utc_now()
     stale_queued = now - timedelta(seconds=Lease.REQUEUE_QUEUED_AFTER_SECONDS)
     queue_is_empty = _queue_sizes_read_once()
@@ -51,14 +52,14 @@ def reap_jobs() -> None:
         _count_jobs_now(admin_jobs, now)
     except Exception:  # noqa: BLE001 — a count for Grafana never fails the reaper's repairs
         log.warning(LogEvent.JOB_REAP_FAILED, step="count_jobs_now", exc_info=True)
-    metrics.REAPER_LAST_PASS.set_to_current_time()  # a pass that ends in an error above never gets here
+    metrics.record_reaper_time(metrics.REAPER_LAST_PASS)  # a pass that ends in an error above never gets here
 
 
 def _announce_abandoned_admin_job(job: dict[str, Any]) -> None:
     """One job.failed line under the job's own task and module, not the reaper's (the dashboard groups failed
     jobs by task), counted as a failure: its worker died, so no task outcome was ever recorded."""
     task = ADMIN_JOB_TASKS.get(job.get("kind", ""), job.get("kind") or "unknown")
-    metrics.JOBS.labels(task, "failure").inc()
+    metrics.count_job(task, "failure")
     log.warning(
         LogEvent.JOB_FAILED,
         task=task,
@@ -146,7 +147,7 @@ def _settle_expired_job(
             return  # its worker renewed or finished in between
         # Counted as a job failure: the worker died mid-job, so no task outcome was ever recorded, and
         # JobsFailing would otherwise never hear of this run.
-        metrics.JOBS.labels(job["task"], "failure").inc()
+        metrics.count_job(job["task"], "failure")
         job_log.warning(LogEvent.JOB_FAILED, reason="abandoned", attempt=attempts, **error)
     else:
         if not jobs.requeue_or_fail_expired_job(record, now):
@@ -199,7 +200,7 @@ def _resend_queued_job(
             "message": ErrorMessage.JOB_NEVER_STARTED.format(sends=sends),
         }
         if jobs.resend_or_fail_unsent_job(record, now, counted=False, error=error):
-            metrics.JOBS.labels(job["task"], "failure").inc()
+            metrics.count_job(job["task"], "failure")
             job_log.warning(LogEvent.JOB_FAILED, reason="never_started", sends=sends, **error)
             publish(record["_id"])
         return
