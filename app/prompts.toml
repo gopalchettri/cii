@@ -72,17 +72,19 @@ RETURN ONLY THIS VALID JSON OBJECT
   "assumptions": ["string"],
   "entry_point": "string",
   "system_reasons": {"<exact supporting system name>": "string"},
+  "action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>": "<the exact sentence of scenario_statement in which the attacker does it>"},
   "evidence_statement": "string"
 }
 
 SCHEMA
-- Include exactly these seven top-level fields. Do NOT include anatomy or any other field. No prose, Markdown, comments or code fences.
+- Include exactly these eight top-level fields. Do NOT include anatomy or any other field. No prose, Markdown, comments or code fences.
 - Use valid JSON with double quotes and no trailing commas. Escape double quotes inside string values.
 - scenario_statement: <scenario words> words. risk_statement: <risk words> words. evidence_statement: <evidence words> words.
 - The upper number of each range is a hard limit. The lower number is a target, never a reason to add padding. Count the words of each statement before returning.
 - assumptions: short, specific sentences; [] when none are needed.
 - entry_point: an exact BRIEF.entry_point_options value; "" if the list is empty.
 - system_reasons: exactly one key for every BRIEF.supporting_systems name, copied exactly; no missing or extra keys.
+- action_sentences: one key for every item of BRIEF.threat.threat_actions, copied exactly; its value is copied word for word from scenario_statement and shows the attacker doing that action, not its purpose ("in order to ...") or the threat's name. {} when BRIEF.threat.threat_actions is absent.
 - evidence_statement: only the evidence passage described in rule 10; "" when no EVIDENCE is supplied.
 
 GENERATION LOGIC
@@ -193,9 +195,10 @@ Clear words never change the facts, the event, the category's loss (rule 11) or 
 
 GENERATOR FINAL CHECK
 Verify before returning:
-- Exactly the seven required fields, valid JSON and no anatomy/additional prose.
+- Exactly the eight required fields, valid JSON and no anatomy/additional prose.
 - One specified threat, one coherent asset-level event and one primary consequence.
 - Every action the threat's name states is carried out, not only named (one of any "or" alternatives), and the primary impact comes from one of them with no added step.
+- action_sentences gives, for each listed action, its own sentence of scenario_statement in which the attacker does it; an action that only touches the asset as a whole (a demand, a message, a public claim) still gets its own sentence in scenario_statement, never only in risk_statement.
 - Every "yes" system has a concise independent contribution; the common asset consequence is explained once.
 - Each "yes" system's access is its own: no credential, account, session or channel works on more than one system, and nothing passes between systems (rule 4).
 - No activity on "no" or unknown-applicability systems; supplied applicability unchanged; exact system_reasons keys and allowed entry point.
@@ -303,6 +306,21 @@ no_evidence = '''
 
 No EVIDENCE is given: any [n] marker or real-world event breaks rule 8; evidence_supported is false.
 '''
+
+[scenario.link_check]
+# Asked when the reviewer finds a Rule 4 break; SYSTEMS and SCENARIO follow the text.
+text = '''
+Decide whether SCENARIO says that two of SYSTEMS are linked. Read all of it: the title, the statements, the assumptions and the system reasons.
+Linked means the words say one of these:
+- data, commands, files or records pass from one of them to another;
+- one of them depends on, controls or coordinates with another;
+- one credential, secret, token, session, account or access works on more than one of them, e.g., one access or session reused on several of them;
+- the attacker moves from one of them to another: a foothold, session or malware on one used to reach another.
+Not linked, when nothing above is also said: the same attacker on each, with its own access there; the same kind of action, weakness or protocol on each; data or effects reaching the asset, or a consequence the systems share; anything sent to the attacker's own machines; the attacker putting together what it took.
+Judge only what the words say: a link you have to guess is not one.
+Return {"linked": true or false, "systems": ["<one system>", "<the other>"], "what": "<what passes, or how one depends on the other>", "quote": "<the exact words of SCENARIO that say it>"}; "systems": [], "what": "" and "quote": "" when not linked.
+'''
+system = '''You check one claim about a cyber threat scenario: are two of its systems linked in its words. Answer with one JSON object only.'''
 
 [remediation.plan]
 text = '''

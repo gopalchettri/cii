@@ -2309,8 +2309,8 @@ Where each key came from:
 ### 8.2 The writer AI call (`write_scenario`)
 
 > **In plain words:** The AI writer gets two things: a fixed set of writing rules, and the brief with any
-> real-world evidence. It must answer in a fixed form with seven fields: a title, the scenario, the risk,
-> assumptions, the way in, one reason per system and the real-world passage. Word limits are set by the
+> real-world evidence. It must answer in a fixed form with eight fields: a title, the scenario, the risk,
+> assumptions, the way in, one reason per system, the story sentence of each act, and the real-world passage. Word limits are set by the
 > platform's settings, and the upper limit is strict.
 
 **How**
@@ -2382,7 +2382,7 @@ Where each key came from:
      service> could stop working or slow down", Elevation of Privilege "Someone could gain privileges in ... that
      they were never given".
    - A final check list before answering.
-6. **The seven fields** (contract `ScenarioAnswer`, `app/models/scenario/write.py`):
+6. **The eight fields** (contract `ScenarioAnswer`, `app/models/scenario/write.py`):
 
    | Field | What code does with it |
    |---|---|
@@ -2392,6 +2392,7 @@ Where each key came from:
    | `assumptions` | `content.assumptions` as written; shown with "- not recorded in the platform" added |
    | `entry_point` | marks `entry_point: true` on one of `content.systems` |
    | `system_reasons` | the `reason` of each `content.system_applicability` entry |
+   | `action_sentences` | not stored: per listed act, the sentence of `scenario_statement` in which the attacker does it. A first answer that gives none for an act, or quotes words not in its own statement, is asked again once; a second answer is kept, for the review and the rewrite (D47) |
    | `evidence_statement` | the cited passage at the end of the statement, and the entry's `supports` (section 8.6) |
 
 7. **Prompt version.** Stored as `content.prompt_version`: "scenario writer-evidence-1"
@@ -2564,7 +2565,12 @@ near copy.
       commands, files or records pass between them, one depends on or controls another, or one credential,
       session or foothold works on more than one). The same attacker on each system, the same kind of action,
       effects reaching the asset, data sent to the attacker's own machines and the asset itself are never a
-      link by themselves (D45).
+      link by themselves (D45). A Rule 4 break is then checked once more, alone (task `link_check`,
+      `[scenario.link_check]`): given only the supporting systems and the whole scenario (never the reviewer's
+      words), it must quote the scenario's own words that link two different supporting systems; code checks the
+      quote is in the scenario and the names are listed systems. A proved link becomes the note, with that quote
+      and the two systems; no link turns the break to "holds"; an outage or a check that stays unusable keeps the
+      reviewer's break. Log `writer.link_checked`, outcome `kept` or `dropped` (D48).
    5. Category-aligned primary impact.
    6. Risk alignment and scope.
    7. Grounding and possibility: nothing invented; "could" or "may", never certain; a consequence that rests

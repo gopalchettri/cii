@@ -2533,6 +2533,10 @@ data:                                            # one key per file
                           "repair_scenario": {
                             "text": "Rewrite a scenario",
                             "index": 18
+                          },
+                          "link_check": {
+                            "text": "Check a cross-system link",
+                            "index": 19
                           }
                         }
                       }
@@ -3050,6 +3054,10 @@ data:                                            # one key per file
                           "repair_scenario": {
                             "text": "Rewrite a scenario",
                             "index": 18
+                          },
+                          "link_check": {
+                            "text": "Check a cross-system link",
+                            "index": 19
                           }
                         }
                       }
@@ -4132,6 +4140,10 @@ data:                                            # one key per file
                           "repair_scenario": {
                             "text": "Rewrite a scenario",
                             "index": 9
+                          },
+                          "link_check": {
+                            "text": "Check a cross-system link",
+                            "index": 10
                           }
                         }
                       }
@@ -5573,6 +5585,10 @@ data:                                            # one key per file
                           "repair_scenario": {
                             "text": "Rewrite a scenario",
                             "index": 9
+                          },
+                          "link_check": {
+                            "text": "Check a cross-system link",
+                            "index": 10
                           }
                         }
                       }

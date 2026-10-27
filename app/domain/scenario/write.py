@@ -195,6 +195,7 @@ PLAN_CHECK_SYSTEM_PROMPT: str = PROMPTS["scenario"]["reviewer"]["text"]
 NO_EVIDENCE: str = PROMPTS["scenario"]["writer"]["no_evidence"]
 _REPAIR: str = PROMPTS["scenario"]["writer"]["repair"]  # asks again for the actions not carried out
 _NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"]
+_LINK_CHECK: dict[str, str] = PROMPTS["scenario"]["link_check"]  # do a Rule 4 break's words link two systems
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _LOOK_ALIKES = re.compile(
     "|".join(re.escape(text) for text in sorted(EvidenceBlock.LOOK_ALIKES, key=len, reverse=True)),
@@ -624,6 +625,7 @@ def check_against_plan(
             FindingCode.PLAN_CHECK_NOT_MADE, FindingMessage.PLAN_CHECK_NOT_MADE.format(reason=reason)
         )
         return PlanCheck(PlanCheckStatus.UNCHECKED), (warning,)
+    answer = _with_link_confirmed(chat, brief, draft, answer)
     problems = _broken_rules(answer)
     status = PlanCheckStatus.INCONSISTENT if problems else PlanCheckStatus.CONSISTENT
     check = PlanCheck(
@@ -689,6 +691,63 @@ def _unjudged_actions(answer: dict[str, Any]) -> list[str]:
     return [] if answer.get("threat_actions") else [AnswerProblem.THREAT_ACTION_VERDICTS_REQUIRED]
 
 
+def _with_link_confirmed(
+    chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft, answer: PlanCheckAnswer
+) -> PlanCheckAnswer:
+    """`answer` with its Rule 4 break checked once more, alone ([scenario.link_check]): the check reads the
+    whole scenario and must quote its words that link two of the brief's supporting systems; the break then
+    carries that quote, else it holds. An outage or a check that stays unusable keeps the reviewer's break,
+    so a possible link is never hidden."""
+    broken = (rule for rule, verdict in answer.rules.items() if rule.strip() == "4" and _is_broken(verdict))
+    if (key := next(broken, None)) is None:
+        return answer
+    systems = tuple(system.name for system in brief.supporting_systems)
+    scenario = {field: text for field, text in draft_answer(draft).items() if field != "evidence_statement"}
+    user = "\n".join((f"SYSTEMS:\n{as_json(list(systems))}", f"SCENARIO:\n{as_json(scenario)}"))
+    prompt = _LINK_CHECK["system"], _LINK_CHECK["text"] + user
+    try:
+        read = functools.partial(_read_link_check, systems=systems, words=name_match_key(as_json(scenario)))
+        link: str = ask_ai_and_check(chat, AiTask.LINK_CHECK, prompt, read)
+    except (Unavailable, UnreadableAiAnswer, TruncatedAiAnswer) as exc:
+        log.warning(LogEvent.WRITER_LINK_CHECKED, outcome="kept", error=type(exc).__name__)
+        return answer
+    log.info(LogEvent.WRITER_LINK_CHECKED, outcome="kept" if link else "dropped")
+    return answer.model_copy(update={"rules": {**answer.rules, key: link or "holds"}})
+
+
+def _is_broken(verdict: str) -> bool:
+    """Whether a reviewer's rule verdict says the rule is broken."""
+    return verdict.strip().casefold().startswith("broken")
+
+
+def _read_link_check(
+    answer: dict[str, Any], systems: tuple[str, ...], words: str
+) -> tuple[str | None, list[str]]:
+    """The Rule 4 break the check proves when it names two different `systems` as linked and quotes words the
+    scenario holds (`words`, name-matched); empty when it finds no link; else the problem to re-ask with."""
+    linked, named, quote = (
+        answer.get("linked"),
+        answer.get("systems"),
+        " ".join(str(answer.get("quote") or "").split()),
+    )
+    if linked is False:
+        return "", []
+    if (
+        linked is True
+        and isinstance(named, list)
+        and len(named) == 2
+        and quote
+        and name_match_key(quote) in words
+    ):
+        found = [
+            next((system for system in systems if is_same_name(system, str(name))), None) for name in named
+        ]
+        if None not in found and found[0] != found[1]:
+            what = " ".join(str(answer.get("what") or "").split())
+            return f'broken: "{quote}" - {found[0]} and {found[1]}: {what}', []
+    return None, [AnswerProblem.LINK_SYSTEMS_REQUIRED]
+
+
 # --- the writer: split the threat's name, write, check, review
 
 
@@ -724,11 +783,36 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
 
 
 def _drafted(chat: ChatModel, task: AiTask, brief: WriterBrief, prompt: ChatPrompt) -> ScenarioDraft:
-    """The writer's draft for `brief`, asked with `prompt`."""
+    """The writer's draft for `brief`, asked with `prompt`; a first answer that shows no sentence of its own
+    statement for a listed action is asked again once (_acts_without_a_sentence)."""
     systems = tuple(system.name for system in brief.supporting_systems)
     read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    draft: ScenarioDraft = ask_ai_and_check(chat, task, prompt, read)
+    acts = (
+        functools.partial(_acts_without_a_sentence, actions=brief.threat_actions)
+        if brief.threat_actions
+        else None
+    )
+    draft: ScenarioDraft = ask_ai_and_check(chat, task, prompt, read, first_answer_check=acts)
     return draft
+
+
+def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -> list[str]:
+    """The re-ask problem when `answer`'s action_sentences copies no sentence of its own scenario_statement
+    for one of the brief's listed `actions`: each action must happen in the story, not only in the risk."""
+    statement = name_match_key(str(answer.get("scenario_statement") or ""))
+    given = answer.get("action_sentences")
+    quoted = (
+        {name_match_key(str(act)): name_match_key(str(text)) for act, text in given.items()}
+        if isinstance(given, dict)
+        else {}
+    )
+    missing = [
+        act for act in actions if not (text := quoted.get(name_match_key(act))) or text not in statement
+    ]
+    if not missing:
+        return []
+    listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in missing)
+    return [AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=listed)]
 
 
 def _repaired(chat: ChatModel, brief: WriterBrief, first: WrittenScenario) -> WrittenScenario:

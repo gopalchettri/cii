@@ -229,6 +229,8 @@ class AnswerProblem(StrEnum):
     SYSTEM_REASONS_MISSING = "system_reasons must give one short sentence for each of: {names}"
     THREAT_ACTIONS_REQUIRED = 'the reply must be {"actions": [...]}: a non-empty list of short verb phrases'
     THREAT_ACTION_VERDICTS_REQUIRED = "threat_actions must judge every item of PLAN.threat.threat_actions"
+    ACTION_SENTENCES_MISSING = "action_sentences must quote the statement's sentence for each of: {actions}"
+    LINK_SYSTEMS_REQUIRED = "when linked, name two different SYSTEMS and quote SCENARIO's exact words"
 
 
 class Controls:

@@ -120,6 +120,7 @@ class ScenarioAnswer(BaseModel):
     assumptions: list[str]
     entry_point: str
     system_reasons: dict[str, str] = {}  # one sentence per supporting system, by name
+    action_sentences: dict[str, str] = {}  # per listed action, the statement's sentence that carries it out
     evidence_statement: str | None = ""  # none given is never a re-ask: code cites its own sentence
 
     @field_validator("scenario_title", "scenario_statement", "risk_statement")
