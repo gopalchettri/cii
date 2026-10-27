@@ -67,6 +67,8 @@ def hand_over(lease: JobLease, next_task: TaskName, changes: dict[str, Any] | No
             **(changes or {}),
             "status": Status.QUEUED,
             "job.task": next_task,
+            "job.task_id": None,
+            "job.worker": None,
             "job.due_at": utc_now(),
             "job.attempts": 0,
             "job.lease_until": None,
@@ -107,15 +109,16 @@ def _fail_if_still_owned(
     lease: JobLease, code: ErrorCode, message: str, reason: AiOutage | None = None
 ) -> bool:
     """False when the job is no longer this delivery's (nothing written). Else the job's one job.failed line.
-    Best effort: if MongoDB is down too, the record stays running and the reaper settles it later (True: still
-    this delivery's as far as known)."""
+    If MongoDB is down too, nothing failed: the record stays running, the reaper re-queues it once the lease
+    runs out, and this delivery ends as Ignore (neither a success nor a failure)."""
     error = {"code": code, "message": message} | ({"reason": reason} if reason else {})
     try:
         lease.update_job(failed_job_fields(lease.collection, error))
     except LeaseLost:
         return False
     except MONGO_UNAVAILABLE_ERRORS:
-        log.warning(LogEvent.JOB_FAILURE_NOT_SAVED, record_id=lease.record_id, exc_info=True)
+        log.warning(LogEvent.JOB_FAILURE_NOT_SAVED, record_id=lease.record_id, **error, exc_info=True)
+        raise Ignore from None
     log.warning(LogEvent.JOB_FAILED, record_id=lease.record_id, **error)
     return True
 
@@ -216,6 +219,8 @@ def _claim_or_ignore(
     if due_at := lease.record["job"].get("due_at"):
         waited = (utc_now() - due_at).total_seconds()
         metrics.JOB_QUEUE_WAIT.labels(task.name).observe(max(waited, 0.0))
+    if request_id := lease.record["job"].get("request_id"):
+        structlog.contextvars.bind_contextvars(request_id=request_id)  # also for a re-send without header
     return lease
 
 
