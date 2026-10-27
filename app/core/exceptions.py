@@ -16,10 +16,10 @@ from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
 
 #: Driver errors meaning "the store cannot serve us right now": unreachable (timeouts, lost connections, no
 #: primary), past its time limit, or a write the replicas did not confirm (WTimeoutError is a
-#: WriteConcernError). The API answers them with 503 + Retry-After; workers retry them with back-off.
+#: WriteConcernError; a bulk write raises it through app/data_access/base.py bulk_write). The API answers
+#: them with 503 + Retry-After; workers retry them with back-off.
 #: ponytail: a misconfigured write concern is retried as an outage too and fails as unavailable after
-#: Lease.MAX_ATTEMPTS (the start-up mongodb.topology line shows it); a BulkWriteError carrying only write
-#: concern errors stays a bug, split it out when a replica set with w>1 is live.
+#: Lease.MAX_ATTEMPTS (the start-up mongodb.topology line shows it).
 MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
     MongoConnectionFailure,
     MongoExecutionTimeout,

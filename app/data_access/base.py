@@ -11,7 +11,15 @@ from typing import Any
 import structlog
 from pymongo import ReplaceOne, ReturnDocument
 from pymongo.collection import Collection as MongoCollection
-from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure, PyMongoError
+from pymongo.errors import (
+    BulkWriteError,
+    DuplicateKeyError,
+    OperationFailure,
+    PyMongoError,
+    WriteConcernError,
+    WTimeoutError,
+)
+from pymongo.results import BulkWriteResult
 
 from app.core.constants import ErrorMessage, LogEvent
 from app.core.database import expire_documents_after, get_mongodb
@@ -23,6 +31,7 @@ Condition = Mapping[str, Any] | Callable[[Any], Mapping[str, Any]]
 
 _DUPLICATE_KEY = 11000  # MongoDB's error code for a value a unique index already holds
 _INDEX_NOT_FOUND = 27  # MongoDB's error code for dropping an index that is not there
+_REPLICATION_TIMED_OUT = 64  # MongoDB's error code for a write the replicas did not confirm in time
 _INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
 #: The field create and save stamp with the record shape version; a record without it is version 1.
 SCHEMA_VERSION_FIELD = "schema_version"
@@ -35,6 +44,31 @@ def duplicate_index_name(error: DuplicateKeyError) -> str:
     details = error.details or {}
     found = _INDEX_NAME_IN_ERROR.search(details.get("errmsg", "") or str(error))
     return found.group(1) if found else "_".join(details.get("keyPattern", {})) or "unknown"
+
+
+def bulk_write(collection: MongoCollection, operations: Sequence[Any], *, ordered: bool) -> BulkWriteResult:
+    """Runs pymongo write operations in one bulk write. One the replicas did not confirm raises what a single
+    write raises (WriteConcernError, an outage), unless a write error other than a duplicate key came too."""
+    try:
+        return collection.bulk_write(operations, ordered=ordered)
+    except BulkWriteError as error:
+        concern_errors = error.details.get("writeConcernErrors")
+        if concern_errors and not _refused_writes(error):
+            raise _unconfirmed_write(concern_errors[0]) from error
+        raise
+
+
+def _refused_writes(error: BulkWriteError) -> list[Record]:
+    """A bulk write's write errors other than a duplicate key."""
+    return [found for found in error.details.get("writeErrors", []) if found.get("code") != _DUPLICATE_KEY]
+
+
+def _unconfirmed_write(concern_error: Mapping[str, Any]) -> WriteConcernError:
+    """A bulk write's write concern error as a single write raises it: WTimeoutError when it timed out."""
+    code = concern_error.get("code")
+    timed_out = code == _REPLICATION_TIMED_OUT or concern_error.get("errInfo", {}).get("wtimeout")
+    error_type = WTimeoutError if timed_out else WriteConcernError
+    return error_type(concern_error.get("errmsg", ""), code, concern_error)
 
 
 def _sort_spec(sort: str | Iterable[str] | None) -> list[tuple[str, int]] | None:
@@ -175,20 +209,16 @@ class MongoRepository:
         return self.collection.delete_many(self._required_filter(where)).deleted_count
 
     def bulk_write_skipping_duplicates(self, operations: Sequence[Any], *, ordered: bool = True) -> Record:
-        """Runs pymongo write operations in one bulk write; a duplicate key is skipped (an ordered write stops
-        there), any other write error or a write-concern error is raised. MongoDB's counts (nInserted ...)."""
+        """bulk_write with a duplicate key skipped (an ordered write stops there); any other write error is
+        raised. MongoDB's counts (nInserted ...)."""
         if not operations:
             return {}
         try:
-            return self.collection.bulk_write(operations, ordered=ordered).bulk_api_result
+            return bulk_write(self.collection, operations, ordered=ordered).bulk_api_result
         except BulkWriteError as error:
-            details = error.details
-            refused = [
-                found for found in details.get("writeErrors", []) if found.get("code") != _DUPLICATE_KEY
-            ]
-            if refused or details.get("writeConcernErrors"):
+            if _refused_writes(error):
                 raise
-            return dict(details)
+            return dict(error.details)
 
     def filter(self, where: Mapping[str, Any]) -> Record:
         """`where` as a MongoDB filter: field equality and each named condition (name=True or a value)."""

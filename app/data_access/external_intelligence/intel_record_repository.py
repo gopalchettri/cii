@@ -8,7 +8,7 @@ from pymongo import ASCENDING, UpdateMany, UpdateOne
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.constants import Collection, IntelLimits, IntelOperationsLimits, IntelSource, IntelState
-from app.data_access.base import MongoRepository
+from app.data_access.base import MongoRepository, bulk_write
 from app.models.external_intelligence.intel_record import IntelRecord, RejectedRecord, SaveCounts
 
 Record = dict[str, Any]
@@ -69,7 +69,7 @@ class IntelRecordRepository(MongoRepository):
 
     def _write_in_order(self, operations: Sequence[UpdateOne | UpdateMany]) -> int:
         """Runs `operations` in order; how many documents it created."""
-        return self.collection.bulk_write(operations, ordered=True).upserted_count if operations else 0
+        return bulk_write(self.collection, operations, ordered=True).upserted_count if operations else 0
 
     def retire_intel_records_missing_from(
         self, source: IntelSource, seen_ids: set[str], retired_at: datetime

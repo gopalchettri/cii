@@ -8,7 +8,7 @@ from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
 from app.core.constants import Cache, Collection, EmbeddingCorpus, IntelSource
-from app.data_access.base import Record, VectorRepository
+from app.data_access.base import Record, VectorRepository, bulk_write
 
 
 def _retired_fields(now: datetime) -> Record:
@@ -65,7 +65,7 @@ class EmbeddingRepository(VectorRepository):
             if key in stored and (stored[key].get("sources") != sources or "retired_at" in stored[key])
         ]
         if changed:
-            self.collection.bulk_write(changed, ordered=False)
+            bulk_write(self.collection, changed, ordered=False)
         unused = {"corpus": corpus, "_id": {"$nin": list(in_use)}, "retired_at": {"$exists": False}}
         return self.collection.update_many(unused, {"$set": _retired_fields(utc_now())}).modified_count
 

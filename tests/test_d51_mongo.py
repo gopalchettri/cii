@@ -2,21 +2,27 @@
 sweep reads only what it can change, and archived Service Mapper generations expire."""
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from pymongo.errors import ExecutionTimeout, WriteConcernError, WTimeoutError
+from pymongo.collection import Collection as MongoCollection
+from pymongo.errors import BulkWriteError, ExecutionTimeout, WriteConcernError, WTimeoutError
 from structlog.testing import capture_logs
 
 from app.core import readiness
 from app.core.constants import (
     Collection,
     Controls,
+    Decision,
+    EmbeddingCorpus,
     ErrorCode,
     ErrorMessage,
+    IntelSource,
     Limits,
     LogEvent,
     ScenarioStatus,
@@ -25,18 +31,42 @@ from app.core.constants import (
     Timeouts,
 )
 from app.core.database import get_mongodb
-from app.data_access.jobs.job_repository import JobLease, new_job
+from app.data_access.admin.embedding_repository import EmbeddingRepository
+from app.data_access.base import VectorRepository
+from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
+from app.data_access.jobs.job_repository import new_job
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository
+from app.models.external_intelligence.intel_record import RejectedRecord
 from app.worker import jobs
+from tests import test_review as review
+from tests.test_review import api_key, service  # noqa: F401 - fixtures used by name
 
 UNCONFIRMED_WRITES = [
     WTimeoutError("waiting for replication timed out", 64),
     WriteConcernError("primary stepped down", 189),
     ExecutionTimeout("operation exceeded time limit", 50),
 ]
+REPLICATION_TIMED_OUT = {
+    "code": 64,
+    "errmsg": "waiting for replication timed out",
+    "errInfo": {"wtimeout": True},
+}
+#: Each way the app writes in bulk; a lagging replica set reaches every one.
+BULK_WRITERS: dict[str, Callable[[], Any]] = {
+    "scenario decisions": lambda: ThreatScenarioRepository().update_scenario_decisions(
+        ["any"], Decision.PENDING, Decision.ACCEPTED, {}
+    ),
+    "library vectors": lambda: EmbeddingRepository().update_library_vector_corpus(
+        EmbeddingCorpus.THREAT, {"key": [{"id": "row"}]}, {"key": {"sources": []}}
+    ),
+    "intel import": lambda: IntelRecordRepository().save_intel_records(
+        [], [RejectedRecord(IntelSource.CISA_KEV, "CVE-1", "bad", "hash")], datetime.now(UTC)
+    ),
+    "vector cache": lambda: VectorRepository(Collection.EMBEDDINGS).save_vectors([{"_id": "key"}]),
+}
 
 
 def test_every_write_waits_for_a_majority_for_a_bounded_time() -> None:
@@ -75,10 +105,8 @@ class RetryRequested(Exception):
     """Stands in for Celery's Retry."""
 
 
-@pytest.mark.parametrize("driver_error", UNCONFIRMED_WRITES, ids=lambda error: type(error).__name__)
-def test_an_unconfirmed_write_gives_the_job_back_for_a_retry(
-    monkeypatch: pytest.MonkeyPatch, driver_error: Exception
-) -> None:
+def _assert_job_given_back_for_a_retry(monkeypatch: pytest.MonkeyPatch, work: Callable[[], Any]) -> None:
+    """A queued job running `work` is given back for a retry as an outage, never failed."""
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, lambda _record_id: None)
     record_id, now = uuid.uuid4().hex, datetime.now(UTC)
     record = {"_id": record_id, "entity_id": 86, "asset_id": 103, "status": Status.QUEUED, "updated_at": now}
@@ -87,16 +115,103 @@ def test_an_unconfirmed_write_gives_the_job_back_for_a_retry(
     task = SimpleNamespace(
         name=TaskName.FIND_THREATS, request=SimpleNamespace(id="task-1"), retry=lambda **_: RetryRequested()
     )
-
-    def work(_lease: JobLease) -> None:
-        raise driver_error
-
     with capture_logs() as logs, pytest.raises(RetryRequested):
-        jobs.run_leased_job(task, Collection.SESSIONS, record_id, 1, work)  # type: ignore[arg-type]
+        jobs.run_leased_job(task, Collection.SESSIONS, record_id, 1, lambda _lease: work())  # type: ignore[arg-type]
     assert LogEvent.JOB_FAILED not in [line["event"] for line in logs]
     saved = sessions.find_one({"_id": record_id})
     assert saved["status"] == Status.QUEUED
     assert saved["job"]["retry"]["message"] == ErrorMessage.MONGO_UNREACHABLE
+
+
+@pytest.mark.parametrize("driver_error", UNCONFIRMED_WRITES, ids=lambda error: type(error).__name__)
+def test_an_unconfirmed_write_gives_the_job_back_for_a_retry(
+    monkeypatch: pytest.MonkeyPatch, driver_error: Exception
+) -> None:
+    def work() -> None:
+        raise driver_error
+
+    _assert_job_given_back_for_a_retry(monkeypatch, work)
+
+
+def _bulk_writes_answer(
+    monkeypatch: pytest.MonkeyPatch, concern_error: dict[str, Any], write_errors: list[dict[str, Any]]
+) -> None:
+    """Every bulk write raises what pymongo raises when the replicas did not confirm it: a BulkWriteError
+    carrying `concern_error` (and `write_errors`), never a WriteConcernError."""
+    details = {"writeErrors": write_errors, "writeConcernErrors": [concern_error], "upserted": []}
+    counts = dict.fromkeys(["nInserted", "nUpserted", "nMatched", "nModified", "nRemoved"], 0)
+
+    def unconfirmed(*_args: Any, **_options: Any) -> None:
+        raise BulkWriteError(details | counts)
+
+    monkeypatch.setattr(MongoCollection, "bulk_write", unconfirmed)
+
+
+@pytest.fixture
+def replicas_lagging(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every bulk write waits past its write concern's time limit."""
+    _bulk_writes_answer(monkeypatch, REPLICATION_TIMED_OUT, [])
+
+
+@pytest.mark.parametrize("write", BULK_WRITERS.values(), ids=BULK_WRITERS)
+@pytest.mark.usefixtures("replicas_lagging")
+def test_an_unconfirmed_bulk_write_is_an_outage(write: Callable[[], Any]) -> None:
+    """Before: a bulk write raised BulkWriteError, outside MONGO_UNAVAILABLE_ERRORS, so it was a bug."""
+    with pytest.raises(WTimeoutError):
+        write()
+
+
+@pytest.mark.parametrize("write", BULK_WRITERS.values(), ids=BULK_WRITERS)
+def test_an_unconfirmed_bulk_write_gives_the_job_back_for_a_retry(
+    monkeypatch: pytest.MonkeyPatch, write: Callable[[], Any]
+) -> None:
+    _bulk_writes_answer(monkeypatch, REPLICATION_TIMED_OUT, [])
+    _assert_job_given_back_for_a_retry(monkeypatch, write)
+
+
+@pytest.mark.parametrize("action", ["accept", "scenarios/reject"])
+@pytest.mark.usefixtures("replicas_lagging", "service")
+def test_a_decision_the_replicas_did_not_confirm_answers_503(
+    client: TestClient,
+    api_key: str,  # noqa: F811 - the fixture
+    action: str,
+) -> None:
+    record_id = review._run()
+    chosen = {"scenario_ids": [review._scenario(record_id, "p1")]}
+    response = review._post(client, api_key, f"/v1/sessions/{record_id}/{action}", chosen)
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == str(Limits.RETRY_AFTER_SECONDS)
+    assert response.json()["detail"] == ErrorMessage.MONGO_UNREACHABLE
+
+
+def test_a_write_concern_error_that_is_no_timeout_is_still_an_outage(monkeypatch: pytest.MonkeyPatch) -> None:
+    _bulk_writes_answer(monkeypatch, {"code": 100, "errmsg": "Not enough data-bearing nodes"}, [])
+    with pytest.raises(WriteConcernError) as raised:
+        BULK_WRITERS["library vectors"]()
+    assert not isinstance(raised.value, WTimeoutError)
+
+
+def test_a_duplicate_with_an_unconfirmed_write_is_an_outage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A duplicate key is skipped, but the rest of the write was not confirmed either."""
+    duplicate = {"index": 0, "code": 11000, "errmsg": "E11000 duplicate key error"}
+    _bulk_writes_answer(monkeypatch, REPLICATION_TIMED_OUT, [duplicate])
+    with pytest.raises(WTimeoutError):
+        BULK_WRITERS["vector cache"]()
+
+
+def test_every_bulk_write_goes_through_the_one_that_raises_outages() -> None:
+    """A repository calling collection.bulk_write itself would answer an unconfirmed write as a bug again."""
+    app = Path(__file__).parents[1] / "app"
+    direct = [path.name for path in app.rglob("*.py") if ".bulk_write(" in path.read_text(encoding="utf-8")]
+    assert direct == ["base.py"]
+
+
+def test_a_refused_write_stays_a_bug_when_also_unconfirmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    refused = {"index": 0, "code": 121, "errmsg": "Document failed validation"}
+    _bulk_writes_answer(monkeypatch, REPLICATION_TIMED_OUT, [refused])
+    for write in BULK_WRITERS.values():
+        with pytest.raises(BulkWriteError):
+            write()
 
 
 def _examined(command: dict[str, Any]) -> int:
