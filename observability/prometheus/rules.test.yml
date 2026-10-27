@@ -262,8 +262,8 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations:
-              summary: "A job ran past its time limit and was stopped as hung in the last hour."
-              description: "Grafana Explore, Loki: {app=\"tsg\"} |= \"job.too_long\" names it (record_id, task). The reaper runs it again on another worker; if it hangs again, restart the worker it ran on."
+              summary: "A job made no progress for 15 minutes and was stopped as hung in the last hour."
+              description: "Grafana Explore, Loki: {app=\"tsg\"} |= \"job.stalled\" names it (record_id, task). The reaper runs it again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts its pod."
 
   # The UAT case (2026-10-24): one worker 76 s behind MongoDB, another 0.2 s. Quiet for the first 5 minutes,
   # then only the far one is named; a pod off by under 5 s never is.

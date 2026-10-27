@@ -350,17 +350,18 @@ data:                                            # one key per file
                 Check that the worker taking them is not stuck or too busy, then the clock of beat's node against
                 the workers': oc debug node/<node> -- chroot /host chronyc tracking.
 
-          # A job past its time limit stops renewing its lease (app/worker/lease_renewal.py): the reaper gives it to
-          # another worker, but its thread may still hold a worker slot.
+          # A job with no lease check (AI call or wait) for Lease.STALL_SECONDS stops renewing its lease
+          # (app/worker/lease_renewal.py): the reaper gives it to another worker; its thread may still hold a slot.
           - alert: JobHung
             expr: sum(increase(tsg_jobs_hung_total[1h])) > 0
             for: 1m
             labels: { severity: warning }
             annotations:
-              summary: A job ran past its time limit and was stopped as hung in the last hour.
+              summary: A job made no progress for 15 minutes and was stopped as hung in the last hour.
               description: >-
-                Grafana Explore, Loki: {app="tsg"} |= "job.too_long" names it (record_id, task). The reaper runs it
-                again on another worker; if it hangs again, restart the worker it ran on.
+                Grafana Explore, Loki: {app="tsg"} |= "job.stalled" names it (record_id, task). The reaper runs it
+                again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts
+                its pod.
 
       - name: tsg-dependencies
         rules:
@@ -2063,7 +2064,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|too_long)\"` [$__range])) or vector(0)",
+              "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|stalled)\"` [$__range])) or vector(0)",
               "queryType": "instant"
             }
           ],
