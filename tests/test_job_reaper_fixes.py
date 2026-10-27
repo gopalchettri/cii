@@ -14,7 +14,7 @@ from app.core.constants import Collection, Lease, LogEvent, Status, TaskName, Wo
 from app.core.database import get_mongodb
 from app.data_access.jobs.job_repository import JobLease
 from app.worker import jobs, reaper
-from app.worker.celery_app import BrokerUnavailable, celery_app
+from app.worker.celery_app import REQUEST_ID_HEADER, BrokerUnavailable, celery_app
 
 
 def _sessions() -> Any:
@@ -129,13 +129,22 @@ def test_the_reapers_lines_carry_the_dead_jobs_own_delivery_and_a_lost_worker_is
 def test_the_reapers_send_lets_a_new_delivery_take_over_a_dead_workers_job(
     sent: list[dict[str, Any]],
 ) -> None:
-    """The reaper's own message (task, record, epoch and priority) is what a new delivery claims and runs."""
-    dead = _insert_job(Status.RUNNING, attempts=1, epoch=3, lease_until=_long_ago(), task_id="dead-delivery")
+    """The reaper's own message (task, record, epoch, priority and the job's API request id) is what a new
+    delivery claims and runs."""
+    dead = _insert_job(
+        Status.RUNNING,
+        attempts=1,
+        epoch=3,
+        lease_until=_long_ago(),
+        task_id="dead-delivery",
+        request_id="req-77",
+    )
     reaper.reap_jobs()
     [message] = sent
     record_id, epoch = message["args"]
     assert (message["name"], record_id, epoch) == (TaskName.FIND_THREATS, dead, 3)
     assert message["priority"] == Worker.NEXT_STAGE_PRIORITY
+    assert message["headers"] == {REQUEST_ID_HEADER: "req-77"}  # the new delivery's job.started names it
     delivery = SimpleNamespace(name=message["name"], request=SimpleNamespace(id="new-delivery", retries=0))
     ran: list[JobLease] = []
     jobs.run_leased_job(delivery, Collection.SESSIONS, record_id, epoch, ran.append)  # type: ignore[arg-type]

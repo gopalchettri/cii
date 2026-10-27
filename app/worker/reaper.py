@@ -152,8 +152,16 @@ def _settle_expired_job(
         if not jobs.requeue_or_fail_expired_job(record, now):
             return  # its worker renewed or finished in between
         job_log.warning(LogEvent.JOB_REQUEUED, reason="lease_expired", attempt=attempts)  # a worker died
-        send_job(job["task"], record["_id"], job["epoch"], priority=Worker.NEXT_STAGE_PRIORITY)
+        _send_again(record)
     publish(record["_id"])
+
+
+def _send_again(record: dict[str, Any]) -> bool:
+    """Send the record's job again under its API request's id: the new delivery's first line names it."""
+    job = record["job"]
+    request = {"request_id": job["request_id"]} if job.get("request_id") else {}
+    with structlog.contextvars.bound_contextvars(**request):
+        return send_job(job["task"], record["_id"], job["epoch"], priority=Worker.NEXT_STAGE_PRIORITY)
 
 
 def _job_log(record: dict[str, Any]) -> Any:
@@ -200,5 +208,5 @@ def _resend_queued_job(
         return
     job_log.info(LogEvent.JOB_REQUEUED, reason="never_picked_up", sends=sends)
     # Counted only once the broker took it: a broker outage never fails a healthy job as never started.
-    if send_job(job["task"], record["_id"], job["epoch"], priority=Worker.NEXT_STAGE_PRIORITY) and counted:
+    if _send_again(record) and counted:
         jobs.count_resend(record, now)
