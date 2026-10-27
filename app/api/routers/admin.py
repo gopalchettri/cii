@@ -93,15 +93,16 @@ def list_all_jobs(
     kind: Annotated[str | None, Query(max_length=64)] = None,
     hours: Annotated[int, Query(ge=1, le=24 * 90)] = 24,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    request_id: Annotated[str | None, Query(max_length=64)] = None,
 ) -> JobMonitor:
     """Every job of every kind (runs, plans, service mappings, intelligence refreshes, embeddings builds)
     active in the last `hours`, newest first: status (queued, running, done, failed, cancelled), the retry it
     waits for, its error, the worker running it. `queues`: each queue's waiting messages and workers online.
     Filter by `module` (threat_scenarios, remediation, service_mapper, external_intelligence,
-    library_embeddings, maintenance), `status` (repeatable) and `kind` (a task name such as tsg_map_services,
-    or an admin job kind)."""
+    library_embeddings, maintenance), `status` (repeatable), `kind` (a task name such as tsg_map_services,
+    or an admin job kind) and `request_id` (the X-Request-Id of the call that queued it)."""
     since = utc_now() - timedelta(hours=hours)
-    return monitor.list_jobs(since, list(status or []), kind, limit, module)
+    return monitor.list_jobs(since, list(status or []), kind, limit, module, request_id)
 
 
 @router.get("/v1/admin/jobs/{job_id}", tags=[ApiTag.JOBS], response_model=MonitoredJob, summary="One job")

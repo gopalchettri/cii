@@ -160,7 +160,7 @@ class ServiceMapperService:
             if key_generation is not None and not _failed_for_outage(record, key_generation):
                 return MappingAccepted(
                     mapping_id=mapping_id,
-                    status=Status.QUEUED,
+                    status=self._generation_status(record, key_generation),
                     generation=key_generation,
                 ), False
             if record["status"] in (Status.QUEUED, Status.RUNNING):
@@ -242,6 +242,15 @@ class ServiceMapperService:
         if record["input_hash"] != fingerprint:
             raise Conflict(MapperMessage.IDEMPOTENCY_KEY_CONFLICT)
         return self._next_generation(principal, record["_id"], record["create_key"], 1)
+
+    def _generation_status(self, record: dict, generation: int) -> Status:
+        """The status `generation` has now: the record's while it is the latest, else its archived copy's."""
+        if generation == record["generation"]:
+            return Status(record["status"])
+        pending = record.get("pending_archive") or {}
+        if pending.get("generation") != generation:
+            pending = self._history.get(("status",), _id=f"{record['_id']}:{generation}") or {}
+        return Status(pending.get("status", record["status"]))
 
     def _archive_pending(self, record: dict) -> None:
         if frozen := record.get("pending_archive"):
