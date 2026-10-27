@@ -15,6 +15,7 @@ from app.ai.common import outage_reason
 from app.core import metrics
 from app.core.clock import utc_now
 from app.core.constants import (
+    AbandonReason,
     AiOutage,
     Collection,
     ErrorCode,
@@ -102,7 +103,7 @@ def job_error_of(exc: Exception) -> dict[str, str]:
 
 
 def _fail_if_still_owned(
-    lease: JobLease, code: ErrorCode, message: str, reason: AiOutage | None = None
+    lease: JobLease, code: ErrorCode, message: str, reason: AiOutage | AbandonReason | None = None
 ) -> bool:
     """False when the job is no longer this delivery's (nothing written). Else the job's one job.failed line.
     If MongoDB is down too, nothing failed: the record stays running, the reaper re-queues it once the lease
@@ -253,14 +254,14 @@ def _wait_for_other_job(
     task: Task, lease: JobLease, exc: WaitingForAnotherJob, collection: Collection
 ) -> NoReturn:
     """Another job holds what this one needs, a normal step and not an outage: give the job back with no
-    attempt used and no retry notice, marked waiting (it reads queued, its looks not announced), and look
-    again after the first back-off delay; after waiting Lease.MAX_WAIT_SECONDS it fails. Raises JobWaiting
-    or JobFailed, or ends a delivery that lost its job."""
+    attempt used or retry notice, marked waiting (reads queued), and look again after the first back-off;
+    after Lease.MAX_WAIT_SECONDS it fails. Raises JobWaiting or JobFailed, or ends a lost delivery."""
     now = utc_now()
     since = lease.record["job"].get("waiting_since") or now
     if (waited := now - since) >= timedelta(seconds=Lease.MAX_WAIT_SECONDS):
         message = ErrorMessage.JOB_WAITED_TOO_LONG.format(minutes=round(waited.total_seconds() / 60))
-        _fail_or_end(lease, collection, ErrorCode.JOB_ABANDONED, message)
+        if not _fail_if_still_owned(lease, ErrorCode.JOB_ABANDONED, message, AbandonReason.WAITED_TOO_LONG):
+            _end_lost_delivery(collection, lease.record_id)
         JOB_COLLECTIONS[collection](lease.record_id)
         raise JobFailed(ErrorCode.JOB_ABANDONED, message) from exc
     # ponytail: polls at the first back-off (cheap); wake waiters if many ever wait

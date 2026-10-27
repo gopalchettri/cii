@@ -11,6 +11,7 @@ from typing import Protocol
 
 import structlog
 
+from app.core import metrics
 from app.core.clock import utc_now
 from app.core.constants import Lease, LogEvent, Status, TaskName, Worker
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
@@ -36,18 +37,19 @@ class RenewableLease(Protocol):
 
 @contextmanager
 def keep_lease_alive(
-    lease: RenewableLease, give_back: Callable[[], bool] | None = None
+    lease: RenewableLease, give_back: Callable[[], bool] | None = None, *, watch_progress: bool = True
 ) -> Generator[None, None, None]:
     """Renew the lease every Lease.RENEW_EVERY_SECONDS while the work runs, from a background thread. A
     renewal that finds the lease lost (a cancel), or a job that made no lease check for Lease.STALL_SECONDS
     (hung: the reaper then takes it over), sets the job's signal: its next AI call raises LeaseLost
     (core/lease_signal.py), as its fenced writes do once the lease is gone. `give_back` frees the lease for
-    another worker when this one stops (hand_back_running_jobs), True once it did."""
+    another worker when this one stops (hand_back_running_jobs), True once it did. `watch_progress` False: a
+    heartbeat only (an admin job), renewed until the work ends."""
     stopped = threading.Event()
     with lease_lost_signal(lease.record_id) as lost:
         renewer = threading.Thread(  # in the job's context: its lines keep the task, module and request id
             target=contextvars.copy_context().run,
-            args=(_renew_until_stopped, lease, lost, stopped),
+            args=(_renew_until_stopped, lease, lost, stopped, watch_progress),
             name=f"lease-{lease.record_id}",
             daemon=True,
         )
@@ -62,21 +64,25 @@ def keep_lease_alive(
             renewer.join()
 
 
-def _renew_until_stopped(lease: RenewableLease, lost: LeaseSignal, stopped: threading.Event) -> None:
+def _renew_until_stopped(
+    lease: RenewableLease, lost: LeaseSignal, stopped: threading.Event, watch_progress: bool
+) -> None:
     """Renews until the work ends or the lease is lost. Python cannot stop a thread: one still running
     Lease.HUNG_AFTER_SECONDS after its lease was lost marks its worker hung, and the pod restarts."""
     while not stopped.wait(Lease.RENEW_EVERY_SECONDS):
-        if not _renewed_while_working(lease, lost):
+        if not _renewed_while_working(lease, lost, watch_progress):
             lost.set()  # no more AI calls; the work's next fenced write raises LeaseLost too
             if not stopped.wait(Lease.HUNG_AFTER_SECONDS):
                 mark_worker_hung(lease.record_id)
             return
 
 
-def _renewed_while_working(lease: RenewableLease, lost: LeaseSignal) -> bool:
-    """One renewal: False once the lease is lost, or when the job made no lease check for STALL_SECONDS."""
-    if (silent := time.monotonic() - lost.checked_at) >= Lease.STALL_SECONDS:
+def _renewed_while_working(lease: RenewableLease, lost: LeaseSignal, watch_progress: bool) -> bool:
+    """One renewal: False once the lease is lost, or (`watch_progress`) when the job made no lease check for
+    STALL_SECONDS: counted as hung."""
+    if watch_progress and (silent := time.monotonic() - lost.checked_at) >= Lease.STALL_SECONDS:
         log.warning(LogEvent.JOB_STALLED, record_id=lease.record_id, seconds=round(silent))
+        metrics.JOBS_HUNG.inc()
         return False
     try:
         return lease.renew()

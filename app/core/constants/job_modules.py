@@ -48,6 +48,7 @@ class AbandonReason(StrEnum):
 
     WORKER_STOPPED = "abandoned"  # its worker stopped renewing its lease on every attempt
     NEVER_STARTED = "never_started"  # sent again and again, or left queued, and no worker ever took it
+    WAITED_TOO_LONG = "waited_too_long"  # it waited Lease.MAX_WAIT_SECONDS for another job to finish
 
 
 #: The collection whose record carries each task's leased job: a refused send is noted there. A controls send

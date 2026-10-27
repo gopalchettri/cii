@@ -316,7 +316,8 @@ class RunError(BaseModel):
 
     code: str
     message: str
-    # ai_down, ai_unreachable, ai_busy, ai_timed_out; job_abandoned: abandoned, never_started; else None.
+    # ai_down, ai_unreachable, ai_busy, ai_timed_out; job_abandoned: abandoned, never_started,
+    # waited_too_long; else None.
     reason: AiOutage | AbandonReason | None = None
 
 

@@ -18,6 +18,7 @@ from celery.exceptions import Ignore
 from structlog.testing import capture_logs
 
 from app.core.constants import (
+    AbandonReason,
     AiLimits,
     Collection,
     ErrorCode,
@@ -305,6 +306,7 @@ def test_a_job_waiting_too_long_for_another_job_is_failed(published: list[str]) 
     record = _records().find_one({"_id": record_id})
     assert record["status"] == Status.FAILED and resent == []
     assert record["job"]["error"]["code"] == failed.value.code == ErrorCode.JOB_ABANDONED
+    assert record["job"]["error"]["reason"] == AbandonReason.WAITED_TOO_LONG  # the stored why (#65)
     assert str(Lease.MAX_WAIT_SECONDS // 60 + 1) in record["job"]["error"]["message"]
     assert published == [record_id, record_id]  # running, then failed
 

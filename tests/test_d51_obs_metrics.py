@@ -91,10 +91,10 @@ def test_a_timer_message_dropped_as_expired_is_counted() -> None:
 
 
 def test_a_job_stopped_as_hung_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Before: a job past its time limit only wrote a job.too_long line, which Prometheus cannot read: a hung
-    job showed nowhere until it had failed Lease.MAX_ATTEMPTS times, about 5 hours later."""
+    """Before: a hung job only wrote a log line, which Prometheus cannot read: it showed nowhere until it had
+    failed Lease.MAX_ATTEMPTS times, about 5 hours later."""
     monkeypatch.setattr(Lease, "RENEW_EVERY_SECONDS", 0.02)
-    monkeypatch.setattr(Lease, "MAX_JOB_SECONDS", 0.1)
+    monkeypatch.setattr(Lease, "STALL_SECONDS", 0.1)
     before = _sample("tsg_jobs_hung_total")
     lease: Any = type("HungLease", (), {"record_id": "hung", "renew": lambda _self: True})()
     with jobs.keep_lease_alive(lease):

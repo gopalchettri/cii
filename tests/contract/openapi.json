@@ -5,7 +5,8 @@
     "description": "Why a job was given up (a job_abandoned error's reason); the job.failed lines carry the same words.",
     "enum": [
      "abandoned",
-     "never_started"
+     "never_started",
+     "waited_too_long"
     ],
     "title": "AbandonReason",
     "type": "string"

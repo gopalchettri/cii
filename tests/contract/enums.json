@@ -1,6 +1,7 @@
 {
  "AbandonReason": {
   "NEVER_STARTED": "never_started",
+  "WAITED_TOO_LONG": "waited_too_long",
   "WORKER_STOPPED": "abandoned"
  },
  "ActionPriority": {

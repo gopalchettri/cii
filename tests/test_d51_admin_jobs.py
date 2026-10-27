@@ -110,7 +110,7 @@ def test_a_running_admin_job_beats_its_heartbeat_past_the_job_time_limit(
 ) -> None:
     """A healthy build beats until it ends: an hour-long one is never taken for a crashed one."""
     monkeypatch.setattr(Lease, "RENEW_EVERY_SECONDS", 0.01)
-    monkeypatch.setattr(Lease, "MAX_JOB_SECONDS", 0.05)
+    monkeypatch.setattr(Lease, "STALL_SECONDS", 0.05)
     job_id = _queued(kind)
     beats: list[bool] = []
 

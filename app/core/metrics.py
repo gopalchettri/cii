@@ -55,7 +55,7 @@ JOBS_NOW = Gauge(
     ["kind", "status"],
 )
 #: Jobs whose lease renewer stopped them as hung (app/worker/lease_renewal.py): JobHung reads it.
-JOBS_HUNG = Counter("tsg_jobs_hung_total", "Jobs stopped as hung: they ran past their time limit")
+JOBS_HUNG = Counter("tsg_jobs_hung_total", "Jobs stopped as hung: no lease check for Lease.STALL_SECONDS")
 #: When the reaper last started a pass (ReaperNotRunning, the beat tile: beat sends it) and last finished
 #: one (ReaperFailing). Their ages, not a rise in tsg_jobs_total: a pass made before Prometheus' first scrape
 #: still counts. Exported by the one process that runs the reaper, from its first pass (record_reaper_time):
