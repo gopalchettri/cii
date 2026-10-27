@@ -547,12 +547,13 @@ def _last_reaper_pass() -> float:
     return metrics.REAPER_LAST_PASS.collect()[0].samples[0].value
 
 
-def test_no_process_but_the_reaper_s_worker_exports_its_last_pass() -> None:
+def test_no_process_but_the_reaper_s_worker_exports_its_reaper_times() -> None:
     """Before: every process that loads the metrics exported 0 (the API, every worker, Flower), so right
-    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending)."""
+    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending).
+    Both gauges: the last start (ReaperNotRunning) and the last finished pass (ReaperFailing)."""
     code = (
         "import app.main, app.worker.lifecycle; from prometheus_client import generate_latest; "
-        "print(b'tsg_reaper_last_pass' in generate_latest())"
+        "print(b'tsg_reaper_last_' in generate_latest())"
     )
     run = [sys.executable, "-c", code]
     result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603

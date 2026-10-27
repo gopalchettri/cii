@@ -122,8 +122,9 @@ def test_a_failing_reaper_pass_still_records_that_it_started(monkeypatch: pytest
 def test_a_worker_start_reports_no_reaper_pass_it_has_not_made(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: the reaper's worker reported a pass at its start. One restarted pod (a deploy, an eviction)
     then hid a dead beat from ReaperNotRunning and the beat tile for 10 minutes, and a pod restarting more
-    often kept the alert silent for ever."""
+    often kept the alert silent for ever. ReaperNotRunning and the beat tile read the start gauge."""
+    metrics.REAPER_LAST_START.set(0)
     metrics.REAPER_LAST_PASS.set(0)
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
     lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
-    assert _gauge_value("REAPER_LAST_PASS") == 0
+    assert (_gauge_value("REAPER_LAST_START"), _gauge_value("REAPER_LAST_PASS")) == (0, 0)
