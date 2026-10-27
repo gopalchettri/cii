@@ -56,6 +56,19 @@ Have all of these ready:
   - the NVD key (free at https://nvd.nist.gov/developers/request-an-api-key), or none;
   - an admin key (32 or more characters) and a Grafana password (16 or more characters): you make them up in step 7.
 - [ ] The platform UI's https address, e.g. `https://<ui host>` (ask the platform UI team; step 8).
+- [ ] Where alert emails go (step 8). Either the company mail relay (its `host:port`, a sender address, its
+      login and password; ask the mail team) or a Gmail account (its address and a Google app password: the
+      account needs 2-Step Verification on, then Google account, Security, App passwords). And the recipients.
+      Mail does not go through the proxy: ask the network team to let `ai-common` reach the relay, or
+      `smtp.gmail.com` port 587, directly.
+- [ ] MongoDB (ask the DBA): TSG writes with write concern `majority` and waits at most 10 s for it. For
+      failover, MongoDB must be a replica set of at least 3 data-bearing members; `CII_MONGO_URL` (step 7)
+      then lists every member, with `replicaSet=<name>` and without `directConnection=true`, and each member's
+      address must be open in the MongoDB rules of `deploy\networkpolicy_threatgen.yaml` and
+      `deploy\networkpolicy_remediation.yaml` (tell the developer). A set with an arbiter (two data members)
+      works, but while a data member is down every write fails after 10 s (the API answers 503, jobs retry).
+      A single server works too, with no failover. After step 14, `/ready` shows what TSG reached under
+      `mongodb` (replica set, default write concern).
 - [ ] TSG's stored procedures installed by the DBA in the TSG SQL Server database: every
       `scripts\sql\tsg_*.sql` file of this release (never a file with `copy` in its name), then
       `scripts\sql\grants.sql`. Give the DBA the files from your code folder and wait for their OK. Without them
@@ -150,9 +163,9 @@ oc -n ai-common get limitrange
 
 **You should see:** each quota with a `Used` and a `Hard` column (or `No resources found`), then `No resources found`
 for the limit range. For `limits.cpu`, `limits.memory` and `requests.storage`, Hard minus Used must leave at least
-2.8 CPU, 5.2Gi and 21Gi for TSG's monitoring (the `Budget:` lines at the top of `deploy\deploy_common.yaml`). What TSG
+2.8 CPU, 5.2Gi and 22Gi for TSG's monitoring (the `Budget:` lines at the top of `deploy\deploy_common.yaml`). What TSG
 already has there is part of these numbers, not extra, so add it back first: its pods are replaced, and its claims
-`prometheus-data`, `loki-data` and `grafana-data` (`oc -n ai-common get pvc` shows them) are used again.
+`prometheus-data`, `loki-data`, `grafana-data` and `alloy-data` (`oc -n ai-common get pvc` shows them) are used again.
 
 **If there is less room:** send the cluster admin those quota lines and these three numbers, and wait for more room
 (or for the chatbot team to free some) before step 13.
@@ -333,8 +346,9 @@ one Redis login per part of TSG (`tsg-redis-api`, `tsg-redis-worker`, `tsg-redis
 - No NVD key: delete `CHANGE_ME` so the line reads `CII_NVD_API_KEY: ""`.
 - **Keep the Grafana password**: you need it to sign in to Grafana.
 - Alert email (step 8 picks the sender): `SMTP_RELAY_PASSWORD` is the company mail relay's password,
-  `GMAIL_APP_PASSWORD` a Google app password (Google account, Security, App passwords). For the one you do not
-  use, delete `CHANGE_ME` so the line reads `""`.
+  `GMAIL_APP_PASSWORD` a Google app password (Google account, Security, App passwords; it needs 2-Step
+  Verification on), never the Gmail account's own password. For the one you do not use, delete `CHANGE_ME` so
+  the line reads `""`. Keep both lines: Alertmanager does not start while either is missing.
 
 Then:
 
@@ -365,9 +379,10 @@ with commas. Never `*`: the app refuses to start with it.
 
 Alert email: in the `alertmanager.yml` part, the line `receiver:` under `route:` picks the sender, `company-smtp`
 (the company mail relay) or `gmail`. In that sender's lines, replace each `CHANGE_ME_` word: the relay's
-`host:port` (company-smtp only), the sender address and login, and the recipients (comma-separated). Make the same
-change in `observability\alertmanager\alertmanager.yml` (the tests fail when the two differ). Mail does not go
-through the proxy: the relay, or `smtp.gmail.com` port 587, must be reachable from `ai-common`.
+`host:port` (company-smtp only), the sender address and login, and the recipients (comma-separated). A
+relay that does not offer STARTTLS needs the line `require_tls: false` added under its `smarthost:` line.
+Make the same change in `observability\alertmanager\alertmanager.yml` (the tests fail when the two differ). Mail does not go
+through the proxy: the relay, or `smtp.gmail.com` port 587, must be reachable from `ai-common` (Part 1).
 Save and close Notepad, then:
 
 ```powershell
@@ -519,6 +534,10 @@ first data arrives, a check can still show as a problem.
 **If Overall still shows a problem after 10 minutes:** the panel **What is wrong right now** names it. Fix it with
 Part 5, then go on to step 16.
 
+**Alert email:** each alert that fires is emailed to the recipients of step 8 (and again when it clears). When
+one fires and no email comes, run `oc -n ai-common logs deployment/alertmanager`: it shows why the send failed
+(a wrong login, or the relay or `smtp.gmail.com` not reachable from `ai-common`).
+
 ### Step 16. Create an API key for each system that calls TSG
 
 **Do** (it asks for the admin key, `CII_ADMIN_API_KEY` from `secrets.yaml`):
@@ -556,7 +575,9 @@ then `running`, then `done`):
 curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/intel/refresh/<job_id>
 ```
 
-**If `status` is `failed`:** its `error` says why. Fix that and run the first line again.
+**If `status` is `failed`:** its `error` says why. When it names feeds that could not be imported, the other
+feeds' data was imported; `GET /v1/tsg/intel/health` (the last check below) says why each named feed failed.
+Fix that and run the first line again.
 
 **If `status` is `done` but the answer has `index_error`:** the data was imported but not indexed, and runs are refused (`intel_no_data`). Its `message` says why (often the AI embedding key). Fix that and run the first line again.
 
@@ -733,8 +754,9 @@ Copy-Item <old code folder>\deploy\secrets.yaml deploy\
 Test-Path deploy\secrets.yaml
 ```
 
-**You should see:** `True`. Then set `CII_CORS_ORIGINS` in the new `deploy\configmap.yaml` again: Part 2, step 8,
-the Notepad part and the `Select-String` line (step 5 below applies it).
+**You should see:** `True`. Then set `CII_CORS_ORIGINS` and the alert email lines in the new
+`deploy\configmap.yaml` (and in `observability\alertmanager\alertmanager.yml`) again: Part 2, step 8, the Notepad
+part and the `Select-String` line (step 5 below applies it).
 
 ### Step 1. Log in
 
@@ -803,8 +825,12 @@ in. Keep the Redis lines in your `tsg-secrets` (the new pods read the new Secret
 the Redis owner to keep the old login (and plain `redis://`, if TLS is new) until this release is accepted: a
 rollback (Part 5) still uses them.
 
-Then apply both, and restart the monitoring so it loads its new config files (the app pods load the new settings
-in step 7):
+**The release that brings alert email** prints `SMTP_RELAY_PASSWORD` and `GMAIL_APP_PASSWORD`: add both to the
+`tsg-monitoring` block of your `secrets.yaml` as in Part 2, step 7 (`""` for the sender you do not use).
+Alertmanager does not start without both.
+
+Then apply both, and restart the monitoring so it loads its new config files: Prometheus its alert rules,
+Grafana its dashboard, Alertmanager its senders (the app pods load the new settings in step 7):
 
 ```powershell
 oc apply -f deploy\secrets.yaml
@@ -876,12 +902,36 @@ then 9 (8 in ai-common, then the monitoring proxy). The network rules print `cre
 rule `monitoring-from-router` in ai-common, or `No resources found` and nothing once they are gone (a rollback brings
 them back): Grafana and Flower now have their Routes in ai-threatgen, through the monitoring proxy.
 
+Keep this order. `deploy_remediation.yaml` goes first so that, in the release that brings `worker-reaper`, a
+reaper worker serves `tsg_reaper` before the new API and beat send to it.
+
 **If a line times out:** see Part 5, "If something fails".
+
+What else changes by itself in this step (nothing to run):
+- **Database indexes.** The API and every worker build MongoDB's indexes when they start, and drop the ones
+  TSG no longer uses. Once the expiry index on `tsg_service_mapping_history` exists, MongoDB deletes the
+  archived Service Mapper generations older than 90 days within about a minute. If any of them must be kept,
+  ask the DBA to back up that collection before this step.
+- **Alloy's volume.** `deploy_common.yaml` creates the claim `alloy-data` (1 Gi), where Alloy keeps how far it
+  has read each pod's log. Its first start on the new volume reads the pods' current logs once more; after
+  that, a restart carries on where it stopped.
+- **Prometheus names pods** as `<project>/<pod>` (e.g. `ai-remediation/worker-maintenance-...`), not by
+  address, from this rollout on: graphs before and after it do not join on that label.
 
 ### Step 8. Check
 
 The same as Part 2, steps 14 and 15 (the API answers `{"status":"ok"}` and `{"status":"ready"...`; Grafana shows
 `ALL GOOD`).
+
+After the first release with `worker-reaper`, check its memory once, in both projects:
+
+```powershell
+oc adm top pods -n ai-threatgen -l app=worker-reaper
+oc adm top pods -n ai-remediation -l app=worker-reaper
+```
+
+**You should see:** one pod in each, well under its 384Mi limit (on a laptop the worker uses about 230Mi). If it
+was restarted with `OOMKilled` (Part 5), ask the developer to raise its limit to 512Mi.
 
 ---
 
@@ -1069,7 +1119,8 @@ all 16 glm-5.3 places are busy), then tries kimi again.
 ### Updates and node failures
 
 - A worker updates by stopping its old pod first (no extra pod in the quota); its twin in the other project serves
-  meanwhile.
+  meanwhile. A stopping worker gets 120 s: after 90 s it puts the jobs it is still running back on their queue,
+  without using up a try, so another worker carries them on.
 - The API starts its new pod before it stops an old one, so it never goes down during an update.
 - Each worker prefers a node its twin is not on, and the two API pods different nodes, so one node failure stops
   neither a queue nor the API. Preferred only: a pod still starts when no other node fits.

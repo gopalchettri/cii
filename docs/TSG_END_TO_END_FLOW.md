@@ -113,7 +113,8 @@ flowchart LR
         W4["tsg_controls<br/>tsg_map_controls (controls job)"]
         W5["tsg_remediation<br/>tsg_write_plan (treatment plan)"]
         W6["tsg_servicemapper<br/>tsg_map_services (service mapper)"]
-        W3["tsg_maintenance<br/>tsg_reap, tsg_retry_controls,<br/>tsg_build_library_indexes,<br/>tsg_refresh_external_intelligence"]
+        W7["tsg_reaper<br/>tsg_reap, tsg_retry_controls"]
+        W3["tsg_maintenance<br/>tsg_build_library_indexes,<br/>tsg_refresh_external_intelligence"]
         B["Beat<br/>schedules the maintenance tasks"]
     end
 
@@ -128,14 +129,14 @@ flowchart LR
     DA --> M
     DA --> Q
     S -- "send job, publish id" --> RD
-    RD -- "jobs" --> W1 & W2 & W4 & W5 & W6 & W3
+    RD -- "jobs" --> W1 & W2 & W4 & W5 & W6 & W3 & W7
     B --> RD
-    W1 & W2 & W4 & W5 & W6 & W3 --> M
+    W1 & W2 & W4 & W5 & W6 & W3 & W7 --> M
     W1 & W2 & W4 & W5 & W6 & W3 --> Q
     W1 & W2 & W4 & W5 & W6 -- "chat, embeddings, rerank" --> AI
     W3 -- "embeddings, rerank" --> AI
     W3 -- "downloads" --> SRC
-    W1 & W2 & W4 & W5 & W6 & W3 -- "publish id" --> RD
+    W1 & W2 & W4 & W5 & W6 & W3 & W7 -- "publish id" --> RD
     RD -- "tsg:events:*" --> EH
 ```
 
@@ -224,7 +225,8 @@ flowchart LR
    evidence it should have.
    `PUT /v1/tsg/intel/switch {"enabled": false}` turns it off
    (`ExternalIntelligenceService.update_intelligence_switch_state`, audited `external_intelligence.switched`);
-   `{"enabled": true}` turns it on and queues an import.
+   `{"enabled": true}` turns it on and queues an import: the answer's `refresh_job_id` names it (null when an
+   import was already queued, or could not be queued: `refresh_not_queued` says why).
 
 **The six sources** (`IntelSource`, `app/core/constants/intelligence.py`; readers in
 `app/worker/external_intelligence/sources/`). Each record is an `IntelRecord` with an id, a kind, an asset type
@@ -251,14 +253,16 @@ is off; otherwise the source starts with blank health, the approval is audited
 (`external_intelligence.source_approved`) and an import of it is queued. These routes take no API key or admin
 key; every change is audited under `X-User-Id` (else "admin").
 
-**The import** (task `tsg_refresh_external_intelligence` on queue `tsg_maintenance`;
+**The import** (task `tsg_refresh_external_intelligence` on queue `tsg_maintenance`, in `worker-maintenance`;
 `refresh_external_intelligence` in `app/worker/external_intelligence/refresh_task.py`, `SourceRefresher` in
 `refresh_sources.py`). It is queued by beat every hour (`IntelLimits.CHECK_EVERY_SECONDS` = 3600) while the
 master switch is on, by `POST /v1/tsg/intel/refresh` (every due source, or one named source), by turning the
 runtime switch on, and by approving a source (when that import cannot be queued, the switch or the
 approval still stands and the answer says the refresh was not queued; never a 503). The hourly task runs only while both switches are on (else it logs
 `external_intelligence.refresh_skipped`). A refresh call is an admin job: one at a time (409 `job_in_progress`),
-and its worker checks only the master switch.
+and its worker checks only the master switch. While it runs, its heartbeat (`lease_until`) is renewed every
+30 s; when a source fails (it keeps its last good data), the job ends `failed` with code `unavailable` and a
+message naming the failed sources, while the other sources' data stands.
 1. **Order** (`SourceCatalogue.fetchers`): `cisa_kev`, `mitre_attack_enterprise`, `mitre_attack_ics`,
    `cisa_ics_advisories`, `first_epss`, `nist_nvd`. EPSS and NVD read the current KEV CVE ids when they run, so
    KEV goes first. `create_missing_intel_feeds` adds any missing source row, approved. Only approved sources run.
@@ -617,7 +621,10 @@ already holds, and every number above can be checked against a stored record.
      clients in `tsg_api_clients`. A found key is cached for 60 s per process (`Cache.API_KEY_TTL_SECONDS`).
      Unknown or revoked: 401.
    - The result is `Principal(client_id, user_id, entity_id, tenant_id)`.
-3. **Optional header** `Idempotency-Key`, at most 200 characters (`Limits.MAX_IDEMPOTENCY_KEY_CHARS`).
+3. **Optional header** `Idempotency-Key`, at most 200 characters (`Limits.MAX_IDEMPOTENCY_KEY_CHARS`). With
+   none, the `idempotency_key` dependency (`app/api/dependencies.py`) derives one: `derived-` and the SHA-256
+   of the caller (tenant, entity, user, client), method, path, a fixed 60 s window and the exact body. The key
+   used goes back in the `Idempotency-Key` response header and on the access line (`idempotency`).
 4. **The body:** `StartRunRequest` (`app/models/scenario/views.py`). An unknown field is refused
    (`extra="forbid"`).
    - `asset_id`: an id from 1 to 2,147,483,647 (`SqlId`).
@@ -630,13 +637,14 @@ already holds, and every number above can be checked against a stored record.
 
 #### Replay and fingerprint
 
-6. **Idempotent replay** (only when `Idempotency-Key` was sent): `_replay` reads the session that took this
-   key for this entity (`ThreatScenarioSessionRepository.get(fields="replay", …)`).
+6. **Idempotent replay:** `_replay` reads the session that took this key for this entity
+   (`ThreatScenarioSessionRepository.get(fields="replay", …)`).
    - None: go on.
    - Found: `check_same_start_request` (`app/domain/scenario/plan.py`) answers 409
      `idempotency_key_conflict` when that session is hand-written (`kind` manual), is for another asset, or
-     has another `request_hash`. The same request gets that session's board back with 200, and nothing new
-     is saved.
+     has another `request_hash`. A derived key (none was sent) then answers 409 `duplicate_request`, naming
+     the session and how many seconds ago it started (`app/domain/shared/idempotency.py`). The caller's own
+     key gets that session's board back with 200, and nothing new is saved.
    - **The fingerprint** (`request_fingerprint`): SHA-256 of the whole body (`asset_id` included) as JSON with
      sorted keys and the system ids sorted. So `[1449, 1448]` and `[1448, 1449]` are the same request.
 
@@ -765,20 +773,22 @@ already holds, and every number above can be checked against a stored record.
     | `counts` | 10 counters at 0: `planned`, `written`, `remaining`, `failed`, `abandoned`, `accepted`, `rejected`, `pending`, `controls_waiting`, `controls_failed` |
     | `job` | `{task: "tsg_find_threats", epoch: 1, task_id: null, attempts: 0, due_at: now, lease_until: null, resends: 0, error: null, request_id: <the API call's>}` (`new_job`) |
     | `created_at`, `updated_at` | now |
-    | `idempotency_key` | only when one was sent |
+    | `idempotency_key` | the key sent, else the derived one (step 3) |
     | `schema_version` | `1`, stamped by the repository |
 
 11. **The insert:** `ThreatScenarioSessionRepository.create_scenario_session` writes it to `tsg_sessions`.
     One unique partial index guards the insert: `(entity_id, idempotency_key)` where the key exists.
     Another session of the asset never clashes: sessions of one asset are isolated (D43). The old
     one-session-per-asset index `entity_id_1_asset_id_1` is dropped at start-up.
-    - After a clash, when a key was sent, `_replay` runs again: a parallel start with the same key won, so
-      its session is answered (200). Otherwise a key clash means the session that took the key was deleted
-      meanwhile: 409 `idempotency_key_conflict`.
+    - After a clash, `_replay` runs again: a parallel start with the same key won, so its session is
+      answered (200), or 409 `duplicate_request` for a derived key. Otherwise a key clash means the session
+      that took the key was deleted meanwhile: 409 `idempotency_key_conflict`.
 12. **Start the work** (`_announce_start`):
     1. `send_job` (`app/worker/celery_app.py`) sends `tsg_find_threats` with only `[session_id, 1]`; the task
-       is routed to queue `tsg_threats`. A failed send is only logged: the reaper re-sends a session left
-       queued (`Lease.REQUEUE_QUEUED_AFTER_SECONDS`, 120 s).
+       is routed to queue `tsg_threats`. A failed send is logged and stored as the job's retry notice
+       (`job.retry`: reason null, "The queue and live-update service is unreachable.", `retry_at` 120 s on),
+       and the reaper re-sends a session left queued (`Lease.REQUEUE_QUEUED_AFTER_SECONDS`, 120 s); the claim
+       clears the notice.
     2. `metrics.RUNS` counts one generated run.
     3. `AuditRepository.create_audit_record` writes `run.started` to `tsg_audit`: `actor`
        `{client_id, user_id, entity_id}` (`caller_actor`), `target` `{type: "session", id}`,
@@ -801,6 +811,7 @@ already holds, and every number above can be checked against a stored record.
 | `X-Entity-Id` is not a whole number from 1 to 2,147,483,647; `X-User-Id` or `X-Tenant-Id` is over 256 characters; `Idempotency-Key` is over 200 characters | 422 |
 | The body has an unknown field, a bad id, no system or a repeated system | 422 |
 | The `Idempotency-Key` was used for another request, another asset or a hand-written session | 409 `idempotency_key_conflict` |
+| No `Idempotency-Key` was sent and the same request came in the same 60 s window | 409 `duplicate_request` |
 | Intelligence is on and the active snapshot indexes nothing | 409 `intel_no_data` |
 | SQL Server cannot be reached, deadlocks, or its answer is lost | 503 |
 | SQL Server refuses a value | 422 |
@@ -812,7 +823,7 @@ already holds, and every number above can be checked against a stored record.
 | A required fact is not recorded; `name` is always required, for the asset and every system | 422 `required_facts_missing` |
 | The session that took the `Idempotency-Key` was deleted while this start ran | 409 `idempotency_key_conflict` |
 | MongoDB cannot be reached | 503 |
-| The job could not be sent to Redis | not an error: the reaper re-sends it |
+| The job could not be sent to Redis | not an error: the reaper re-sends it, and the status shows it as `progress.retrying` meanwhile |
 
 ### 4.3 In the example
 
@@ -822,8 +833,8 @@ already holds, and every number above can be checked against a stored record.
 > field equipment such as traffic signals. None of the four has a description recorded. The service notes
 > that gap but does not refuse the request for it.
 
-**The request.** No `Idempotency-Key` was sent: the session has no `idempotency_key` field. The API key is
-shown as a placeholder.
+**The request.** No `Idempotency-Key` was sent, so the session has no `idempotency_key` field (the code now
+derives one, step 3). The API key is shown as a placeholder.
 
 ```http
 POST /v1/sessions
@@ -836,12 +847,12 @@ Content-Type: application/json
 {"asset_id": 1166, "supporting_system_id": [1448, 1449, 1450, 1451], "service_id": 1546, "sector_id": 183, "subsector_id": 199}
 ```
 
-**The checks.** No key was sent, so there was no replay (step 6). Intelligence was on during this run: the
+**The checks.** No earlier session held the key, so there was no replay (step 6). Intelligence was on during this run: the
 plan job, a second later, added the country to the AI's view of the asset, which it does only while the
 switch is on. So step 7 would have refused the start if the active snapshot held no records. The SQL call
 bound `@EntityID=125`, `@AssetID=1166`, `@SystemIDs='[1448, 1449, 1450, 1451]'`, `@ServiceID=1546`,
-`@SectorID=183`, `@SubsectorID=199`. No Idempotency-Key was sent, so no index could refuse the
-insert; another session of the asset never clashes (D43).
+`@SectorID=183`, `@SubsectorID=199`. The `(entity_id, idempotency_key)` index refuses an insert only
+for a key another session already holds; another session of the asset never clashes (D43).
 
 **The facts that came back,** as the frozen `context` stored on the session:
 
@@ -939,7 +950,7 @@ creation, by `_new_run_record`, next to the stored values (read on 2026-10-19).
 | `counts` | the 10 counters at 0 | `planned` 51, `written` 6, `remaining` 45, `pending` 6, the rest 0, plus `controls_cancelled` and `replaced` |
 | `job` | `{task: "tsg_find_threats", epoch: 1, task_id: null, attempts: 0, due_at: 08:14:51.643, lease_until: null, resends: 0, error: null}` | `task: "tsg_write_scenarios"`, still `epoch: 1`, with the last batch's `batch` and `set` |
 | `created_at`, `updated_at` | both 08:14:51.643 | `updated_at` 08:19:57.527 |
-| `idempotency_key` | not written: no key was sent | absent |
+| `idempotency_key` | not written then: no key was sent; written now, the derived key (D51) | absent |
 | `schema_version` | `1` | `1` |
 
 `created_at` and `last_action.started_at` both read 08:14:51.643, which is the `now` the code used for every
@@ -1022,12 +1033,12 @@ flowchart TB
 2. The task `find_threats(record_id, epoch)` calls `run_leased_job(self, "tsg_sessions", record_id, epoch, plan, fields=PLAN_JOB_FIELDS)`. The job reads only `context`, `entity_id` and `asset_id` (`PLAN_JOB_FIELDS`).
 3. `_claim_or_ignore` calls `JobRepository.claim_job` (`app/data_access/jobs/job_repository.py`). This is one `find_one_and_update` with this filter:
    - `_id`, `job.epoch` and `job.task` match; and
-   - either `status=queued` and `job.due_at` ≤ now + 5 s (`Lease.CLOCK_SKEW_SECONDS`), or `status=running` with `job.lease_until` in the past (an abandoned lease).
+   - either `status=queued` and `job.due_at` ≤ now + 5 s (`Lease.CLOCK_SKEW_SECONDS`), or `status=running` with `job.lease_until` in the past (an abandoned lease), or `status=running` under this delivery's own `job.task_id` with a lower `job.task_retries` (its own retry taking back a claim whose answer was lost).
 
    "Now" is MongoDB's clock, not the pod's. Every pod reads the time through `app/core/clock.py` (`utc_now`, `epoch_seconds`), which corrects its own clock by the difference to MongoDB's, measured every minute. Pods whose clocks disagree therefore still agree on due times, leases and heartbeats (UAT, 2026-10-24: a worker 76 s behind dropped every job; `docs/UAT_CLOCK_SKEW_RUNBOOK.md`).
 
-   The update sets `status=running`, `job.task_id`, `job.lease_until` = now + 120 s (`Lease.SECONDS`) and `job.resends=0`, and adds 1 to `job.attempts`; the worker then binds the record's `job.request_id` to its log lines, so a delivery without the Celery header (a reaper or sweep re-send) still traces to the API call. An expired lease is claimed only while `job.attempts` is below 5 (`Lease.MAX_ATTEMPTS`). No match means a stale, duplicate or early delivery: it logs `job.not_claimed` with its `reason` (`not_due` with `due_in_seconds`, `missing`, `other_epoch`, `other_task`, `leased` with the holder's `job_worker`, or `status_<x>`) and ends with Celery `Ignore`.
-4. `keep_lease_alive` renews the lease every 30 s (`Lease.RENEW_EVERY_SECONDS`) from a background thread, for at most 1 hour (`Lease.MAX_JOB_SECONDS`). Every write is fenced on `_id`, `status=running`, `job.task_id`, `job.epoch` and `job.attempts` (`JobLease.fence`). A lost lease (a cancel, a delete, or another delivery taking over) raises `LeaseLost` at the next write or AI call, and the job stops without writing.
+   The update sets `status=running`, `job.task_id`, `job.task_retries` (the Celery retry count), `job.lease_until` = now + 120 s (`Lease.SECONDS`) and `job.resends=0`, and adds 1 to `job.attempts`; the worker then binds the record's `job.request_id` to its log lines, so a delivery without the Celery header (a reaper or sweep re-send) still traces to the API call. An expired lease is claimed only while `job.attempts` is below 5 (`Lease.MAX_ATTEMPTS`). No match means a stale, duplicate or early delivery: it logs `job.not_claimed` with its `reason` (`not_due` with `due_in_seconds`, `missing`, `other_epoch`, `other_task`, `leased` with the holder's `job_worker`, or `status_<x>`) and ends with Celery `Ignore`.
+4. `keep_lease_alive` renews the lease every 30 s (`Lease.RENEW_EVERY_SECONDS`) from a background thread, for as long as the job keeps checking its lease: every AI call, AI slot or rate wait, rerank turn and shared-build wait is a check. A job with no check for 15 minutes (`Lease.STALL_SECONDS`) stops renewing (`job.stalled`), and the reaper takes it over once the lease runs out. A worker told to stop (SIGTERM) hands its running jobs back after 90 s (`Worker.HAND_BACK_AFTER_SECONDS`): queued again, due now, with the attempt returned (`job.handed_back`). Every write is fenced on `_id`, `status=running`, `job.task_id`, `job.epoch` and `job.attempts` (`JobLease.fence`). A lost lease (a cancel, a delete, or another delivery taking over) raises `LeaseLost` at the next write or AI call, and the job stops without writing.
 5. `PlanJob.plan_threat_scenario_session` then does the following:
    - reads the frozen context with `FrozenContext.from_record`; SQL Server is not read again;
    - sets the country to `THREAT_CONTEXT_COUNTRY` only while the intelligence switch is on, otherwise "";
@@ -1507,7 +1518,7 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 | Case | What happens (code) |
 |---|---|
 | AI busy or down | 3 quick retries 0.5, 1 and 2 s apart (`call_with_retries`); an HTTP 429 (rate limited) waits and asks the same model again (section 15); a timeout goes straight to the fallback model (`CII_CHAT_FALLBACK_MODEL`). Still down → `Unavailable` → the job is given back and retried after 15, 30, 60 and 120 s (`Lease.RETRY_DELAYS_SECONDS`); on the 5th attempt it fails `unavailable` |
-| Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan waits for its next try. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503, no AI slot, request turn or fallback slot free in time) or `ai_timed_out`; null for a store outage. An AI outage in the evidence search (intelligence on) is told the same way. The claim of the next try, a hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
+| Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan waits for its next try. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503; a worker waits for its AI slot or request turn until its lease ends, so TSG's own limiter is never the cause here) or `ai_timed_out`; null for a store outage. A send the job queue refused is told the same way (reason null, "The queue and live-update service is unreachable.", `retry_at` the reaper's re-send 120 s on). An AI outage in the evidence search (intelligence on) is told the same way. The claim of the next try, a hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
 | Answer with problems | asked again once with the problems; still wrong on a normal attempt → `Unavailable` (job retried); on the last attempt → that batch or proposal is skipped and planning goes on (`_retry_or_skip`) |
 | Answer cut off, or prompt too long | a reply cut off at the task's `max_tokens` is asked once more at the model's full limit (section 15); still cut off, or a prompt too long → `TruncatedAiAnswer`: skipped on any attempt, never retried |
 | Delivery retried or re-sent | the gate and gap-fill answers the job already accepted are reused from `tsg_ai_calls` (5.6) |
@@ -1742,7 +1753,7 @@ flowchart TB
 | Exact match | `HybridIndex.search` | A row whose tokenized text equals the tokenized query comes first, whatever its scores | not visible in the stored search |
 | Embedding model | `CII_EMBEDDING_MODEL` (required, no default); `embed_search_queries` (`app/ai/embeddings.py`) | One call per batch for every search with at least one allowed row; query vectors cached `Cache.QUERY_VECTOR_DAYS = 14` days in `tsg_query_vectors` (only the text's hash is stored) | `openai/text-embedding-3-large` (`plan.made_with`) |
 | Reranker model | `CII_RERANK_MODEL` (required); `CII_RERANK_BASE_URL` default `""` = a local model; `RerankModel.score_relevance` (`app/ai/rerank.py`) | Remote: one 0-1 score per document, checked, × 100. Local: `CrossEncoder.predict` (a sigmoid for a one-label model) × 100, 6 documents per turn (`AiLimits.LOCAL_RERANK_TURN_DOCUMENTS`). The scorer reads `scoring_text(hit)`: a technique's name and description without its id and its Tactics / Platforms / Mitigations lists, a sub-technique's name after its parent's (for example "Unauthorized Message: Command Message"); other kinds whole | local `…/bge-reranker-v2-m3` (`intel_search.rerank_model`) |
-| Rerank parallelism | `EvidenceLimits.SEARCHES_AT_ONCE = 8`: at most 8 threads per batch (one per threat, `run_in_parallel`); `rerank_gate_for` (`app/domain/external_intelligence/rerank_gate.py`): remote `RerankGateLimits.RERANKS_AT_ONCE = 6` places and `GATE_WAIT_SECONDS = 300`; local `LOCAL_RERANKS_AT_ONCE = 1`, no time limit; the lease is checked every 2 s. `EvidenceFinder._rerank` keeps each answered rerank by snapshot, model, query and candidates (`EvidenceLimits.RERANKS_KEPT` = 2,000 per process, oldest dropped first) | A threat waiting longer than 300 s for a remote place gets `Unavailable` (its rerank also waits its turn under the reranker's own `CII_RERANK_REQUESTS_PER_MINUTE`); a lost lease ends any wait. The same rerank asked again (another path of the threat, a later set, a retry, another run) is taken from memory, with no call | batch 2: 2 threads; 1 local place |
+| Rerank parallelism | `EvidenceLimits.SEARCHES_AT_ONCE = 8`: at most 8 threads per batch (one per threat, `run_in_parallel`); `rerank_gate_for` (`app/domain/external_intelligence/rerank_gate.py`): remote `RerankGateLimits.RERANKS_AT_ONCE = 6` places, local `LOCAL_RERANKS_AT_ONCE = 1`, neither with a time limit; the lease is checked every 2 s. `EvidenceFinder._rerank` keeps each answered rerank by snapshot, model, query and candidates (`EvidenceLimits.RERANKS_KEPT` = 2,000 per process, oldest dropped first) | A threat waits for a place until one frees (its rerank also waits its turn under the reranker's own `CII_RERANK_REQUESTS_PER_MINUTE`); only a lost lease ends the wait. The same rerank asked again (another path of the threat, a later set, a retry, another run) is taken from memory, with no call | batch 2: 2 threads; 1 local place |
 | Threshold | `EVIDENCE_SIMILARITY_THRESHOLD` (`Settings.evidence_similarity_threshold`, `app/core/config.py`): code default **1.0**, range 0-100; outside dev with intelligence on it must be set or start-up stops (`refuse_unset_evidence_threshold`); `.env.example` 30 for the local bge-reranker-v2-m3, calibrated 2026-10-19 on 36 labelled threats with the clean scoring text (`EVIDENCE_THRESHOLD_CALIBRATED_ON`); UAT's qwen3 reranker needs its own value | First pass: a candidate scoring under it is left out (`below_threshold`) | **20.0** in this run (`intel_search.threshold`); 30 from now on in dev |
 | Recorded products | `RecordedFields` (`app/core/constants/evidence.py`): vendor `vendor_name`; product `technology_used`, `operating_system`; version `product_version`, `firmware_version`, `software_version` | Read from the asset's facts (`asset_context`) and each of the threat's systems (`_recorded`); used only for vulnerabilities and advisories (product link, applicability) | none of the six fields on the asset or its four systems → any vulnerability or advisory gets `no_product_link` |
 | Per threat | `EVIDENCE_KEPT_PER_THREAT` (`Settings.evidence_kept_per_threat`, `app/core/config.py`): default **3**, range 1-10; `choose_within_limit` | Best N (3 by default); then a later entry of a missing kind replaces the lowest-scored entry of a kind held more than once | 1 kept |
@@ -1893,8 +1904,7 @@ whichever path or kind of attack it is written for.
     target the session, and `after` holding `snapshot_id`, `source_versions`, `threats_searched`,
     `threats_with_evidence`, `evidence_used` and `stale`.
 13. **Outages.** An embedding outage gives every threat of the batch `failure: "evidence_search_unavailable"`; a
-    reranker outage, or a remote gate wait over 300 s (`RerankGateLimits.GATE_WAIT_SECONDS`), gives it to that
-    threat only: that search fails, so its path waits and is tried again. Another temporary error while
+    reranker outage gives it to that threat only: that search fails, so its path waits and is tried again. Another temporary error while
     the batch's search runs (for example MongoDB down when the source health is read for the stale flag, or
     when the audit row is written) sets `intel_search = {"failure": "<type>: <message>"}` on every threat. An
     error while the approved sources are read comes before this guard: it is raised and the job is retried. A failed search, or one with no snapshot,
@@ -2474,8 +2484,8 @@ asked for, left out):
 6. **The `ChatModel` wrapper**, briefly:
    - A prompt longer than the smallest `max_input_chars` raises `TruncatedAiAnswer` before any call.
    - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of `CII_MAX_CONCURRENT_AI_CALLS` (16; 0 in
-     UAT: no fixed limit, only the one a gateway 429 sets, section 15), shared by every pod. A worker waits up to
-     300 s (`AiLimits.WORKER_SLOT_WAIT_SECONDS`), else `Unavailable`.
+     UAT: no fixed limit, only the one a gateway 429 sets, section 15), shared by every pod. A worker waits for
+     its slot until its lease ends (`AiLimits.WORKER_SLOT_WAIT_SECONDS`, 86,400 s, stands for no clock).
    - Every request, each retry included, first waits its turn under its model's own limit:
      `CII_CHAT_REQUESTS_PER_MINUTE`, or the fallback's `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE` (`AiRequestRate`,
      section 15).
@@ -3026,8 +3036,14 @@ flowchart TB
      or changed by the sweep) recounts the session and publishes its status, so the run never shows
      "controls running" after the last mapping ended.
    - An outage before any claim retries the message at most 3 times (`Controls.MAX_MESSAGE_RETRIES`), then
-     stops with a log line; the sweep re-sends later. The delivery binds the run's `job.request_id`, so a
-     sweep re-send keeps it.
+     stops with a log line; the sweep re-sends later. Every outage the message retries is stored on the run
+     (`controls_delivery.retry`, fenced on the delivery lease) and shown as `progress.retrying` with stage
+     `controls` while controls wait (max_attempts 4; after the last, `retry_at` about 600 s on); the next
+     claim, hand-over, release or cancel clears it. The delivery binds the run's `job.request_id`, so a
+     sweep re-send keeps it, and maps each scenario under the request that wrote it (`controls.request_id`;
+     a card without it keeps the run's).
+   - A worker told to stop hands each scenario it still maps back after 90 s: queued, its controls attempt
+     returned, and one `tsg_map_controls` sent for the run.
    - `JobFailed` fails its controls and is raised.
    - Any other error fails only that scenario's controls (`internal_error`).
    - A lost lease skips it.
@@ -3234,13 +3250,13 @@ The rest: `status` `done`, `attempts` 1, `queued_at` 08:18:35.362 (the moment th
 > failed and is never retried by the sweep, so nothing loops forever: a plan request or a plan regenerate
 > maps those controls again.
 
-**How:** beat runs `tsg_retry_controls` on queue `tsg_maintenance` every 300 s
+**How:** beat runs `tsg_retry_controls` on queue `tsg_reaper` (worker-reaper) every 300 s
 (`Controls.SWEEP_EVERY_SECONDS`) → `ControlsJob.retry_stalled_controls` →
 `WorkControlRepository.sweep_stalled_controls` (`app/data_access/jobs/work_control_repository.py`):
 1. `settle_stopped_scenario_sessions`: waiting controls of a cancelled session become `cancelled` (never
    one a live lease holds); every scenario of a deleted session is removed.
 2. `fail_abandoned_controls`: controls still `running` with an expired lease after 5 attempts fail
-   (`job_abandoned`); only a plan request or a plan regenerate maps them again.
+   (`job_abandoned`, reason `abandoned`); only a plan request or a plan regenerate maps them again.
 3. `requeue_stalled_controls`: controls queued for over 600 s, running with an expired lease, or failed over
    1800 s ago (`Controls.RETRY_FAILED_AFTER_SECONDS`) with attempts left go back to `queued`. Attempts are
    kept.
@@ -3684,8 +3700,8 @@ In session `c21b4a67…` (7 paths planned), the next set at 03:15:59.675 found o
 | Action | Route → method | What it does | Refused with |
 |---|---|---|---|
 | Promote | `POST /v1/sessions/{id}/scenarios/{sid}/promote-to-library` → `ThreatScenarioService.promote_threat_scenario_to_library` | an accepted scenario's AI-proposed threat goes to the curators as pending (`tsg_ResolveThreat`, only for a name the library does not know). Set once (`library_promotion`); audit `library.promoted` | 409 `scenario_not_accepted`, 409 `nothing_to_promote` (a library threat), 503 while SQL Server is down |
-| Cancel | `POST /v1/sessions/{id}/cancel` → `JobService.cancel_threat_scenario_session` (`app/services/jobs/job_service.py`) | stops the job and the controls still waiting. A running job sees `LeaseLost` at its next renewal, AI call or save. Written scenarios stay readable and decidable. Audit `run.cancelled` | 409 `nothing_to_cancel` |
-| Delete | `DELETE /v1/sessions/{id}` → `JobService.delete_threat_scenario_session` | removes the session, its scenarios and their treatment plans for good. Audit `session.deleted` | 409 `cancel_first` while any of its work is queued or running |
+| Cancel | `POST /v1/sessions/{id}/cancel` → `JobService.cancel_threat_scenario_session` (`app/services/jobs/job_service.py`) | stops the job and the controls still waiting, never a plan's (a hand-written scenario's, or a plan job's live claim). A running job sees `LeaseLost` at its next renewal, AI call or save. Written scenarios stay readable and decidable. Audit `run.cancelled` | 409 `nothing_to_cancel` (also when the only waiting controls are a plan's: cancel the plan) |
+| Delete | `DELETE /v1/sessions/{id}` → `JobService.delete_threat_scenario_session` | removes the session, its scenarios and their treatment plans for good. Audit `session.deleted` | 409 `cancel_first` while any of its work is queued or running; `details.plans_to_cancel` names the plans being written (`[{remediation_id, scenario_id}]`) |
 
 ### 12.8 All review actions
 
@@ -3697,8 +3713,8 @@ In session `c21b4a67…` (7 paths planned), the next set at 03:15:59.675 found o
 | Regenerate | `POST /v1/sessions/{id}/regenerate/scenarios` | a new version of each chosen current version, written afresh; the old one is superseded only when the new one is written. 409 `version_limit_reached` at `REGENERATIONS_MAX_VERSION_COUNT` (default 10) versions | `tsg_write_scenarios` (epoch + 1); then `tsg_map_controls` |
 | Next set | `POST /v1/sessions/{id}/scenarios/next-set` | the next `NEXT_SET_SIZE` (6) open paths, best rank first. With none left it resumes controls a cancel stopped (202), else 409 `nothing_left`, `target_reached` or `scenarios_abandoned` | `tsg_write_scenarios` (epoch + 1), or `tsg_map_controls` when resuming controls |
 | Promote | `POST /v1/sessions/{id}/scenarios/{sid}/promote-to-library` | an accepted scenario's AI-proposed threat goes to the curators | - |
-| Cancel | `POST /v1/sessions/{id}/cancel` | stops queued or running work, and controls still waiting | - |
-| Delete | `DELETE /v1/sessions/{id}` | removes the session, its scenarios and plans; 409 `cancel_first` while work runs | - |
+| Cancel | `POST /v1/sessions/{id}/cancel` | stops queued or running work, and controls still waiting (never a plan's) | - |
+| Delete | `DELETE /v1/sessions/{id}` | removes the session, its scenarios and plans; 409 `cancel_first` while work runs, naming the plans being written in `details.plans_to_cancel` | - |
 
 Regenerate and next set also resume controls that a cancel stopped (`tsg_map_controls`).
 
@@ -3721,17 +3737,21 @@ flowchart LR
     VD --> RV["Review a done version: accept or reject<br/>regenerate after done, failed or cancelled, up to 10 versions"]
 ```
 
-Cancel (`POST .../cancel`) applies only while a version is queued or running.
+Cancel (`POST .../cancel`) applies only while a version is queued or running. It also cancels a hand-written
+scenario's waiting controls, gives back a generated scenario's controls the plan job holds (cancelled while
+the run's cancel stands, else queued for the run), and recounts and publishes the run.
 
 1. **Request:** `POST /v1/remediation` (202). With `is_manual=false` it needs an accepted generated
-   scenario. With `is_manual=true` it takes a **hand-written scenario** (with an `Idempotency-Key`): it is
+   scenario. With `is_manual=true` it takes a **hand-written scenario** (an `Idempotency-Key` is optional; with none, a
+   repeat in the same 60 s window is 409 `duplicate_request`): it is
    checked against the library, saved already accepted, and needs no evidence. One plan per scenario.
 2. **Job:** `tsg_write_plan` on queue `tsg_remediation` (its own worker, `worker-remediation`; leased; the version
    number is its epoch). It completes the inputs. For a
    hand-written scenario it ranks the attackers and proposes a new threat wording to the curators
    (`tsg_ResolveThreat`). If the scenario has no usable mapped controls (none, or only retired ones), it maps
    them itself, inline; when another job is mapping them, the plan job is given back and tries again 15 s later
-   (no attempt used). It
+   (no attempt used), reading `queued` meanwhile (`job.waiting`), and after an hour of waiting
+   (`Lease.MAX_WAIT_SECONDS`) it fails `job_abandoned`, reason `waited_too_long`. It
    then works out where the risk is and where each control already stands (D19, D20, D34). The request sends
    the systems once, for the whole request: `supporting_systems_applicable_to_risk` and
    `supporting_systems_applicable_to_existing_controls`, both optional (null, `""` and `[]` mean no system).
@@ -3794,7 +3814,10 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
    on 2 and 3, still needed on 1 and 4.
 5. **Later:** `GET .../treatment-plan` (and `/status`), `POST .../review` (accept or reject a version),
    `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10; a version that failed for an outage
-   is written again in place and uses no version), `.../cancel`; live updates on `.../treatment-plan/events`.
+   is written again in place and uses no version; one that meets its run's delete takes back the version it
+   added), `.../cancel`; live updates on `.../treatment-plan/events`. While no version is decided and the
+   scenario is no longer accepted, `progress.overall` reads `read_only` (review and regenerate answer 409
+   `scenario_not_accepted`).
    A hand-written request sent again with the same `Idempotency-Key` and body after an outage failure writes its
    latest version again in the same way (202). The prefix is
    `/v1/sessions/{sid}/scenarios/{scid}/treatment-plan`. Lists: `GET /v1/sessions/{sid}/treatment-plans` and
@@ -3812,12 +3835,15 @@ Cancel (`POST .../cancel`) applies only while a version is queued or running.
   replayed, an unknown outcome is reconciled, a young pending one answers 409 `operation_in_progress`.
 - **Admin** (admin key): API keys (`/v1/tsg/api-clients`) and the embeddings build (`/v1/embeddings`).
 - **External intelligence** (`/v1/tsg/intel/...`, no admin or API key, audited under `X-User-Id`): the
-  switch, the import (refresh), health, and revoking or approving a source (section 2.3).
+  switch (turning it on answers the import's `refresh_job_id`), the import (refresh), health, and revoking or
+  approving a source (section 2.3).
 - **Audit and AI logs:** `tsg_audit` is append-only and kept 365 days; it has no read route. The AI call log
   `tsg_ai_calls` is kept 14 days.
 - **Service mapper** (`docs/service_mapper/SERVICE_MAPPER.md`): one AI call per generation, on queue
   `tsg_servicemapper`. A generation that failed for an outage is tried again by a regenerate, or by the same
-  `Idempotency-Key` while that key's generation is still the latest.
+  `Idempotency-Key` while that key's generation is still the latest. With no key, a create or regenerate sent
+  again in the same 60 s window is 409 `duplicate_request`. Archived generations
+  (`tsg_service_mapping_history`) are deleted 90 days after `archived_at`.
 
 ---
 
@@ -3831,6 +3857,7 @@ stateDiagram-v2
     running --> queued: temporary error (retry in 15/30/60/120 s)
     running --> queued: hand over to the next task (same epoch)
     running --> queued: lease expired (reaper)
+    running --> queued: worker stopping hands it back (attempt returned)
     running --> done: finished
     running --> failed: 5th attempt, refusal, or unexpected error
     running --> failed: lease expired on the 5th attempt (reaper, job_abandoned)
@@ -3845,36 +3872,58 @@ stateDiagram-v2
 
 - **Save first, then send.** Every job is a record (`job.*` on the session or plan) before its message is
   sent, so a lost message is re-sent, never lost.
-- **Lease and epoch fence:** a claim sets a 120 s lease, renewed every 30 s (at most 1 hour per job). Every
+- **Lease and epoch fence:** a claim sets a 120 s lease, renewed every 30 s while the job keeps checking its
+  lease (every AI call, AI slot or rate wait, rerank turn and shared-build wait is a check). Every
   write is fenced on the record's id, `running` status, task id, epoch and attempt. A stale or duplicate
   delivery finds nothing to claim and is ignored. A delivery whose job was cancelled, deleted or taken over
-  raises `LeaseLost` at its next write or AI call, and stops without writing.
+  raises `LeaseLost` at its next write or AI call, and stops without writing. A delivery's own retry takes
+  back a claim whose answer was lost (same task id, higher `job.task_retries`).
+- **Stalled and hung jobs:** a job with no lease check for 15 minutes (`Lease.STALL_SECONDS`) stops renewing
+  and logs `job.stalled` (counted in `tsg_jobs_hung_total`); the reaper takes it over once its lease runs
+  out. A job of any length that keeps checking keeps its lease (`Lease.MAX_JOB_SECONDS` only sizes the job
+  histogram and the broker's visibility timeout). Python cannot stop a thread: one still running 10 minutes
+  (`Lease.HUNG_AFTER_SECONDS`) after its lease was lost or it stalled logs `worker.job_hung` (error), and the
+  worker stops touching its liveness file, so OpenShift restarts the pod.
+- **Hand-back on shutdown:** a worker told to stop (SIGTERM, a deploy) waits 90 s
+  (`Worker.HAND_BACK_AFTER_SECONDS`; pods get 120 s), then gives back every lease it still holds: a job
+  goes back to `queued`, due now, with the attempt returned, and is sent again under its request id
+  (`job.handed_back`); a worker-controls scenario goes back to `queued` with its controls attempt returned,
+  one `tsg_map_controls` per run. A stalled or cancelled job is not handed back. The old delivery stops at
+  its next AI call or wait. Celery itself never puts a job back (`task_reject_on_worker_lost` is off).
 - **Queue order:** each queue is two Redis lists, served in priority order. A run's next stage (`hand_over`), a
   retry and a reaper re-send go first (`Worker.NEXT_STAGE_PRIORITY`, 0); every other send waits behind them
   (`Worker.NEW_WORK_PRIORITY`, 3). So a run already started finishes before new runs take the workers.
-  `tsg_job_queue_wait_seconds{task}` records how long each claimed job waited after it was due.
+  `tsg_job_queue_wait_seconds{task, module}` records how long each claimed job waited after it was due; a
+  takeover of an expired lease counts from when that lease ran out.
 - **Retries:** temporary errors (AI outage, MongoDB or Redis down, Redis read-only after a failover
   (`READONLY`) or out of memory (`OOM`), an SQL operation in progress) give the
   job back and retry after 15, 30, 60, 120 s; the 5th attempt fails it as `unavailable`. Refusals (a
   `JobFailed`, for example `actor_library_empty`, `ai_misconfigured`, `ai_answer_unusable`) fail at once,
   never retried. A job waiting for another job's work (a plan waiting for its scenario's control mapping) is
-  given back without using an attempt and looks again every 15 s. A wait is not an outage: it logs
+  given back without using an attempt, marked `job.waiting` (it reads `queued`, and its looks are not
+  announced), and looks again every 15 s; after an hour (`Lease.MAX_WAIT_SECONDS`, counted from
+  `job.waiting_since`) it fails `job_abandoned`, reason `waited_too_long`. A wait is not an outage: it logs
   `job.waiting` (info, not the `job.retry_scheduled` warning), counts as `waiting` in `tsg_jobs_total` (never
   `retry`), adds no job time to `tsg_job_seconds` and leaves no retry notice. A retry delivered early (Celery counts its
   delay on its own pod's clock, the job's due time is MongoDB's) is sent again for its due time instead of
   dropped, when that is at most 125 s away (`Lease.RESEND_EARLY_WITHIN_SECONDS`); nothing is written, so no
   attempt is used, and the log line `job.not_claimed` says `sent_again`.
-- **Reaper** (`tsg_reap`, beat every 60 s; its message expires after 180 s, 3 times the interval, and the
-  controls sweep's likewise, so clock skew does not drop a pass): re-queues a job whose lease expired (fails it
-  after 5 attempts, `job_abandoned`; the dead delivery's `job.task_id` and `job.worker` are cleared), and
-  re-sends a job still queued after 120 s when its queue is empty (or after 15 minutes anyway). `send_job`
+- **Reaper** (`tsg_reap`, beat every 60 s, on queue `tsg_reaper` with the controls sweep, served by its own
+  `worker-reaper`, so a long index build or import never holds its thread; its message expires after 180 s,
+  3 times the interval, and the controls sweep's likewise, so clock skew does not drop a pass; a message
+  dropped that way counts `tsg_jobs_total{outcome="expired"}`): re-queues a job whose lease expired (fails it
+  after 5 attempts, `job_abandoned` with reason `abandoned`; the dead delivery's `job.task_id` and
+  `job.worker` are cleared), and re-sends a job still queued after 120 s when its queue is empty (or after 15
+  minutes anyway); after 5 sends that never started it, `job_abandoned` with reason `never_started`. `send_job`
   returns True when the broker took the message, False when it did not; the reaper counts `job.resends` only
   for a re-send that was sent, so a job fails as never started only after 5 sends that reached Redis. Its log
   lines name the dead job's own `task_id`, `worker`, `epoch` and `request_id`, not the reaper's.
 - **Redis client:** no hidden retries (redis-py's default retries with backoff are off); a call fails after
   its timeout, so a best-effort call never blocks for seconds.
-- **Shared library build:** the library index build that several jobs wait on runs outside any job's lease:
-  one job's cancel stops only that job, never the others waiting on the same build.
+- **Shared library build:** the library index build that several jobs wait on runs in its own thread, outside
+  any job's lease: one job's cancel stops only that job, never the others waiting on the same build. Every
+  waiter, the one that started the build included, checks its own lease every second (`wait_while_leased`),
+  so it sees its cancel within a second.
 - **AI calls:** LiteLLM for chat and embeddings, and for rerank when `CII_RERANK_BASE_URL` is set (empty in
   dev: a local rerank model). In UAT one gateway key serves chat, embedding and rerank
   for every pod, and each model has its own requests-a-minute limit on it (kimi-k2.5: 192).
@@ -3883,10 +3932,12 @@ stateDiagram-v2
     model, `tsg:ai_next_request:{model}`, timed by the Redis server's clock), so one model's queue never delays
     another's. `CII_CHAT_REQUESTS_PER_MINUTE` (UAT: 180, a margin under kimi-k2.5's 192, assuming nothing else
     uses kimi on the key), `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
-    `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0 until the gateway admin gives each model's limit). A turn further
-    away than the process waits (a worker 300 s, the API 30 s) is an outage (`ai_busy`); a job whose lease is
-    lost stops waiting. `tsg_ai_request_rate_wait_seconds{model}` records every request's wait, 0 included.
-    0 = no limit.
+    `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0 until the gateway admin gives each model's limit). The API waits at
+    most 30 s for its turn, else an outage (`ai_busy`); a worker waits until its lease ends (a cancel, or the
+    reaper taking over a stalled job). `tsg_ai_request_rate_wait_seconds{model}` records every request's wait,
+    0 included. 0 = no limit. A Redis error while a turn is reserved (Redis down, hung, or refusing writes)
+    lets the request go ahead unspaced, logged once as `ai.slots_untracked`, and leaves Redis alone for 30 s
+    (`REDIS_SKIP_SECONDS`).
   - **At once:** at most `CII_MAX_CONCURRENT_AI_CALLS` calls across all pods (Redis slots, `tsg:ai_slots`): 16
     by default, 0 in UAT: no fixed limit, so each model's request rate is the limit until the gateway answers
     429.
@@ -3899,16 +3950,25 @@ stateDiagram-v2
     - **Leased slots:** each call's slot is a 60 s lease that its process renews every 20 s
       (`AiLimits.SLOT_LEASE_SECONDS`, `SLOT_RENEW_SECONDS`), so a pod killed mid-call stops counting within a
       minute.
+    - **Waiting line:** while a cap or a 429's limit is in force, a freed slot goes to the first caller in a
+      Redis line (`<slots key>:line`, `:line_polls`, in `TAKE_FREE_SLOT_SCRIPT`). A caller's place is its first
+      poll plus its wait, so the API's callers (30 s) go before workers, each in arrival order. A worker waits
+      for its slot until its lease ends (`AiLimits.WORKER_SLOT_WAIT_SECONDS`, 86,400 s, stands for no clock). A
+      caller refused on its last try leaves the line at once; one that stops polling leaves after 5 s
+      (`SLOT_WAITER_STALE_SECONDS`). Polls back off to at most 0.25 s apart (`SLOT_MAX_PAUSE_SECONDS`). With no
+      cap and no limit there is no line.
     - **Redis IO:** an answered call costs two Redis round trips (take; free, which also raises a 429's limit).
       A request that no model answered never raises the limit. At cap 0, a Redis failure makes the call
-      limiter (the slots) skip Redis for 30 s (`REDIS_SKIP_SECONDS`). A model's request-rate turn still asks
-      Redis on every request.
+      limiter (the slots) skip Redis for 30 s (`REDIS_SKIP_SECONDS`). At a fixed cap, a Redis error from the
+      slots is `Unavailable` ("The queue and live-update service is unreachable."): the cap still holds, no
+      call is made, and the job retries it as an outage.
     - **Gauges:** `tsg_ai_slots_in_use` and `tsg_ai_slots_cap` (the limit in force:
       `CII_MAX_CONCURRENT_AI_CALLS` or the one a gateway 429 set, the lower; 0 = none) show NaN when Redis
       cannot say.
-    - **Source label:** a call refused by TSG's own limiter (no slot or request turn within the wait) is an
-      `ai_busy` outage counted with `source="limiter"` in `tsg_ai_outages_total`; the gateway's own refusals
-      carry `source="gateway"`, and only those raise the `AiNotAnswering` alert.
+    - **Source label:** a call refused by TSG's own limiter (no slot or request turn within the wait: an API
+      call, since a worker waits until its lease ends) is an `ai_busy` outage counted with `source="limiter"`
+      in `tsg_ai_outages_total`; the gateway's own refusals carry `source="gateway"`, and only those raise the
+      `AiNotAnswering` alert.
   - **Busy or down:** three quick retries (0.5, 1, 2 s) when the provider is busy or unreachable or the answer
     came back short. An HTTP 429 (rate limited, counted in `tsg_ai_rate_limited_total{model}`) asks the same
     model again, since the fallback takes 55-99 s: after 2, 5, 10 and 15 s (±20 %), or after its Retry-After
@@ -3931,7 +3991,9 @@ stateDiagram-v2
   - **Embeddings:** processes building the same index at once share its batches: each sends them in its own
     order and skips a batch another process has already stored.
 - **Cancel and delete** are fenced the same way: a cancel stops the job at its next renewal, AI call or save;
-  a delete is refused with 409 `cancel_first` while anything of the session is queued or running.
+  its later writes (the run's summary, a finished run's `cancelled` stamp) land only on the job it stopped,
+  so a next set queued meanwhile keeps running. A delete is refused with 409 `cancel_first` while anything of
+  the session is queued or running; `details.plans_to_cancel` names each plan being written.
 
 ---
 
@@ -3939,12 +4001,16 @@ stateDiagram-v2
 
 - **Health:** `GET /health` (always 200) and `GET /ready` (200 when MongoDB answers; Redis, SQL Server and
   the live workers of each routed queue, `tsg_threats`, `tsg_scenarios`, `tsg_controls`, `tsg_remediation`,
-  `tsg_servicemapper` and `tsg_maintenance`, are reported in the body but never fail it, so a Redis outage or
-  a queue without a worker does not take the API out of service). Workers send a heartbeat to Redis every
-  20 s, and at start and at every heartbeat touch `/tmp/tsg-worker-alive` (`Worker.LIVENESS_FILE`), whether
-  the Redis write worked or not. OpenShift's worker liveness probe fails when that file is older than 180 s
-  (`Worker.LIVENESS_MAX_AGE_SECONDS`); the startup probe waits for the file. No probe uses the broker, so a
-  Redis outage does not restart the workers.
+  `tsg_servicemapper`, `tsg_maintenance` and `tsg_reaper`, are reported in the body but never fail it, so a
+  Redis outage or a queue without a worker does not take the API out of service). Workers send a heartbeat to
+  Redis every 20 s, and at start and at every heartbeat touch `/tmp/tsg-worker-alive` (`Worker.LIVENESS_FILE`),
+  whether the Redis write worked or not. OpenShift's worker liveness probe fails when that file is older than
+  180 s (`Worker.LIVENESS_MAX_AGE_SECONDS`); the startup probe waits for the file. No probe uses the broker, so
+  a Redis outage does not restart the workers. A worker with a hung job thread (`worker.job_hung`, section 15)
+  stops touching the file, so the probe restarts its pod. Each heartbeat also checks the worker's own MongoDB
+  and Redis (at most a 5 s wait) and exports `tsg_dependency_up` on its metrics port. At start, the API and
+  every worker log `mongodb.topology` (with the client's `write_concern`) and `redis.eviction_policy` (an error
+  unless `noeviction`).
 - **Logs:** one JSON line per event (structlog) to stdout, secrets masked; Celery's and the libraries' lines
   too, a traceback inside its line; locally also to `logs/<role>.log`. Alloy ships them to Loki (kept 7 days).
   Every API call writes one `http.request` line (path, status, time, caller, request id; for an error, the
@@ -3955,33 +4021,43 @@ stateDiagram-v2
   Error text (exception messages, `error` and `message` fields) is redacted before it is written. AI lines
   name the AI step `ai_task` (the job's `task` stays the Celery task), and the limiter's lines `limiter`.
 - **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; locally
-  the maintenance worker uses 9102, the service-mapper worker 9103, and 9101 is the VS Code debug worker's):
-  HTTP requests, jobs by task and outcome, how long each job ran (`tsg_job_seconds`, buckets up to 3600 s)
+  the maintenance worker uses 9102, the service-mapper worker 9103, the reaper worker 9104, and 9101 is the
+  VS Code debug worker's): HTTP requests, jobs by task, module and outcome (`expired`: a timer message
+  dropped after its expiry), jobs stopped as stalled (`tsg_jobs_hung_total`), when the reaper last started and
+  finished a pass (exported only by the reaper's process, from its first pass), how long each job ran (`tsg_job_seconds`, buckets up to 3600 s)
   and waited in its queue (`tsg_job_queue_wait_seconds`, the same top bucket), runs, scenarios by outcome, decisions, plans, AI calls, AI outages by
   reason and source (`tsg_ai_outages_total`: `gateway`, or `limiter` for TSG's own limiter), HTTP 429 answers
   (`tsg_ai_rate_limited_total`), each request's wait for its model's turn
   (`tsg_ai_request_rate_wait_seconds{model}`), tokens and seconds, dependencies up, workers online, AI slots,
   audit and library-check failures.
 - **Alerts** (`observability/prometheus/rules.yml`): API errors, API bugs (500) and latency, failing jobs, the
-  reaper, queue backlog and unknown queue depth, missing workers, stores down, the AI error rate, the AI not
+  reaper not started (`ReaperNotRunning`, from its last start) or started but not finishing a pass
+  (`ReaperFailing`), timer jobs dropped as expired (`ScheduledJobsExpiring`), a job stopped as stalled
+  (`JobHung`), lost log lines (`LogLinesLost`), queue backlog and unknown queue depth, missing workers, stores
+  down (`MongoDown`, `RedisDown`, naming the API or a worker), the AI error rate, the AI not
   answering (by reason), AI slots saturated and a model's AI requests waiting long for their turn, audit-write and library-check failures, scrape targets down,
   Redis evicting keys, jobs retrying a lot, a long queue wait (p95 of `tsg_job_queue_wait_seconds`), and
   pods (not starting, restarting, out of memory). Failing jobs count admin builds
   (`tsg_build_library_indexes`) and leave out the timer tasks (`tsg_retry_controls`, the scheduled
   intelligence refresh). Each has a plain summary and a description saying what
-  to do. Alertmanager has no receiver yet.
+  to do. Alertmanager emails them: through the company mail relay (`company-smtp`) or Gmail (`gmail`,
+  smtp.gmail.com:587), whichever the one `route.receiver` line names; the passwords are files from Secret
+  `tsg-monitoring`. In UAT an alert names a pod as `<project>/<pod>`.
 - **Seeing jobs:** `GET /v1/admin/jobs` (admin key) lists every job of every kind (runs, plans, service
   mappings, intelligence refreshes, embeddings builds) with its `module` (threat_scenarios, remediation,
   service_mapper, external_intelligence, library_embeddings, maintenance), its status, the retry it waits for, its error and
   the worker running it, its `request_id`, `lease_until` and `resends`, plus each queue's waiting messages
   and workers online (a Redis outage leaves the counts empty, never a 503); filter with `module`, `status`,
-  `kind`, `hours` and `request_id`. Workers are named by module (`scenarios@`, `mapper@`, `maintenance@`), so each
+  `kind`, `hours` and `request_id`. Workers are named by module (`scenarios@`, `mapper@`, `maintenance@`, `reaper@`), so each
   writes `logs/worker-<name>.log`. Each task logs `job.started` and `job.finished` (outcome, seconds) with its `record_id`, its
   `worker` and the `request_id` of the API call that sent it (stored on the record as `job.request_id` and
   bound at the claim, so every later stage and every re-send keeps it): searching that id in Loki (or
-  `scripts/debug_tools.py find <id>`) shows the API call and all its worker lines. The reaper also fails an
-  admin job still running an hour after it started (`started_at`; time queued does not count), and sets `tsg_jobs_current{kind,status}` for Grafana's "Jobs now"
-  panel.
+  `scripts/debug_tools.py find <id>`) shows the API call and all its worker lines; a control mapping logs
+  under the request that wrote its scenario. The reaper also fails an admin job (an index build or an import)
+  whose heartbeat (`lease_until`, renewed every 30 s while it runs) ran out, reason `abandoned`, or that never
+  started an hour after it was created, reason `never_started`: a crashed one fails in about 3 minutes and is
+  not run again. It also sets `tsg_jobs_current{kind,status}` for Grafana's "Jobs now" panel, which reads only
+  the worker whose reaper pass is newest.
 - **Dashboards:** Grafana's home, "TSG — is everything working?", for operations, support and developers:
   a green/red tile for every part (API, each worker queue, beat, MongoDB, SQL Server, Redis, the AI service,
   log collection, alerting) and the problems now; counts and lists of errors and exceptions, warnings, failed
@@ -3990,21 +4066,24 @@ stateDiagram-v2
   Celery tasks.
 - **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the job worker
   (`tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation`), the service-mapper worker (`tsg_servicemapper`), the
-  maintenance worker and beat, starts the monitoring tools, and waits for `/ready`. `.\run.ps1 stop` stops them
+  maintenance worker (`tsg_maintenance`), the reaper worker (`tsg_reaper`) and beat, starts the monitoring
+  tools, and waits for `/ready`. `.\run.ps1 stop` stops them
   cleanly.
 - **OpenShift:** plain YAML applied with `oc apply -f` (D25). `deploy/deploy_threatgen.yaml` runs the API
   (2 replicas), one worker per queue and beat in project `ai-threatgen`; `deploy/deploy_remediation.yaml` adds a
   twin of every worker in project `ai-remediation`. The workers (D29; threads, CPU and memory limits):
   `worker-threats` 2, 1 CPU, 1536Mi; `worker-scenarios` 2, 1 CPU, 2Gi (the only one holding the evidence
   index); `worker-controls` 1, 250m, 1Gi; `worker-remediation` 2, 500m, 1Gi; `worker-service-mapper` 2, 500m,
-  1Gi; `worker-maintenance` 3, 250m, 1536Mi; the API 750m, 1Gi each, beat 200m, 512Mi. The image runs numpy's maths
+  1Gi; `worker-maintenance` 3, 150m, 1536Mi; `worker-reaper` 2, 100m, 384Mi; the API 750m, 1Gi each, beat
+  200m, 512Mi. The image runs numpy's maths
   libraries on one thread (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, `Dockerfile`). `deploy/deploy_common.yaml` runs the monitoring and
   Flower in project `ai-common`, which TSG shares with the chatbot (D24), and the monitoring proxy (nginx, 50m and
   64Mi, requests = limits) in `ai-threatgen`: Grafana and Flower are on the API's host at `/grafana` and `/flower`,
   without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus,
   Alertmanager and Loki have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
   (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
-  (Secret `tsg-secrets`, copied from `deploy/secrets.example.yaml`, never committed); network rules are
+  (Secret `tsg-secrets`, one Redis login per part, `tsg-redis-<part>`, and `tsg-monitoring`, copied from
+  `deploy/secrets.example.yaml`, never committed); network rules are
   `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
   settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each project's rollouts awaited by their `part-of` label.
   `deploy/DEPLOYMENT_GUIDE.md` has every step and check.
@@ -4068,6 +4147,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `CII_MAX_CONCURRENT_FALLBACK_CALLS` | 0, no limit (UAT: 16) | calls at once to the fallback chat model, all pods |
 | `CII_CHAT_MODEL`, `CII_CHAT_FALLBACK_MODEL` | - | the chat model and its fallback |
 | `CII_CHAT_MODEL_THINKING`, `CII_CHAT_FALLBACK_MODEL_THINKING` | false | each chat model's thinking (LiteLLM gateway models): false = off |
+| `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |
 
 ---
 
