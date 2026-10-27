@@ -918,11 +918,11 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     assert _records().find_one({"_id": retried})["job"]["resends"] == 0
 
 
-def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_job_that_stops_checking_its_lease_stops_renewing_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hung job (a deadlock, an endless loop) stops renewing, so the reaper takes it over, and makes no more
     AI calls meanwhile."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
-    monkeypatch.setattr(jobs.Lease, "MAX_JOB_SECONDS", 0.1)
+    monkeypatch.setattr(jobs.Lease, "STALL_SECONDS", 0.1)
     renewals: list[int] = []
     lease = SimpleNamespace(record_id="hung", renew=lambda: renewals.append(1) or True)
     with jobs.keep_lease_alive(lease):  # type: ignore[arg-type]

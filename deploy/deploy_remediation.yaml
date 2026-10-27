@@ -19,7 +19,7 @@
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- workers: one Deployment per queue
-# A stopped worker loses nothing: once its job's lease runs out, the reaper re-sends the job to another worker.
+# A stopping worker hands its unfinished jobs back to the queue (no attempt used); a crashed one's go back via the reaper.
 ---
 apiVersion: apps/v1                              # Deployment API version
 kind: Deployment                                 # keeps one threat-finding worker running

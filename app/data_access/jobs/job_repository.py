@@ -23,7 +23,14 @@ from app.core.logging import current_request_id
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
 #: What a claim reads of every job: its lease carries them, with the task's own fields.
-_CLAIM_FIELDS = ("job.attempts", "job.due_at", "job.lease_until", "job.request_id", "job.waiting")
+_CLAIM_FIELDS = (
+    "job.attempts",
+    "job.due_at",
+    "job.lease_until",
+    "job.request_id",
+    "job.waiting",
+    "job.waiting_since",
+)
 
 
 def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[str, Any]:

@@ -89,7 +89,7 @@ class Realtime:
 class Worker:
     THREADS: Final = 4  # tasks at once when a worker's command names none: each Deployment's -c sets its own
     BROKER_KEY_PREFIX: Final = "tsg:"  # every Celery key in Redis: v1 must not share the Redis database
-    BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS: never redelivered
+    BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS; a claim drops a copy
     HEARTBEAT_SECONDS: Final = 20  # each worker pod tells /ready "alive" this often
     ONLINE_WITHIN_SECONDS: Final = 60  # /ready counts a worker only if its last beat is this recent
     HEARTBEAT_KEY: Final = "tsg:workers:{queue}"  # sorted set: member = worker hostname, score = last beat
@@ -97,6 +97,7 @@ class Worker:
     LIVENESS_MAX_AGE_SECONDS: Final = 180  # the probe fails when the file is older: hung or dead
     NEXT_STAGE_PRIORITY: Final = 0  # next stages, retries, the reaper's re-sends: Redis serves 0 first
     NEW_WORK_PRIORITY: Final = 3  # every other send; its list is <queue>\x06\x163, which old pods read too
+    HAND_BACK_AFTER_SECONDS: Final = 90  # a stopping worker queues its unfinished jobs again (pods get 120 s)
 
 
 class Lease:
@@ -106,7 +107,10 @@ class Lease:
     MAX_ATTEMPTS: Final = 5  # then the record is failed with job.error
     REQUEUE_QUEUED_AFTER_SECONDS: Final = 120
     RESEND_ANYWAY_AFTER_SECONDS: Final = 900  # a job queued this long is sent again even behind a backlog
-    MAX_JOB_SECONDS: Final = 3_600  # a job running this long stops renewing, so a hung job is taken over
+    MAX_JOB_SECONDS: Final = 3_600  # the run time job metrics are sized for; a longer job keeps its lease
+    STALL_SECONDS: Final = 900  # a job with no AI call or wait check this long is hung: it stops renewing
+    HUNG_AFTER_SECONDS: Final = 600  # its thread still running this long after its lease is lost: pod restart
+    MAX_WAIT_SECONDS: Final = 3_600  # a job waiting this long for another job is failed
     RETRY_DELAYS_SECONDS: Final = (15, 30, 60, 120)  # wait before retrying after an outage, by attempt
     CLOCK_SKEW_SECONDS: Final = 5  # a claim accepts a job due this much later than the pod's clock
     RESEND_EARLY_WITHIN_SECONDS: Final = RETRY_DELAYS_SECONDS[-1] + CLOCK_SKEW_SECONDS  # retry early: re-sent

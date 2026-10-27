@@ -76,6 +76,7 @@ class ErrorMessage(StrEnum):
     )
     JOB_ABANDONED = "The job stopped responding {attempts} times and was given up."
     JOB_NEVER_STARTED = "The job was sent {sends} times and never started, so it was given up."
+    JOB_WAITED_TOO_LONG = "The job waited {minutes} minutes for another job to finish and was given up."
     WORKER_METRICS_PORT_BUSY = (
         "Worker metrics port {port} is in use: set CII_WORKER_METRICS_PORT to a free port."
     )

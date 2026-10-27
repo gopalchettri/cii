@@ -14,7 +14,7 @@ RUNS = Counter("tsg_runs_total", "Runs started", ["kind"])
 SCENARIOS = Counter("tsg_scenarios_total", "Scenario paths settled, by outcome", ["outcome"])
 DECISIONS = Counter("tsg_decisions_total", "Scenarios newly accepted or rejected by reviewers", ["decision"])
 PLANS = Counter("tsg_plans_total", "Remediation plan versions settled, by outcome", ["outcome"])
-#: Up to Lease.MAX_JOB_SECONDS (3600 s), the longest a job may run.
+#: Up to Lease.MAX_JOB_SECONDS (3600 s); a job still working after that lands in +Inf.
 JOB_SECONDS = Histogram(
     "tsg_job_seconds",
     "Background job duration",

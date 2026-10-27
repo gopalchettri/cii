@@ -1,10 +1,5 @@
-"""Leased background jobs: one owner per job at a time, and retries after outages (the reaper that repairs
-abandoned jobs is app/worker/reaper.py).
-
-A job lives on its MongoDB record (`status`, `job.*`; read and written by
-app/data_access/jobs/job_repository.py). A delivery claims it with a time-limited lease, renews the lease
-while it works, and writes only while it still owns it. If the worker dies, the lease runs out and the
-reaper hands the job to another delivery."""
+"""Leased background jobs on MongoDB records (`status`, `job.*`): a delivery claims a job with a lease, renews
+it while it works and writes only while it owns it; outages retry it, the reaper takes over lost jobs."""
 
 import contextlib
 import math
@@ -42,7 +37,7 @@ from app.core.exceptions import (
 from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields, retry_notice
 from app.realtime.publisher import publish_mapping_status, publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
-from app.worker.lease_renewal import keep_lease_alive
+from app.worker.lease_renewal import handed_back_at_shutdown, keep_lease_alive
 
 log = structlog.get_logger(__name__)
 
@@ -73,6 +68,7 @@ def hand_over(lease: JobLease, next_task: TaskName, changes: dict[str, Any] | No
             "job.attempts": 0,
             "job.lease_until": None,
             "job.retry": None,
+            "job.waiting_since": None,  # the next stage waits on its own clock
         }
     )
     send_job(next_task, lease.record_id, lease.epoch, priority=Worker.NEXT_STAGE_PRIORITY)
@@ -142,7 +138,7 @@ def run_leased_job(
     if not lease.record["job"].get("waiting"):
         publish(record_id)
     try:
-        with keep_lease_alive(lease):
+        with keep_lease_alive(lease), handed_back_at_shutdown(task.name, lease):
             work(lease)
     except LeaseLost:
         _end_lost_delivery(collection, record_id)
@@ -257,14 +253,21 @@ def _wait_for_other_job(
     task: Task, lease: JobLease, exc: WaitingForAnotherJob, collection: Collection
 ) -> NoReturn:
     """Another job holds what this one needs, a normal step and not an outage: give the job back with no
-    attempt used and no retry notice, marked waiting (it reads queued, and its looks are not announced),
-    and look again after the first back-off delay. Raises JobWaiting, or ends the delivery when the job is
-    no longer its own."""
+    attempt used and no retry notice, marked waiting (it reads queued, its looks not announced), and look
+    again after the first back-off delay; after waiting Lease.MAX_WAIT_SECONDS it fails. Raises JobWaiting
+    or JobFailed, or ends a delivery that lost its job."""
+    now = utc_now()
+    since = lease.record["job"].get("waiting_since") or now
+    if (waited := now - since) >= timedelta(seconds=Lease.MAX_WAIT_SECONDS):
+        message = ErrorMessage.JOB_WAITED_TOO_LONG.format(minutes=round(waited.total_seconds() / 60))
+        _fail_or_end(lease, collection, ErrorCode.JOB_ABANDONED, message)
+        JOB_COLLECTIONS[collection](lease.record_id)
+        raise JobFailed(ErrorCode.JOB_ABANDONED, message) from exc
     # ponytail: polls at the first back-off (cheap); wake waiters if many ever wait
     delay = Lease.RETRY_DELAYS_SECONDS[0]
-    due_at = utc_now() + timedelta(seconds=delay)
     waiting = {"job.attempts": lease.attempts - 1, "job.retry": None, "job.waiting": True}
-    if not _give_back(lease, due_at, waiting):
+    waiting["job.waiting_since"] = since
+    if not _give_back(lease, now + timedelta(seconds=delay), waiting):
         _end_lost_delivery(collection, lease.record_id)
     log.info(LogEvent.JOB_WAITING, record_id=lease.record_id, delay_seconds=delay, message=str(exc))
     if not lease.record["job"].get("waiting"):  # only the wait's start is news
@@ -287,9 +290,6 @@ def _give_back(lease: JobLease, due_at: datetime, changes: dict[str, Any]) -> bo
 
 
 def _retry_later(task: Task, exc: Exception, delay: int) -> Exception:
-    """Celery's own retry, with no limit of its own (task_annotations in app/worker/celery_app.py). Its count
-    is per message and also grows with the retries of an unclaimed delivery (MongoDB down at claim), so any
-    Celery limit could end an owned job early: counted as a failure while the record still waited to run. The
-    real limit is Lease.MAX_ATTEMPTS, counted on the record; an unclaimed delivery waits for MongoDB, 15 s
-    apart. Sent ahead of new work: Celery would copy the message's own priority, behind the whole backlog."""
+    """Celery's own retry, sent ahead of new work, with no Celery limit: Lease.MAX_ATTEMPTS on the record is
+    the limit (Celery's per-message count also grows while MongoDB is down at claim; celery_app.py)."""
     return task.retry(countdown=delay, exc=exc, priority=Worker.NEXT_STAGE_PRIORITY)

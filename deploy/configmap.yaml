@@ -2478,8 +2478,8 @@ data:                                            # one key per file
                             "text": "A job could not renew its lease",
                             "index": 14
                           },
-                          "job.too_long": {
-                            "text": "A job ran too long and was stopped",
+                          "job.stalled": {
+                            "text": "A job made no progress for 15 minutes",
                             "index": 15
                           },
                           "job.send_failed": {
@@ -2995,8 +2995,8 @@ data:                                            # one key per file
                             "text": "A job could not renew its lease",
                             "index": 14
                           },
-                          "job.too_long": {
-                            "text": "A job ran too long and was stopped",
+                          "job.stalled": {
+                            "text": "A job made no progress for 15 minutes",
                             "index": 15
                           },
                           "job.send_failed": {

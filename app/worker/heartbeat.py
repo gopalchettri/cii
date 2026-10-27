@@ -13,12 +13,13 @@ from pathlib import Path
 import structlog
 
 from app.core.clock import epoch_seconds
-from app.core.constants import Dependency, LogEvent, Worker
+from app.core.constants import Dependency, Lease, LogEvent, Worker
 from app.core.database import get_redis_client
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS
 from app.core.readiness import check_stores
 
 log = structlog.get_logger(__name__)
+_hung = threading.Event()  # a job thread ignored its lost lease: the liveness file is no longer touched
 
 #: The stores every worker uses; SQL Server is left out: not every worker reads it, so SqlDown would lie.
 _WORKER_STORES = (Dependency.MONGO, Dependency.REDIS)
@@ -55,7 +56,8 @@ class WorkerHeartbeat:
 
     def _beat_until_stopped(self) -> None:
         while True:
-            _touch_liveness_file()  # first and whatever Redis does: the pod's liveness probe reads its age
+            if not _hung.is_set():  # first and whatever Redis does: the pod's liveness probe reads its age
+                _touch_liveness_file()
             try:
                 self.beat()
             except Exception:  # noqa: BLE001 — ANY Redis error (failover read-only, OOM, auth…) must not end
@@ -64,6 +66,13 @@ class WorkerHeartbeat:
             check_stores(_WORKER_STORES)  # MongoDown/RedisDown see this worker; never raises, waits <= 5 s
             if self._stopped.wait(Worker.HEARTBEAT_SECONDS):
                 return
+
+
+def mark_worker_hung(record_id: str) -> None:
+    """A job thread still runs long after losing its lease, and no thread can be killed: the liveness probe
+    restarts this pod, whose other jobs are handed back (lease_renewal.py)."""
+    log.error(LogEvent.WORKER_JOB_HUNG, record_id=record_id, seconds=Lease.HUNG_AFTER_SECONDS)
+    _hung.set()
 
 
 def _touch_liveness_file() -> None:

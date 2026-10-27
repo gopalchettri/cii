@@ -11,7 +11,7 @@ import structlog
 
 from app.ai import EmbeddingModel
 from app.core.constants import EMBEDDING_SOURCE_TABLE, Cache, EmbeddingCorpus, LogEvent
-from app.core.lease_signal import context_without_lease, start_thread_without_lease
+from app.core.lease_signal import start_thread_without_lease, wait_while_leased
 from app.models.library.library import (
     LibraryActor,
     LibraryControl,
@@ -75,35 +75,36 @@ class _SnapshotKeeper:
             if builds_it:
                 building = self._building = (library, Future())
         # The build is every waiter's: under no caller's lease, so one job's cancel never fails the others.
+        if builds_it and building is not None:
+            start_thread_without_lease("library-indexes", self._build_and_share, *building)
         if current is not None and not wait:
-            if builds_it and building is not None:
-                start_thread_without_lease("library-indexes", self._build_and_share, *building)
             return current
         assert building is not None
-        if builds_it:
-            context_without_lease().run(self._build_and_share, *building)
-        return building[1].result()
+        return wait_while_leased(building[1])  # a waiter's own cancel ends its wait, not the build
 
     def _build_and_share(self, library: LoadedLibraries, outcome: Future[LibrarySnapshot]) -> None:
+        """Builds in its own thread and hands the snapshot or its error to every waiting caller, once the
+        build is forgotten: a caller arriving after its end starts a new one."""
         try:
             snapshot = self._build(library)
-        except BaseException as exc:  # noqa: BLE001 — handed to every waiting caller, raised by result()
-            outcome.set_exception(exc)
-            if not isinstance(exc, Exception):
-                # An interrupt still ends this thread; its waiting callers got it instead of waiting for ever.
-                raise
-            self._retry_at = time.monotonic() + Cache.LIBRARY_STAMP_EVERY_SECONDS
-            log.warning(LogEvent.LIBRARY_INDEXES_BUILD_FAILED, error=str(exc), exc_info=True)
+        except BaseException as exc:  # noqa: BLE001 — an interrupt too: no waiting caller waits for ever
+            if isinstance(exc, Exception):
+                self._retry_at = time.monotonic() + Cache.LIBRARY_STAMP_EVERY_SECONDS
+                log.warning(LogEvent.LIBRARY_INDEXES_BUILD_FAILED, error=str(exc), exc_info=True)
+            self._forget_build(outcome)
+            outcome.set_exception(exc)  # raised by every caller's wait
         else:
             # Kept only while it is still the current library: a slow build of an older version must never
             # replace a newer snapshot (its callers still get the snapshot they asked for).
             if library is self._library.get_loaded_libraries():
                 self._current = snapshot
+            self._forget_build(outcome)
             outcome.set_result(snapshot)
-        finally:
-            with self._lock:
-                if self._building is not None and self._building[1] is outcome:
-                    self._building = None
+
+    def _forget_build(self, outcome: Future[LibrarySnapshot]) -> None:
+        with self._lock:
+            if self._building is not None and self._building[1] is outcome:
+                self._building = None
 
 
 class _SnapshotBuilder:

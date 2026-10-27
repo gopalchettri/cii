@@ -12,14 +12,16 @@ from celery.concurrency import get_implementation
 from prometheus_client import start_http_server
 
 from app.core import metrics
-from app.core.constants import ErrorMessage, LogEvent, TaskName, module_of
+from app.core.constants import ErrorMessage, LogEvent, TaskName, Worker, module_of
 from app.core.database import get_mongodb, get_stored_procedure_client
+from app.core.lease_signal import start_thread_without_lease
 from app.core.logging import configure_logging
 from app.core.readiness import log_mongodb_topology
 from app.worker.celery_app import REQUEST_ID_HEADER, queue_of, settings
 from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
 from app.worker.jobs import JOB_COLLECTIONS, JobWaiting
+from app.worker.lease_renewal import hand_back_running_jobs
 
 log = structlog.get_logger(__name__)
 
@@ -169,6 +171,13 @@ def record_expired_delivery(sender: Task, request: Any = None, expired: bool = F
         metrics.count_job(sender.name, "expired")
         job = {"task": sender.name, "module": module_of(sender.name), "task_id": getattr(request, "id", None)}
         log.warning(LogEvent.JOB_FINISHED, outcome="expired", **job)
+
+
+@signals.worker_shutting_down.connect
+def hand_back_jobs_when_stopping(**_: object) -> None:
+    """A stopping worker queues the jobs still running Worker.HAND_BACK_AFTER_SECONDS later again, no attempt
+    used, before its pod is killed. In a thread: Celery sends this signal from its OS signal handler."""
+    start_thread_without_lease("hand-back", hand_back_running_jobs, Worker.HAND_BACK_AFTER_SECONDS)
 
 
 @signals.worker_shutdown.connect

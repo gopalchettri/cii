@@ -269,13 +269,15 @@ class LogEvent(StrEnum):
     JOB_FAILED = "job.failed"
     JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
     JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback
-    JOB_TOO_LONG = "job.too_long"
+    JOB_STALLED = "job.stalled"  # no lease check for Lease.STALL_SECONDS: it stopped renewing its lease
+    JOB_HANDED_BACK = "job.handed_back"  # a stopping worker queued its running job again, no attempt used
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"
+    WORKER_JOB_HUNG = "worker.job_hung"  # a job thread ignored its lost lease: the liveness probe restarts it
     WORKER_NONE_ONLINE = "worker.none_online"
     WORKERS_UNKNOWN = "worker.count_unknown"
     EVENT_PUBLISH_FAILED = "event.publish_failed"
