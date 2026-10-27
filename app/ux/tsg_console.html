@@ -987,16 +987,8 @@ $(function () {
         setSession(r.session_id); gotoTab("scenarios");
       })
       .fail(function (e) {
-        var other = e.details && e.details.active_session_id;
-        if (e.reason === "active_session_exists" && other) {
-          openModal("This asset already has a running assessment",
-            "<p>One active run per asset: a unique partial index on <code>{entity_id, asset_id}</code> where <code>active: true</code> " +
-            "refused the insert (stage 1.5).</p><p class=\"muted mono\">" + esc(other) + "</p>",
-            [{ text: "Open that session", cls: "primary", click: function () { closeModal(); setSession(other); gotoTab("scenarios"); } }]);
-        } else {
-          var list = (e.errors || []).map(function (x) { return (x.field || "") + ": " + (x.message || ""); }).join(" · ");
-          toast(e.reason || e.code || "Could not start", e.message + (list ? " — " + list : ""), "err");
-        }
+        var list = (e.errors || []).map(function (x) { return (x.field || "") + ": " + (x.message || ""); }).join(" · ");
+        toast(e.reason || e.code || "Could not start", e.message + (list ? " — " + list : ""), "err");
       });
   });
   $("#btnOpen").on("click", function () {

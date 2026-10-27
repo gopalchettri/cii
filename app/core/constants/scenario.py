@@ -7,6 +7,7 @@ from typing import Final
 class Writing:
     MAX_PLAN_PROBLEMS: Final = 10  # the plan check's problems kept as notes ...
     PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
+    RETIRED_RULES: Final = frozenset({"4"})  # reviewer rules no longer asked: never a note (D49)
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
     PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
@@ -167,7 +168,6 @@ class ReviewMessage(StrEnum):
         "TOTAL_SCENARIO_COUNT."
     )
     SCENARIOS_ABANDONED = "Every attack path of run '{session_id}' left to write was given up."
-    ASSET_BUSY = "Asset {asset_id} has another active run: try again once it is done."
     SCENARIO_NOT_ACCEPTED = "Scenario '{scenario_id}' is not accepted: accept it before promoting its threat."
     NOTHING_TO_PROMOTE = "Scenario '{scenario_id}' is built on a library threat: there is nothing to promote."
 

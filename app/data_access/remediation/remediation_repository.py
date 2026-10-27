@@ -99,7 +99,6 @@ class RemediationRepository(MongoRepository):
                         },
                         "job": {"$literal": job},
                         "status": Status.QUEUED,
-                        "active": True,
                         "finished_at": "$$REMOVE",
                         "cancelled": "$$REMOVE",
                         "updated_at": now,
@@ -127,7 +126,6 @@ class RemediationRepository(MongoRepository):
                 "$set": {
                     "job": job,
                     "status": Status.QUEUED,
-                    "active": True,
                     "updated_at": now,
                     "versions.$[v].snapshot": None,
                 },

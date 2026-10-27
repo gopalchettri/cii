@@ -233,7 +233,7 @@ def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops
     assert run_id not in container.get_work_control_repository().sweep_stalled_controls()
     assert container.get_threat_scenario_session_repository().claim_controls_delivery(run_id, "t3") is None
     stored = sessions.find_one({"_id": run_id})
-    assert stored["active"] is False and stored["cancelled"]["user_id"] == "u1"
+    assert "active" not in stored and stored["cancelled"]["user_id"] == "u1"
     audits = get_mongodb()[Collection.AUDIT].find({"target.id": run_id, "action": AuditAction.RUN_CANCELLED})
     assert len(list(audits)) == 1
 
@@ -340,7 +340,7 @@ def test_a_remediation_plan_being_written_can_be_cancelled(
     response = client.post(url, headers=_who(api_key, entity))
     assert response.json() == {"remediation_id": plan_id, "status": Status.CANCELLED}
     stored = get_mongodb()[Collection.REMEDIATIONS].find_one({"_id": plan_id})
-    assert stored["status"] == Status.CANCELLED and stored["active"] is False
+    assert stored["status"] == Status.CANCELLED and "active" not in stored
     again = client.post(url, headers=_who(api_key, entity))
     assert (again.status_code, again.json()["reason"]) == (409, ConflictReason.NOTHING_TO_CANCEL)
     assert client.post(url, headers=_who(api_key, entity + 1)).status_code == 403

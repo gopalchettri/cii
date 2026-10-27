@@ -40,16 +40,21 @@
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
   "REMEDIATION_PLAN": "remediation_plan",
+  "REPAIR_SCENARIO": "repair_scenario",
   "RERANK": "rerank",
   "SERVICE_MAPPER": "service_mapper",
+  "THREAT_ACTIONS": "threat_actions",
   "WRITE_SCENARIO": "write_scenario"
  },
  "AnswerProblem": {
+  "ACTION_SENTENCES_MISSING": "action_sentences must quote the statement's sentence for each of: {actions}",
   "ENTRY_POINT_NOT_OFFERED": "entry_point must be one of entry_point_options, copied exactly: {options}",
   "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
   "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
   "SYSTEM_REASONS_MISSING": "system_reasons must give one short sentence for each of: {names}",
-  "TEXT_REQUIRED": "must not be empty"
+  "TEXT_REQUIRED": "must not be empty",
+  "THREAT_ACTIONS_REQUIRED": "the reply must be {\"actions\": [...]}: a non-empty list of short verb phrases",
+  "THREAT_ACTION_VERDICTS_REQUIRED": "threat_actions must judge every item of PLAN.threat.threat_actions"
  },
  "ApiTag": {
   "API_KEYS": "2. Set-up: API keys",
@@ -146,8 +151,6 @@
   "SQL_OPERATIONS": "tsg_sql_operations"
  },
  "ConflictReason": {
-  "ACTIVE_SESSION_EXISTS": "active_session_exists",
-  "ASSET_BUSY": "asset_busy",
   "ASSET_NOT_OWNED": "asset_not_owned",
   "CANCEL_FIRST": "cancel_first",
   "CHANGED_CONCURRENTLY": "changed_concurrently",
@@ -561,7 +564,6 @@
   "RUNNING": "running"
  },
  "RunClash": {
-  "ACTIVE_RUN": "active_run",
   "CHANGED": "changed",
   "DELETING": "deleting",
   "IDEMPOTENCY_KEY": "idempotency_key"

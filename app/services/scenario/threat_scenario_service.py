@@ -160,15 +160,9 @@ class ThreatScenarioService:
         context = freeze_context(request, asset_context)
         record = _new_run_record(principal, request, idempotency_key, context)
         clash = self._sessions.create_scenario_session(record)
-        # A parallel start with the same key won, whichever unique rule refused this insert: its replay.
+        # A parallel start with the same key won: its replay.
         if clash and idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
             return build_board(replayed), False
-        if clash is RunClash.ACTIVE_RUN:
-            active_id = self._active_session_id(principal.entity_id, request.asset_id)
-            message = SessionMessage.ACTIVE_SESSION_EXISTS.format(asset_id=request.asset_id)
-            raise Conflict(
-                message, reason=ConflictReason.ACTIVE_SESSION_EXISTS, details={"active_session_id": active_id}
-            )
         if clash is RunClash.IDEMPOTENCY_KEY:  # the run that took the key was deleted since
             message = SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
             raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
@@ -189,11 +183,6 @@ class ThreatScenarioService:
             return None
         check_same_start_request(earlier, request)
         return session_status_from_record(earlier)
-
-    def _active_session_id(self, entity_id: int, asset_id: int) -> str | None:
-        """The id of the asset's active scenario session in tsg_sessions, if any."""
-        found = self._sessions.get(fields=["_id"], entity_id=entity_id, asset_id=asset_id, active=True)
-        return None if found is None else found["_id"]
 
     def _announce_start(self, principal: Principal, record: dict[str, Any], context: FrozenContext) -> None:
         """Sends the new run's job (a failed send is re-sent by the reaper), counts and audits it."""
@@ -512,12 +501,6 @@ class ThreatScenarioService:
         epoch."""
         self._refuse_without_intel_data()  # never a write job that can only fail its evidence searches
         clash = self._sessions.update_scenario_session_job(run, kind, batch, asked)
-        if clash is RunClash.ACTIVE_RUN:
-            active_id = self._active_session_id(run.entity_id, run.asset_id)
-            message = ReviewMessage.ASSET_BUSY.format(asset_id=run.asset_id)
-            raise Conflict(
-                message, reason=ConflictReason.ASSET_BUSY, details={"active_session_id": active_id}
-            )
         if clash is RunClash.DELETING:
             raise run_being_deleted(run.session_id)
         if clash is RunClash.CHANGED:
@@ -622,7 +605,6 @@ def _new_run_record(
         "context": context.to_record(),
         "status": Status.QUEUED,
         "step": Step.THREATS,
-        "active": True,
         "plan_note": None,
         "last_action": running_action(RunActionKind.START, now),
         "counts": dict.fromkeys(_RUN_COUNTS, 0),

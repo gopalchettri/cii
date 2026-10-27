@@ -126,9 +126,9 @@ class BatchWriter:
         outages: dict[str, BaseException] = {}
         if self._evidence is not None:
             self._evidence.attach(to_write)  # one evidence search for the paths about to be written
-            to_write = {key: others for key, others in to_write.items() if not self._held_back(key, outages)}
+            to_write = [key for key in to_write if not self._held_back(key, outages)]
         paths = self._progress.paths
-        path_jobs = {key: partial(self._paths.write, paths[key], others) for key, others in to_write.items()}
+        path_jobs = {key: partial(self._paths.write, paths[key]) for key in to_write}
         outages |= write_at_once(path_jobs, self._save)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
         # delivery that died or failed after saving must not leave its controls to the sweep. The controls
@@ -155,7 +155,7 @@ class BatchWriter:
         paths = self._progress.paths
         return [key for key in self._batch if paths[key]["served"] not in (None, self._replaces.get(key))]
 
-    def _without_repeats(self, to_write: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    def _without_repeats(self, to_write: list[str]) -> list[str]:
         """Give up, with no AI call and no new card, each path to write for the first time repeating a
         scenario the run's other paths hold now (the asset's other sessions never block one: D15); a spare may
         take its place (never in a regenerate). The paths left to write."""
@@ -164,7 +164,7 @@ class BatchWriter:
             return to_write
         threats, repeat = self._paths.threats, FindingCode.NEAR_DUPLICATE
         own = self._scenarios.list_scenarios_for_duplicate_check(self._run["_id"])
-        left = dict(to_write)
+        left = list(to_write)
         for path_id in first_writes:
             path = self._progress.paths[path_id]
             steps = path.get("steps") or []
@@ -178,7 +178,7 @@ class BatchWriter:
                 }
                 self._progress.abandon(path_id, state, repeat, threats)
                 self._card_says_it_repeats(path_id, held_id)
-                del left[path_id]
+                left.remove(path_id)
         return left
 
     def _card_says_it_repeats(self, path_id: str, held_id: str) -> None:

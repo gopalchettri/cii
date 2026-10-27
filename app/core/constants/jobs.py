@@ -151,7 +151,6 @@ class SessionMessage(StrEnum):
     SECTOR_NOT_PARENT = (
         "Sector {sector_id} is not the parent of sub-sector {subsector_id}; its sector is {parent_id}."
     )
-    ACTIVE_SESSION_EXISTS = "Asset {asset_id} already has an active run."
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another request."
     ENTITY_MISMATCH = "The entity in the path is not the caller's entity."
     ENTITY_MISMATCH_BODY = "manual_scenario.entity_id is not the caller's entity (X-Entity-Id)."
@@ -248,7 +247,6 @@ class BoardMessage(StrEnum):
 class ConflictReason(StrEnum):
     """The `reason` of a 409 (and of a few 403/404/422 answers); the API never changes one."""
 
-    ACTIVE_SESSION_EXISTS = "active_session_exists"
     IDEMPOTENCY_KEY_CONFLICT = "idempotency_key_conflict"
     GENERATION_IN_PROGRESS = "generation_in_progress"
     RUN_FAILED = "run_failed"
@@ -260,7 +258,6 @@ class ConflictReason(StrEnum):
     NOTHING_LEFT = "nothing_left"
     TARGET_REACHED = "target_reached"
     SCENARIOS_ABANDONED = "scenarios_abandoned"
-    ASSET_BUSY = "asset_busy"
     SCENARIO_NOT_ACCEPTED = "scenario_not_accepted"
     NOTHING_TO_PROMOTE = "nothing_to_promote"
     TYPE_MISMATCH = "type_mismatch"  # a 422: the threat the library holds is of another type
@@ -283,7 +280,6 @@ class ConflictReason(StrEnum):
 class RunClash(StrEnum):
     """Why a run could not be inserted or queued again (tsg_sessions)."""
 
-    ACTIVE_RUN = "active_run"  # one active run per asset
     IDEMPOTENCY_KEY = "idempotency_key"  # one run per Idempotency-Key per entity
     CHANGED = "changed"  # the run moved on since it was read: its job was not replaced
     DELETING = "deleting"  # its owner is deleting it: nothing more starts on it

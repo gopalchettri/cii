@@ -87,9 +87,8 @@ def _queued_run(
         {
             "_id": record_id,
             "entity_id": 86,
-            "asset_id": int(record_id[:6], 16),  # its own asset: one active run per asset is enforced
+            "asset_id": int(record_id[:6], 16),
             "status": Status.QUEUED,
-            "active": True,
             "context": CONTEXT.to_record(),
             "plan": {
                 "threats": threats,
@@ -208,7 +207,7 @@ def test_fourteen_paths_are_written_in_three_batches_by_themselves(
     assert _settled("written") == written_before + 14  # S27: tsg_scenarios_total{outcome}
     assert PUBLISHED.count(record_id) == 14  # T-WRT-19: a live update after every save
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,
@@ -234,7 +233,7 @@ def test_the_run_writes_only_its_first_set_and_the_rest_wait_for_a_next_set(
     assert _deliver_until_done(record_id) == 1
     assert [task for task, _, _ in sent].count(TaskName.WRITE_SCENARIOS) == 0
     run = _sessions().find_one({"_id": record_id})
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,
@@ -494,7 +493,7 @@ def test_a_written_path_another_delivery_gave_up_on_ends_served(
     _deliver_until_done(record_id)
     scenario_id = _scenarios_of(record_id)[0]["_id"]
     gave_up = {"plan.paths.0.served": None, "plan.paths.0.abandoned": True, "plan.paths.0.attempts": 5}
-    again = {"status": Status.QUEUED, "active": True, "job.batch": [], "job.attempts": 0}
+    again = {"status": Status.QUEUED, "job.batch": [], "job.attempts": 0}
     _sessions().update_one({"_id": record_id}, {"$set": gave_up | again})
     assert _deliver_until_done(record_id) == 1
     run = _sessions().find_one({"_id": record_id})

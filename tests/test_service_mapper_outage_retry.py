@@ -139,7 +139,7 @@ def test_an_older_key_replays_when_a_later_generation_failed_for_an_outage() -> 
     mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), create_key)[0].mapping_id
     result = reconcile(mapping_id, 1, _request(), _answer(), _catalog(), 20, 20)
     get_mongodb()[Collection.SERVICE_MAPPINGS].update_one(
-        {"_id": mapping_id}, {"$set": {"status": Status.DONE, "active": False, "result": result}}
+        {"_id": mapping_id}, {"$set": {"status": Status.DONE, "result": result}}
     )
     mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, regen_key)
     _fail_on_the_last_try(mapping_id, _busy())

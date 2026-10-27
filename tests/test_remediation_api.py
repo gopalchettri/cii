@@ -770,9 +770,9 @@ def test_a_regenerate_after_an_outage_writes_the_failed_version_again_in_place(
     assert world["sent"] == [(TaskName.WRITE_PLAN, remediation_id, 1)] * 2
     record = _record(remediation_id)
     job = record["job"]
-    assert (record["status"], record["active"], job["attempts"], job["error"]) == (
+    assert (record["status"], "active" in record, job["attempts"], job["error"]) == (
         Status.QUEUED,
-        True,
+        False,
         0,
         None,
     )
@@ -833,7 +833,7 @@ def test_an_outage_retry_that_meets_its_runs_delete_is_put_back_failed_for_the_o
         refused = _post(client, api_key, remediation_id, "regenerate", {})
     assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
     record = _record(remediation_id)
-    assert (record["status"], record["active"], record["job"]["error"]["code"]) == (
+    assert (record["status"], "active" in record, record["job"]["error"]["code"]) == (
         Status.FAILED,
         False,
         ErrorCode.UNAVAILABLE,
@@ -1013,7 +1013,6 @@ def _stored_plan() -> str:
         "decision": Decision.PENDING,
         "decision_seq": 0,
         "status": Status.QUEUED,
-        "active": True,
         "job": _job(1),
         "created_at": NOW,
         "updated_at": NOW,
@@ -1044,7 +1043,7 @@ def test_a_version_is_appended_only_on_the_finished_latest_read() -> None:
     found = [(v["version"], v["status"]) for v in record["versions"]]
     assert found == [(1, Status.FAILED), (2, Status.QUEUED)] and record["versions"][0]["error"] == error
     assert record["versions"][1]["snapshot"]["scenario"]["statement"] == "$status costs $5"
-    assert (record["status"], record["active"], record["job"]["epoch"]) == (Status.QUEUED, True, 2)
+    assert (record["status"], "active" in record, record["job"]["epoch"]) == (Status.QUEUED, False, 2)
     assert "finished_at" not in record and record["job"]["error"] is None
     assert plans.create_remediation_plan_version(remediation_id, 1, _item(3), _job(3), NOW) is False
     assert (record["decision_seq"], record["decision"]) == (1, Decision.PENDING)
@@ -1065,7 +1064,6 @@ def test_only_a_latest_version_failed_for_an_outage_is_queued_again_in_place() -
     def settle(status: Status, error: dict[str, str] | None) -> None:
         settled = {
             "status": status,
-            "active": False,
             "job.attempts": 5,
             "job.error": error,
             "finished_at": NOW,
@@ -1082,9 +1080,9 @@ def test_only_a_latest_version_failed_for_an_outage_is_queued_again_in_place() -
     assert retry() is True
     record = _record(remediation_id)
     job = record["job"]
-    assert (record["status"], record["active"], job["attempts"], job["error"]) == (
+    assert (record["status"], "active" in record, job["attempts"], job["error"]) == (
         Status.QUEUED,
-        True,
+        False,
         0,
         None,
     )
@@ -1159,7 +1157,7 @@ def test_a_plan_stored_before_the_rebuild_reads_and_its_pending_version_is_writt
         {"_id": remediation_id, "scenario_id": scenario_id, "session_id": run, "entity_id": ENTITY,
          "asset_id": 1179, "source": RunKind.GENERATED, "title": "Loss of control integrity",
          "register": register, "versions": versions, "accepted_version": None, "decision": Decision.PENDING,
-         "decision_seq": 1, "risk_level": "High", "status": Status.QUEUED, "active": True,
+         "decision_seq": 1, "risk_level": "High", "status": Status.QUEUED,
          "job": new_job(TaskName.WRITE_PLAN, 2, now), "created_at": now, "updated_at": now}
     )  # fmt: skip
     old = _result(client, api_key, remediation_id, include_history="true")

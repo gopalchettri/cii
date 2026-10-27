@@ -103,7 +103,7 @@ def test_a_start_queues_the_whole_job_with_the_frozen_context(client: TestClient
     assert context["asset_context"]["critical_service"] == "Electricity transmission"
     assert "id" not in context["asset_context"]  # the prompts' view of the asset never carries an id
     assert run["client_id"] == container.get_admin_service().get_api_client_id(api_key)
-    assert run["active"] is True and run["job"]["task"] == TaskName.FIND_THREATS
+    assert run["job"]["task"] == TaskName.FIND_THREATS
     lease = JobRepository(get_mongodb()[Collection.SESSIONS]).claim_job(
         run["_id"], 1, TaskName.FIND_THREATS, "w1"
     )
@@ -185,18 +185,16 @@ def test_a_wrong_sector_names_the_field(client: TestClient, api_key: str) -> Non
     assert [error["field"] for error in errors] == ["body.sector_id"]
 
 
-def test_one_active_run_per_asset_even_when_two_start_at_once(client: TestClient, api_key: str) -> None:
-    """T-SCN-06: two parallel starts → 202 and 409 active_session_exists, with the active run's id."""
+def test_two_starts_on_one_asset_at_once_are_two_runs(client: TestClient, api_key: str) -> None:
+    """T-SCN-06: two parallel starts on the same asset both get 202, each its own run."""
     answers: list[Any] = []
     starts = [threading.Thread(target=lambda: answers.append(_start(client, api_key))) for _ in range(2)]
     for start in starts:
         start.start()
     for start in starts:
         start.join()
-    created, refused = sorted(answers, key=lambda answer: answer.status_code)
-    assert (created.status_code, refused.status_code) == (202, 409)
-    assert refused.json()["reason"] == "active_session_exists"
-    assert refused.json()["details"] == {"active_session_id": created.json()["session_id"]}
+    assert [answer.status_code for answer in answers] == [202, 202]
+    assert len({answer.json()["session_id"] for answer in answers}) == 2
 
 
 def test_the_same_idempotency_key_replays_and_another_asset_is_refused(
@@ -435,11 +433,9 @@ def test_a_replay_whose_run_was_deleted_since_is_a_conflict(monkeypatch: pytest.
     assert refused.value.detail == SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
 
 
-def test_a_same_key_start_refused_by_the_one_active_run_rule_replays_the_winner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_same_key_start_that_loses_the_insert_replays_the_winner(monkeypatch: pytest.MonkeyPatch) -> None:
     """The same key and body sent while the first start is still running: its insert is refused by the
-    one-active-run rule, and it answers the first start's run, never 409 active_session_exists."""
+    key's unique rule, and it answers the first start's run."""
     request = StartRunRequest.model_validate(START)
     winner = {
         "_id": "run-1",
@@ -451,7 +447,8 @@ def test_a_same_key_start_refused_by_the_one_active_run_rule_replays_the_winner(
     }
     reads = iter([None, winner])  # nothing holds the key before the insert; the winner does after it
     sessions = SimpleNamespace(
-        get=lambda *args, **where: next(reads), create_scenario_session=lambda record: RunClash.ACTIVE_RUN
+        get=lambda *args, **where: next(reads),
+        create_scenario_session=lambda record: RunClash.IDEMPOTENCY_KEY,
     )
     board, created = _run_service_over(monkeypatch, sessions).create_threat_scenario_session(
         Principal("client", "u1", 86, "DESC"), request, "key-1"

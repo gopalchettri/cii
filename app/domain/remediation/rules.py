@@ -164,7 +164,6 @@ def new_plan_record(
         "decision_seq": 0,
         "risk_level": register["risk_level"],
         "status": Status.QUEUED,
-        "active": True,
         "job": job,
         "created_at": now,
         "updated_at": now,

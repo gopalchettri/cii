@@ -11,11 +11,15 @@ import pytest
 from app.core.constants import RunActionKind, RunClash, Status, Step
 from app.core.exceptions import LeaseLost
 from app.data_access.jobs.job_repository import JobLease
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.data_access.scenario.threat_scenario_repository import RETIRED_ASSET_INDEX, ThreatScenarioRepository
+from app.data_access.scenario.threat_scenario_session_repository import (
+    RETIRED_ACTIVE_RUN_INDEX,
+    ThreatScenarioSessionRepository,
+)
 from app.models.scenario.views import session_status_from_record
 
-scenario_sessions = ThreatScenarioSessionRepository(scenarios=ThreatScenarioRepository())
+scenarios = ThreatScenarioRepository()
+scenario_sessions = ThreatScenarioSessionRepository(scenarios=scenarios)
 
 
 @pytest.fixture(autouse=True)
@@ -33,13 +37,28 @@ def _session(**fields: Any) -> dict[str, Any]:
     )
 
 
-def test_a_start_clash_names_the_unique_rule() -> None:
-    first = _session(active=True, idempotency_key=uuid.uuid4().hex)
+def test_only_the_idempotency_key_clashes_never_the_same_asset() -> None:
+    first = _session(active=True, idempotency_key=uuid.uuid4().hex)  # flagged active, as older runs are
     assert scenario_sessions.create_scenario_session(first) is None
     same_asset = _session(asset_id=first["asset_id"], active=True)
-    assert scenario_sessions.create_scenario_session(same_asset) is RunClash.ACTIVE_RUN
+    assert scenario_sessions.create_scenario_session(same_asset) is None
     same_key = _session(idempotency_key=first["idempotency_key"])
     assert scenario_sessions.create_scenario_session(same_key) is RunClash.IDEMPOTENCY_KEY
+
+
+@pytest.mark.parametrize(
+    ("repository", "keys", "retired"),
+    [
+        (scenario_sessions, ["entity_id", "asset_id"], RETIRED_ACTIVE_RUN_INDEX),  # the old asset lock
+        (scenarios, ["entity_id", "asset_id", "decision"], RETIRED_ASSET_INDEX),  # no query reads it
+    ],
+)
+def test_start_up_drops_each_retired_index(repository: Any, keys: list[str], retired: str) -> None:
+    """A database built before an index was retired loses it at start-up; the drop goes by name."""
+    repository.collection.create_index([(key, 1) for key in keys])
+    repository.create_indexes()
+    assert retired not in repository.collection.index_information()
+    repository.create_indexes()  # gone already: as for a process that lost the race to drop it
 
 
 def test_a_manual_start_is_saved_once_and_another_body_is_refused() -> None:

@@ -299,7 +299,7 @@ The tests cover 202 queued, 409 second build, stale job replacement, 503 failed 
 
 Target: `POST /v1/sessions` creates a scenario run, workers generate scenarios, and `GET /v1/sessions/{session_id}` plus `/results` expose persisted progress/results. This is the pattern to use for long-running entity-owned work.
 
-**C1. Fix the request contract.** The caller supplies all four headers: `X-API-Key`, `X-User-Id`, `X-Entity-Id`, `X-Tenant-Id`. The JSON body contains a positive `asset_id` and `supporting_system_id` (one positive ID or a nonempty list of distinct positive IDs); optional service/sector/subsector IDs are bounded SQL IDs. Unknown fields are 422. Optional `Idempotency-Key` is bounded. A new run returns `202 RunBoard`; replay of the same key/body returns 200 and the same ID. An active run for the asset returns 409.
+**C1. Fix the request contract.** The caller supplies all four headers: `X-API-Key`, `X-User-Id`, `X-Entity-Id`, `X-Tenant-Id`. The JSON body contains a positive `asset_id` and `supporting_system_id` (one positive ID or a nonempty list of distinct positive IDs); optional service/sector/subsector IDs are bounded SQL IDs. Unknown fields are 422. Optional `Idempotency-Key` is bounded. A new run returns `202 RunBoard`; replay of the same key/body returns 200 and the same ID. Another run of the same asset never blocks a start (D43).
 
 **C2. Create the shape in `app/models/scenario/views.py`.** `StartRunRequest` has `extra="forbid"`, a `SqlId` type constrained to SQL Server INT, `supporting_system_ids` with the wire alias `supporting_system_id`, and validators to accept one ID and reject empty/repeated lists. `RunBoard` is the response; `SessionStatus` is the projected stored status used by ownership checks. The core request shape is:
 
@@ -346,15 +346,10 @@ return AssetContextRows(
 )
 ```
 
-**C5. Make MongoDB arbitrate races.** `ThreatScenarioSessionRepository` in `app/data_access/scenario/threat_scenario_session_repository.py` has a partial unique index on `(entity_id,asset_id)` for active runs and another on `(entity_id,idempotency_key)` when a key exists. `create_scenario_session()` inserts a queued record and reports which unique rule lost. Do not implement uniqueness with a read-then-insert check alone; two HTTP requests can read the same empty state.
+**C5. Make MongoDB arbitrate races.** `ThreatScenarioSessionRepository` in `app/data_access/scenario/threat_scenario_session_repository.py` has a partial unique index on `(entity_id,idempotency_key)` when a key exists. Sessions of one asset are isolated, so nothing limits how many run at once (D43); `create_indexes()` drops the old `(entity_id,asset_id)` index `entity_id_1_asset_id_1` when a database still has it. `create_scenario_session()` inserts a queued record and reports a key clash. Do not implement uniqueness with a read-then-insert check alone; two HTTP requests can read the same empty state.
 
 ```python
 _SESSION_INDEXES = (
-    {
-        "keys": [("entity_id", 1), ("asset_id", 1)],
-        "unique": True,
-        "partialFilterExpression": {"active": True},
-    },
     {
         "keys": [("entity_id", 1), ("idempotency_key", 1)],
         "unique": True,
@@ -383,12 +378,6 @@ record = _new_run_record(principal, request, idempotency_key, context)
 clash = self._sessions.create_scenario_session(record)
 if clash and idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
     return build_board(replayed), False
-if clash is RunClash.ACTIVE_RUN:
-    active_id = self._active_session_id(principal.entity_id, request.asset_id)
-    message = SessionMessage.ACTIVE_SESSION_EXISTS.format(asset_id=request.asset_id)
-    raise Conflict(
-        message, reason=ConflictReason.ACTIVE_SESSION_EXISTS, details={"active_session_id": active_id}
-    )
 if clash is RunClash.IDEMPOTENCY_KEY:
     raise Conflict(
         SessionMessage.IDEMPOTENCY_KEY_RUN_GONE,
@@ -442,7 +431,7 @@ def find_threats(self: Task, record_id: str, epoch: int) -> None:
 .\.venv\Scripts\python.exe -m pytest tests/test_realtime.py -q
 ```
 
-`tests/test_runs.py` verifies 202 with a queued claimable record, exact frozen SQL facts, 403 foreign asset, 422 bad input, 409 active-run race, 200 same-key replay, and status/results views. Then perform the manual session sequence in Stage 13.5. Keep the `session_id` from POST; poll its status and read scenarios. If a worker fails, inspect `job.error` and the request ID in logs rather than reissuing a new start with another key.
+`tests/test_runs.py` verifies 202 with a queued claimable record, exact frozen SQL facts, 403 foreign asset, 422 bad input, two parallel starts on one asset both 202, 200 same-key replay, and status/results views. Then perform the manual session sequence in Stage 13.5. Keep the `session_id` from POST; poll its status and read scenarios. If a worker fails, inspect `job.error` and the request ID in logs rather than reissuing a new start with another key.
 
 **C11. Know which failure to investigate.**
 
@@ -450,7 +439,7 @@ def find_threats(self: Task, record_id: str, epoch: int) -> None:
 | --- | --- |
 | 401 before a service call | API key and all four identity headers in `app/api/dependencies.py` |
 | 403/404 asset or session | Caller entity, `tsg_GetAssetContext` result, or `CallersRun` ownership check |
-| 409 active run/idempotency | Session unique indexes and the service replay branch |
+| 409 idempotency_key_conflict | The (entity_id, idempotency_key) unique index and the service replay branch |
 | 422 missing facts | Request validation and `freeze_context()` error details |
 | 202 stays queued | `tsg_threats` worker heartbeat, broker, reaper, stored job due time |
 | Threats done but scenarios not written | `WRITE_SCENARIOS` route/worker, lease handoff and `job.error` |
@@ -748,7 +737,7 @@ Follow the data owner, not the URL path:
 
 1. Use `MongoRepository` in `app/data_access/base.py` for named projections/conditions, create/get/list/count/update/delete. Give each repository its collection, schema version, indexes, and methods that express the data operation.
 2. For a read, choose only the fields the service needs and include the ownership filter or perform the established owner check before returning the row. For a mutation, use an atomic conditional update with record ID, owner, and expected state/version; handle “zero rows changed” as a race or conflict.
-3. Add unique indexes for invariants such as one active run per asset and one idempotency record per key. Create indexes in each repository's `create_indexes()`, then add that repository to `app/container.py:create_all_indexes()`. Startup, not a request handler, creates indexes.
+3. Add unique indexes for invariants such as one idempotency record per key. Create indexes in each repository's `create_indexes()`, then add that repository to `app/container.py:create_all_indexes()`. Startup, not a request handler, creates indexes.
 4. Do not call MongoDB driver methods or `execute_procedure()` from `api`, `services`, `domain`, or `worker`; `tests/test_code_conventions.py` enforces this. Do not use an empty filter for update/delete.
 5. For SQL writes whose response can be lost, follow `SqlOperationRepository` rather than blindly retrying a procedure. A timeout may mean the first write succeeded; the operation record resolves that ambiguity.
 
@@ -813,7 +802,7 @@ Complete the write path in this exact order:
 1. In `app/models/scenario/views.py`, define `StartRunRequest` with positive bounded SQL IDs, a required supporting-system list, one-ID alias handling, duplicate checks, and forbidden unknown fields. Define `SessionStatus`, `RunBoard`, `RunResults`, `ScenarioView`, and list shapes. Keep Pydantic models in `models`, not in the router.
 2. In `AssetRepository.get_asset_context()`, call `tsg_GetAssetContext` with the **principal's entity ID** and the request IDs. Read its five result sets into `AssetContextRows` (`app/models/scenario/asset_context.py`). A missing or unlinked asset/system must be a defined 404/403/422, not a database traceback.
 3. In `app/domain/scenario/plan.py:freeze_context()`, validate the SQL facts and freeze exactly the planning context that a worker will use. Do this before creating a MongoDB session so a bad asset creates no job.
-4. In `ThreatScenarioSessionRepository.create_scenario_session()`, persist one session with `entity_id`, asset/request/context, idempotency key, status, and queued job epoch. Its unique indexes arbitrate parallel starts: one active run per asset and one use of an idempotency key for that entity.
+4. In `ThreatScenarioSessionRepository.create_scenario_session()`, persist one session with `entity_id`, asset/request/context, idempotency key, status, and queued job epoch. Its unique index arbitrates parallel starts with the same idempotency key for that entity; sessions of one asset never clash (D43).
 5. In `ThreatScenarioService.create_threat_scenario_session()`, check same-key replay first; check the intelligence snapshot only when intelligence is on; fetch/freeze facts; create the session; resolve a competing insert as replay or named 409; call `send_job(TaskName.FIND_THREATS, id, epoch)`; audit the start. Return `(RunBoard, created)` so the router can answer 202 or 200.
 6. In `app/api/routers/scenario.py`, inject `Caller` and `ThreatScenarioService`. The POST route does one service call and changes `Response.status_code` to 200 only for a replay. All session GET routes use `CallersRun` for 404/403 ownership before their service read. List calls use `Offset` and `Limit`.
 7. In `app/domain/scenario/results.py`, build response views from persisted records. Results include only current versions unless `include_replaced=true`; never leak another entity's record or an internal MongoDB field.

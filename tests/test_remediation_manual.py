@@ -237,7 +237,7 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     )
     assert _plan(planned["remediation_id"])["versions"][0]["snapshot"] is None
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": planned["session_id"]})
-    assert (run["kind"], run["active"], run["counts"]["accepted"]) == (RunKind.MANUAL, False, 1)
+    assert (run["kind"], run["counts"]["accepted"]) == (RunKind.MANUAL, 1)
     content = scenario["content"]
     # Two systems: any link between them is one the platform does not record.
     found = (scenario["source"], scenario["decision"], content["route"]["status"])

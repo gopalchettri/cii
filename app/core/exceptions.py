@@ -35,8 +35,8 @@ class AppError(Exception):
         details: dict[str, Any] | None = None,
         retry_after: int | None = None,
     ) -> None:
-        """`reason`: which rule refused it (409, e.g. active_session_exists) · `errors`: the fields at fault
-        (422, `[{field, message}]`) · `details`: facts the caller can act on (the active session's id)."""
+        """`reason`: which rule refused it (409, e.g. generation_in_progress) · `errors`: the fields at fault
+        (422, `[{field, message}]`) · `details`: facts the caller can act on (e.g. the running job's id)."""
         self.detail = detail or HTTPStatus(self.status).phrase
         super().__init__(self.detail)
         self.reason = reason
@@ -66,7 +66,7 @@ class Conflict(AppError):
 
 
 class DuplicateRecord(Conflict):
-    """A unique index refused a write: `index_name` says which rule (e.g. one active run per asset)."""
+    """A unique index refused a write: `index_name` says which rule (e.g. one run per Idempotency-Key)."""
 
     def __init__(self, index_name: str) -> None:
         super().__init__(ErrorMessage.UNIQUE_RULE_BROKEN.format(index_name=index_name))

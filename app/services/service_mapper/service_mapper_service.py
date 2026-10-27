@@ -294,7 +294,6 @@ def _new_record(
         "generation": 1,
         "result": None,
         "status": Status.QUEUED,
-        "active": True,
         "limits": limits,
         "job": new_job(TaskName.MAP_SERVICES, 1, now),
         "created_at": now,

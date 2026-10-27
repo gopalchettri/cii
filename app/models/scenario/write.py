@@ -52,7 +52,7 @@ class WriterBrief:
     why_it_applies: str  # the relevance check's reason, systems by name
     systems: tuple[dict[str, Any], ...]  # the threat's systems, each its name plus recorded facts
     other_systems: tuple[str, ...]  # the run's other systems, by name: never part of this scenario
-    other_scenarios: tuple[str, ...] = ()  # the statements of the path's other versions (regenerate only)
+    threat_actions: tuple[str, ...] = ()  # the actions the threat's name states; (): the writer splits it
     style: WriterStyle = WriterStyle.ORIGINAL
     # Evidence docs in the plan's order, best first: the writer's grounding; the first citable one is [1].
     evidence: tuple[dict[str, Any], ...] = ()
@@ -86,6 +86,7 @@ class PlanCheck:
     same_threat: bool = True  # the statement, and the cause its risk gives, carry the plan's threat
     same_impact: bool = True  # the risk is the consequence of that same scenario's impact
     evidence_supported: bool = False  # the passage states only its cited entry's facts
+    actions_not_carried_out: tuple[str, ...] = ()  # the brief's listed actions not judged "carried out"
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class WrittenScenario:
     plan_check: PlanCheck
     route: Route
     title_qualifier: str = ""  # the threat's name as a title carries it, to tell two same titles apart
+    rewritten: bool = False  # the draft is the writer's repair (_repaired), kept over its first draft
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,7 @@ class ScenarioAnswer(BaseModel):
     assumptions: list[str]
     entry_point: str
     system_reasons: dict[str, str] = {}  # one sentence per supporting system, by name
+    action_sentences: dict[str, str] = {}  # per listed action, the statement's sentence that carries it out
     evidence_statement: str | None = ""  # none given is never a re-ask: code cites its own sentence
 
     @field_validator("scenario_title", "scenario_statement", "risk_statement")
@@ -133,6 +136,7 @@ class PlanCheckAnswer(BaseModel):
     """The reviewer's answer: per numbered rule "holds" or 'broken: "<exact words>" - <reason>'."""
 
     rules: dict[str, str]
+    threat_actions: dict[str, str] = {}  # per listed action: "carried out", "only named" or "missing"
     same_threat: bool  # required, so a reviewer that leaves them out is re-asked, never assumed
     same_impact: bool
     evidence_supported: bool | None = None  # only True counts: none given keeps code's own sentence

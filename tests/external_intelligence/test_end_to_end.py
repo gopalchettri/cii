@@ -128,7 +128,7 @@ def test_a_run_is_started_planned_written_mapped_read_and_reviewed(
     assert scenario_tasks.map_controls.apply(args=message, task_id="controls-1").successful()
 
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": session_id})
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,

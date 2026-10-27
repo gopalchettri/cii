@@ -46,7 +46,7 @@ from app.data_access.jobs.job_repository import (
     failed_job_fields,
 )
 from app.domain.scenario.review import regenerate_batch, why_ids_cannot_be_regenerated
-from app.domain.scenario.write import _newest_within, scenario_id
+from app.domain.scenario.write import scenario_id
 from app.models.admin.api_clients import Principal
 from app.models.scenario.views import ScenarioIdsRequest, SessionStatus, session_status_from_record
 from app.worker.scenario import path_writing
@@ -122,7 +122,7 @@ def _interrupted_run() -> str:
     container.get_scenario_write_job().write_scenario_batch(lease)  # writes 6 and hands the last 2 to itself
     _sessions().update_one(
         {"_id": record_id},
-        {"$set": {"status": Status.FAILED, "active": False, "step": Step.SCENARIOS,
+        {"$set": {"status": Status.FAILED, "step": Step.SCENARIOS,
                   "job.error": {"code": "unavailable", "message": "down"}}},
     )  # fmt: skip
     return record_id
@@ -143,7 +143,7 @@ def test_next_set_resumes_an_interrupted_run_and_the_job_writes_the_rest(
     assert (answer.status_code, answer.json()) == (202, started), answer.text
     assert queued == [(TaskName.WRITE_SCENARIOS, record_id, 2)]
     run = _sessions().find_one({"_id": record_id})
-    assert (run["status"], run["active"], run["job"]["error"]) == (Status.QUEUED, True, None)
+    assert (run["status"], run["job"]["error"]) == (Status.QUEUED, None)
     assert [item["path_id"] for item in run["job"]["batch"]] == ["p7", "p8"]
     assert run["last_action"]["kind"] == RunActionKind.NEXT_SET
     # Shown from the moment it is asked, so the status never shows the set before (review 2026-10-12).
@@ -281,24 +281,23 @@ def test_next_set_names_why_nothing_is_left(
 
 
 @pytest.mark.usefixtures("chat", "sent")
-def test_next_set_while_another_run_holds_the_asset_and_for_another_entity(
+def test_a_regenerate_runs_while_another_run_of_the_asset_generates(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]]
 ) -> None:
-    """asset_busy (one active run per asset) names the active run, and the run stays as it was; another
-    entity's run → 403."""
-    record_id = _interrupted_run()
+    """Runs of one asset are isolated: a regenerate is queued while another run of the asset is running;
+    another entity's run → 403."""
+    record_id = _written_run(["Threat 1", "Threat 2"])
     asset_id = _sessions().find_one({"_id": record_id})["asset_id"]
-    other = uuid.uuid4().hex
-    _sessions().insert_one(
-        {"_id": other, "entity_id": 86, "asset_id": asset_id, "active": True, "status": Status.RUNNING}
-    )
-    url = f"/v1/sessions/{record_id}/scenarios/next-set"
-    busy = client.post(url, headers=_identity(api_key))
-    assert (busy.status_code, busy.json()["reason"]) == (409, ConflictReason.ASSET_BUSY)
-    assert busy.json()["details"] == {"active_session_id": other}
-    assert _sessions().find_one({"_id": record_id})["status"] == Status.FAILED
-    assert client.post(url, headers=_identity(api_key, 87)).status_code == 403
-    assert queued == []
+    other_run = {"_id": uuid.uuid4().hex, "entity_id": 86, "asset_id": asset_id, "status": Status.RUNNING}
+    other_run["active"] = True  # still flagged active, as runs saved before this change are
+    _sessions().insert_one(other_run)
+    first = scenario_id(record_id, "p1", 1)
+    other_entity = _identity(api_key, 87)
+    url = f"/v1/sessions/{record_id}/regenerate/scenarios"
+    assert client.post(url, json={"scenario_ids": [first]}, headers=other_entity).status_code == 403
+    answer = _regenerate(client, api_key, record_id, [first])
+    assert (answer.status_code, answer.json()["epoch"]) == (202, 2), answer.text
+    assert queued == [(TaskName.WRITE_SCENARIOS, record_id, 2)]
 
 
 def _scenarios() -> Any:
@@ -323,7 +322,7 @@ def _regenerate(client: TestClient, api_key: str, record_id: str, scenario_ids: 
 def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]], fake_chat: Any
 ) -> None:
-    """T-SCN-24: 202 {epoch 2}; the job writes version 2 (pending, `replaces` v1, told to differ from v1),
+    """T-SCN-24: 202 {epoch 2}; the job writes version 2 (pending, `replaces` v1, never shown v1's text),
     then supersedes v1, which stays accepted; the path is served by v2; the run ends complete."""
     record_id = _written_run(["Threat 1", "Threat 2"])
     first = scenario_id(record_id, "p1", 1)
@@ -339,7 +338,7 @@ def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
     old = _scenarios().find_one({"_id": first})
     assert (old["superseded_by"], old["decision"]) == (second["_id"], Decision.ACCEPTED)
     briefs = [prompt for task, prompt in fake_chat.calls[calls_before:] if task == AiTask.WRITE_SCENARIO]
-    assert briefs and '"other_scenarios"' in briefs[0] and old["content"]["statement"] in briefs[0]
+    assert briefs and old["content"]["statement"] not in briefs[0]  # written afresh: no earlier text to copy
     run = _sessions().find_one({"_id": record_id})
     served = {path["path_id"]: path["served"] for path in run["plan"]["paths"]}
     assert served["p1"] == second["_id"]
@@ -347,7 +346,7 @@ def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
         RunActionKind.REGENERATE,
         RunActionOutcome.COMPLETE,
     )
-    assert (run["status"], run["active"], run["counts"]["written"]) == (Status.DONE, False, 2)
+    assert (run["status"], "active" in run, run["counts"]["written"]) == (Status.DONE, False, 2)
     assert run["last_regen"] == {
         "outcome": RunActionOutcome.COMPLETE,
         "requested": 1,
@@ -633,13 +632,6 @@ def test_regenerate_takes_an_ai_outage_card_and_writes_it_in_place() -> None:
         "unreadable": TargetProblem.FAILURE_SCENARIO,
     }
     assert regenerate_batch(["busy"], targets) == [{"path_id": "p1", "replaces": None}]
-
-
-def test_the_writer_sees_the_newest_versions_that_fit() -> None:
-    """S41 review: a path regenerated many times never pushes the prompt past the model input; the newest
-    versions are kept, oldest first."""
-    assert _newest_within(("a" * 10, "b" * 10, "c" * 10), 25) == ("b" * 10, "c" * 10)
-    assert _newest_within(("a" * 30,), 25) == ()
 
 
 def test_a_failed_job_never_leaves_the_run_reading_running() -> None:

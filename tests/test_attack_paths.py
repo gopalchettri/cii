@@ -262,7 +262,7 @@ def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:
 
 
 def _queued_run(attempts: int = 0) -> str:
-    """A run waiting for its threats job, on an asset of its own (one active run per asset)."""
+    """A run waiting for its threats job, on an asset of its own."""
     record_id, now = uuid.uuid4().hex, datetime.now(UTC)
     job = {
         "task": TaskName.FIND_THREATS,
@@ -279,7 +279,6 @@ def _queued_run(attempts: int = 0) -> str:
             "asset_id": uuid.uuid4().int % 1_000_000_000,
             "status": Status.QUEUED,
             "step": Step.THREATS,
-            "active": True,
             "context": CONTEXT.to_record(),
             "counts": {},
             "last_action": {"kind": RunActionKind.START, "outcome": RunActionOutcome.RUNNING},
@@ -327,7 +326,7 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     record_id = _queued_run()
     jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
-    assert (run["status"], run["step"], run["active"]) == (Status.QUEUED, Step.SCENARIOS, True)
+    assert (run["status"], run["step"]) == (Status.QUEUED, Step.SCENARIOS)
     assert (run["job"]["task"], run["job"]["epoch"], run["job"]["attempts"]) == (
         TaskName.WRITE_SCENARIOS,
         1,
@@ -367,7 +366,7 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
     record_id = _queued_run()
     jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,
@@ -391,7 +390,7 @@ def test_another_session_of_the_asset_never_takes_a_path_away(
     jobs.run_leased_job(_threats_task(), Collection.SESSIONS, earlier, 1, plan, fields=PLAN_JOB_FIELDS)
     first = _stored_run(earlier)
     sessions, scenarios = get_mongodb()[Collection.SESSIONS], get_mongodb()[Collection.SCENARIOS]
-    sessions.update_one({"_id": earlier}, {"$set": {"status": Status.DONE, "active": False}})
+    sessions.update_one({"_id": earlier}, {"$set": {"status": Status.DONE}})
     names = {threat["key"]: threat["name"] for threat in first["plan"]["threats"]}
     assert len(first["plan"]["paths"]) == 2
     held_ids = []
@@ -436,13 +435,13 @@ def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage
     with pytest.raises(Unavailable):
         jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
-    assert (run["status"], run["active"]) == (Status.FAILED, False) and "plan" not in run
+    assert (run["status"], "active" in run) == (Status.FAILED, False) and "plan" not in run
     assert run["job"]["error"] == {"code": ErrorCode.UNAVAILABLE, "message": PlanMessage.AI_COULD_NOT_ANSWER}
     assert chat.asked(AiTask.GAP_FILL) == [] and sent == []
 
 
 def test_a_refused_plan_fails_the_run_with_its_own_code(sent: list[tuple[Any, ...]]) -> None:
-    """No type links a live actor: the run fails actor_library_empty, frees the asset, is never retried."""
+    """No type links a live actor: the run fails actor_library_empty and is never retried."""
     unlinked = tuple(replace(threat, linked_actors=()) for threat in THREATS)
     refusing = finder(planner_chat({}), threats=unlinked)
     plan = _plan_job(refusing)
@@ -450,7 +449,7 @@ def test_a_refused_plan_fails_the_run_with_its_own_code(sent: list[tuple[Any, ..
     with pytest.raises(PlanRefused):
         jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
-    assert run["status"] == Status.FAILED and run["active"] is False and "plan" not in run
+    assert run["status"] == Status.FAILED and "active" not in run and "plan" not in run
     assert run["job"]["error"] == {
         "code": ErrorCode.ACTOR_LIBRARY_EMPTY,
         "message": PlanMessage.ACTOR_LIBRARY_EMPTY,
