@@ -99,9 +99,11 @@ def describe_mongodb_topology() -> dict[str, Any]:
 
 
 def log_mongodb_topology() -> None:
-    """One start-up line naming the MongoDB topology (API and each worker); never fails start-up."""
+    """One start-up line naming the MongoDB topology (API and each worker) and the write concern every write
+    uses; never fails start-up."""
     try:
-        log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology())
+        write_concern = get_mongodb().write_concern.document
+        log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology(), write_concern=write_concern)
     except Exception:  # noqa: BLE001 — a report only: a store that does not answer fails elsewhere
         log.warning(LogEvent.MONGODB_TOPOLOGY, replica_set=None, exc_info=True)
 

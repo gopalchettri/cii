@@ -55,8 +55,11 @@ _DUPLICATE_CHECK_FIELDS = (
 
 #: Dropped at start-up: no query reads scenarios by asset; a duplicate check stays in its own session.
 RETIRED_ASSET_INDEX = "entity_id_1_asset_id_1_decision_1"
+#: Dropped at start-up: it read every failed card, those failed for good too (the attempts index replaces it).
+RETIRED_FAILED_CONTROLS_INDEX = "controls.status_1_controls.last_attempt_at_1"
 _SCENARIO_INDEXES = (
     {"keys": [("session_id", ASCENDING), ("created_at", ASCENDING)]},
+    {"keys": [("created_at", ASCENDING), ("session_id", ASCENDING)]},  # the sweep's recent sessions, covered
     {"keys": [("entity_id", ASCENDING), ("decision", ASCENDING), ("created_at", DESCENDING)]},
     {"keys": [("entity_id", ASCENDING), ("created_at", DESCENDING)]},
     {  # one accepted version per attack path, even under a race
@@ -71,7 +74,13 @@ _SCENARIO_INDEXES = (
         "name": TITLE_INDEX,
     },
     {"keys": [("controls.status", ASCENDING), ("controls.queued_at", ASCENDING)]},
-    {"keys": [("controls.status", ASCENDING), ("controls.last_attempt_at", ASCENDING)]},
+    {  # the sweep's failed and abandoned controls: attempts before time, so spent cards are never read
+        "keys": [
+            ("controls.status", ASCENDING),
+            ("controls.attempts", ASCENDING),
+            ("controls.last_attempt_at", ASCENDING),
+        ]
+    },
     {"keys": [("session_id", ASCENDING), ("controls.status", ASCENDING)]},
     {  # count_scenarios_of_session reads this index only, never a document
         "keys": [(field, ASCENDING) for field in ("session_id", *_COUNTED_FIELDS)],
@@ -197,8 +206,9 @@ class ThreatScenarioRepository(MongoRepository):
         )
 
     def create_indexes(self) -> None:
-        """The validator and every index, after dropping the retired asset index."""
-        drop_retired_index(self.collection, RETIRED_ASSET_INDEX)
+        """The validator and every index, after dropping the retired ones."""
+        for retired in (RETIRED_ASSET_INDEX, RETIRED_FAILED_CONTROLS_INDEX):
+            drop_retired_index(self.collection, retired)
         super().create_indexes()
 
     def save_scenario(self, record: Record) -> bool:

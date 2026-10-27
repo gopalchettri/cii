@@ -8,6 +8,7 @@ class Timeouts:
 
     MONGO_MS: Final = 5_000  # find a server / open a connection
     MONGO_SOCKET_MS: Final = 30_000  # one network wait inside an operation
+    MONGO_MAJORITY_WRITE_MS: Final = 10_000  # a write waits this long for a majority to confirm it
     SQL_CONNECT_SECONDS: Final = 5  # short, so an outage answers 503 quickly
     SQL_QUERY_SECONDS: Final = 30  # one procedure call
     REDIS_SECONDS: Final = 5  # connect and each command

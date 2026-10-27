@@ -1,7 +1,8 @@
 """MongoRepository: every plain read and write of one MongoDB collection, done once. Callers pass field
 equality as keywords and the repository's named conditions (name=True, or name=value for a condition that
 takes one); a repository adds a named method only for a real rule (a lease, a guarded state change, an
-aggregate). No timeout or write concern here: the records that need one keep their own."""
+aggregate). No timeout here: the records that need one keep their own. Every write waits for a majority
+(the client's write concern, app/core/database.py)."""
 
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence

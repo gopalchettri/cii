@@ -60,7 +60,7 @@ _DONE_AGAIN = [
     }
 ]
 #: How far back the sweep looks for scenarios of any status whose session is gone: a write racing a delete
-#: lands within one job's longest run. ponytail: scans the session_id index, a created_at index if it is slow.
+#: lands within one job's longest run. The created_at index serves it: only that window's keys are read.
 _ORPHANS_WRITTEN_WITHIN = timedelta(seconds=Lease.MAX_JOB_SECONDS)
 #: The records found, oldest first (at most JobControl.LIST_MAX per kind), and how many match in all.
 Found = tuple[list[dict[str, Any]], int]

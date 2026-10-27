@@ -41,6 +41,10 @@ def get_mongodb() -> Database:
         connectTimeoutMS=Timeouts.MONGO_MS,
         socketTimeoutMS=Timeouts.MONGO_SOCKET_MS,  # pymongo's default is no limit
         waitQueueTimeoutMS=Timeouts.MONGO_MS,  # every pooled connection busy: fail fast, never wait for ever
+        # A write a failover cannot roll back, whatever the server's default; a standalone (dev) takes it as
+        # w:1. Bounded below the socket timeout, so a lagging replica set answers WTimeoutError (an outage).
+        w="majority",
+        wTimeoutMS=Timeouts.MONGO_MAJORITY_WRITE_MS,
         tz_aware=True,
     )
     return client[settings.mongo_db]

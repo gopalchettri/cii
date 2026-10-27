@@ -6,7 +6,7 @@ from typing import Any
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import Collection, Status
+from app.core.constants import Collection, MapperLimits, Status
 from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
 
@@ -110,6 +110,7 @@ class MappingHistoryRepository(MongoRepository):
         super().__init__(
             collection,
             indexes=({"keys": [("mapping_id", 1), ("generation", -1)]},),
+            ttl=[("archived_at", MapperLimits.HISTORY_KEEP_DAYS * 86_400)],
             required=("_id", "mapping_id", "generation", "tenant_id", "entity_id"),
         )
 
