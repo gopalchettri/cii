@@ -56,7 +56,6 @@ class EvidenceLimits:
 class RerankGateLimits:
     RERANKS_AT_ONCE: Final = 6  # reranker calls in flight in the whole process (the remote reranker)
     LOCAL_RERANKS_AT_ONCE: Final = 1  # the local CPU model predicts one at a time
-    GATE_WAIT_SECONDS: Final = 300.0  # remote only: a call in a place also waits its request turns and 429s
     CHECK_EVERY_SECONDS: Final = 2.0  # a waiter checks its job's lease (and deadline) this often
 
 

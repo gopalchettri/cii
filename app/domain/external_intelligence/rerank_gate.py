@@ -1,6 +1,6 @@
 """The process-wide limit on evidence reranks, always taken before the AI slot so the two never deadlock. A
-wait that ends is Unavailable (that search fails, so its path waits and is tried again); a lost lease ends
-it too."""
+wait ends when a place frees or the job's lease is lost (LeaseLost); a gate given a fixed wait refuses as
+Unavailable once it passes."""
 
 import threading
 import time
@@ -18,7 +18,7 @@ class RerankGate:
     def __init__(
         self,
         size: int,
-        wait_seconds: float | None = RerankGateLimits.GATE_WAIT_SECONDS,
+        wait_seconds: float | None = None,
         check_every: float = RerankGateLimits.CHECK_EVERY_SECONDS,
     ) -> None:
         """`size` places; `wait_seconds` None: no fixed clock, a wait ends only with a lost lease."""
@@ -51,9 +51,9 @@ class RerankGate:
 
 
 def rerank_gate_for(rerank_base_url: str) -> RerankGate:
-    """The gate for the reranker in use: a remote one (a base URL) gets RERANKS_AT_ONCE places and a timed
-    wait, so it never takes every AI slot from the writer; a local CPU model one place and an untimed wait,
-    since its queue always moves, however slowly."""
+    """The gate for the reranker in use: a remote one (a base URL) gets RERANKS_AT_ONCE places, so it never
+    takes every AI slot from the writer; a local CPU model one place. Neither has a clock of its own: both
+    queues always move, and a worker waits for AI capacity until its lease ends."""
     if rerank_base_url:
         return RerankGate(RerankGateLimits.RERANKS_AT_ONCE)
-    return RerankGate(RerankGateLimits.LOCAL_RERANKS_AT_ONCE, wait_seconds=None)
+    return RerankGate(RerankGateLimits.LOCAL_RERANKS_AT_ONCE)

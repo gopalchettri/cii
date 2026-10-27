@@ -265,7 +265,7 @@ def test_a_429_from_the_fallback_model_limits_every_ai_call(monkeypatch: pytest.
 def test_with_no_cap_a_redis_outage_never_fails_an_ai_call_and_is_logged_once(
     monkeypatch: pytest.MonkeyPatch, error: type[RedisError]
 ) -> None:
-    """The call goes ahead unlimited and uncounted; with a fixed cap, the error reaches the job."""
+    """The call goes ahead unlimited and uncounted; with a fixed cap, the job retries it as an outage."""
     redis = get_redis_client()
 
     def redis_is_down(*_: object) -> None:
@@ -282,7 +282,7 @@ def test_with_no_cap_a_redis_outage_never_fails_an_ai_call_and_is_logged_once(
             slots.note_rate_limited()
     assert answered == 3
     assert [entry["event"] for entry in logs] == [LogEvent.AI_SLOTS_UNTRACKED]
-    with pytest.raises(error), capped.hold_slot(TASK):
+    with pytest.raises(Unavailable), capped.hold_slot(TASK):
         pass
 
 

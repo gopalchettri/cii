@@ -225,8 +225,8 @@ class LogEvent(StrEnum):
     AI_REQUEST_RATE_BUSY = "ai.request_rate_busy"
     AI_SLOTS_BUSY = "ai.slots_busy"
     AI_SLOT_FREE_FAILED = "ai.slot_free_failed"
-    # Redis failed: at cap 0 AI calls go ahead uncounted and unlimited; at any cap a 429 or an answer could
-    # not change the limit
+    # Redis failed: at cap 0 AI calls go ahead uncounted and unlimited, and requests unspaced; at any cap a
+    # 429 or an answer could not change the limit
     AI_SLOTS_UNTRACKED = "ai.slots_untracked"
     AI_LIMIT_CUT = "ai.limit_cut"  # a gateway 429 set the limit on AI calls in flight
     LIBRARY_RELOADED = "library.reloaded"
