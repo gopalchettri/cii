@@ -307,6 +307,14 @@ class Progress(BaseModel):
     scenario_count: ScenarioCount
 
 
+class RunError(BaseModel):
+    """Why a run failed: its job's error code and message, and the AI outage that failed it, if one did."""
+
+    code: str
+    message: str
+    reason: AiOutage | None = None  # ai_down, ai_unreachable, ai_busy, ai_timed_out; None for any other
+
+
 class RunBoard(BaseModel):
     session_id: str
     entity_id: int
@@ -316,6 +324,7 @@ class RunBoard(BaseModel):
     session_status: SessionState
     progress: Progress
     updated_at: datetime
+    error: RunError | None = None  # only once the run has failed
 
 
 # A scenario in TSG v1's results format.

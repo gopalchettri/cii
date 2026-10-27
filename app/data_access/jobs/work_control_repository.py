@@ -2,7 +2,7 @@
 of scenario sessions and remediation plans, and the controls sweep. It writes through each owning
 repository's collection: a session first, then its cards."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -64,6 +64,8 @@ _DONE_AGAIN = [
 _ORPHANS_WRITTEN_WITHIN = timedelta(seconds=Lease.MAX_JOB_SECONDS)
 #: The records found, oldest first (at most JobControl.LIST_MAX per kind), and how many match in all.
 Found = tuple[list[dict[str, Any]], int]
+#: What the sweep calls once per session whose controls it changed: the session's counts saved (and told).
+Recount = Callable[[str], object]
 
 
 class WorkControlRepository:
@@ -227,11 +229,12 @@ class WorkControlRepository:
         sessions.delete_one(session)
         return removed, plan_ids
 
-    def settle_stopped_scenario_sessions(self) -> None:
-        """tsg_scenarios: controls waiting on a cancelled session stop, with its counts, never one a live
-        lease holds (a plan job maps a cancelled session's scenario on purpose); every scenario of a deleted
-        session goes, whatever its status (failure and blocked cards too). The waiting cards are read before
-        the session states and only they are stopped: a card a resume queued again is never stopped again."""
+    def settle_stopped_scenario_sessions(self, recount: Recount | None = None) -> None:
+        """tsg_scenarios: controls waiting on a cancelled session stop, its counts by `recount`, never one a
+        live lease holds (a plan job maps a cancelled session's scenario on purpose); every scenario of a
+        deleted session goes, whatever its status (failure and blocked cards too). The waiting cards are read
+        before the session states and only they are stopped: a card a resume queued again is never stopped
+        again."""
         scenarios = self._scenarios.collection
         stoppable = {"$or": [*waiting_controls(utc_now()), FAILED_WITH_ATTEMPTS_LEFT]}
         waiting = {**SWEPT, "$and": [MAPPED_VERSIONS, stoppable]}
@@ -255,21 +258,24 @@ class WorkControlRepository:
                 {**waiting, "_id": {"$in": stopped_cards}},
                 {"$set": {"controls.status": Status.CANCELLED, "controls.lease_until": None}},
             )
-            for session_id in cancelled:
-                self._sessions.update_scenario_session_counts(session_id)
+            for session_id in sorted(cancelled):
+                (recount or self._sessions.update_scenario_session_counts)(session_id)
         if deleted := [session_id for session_id in session_ids if session_id not in states]:
             scenarios.delete_many({"session_id": {"$in": deleted}})
 
-    def sweep_stalled_controls(self) -> list[str]:
+    def sweep_stalled_controls(self, recount: Recount | None = None) -> list[str]:
         """The controls sweep: stopped sessions settled; then, at one moment, controls whose lease expired on
-        their last attempt failed for good (with their sessions' counts) and stalled mappings queued again,
-        never a live lease's. The sorted ids of the sessions that need a mapping message: those no delivery
-        serves, read after the requeue, so a session released in between still gets its message."""
-        self.settle_stopped_scenario_sessions()
+        their last attempt failed for good and stalled mappings queued again, never a live lease's; every
+        session it changed recounted once by `recount` (the worker's also publishes; default: counts only).
+        The sorted ids of the sessions that need a mapping message: those no delivery serves, read after the
+        requeue, so a session released in between still gets its message."""
+        recount = recount or self._sessions.update_scenario_session_counts
+        self.settle_stopped_scenario_sessions(recount)
         now = utc_now()
-        for session_id in self._scenarios.fail_abandoned_controls(now):
-            self._sessions.update_scenario_session_counts(session_id)
+        abandoned = self._scenarios.fail_abandoned_controls(now)
         session_ids = self._scenarios.requeue_stalled_controls(now)
+        for session_id in sorted({*abandoned, *session_ids}):
+            recount(session_id)
         live = self._sessions.list_scenario_sessions_with_live_delivery(session_ids)
         return sorted(set(session_ids) - live)
 

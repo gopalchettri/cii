@@ -51,19 +51,40 @@ class ControlsJob:
         """Take the run's delivery lease and map its waiting scenarios; how many were mapped (0 while another
         delivery holds the run)."""
         # Taken before anything is loaded, so a message that finds the run being mapped costs one update.
-        context = self._sessions.claim_controls_delivery(record_id, task_id)
-        if context is None:
+        claimed = self._sessions.claim_controls_delivery(record_id, task_id)
+        if claimed is None:
             return 0
-        snapshot = self._search.snapshot()
+        if request_id := (claimed.get("job") or {}).get("request_id"):
+            structlog.contextvars.bind_contextvars(request_id=request_id)  # a sweep's re-send carries none
+        context, snapshot = claimed.get("context", {}), self._search.snapshot()
         return RunControls(
             record_id, task_id, context, self._sessions, self._scenarios, snapshot, self._mapper
         ).map_all()
 
     def retry_stalled_controls(self) -> None:
-        """Requeue stalled mappings, then send one message per run they belong to that no delivery serves
-        (read after the requeue, so a run released in between still gets its message)."""
-        for record_id in self._work_control.sweep_stalled_controls():
+        """Sweep stalled mappings, recount and publish every run the sweep changed, then send one message per
+        run they belong to that no delivery serves (read after the requeue, so a run released in between
+        still gets its message)."""
+        swept: dict[str, dict[str, int]] = {}
+
+        def recount(session_id: str) -> None:
+            counts = recount_and_publish(self._sessions, session_id)
+            swept[session_id] = {key: value for key, value in counts.items() if key.startswith("controls_")}
+
+        record_ids = self._work_control.sweep_stalled_controls(recount)
+        if swept:
+            log.info(LogEvent.CONTROLS_SWEPT, runs=swept, messages=len(record_ids))
+        for record_id in record_ids:
             send_job(TaskName.MAP_CONTROLS, record_id, 0)  # the epoch is never checked for controls
+
+
+def recount_and_publish(
+    sessions: ThreatScenarioSessionRepository, session_id: str, controls_seconds: float = 0.0
+) -> dict[str, int]:
+    """Recount a run's counts and tell its watchers: the one path every controls change takes."""
+    counts = sessions.update_scenario_session_counts(session_id, controls_seconds)
+    publish_session_status(session_id)
+    return counts
 
 
 class RunControls:
@@ -117,16 +138,15 @@ class RunControls:
         return claimed
 
     def _map_and_count(self, scenario: dict[str, Any]) -> int:
-        """Map one claimed scenario, then update the run's counts, watchers and lease: 1 when saved."""
+        """Map one claimed scenario, then, mapped or failed, update the run's counts, watchers and lease: 1
+        when saved."""
         started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
-        mapped = self._map_one(scenario)
-        self._sessions.update_scenario_session_counts(
-            self._record_id, controls_seconds=time.perf_counter() - started
-        )
-        publish_session_status(self._record_id)
-        if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
-            self._taken_over = True
-        return mapped
+        try:
+            return self._map_one(scenario)
+        finally:
+            recount_and_publish(self._sessions, self._record_id, time.perf_counter() - started)
+            if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
+                self._taken_over = True
 
     def _release(self) -> None:
         """Give up the run's lease; a scenario written meanwhile, whose message found the run held, gets a
