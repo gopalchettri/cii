@@ -2,7 +2,8 @@
 
 Each worker pod stamps its hostname, with the time, under every queue it consumes (one Redis sorted set per
 queue), every Worker.HEARTBEAT_SECONDS. /ready counts only stamps newer than Worker.ONLINE_WITHIN_SECONDS, so
-a pod that dies without a word drops out within a minute."""
+a pod that dies without a word drops out within a minute. Each beat also checks this worker's own MongoDB and
+Redis (tsg_dependency_up on its metrics port)."""
 
 import contextlib
 import threading
@@ -12,11 +13,15 @@ from pathlib import Path
 import structlog
 
 from app.core.clock import epoch_seconds
-from app.core.constants import LogEvent, Worker
+from app.core.constants import Dependency, LogEvent, Worker
 from app.core.database import get_redis_client
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS
+from app.core.readiness import check_stores
 
 log = structlog.get_logger(__name__)
+
+#: The stores every worker uses; SQL Server is left out: not every worker reads it, so SqlDown would lie.
+_WORKER_STORES = (Dependency.MONGO, Dependency.REDIS)
 
 
 class WorkerHeartbeat:
@@ -56,6 +61,7 @@ class WorkerHeartbeat:
             except Exception:  # noqa: BLE001 — ANY Redis error (failover read-only, OOM, auth…) must not end
                 # the thread: a dead heartbeat makes /ready drop every API pod until this worker restarts.
                 log.warning(LogEvent.WORKER_HEARTBEAT_FAILED, exc_info=True)
+            check_stores(_WORKER_STORES)  # MongoDown/RedisDown see this worker; never raises, waits <= 5 s
             if self._stopped.wait(Worker.HEARTBEAT_SECONDS):
                 return
 

@@ -72,6 +72,8 @@ BUILT_ALERTS = {
     "ReaperFailing",
     "ScheduledJobsExpiring",
     "JobHung",
+    # Log lines Alloy dropped or Loki refused while both were up.
+    "LogLinesLost",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
@@ -85,6 +87,8 @@ EXPORTER_METRICS = {
     "kube_pod_container_status_last_terminated_reason",
     "kube_pod_container_status_waiting_reason",
     "kube_pod_status_phase",
+    "loki_write_dropped_entries_total",  # Alloy's loki.write
+    "loki_discarded_samples_total",  # Loki itself
 }
 PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
 WATCHED_APP_PROJECTS = ("ai-threatgen", "ai-remediation")  # TSG's own projects: every pod there is TSG's
@@ -157,7 +161,7 @@ def test_every_metric_in_alerts_and_dashboard_exists() -> None:
         name
         for query in _prometheus_queries()
         # Quoted label values left out: task="tsg_reap" names a task, not a metric.
-        for name in re.findall(r"\b(?:tsg|redis|flower|kube)_[a-z_]+\b", re.sub(r'"[^"]*"', '""', query))
+        for name in re.findall(r"\b(?:tsg|redis|flower|kube|loki)_[a-z_]+\b", re.sub(r'"[^"]*"', '""', query))
     }
     assert used - known == set()
     named_stores = {

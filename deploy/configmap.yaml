@@ -161,6 +161,10 @@ data:                                            # one key per file
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+          # Alerts and the dashboard name a target by instance: <project>/<pod>, not the pod's IP:port.
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+            separator: /
+            target_label: instance
 
       # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
       # over the labels of the kube-state-metrics pod itself. It reports every pod of the three projects: keep the
@@ -184,7 +188,8 @@ data:                                            # one key per file
     # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
     # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
     # Grafana Alerting. Planned with its metric: IntelStale (M12).
-    # No alert channel yet (D-05): firing alerts show in Grafana (home dashboard, Alerting) and at /alertmanager.
+    # Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
+    # Alerting) and at /alertmanager.
 
     groups:
       - name: tsg-api
@@ -358,12 +363,14 @@ data:                                            # one key per file
 
       - name: tsg-dependencies
         rules:
+          # The API (each /ready and scrape) and every worker (each heartbeat) report the stores they reach: by
+          # job, so the alert names which one lost it. SQL Server: the API only.
           - alert: MongoDown
-            expr: min(tsg_dependency_up{name="mongo"}) == 0
+            expr: min by (job) (tsg_dependency_up{name="mongo"}) == 0
             for: 3m
             labels: { severity: critical }
             annotations:
-              summary: MongoDB does not answer the API.
+              summary: MongoDB does not answer the {{ $labels.job }}.
               description: Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL.
           - alert: SqlDown
             expr: min(tsg_dependency_up{name="sql"}) == 0
@@ -373,11 +380,11 @@ data:                                            # one key per file
               summary: SQL Server does not answer the API.
               description: Asset and library data cannot be read. Check the SQL Server and its connection settings.
           - alert: RedisDown
-            expr: min(tsg_dependency_up{name="redis"}) == 0
+            expr: min by (job) (tsg_dependency_up{name="redis"}) == 0
             for: 3m
             labels: { severity: critical }
             annotations:
-              summary: Redis does not answer the API.
+              summary: Redis does not answer the {{ $labels.job }}.
               description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
           # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
@@ -462,6 +469,25 @@ data:                                            # one key per file
               summary: The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served).
               description: Check SQL Server; the "Errors and exceptions" table shows each library.check_failed line.
 
+      - name: tsg-logs
+        rules:
+          # Alloy gives up on a batch after its retries; Loki refuses lines too old, too long or over its rate. Both
+          # are up, so TargetDown is quiet. Loki makes its counter at its first refusal, already above 0, which
+          # increase() cannot see: a counter new in the last 15 minutes counts too.
+          - alert: LogLinesLost
+            expr: >-
+              sum(increase(loki_write_dropped_entries_total[15m])) > 0
+              or sum(increase(loki_discarded_samples_total[15m])) > 0
+              or count(loki_write_dropped_entries_total > 0 unless loki_write_dropped_entries_total offset 15m)
+              or count(loki_discarded_samples_total > 0 unless loki_discarded_samples_total offset 15m)
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them.
+              description: >-
+                Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate).
+                UAT: oc -n ai-common logs deployment/alloy, then deployment/loki.
+
       - name: tsg-platform
         rules:
           - alert: TargetDown
@@ -520,7 +546,7 @@ data:                                            # one key per file
               summary: "{{ $labels.pod }} ran out of memory and was restarted."
               description: Raise its memory limit in deploy/, or find what used the memory (the "What is slow" row).
 
-# Alertmanager: where alerts go (nowhere yet, D-05)
+# Alertmanager: where alerts go (by email; fill in its CHANGE_ME_ values here and in observability/alertmanager/alertmanager.yml)
 ---
 apiVersion: v1                                   # core API version
 kind: ConfigMap                                  # Alertmanager's config, mounted at /etc/alertmanager
@@ -531,19 +557,39 @@ metadata:                                        # the object's name and place
 data:                                            # one key per file
   alertmanager.yml: |                            # receivers and routing: a copy of observability/alertmanager/alertmanager.yml
     # Alertmanager, UAT and laptop. Runs with --web.external-url=<host>/alertmanager/.
-    # D-05: no alert channel yet. Firing alerts show in Grafana (home dashboard and Alerting) and at /alertmanager.
-    # When the owner names a channel, add it to `receivers` (email_configs, webhook_configs …) and point the
-    # route at it.
+    # Alerts are sent by email (D-05). Two senders are set up; the `receiver:` line under `route:` picks the one used:
+    #   company-smtp  the company's mail relay
+    #   gmail         smtp.gmail.com:587 (STARTTLS), signed in with a Google app password
+    # Every CHANGE_ME_ value is a placeholder: put in the relay, the sender and the recipients here and in the copy in
+    # deploy/configmap.yaml. Passwords never go here: each is a file from Secret tsg-monitoring (deploy/secrets.yaml),
+    # mounted at /etc/alertmanager-secrets (deploy/deploy_common.yaml). The laptop has no such folder, so its
+    # Alertmanager cannot sign in and sends nothing. Firing alerts also show in Grafana (home dashboard and Alerting)
+    # and at /alertmanager.
 
     route:
-      receiver: none
+      receiver: company-smtp # where alerts go: company-smtp or gmail
       group_by: [alertname]
       group_wait: 30s
       group_interval: 5m
       repeat_interval: 4h
 
     receivers:
-      - name: none
+      - name: company-smtp
+        email_configs:
+          - smarthost: CHANGE_ME_RELAY_HOST:587 # the relay's host:port; it must offer STARTTLS (require_tls)
+            from: CHANGE_ME_SENDER@company.example
+            to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+            auth_username: CHANGE_ME_RELAY_USER
+            auth_password_file: /etc/alertmanager-secrets/smtp-relay-password # SMTP_RELAY_PASSWORD
+            send_resolved: true # also say when an alert has cleared
+      - name: gmail
+        email_configs:
+          - smarthost: smtp.gmail.com:587 # STARTTLS (require_tls)
+            from: CHANGE_ME_SENDER@gmail.com
+            to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+            auth_username: CHANGE_ME_SENDER@gmail.com # the same Gmail address
+            auth_password_file: /etc/alertmanager-secrets/gmail-app-password # GMAIL_APP_PASSWORD
+            send_resolved: true # also say when an alert has cleared
 
 # Loki: log storage
 ---
@@ -1473,6 +1519,10 @@ data:                                            # one key per file
                           "JobHung": {
                             "text": "A job hung and was stopped: it runs again on another worker",
                             "index": 29
+                          },
+                          "LogLinesLost": {
+                            "text": "Log lines were lost on the way to Loki",
+                            "index": 30
                           }
                         }
                       }
@@ -5222,7 +5272,7 @@ data:                                            # one key per file
           "id": 61,
           "type": "table",
           "title": "Jobs now, by kind and status",
-          "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute. For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
+          "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute; this shows the count of its newest pass (a worker that missed the latest passes keeps an older one). For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -5234,7 +5284,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max by (kind, status) (tsg_jobs_current) > 0",
+              "expr": "max by (kind, status) (tsg_jobs_current and on (instance) topk(1, tsg_reaper_last_pass_timestamp_seconds)) > 0",
               "legendFormat": "__auto",
               "instant": true,
               "range": false,

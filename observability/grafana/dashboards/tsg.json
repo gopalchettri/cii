@@ -637,6 +637,10 @@
                       "JobHung": {
                         "text": "A job hung and was stopped: it runs again on another worker",
                         "index": 29
+                      },
+                      "LogLinesLost": {
+                        "text": "Log lines were lost on the way to Loki",
+                        "index": 30
                       }
                     }
                   }
@@ -4386,7 +4390,7 @@
       "id": 61,
       "type": "table",
       "title": "Jobs now, by kind and status",
-      "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute. For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
+      "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute; this shows the count of its newest pass (a worker that missed the latest passes keeps an older one). For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -4398,7 +4402,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (kind, status) (tsg_jobs_current) > 0",
+          "expr": "max by (kind, status) (tsg_jobs_current and on (instance) topk(1, tsg_reaper_last_pass_timestamp_seconds)) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,

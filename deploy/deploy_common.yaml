@@ -46,7 +46,7 @@
 #
 # Budget: ai-common's quota is 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
 # 6 Gi and 60 Gi. These pods' limits: about 2.3 CPU and 4.1 Gi; a restart adds up to 0.5 CPU and 1.1 Gi (one new
-# pod each for alertmanager, redis-exporter, kube-state-metrics and flower); volumes 21 Gi.
+# pod each for alertmanager, redis-exporter, kube-state-metrics and flower); volumes 22 Gi.
 # Security: Flower and redis-exporter read tsg-secrets here, so whoever may read Secrets in ai-common can read
 # TSG's passwords and keys.
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
@@ -227,7 +227,7 @@ subjects:                                        # who gets it: the three monito
   - { kind: ServiceAccount, name: alloy, namespace: ai-common }   # Alloy: reads the pods' logs
   - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-common }   # kube-state-metrics: watches the pods
 
-# ---------------------------------------------------------------- volumes (21 Gi in all)
+# ---------------------------------------------------------------- volumes (22 Gi in all)
 ---
 apiVersion: v1                                   # core API version
 kind: PersistentVolumeClaim                      # a disk that outlives the pod
@@ -264,6 +264,18 @@ spec:                                            # the disk wanted
   resources:                                     # size
     requests:                                    # asked for
       storage: 1Gi                               # Grafana's own small database
+---
+apiVersion: v1                                   # core API version
+kind: PersistentVolumeClaim                      # a disk that outlives the pod
+metadata:                                        # the object's name and place
+  name: alloy-data                               # volume name (the alloy Deployment mounts it)
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the disk wanted
+  accessModes: [ReadWriteOnce]                   # one pod writes at a time
+  resources:                                     # size
+    requests:                                    # asked for
+      storage: 1Gi                               # Alloy's read positions: how far it has read each pod's log
 
 # ---------------------------------------------------------------- Prometheus (metrics, 15 days)
 ---
@@ -335,7 +347,8 @@ spec:                                            # what it does
   selector: { app: prometheus, part-of: tsg-monitoring }   # sends traffic to TSG's Prometheus pod only (never a chatbot pod labelled app=prometheus)
   ports: [{ name: http, port: 9090, targetPort: 9090 }]   # port 9090 to the pod's port 9090
 
-# ---------------------------------------------------------------- Alertmanager (no alert channel yet)
+# ---------------------------------------------------------------- Alertmanager (emails the alerts)
+# SMTP does not go through the proxy: the relay (or smtp.gmail.com:587) must be reachable from ai-common directly.
 ---
 apiVersion: apps/v1                              # Deployment API version
 kind: Deployment                                 # keeps one Alertmanager running
@@ -387,6 +400,7 @@ spec:                                            # what to run
           volumeMounts:                          # folders from the volumes below
             - { name: config, mountPath: /etc/alertmanager }   # alertmanager.yml
             - { name: data, mountPath: /alertmanager }   # silences and notification state
+            - { name: email-passwords, mountPath: /etc/alertmanager-secrets, readOnly: true }   # the alert email passwords alertmanager.yml names
           resources:                             # CPU and memory
             requests: { cpu: 25m, memory: 64Mi }   # reserved for the pod
             limits: { cpu: 100m, memory: 256Mi }   # the most it may use
@@ -395,6 +409,12 @@ spec:                                            # what to run
           configMap: { name: alertmanager-config }   # from configmap.yaml
         - name: data                             # silences
           emptyDir: {}                           # a scratch folder, emptied when the pod stops
+        - name: email-passwords                  # one file per alert email password
+          secret:                                # from deploy/secrets.yaml
+            secretName: tsg-monitoring           # the monitoring's Secret; only the two keys below (not Grafana's password)
+            items:                               # key -> file name
+              - { key: SMTP_RELAY_PASSWORD, path: smtp-relay-password }   # the company mail relay's
+              - { key: GMAIL_APP_PASSWORD, path: gmail-app-password }   # the Google app password
 ---
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
@@ -489,7 +509,7 @@ metadata:                                        # the object's name and place
   labels: { app: alloy, part-of: tsg-monitoring }   # labels on the Deployment itself
 spec:                                            # what to run
   replicas: 1                                    # one reader: two would ship every line twice
-  strategy: { type: Recreate }                   # the old pod stops before the new one starts: never two readers
+  strategy: { type: Recreate }                   # the old pod stops before the new one starts: never two readers, one writer on a ReadWriteOnce volume
   selector:                                      # which pods belong to this Deployment
     matchLabels: { app: alloy }                  # pods labelled app=alloy
   template:                                      # the pod to run
@@ -540,8 +560,8 @@ spec:                                            # what to run
       volumes:                                   # where the folders come from
         - name: config                           # the config file
           configMap: { name: alloy-config }      # from configmap.yaml
-        - name: data                             # read positions
-          emptyDir: {}                           # a scratch folder, emptied when the pod stops
+        - name: data                             # read positions: kept across restarts, so no line is sent twice or missed
+          persistentVolumeClaim: { claimName: alloy-data }   # the alloy-data volume above
 
 # ---------------------------------------------------------------- Grafana (the one place to look)
 ---

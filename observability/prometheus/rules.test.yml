@@ -331,19 +331,19 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: tsg_dependency_up{name="mongo"}
+      - series: tsg_dependency_up{job="api",name="mongo"}
         values: 0x5
-      - series: tsg_dependency_up{name="sql"}
+      - series: tsg_dependency_up{job="api",name="sql"}
         values: 0x5
-      - series: tsg_dependency_up{name="redis"}
+      - series: tsg_dependency_up{job="api",name="redis"}
         values: 0x5
     alert_rule_test:
       - eval_time: 4m
         alertname: MongoDown
         exp_alerts:
-          - exp_labels: { severity: critical }
+          - exp_labels: { severity: critical, job: api }
             exp_annotations:
-              summary: "MongoDB does not answer the API."
+              summary: "MongoDB does not answer the api."
               description: "Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL."
       - eval_time: 4m
         alertname: SqlDown
@@ -355,9 +355,38 @@ tests:
       - eval_time: 4m
         alertname: RedisDown
         exp_alerts:
-          - exp_labels: { severity: critical }
+          - exp_labels: { severity: critical, job: api }
             exp_annotations:
-              summary: "Redis does not answer the API."
+              summary: "Redis does not answer the api."
+              description: "Jobs cannot be queued and live updates stop. Check the Redis server."
+
+  # Each worker reports its own stores on every heartbeat: one that cannot reach them is named while the API can.
+  - interval: 1m
+    input_series:
+      - series: tsg_dependency_up{job="api",instance="api-1",name="mongo"}
+        values: 1x5
+      - series: tsg_dependency_up{job="worker",instance="worker-1",name="mongo"}
+        values: 0x5
+      - series: tsg_dependency_up{job="worker",instance="worker-2",name="mongo"}
+        values: 1x5
+      - series: tsg_dependency_up{job="api",instance="api-1",name="redis"}
+        values: 1x5
+      - series: tsg_dependency_up{job="worker",instance="worker-1",name="redis"}
+        values: 0x5
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MongoDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: worker }
+            exp_annotations:
+              summary: "MongoDB does not answer the worker."
+              description: "Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL."
+      - eval_time: 4m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: worker }
+            exp_annotations:
+              summary: "Redis does not answer the worker."
               description: "Jobs cannot be queued and live updates stop. Check the Redis server."
 
   - interval: 1m
@@ -645,3 +674,60 @@ tests:
       - eval_time: 16m
         alertname: AiNotAnswering
         exp_alerts: []
+
+  # Alloy gave up on a batch after its retries: quiet while its counter stays at 0 from its start, then fires.
+  - interval: 1m
+    input_series:
+      - series: loki_write_dropped_entries_total{job="alloy",host="loki:3100",reason="ingester_error"}
+        values: 0x5 40x20
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LogLinesLost
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LogLinesLost
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them."
+              description: "Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate). UAT: oc -n ai-common logs deployment/alloy, then deployment/loki."
+
+  # Loki makes its counter at its first refused line, already above 0, which increase() cannot see: a counter
+  # new in the last 15 minutes counts, and stops counting 15 minutes later.
+  - interval: 1m
+    input_series:
+      - series: loki_discarded_samples_total{job="loki",reason="too_far_behind",tenant="fake"}
+        values: _x5 120x30
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LogLinesLost
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them."
+              description: "Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate). UAT: oc -n ai-common logs deployment/alloy, then deployment/loki."
+      - eval_time: 30m
+        alertname: LogLinesLost
+        exp_alerts: []
+
+  # Two maintenance workers share the reaper's queue and each keeps the counts of its own last pass. The panel
+  # "Jobs now, by kind and status" reads only the one whose pass is newest: the other's 3 running jobs ended.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_pass_timestamp_seconds{job="worker",instance="ai-threatgen/maintenance-a"}
+        values: 0+60x10
+      - series: tsg_jobs_current{job="worker",instance="ai-threatgen/maintenance-a",kind="tsg_find_threats",status="running"}
+        values: 0x10
+      - series: tsg_jobs_current{job="worker",instance="ai-threatgen/maintenance-a",kind="tsg_find_threats",status="queued"}
+        values: 2x10
+      - series: tsg_reaper_last_pass_timestamp_seconds{job="worker",instance="ai-remediation/maintenance-b"}
+        values: 0+60x2 120x8
+      - series: tsg_jobs_current{job="worker",instance="ai-remediation/maintenance-b",kind="tsg_find_threats",status="running"}
+        values: 3x10
+    promql_expr_test:
+      - expr: max by (kind, status) (tsg_jobs_current and on (instance) topk(1, tsg_reaper_last_pass_timestamp_seconds)) > 0
+        eval_time: 10m
+        exp_samples:
+          - labels: '{kind="tsg_find_threats", status="queued"}'
+            value: 2
+    alert_rule_test: []

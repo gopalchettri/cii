@@ -58,6 +58,10 @@ scrape_configs:
         target_label: namespace
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
+      # Alerts and the dashboard name a target by instance: <project>/<pod>, not the pod's IP:port.
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+        separator: /
+        target_label: instance
 
   # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
   # over the labels of the kube-state-metrics pod itself. It reports every pod of the three projects: keep the

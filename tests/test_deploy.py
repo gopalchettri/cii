@@ -304,6 +304,9 @@ def _reads(deployment: dict) -> set[tuple[str, str, str]]:
         if "configMap" in volume:
             keys = [item["key"] for item in volume["configMap"].get("items", [])] or [""]
             reads |= {("ConfigMap", volume["configMap"]["name"], key) for key in keys}
+        if "secret" in volume:
+            keys = [item["key"] for item in volume["secret"].get("items", [])] or [""]
+            reads |= {("Secret", volume["secret"]["secretName"], key) for key in keys}
         if "persistentVolumeClaim" in volume:
             reads.add(("PersistentVolumeClaim", volume["persistentVolumeClaim"]["claimName"], ""))
     return reads

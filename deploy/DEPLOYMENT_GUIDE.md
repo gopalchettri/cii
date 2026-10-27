@@ -298,6 +298,9 @@ Save and close.
   `-join (1..2 | ForEach-Object { [guid]::NewGuid().ToString('N') })`
 - No NVD key: delete `CHANGE_ME` so the line reads `CII_NVD_API_KEY: ""`.
 - **Keep the Grafana password**: you need it to sign in to Grafana.
+- Alert email (step 8 picks the sender): `SMTP_RELAY_PASSWORD` is the company mail relay's password,
+  `GMAIL_APP_PASSWORD` a Google app password (Google account, Security, App passwords). For the one you do not
+  use, delete `CHANGE_ME` so the line reads `""`.
 
 Then:
 
@@ -324,7 +327,14 @@ notepad deploy\configmap.yaml
 In Notepad, find `CHANGE_ME_UI_ORIGIN` (Ctrl+F), on the `CII_CORS_ORIGINS` line. Replace the whole word with the
 platform UI's address, e.g. `https://<ui host>`: https, the host name (and `:port` if it has one), no path and no
 `/` at the end. The app compares it letter for letter with the browser's address. Several addresses: separate them
-with commas. Never `*`: the app refuses to start with it. Save and close Notepad, then:
+with commas. Never `*`: the app refuses to start with it.
+
+Alert email: in the `alertmanager.yml` part, the line `receiver:` under `route:` picks the sender, `company-smtp`
+(the company mail relay) or `gmail`. In that sender's lines, replace each `CHANGE_ME_` word: the relay's
+`host:port` (company-smtp only), the sender address and login, and the recipients (comma-separated). Make the same
+change in `observability\alertmanager\alertmanager.yml` (the tests fail when the two differ). Mail does not go
+through the proxy: the relay, or `smtp.gmail.com` port 587, must be reachable from `ai-common`.
+Save and close Notepad, then:
 
 ```powershell
 Select-String -Path deploy\configmap.yaml -Pattern 'CII_CORS_ORIGINS:'

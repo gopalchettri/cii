@@ -2,7 +2,8 @@
 # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
 # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
 # Grafana Alerting. Planned with its metric: IntelStale (M12).
-# No alert channel yet (D-05): firing alerts show in Grafana (home dashboard, Alerting) and at /alertmanager.
+# Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
+# Alerting) and at /alertmanager.
 
 groups:
   - name: tsg-api
@@ -176,12 +177,14 @@ groups:
 
   - name: tsg-dependencies
     rules:
+      # The API (each /ready and scrape) and every worker (each heartbeat) report the stores they reach: by
+      # job, so the alert names which one lost it. SQL Server: the API only.
       - alert: MongoDown
-        expr: min(tsg_dependency_up{name="mongo"}) == 0
+        expr: min by (job) (tsg_dependency_up{name="mongo"}) == 0
         for: 3m
         labels: { severity: critical }
         annotations:
-          summary: MongoDB does not answer the API.
+          summary: MongoDB does not answer the {{ $labels.job }}.
           description: Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL.
       - alert: SqlDown
         expr: min(tsg_dependency_up{name="sql"}) == 0
@@ -191,11 +194,11 @@ groups:
           summary: SQL Server does not answer the API.
           description: Asset and library data cannot be read. Check the SQL Server and its connection settings.
       - alert: RedisDown
-        expr: min(tsg_dependency_up{name="redis"}) == 0
+        expr: min by (job) (tsg_dependency_up{name="redis"}) == 0
         for: 3m
         labels: { severity: critical }
         annotations:
-          summary: Redis does not answer the API.
+          summary: Redis does not answer the {{ $labels.job }}.
           description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
       # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
@@ -279,6 +282,25 @@ groups:
         annotations:
           summary: The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served).
           description: Check SQL Server; the "Errors and exceptions" table shows each library.check_failed line.
+
+  - name: tsg-logs
+    rules:
+      # Alloy gives up on a batch after its retries; Loki refuses lines too old, too long or over its rate. Both
+      # are up, so TargetDown is quiet. Loki makes its counter at its first refusal, already above 0, which
+      # increase() cannot see: a counter new in the last 15 minutes counts too.
+      - alert: LogLinesLost
+        expr: >-
+          sum(increase(loki_write_dropped_entries_total[15m])) > 0
+          or sum(increase(loki_discarded_samples_total[15m])) > 0
+          or count(loki_write_dropped_entries_total > 0 unless loki_write_dropped_entries_total offset 15m)
+          or count(loki_discarded_samples_total > 0 unless loki_discarded_samples_total offset 15m)
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them.
+          description: >-
+            Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate).
+            UAT: oc -n ai-common logs deployment/alloy, then deployment/loki.
 
   - name: tsg-platform
     rules:

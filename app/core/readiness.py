@@ -1,5 +1,5 @@
 """Readiness: every store answers and every routed queue has a live worker, and the MongoDB topology. Read by
-/ready and /metrics (app/api/routers/health.py) and logged at start-up."""
+/ready and /metrics (app/api/routers/health.py) and each worker's heartbeat (its stores); logged at start."""
 
 import asyncio
 import threading
@@ -112,10 +112,22 @@ def check_readiness() -> Readiness:
     """Each store up or down, and live workers per queue; sets tsg_dependency_up and tsg_workers_online.
     A check still running Timeouts.READY_CHECK_SECONDS after it started counts as down."""
     runs, workers_run = _start_runs()
-    pending, left = _still_within_bound([*runs.values(), workers_run])
+    _wait_within_bound([*runs.values(), workers_run])
+    return _results(runs, workers_run)
+
+
+def check_stores(names: Iterable[Dependency]) -> dict[Dependency, bool]:
+    """Each named store up or down, set in tsg_dependency_up: a worker's own view, which no /metrics shows."""
+    runs = {name: _current_run(name, _DEPENDENCY_CHECKS[name]) for name in names}
+    _wait_within_bound(list(runs.values()))
+    return {name: _report_dependency(name, run) for name, run in runs.items()}
+
+
+def _wait_within_bound(runs: list[_Run]) -> None:
+    """Wait for the runs still inside their bound, at most what is left of it."""
+    pending, left = _still_within_bound(runs)
     if pending:
         wait([run.future for run in pending], timeout=left)
-    return _results(runs, workers_run)
 
 
 async def check_readiness_without_a_thread() -> Readiness:
