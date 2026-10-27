@@ -49,7 +49,8 @@ Have all of these ready:
 - [ ] Docker Desktop, started: its window says **Engine running**.
 - [ ] The code: the release's ZIP from GitHub, unpacked (or a git clone). Ask the owner which branch.
 - [ ] For `secrets.yaml` (step 7):
-  - the SQL Server, MongoDB and Redis user names and passwords (ask the owner);
+  - the SQL Server and MongoDB user names and passwords (ask the owner);
+  - five Redis logins, one per part of TSG, with TLS on (ask the Redis owner: "The Redis owner's part" below);
   - the AI gateway key (ask the AI gateway admin; the same key goes in `CII_CHAT_API_KEY`, `CII_EMBEDDING_API_KEY`
     and `CII_RERANK_API_KEY`);
   - the NVD key (free at https://nvd.nist.gov/developers/request-an-api-key), or none;
@@ -60,6 +61,33 @@ Have all of these ready:
       `scripts\sql\grants.sql`. Give the DBA the files from your code folder and wait for their OK. Without them
       the app cannot read its library, and the service mapper cannot read its catalog ("Could not find stored
       procedure").
+
+**The Redis owner's part.** Send the Redis owner these lines. Each makes one Redis user with its own password
+(the owner picks them; the user names may differ too). Each part of TSG logs in as its own user, so a leaked
+password touches one part, and Redis' `ACL LOG` names who did what:
+
+```
+ACL SETUSER tsg-api reset on >PASSWORD ~tsg:* allchannels +@all -@dangerous +info
+ACL SETUSER tsg-worker reset on >PASSWORD ~tsg:* allchannels +@all -@dangerous +info
+ACL SETUSER tsg-beat reset on >PASSWORD ~tsg:* allchannels +@all -@dangerous +info
+ACL SETUSER tsg-flower reset on >PASSWORD ~tsg:* allchannels +@all -@dangerous +info
+ACL SETUSER tsg-exporter reset on >PASSWORD ~tsg:* -@all +@connection +memory -readonly +strlen +config|get +xinfo +pfcount -quit +zcard +type +xlen -readwrite -command +client -wait +scard +llen +hlen +get +eval +slowlog +cluster|info -hello -echo +info +latency +scan -reset -auth -asking
+```
+
+- `tsg-api` (the API), `tsg-worker` (every worker, in both app projects), `tsg-beat` (the scheduler) and
+  `tsg-flower` read and write TSG's keys (all start with `tsg:`) in databases 0 and 1, and run its Lua scripts
+  and `INFO`. They need **every channel** (`allchannels`): Celery subscribes to channel patterns, and Redis
+  compares a pattern letter for letter with the user's channel rules, so `&tsg:*` refuses it and the workers stop.
+- `tsg-exporter` (redis-exporter, the queue lengths in Grafana) only reads: redis_exporter's own list of commands
+  (its README), with read access to `tsg:*`.
+- **TLS** (the URLs are `rediss://`): every TSG pod checks Redis' certificate, and that the certificate names the
+  address in the URLs. Ask that it names `10.228.146.4` (an IP address entry). If it names only a host name, write
+  that name in place of `10.228.146.4` in every Redis URL (step 7). TLS on another port than 6379: tell the
+  developer (the network rules open 6379 only). A certificate from the company's own CA: give the CA file to the
+  developer, who mounts it and points `CII_REDIS_CA_FILE` (configmap.yaml) and redis-exporter's
+  `REDIS_EXPORTER_TLS_CA_CERT_FILE` at it (the deploy files mount none today). No TLS yet: step 7 says what to write.
+- Redis' `maxmemory-policy` must be `noeviction`: any other policy drops keys (a queue, the AI limits) when Redis
+  is full. The API and the workers log it at start-up, as an error when it is not.
 
 ---
 
@@ -290,10 +318,16 @@ notepad deploy\secrets.yaml
 In Notepad, find each word that starts with `CHANGE_ME` (Ctrl+F) and replace **the whole word** with the real value:
 all of `CHANGE_ME_USER` or `CHANGE_ME_PASSWORD`, not only `CHANGE_ME`. Part 1 says where each value comes from.
 Save and close.
-- In the connection strings (`CII_DB_DSN`, `CII_MONGO_URL`, `CII_REDIS_URL`, `CII_REDIS_CELERY_BROKER_URL`), a user
-  name or password with a special character (`@ : / ? # % &`) must be URL-encoded. Run this, type the password,
-  and paste what it prints: `[uri]::EscapeDataString((Read-Host 'Password'))`
-- Redis with a password but no user name: delete `CHANGE_ME_USER` and keep the `:`, e.g. `redis://:<password>@10.228.146.4:6379/0` (in both Redis lines).
+The file holds these Secrets: `tsg-secrets` (the database logins and the keys, written once for three projects),
+one Redis login per part of TSG (`tsg-redis-api`, `tsg-redis-worker`, `tsg-redis-beat`, `tsg-redis-flower`,
+`tsg-redis-exporter`) and `tsg-monitoring` (Grafana's password).
+- In the connection strings (`CII_DB_DSN`, `CII_MONGO_URL`, `CII_REDIS_URL`, `CII_REDIS_CELERY_BROKER_URL`,
+  `REDIS_ADDR`), a user name or password with a special character (`@ : / ? # % &`) must be URL-encoded. Run
+  this, type the password, and paste what it prints: `[uri]::EscapeDataString((Read-Host 'Password'))`
+- Redis: in each `tsg-redis-...` Secret, `CHANGE_ME_<PART>_USER` and `CHANGE_ME_<PART>_PASSWORD` (e.g.
+  `CHANGE_ME_API_USER`) are that part's login from the Redis owner (Part 1), in every line of that Secret. Never
+  leave the user name out: Redis would log it in as its `default` user. Keep `rediss://` (TLS); only while the
+  Redis owner has not turned TLS on, write `redis://` instead, in every Redis URL.
 - The admin key and the Grafana password are yours to make up. This makes one (64 characters):
   `-join (1..2 | ForEach-Object { [guid]::NewGuid().ToString('N') })`
 - No NVD key: delete `CHANGE_ME` so the line reads `CII_NVD_API_KEY: ""`.
@@ -746,15 +780,28 @@ start with `OK` before step 5.
 
 ### Step 5. Apply the secrets and settings (every release; no harm if nothing changed)
 
-First check that your `deploy\secrets.yaml` has every key of the new `deploy\secrets.example.yaml`:
+First check that your `deploy\secrets.yaml` has every Secret and every key of the new
+`deploy\secrets.example.yaml`:
 
 ```powershell
 $mine = Get-Content deploy\secrets.yaml -Raw
-Select-String -Path deploy\secrets.example.yaml -Pattern '^\s+([A-Z_]+):' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Where-Object { $mine -notmatch "\b$_\b" }
+Select-String -Path deploy\secrets.example.yaml -Pattern '^\s+name: (tsg-[\w-]+)', '^\s+([A-Z_]+):' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique | Where-Object { $mine -notmatch "\b$_\b" }
 ```
 
-**You should see:** nothing. A name printed is a new secret: copy its line from `secrets.example.yaml` into your
-`secrets.yaml`, with the real value.
+**You should see:** nothing. Each name printed is missing from your `secrets.yaml`. Fix it, then run the lines
+again:
+- A `tsg-...` name is a new Secret: copy its whole block (from its `- apiVersion: v1` line to the next one) from
+  `secrets.example.yaml` into your `secrets.yaml`, and replace its `CHANGE_ME` words as in Part 2, step 7.
+  Without it, every pod that reads it stops with `CreateContainerConfigError`.
+- Any other name is a new key: copy its line into the same Secret in your `secrets.yaml`, with the real value.
+
+**The release that brings the Redis logins** prints `tsg-redis-api`, `tsg-redis-worker`, `tsg-redis-beat`,
+`tsg-redis-flower`, `tsg-redis-exporter` and `REDIS_ADDR`: from it on, each part of TSG logs in to Redis as its
+own user, over TLS. Get the five logins from the Redis owner first (Part 1, "The Redis owner's part"). Then copy
+every block from the `# Redis logins` comment down to (not including) the `tsg-monitoring` block, and fill them
+in. Keep the Redis lines in your `tsg-secrets` (the new pods read the new Secrets' lines in their place), and ask
+the Redis owner to keep the old login (and plain `redis://`, if TLS is new) until this release is accepted: a
+rollback (Part 5) still uses them.
 
 Then apply both, and restart the monitoring so it loads its new config files (the app pods load the new settings
 in step 7):
@@ -768,9 +815,9 @@ oc -n ai-threatgen rollout restart deployment -l app=monitoring-proxy
 oc -n ai-threatgen get deployment -l app=monitoring-proxy -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
 ```
 
-**You should see:** `configured` or `unchanged` for each secret and setting, then 9 lines ending with
-`successfully rolled out`: 8 in ai-common, then the monitoring proxy. Before the proxy is first deployed (step 7
-creates it), its two lines print `No resources found` instead: that is fine.
+**You should see:** `created` (a new Secret), `configured` or `unchanged` for each secret and setting, then 9
+lines ending with `successfully rolled out`: 8 in ai-common, then the monitoring proxy. Before the proxy is first
+deployed (step 7 creates it), its two lines print `No resources found` instead: that is fine.
 
 **If a line times out:** see Part 5, "If something fails".
 
@@ -858,7 +905,7 @@ the events, in the left column below.
 | `manifest unknown` in a `Failed to pull image` event | That tag is not in Quay. A monitoring image: Part 2, step 3, by name. `tsg-api`: Part 2, steps 4 and 5. |
 | `exceeded quota` | Wait up to 6 minutes (old pods still stopping). Still failing: `oc -n <project> describe quota`, and Part 2, step 2. |
 | `insufficient quota to match these scopes` | The cluster lets a pod's spreading rule look at another project only under a special quota: Part 2, step 2. |
-| `CreateContainerConfigError` | A secret or setting is missing: Part 2, steps 7 and 8. |
+| `CreateContainerConfigError` | A secret or setting is missing: Part 2, steps 7 and 8. After a new release (e.g. `secret "tsg-redis-api" not found`): the check in Part 4, step 5. |
 | `field is immutable` | An older Deployment with the same name is still there. In `ai-threatgen` or `ai-remediation`: Part 2, step 9. In `ai-common` (the chatbot runs there too): run `oc -n ai-common get deployment <name> --show-labels`. If it shows `part-of=tsg-monitoring`, `part-of=tsg` or `app.kubernetes.io/part-of=tsg-observability` (TSG's older label), it is TSG's: run `oc -n ai-common delete deployment <name>` and apply again (the end of Part 2, step 9 removes all the older ones at once). Otherwise it is not TSG's: do not delete it, ask its owner (the chatbot team). |
 | `Pending` | The last lines (Events) of `oc -n <project> describe pod <name>` say why. `unbound ... PersistentVolumeClaims`: run `oc -n <project> get pvc`. A claim that is `Pending` with an empty `STORAGECLASS` means the cluster has no default storage class: ask the cluster admin which one to use (the other claims there show one) and tell the developer, who names it in `deploy\deploy_common.yaml`. With that new file, delete the `Pending` claim (it holds no data yet: `oc -n <project> delete pvc <name>`) and apply again. Otherwise ask the cluster admin for storage. |
 | `/ready` answers `not_ready` (503) | Each `false` in its answer is a missing store or worker. A worker: `oc -n <project> logs deployment/<that worker>` shows why. |
