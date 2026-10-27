@@ -601,6 +601,18 @@
                       "AiRequestRateWaitHigh": {
                         "text": "A model's AI requests wait long for their turn (its requests-a-minute limit)",
                         "index": 23
+                      },
+                      "JobsRetrying": {
+                        "text": "Jobs keep retrying: something they need keeps failing",
+                        "index": 24
+                      },
+                      "JobQueueWaitHigh": {
+                        "text": "Jobs wait long for a worker",
+                        "index": 25
+                      },
+                      "RedisEvictingKeys": {
+                        "text": "Redis is full and drops keys: waiting jobs can be lost",
+                        "index": 26
                       }
                     }
                   }
@@ -1422,7 +1434,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+          "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
           "queryType": "range",
           "maxLines": 500
         }
@@ -1939,7 +1951,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+          "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
           "queryType": "range",
           "maxLines": 500
         }
@@ -5757,7 +5769,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
+          "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .attempt }} (attempt {{ . }}){{ end }}{{ with .ai_task }}  | AI {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .outcome }}  | {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
           "queryType": "range",
           "maxLines": 2000
         }

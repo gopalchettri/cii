@@ -19,7 +19,7 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import LITELLM_MODEL_PREFIX, Controls, Generation, Lease, Queue, ThreatFinding
+from app.core.constants import LITELLM_MODEL_PREFIX, Controls, Generation, Lease, Queue, ThreatFinding, Worker
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -109,8 +109,12 @@ REFERENCES = {
 }
 BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
 CHAT_MODEL_REQUESTS_PER_MINUTE = 192  # kimi-k2.5's own limit on UAT's gateway key (owner, 2026-10-24)
-#: Every worker's startup and liveness probe: the light app.probe module pings this very worker.
-WORKER_PING = ["sh", "-c", 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10']
+#: Every worker's startup and liveness probe: the heartbeat's file exists, then is fresh. No Redis.
+FILE_AGE = f"$(( $(date +%s) - $(stat -c %Y {Worker.LIVENESS_FILE}) ))"
+WORKER_PROBES = {
+    "startupProbe": ["sh", "-c", f"test -f {Worker.LIVENESS_FILE}"],
+    "livenessProbe": ["sh", "-c", f"test {FILE_AGE} -lt {Worker.LIVENESS_MAX_AGE_SECONDS}"],
+}
 KUBERNETES_IO = "kubernetes.io"
 #: The owner's one exception to "no kubernetes.io" (2026-10-24): the node label as a spreading rule's key.
 NODE_TOPOLOGY = ("topologyKey", "kubernetes.io/hostname")
@@ -398,13 +402,21 @@ def test_every_queue_has_a_worker_in_each_app_project() -> None:
             command = _container(deployment)["command"]
             if command[:4] == ["celery", "-A", "app.worker", "worker"]:
                 assert "--pool=threads" in command  # the worker refuses any other pool at start-up
-                # Ready only once it answers its own ping, so rollout status waits until the queue is served.
-                container = _container(deployment)
-                for probe in ("startupProbe", "livenessProbe"):
-                    assert container[probe]["exec"]["command"] == WORKER_PING, (namespace, probe)
                 queues.setdefault(namespace, []).append(command[command.index("-Q") + 1])
-    assert (REPO / "app" / "probe.py").is_file()  # the module the probes load
     assert sorted(queues["ai-threatgen"]) == sorted(queues["ai-remediation"]) == sorted(ROUTED_QUEUES)
+
+
+def test_worker_probes_read_the_heartbeat_file_never_redis() -> None:
+    """A probe that pings through Redis restarts every worker (and kills its jobs) during a 3-minute outage:
+    each worker's startup and liveness probe only reads the file its heartbeat touches."""
+    for namespace, path in APP_FILES.items():
+        for deployment in _objects(path, kind="Deployment"):
+            container = _container(deployment)
+            if container["command"][:4] == ["celery", "-A", "app.worker", "worker"]:
+                for probe, expected in WORKER_PROBES.items():
+                    probe_command = container[probe]["exec"]["command"]
+                    assert probe_command == expected, (namespace, probe)
+                    assert "celery" not in " ".join(probe_command), (namespace, probe)  # no broker call
 
 
 def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_budget() -> None:

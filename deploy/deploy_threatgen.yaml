@@ -11,7 +11,8 @@
 # A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
 # A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
 # update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
-# once the old pod is gone: rollout status only takes longer. A worker is ready once it answers a ping (startupProbe).
+# once the old pod is gone: rollout status only takes longer.
+# A worker is ready once its heartbeat has written /tmp/tsg-worker-alive (startupProbe).
 # Each worker prefers a node its twin in ai-remediation is not on, and the two API pods different nodes, so one node
 # failure stops neither a queue nor the API (preferred only: a pod still starts when no other node fits).
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
@@ -88,7 +89,7 @@ spec:                                            # what to run
             seccompProfile: { type: RuntimeDefault }   # the default system-call filter
 
 # ---------------------------------------------------------------- workers: one Deployment per queue
-# A stopped worker loses nothing: its job goes back to the queue and is picked up again.
+# A stopped worker loses nothing: once its job's lease runs out, the reaper re-sends the job to another worker.
 ---
 apiVersion: apps/v1                              # Deployment API version
 kind: Deployment                                 # keeps one threat-finding worker running
@@ -138,14 +139,14 @@ spec:                                            # what to run
             - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
+            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
+            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
@@ -208,14 +209,14 @@ spec:                                            # what to run
             - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
+            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
+            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
@@ -278,14 +279,14 @@ spec:                                            # what to run
             - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
+            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
+            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
@@ -348,14 +349,14 @@ spec:                                            # what to run
             - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
+            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
+            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
@@ -418,14 +419,14 @@ spec:                                            # what to run
             - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
+            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
+            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
@@ -489,14 +490,14 @@ spec:                                            # what to run
             - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
             - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
           ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
+            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
             initialDelaySeconds: 20              # first check after 20 s
             periodSeconds: 15                    # then every 15 s until it answers
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = this very worker answers through the queue
-            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
+            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
             initialDelaySeconds: 120             # first check after 2 minutes
             periodSeconds: 60                    # then every minute
             timeoutSeconds: 30                   # each check may take 30 s
