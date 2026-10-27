@@ -163,8 +163,9 @@ class WorkControlRepository:
         self, remediation_id: str, entity_id: int, who: dict[str, Any]
     ) -> dict[str, Any] | None:
         """The plan's job stopped while it is queued or running, who and when kept on the plan; with it the
-        controls of its hand-written scenario, which only this plan maps (counts saved). The stopped plan's
-        scenario_id and session_id; None when nothing was stopped."""
+        controls only this plan maps: its hand-written scenario's are cancelled, and a generated one's its job
+        holds go back to the run (_hand_back_plans_claim). Counts saved. The stopped plan's scenario_id and
+        session_id; None when nothing was stopped."""
         now = utc_now()
         plan = self._remediations.collection.find_one_and_update(
             {"_id": remediation_id, "entity_id": entity_id, "status": {"$in": _WORKING}},
@@ -180,10 +181,24 @@ class WorkControlRepository:
         }
         stopped = self._scenarios.collection.update_one(
             own_controls, {"$set": {"controls.status": Status.CANCELLED, "controls.lease_until": None}}
-        )
-        if stopped.modified_count and plan.get("session_id"):
+        ).modified_count
+        handed_back = self._hand_back_plans_claim(plan["scenario_id"])
+        if (stopped or handed_back) and plan.get("session_id"):
             self._sessions.update_scenario_session_counts(plan["session_id"])
         return plan
+
+    def _hand_back_plans_claim(self, scenario_id: str) -> bool:
+        """A generated scenario's controls the stopped plan's job holds, handed back to its run at once (the
+        job's own give-back then finds them taken): cancelled while the run's cancel stands, else queued
+        again. Whether they were."""
+        held = self._scenarios.get_plans_controls_claim(scenario_id)
+        if held is None:
+            return False
+        outcome = Status.CANCELLED if self._sessions.is_cancelled(held["session_id"]) else Status.QUEUED
+        claim = held["controls"]
+        return self._scenarios.update_scenario_controls(
+            scenario_id, claim["task_id"], claim["attempts"], outcome
+        )
 
     def resume_scenario_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
         """A scenario session resumed on purpose: the controls a cancel stopped wait again (how many), and a

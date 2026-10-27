@@ -182,7 +182,8 @@ class RemediationPlanJob:
             self._settle(claimed)
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
-            outcome, freed_error = _freed_controls(claimed, exc)
+            run_cancelled = self._sessions.is_cancelled(claimed["session_id"])
+            outcome, freed_error = _freed_controls(claimed, exc, run_cancelled)
             self._scenarios.update_scenario_controls(
                 scenario_id, task_id, attempts, outcome, error=freed_error
             )
@@ -221,13 +222,18 @@ class _ControlsLease:
         )
 
 
-def _freed_controls(claimed: dict[str, Any], exc: Exception) -> tuple[Status, dict[str, str] | None]:
-    """(outcome, error) of a controls claim given back after `exc`. A stopped job (a lost lease) keeps no
-    error: a hand-written scenario's controls cancelled (only its plan maps them), a generated one's queued
-    again. After an outage or a fault, saying why: a hand-written one's failed, a generated one's queued."""
+def _freed_controls(
+    claimed: dict[str, Any], exc: Exception, run_cancelled: bool
+) -> tuple[Status, dict[str, str] | None]:
+    """(outcome, error) of a controls claim given back after `exc`. Cancelled with no error when stopped on
+    purpose: a generated scenario's while its run's cancel stands, a hand-written one's (only its plan maps
+    them) when the job was stopped (a lost lease). Else a stopped job's queued again with no error; after an
+    outage or a fault, saying why: a hand-written one's failed, a generated one's queued."""
     manual = claimed.get("source") == RunKind.MANUAL
+    if (run_cancelled and not manual) or (manual and isinstance(exc, LeaseLost)):
+        return Status.CANCELLED, None
     if isinstance(exc, LeaseLost):
-        return (Status.CANCELLED if manual else Status.QUEUED), None
+        return Status.QUEUED, None
     error = outage_error(exc) if isinstance(exc, TEMPORARY_ERRORS) else job_error_of(exc)
     return (Status.FAILED if manual else Status.QUEUED), error
 

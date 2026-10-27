@@ -101,8 +101,9 @@ class JobService:
         return SessionDeleted(session_id=run.session_id, **removed)
 
     def cancel_remediation_plan(self, principal: Principal, remediation_id: str) -> PlanCancelled:
-        """Stop a plan being written, with its hand-written scenario's controls (409 when it is not); 404/403
-        come from the route's CallersPlan. The plan's watchers and its run's are told."""
+        """Stop a plan being written, with the controls only it maps (a generated scenario's its job holds go
+        back to the run); 409 when it is not; 404/403 come from the route's CallersPlan. The plan's watchers
+        and its run's are told."""
         plan = self._work_control.cancel_remediation_plan(
             remediation_id, principal.entity_id, _who(principal)
         )

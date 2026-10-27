@@ -169,8 +169,8 @@ _CLAIMED_FIELDS = dict.fromkeys(
 )
 #: The scenarios the sweep looks after: written, never hand-written (those are mapped in their plan request).
 SWEPT = {"status": ScenarioStatus.DONE, "source": {"$ne": RunKind.MANUAL}}
-#: A plan job's controls claim still live at `now`: that mapping is its plan's work.
-_PLANS_LIVE_CLAIM = re.compile(f"{re.escape(Remediation.CONTROLS_CLAIM_SUFFIX)}$")
+#: A plan job's controls claim task id: that mapping is its plan's work.
+_PLANS_CLAIM_TASK_ID = re.compile(f"{re.escape(Remediation.CONTROLS_CLAIM_SUFFIX)}$")
 
 
 def run_controls_to_stop(now: datetime) -> Record:
@@ -181,7 +181,7 @@ def run_controls_to_stop(now: datetime) -> Record:
     }
     plans_claim = {
         "controls.status": Status.RUNNING,
-        "controls.task_id": _PLANS_LIVE_CLAIM,
+        "controls.task_id": _PLANS_CLAIM_TASK_ID,
         "controls.lease_until": {"$gte": now},
     }
     return {**SWEPT, "$and": [MAPPED_VERSIONS, stoppable], "$nor": [plans_claim]}
@@ -331,6 +331,19 @@ class ThreatScenarioRepository(MongoRepository):
             _running(task_id, now),
             projection=_CLAIMED_FIELDS,
             return_document=ReturnDocument.AFTER,
+        )
+
+    def get_plans_controls_claim(self, scenario_id: str) -> Record | None:
+        """tsg_scenarios: a generated scenario while a plan job's claim holds its controls running (its lease
+        live or not): its session_id and the claim's controls.task_id and controls.attempts; else None."""
+        held = {
+            "_id": scenario_id,
+            "source": {"$ne": RunKind.MANUAL},
+            "controls.status": Status.RUNNING,
+            "controls.task_id": _PLANS_CLAIM_TASK_ID,
+        }
+        return self.collection.find_one(
+            held, {"session_id": 1, "controls.task_id": 1, "controls.attempts": 1}
         )
 
     def update_scenario_controls(

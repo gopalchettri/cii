@@ -1,8 +1,9 @@
 """Cancel and delete leave a plan's controls to the plan. A run cancel stops only the run's own controls
 (never a hand-written scenario's, never a plan job's live claim); a plan cancel stops the hand-written
-controls only it maps; the cancel's later writes never touch a next set queued meanwhile; a delete refused
-for plans names them; a plan job stopped meanwhile proposes nothing to the library. Records written straight
-into the test MongoDB."""
+controls only it maps and hands a generated scenario's claim back to the run as the run's cancel left it, as
+the plan job's own give-back does; the cancel's later writes never touch a next set queued meanwhile; a
+delete refused for plans names them; a plan job stopped meanwhile proposes nothing to the library. Records
+written straight into the test MongoDB."""
 
 import random
 import time
@@ -305,6 +306,79 @@ def test_a_stopped_plan_job_gives_a_hand_written_scenarios_controls_back_cancell
     deliver(remediation_id)
     controls = _controls(scenario_id)
     assert (controls["status"], controls.get("error")) == (Status.CANCELLED, None)
+
+
+# --- a plan's claim on a generated scenario goes back to its run as the run's cancel left it
+
+
+def _run_with_a_plans_live_claim(entity_id: int) -> tuple[str, str, str, str]:
+    """(a finished run, its own waiting card, its card a plan job maps now under a live claim, that plan)."""
+    run_id = _run(entity_id, Status.DONE)
+    own, held = _scenario(run_id, entity_id, Status.QUEUED), _scenario(run_id, entity_id, Status.QUEUED)
+    assert container.get_threat_scenario_repository().claim_scenario_controls_by_id(held, PLAN_CLAIM)
+    return run_id, own, held, _plan(entity_id, run_id, held, Status.RUNNING)
+
+
+def test_a_plan_cancel_after_its_runs_cancel_gives_the_claim_back_cancelled(
+    client: TestClient, api_key: str, entity: int
+) -> None:
+    """The run cancel left the card a plan job maps to the plan; the plan's cancel hands it back as the run's
+    cancel left it: cancelled, and the run deletes at once. Before: the delete answered cancel_first naming
+    no plan while the run cancel answered nothing_to_cancel, then the job gave the card back queued for the
+    background to map."""
+    run_id, own, held, plan_id = _run_with_a_plans_live_claim(entity)
+    headers = _who(api_key, entity)
+    assert client.post(f"/v1/sessions/{run_id}/cancel", headers=headers).status_code == 200
+    assert client.post(plan_url(plan_id, "cancel"), headers=headers).status_code == 200
+    for card in (own, held):
+        controls = _controls(card)
+        assert (controls["status"], controls.get("lease_until")) == (Status.CANCELLED, None)
+    deleted = client.delete(f"/v1/sessions/{run_id}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+
+
+def test_a_plan_cancel_gives_the_claim_back_queued_to_a_run_not_cancelled(
+    client: TestClient, api_key: str, entity: int
+) -> None:
+    """The card waits for the run's own mapping again: the delete names no plan, and the run's cancel stops
+    it. Before: it stayed running under the cancelled plan's claim, out of the run cancel's reach."""
+    run_id, _, held, plan_id = _run_with_a_plans_live_claim(entity)
+    headers = _who(api_key, entity)
+    assert client.post(plan_url(plan_id, "cancel"), headers=headers).status_code == 200
+    controls = _controls(held)
+    assert (controls["status"], controls.get("lease_until")) == (Status.QUEUED, None)
+    refused = client.delete(f"/v1/sessions/{run_id}", headers=headers)
+    assert (refused.status_code, refused.json()["details"]) == (409, {"plans_to_cancel": []})
+    assert client.post(f"/v1/sessions/{run_id}/cancel", headers=headers).status_code == 200
+    assert _controls(held)["status"] == Status.CANCELLED
+    assert client.delete(f"/v1/sessions/{run_id}", headers=headers).status_code == 200
+
+
+def test_a_plan_job_fault_gives_a_cancelled_runs_controls_back_cancelled(
+    client: TestClient,
+    api_key: str,
+    entity: int,
+    world: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run was cancelled before its plan's job claimed the card: a fault while mapping gives it back as
+    the run's cancel left it. Before: queued again, so the sweep sent the cancelled run's mapping."""
+    remediation_id, scenario_id = _requested_plan(client, api_key, entity)
+    run_id = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})["session_id"]
+    assert client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity)).status_code == 200
+
+    def mapper_fault(*_args: Any) -> None:
+        raise RuntimeError("mapper fault")
+
+    monkeypatch.setattr(world["mapper"], "map_controls", mapper_fault)
+    deliver(remediation_id)
+    controls = _controls(scenario_id)
+    assert controls["task_id"].endswith(Remediation.CONTROLS_CLAIM_SUFFIX)  # the plan job claimed it
+    assert (controls["status"], controls.get("lease_until"), controls.get("error")) == (
+        Status.CANCELLED,
+        None,
+        None,
+    )
 
 
 # --- a delete refused for plans names them

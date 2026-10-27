@@ -246,6 +246,15 @@ class ThreatScenarioSessionRepository(MongoRepository):
         found = self.collection.find_one({"_id": session_id}, {DELETING_MARK: 1})
         return found is None or DELETING_MARK in found
 
+    def is_cancelled(self, session_id: str) -> bool:
+        """Whether the owner's cancel stands on the scenario session: its job stopped, or its controls (the
+        `cancelled` stamp, cleared by a resume or a new action)."""
+        # ponytail: read before a plan's claim is handed back; a run cancel landing between this read and
+        # that write leaves the card queued (a second run cancel stops it). Keeping the cancel on the card
+        # closes it.
+        stands = {"_id": session_id, "$or": [{"status": Status.CANCELLED}, {"cancelled": {"$ne": None}}]}
+        return self.collection.find_one(stands, {"_id": 1}) is not None
+
     def claim_controls_delivery(self, session_id: str, task_id: str) -> Record | None:
         """tsg_sessions: the session's delivery lease for `task_id` when free, expired, handed over or
         already its own, never for a cancelled session; its frozen context and job.request_id, or None while
