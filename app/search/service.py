@@ -90,7 +90,7 @@ class _SnapshotKeeper:
         except BaseException as exc:  # noqa: BLE001 — an interrupt too: no waiting caller waits for ever
             if isinstance(exc, Exception):
                 self._retry_at = time.monotonic() + Cache.LIBRARY_STAMP_EVERY_SECONDS
-                log.warning(LogEvent.LIBRARY_INDEXES_BUILD_FAILED, error=str(exc), exc_info=True)
+                log.warning(LogEvent.LIBRARY_INDEXES_BUILD_FAILED, message=str(exc), exc_info=True)
             self._forget_build(outcome)
             outcome.set_exception(exc)  # raised by every caller's wait
         else:

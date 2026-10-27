@@ -138,7 +138,7 @@ def store_unavailable_answer(
     """A driver error meaning the store is unreachable: 503 + Retry-After, never a 500."""
 
     async def answer_store_unavailable(request: Request, exc: Exception) -> JSONResponse:
-        log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=dependency, error=str(exc))
+        log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=dependency, message=str(exc))
         outage = Unavailable(message)
         return build_problem_response(
             request, outage.status, outage.code, outage.detail, retry_after=outage.retry_after

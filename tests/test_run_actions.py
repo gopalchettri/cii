@@ -433,7 +433,7 @@ def test_a_regenerated_copy_of_another_path_is_kept_hidden_and_the_old_version_s
     assert old["superseded_by"] is None and old["regenerate_error"]["code"] == ErrorCode.SCENARIO_BLOCKED
     assert FindingCode.NEAR_DUPLICATE in old["regenerate_error"]["message"]
     [failed] = [line for line in logs if line["event"] == LogEvent.WRITER_REGENERATE_FAILED]
-    assert FindingCode.NEAR_DUPLICATE in failed["reason"]
+    assert FindingCode.NEAR_DUPLICATE in failed["message"] and "reason" not in failed  # reason: codes only
 
 
 @pytest.mark.usefixtures("sent")

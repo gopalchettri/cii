@@ -123,7 +123,7 @@ def _short(line: str) -> str:
     except ValueError:
         return line  # beat's plain-text lines
     keys = ["timestamp", "level", "event", "status", "route", "record_id", "task_id", "attempt", "outcome"]
-    keys += ["code", "error", "reason", "message"]  # why a job or an AI call ended
+    keys += ["code", "reason", "message", "error_type"]  # why a job or an AI call ended
     return "  ".join(f"{key}={fields[key]}" for key in keys if fields.get(key) not in (None, ""))
 
 

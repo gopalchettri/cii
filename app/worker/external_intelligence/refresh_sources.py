@@ -198,7 +198,7 @@ class SourceRefresher:
         self._audit.create_audit_record(
             AuditAction.EXTERNAL_INTELLIGENCE_REFRESH_FAILED, _ACTOR, _target(source), after={"error": reason}
         )
-        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SOURCE_FAILED, source=source, error=reason)
+        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SOURCE_FAILED, source=source, message=reason)
         return SourceRefresh(source, RefreshResult.FAILED, error=reason)
 
 

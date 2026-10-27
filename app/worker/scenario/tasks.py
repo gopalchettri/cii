@@ -54,7 +54,7 @@ def map_controls(self: Task, record_id: str, epoch: int) -> None:
         container.get_controls_job().note_controls_outage(record_id, self.request.id, exc, retries + 1, delay)
         if last:
             log.warning(
-                LogEvent.JOB_NOT_CLAIMED, reason="outage_retries_used", retries=retries, error=str(exc)
+                LogEvent.JOB_NOT_CLAIMED, reason="outage_retries_used", attempt=retries + 1, message=str(exc)
             )
             return
         raise self.retry(countdown=delay, exc=exc, priority=Worker.NEXT_STAGE_PRIORITY) from exc

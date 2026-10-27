@@ -212,7 +212,7 @@ class JobRepository:
                 "due_in_seconds": round((job["due_at"] - utc_now()).total_seconds(), 1),
             }
         if status == Status.RUNNING:
-            return {"reason": "leased", "worker": job.get("worker")}
+            return {"reason": "leased", "job_worker": job.get("worker")}
         return {"reason": f"status_{status}"}
 
     def list_recent_jobs(

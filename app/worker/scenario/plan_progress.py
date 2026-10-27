@@ -68,7 +68,7 @@ class PlanProgress:
         """Give a path up for good, logged and counted with its last `card`; when the set's budget allows and
         a reserve exists, the reserve takes its place in the same fenced write. Return its id, or None."""
         log.warning(
-            LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"], reason=reason
+            LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, path_attempts=state["attempts"], reason=reason
         )
         counted = (ScenarioOutcome.ABANDONED,) if card is None else (card, ScenarioOutcome.ABANDONED)
         states = {path_id: state | {"abandoned_reason": reason, "settled_epoch": self._lease.epoch}}

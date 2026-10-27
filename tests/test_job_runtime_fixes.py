@@ -133,6 +133,7 @@ def test_a_worker_that_cannot_start_logs_why_before_it_exits(monkeypatch: pytest
     assert [(line["event"], line["log_level"], line["exc_info"]) for line in logs] == [
         (LogEvent.WORKER_START_FAILED, "error", False)
     ]
+    assert "--pool=threads" in logs[0]["message"] and "reason" not in logs[0]  # free text, not a reason code
 
     def bad_log_dir(*_args: object) -> None:
         raise OSError("no such directory")

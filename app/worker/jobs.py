@@ -239,7 +239,7 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
             LogEvent.JOB_RETRY_SCHEDULED,
             record_id=lease.record_id,
             delay_seconds=delay,
-            error=str(exc),
+            message=str(exc),
             reason=outage_reason(exc),
         )
         publish(lease.record_id)

@@ -290,7 +290,7 @@ class PathSaver:
         self, target_id: str, code: ErrorCode, message: str, reason: AiOutage | None = None
     ) -> None:
         """Log why a regenerate wrote no new version and note it on the old one, with the AI outage if one."""
-        log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, reason=message)
+        log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, message=message)
         error = {"code": code, "message": message, "at": utc_now()}
         error |= {"reason": reason} if reason else {}
         changes = {"regenerate_error": error, "updated_at": error["at"]}

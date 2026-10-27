@@ -2345,7 +2345,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error_type }}{{ .error_type }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -2862,7 +2862,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error_type }}{{ .error_type }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }

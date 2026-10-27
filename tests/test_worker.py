@@ -655,7 +655,7 @@ def test_a_delivery_that_cannot_claim_its_job_logs_why() -> None:
     not_due = why(queued)
     assert not_due["reason"] == "not_due" and 370 < not_due["due_in_seconds"] <= 376
     running = _insert_job(Status.RUNNING, worker="celery@worker-threats", lease_until=datetime.now(UTC))
-    assert why(running) == {"reason": "leased", "worker": "celery@worker-threats"}
+    assert why(running) == {"reason": "leased", "job_worker": "celery@worker-threats"}
     assert why(_insert_job(Status.FAILED)) == {"reason": "status_failed"}
     with capture_logs() as logs, pytest.raises(Ignore):
         jobs.run_leased_job(_task("early"), Collection.SESSIONS, queued, 1, lambda _lease: None)

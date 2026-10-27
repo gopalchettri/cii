@@ -209,7 +209,7 @@ class BatchWriter:
         )
         if not paths_own_outage:
             raise_most_retryable(errors)
-        log.warning(LogEvent.WRITER_OUTAGE_SETTLED, paths=list(outages), attempts=self._lease.attempts)
+        log.warning(LogEvent.WRITER_OUTAGE_SETTLED, paths=list(outages))  # the bound `attempt` is this try
         tries = self._lease.attempts
         for path_id, error in outages.items():  # an evidence outage keeps its own message
             outage = outage_reason(error)

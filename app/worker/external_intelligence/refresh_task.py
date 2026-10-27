@@ -60,7 +60,7 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
             else:
                 summary = refresher().refresh_one_source(source, now)
     except Exception as exc:
-        log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
+        log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, record_id=job_id, exc_info=True)
         if not jobs.update_admin_job_finished(job_id, utc_now(), error=job_error_of(exc)):
             raise Ignore from exc  # cancelled or abandoned meanwhile: that outcome stands
         raise

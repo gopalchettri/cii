@@ -587,7 +587,7 @@ class _CategoryJudge:
         if isinstance(error, UnreadableAiAnswer) and not self._last_attempt:
             self._unavailable.set()
             raise Unavailable(str(error)) from error
-        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, category=category, check=check, error=str(error))
+        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, category=category, check=check, message=str(error))
 
     def _propose(self, audit: CategoryAudit) -> tuple[PlannedThreat | None, dict[str, Any] | None]:
         """The AI's one proposal, kept when it is no library threat already judged, its type matches a library

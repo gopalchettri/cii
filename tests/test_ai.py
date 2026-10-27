@@ -89,7 +89,7 @@ def test_provider_outage_becomes_unavailable(monkeypatch: pytest.MonkeyPatch) ->
         _ask(_chat_model(), AiTask.RELEVANCE_GATE)
     # S29 review (G125): the outage's kind is logged (a rate limit told from a timeout), never its text.
     outage = next(entry for entry in logs if entry["event"] == "ai.call_unavailable")
-    logged = (outage["error"], outage["status"], outage["model"], outage["reason"])
+    logged = (outage["error_type"], outage["status"], outage["model"], outage["reason"])
     assert logged == ("RateLimitError", 429, "test-chat", AiOutage.BUSY)
     assert "gw-7" not in str(outage)
 
@@ -1033,7 +1033,7 @@ def test_a_usable_first_answer_is_kept_when_the_re_ask_finds_the_ai_busy(
     with capture_logs() as logs:
         kept = chat.ask_for_checked_json(AiTask.RELEVANCE_GATE, "s", "u", _needs_relevant, faulted)
     assert kept == {"relevant": True}
-    assert [entry["reask_error"] for entry in logs if entry["event"] == "ai.first_answer_kept"] == [
+    assert [entry["error_type"] for entry in logs if entry["event"] == "ai.first_answer_kept"] == [
         "Unavailable"
     ]
     replies = iter(['{"relevant": "maybe"}'])

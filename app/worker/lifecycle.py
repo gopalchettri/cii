@@ -56,10 +56,10 @@ def prepare_worker(sender: Any, **_: object) -> None:
     warm_up_external_intelligence(sender)  # before Celery starts the consumer and sends worker_ready
 
 
-def _start_failed(reason: str) -> SystemExit:
+def _start_failed(message: str) -> SystemExit:
     """Log why this process cannot start (with the exception in hand, if any); the SystemExit to raise."""
-    log.error(LogEvent.WORKER_START_FAILED, reason=reason, exc_info=sys.exc_info()[1] is not None)
-    return SystemExit(reason)
+    log.error(LogEvent.WORKER_START_FAILED, message=message, exc_info=sys.exc_info()[1] is not None)
+    return SystemExit(message)
 
 
 def _serve_metrics(pool: str) -> None:

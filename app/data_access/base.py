@@ -288,7 +288,7 @@ def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> No
         else:
             database.create_collection(name, **options)
     except PyMongoError as error:  # an older server or no collMod right: start-up goes on without it
-        log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, error=str(error))
+        log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, message=str(error))
 
 
 class VectorRepository(MongoRepository):

@@ -624,7 +624,7 @@ def check_against_plan(
             reuse_earlier_answer=True,  # temperature 0: a retry's same ask gets the same answer, so read back
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, error=str(exc))
+        log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, message=str(exc))
         reason = shorten_text(str(exc), Writing.PROBLEM_MAX_CHARS)
         warning = Finding(
             FindingCode.PLAN_CHECK_NOT_MADE, FindingMessage.PLAN_CHECK_NOT_MADE.format(reason=reason)
@@ -707,7 +707,7 @@ def split_threat_actions(chat: ChatModel, threat: str) -> tuple[str, ...]:
             chat, AiTask.THREAT_ACTIONS, prompt, _read_threat_actions, reuse_earlier_answer=True
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(LogEvent.WRITER_THREAT_ACTIONS_NOT_SPLIT, error=str(exc))
+        log.warning(LogEvent.WRITER_THREAT_ACTIONS_NOT_SPLIT, message=str(exc))
         return ()
     return actions
 
@@ -781,7 +781,7 @@ def _repaired(chat: ChatModel, brief: WriterBrief, first: WrittenScenario) -> Wr
     try:
         repair = _reviewed(chat, brief, _drafted(chat, AiTask.REPAIR_SCENARIO, brief, prompt))
     except (Unavailable, UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", error=type(exc).__name__)
+        log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", error_type=type(exc).__name__)
         return first
     fixed = _fixes(repair, first)
     log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")

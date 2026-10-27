@@ -655,7 +655,7 @@ def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_rep
 
 
 @pytest.mark.parametrize(
-    ("repairs", "checks", "calls", "error"),
+    ("repairs", "checks", "calls", "error_type"),
     [
         ([draft_answer(_CLEAN)], [_ONE_MISSING], _REVIEWED, None),  # still missing: no second repair
         ([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED], _REVIEWED, None),
@@ -671,7 +671,7 @@ def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_rep
     ],
 )
 def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_note(
-    repairs: list[Any], checks: list[Any], calls: list[AiTask], error: str | None
+    repairs: list[Any], checks: list[Any], calls: list[AiTask], error_type: str | None
 ) -> None:
     """Still missing or left unjudged, a new broken rule, another threat, blocked, not reviewed, an outage or
     an unusable answer: the first."""
@@ -682,7 +682,7 @@ def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_n
     assert [finding.message for finding in written.findings] == [_MISSING_NOTE]
     assert written.plan_check.actions_not_carried_out == ("hiding the change",)
     (logged,) = [log for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED]
-    assert (logged["outcome"], logged.get("error")) == ("kept_first", error)
+    assert (logged["outcome"], logged.get("error_type")) == ("kept_first", error_type)
 
 
 _PUSH = _CLEAN.statement  # the sentence in which the attacker pushes the firmware
