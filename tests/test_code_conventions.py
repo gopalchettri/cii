@@ -30,6 +30,8 @@ LOG_FIELD_SYNONYMS = {
     "sends": "resends (the reaper's re-sends of a job that never started)",
     "job_id": "record_id (the record a job runs on, an admin job's too)",
     "error": "message (its text) or error_type (its class name)",
+    "cause": "message (its text) or error_type (its class name)",
+    "reask_error": "error_type (its class name)",
 }
 
 #: Which layers each layer may import (BLUEPRINT §5): the diagram's arrows. A layer always may import itself.
@@ -151,15 +153,25 @@ def _log_field_names(call: ast.Call) -> list[str]:
     return [keyword.arg for keyword in call.keywords if keyword.arg] + spread
 
 
+def _is_log_call(call: ast.Call) -> bool:
+    """A structlog call: by its method's name, or by its first argument, an event (`write(LogEvent.X)`)."""
+    if isinstance(call.func, ast.Attribute) and call.func.attr in LOG_FIELD_CALLS:
+        return True
+    first = call.args[0] if call.args else None
+    return (
+        isinstance(first, ast.Attribute)
+        and isinstance(first.value, ast.Name)
+        and first.value.id.endswith("Event")
+    )
+
+
 def test_every_log_field_has_one_name_per_meaning() -> None:
     """The log panels and debug_tools.py read one name per meaning; `reason` is a code, text is `message`."""
     calls = [
         (source, node)
         for source in APP_SOURCES
         for node in ast.walk(_tree(source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in LOG_FIELD_CALLS
+        if isinstance(node, ast.Call) and _is_log_call(node)
     ]
     assert len(calls) > 100, f"the guard sees {len(calls)} log calls"
     offenders = [

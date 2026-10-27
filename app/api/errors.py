@@ -97,8 +97,14 @@ async def answer_app_error(request: Request, exc: Exception) -> JSONResponse:
     if exc.status >= 500:
         # With the driver's own error: a rotated password and a short outage both answer 503, and only the
         # cause tells them apart.
-        cause = repr(exc.__cause__) if exc.__cause__ is not None else None
-        log.warning(LogEvent.HTTP_APP_ERROR, code=exc.code, detail=exc.detail, cause=cause)
+        cause = exc.__cause__
+        log.warning(
+            LogEvent.HTTP_APP_ERROR,
+            code=exc.code,
+            detail=exc.detail,
+            error_type=type(cause).__name__ if cause is not None else None,
+            message=str(cause) if cause is not None else None,
+        )
     return build_problem_response(
         request,
         exc.status,
