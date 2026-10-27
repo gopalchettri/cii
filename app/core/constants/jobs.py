@@ -41,25 +41,6 @@ TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Cele
 ROUTED_QUEUES: Final[tuple[str, ...]] = tuple(sorted({route["queue"] for route in TASK_ROUTES.values()}))
 
 
-class AdminJobKind(StrEnum):
-    """What an admin job does (tsg_admin_jobs.kind); one of each kind at a time."""
-
-    EMBEDDINGS_BUILD = "embeddings_build"  # the library's vectors made now, not at the next build
-    INTEL_REFRESH = "intel_refresh"  # external intelligence sources read now, not at the next check
-
-
-class AdminJobs:
-    STALE_AFTER_SECONDS: Final = 3_600  # a job not started this long is abandoned: a new request takes over
-    KEEP_DAYS: Final = 90  # tsg_admin_jobs retention (TTL on created_at)
-
-
-class AdminJobMessage(StrEnum):
-    IN_PROGRESS = "An embeddings build is already queued or running: details.job_id names it."
-    NOT_FOUND = "Admin job '{job_id}' does not exist."
-    NOT_SENT = "The job queue is unreachable: the build was not started. Try again shortly."
-    ABANDONED = "Its worker stopped (or it never started in {seconds} s): marked failed; a new one can start."
-
-
 class Event(StrEnum):
     """Names of the server-sent events (the `event:` line of each message)."""
 

@@ -10,4 +10,5 @@ from app.core.constants.jobs import *  # noqa: F403
 from app.core.constants.planning import *  # noqa: F403
 from app.core.constants.remediation import *  # noqa: F403
 from app.core.constants.scenario import *  # noqa: F403
+from app.core.constants.service_mapper import *  # noqa: F403
 from app.core.constants.timing import *  # noqa: F403
