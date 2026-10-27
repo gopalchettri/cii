@@ -373,6 +373,7 @@ def get_work_control_repository() -> WorkControlRepository:
         get_threat_scenario_session_repository(),
         get_threat_scenario_repository(),
         get_remediation_repository(),
+        get_mapping_repository(),
     )
 
 

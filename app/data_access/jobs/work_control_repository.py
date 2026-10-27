@@ -1,6 +1,7 @@
 """Job control across tsg_sessions, tsg_scenarios and tsg_remediations: the owner's cancel, resume and delete
-of scenario sessions and remediation plans, and the controls sweep. It writes through each owning
-repository's collection: a session first, then its cards."""
+of scenario sessions and remediation plans, and the controls sweep; the list of work also reads
+tsg_service_mappings. It writes through each owning repository's collection: a session first, then its
+cards."""
 
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
@@ -24,6 +25,7 @@ from app.data_access.scenario.threat_scenario_session_repository import (
     DELETING_MARK,
     ThreatScenarioSessionRepository,
 )
+from app.data_access.service_mapper.mapping_repository import MappingRepository
 
 _WORKING = [Status.QUEUED, Status.RUNNING]
 _LISTED_FIELDS = dict.fromkeys(
@@ -44,6 +46,7 @@ _SCENARIO_SESSION_FIELDS = _LISTED_FIELDS | dict.fromkeys(
     ("context.asset.name", "step", "job.task", "counts", "controls_delivery.retry"), 1
 )
 _REMEDIATION_PLAN_FIELDS = _LISTED_FIELDS | dict.fromkeys(("session_id", "scenario_id"), 1)
+_SERVICE_MAPPING_FIELDS = _LISTED_FIELDS | {"created_by": 1}
 #: The status's summary of each kind of action: a cancel ends it as cancelled.
 _SUMMARY_OF: dict[str, str] = {
     RunActionKind.NEXT_SET: "last_next_set",
@@ -69,17 +72,19 @@ Recount = Callable[[str], object]
 
 
 class WorkControlRepository:
-    """An organisation's work in progress (tsg_sessions, tsg_scenarios, tsg_remediations) and its owner's
-    controls over it: cancel (stop now, keep what is done), resume, and delete (gone for good). Every write
-    is scoped to the caller's entity."""
+    """An organisation's work in progress (tsg_sessions, tsg_scenarios, tsg_remediations,
+    tsg_service_mappings) and its owner's controls over its runs and plans: cancel (stop now, keep what is
+    done), resume, and delete (gone for good). Every write is scoped to the caller's entity."""
 
     def __init__(
         self,
         sessions: ThreatScenarioSessionRepository,
         scenarios: ThreatScenarioRepository,
         remediations: RemediationRepository,
+        mappings: MappingRepository,
     ) -> None:
         self._sessions, self._scenarios, self._remediations = sessions, scenarios, remediations
+        self._mappings = mappings
 
     def list_working_scenario_sessions(self, entity_id: int) -> Found:
         """The entity's scenario sessions whose job is queued or running, and the finished ones whose controls
@@ -93,6 +98,11 @@ class WorkControlRepository:
         """The entity's remediation plans being written (queued or running)."""
         query = {"entity_id": entity_id, "status": {"$in": _WORKING}}
         return _oldest_first(self._remediations.collection, _REMEDIATION_PLAN_FIELDS, (query,))
+
+    def list_working_service_mappings(self, tenant_id: str, entity_id: int) -> Found:
+        """The tenant entity's service mappings being generated (queued or running)."""
+        query = {"tenant_id": tenant_id, "entity_id": entity_id, "status": {"$in": _WORKING}}
+        return _oldest_first(self._mappings.collection, _SERVICE_MAPPING_FIELDS, (query,))
 
     def cancel_scenario_session(
         self, session_id: str, entity_id: int, who: dict[str, Any]

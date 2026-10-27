@@ -38,6 +38,7 @@ from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.data_access.service_mapper.mapping_repository import MappingRepository
 from app.domain.scenario.review import cancel_stamp_seen
 from app.models.admin.api_clients import Principal
 from app.services.jobs.job_service import JobService
@@ -93,7 +94,9 @@ def _work_control(remediations: RemediationRepository | None = None) -> WorkCont
     """A job control of the test's own on the test database, so a test can patch it."""
     scenarios = ThreatScenarioRepository()
     sessions = ThreatScenarioSessionRepository(scenarios=scenarios)
-    return WorkControlRepository(sessions, scenarios, remediations or RemediationRepository())
+    return WorkControlRepository(
+        sessions, scenarios, remediations or RemediationRepository(), MappingRepository()
+    )
 
 
 def _who(api_key: str, entity_id: int) -> dict[str, str]:

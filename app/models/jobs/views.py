@@ -51,6 +51,7 @@ class JobView(BaseModel):
     kind: JobKind
     session_id: str | None
     remediation_id: str | None = None
+    mapping_id: str | None = None  # a service mapping's
     asset_id: int | None
     asset_name: str | None = None
     status: Status  # queued or running
@@ -58,12 +59,12 @@ class JobView(BaseModel):
     created_at: datetime | None
     attempts: int = 0
     user_id: str | None = None
-    progress: JobProgress | None = None  # a run's; None for a remediation plan
+    progress: JobProgress | None = None  # a run's; None for a remediation plan or a service mapping
     retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
 
 
 class JobList(BaseModel):
-    jobs: list[JobView]  # oldest first; at most JobControl.LIST_MAX runs and as many plans
+    jobs: list[JobView]  # oldest first; at most JobControl.LIST_MAX of each kind (runs, plans, mappings)
     total: int  # all of them, though the list was cut
 
 

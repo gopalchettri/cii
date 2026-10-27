@@ -17,6 +17,8 @@ class MappingRepository(MongoRepository):
             collection,
             indexes=(
                 {"keys": [("tenant_id", 1), ("entity_id", 1), ("created_at", -1)]},
+                # the entity's mappings being generated, oldest first: GET /v1/jobs
+                {"keys": [("tenant_id", 1), ("entity_id", 1), ("status", 1), ("created_at", 1)]},
                 {
                     "keys": [("tenant_id", 1), ("entity_id", 1), ("create_key", 1)],
                     "unique": True,

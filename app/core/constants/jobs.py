@@ -121,6 +121,7 @@ class JobKind(StrEnum):
     SCENARIOS = "scenarios"  # writing a run's scenarios (a set, or a regenerate)
     CONTROLS = "controls"  # matching controls to a run's written scenarios
     REMEDIATION = "remediation"  # writing one version of a remediation plan
+    SERVICE_MAPPING = "service_mapping"  # generating one version of a service mapping
 
 
 class JobControl:

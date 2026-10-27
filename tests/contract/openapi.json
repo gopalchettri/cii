@@ -1667,7 +1667,8 @@
      "threats",
      "scenarios",
      "controls",
-     "remediation"
+     "remediation",
+     "service_mapping"
     ],
     "title": "JobKind",
     "type": "string"
@@ -1789,6 +1790,17 @@
      },
      "kind": {
       "$ref": "#/components/schemas/JobKind"
+     },
+     "mapping_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Mapping Id"
      },
      "progress": {
       "anyOf": [
@@ -7259,7 +7271,7 @@
   },
   "/v1/jobs": {
    "get": {
-    "description": "My entity's runs and plans that are queued or running, oldest first.",
+    "description": "My entity's runs, plans and service mappings that are queued or running, oldest first.",
     "operationId": "list_jobs_v1_jobs_get",
     "parameters": [
      {

@@ -1,5 +1,6 @@
-"""An organisation's control over its own work: list what is queued or running, cancel a run or a plan (what
-is done stays), delete a run for good. Each change is announced to live watchers and audited."""
+"""An organisation's control over its own work: list what is queued or running (runs, plans and service
+mappings), cancel a run or a plan (what is done stays), delete a run for good. Each change is announced to
+live watchers and audited."""
 
 from typing import Any
 
@@ -49,14 +50,17 @@ class JobService:
         self._publish_remediation_status = publish_remediation_status
 
     def list_jobs(self, principal: Principal) -> JobList:
-        """The caller's runs and remediation plans queued or running (a run also while its controls are being
-        matched), oldest first; `total` counts them all, though the list shows at most JobControl.LIST_MAX
-        runs and as many plans."""
-        runs, run_total = self._work_control.list_working_scenario_sessions(principal.entity_id)
-        plans, plan_total = self._work_control.list_working_remediation_plans(principal.entity_id)
+        """The caller's runs, remediation plans and service mappings queued or running (a run also while its
+        controls are being matched), oldest first; `total` counts them all, though the list shows at most
+        JobControl.LIST_MAX of each kind."""
+        work = self._work_control
+        runs, run_total = work.list_working_scenario_sessions(principal.entity_id)
+        plans, plan_total = work.list_working_remediation_plans(principal.entity_id)
+        mappings, mapping_total = work.list_working_service_mappings(principal.tenant_id, principal.entity_id)
         jobs = [_run_job(record) for record in runs] + [_plan_job(record) for record in plans]
+        jobs += [_mapping_job(record) for record in mappings]
         jobs.sort(key=lambda job: (job.created_at is None, job.created_at))
-        return JobList(jobs=jobs, total=run_total + plan_total)
+        return JobList(jobs=jobs, total=run_total + plan_total + mapping_total)
 
     def cancel_threat_scenario_session(self, principal: Principal, run: SessionStatus) -> RunBoard:
         """Stop the run now: its job, and the controls still being matched for its scenarios. What is written
@@ -146,5 +150,22 @@ def _plan_job(record: dict[str, Any]) -> JobView:
         created_at=record.get("created_at"),
         attempts=job.get("attempts") or 0,
         user_id=record.get("user_id"),
+        retrying=retry_notice_of(record["status"], job.get("retry")),
+    )
+
+
+def _mapping_job(record: dict[str, Any]) -> JobView:
+    """A service mapping being generated as the list shows it."""
+    job = record.get("job") or {}
+    return JobView(
+        kind=JobKind.SERVICE_MAPPING,
+        session_id=None,
+        mapping_id=record["_id"],
+        asset_id=None,
+        status=record["status"],
+        queued_at=job.get("due_at"),
+        created_at=record.get("created_at"),
+        attempts=job.get("attempts") or 0,
+        user_id=record.get("created_by"),
         retrying=retry_notice_of(record["status"], job.get("retry")),
     )

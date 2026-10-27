@@ -403,6 +403,7 @@
   "CONTROLS": "controls",
   "REMEDIATION": "remediation",
   "SCENARIOS": "scenarios",
+  "SERVICE_MAPPING": "service_mapping",
   "THREATS": "threats"
  },
  "LibraryBanner": {
