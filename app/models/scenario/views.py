@@ -548,5 +548,6 @@ class RunResults(BaseModel):
     asset_name: str | None
     user_id: str | None
     progress: Progress
+    error: RunError | None = None  # as the run's status shows it: only once the run has failed
     scenarios: list[ScenarioView]
     total: int  # every match, for paging (offset + limit)

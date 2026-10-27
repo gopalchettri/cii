@@ -46,7 +46,7 @@ TASK_MODULES = [
 
 celery_app = Celery("tsg", broker=settings.redis_celery_broker_url, include=TASK_MODULES)
 celery_app.conf.update(
-    shared_celery_conf(),  # the probe's too (app/probe.py): encoding and broker options
+    shared_celery_conf(),  # encoding and broker options, shared with every sender
     task_routes=TASK_ROUTES,
     task_default_queue=Queue.MAINTENANCE,
     task_acks_late=True,  # acknowledged when the task ends: a worker that dies mid-task loses nothing

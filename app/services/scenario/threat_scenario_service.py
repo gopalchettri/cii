@@ -238,6 +238,7 @@ class ThreatScenarioService:
         return RunResults(
             **header,
             progress=board.progress,
+            error=board.error,
             scenarios=page.scenarios,
             total=page.total,
         )

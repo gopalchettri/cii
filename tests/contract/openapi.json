@@ -1532,6 +1532,17 @@
       ],
       "title": "Refresh Job Id"
      },
+     "refresh_not_queued": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Refresh Not Queued"
+     },
      "source": {
       "$ref": "#/components/schemas/IntelSource"
      }
@@ -1605,6 +1616,17 @@
      "env_enabled": {
       "title": "Env Enabled",
       "type": "boolean"
+     },
+     "refresh_not_queued": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Refresh Not Queued"
      },
      "runtime_enabled": {
       "title": "Runtime Enabled",
@@ -2647,9 +2669,43 @@
       "title": "Kind",
       "type": "string"
      },
+     "lease_until": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Lease Until"
+     },
      "module": {
       "title": "Module",
       "type": "string"
+     },
+     "request_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Request Id"
+     },
+     "resends": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Resends"
      },
      "retrying": {
       "anyOf": [
@@ -3806,8 +3862,15 @@
       "title": "Waiting"
      },
      "workers_online": {
-      "title": "Workers Online",
-      "type": "integer"
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Workers Online"
      }
     },
     "required": [
@@ -4408,6 +4471,16 @@
       "title": "Entity Id",
       "type": "integer"
      },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RunError"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "progress": {
       "$ref": "#/components/schemas/app__models__scenario__views__Progress"
      },
@@ -4446,6 +4519,35 @@
      "updated_at"
     ],
     "title": "RunBoard",
+    "type": "object"
+   },
+   "RunError": {
+    "description": "Why a run failed: its job's error code and message, and the AI outage that failed it, if one did.",
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AiOutage"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "RunError",
     "type": "object"
    },
    "RunKind": {
@@ -4491,6 +4593,16 @@
      "entity_id": {
       "title": "Entity Id",
       "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RunError"
+       },
+       {
+        "type": "null"
+       }
+      ]
      },
      "progress": {
       "$ref": "#/components/schemas/app__models__scenario__views__Progress"
@@ -6246,7 +6358,7 @@
   },
   "/ready": {
    "get": {
-    "description": "200 `ready` when MongoDB and Redis answer and every queue has a live worker; else 503 `not_ready`,\nnaming what is down. SQL Server is reported but never fails readiness: only the library routes need it,\nand a 503 here would take every route out of service. No key.",
+    "description": "200 `ready` when MongoDB answers, else 503 `not_ready`. Redis, SQL Server and live workers per queue\nare reported but never fail readiness: each serves only some routes, and a 503 here would take every\nroute out of service. No key.",
     "operationId": "report_readiness_ready_get",
     "responses": {
      "200": {
@@ -6266,7 +6378,7 @@
   },
   "/v1/admin/jobs": {
    "get": {
-    "description": "Every job of every kind (runs, plans, service mappings, intelligence refreshes, embeddings builds)\nactive in the last `hours`, newest first: status (queued, running, done, failed, cancelled), the retry it\nwaits for, its error, the worker running it. `queues`: each queue's waiting messages and workers online.\nFilter by `module` (threat_scenarios, remediation, service_mapper, external_intelligence,\nlibrary_embeddings, maintenance), `status` (repeatable) and `kind` (a task name such as tsg_map_services,\nor an admin job kind).",
+    "description": "Every job of every kind (runs, plans, service mappings, intelligence refreshes, embeddings builds)\nactive in the last `hours`, newest first: status (queued, running, done, failed, cancelled), the retry it\nwaits for, its error, the worker running it. `queues`: each queue's waiting messages and workers online.\nFilter by `module` (threat_scenarios, remediation, service_mapper, external_intelligence,\nlibrary_embeddings, maintenance), `status` (repeatable), `kind` (a task name such as tsg_map_services,\nor an admin job kind) and `request_id` (the X-Request-Id of the call that queued it).",
     "operationId": "list_all_jobs_v1_admin_jobs_get",
     "parameters": [
      {
@@ -6343,6 +6455,23 @@
        "minimum": 1,
        "title": "Limit",
        "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "request_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Request Id"
       }
      },
      {

@@ -411,6 +411,18 @@
     ],
     "unique": true
    },
+   "status_1_finished_at_1": {
+    "key": [
+     [
+      "status",
+      1
+     ],
+     [
+      "finished_at",
+      1
+     ]
+    ]
+   },
    "status_1_job.due_at_1": {
     "key": [
      [
@@ -669,6 +681,18 @@
      ]
     ]
    },
+   "status_1_finished_at_1": {
+    "key": [
+     [
+      "status",
+      1
+     ],
+     [
+      "finished_at",
+      1
+     ]
+    ]
+   },
    "status_1_job.due_at_1": {
     "key": [
      [
@@ -815,6 +839,18 @@
      ],
      [
       "created_at",
+      1
+     ]
+    ]
+   },
+   "status_1_finished_at_1": {
+    "key": [
+     [
+      "status",
+      1
+     ],
+     [
+      "finished_at",
       1
      ]
     ]
