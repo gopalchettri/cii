@@ -158,6 +158,7 @@
   "ASSET_NOT_OWNED": "asset_not_owned",
   "CANCEL_FIRST": "cancel_first",
   "CHANGED_CONCURRENTLY": "changed_concurrently",
+  "DUPLICATE_REQUEST": "duplicate_request",
   "DUPLICATE_VERSION": "duplicate_version",
   "GENERATION_IN_PROGRESS": "generation_in_progress",
   "IDEMPOTENCY_KEY_CONFLICT": "idempotency_key_conflict",

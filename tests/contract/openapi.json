@@ -3358,7 +3358,7 @@
       "title": "Impacted Business Division"
      },
      "is_manual": {
-      "description": "false: the scenario already exists in TSG (send session_id + scenario_id). true: a person wrote it (send manual_scenario and an Idempotency-Key header); TSG saves it and plans it.",
+      "description": "false: the scenario already exists in TSG (send session_id + scenario_id). true: a person wrote it (send manual_scenario); TSG saves it and plans it.",
       "title": "Is Manual",
       "type": "boolean"
      },
@@ -7373,26 +7373,9 @@
   },
   "/v1/remediation": {
    "post": {
-    "description": "Start writing a remediation plan for one scenario: v1's one request for both kinds.\n\n- **is_manual=false**: send `session_id` and `scenario_id` of an ACCEPTED scenario of that run.\n- **is_manual=true**: send `manual_scenario` (a scenario a person wrote) and an `Idempotency-Key` header.\n  TSG saves the scenario, accepts it and plans it. The same key and body again: 200, `replayed: true`;\n  if that plan failed for an outage (`error.code` `unavailable`), its version is written again: 202.\n\nEvery other field is the register's data; all are optional. `supporting_systems_applicable_to_risk` names\nthe asset's systems the risk applies to (none: the asset itself), and\n`supporting_systems_applicable_to_existing_controls` those the existing controls are on (none: no\nsystem). Answers 202 at once with `remediation_id`, `session_id` and `scenario_id`: keep the last two,\nbecause every later call on the plan takes them in its address. No AI is called here: the plan job\nmatches the scenario's controls (and a hand-written one's attacker) if they are missing, then writes the\nplan; poll `GET .../treatment-plan/status` until `latest_status` is `done`.\n\nErrors: 404 scenario unknown or not in that run; 403 another entity's; 409 `scenario_not_accepted`,\n`plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `control_library_empty`,\n`run_being_deleted`; 422 a field, the two kinds mixed, or a listed system that is not a supporting\nsystem of the scenario's asset.",
+    "description": "Start writing a remediation plan for one scenario: v1's one request for both kinds.\n\n- **is_manual=false**: send `session_id` and `scenario_id` of an ACCEPTED scenario of that run.\n- **is_manual=true**: send `manual_scenario` (a scenario a person wrote). TSG saves the scenario, accepts\n  it and plans it. With an `Idempotency-Key` header, the same key and body again: 200, `replayed: true`;\n  if that plan failed for an outage (`error.code` `unavailable`), its version is written again: 202.\n  Without one, the same body again within a minute is 409 `duplicate_request`.\n\nEvery other field is the register's data; all are optional. `supporting_systems_applicable_to_risk` names\nthe asset's systems the risk applies to (none: the asset itself), and\n`supporting_systems_applicable_to_existing_controls` those the existing controls are on (none: no\nsystem). Answers 202 at once with `remediation_id`, `session_id` and `scenario_id`: keep the last two,\nbecause every later call on the plan takes them in its address. No AI is called here: the plan job\nmatches the scenario's controls (and a hand-written one's attacker) if they are missing, then writes the\nplan; poll `GET .../treatment-plan/status` until `latest_status` is `done`.\n\nErrors: 404 scenario unknown or not in that run; 403 another entity's; 409 `scenario_not_accepted`,\n`plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `duplicate_request`,\n`control_library_empty`, `run_being_deleted`; 422 a field, the two kinds mixed, or a listed system that is\nnot a supporting system of the scenario's asset.",
     "operationId": "request_plan_v1_remediation_post",
     "parameters": [
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 200,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Idempotency-Key"
-      }
-     },
      {
       "in": "header",
       "name": "X-API-Key",
@@ -7459,6 +7442,23 @@
         }
        ],
        "title": "X-Tenant-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "Idempotency-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Idempotency-Key"
       }
      }
     ],
@@ -7643,26 +7643,9 @@
     ]
    },
    "post": {
-    "description": "202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a\nnew try when the key's generation is still the latest and failed for an outage (`error.code`\n`unavailable`).",
+    "description": "202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a\nnew try when the key's generation is still the latest and failed for an outage (`error.code`\n`unavailable`). Without a key, the same body again within a minute is 409 `duplicate_request`.",
     "operationId": "create_mapping_v1_service_mapper_post",
     "parameters": [
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 200,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Idempotency-Key"
-      }
-     },
      {
       "in": "header",
       "name": "X-API-Key",
@@ -7729,6 +7712,23 @@
         }
        ],
        "title": "X-Tenant-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "Idempotency-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Idempotency-Key"
       }
      }
     ],
@@ -8131,7 +8131,7 @@
   },
   "/v1/service-mapper/{mapping_id}/regenerate": {
    "post": {
-    "description": "202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one\nruns). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when\nthat generation is still the latest and failed for an outage (`error.code` `unavailable`).",
+    "description": "202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one\nruns). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when\nthat generation is still the latest and failed for an outage (`error.code` `unavailable`). Without a\nkey, a repeat within a minute is 409 `duplicate_request`.",
     "operationId": "regenerate_mapping_v1_service_mapper__mapping_id__regenerate_post",
     "parameters": [
      {
@@ -8142,23 +8142,6 @@
        "maxLength": 64,
        "title": "Mapping Id",
        "type": "string"
-      }
-     },
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 200,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Idempotency-Key"
       }
      },
      {
@@ -8227,6 +8210,23 @@
         }
        ],
        "title": "X-Tenant-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "Idempotency-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Idempotency-Key"
       }
      }
     ],
@@ -8372,26 +8372,9 @@
   },
   "/v1/sessions": {
    "post": {
-    "description": "Send `asset_id` and `supporting_system_id` (one id or a list; `service_id`, `sector_id`,\n`subsector_id` optional). 202 with the run's status; keep `session_id`. With an `Idempotency-Key`\nheader a retry is safe (the same key and body: 200, the same run). 409 `intel_no_data`: external\nintelligence is on but nothing is imported yet (group 4).",
+    "description": "Send `asset_id` and `supporting_system_id` (one id or a list; `service_id`, `sector_id`,\n`subsector_id` optional). 202 with the run's status; keep `session_id`. With an `Idempotency-Key`\nheader a retry is safe (the same key and body: 200, the same run); without one, the same request again\nwithin a minute is 409 `duplicate_request`. 409 `intel_no_data`: external intelligence is on but\nnothing is imported yet (group 4).",
     "operationId": "start_run_v1_sessions_post",
     "parameters": [
-     {
-      "in": "header",
-      "name": "Idempotency-Key",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 200,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Idempotency-Key"
-      }
-     },
      {
       "in": "header",
       "name": "X-API-Key",
@@ -8458,6 +8441,23 @@
         }
        ],
        "title": "X-Tenant-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "Idempotency-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Idempotency-Key"
       }
      }
     ],

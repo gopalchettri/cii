@@ -25,6 +25,7 @@ from app.data_access.service_mapper.mapping_repository import MappingHistoryRepo
 from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.views import mapping_list_item, mapping_status, mapping_view
 from app.domain.shared.audit import audit_target, caller_actor
+from app.domain.shared.idempotency import duplicate_request, is_derived_key
 from app.models.admin.api_clients import Principal
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
@@ -63,21 +64,21 @@ class ServiceMapperService:
         self,
         principal: Principal,
         body: CreateMappingRequest,
-        idempotency_key: str | None,
+        idempotency_key: str,
     ) -> tuple[MappingAccepted, bool]:
         request = body.model_dump()
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         key_hash = _key_hash(idempotency_key)
-        if key_hash and (earlier := self._created_with_key(principal, key_hash)):
-            return self._replay_create(principal, earlier, fingerprint)
+        if earlier := self._created_with_key(principal, key_hash):
+            return self._replay_create(principal, earlier, fingerprint, idempotency_key)
         mapping_id = uuid4().hex
         record = _new_record(mapping_id, principal, request, fingerprint, key_hash, self._limits())
         try:
             self._mappings.create(record)
         except DuplicateRecord:
-            if not key_hash or not (earlier := self._created_with_key(principal, key_hash)):
+            if not (earlier := self._created_with_key(principal, key_hash)):
                 raise
-            return self._replay_create(principal, earlier, fingerprint)
+            return self._replay_create(principal, earlier, fingerprint, idempotency_key)
         self._send_job(TaskName.MAP_SERVICES, mapping_id, 1)
         self._record_change(AuditAction.MAPPING_STARTED, principal, mapping_id, {"generation": 1})
         return MappingAccepted(mapping_id=mapping_id, status=Status.QUEUED, generation=1), True
@@ -143,26 +144,27 @@ class ServiceMapperService:
         self,
         principal: Principal,
         mapping_id: str,
-        idempotency_key: str | None,
+        idempotency_key: str,
     ) -> tuple[MappingAccepted, bool]:
-        return self._next_generation(principal, mapping_id, _key_hash(idempotency_key), None)
+        key_hash, derived = _key_hash(idempotency_key), is_derived_key(idempotency_key)
+        return self._next_generation(principal, mapping_id, key_hash, None, derived)
 
     def _next_generation(
-        self, principal: Principal, mapping_id: str, key_hash: str | None, unlisted_generation: int | None
+        self,
+        principal: Principal,
+        mapping_id: str,
+        key_hash: str,
+        unlisted_generation: int | None,
+        derived: bool = False,
     ) -> tuple[MappingAccepted, bool]:
         """The next generation, or a replay of the one `key_hash` started (`unlisted_generation` when not in
-        regen_keys); a replay of the latest generation that failed for an outage is a new try instead."""
+        regen_keys; 409 when the key was `derived`); a replay of the latest generation that failed for an
+        outage is a new try instead."""
         for _attempt in range(3):
             record = self._owned(principal, mapping_id)
-            key_generation = (
-                record.get("regen_keys", {}).get(key_hash, unlisted_generation) if key_hash else None
-            )
-            if key_generation is not None and not _failed_for_outage(record, key_generation):
-                return MappingAccepted(
-                    mapping_id=mapping_id,
-                    status=self._generation_status(record, key_generation),
-                    generation=key_generation,
-                ), False
+            key_generation = record.get("regen_keys", {}).get(key_hash, unlisted_generation)
+            if (replayed := self._replayed_generation(record, key_generation, derived)) is not None:
+                return replayed, False
             if record["status"] in (Status.QUEUED, Status.RUNNING):
                 raise Conflict(MapperMessage.ROUND_RUNNING, reason=MapperConflict.GENERATION_IN_PROGRESS)
             self._archive_pending(record)
@@ -171,7 +173,7 @@ class ServiceMapperService:
                 mapping_id,
                 record["generation"],
                 record["decision_seq"],
-                new_job(TaskName.MAP_SERVICES, generation, now),
+                new_job(TaskName.MAP_SERVICES, generation, now, requested_at=now),
                 key_hash,
                 _frozen(record),
                 self._limits(),
@@ -236,12 +238,32 @@ class ServiceMapperService:
         )
 
     def _replay_create(
-        self, principal: Principal, record: dict, fingerprint: str
+        self, principal: Principal, record: dict, fingerprint: str, key: str
     ) -> tuple[MappingAccepted, bool]:
-        """The mapping this key created, or a new try of it when the key's generation failed for an outage."""
+        """The mapping this key created, or a new try of it when the key's generation failed for an outage;
+        409 for a derived key's repeat."""
         if record["input_hash"] != fingerprint:
             raise Conflict(MapperMessage.IDEMPOTENCY_KEY_CONFLICT)
+        if is_derived_key(key):
+            raise duplicate_request(record["created_at"], mapping_id=record["_id"])
         return self._next_generation(principal, record["_id"], record["create_key"], 1)
+
+    def _replayed_generation(
+        self, record: dict, generation: int | None, derived: bool
+    ) -> MappingAccepted | None:
+        """The generation a key started, for its repeat; None to start one (no such generation, or the latest
+        failed for an outage); 409 duplicate_request when the key was derived."""
+        if generation is None:
+            return None
+        if derived:
+            # ponytail: the latest generation's request time; an older one (regenerated again within the
+            # window) reads short. Keep each generation's time in regen_keys if that matters.
+            started = record["job"].get("requested_at", record["updated_at"])
+            raise duplicate_request(started, mapping_id=record["_id"], generation=generation)
+        if _failed_for_outage(record, generation):
+            return None
+        status = self._generation_status(record, generation)
+        return MappingAccepted(mapping_id=record["_id"], status=status, generation=generation)
 
     def _generation_status(self, record: dict, generation: int) -> Status:
         """The status `generation` has now: the record's while it is the latest, else its archived copy's."""
@@ -310,8 +332,8 @@ def _new_record(
     }
 
 
-def _key_hash(value: str | None) -> str | None:
-    return hashlib.sha256(value.encode()).hexdigest() if value else None
+def _key_hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _failed_for_outage(record: dict, generation: int) -> bool:

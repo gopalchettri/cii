@@ -130,6 +130,10 @@ class ErrorMessage(StrEnum):
     SQL_PROCEDURE_BROKEN = (
         "A library database procedure is missing or refused its call: install scripts/sql/ on this database."
     )
+    DUPLICATE_REQUEST = (
+        "The same request was sent {seconds} s ago and started {first}. Wait {window} s, or send a new "
+        "Idempotency-Key to start another."
+    )
 
 
 class Problem:
@@ -148,6 +152,11 @@ class Header(StrEnum):
     ADMIN_KEY = "X-Admin-Key"
     IDEMPOTENCY_KEY = "Idempotency-Key"
     REQUEST_ID = "X-Request-Id"
+
+
+class Idempotency:
+    DERIVED_PREFIX: Final = "derived-"  # a key the server made because the caller sent none
+    DERIVED_WINDOW_SECONDS: Final = 60  # a derived key's repeat in this window is refused, never replayed
 
 
 class ApiTag(StrEnum):

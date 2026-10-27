@@ -75,7 +75,7 @@ _SESSION_FIELD_LISTS = {
     "attack_paths": {"plan.paths": 1},
     "plan_trace": {"plan_trace": 1, "plan.paths": 1},
     "plan_threat": {"plan.threats.$": 1},
-    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1},
+    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1, "created_at": 1},
     "writing": {
         "entity_id": 1,
         "asset_id": 1,

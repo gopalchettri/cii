@@ -225,19 +225,6 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     assert [error["field"] for error in old_flag.json().get("errors", [])] == [
         "body.all_supporting_systems_applicable"
     ]
-    manual = {
-        "is_manual": True,
-        "manual_scenario": {
-            "asset_id": 1,
-            "entity_id": ENTITY,
-            "supporting_system_ids": [1],
-            "threat_type_name": "Malware",
-            "threat_name": "Firmware tampering",
-            "threat_scenario": "A cybercriminal could tamper with firmware.",
-            "risk_statement": "Control could be lost.",
-        },
-    }
-    assert _request(client, api_key, manual).status_code == 422  # no Idempotency-Key
     run = generated(accepted)["session_id"]
     nowhere = client.get(
         f"/v1/sessions/{run}/scenarios/nope/treatment-plan/status", headers=_identity(api_key)

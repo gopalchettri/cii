@@ -75,7 +75,7 @@ def _map(mapping_id: str, generation: int) -> tuple[TaskName, str, int]:
 def test_regenerate_with_a_new_key_after_an_outage_failure_starts_the_next_generation() -> None:
     regen_key = uuid4().hex
     mapper, sent = _mapper()
-    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), None)[0].mapping_id
+    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
     _fail_on_the_last_try(mapping_id, _busy())
     failed = mapper.get_service_mapping_status(PRINCIPAL, mapping_id)
     assert failed.error is not None and (failed.error.code, failed.error.reason) == ("unavailable", "ai_busy")
@@ -104,7 +104,7 @@ def test_the_same_create_key_after_an_outage_failure_starts_a_new_try() -> None:
 def test_the_same_regenerate_key_after_an_outage_failure_starts_a_new_try() -> None:
     regen_key = uuid4().hex
     mapper, sent = _mapper()
-    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), None)[0].mapping_id
+    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
     _fail_on_the_last_try(mapping_id, _busy())
     first, _ = mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, regen_key)
     _fail_on_the_last_try(mapping_id, _busy())
@@ -202,7 +202,7 @@ def test_a_create_replay_that_loses_to_another_keys_regenerate_replays(
 
 def test_deciding_on_a_failed_mapping_says_to_regenerate_it() -> None:
     mapper, _ = _mapper()
-    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), None)[0].mapping_id
+    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
     _fail_on_the_last_try(mapping_id, _busy())
     with pytest.raises(Conflict) as refused:
         mapper.decide_dependencies(PRINCIPAL, mapping_id, DependencyDecisionRequest(accept=["any"]))

@@ -1,15 +1,18 @@
-"""Shared request dependencies: who is calling (API key + identity headers), the caller's run, and the
-admin-key check."""
+"""Shared request dependencies: who is calling (API key + identity headers), the request's idempotency key,
+the caller's run, and the admin-key check."""
 
+import hashlib
 import hmac
+import json
 from typing import Annotated
 
 from fastapi import Depends, Path, Query, Request
 from fastapi import Header as HeaderParam
 
 from app.container import get_admin_service, get_remediation_plan_service, get_threat_scenario_service
+from app.core.clock import epoch_seconds
 from app.core.config import Settings, get_settings
-from app.core.constants import Audit, ErrorMessage, Header, Limits, Review
+from app.core.constants import Audit, ErrorMessage, Header, Idempotency, Limits, Review
 from app.core.exceptions import Forbidden, Unauthorized
 from app.models.admin.api_clients import Principal
 from app.models.remediation.plan import RemediationStatus
@@ -46,6 +49,35 @@ def get_authenticated_principal(
     # reach it, because a sync dependency runs in a worker thread.
     request.state.client_id = client_id
     return Principal(client_id, user_id, entity_id, tenant_id)
+
+
+async def raw_body(request: Request) -> bytes:
+    """The request body exactly as sent (FastAPI has read it already)."""
+    return await request.body()
+
+
+def idempotency_key(
+    request: Request,
+    principal: Annotated[Principal, Depends(get_authenticated_principal)],
+    body: Annotated[bytes, Depends(raw_body)],
+    supplied: Annotated[
+        str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
+    ] = None,
+) -> str:
+    """The caller's Idempotency-Key, else one derived from the request; kept for the answer and the log."""
+    key = supplied or derived_idempotency_key(principal, request.method, request.url.path, body)
+    request.state.idempotency_key = key  # the middleware echoes it in the header and logs it
+    return key
+
+
+def derived_idempotency_key(principal: Principal, method: str, path: str, body: bytes) -> str:
+    """'derived-' and a hash of the caller, method, path, exact body and the current window."""
+    # ponytail: fixed windows, so a repeat that straddles a window edge (gap/60 s of double clicks) starts
+    # new work; an anchored claim (first request's time + window, TTL index) if that ever matters.
+    window = int(epoch_seconds() // Idempotency.DERIVED_WINDOW_SECONDS)
+    caller = (principal.tenant_id, principal.entity_id, principal.user_id, principal.client_id)
+    request = json.dumps([*caller, method, path, window]).encode() + body  # the list's "]" ends the prefix
+    return Idempotency.DERIVED_PREFIX + hashlib.sha256(request).hexdigest()
 
 
 def admin_user_id(
@@ -93,6 +125,8 @@ def valid_plan(
     return plans.get_remediation_plan_status(session_id, scenario_id, principal.entity_id)
 
 
+#: The Idempotency-Key the caller sent, else one the server derived, as a route parameter.
+IdempotencyKey = Annotated[str, Depends(idempotency_key)]
 #: Who an admin call is recorded as (X-User-Id, else Audit.ADMIN_USER), as a route parameter.
 AdminUser = Annotated[str, Depends(admin_user_id)]
 #: The authenticated caller, and the caller's run (404 unknown, 403 another entity's), as route parameters.

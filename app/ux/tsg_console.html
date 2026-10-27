@@ -450,7 +450,7 @@
     <!-- ---------- manual ---------- -->
     <section class="pane" id="pane-manual">
       <div class="callout info">A scenario a person wrote: TSG saves it as an accepted scenario of a new <code>manual</code> run and starts
-        its plan in one call (<code>POST /v1/remediation</code> with <code>is_manual: true</code>, <code>manual_scenario</code> and an <code>Idempotency-Key</code>).
+        its plan in one call (<code>POST /v1/remediation</code> with <code>is_manual: true</code> and <code>manual_scenario</code>).
         Edit the JSON, then submit. The asset, systems and library names must exist in this environment.</div>
       <div class="field"><textarea class="code" id="manualJson" spellcheck="false"></textarea></div>
       <div class="row" style="margin-top:10px">
@@ -544,13 +544,6 @@ $(function () {
   function pretty(x) {
     if (x === undefined || x === "") return "(empty)";
     try { return typeof x === "string" ? x : JSON.stringify(x, null, 2); } catch (e) { return String(x); }
-  }
-  // v4 uuid from crypto.getRandomValues: crypto.randomUUID needs a secure context, and this page may be opened from file://.
-  function uuid() {
-    var b = crypto.getRandomValues(new Uint8Array(16)), s = "";
-    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
-    for (var i = 0; i < 16; i++) s += (i === 4 || i === 6 || i === 8 || i === 10 ? "-" : "") + (b[i] + 256).toString(16).slice(1);
-    return s;
   }
 
   // ====================================================================================
@@ -982,8 +975,8 @@ $(function () {
     $.each(opt, function (k, v) { if (v === null) return; if (isNaN(v)) bad = true; else body[k] = v; });
     if (bad) { toast("Check the optional ids", "They must be whole numbers.", "warn"); return; }
     withBusy($(this), api("POST", "/v1/sessions", body, { quiet: true }))
-      .done(function (r, http) {
-        toast(http === 200 ? "Replayed an earlier start" : "Assessment started", "Session " + short(r.session_id) + "… · " + r.session_status + " · " + overallText(prog(r).overall), "ok");
+      .done(function (r) {
+        toast("Assessment started", "Session " + short(r.session_id) + "… · " + r.session_status + " · " + overallText(prog(r).overall), "ok");
         setSession(r.session_id); gotoTab("scenarios");
       })
       .fail(function (e) {
@@ -1976,8 +1969,8 @@ $(function () {
 
   // ==================== module: manual ====================
   // ====================================================================================
-  // MANUAL SCENARIO: POST /v1/remediation with is_manual: true, manual_scenario (ManualScenario: v1's flat threat fields
-  // and entity_id = X-Entity-Id) and a fresh Idempotency-Key.
+  // MANUAL SCENARIO: POST /v1/remediation with is_manual: true and manual_scenario (ManualScenario: v1's flat threat
+  // fields and entity_id = X-Entity-Id). No Idempotency-Key: the server's derived key refuses a repeat (409).
   // ====================================================================================
   var manualLast = null, manualPristine = "";
   function manualExample() {
@@ -2002,9 +1995,8 @@ $(function () {
     };
   }
   function manualEntity() { var n = parseInt($("#entityId").val(), 10); return isNaN(n) ? null : n; }   // X-Entity-Id as a number
-  function manualOkHtml(r, http) {
-    return '<div class="rm-ok"><div class="row">' +
-      (http === 200 ? '<span class="badge amber">Replayed (HTTP 200): same Idempotency-Key and body, nothing new saved</span>' : '<span class="badge green">Saved (HTTP 202)</span>') +
+  function manualOkHtml(r) {
+    return '<div class="rm-ok"><div class="row">' + '<span class="badge green">Saved (HTTP 202)</span>' +
       '<span class="badge">Plan v' + esc(r.version) + " " + esc(r.status) + "</span></div>" +
       '<dl class="kv rm-ids">' + ["remediation_id", "session_id", "scenario_id"].map(function (k) {
         return r[k] ? "<dt>" + k + '</dt><dd><span class="mono">' + esc(r[k]) + '</span><button class="btn ghost sm rm-copy">Copy</button></dd>' : "";
@@ -2020,7 +2012,7 @@ $(function () {
   $("#manualJson").after('<div class="hint">The asset, supporting systems, library names and mapped_controls must exist in the chosen ' +
     "environment; leave out mapped_controls to let TSG map the controls itself (stage 4). The threat is named in flat fields: " +
     "threat_type_id or threat_type_name, threat_id or threat_name (both needed), threat_category_id or threat_category_name (optional). " +
-    "entity_id must equal X-Entity-Id (403 otherwise); left empty, the page fills it in. Every submit sends a new Idempotency-Key.</div>");
+    "entity_id must equal X-Entity-Id (403 otherwise); left empty, the page fills it in. The same JSON sent again within a minute is refused (409 duplicate_request).</div>");
   if (!String($("#manualJson").val() || "").trim()) resetManual();
   $("#btnManualReset").on("click", resetManual);
   $("#btnManual").on("click", function () {
@@ -2028,8 +2020,8 @@ $(function () {
     try { body = JSON.parse($("#manualJson").val()); } catch (e) { toast("The JSON is not valid", e.message, "err"); return; }
     if (body && body.manual_scenario && body.manual_scenario.entity_id == null) body.manual_scenario.entity_id = manualEntity();
     manualLast = null; $("#manualResult").empty();
-    withBusy($(this), api("POST", "/v1/remediation", body, { headers: { "Idempotency-Key": uuid() }, quiet: true }))
-      .done(function (r, http) { manualLast = r || {}; $("#manualResult").html(manualOkHtml(manualLast, http)); })
+    withBusy($(this), api("POST", "/v1/remediation", body, { quiet: true }))
+      .done(function (r) { manualLast = r || {}; $("#manualResult").html(manualOkHtml(manualLast)); })
       .fail(function (e) { $("#manualResult").html(manualErrHtml(e)); });
   });
   $("#manualResult")
@@ -2154,7 +2146,7 @@ $(function () {
     if (!body.service_name || !body.service_description || !body.sector || !body.subsector || !body.entity_names.length) {
       toast("Details missing", "Fill in the service name, sector, subsector, entity names and description.", "warn"); return;
     }
-    withBusy($(this), api("POST", "/v1/service-mapper", body, { headers: { "Idempotency-Key": uuid() } }))
+    withBusy($(this), api("POST", "/v1/service-mapper", body))
       .done(function (r) { toast("Mapping queued", r.mapping_id); smOpen(r.mapping_id); });
   });
   $("#btnSmOpen").on("click", function () {
@@ -2187,7 +2179,7 @@ $(function () {
       if (act === "refresh") { withBusy($b, smOpen(sm.id)); return; }
       if (act === "export") { smExportDocx($b, sm.view); return; }
       if (act === "regenerate") {
-        withBusy($b, api("POST", root + "/regenerate", undefined, { headers: { "Idempotency-Key": uuid() } }))
+        withBusy($b, api("POST", root + "/regenerate"))
           .done(function () { toast("Regenerating", "A new generation is queued."); smOpen(sm.id); });
       }
     });

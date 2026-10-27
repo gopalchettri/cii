@@ -61,6 +61,7 @@ from app.domain.remediation.rules import (
 )
 from app.domain.scenario.plan import freeze_context
 from app.domain.shared.audit import audit_target, caller_actor
+from app.domain.shared.idempotency import duplicate_request, is_derived_key
 from app.models.admin.api_clients import Principal
 from app.models.remediation.plan import (
     PlanRequested,
@@ -103,7 +104,7 @@ class RemediationPlanService:
         self._send_job, self._publish_remediation_status = send_job, publish_remediation_status
 
     def create_remediation_plan(
-        self, principal: Principal, body: PlanRequest, idempotency_key: str | None
+        self, principal: Principal, body: PlanRequest, idempotency_key: str
     ) -> tuple[PlanStarted, bool]:
         """Starts a plan for an accepted scenario: (the plan, True when work started now, False for a plain
         replay)."""
@@ -210,19 +211,20 @@ class RemediationPlanService:
         return status.model_dump(mode="json")
 
     def _create_manual_remediation_plan(
-        self, principal: Principal, body: PlanRequest, key: str | None
+        self, principal: Principal, body: PlanRequest, key: str
     ) -> tuple[PlanStarted, bool]:
-        """A hand-written scenario's plan: the same key and body replay the first answer (a plan that failed
-        for an outage is written again); the key of another request is 409; a first request saves the
-        scenario, then plans it as a generated one."""
-        manual = check_manual_request(principal, body, key)
-        assert key is not None  # check_manual_request refused a missing one
+        """A hand-written scenario's plan: the caller's key and the same body replay the first answer (a plan
+        that failed for an outage is written again), a derived key's repeat is 409 duplicate_request; the key
+        of another request is 409; a first request saves the scenario, then plans it as a generated one."""
+        manual = check_manual_request(principal, body)
         fingerprint = manual_request_fingerprint(body)
+        session_id, scenario_id = manual_ids(principal.entity_id, key)
         scenario: dict[str, Any] | None = None
         earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is not None:  # the key was used before: the same request again, else 409
             check_same_manual_request(earlier, fingerprint)
-            scenario_id = manual_ids(principal.entity_id, key)[1]
+            if is_derived_key(key):
+                raise duplicate_request(earlier["created_at"], session_id=session_id, scenario_id=scenario_id)
             scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
         if scenario is not None and (replayed := self._replayed(principal, scenario)) is not None:
             return replayed
@@ -233,10 +235,11 @@ class RemediationPlanService:
             started = self._plan_scenario(principal, body.register(), scenario)
             return started.model_copy(update={"replayed": saved_before}), True
         except Conflict as clash:  # the same request made at the same moment won: its answer, replayed
-            if (
-                clash.reason != ConflictReason.PLAN_ALREADY_EXISTS
-                or (replayed := self._replayed(principal, scenario)) is None
-            ):
+            if clash.reason != ConflictReason.PLAN_ALREADY_EXISTS:
+                raise
+            if is_derived_key(key):  # a derived key's twin is refused, never replayed
+                raise duplicate_request(utc_now(), session_id=session_id, scenario_id=scenario_id) from None
+            if (replayed := self._replayed(principal, scenario)) is None:
                 raise
             return replayed
 

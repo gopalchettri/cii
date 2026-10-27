@@ -181,7 +181,6 @@ class RemediationMessage(StrEnum):
     CHANGED_CONCURRENTLY = (
         "Remediation plan '{remediation_id}' changed while this decision was made: read it again."
     )
-    IDEMPOTENCY_KEY_REQUIRED = "A hand-written scenario needs an Idempotency-Key header."
     THREAT_REFS_INVALID = "The threat, its type or its category does not match the library."
     UNKNOWN_ID = "No live or pending library row has id {id}."
     ID_NAME_DISAGREE = "Id {id} is the library's '{library_name}', not '{name}'."

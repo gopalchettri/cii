@@ -256,6 +256,7 @@ class ConflictReason(StrEnum):
     """The `reason` of a 409 (and of a few 403/404/422 answers); the API never changes one."""
 
     IDEMPOTENCY_KEY_CONFLICT = "idempotency_key_conflict"
+    DUPLICATE_REQUEST = "duplicate_request"  # a repeat of a derived Idempotency-Key (none was sent)
     GENERATION_IN_PROGRESS = "generation_in_progress"
     RUN_FAILED = "run_failed"
     RUN_CANCELLED = "run_cancelled"  # cancelled before its plan: nothing to decide or resume
