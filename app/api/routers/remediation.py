@@ -69,7 +69,9 @@ def request_plan(
     `plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `duplicate_request`,
     `control_library_empty`, `run_being_deleted`; 422 a field, the two kinds mixed, or a listed system that is
     not a supporting system of the scenario's asset."""
-    planned, created = plans.create_remediation_plan(principal, body, idempotency_key)
+    planned, created = plans.create_remediation_plan(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200
     return planned

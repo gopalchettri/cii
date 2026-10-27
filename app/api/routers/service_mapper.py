@@ -43,7 +43,9 @@ def create_mapping(
     """202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a
     new try when the key's generation is still the latest and failed for an outage (`error.code`
     `unavailable`). Without a key, the same body again within a minute is 409 `duplicate_request`."""
-    accepted, created = mapper.create_service_mapping(principal, body, idempotency_key)
+    accepted, created = mapper.create_service_mapping(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200
     return accepted
@@ -115,7 +117,9 @@ def regenerate_mapping(
     runs). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when
     that generation is still the latest and failed for an outage (`error.code` `unavailable`). Without a
     key, a repeat within a minute is 409 `duplicate_request`."""
-    accepted, created = mapper.regenerate_service_mapping(principal, mapping_id, idempotency_key)
+    accepted, created = mapper.regenerate_service_mapping(
+        principal, mapping_id, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200
     return accepted

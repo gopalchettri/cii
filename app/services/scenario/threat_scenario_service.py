@@ -82,7 +82,7 @@ from app.domain.scenario.review import (
     versions_to_replace,
 )
 from app.domain.shared.audit import audit_target, caller_actor
-from app.domain.shared.idempotency import duplicate_request, is_derived_key
+from app.domain.shared.idempotency import duplicate_request
 from app.models.admin.api_clients import Principal
 from app.models.library.library import ThreatLibrary, ThreatProposal
 from app.models.scenario.asset_context import FrozenContext
@@ -150,11 +150,11 @@ class ThreatScenarioService:
     # Starting a run.
 
     def create_threat_scenario_session(
-        self, principal: Principal, request: StartRunRequest, idempotency_key: str
+        self, principal: Principal, request: StartRunRequest, idempotency_key: str, *, derived: bool = False
     ) -> tuple[RunBoard, bool]:
         """Starts a run: (its status board, True when created now, False for a replay of the caller's
-        Idempotency-Key); 409 duplicate_request for a repeat of a derived one."""
-        if replayed := self._replay(principal, request, idempotency_key):
+        Idempotency-Key); 409 duplicate_request for a repeat of a `derived` one."""
+        if replayed := self._replay(principal, request, idempotency_key, derived):
             return build_board(replayed), False
         self._refuse_without_intel_data()  # never a run that can only fail its evidence searches
         asset_context = self._assets.get_asset_context(principal.entity_id, request)
@@ -162,7 +162,7 @@ class ThreatScenarioService:
         record = _new_run_record(principal, request, idempotency_key, context)
         clash = self._sessions.create_scenario_session(record)
         # A parallel start with the same key won: its replay.
-        if clash and (replayed := self._replay(principal, request, idempotency_key)):
+        if clash and (replayed := self._replay(principal, request, idempotency_key, derived)):
             return build_board(replayed), False
         if clash is RunClash.IDEMPOTENCY_KEY:  # the run that took the key was deleted since
             message = SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
@@ -176,14 +176,16 @@ class ThreatScenarioService:
             return
         check_intel_has_data(self._intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {})
 
-    def _replay(self, principal: Principal, request: StartRunRequest, key: str) -> SessionStatus | None:
+    def _replay(
+        self, principal: Principal, request: StartRunRequest, key: str, derived: bool
+    ) -> SessionStatus | None:
         """The run that took this key, when it is the same request; 409 when the key named another request or
-        a hand-written run, or was derived (a repeat the caller sent no key for)."""
+        a hand-written run, or was `derived` (a repeat the caller sent no key for)."""
         earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
         check_same_start_request(earlier, request)
-        if is_derived_key(key):
+        if derived:
             raise duplicate_request(earlier["created_at"], session_id=earlier["_id"])
         return session_status_from_record(earlier)
 

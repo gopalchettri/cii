@@ -4,7 +4,7 @@ the caller's run, and the admin-key check."""
 import hashlib
 import hmac
 import json
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 from fastapi import Depends, Path, Query, Request
 from fastapi import Header as HeaderParam
@@ -56,6 +56,13 @@ async def raw_body(request: Request) -> bytes:
     return await request.body()
 
 
+class RequestIdempotencyKey(NamedTuple):
+    """The key a request is idempotent under, and whether the server derived it (the caller sent none)."""
+
+    value: str
+    derived: bool
+
+
 def idempotency_key(
     request: Request,
     principal: Annotated[Principal, Depends(get_authenticated_principal)],
@@ -63,10 +70,11 @@ def idempotency_key(
     supplied: Annotated[
         str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
     ] = None,
-) -> str:
+) -> RequestIdempotencyKey:
     """The caller's Idempotency-Key, else one derived from the request; kept for the answer and the log."""
-    key = supplied or derived_idempotency_key(principal, request.method, request.url.path, body)
-    request.state.idempotency_key = key  # the middleware echoes it in the header and logs it
+    value = supplied or derived_idempotency_key(principal, request.method, request.url.path, body)
+    key = RequestIdempotencyKey(value, derived=not supplied)  # a caller's key replays, whatever its prefix
+    request.state.idempotency_key = key.value  # the middleware echoes it in the header and logs it
     return key
 
 
@@ -125,8 +133,8 @@ def valid_plan(
     return plans.get_remediation_plan_status(session_id, scenario_id, principal.entity_id)
 
 
-#: The Idempotency-Key the caller sent, else one the server derived, as a route parameter.
-IdempotencyKey = Annotated[str, Depends(idempotency_key)]
+#: The Idempotency-Key the caller sent, else one the server derived (and which it is), as a route parameter.
+IdempotencyKey = Annotated[RequestIdempotencyKey, Depends(idempotency_key)]
 #: Who an admin call is recorded as (X-User-Id, else Audit.ADMIN_USER), as a route parameter.
 AdminUser = Annotated[str, Depends(admin_user_id)]
 #: The authenticated caller, and the caller's run (404 unknown, 403 another entity's), as route parameters.

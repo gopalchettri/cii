@@ -155,7 +155,7 @@ class Header(StrEnum):
 
 
 class Idempotency:
-    DERIVED_PREFIX: Final = "derived-"  # a key the server made because the caller sent none
+    DERIVED_PREFIX: Final = "derived-"  # marks a key the server made; never read back to decide a repeat
     DERIVED_WINDOW_SECONDS: Final = 60  # a derived key's repeat in this window is refused, never replayed
 
 

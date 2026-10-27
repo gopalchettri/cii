@@ -25,7 +25,7 @@ from app.data_access.service_mapper.mapping_repository import MappingHistoryRepo
 from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.views import mapping_list_item, mapping_status, mapping_view
 from app.domain.shared.audit import audit_target, caller_actor
-from app.domain.shared.idempotency import duplicate_request, is_derived_key
+from app.domain.shared.idempotency import duplicate_request
 from app.models.admin.api_clients import Principal
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
@@ -65,12 +65,14 @@ class ServiceMapperService:
         principal: Principal,
         body: CreateMappingRequest,
         idempotency_key: str,
+        *,
+        derived: bool = False,
     ) -> tuple[MappingAccepted, bool]:
         request = body.model_dump()
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         key_hash = _key_hash(idempotency_key)
         if earlier := self._created_with_key(principal, key_hash):
-            return self._replay_create(principal, earlier, fingerprint, idempotency_key)
+            return self._replay_create(principal, earlier, fingerprint, derived)
         mapping_id = uuid4().hex
         record = _new_record(mapping_id, principal, request, fingerprint, key_hash, self._limits())
         try:
@@ -78,7 +80,7 @@ class ServiceMapperService:
         except DuplicateRecord:
             if not (earlier := self._created_with_key(principal, key_hash)):
                 raise
-            return self._replay_create(principal, earlier, fingerprint, idempotency_key)
+            return self._replay_create(principal, earlier, fingerprint, derived)
         self._send_job(TaskName.MAP_SERVICES, mapping_id, 1)
         self._record_change(AuditAction.MAPPING_STARTED, principal, mapping_id, {"generation": 1})
         return MappingAccepted(mapping_id=mapping_id, status=Status.QUEUED, generation=1), True
@@ -145,9 +147,10 @@ class ServiceMapperService:
         principal: Principal,
         mapping_id: str,
         idempotency_key: str,
+        *,
+        derived: bool = False,
     ) -> tuple[MappingAccepted, bool]:
-        key_hash, derived = _key_hash(idempotency_key), is_derived_key(idempotency_key)
-        return self._next_generation(principal, mapping_id, key_hash, None, derived)
+        return self._next_generation(principal, mapping_id, _key_hash(idempotency_key), None, derived)
 
     def _next_generation(
         self,
@@ -238,13 +241,13 @@ class ServiceMapperService:
         )
 
     def _replay_create(
-        self, principal: Principal, record: dict, fingerprint: str, key: str
+        self, principal: Principal, record: dict, fingerprint: str, derived: bool
     ) -> tuple[MappingAccepted, bool]:
         """The mapping this key created, or a new try of it when the key's generation failed for an outage;
-        409 for a derived key's repeat."""
+        409 for a `derived` key's repeat."""
         if record["input_hash"] != fingerprint:
             raise Conflict(MapperMessage.IDEMPOTENCY_KEY_CONFLICT)
-        if is_derived_key(key):
+        if derived:
             raise duplicate_request(record["created_at"], mapping_id=record["_id"])
         return self._next_generation(principal, record["_id"], record["create_key"], 1)
 

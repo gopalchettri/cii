@@ -7,11 +7,6 @@ from app.core.constants import ConflictReason, ErrorMessage, Idempotency
 from app.core.exceptions import Conflict
 
 
-def is_derived_key(key: str) -> bool:
-    """Whether the server derived this key because the request had no Idempotency-Key."""
-    return key.startswith(Idempotency.DERIVED_PREFIX)
-
-
 def duplicate_request(started_at: datetime, **first: str | int) -> Conflict:
     """409 duplicate_request naming what the first request started (`first`) and how many seconds ago."""
     seconds = max(0, round((utc_now() - started_at).total_seconds()))

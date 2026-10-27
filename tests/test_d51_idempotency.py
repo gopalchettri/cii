@@ -144,6 +144,61 @@ def test_a_callers_own_key_still_replays_and_is_echoed(
     assert again.headers.get(Header.IDEMPOTENCY_KEY) == keyed[Header.IDEMPOTENCY_KEY]
 
 
+def test_a_callers_key_that_starts_like_a_derived_one_still_replays(
+    client: TestClient, caller: dict[str, str], runs: None
+) -> None:
+    """A key is derived only when the caller sent none, whatever its spelling: 202, then 200, one run."""
+    keyed = caller | {Header.IDEMPOTENCY_KEY: f"derived-{uuid.uuid4().hex}"}
+    first = client.post("/v1/sessions", json=START, headers=keyed)
+    again = client.post("/v1/sessions", json=START, headers=keyed)
+    assert (first.status_code, again.status_code) == (202, 200), again.text
+    assert again.json()["session_id"] == first.json()["session_id"]
+
+
+def _sent_again_with_its_echoed_key(
+    client: TestClient, path: str, caller: dict[str, str], body: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], Any]:
+    """A key-less request (its 202 body), then the same request carrying the key its answer echoed."""
+    first = client.post(path, json=body, headers=caller)
+    assert first.status_code == 202, first.text
+    echoed = caller | {Header.IDEMPOTENCY_KEY: first.headers[Header.IDEMPOTENCY_KEY]}
+    return first.json(), client.post(path, json=body, headers=echoed)
+
+
+def test_a_retry_with_the_echoed_key_replays_on_every_route(
+    client: TestClient,
+    caller: dict[str, str],
+    runs: None,
+    mapper: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 202 lost on the way back, retried with the Idempotency-Key it echoed: the caller sent that key, so
+    each route answers 200 with what the first request started (a manual plan also when it looked before the
+    first saved)."""
+    run, again = _sent_again_with_its_echoed_key(client, "/v1/sessions", caller, START)
+    assert (again.status_code, again.json()["session_id"]) == (200, run["session_id"]), again.text
+    plan, again = _sent_again_with_its_echoed_key(client, "/v1/remediation", caller, MANUAL)
+    assert (again.status_code, again.json()["remediation_id"]) == (200, plan["remediation_id"]), again.text
+    sessions = container.get_threat_scenario_session_repository()
+    real_get = sessions.get
+    monkeypatch.setattr(
+        sessions,
+        "get",
+        lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
+    )
+    echoed = caller | {Header.IDEMPOTENCY_KEY: again.headers[Header.IDEMPOTENCY_KEY]}
+    raced = client.post("/v1/remediation", json=MANUAL, headers=echoed)
+    assert (raced.status_code, raced.json()["remediation_id"]) == (200, plan["remediation_id"]), raced.text
+    mapping, again = _sent_again_with_its_echoed_key(client, "/v1/service-mapper", caller, MAPPING)
+    assert (again.status_code, again.json()["mapping_id"]) == (200, mapping["mapping_id"]), again.text
+    get_mongodb()[Collection.SERVICE_MAPPINGS].update_one(
+        {"_id": mapping["mapping_id"]}, {"$set": {"status": Status.DONE, "updated_at": datetime.now(UTC)}}
+    )
+    path = f"/v1/service-mapper/{mapping['mapping_id']}/regenerate"
+    regenerated, again = _sent_again_with_its_echoed_key(client, path, caller)
+    assert (again.status_code, again.json()["generation"]) == (200, regenerated["generation"]), again.text
+
+
 def test_a_keyless_manual_plan_starts_and_its_repeat_is_refused(
     client: TestClient,
     caller: dict[str, str],

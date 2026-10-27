@@ -75,7 +75,9 @@ def start_run(
     header a retry is safe (the same key and body: 200, the same run); without one, the same request again
     within a minute is 409 `duplicate_request`. 409 `intel_no_data`: external intelligence is on but
     nothing is imported yet (group 4)."""
-    board, created = scenarios.create_threat_scenario_session(principal, body, idempotency_key)
+    board, created = scenarios.create_threat_scenario_session(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200  # a replay of the caller's Idempotency-Key: the run it started
     return board
