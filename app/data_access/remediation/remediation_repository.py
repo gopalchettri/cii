@@ -13,16 +13,16 @@ from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
 from app.models.remediation.plan import RemediationStatus, RemediationSummary
 
+#: What a new version changes at the top of the record, put back as read when it is undone.
+_VERSION_STARTED_FIELDS = ("job", "status", "decision", "finished_at", "cancelled")
 #: What a regenerate or a review reads first: never a snapshot or a plan.
 _CHANGE_FIELDS = {
     "entity_id": 1,
     "scenario_id": 1,
     "session_id": 1,
-    "status": 1,
-    "job.epoch": 1,
-    "job.error": 1,
     "accepted_version": 1,
     "decision_seq": 1,
+    **dict.fromkeys(_VERSION_STARTED_FIELDS, 1),
     **{f"versions.{field}": 1 for field in ("version", "status", "decision")},
 }
 #: What a plan request and its plan job read of the scenario: owner, decision, content, controls, and what
@@ -171,17 +171,37 @@ class RemediationRepository(MongoRepository):
         lease.update_job(changes, [{"v.version": lease.epoch}])
 
     def stop_remediation_plan_version(
-        self, remediation_id: str, version: int, outage: dict[str, Any] | None = None
+        self, remediation_id: str, version: int, outage: dict[str, Any]
     ) -> None:
-        """Ends `version`'s job cancelled on tsg_remediations while it still waits or runs (a regenerate that
-        lost the race with its run's delete); an in-place retry ends failed with its `outage` error again."""
+        """Ends `version`, queued again in place, failed with its `outage` error again on tsg_remediations
+        while it still waits or runs (a retry that lost the race with its run's delete): still retryable."""
         now = utc_now()
-        ended = ended_job_fields(Status.CANCELLED if outage is None else Status.FAILED, now)
-        if outage is not None:
-            ended["job.error"] = outage
+        ended = ended_job_fields(Status.FAILED, now) | {"job.error": outage, "updated_at": now}
         self.collection.update_one(
             {"_id": remediation_id, "job.epoch": version, "status": {"$in": [Status.QUEUED, Status.RUNNING]}},
-            {"$set": ended | {"updated_at": now}},
+            {"$set": ended},
+        )
+
+    def undo_remediation_plan_version(self, read: dict[str, Any], version: int) -> None:
+        """Removes `version`, appended after `read` (a "change" read) and never sent, from tsg_remediations:
+        the plan as read again (a regenerate that lost the race with its run's delete). decision_seq still
+        moves on, so a decision read in between reads again."""
+        restored = {
+            field: {"$literal": read[field]} if field in read else "$$REMOVE"
+            for field in _VERSION_STARTED_FIELDS
+        }
+        self.collection.update_one(
+            {"_id": read["_id"], "job.epoch": version, "status": Status.QUEUED},
+            [
+                {
+                    "$set": restored
+                    | {
+                        "versions": {"$slice": ["$versions", len(read["versions"])]},
+                        "decision_seq": {"$add": ["$decision_seq", 1]},
+                        "updated_at": utc_now(),
+                    }
+                }
+            ],
         )
 
 

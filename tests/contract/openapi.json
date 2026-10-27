@@ -3981,6 +3981,7 @@
      "failed",
      "cancelled",
      "generating",
+     "read_only",
      "awaiting_review",
      "rejected",
      "accepted"
@@ -10614,7 +10615,7 @@
   },
   "/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/status": {
    "get": {
-    "description": "The cheap poll: `latest_status` queued \u2192 running \u2192 done (or failed / cancelled), the review `decision`\n(pending, accepted, rejected) and `progress.overall`, which says what to do next (generating,\nawaiting_review, accepted, rejected, failed, cancelled). 404 when the scenario has no plan.",
+    "description": "The cheap poll: `latest_status` queued \u2192 running \u2192 done (or failed / cancelled), the review `decision`\n(pending, accepted, rejected) and `progress.overall`, which says what to do next (generating,\nawaiting_review, accepted, rejected, failed, cancelled; read_only when no version is decided and the\nscenario is no longer accepted, so it cannot be reviewed). 404 when the scenario has no plan.",
     "operationId": "plan_status_v1_sessions__session_id__scenarios__scenario_id__treatment_plan_status_get",
     "parameters": [
      {

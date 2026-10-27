@@ -116,6 +116,7 @@ class RemediationProgress(StrEnum):
     FAILED = "failed"  # the latest version failed
     CANCELLED = "cancelled"  # its owner stopped the latest version being written
     GENERATING = "generating"  # the latest version is queued or running
+    READ_ONLY = "read_only"  # no version decided, and its scenario is no longer accepted: nothing to review
     AWAITING_REVIEW = "awaiting_review"  # no version decided yet
     REJECTED = "rejected"
     ACCEPTED = "accepted"

@@ -142,8 +142,8 @@ class RemediationStatus(BaseModel):
     }
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> "RemediationStatus":
-        """The status of a stored record."""
+    def from_record(cls, record: dict[str, Any], scenario_accepted: bool) -> "RemediationStatus":
+        """The status of a stored record whose scenario is (or is no longer) accepted."""
         status, decision = Status(record["status"]), Decision(record["decision"])
         job = record.get("job") or {}
         return cls(
@@ -158,7 +158,7 @@ class RemediationStatus(BaseModel):
             progress=Progress(
                 generation=status,
                 review=decision,
-                overall=_overall(status, decision),
+                overall=_overall(status, decision, scenario_accepted),
                 retrying=retry_notice_of(status, job.get("retry")),
             ),
             error=job.get("error"),
@@ -166,8 +166,9 @@ class RemediationStatus(BaseModel):
         )
 
 
-def _overall(status: Status, decision: Decision) -> RemediationProgress:
-    """First that applies: the latest version failed, is being written or awaits review; else the decision."""
+def _overall(status: Status, decision: Decision, scenario_accepted: bool) -> RemediationProgress:
+    """First that applies: the latest version failed, is being written or awaits a review it may still get;
+    else the decision."""
     if status == Status.FAILED:
         return RemediationProgress.FAILED
     if status == Status.CANCELLED:
@@ -175,7 +176,7 @@ def _overall(status: Status, decision: Decision) -> RemediationProgress:
     if status in (Status.QUEUED, Status.RUNNING):
         return RemediationProgress.GENERATING
     if decision == Decision.PENDING:
-        return RemediationProgress.AWAITING_REVIEW
+        return RemediationProgress.AWAITING_REVIEW if scenario_accepted else RemediationProgress.READ_ONLY
     return RemediationProgress.ACCEPTED if decision == Decision.ACCEPTED else RemediationProgress.REJECTED
 
 
@@ -345,9 +346,13 @@ class RemediationResult(RemediationStatus):
 
     @classmethod
     def from_records(
-        cls, record: dict[str, Any], scenario: dict[str, Any] | None, include_history: bool
+        cls,
+        record: dict[str, Any],
+        scenario: dict[str, Any] | None,
+        scenario_accepted: bool,
+        include_history: bool,
     ) -> "RemediationResult":
-        """The result of a stored record and its scenario."""
+        """The result of a stored record and its scenario (still accepted or not)."""
         item = shown_item(record)
         shown = None if item is None else VersionView.from_item(item, record)
         versions = [VersionView.from_item(v, record) for v in record["versions"]] if include_history else None
@@ -366,7 +371,7 @@ class RemediationResult(RemediationStatus):
                 controls=(scenario.get("controls") or {}).get("items") or [],
             )
         return cls(
-            **RemediationStatus.from_record(record).model_dump(),
+            **RemediationStatus.from_record(record, scenario_accepted).model_dump(),
             shown_version=None if shown is None else shown.version,
             plan=None if shown is None else shown.plan,
             warnings=[] if shown is None else shown.warnings,

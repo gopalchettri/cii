@@ -530,6 +530,7 @@
   "CANCELLED": "cancelled",
   "FAILED": "failed",
   "GENERATING": "generating",
+  "READ_ONLY": "read_only",
   "REJECTED": "rejected"
  },
  "ResolveOutcome": {

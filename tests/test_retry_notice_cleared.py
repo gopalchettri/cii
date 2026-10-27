@@ -26,7 +26,7 @@ _READERS: dict[Collection, tuple[TaskName, dict[str, Any], list[Callable[[dict[s
     Collection.REMEDIATIONS: (
         TaskName.WRITE_PLAN,
         {"entity_id": 86, "scenario_id": "s-1", "session_id": "run-1", "decision": Decision.PENDING},
-        [lambda record: RemediationStatus.from_record(record).progress.retrying],
+        [lambda record: RemediationStatus.from_record(record, True).progress.retrying],
     ),
     Collection.SERVICE_MAPPINGS: (
         TaskName.MAP_SERVICES,

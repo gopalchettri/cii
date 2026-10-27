@@ -72,7 +72,8 @@ def request_plan(
 def plan_status(plan: CallersPlan) -> RemediationStatus:
     """The cheap poll: `latest_status` queued → running → done (or failed / cancelled), the review `decision`
     (pending, accepted, rejected) and `progress.overall`, which says what to do next (generating,
-    awaiting_review, accepted, rejected, failed, cancelled). 404 when the scenario has no plan."""
+    awaiting_review, accepted, rejected, failed, cancelled; read_only when no version is decided and the
+    scenario is no longer accepted, so it cannot be reviewed). 404 when the scenario has no plan."""
     return plan
 
 

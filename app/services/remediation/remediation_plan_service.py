@@ -76,9 +76,9 @@ from app.search.library_cache import LibraryCache
 
 log = structlog.get_logger(__name__)
 
-#: What a result shows of the planned scenario.
-_SCENARIO_SUMMARY_FIELDS = ("content", "controls.items")
-#: What a regenerate or a review reads of the planned scenario: whether it is still accepted.
+#: What a result shows of the planned scenario, and whether it is still accepted.
+_SCENARIO_SUMMARY_FIELDS = ("content", "controls.items", "status", "decision")
+#: What a status, a regenerate or a review reads of the planned scenario: whether it is still accepted.
 _SCENARIO_DECISION_FIELDS = ("status", "decision")
 _AUDITED = {Decision.ACCEPTED: AuditAction.PLAN_ACCEPTED, Decision.REJECTED: AuditAction.PLAN_REJECTED}
 
@@ -158,11 +158,12 @@ class RemediationPlanService:
     ) -> RemediationResult:
         """The scenario's plan as shown, with the scenario it treats; 404/403 as every plan route."""
         record = self._remediations.get(fields="result", scenario_id=scenario_id)
-        status = None if record is None else RemediationStatus.from_record(record)
+        scenario = self._scenarios.get(fields=_SCENARIO_SUMMARY_FIELDS, _id=scenario_id)
+        accepted = still_accepted(scenario)
+        status = None if record is None else RemediationStatus.from_record(record, accepted)
         check_plan_of_scenario(status, principal.entity_id, session_id, scenario_id)
         assert record is not None  # check_plan_of_scenario refused a missing plan
-        scenario = self._scenarios.get(fields=_SCENARIO_SUMMARY_FIELDS, _id=scenario_id)
-        return RemediationResult.from_records(record, scenario, include_history)
+        return RemediationResult.from_records(record, scenario, accepted, include_history)
 
     def list_remediation_plans(
         self,
@@ -348,9 +349,7 @@ class RemediationPlanService:
             return None
         # Checked again after the write: either this sees the delete's mark or the delete sees the version.
         if self._sessions.is_being_deleted(read["session_id"]):
-            outage = read["job"]["error"] if in_place else None  # still retryable in place afterwards
-            self._remediations.stop_remediation_plan_version(remediation_id, version, outage)
-            self._publish_remediation_status(remediation_id)
+            self._undo_version(read, version, in_place)
             raise run_being_deleted(read["session_id"])
         self._send_job(TaskName.WRITE_PLAN, remediation_id, version)
         target = audit_target(AuditTarget.REMEDIATION, remediation_id)
@@ -366,6 +365,15 @@ class RemediationPlanService:
             status=Status.QUEUED,
         )
 
+    def _undo_version(self, read: dict[str, Any], version: int, in_place: bool) -> None:
+        """The plan put back as `read` before `version` was queued: one queued again in place fails for its
+        outage again (still retryable), an appended one is removed (no version used, no decision changed)."""
+        if in_place:
+            self._remediations.stop_remediation_plan_version(read["_id"], version, read["job"]["error"])
+        else:
+            self._remediations.undo_remediation_plan_version(read, version)
+        self._publish_remediation_status(read["_id"])
+
     def _replayed(self, principal: Principal, scenario: dict[str, Any]) -> tuple[PlanStarted, bool] | None:
         """A hand-written request's plan for a repeat of it: written again in place as a regenerate does when
         it failed for an outage (True), else its first call's answer read back (False); None without one."""
@@ -377,7 +385,7 @@ class RemediationPlanService:
             record = self._remediations.get(fields="status", _id=record["_id"])  # another repeat retried it
         if record is None:
             return None
-        status = RemediationStatus.from_record(record)
+        status = RemediationStatus.from_record(record, still_accepted(scenario))
         replayed = PlanStarted(
             remediation_id=status.remediation_id,
             session_id=status.session_id,
@@ -398,9 +406,13 @@ class RemediationPlanService:
         return check_plan_changeable(scenario, read, principal.entity_id, remediation_id)
 
     def _status(self, **where: Any) -> RemediationStatus | None:
-        """The status of the plan matching `where` (never a snapshot or a plan), or None."""
+        """The status of the plan matching `where` (never a snapshot or a plan) as its scenario stands now, or
+        None."""
         record = self._remediations.get(fields="status", **where)
-        return None if record is None else RemediationStatus.from_record(record)
+        if record is None:
+            return None
+        scenario = self._scenarios.get(fields=_SCENARIO_DECISION_FIELDS, _id=record["scenario_id"])
+        return RemediationStatus.from_record(record, still_accepted(scenario))
 
     def _status_now(self, remediation_id: str) -> RemediationStatus:
         """The plan's status read now; 404 once it is gone (deleted with its run)."""
