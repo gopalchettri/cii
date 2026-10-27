@@ -31,6 +31,7 @@ from app.core.constants import (
     Header,
     Lease,
     PlanWarning,
+    PromptVersion,
     Remediation,
     RemediationMessage,
     RunKind,
@@ -181,7 +182,7 @@ def test_a_plan_is_requested_written_and_its_status_read(
     world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
     deliver(remediation_id)
     version = _record(remediation_id)["versions"][0]
-    assert (version["status"], version["prompt_version"]) == (Status.DONE, Remediation.PROMPT_VERSION)
+    assert (version["status"], version["prompt_version"]) == (Status.DONE, PromptVersion.REMEDIATION)
     assert _mapped_codes(version) == ["CII-CID-1"]
     assert version["warnings"] == [PlanWarning.NO_WINDOW.format(total=20)]
     shown = _result(client, api_key, remediation_id).json()
@@ -1174,7 +1175,7 @@ def test_a_plan_stored_before_the_rebuild_reads_and_its_pending_version_is_writt
     deliver(remediation_id, 2)
     record = _record(remediation_id)
     written = record["versions"][1]
-    assert (record["status"], written["prompt_version"]) == (Status.DONE, Remediation.PROMPT_VERSION)
+    assert (record["status"], written["prompt_version"]) == (Status.DONE, PromptVersion.REMEDIATION)
     assert "pending" not in written["snapshot"] and _mapped_codes(written) == ["CII-CID-1"]
     assert record["versions"][0]["plan"] == OLD_PLAN
     newest = _result(client, api_key, remediation_id).json()

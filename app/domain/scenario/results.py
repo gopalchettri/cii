@@ -32,6 +32,7 @@ from app.core.constants import (
     Step,
     ThreatSource,
     ValidationStatus,
+    Writing,
 )
 from app.domain.scenario.plan import attacker_unsupported
 from app.models.external_intelligence.evidence_view import cited_evidence
@@ -278,10 +279,17 @@ def _scenario_text(content: dict[str, Any]) -> ScenarioText:
         scenario_title=content.get("title"),
         scenario_statement=content.get("statement"),
         risk_statement=content.get("risk_statement"),
-        assumptions=content.get("assumptions") or [],
+        assumptions=[_with_platform_note(text) for text in content.get("assumptions") or [] if text.strip()],
         route_status=ROUTE_WORDS.get(str(status), str(status).upper()) if status else None,
         also_applies=content.get("also_applies") or [],
     )
+
+
+def _with_platform_note(assumption: str) -> str:
+    """The assumption with code's platform note once; one already carrying it is shown as stored."""
+    if Writing.PLATFORM_NOTE.removeprefix(" - ").casefold() in assumption.casefold():
+        return assumption
+    return assumption.rstrip(". ") + Writing.PLATFORM_NOTE
 
 
 def _systems_involved(content: dict[str, Any]) -> list[SystemInvolved]:

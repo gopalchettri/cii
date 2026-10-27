@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.prompts import PROMPTS
+
 
 class Env(StrEnum):
     DEV = "dev"
@@ -128,6 +130,16 @@ class AiTask(StrEnum):
     REMEDIATION_PLAN = "remediation_plan"
     EMBED = "embed"
     RERANK = "rerank"
+
+
+class PromptVersion:
+    """One number for every AI prompt's label: the version in app/prompts.toml."""
+
+    NUMBER: Final[int] = PROMPTS["version"]
+    PLANNER: Final = f"planner-{NUMBER}"  # plan.prompt_version ([scenario.gate], [scenario.gap_fill])
+    SCENARIO_WRITER: Final = f"scenario writer-{NUMBER}"  # content.prompt_version (writer, reviewer)
+    SCENARIO_WRITER_EVIDENCE: Final = f"scenario writer-evidence-{NUMBER}"  # a story's content.prompt_version
+    REMEDIATION: Final = f"remediation-{NUMBER}"  # every remediation plan version
 
 
 #: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a retry differs.

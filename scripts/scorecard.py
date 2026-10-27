@@ -55,7 +55,7 @@ WRITTEN_WITHOUT = "no evidence found: written without"
 def evidence(card: dict[str, Any]) -> str:
     """With intelligence on (an evidence story), one or more markers, each naming a stored entry; written
     without evidence (none found) or with it off, no marker and no entry."""
-    from app.core.constants import StoryLimits
+    from app.core.constants import PromptVersion
     from app.models.external_intelligence.evidence_view import markers_of
 
     content = card["content"]
@@ -63,8 +63,7 @@ def evidence(card: dict[str, Any]) -> str:
     entries = content.get("evidence") or []
     if evidence_note(card):
         return f"cites {sorted(cited)} though written without evidence" if cited or entries else ""
-    story_prompts = StoryLimits.PROMPT_VERSION.rpartition("-")[0]  # the evidence story's prompts, any version
-    if not (content.get("prompt_version") or "").startswith(story_prompts):
+    if content.get("prompt_version") != PromptVersion.SCENARIO_WRITER_EVIDENCE:
         return f"cites {sorted(cited)} with intelligence off" if cited or entries else ""
     if not cited:
         return "cites no evidence"

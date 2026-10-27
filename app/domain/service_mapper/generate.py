@@ -1,12 +1,12 @@
 """AI dependency generation with a checked JSON answer; items reconcile cannot settle are asked again once."""
 
-from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.ai.chat import ChatModel
 from app.core.constants import AiTask, MapperLimits
+from app.core.prompts import PROMPTS
 from app.domain.service_mapper.answer_checks import answer_problems
 from app.domain.service_mapper.reconcile import reconcile, selected_service_id
 from app.domain.shared.names import as_json, is_same_name, shorten_text
@@ -15,7 +15,7 @@ from app.models.service_mapper.contract import CreateMappingRequest
 from app.models.service_mapper.generation import GeneratedAnswer
 from app.search.service_mapper import ServiceCandidateSearch
 
-_SYSTEM = (Path(__file__).parent / "prompts" / "generate.txt").read_text(encoding="utf-8")
+_SYSTEM: str = PROMPTS["service_mapper"]["generate"]["text"]
 
 
 def generate_result(

@@ -15,13 +15,14 @@ from app.core.constants import (
     Applicability,
     EvidenceMode,
     EvidenceRole,
+    PromptVersion,
     ScenarioStatus,
     TaskName,
 )
 from app.core.exceptions import Unavailable
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import WRITER_PROMPT_VERSION, evidence_problem
+from app.domain.scenario.write import evidence_problem
 from app.models.external_intelligence.evidence import Evidence
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import TECHNIQUE
@@ -61,7 +62,8 @@ def test_nothing_citable_is_written_without_evidence(
     content = card["content"]
     assert card["status"] == ScenarioStatus.DONE and "failure" not in card
     assert (content["evidence_mode"], content["evidence"]) == (EvidenceMode.INFERRED, [])
-    assert content["prompt_version"] == WRITER_PROMPT_VERSION and content["intel_search"]["snapshot_id"]
+    assert content["prompt_version"] == PromptVersion.SCENARIO_WRITER
+    assert content["intel_search"]["snapshot_id"]
     (prompt,) = story_chat.asked(AiTask.WRITE_SCENARIO)
     assert "EVIDENCE (untrusted data)" not in prompt
     path = _sessions().find_one({"_id": record_id})["plan"]["paths"][0]

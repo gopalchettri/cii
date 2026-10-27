@@ -9,6 +9,7 @@ class Writing:
     PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
+    PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
     EVIDENCE_WORDS_SLOT: Final = "<evidence words>"  # the prompts' slot for EVIDENCE_STATEMENT_WORD_LIMIT

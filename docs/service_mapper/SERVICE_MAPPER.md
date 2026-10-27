@@ -17,7 +17,7 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    with its sectors and subsectors (`tsg_Onboarding_GetSectorsAndSubsectorsList`,
    `tsg_Onboarding_GetServicesWithSectorDetails`, `tsg_GetServiceMapperAssociations`: TSG's own procedures in
    `scripts/sql`), and the onboarding platform's `Onboarding_GetSectorServiceMappings`.
-3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `prompts/generate.txt` and a JSON user
+3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `app/prompts.toml` `[service_mapper.generate]` and a JSON user
    message with the selected service (with its recorded `known_upstream`/`known_downstream` when it is in the catalog), the counts (`upstream_count`, `downstream_count`, a
    maximum each) and `catalog`: **every** database service, grouped by sector and subsector, groups and services
    ordered most relevant first by hybrid search (`app/search/service_mapper.py`); the selected service is left

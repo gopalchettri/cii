@@ -29,10 +29,6 @@ def items_in(user_prompt: str, heading: str) -> list[dict[str, Any]]:
     return json.loads(user_prompt.rsplit(f"\n{heading}:\n", 1)[1])
 
 
-#: The writer's own "why this threat applies" a fake answer gets when it gives none (G268).
-WHY_APPLIES = "Vendor firmware sessions make this asset's control logic a place this attack could change."
-
-
 class FakeChatModel:
     """ChatModel's planner surface. Per task, queued answers are used first, then the task's responder; a
     rejected first answer is re-asked once, and a usable first answer is kept when the re-ask is unusable or
@@ -86,14 +82,12 @@ class FakeChatModel:
 
     def _with_system_reasons(self, task: AiTask, answer: dict[str, Any], user_prompt: str) -> dict[str, Any]:
         """A writer answer that gives no system_reasons gets one per supporting system of the brief it
-        answers (G216) and one with no why_applies a sentence (G268), so a test about something else need not
-        write them; a test of either gives its own (empty included)."""
-        if task != AiTask.WRITE_SCENARIO or not isinstance(answer, dict):
+        answers (G216), so a test about something else need not write them; a test of them gives its own
+        (empty included)."""
+        if task != AiTask.WRITE_SCENARIO or not isinstance(answer, dict) or "system_reasons" in answer:
             return answer
         names = brief_system_names(user_prompt)
-        reasons = {name: f"It could affect {name}." for name in names}
-        filled = {"system_reasons": reasons, "why_applies": WHY_APPLIES}
-        return {key: value for key, value in filled.items() if key not in answer} | answer
+        return {"system_reasons": {name: f"It could affect {name}." for name in names}} | answer
 
     def asked(self, task: AiTask) -> list[str]:
         """The user prompts of every call made for `task`, re-asks included."""

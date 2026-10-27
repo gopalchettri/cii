@@ -306,7 +306,7 @@ Headers: identity headers.
 | `scenario.scenario_title` | string or null | |
 | `scenario.scenario_statement` | string or null | the scenario statement only (no "Why this threat applies") |
 | `scenario.risk_statement` | string or null | |
-| `scenario.assumptions` | string[] | |
+| `scenario.assumptions` | string[] | each "assumes ... - not recorded in the platform"; [] when none |
 | `scenario.route_status` | string or null | `STANDALONE` or `ASSUMED` |
 | `scenario.also_applies` | string[] | other threats of the same kind on the same system |
 | `threat.threat_id` | string or null | `lib:<id>` or `ai:<name>` |
@@ -834,7 +834,7 @@ Headers: identity headers.
 | `plan.critical_path` | string[] | action ids |
 | `plan.mitigation_timeline` / `.mitigation_timeline_days` / `.mitigation_end_date_planned` | | |
 | `plan.risk_identification_date` / `.risk_owner` / `.impacted_business_division` | | from the request |
-| `plan.prompt_version` | string | |
+| `plan.prompt_version` | string | the prompt that wrote the version, e.g. `remediation-1` |
 | `plan.control_assessment[]` | object[] | `control_id`, `control_code`, `control_name`, `domain`, `match`, `implementation_status`, `recommended`, `protected_systems[]`, `required_systems[]`, `validation` (`retained`/`replaced`/`flagged_for_review`), `validation_reason`, `replaced_by`, `replaces[]` |
 | `plan.unresolved_gaps[]` | object[] | `kind` (`flagged_control`/`no_validated_control`/`uncovered_risk`), `control_code`, `detail` |
 | `warnings` | string[] | checks on the shown version; never a block |
@@ -886,7 +886,7 @@ Headers: identity headers.
     "risk_identification_date": "2026-10-20T09:30:00Z",
     "risk_owner": "Head of OT Operations",
     "impacted_business_division": "Traffic Operations",
-    "prompt_version": "remediation-5",
+    "prompt_version": "remediation-1",
     "control_assessment": [],
     "unresolved_gaps": []
   },

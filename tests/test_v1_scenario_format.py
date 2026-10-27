@@ -140,6 +140,18 @@ def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
     assert view.scenario is not None and view.scenario.route_status == "STANDALONE"
 
 
+def test_each_assumption_is_shown_with_the_platform_note_once() -> None:
+    """Code adds the note the writer never writes; an older record's own note is shown as stored; a blank
+    assumption is not shown."""
+    older = "Assumes vendor access - NOT recorded in the platform."
+    written = "assumes contractor credentials can reach the SCADA system."
+    view = build_scenario_view(_record(**_content(assumptions=[written, "  ", older])))
+    assert view.scenario is not None and view.scenario.assumptions == [
+        "assumes contractor credentials can reach the SCADA system - not recorded in the platform",
+        older,
+    ]
+
+
 def test_a_scenario_written_before_shows_no_generation_times() -> None:
     record = _record()
     record.pop("generation")

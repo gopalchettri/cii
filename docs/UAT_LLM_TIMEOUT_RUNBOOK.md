@@ -156,7 +156,7 @@ UAT works again here. But a later deployment would bring back the old settings, 
   - the `NO_PROXY` fix (D23);
   - a plan covers every system linked to the asset (D20);
   - a control counts only on systems of its asset type (D21);
-  - prompt `remediation-5` (D34), and at most 5 controls per scenario (D22);
+  - the D34 remediation prompt, stored as `remediation-1` (D36), and at most 5 controls per scenario (D22);
   - the plan request names supporting systems once per request (D34): the platform sends
     `supporting_systems_applicable_to_risk` and `supporting_systems_applicable_to_existing_controls`.
     `supporting_system_ids` inside an existing control is now a 422, and so is any of the old flags (the message

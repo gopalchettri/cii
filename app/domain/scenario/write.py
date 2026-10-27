@@ -1,5 +1,5 @@
 """Writing one scenario per attack path: the brief built by code, the writer and reviewer prompts
-(prompts/writer.txt, prompts/reviewer.txt), the exact checks, the card stored and the duplicate check."""
+(app/prompts.toml), the exact checks, the card stored and the duplicate check."""
 
 import dataclasses
 import functools
@@ -10,7 +10,6 @@ import uuid
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -46,19 +45,20 @@ from app.core.constants import (
     PathProblem,
     PlanCheckStatus,
     Precedent,
+    PromptVersion,
     Route,
     RunKind,
     ScenarioStatus,
     Status,
     StoryFindingCode,
     StoryFindingMessage,
-    StoryLimits,
     StrideCategory,
     TextSafety,
     WriterStyle,
     Writing,
 )
 from app.core.exceptions import PathNotWritable, Unavailable
+from app.core.prompts import PROMPTS
 from app.core.redaction import redact
 from app.domain.external_intelligence.injection_patterns import ECHO_PATTERNS
 from app.domain.external_intelligence.text_cleaner import ID_IN_TEXT
@@ -78,7 +78,7 @@ from app.domain.shared.names import (
     shorten_text,
     threat_name_without_code,
 )
-from app.domain.shared.prompt_redaction import facts_safe_for_prompt
+from app.domain.shared.prompt_redaction import facts_safe_for_prompt, without_platform_note
 from app.models.external_intelligence.evidence_view import markers_of
 from app.models.library.library import ThreatLibrary
 from app.models.scenario.asset_context import FrozenContext
@@ -136,8 +136,6 @@ def draft_answer(draft: ScenarioDraft) -> dict[str, Any]:
         "assumptions": list(draft.assumptions),
         "entry_point": draft.entry_point,
     }
-    if draft.why_applies:
-        answer["why_applies"] = draft.why_applies
     if draft.evidence_statement:
         answer["evidence_statement"] = draft.evidence_statement
     return answer | ({"system_reasons": dict(draft.system_reasons)} if draft.system_reasons else {})
@@ -188,20 +186,13 @@ def blocking_finding_code(written: WrittenScenario) -> str:
     return str(first.code) if first else ""
 
 
-# --- the writer's and the reviewer's prompts
+# --- the writer's and the reviewer's prompts ([scenario.writer] and [scenario.reviewer] in app/prompts.toml)
 
-#: Stored on every scenario it writes.
-WRITER_PROMPT_VERSION = "scenario writer-2"
-_PROMPTS = Path(__file__).with_name("prompts")
-WRITER_SYSTEM_PROMPT = (_PROMPTS / "writer.txt").read_text(encoding="utf-8")
-PLAN_CHECK_SYSTEM_PROMPT = (_PROMPTS / "reviewer.txt").read_text(encoding="utf-8")
+WRITER_SYSTEM_PROMPT: str = PROMPTS["scenario"]["writer"]["text"]
+PLAN_CHECK_SYSTEM_PROMPT: str = PROMPTS["scenario"]["reviewer"]["text"]
 #: With intelligence off, or nothing citable found: no evidence is fabricated or implied.
-NO_EVIDENCE = (
-    '\nNo EVIDENCE is given: cite nothing, tell no real-world event and return "evidence_statement": "".\n'
-)
-_NO_EVIDENCE_REVIEW = (
-    "\nNo EVIDENCE is given: any [n] marker or real-world event breaks rule 8; evidence_supported is false.\n"
-)
+NO_EVIDENCE: str = PROMPTS["scenario"]["writer"]["no_evidence"]
+_NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"]
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _LOOK_ALIKES = re.compile(
     "|".join(re.escape(text) for text in sorted(EvidenceBlock.LOOK_ALIKES, key=len, reverse=True)),
@@ -406,7 +397,7 @@ def build_brief(
         other_systems=tuple(
             redact(system["name"]) for system in context.systems if system["id"] not in path["systems"]
         ),
-        other_scenarios=_newest_within(_without_citations(other_scenarios), budget // 4),
+        other_scenarios=_newest_within(_versions_as_writer_reads(other_scenarios), budget // 4),
         style=style,
         supporting_systems=tuple(
             BriefSystem(system["id"], redact(system["name"]), system["id"] in path["systems"])
@@ -449,8 +440,10 @@ def path_style(threats: dict[str, dict[str, Any]], path: dict[str, Any], style: 
 
 
 def _kind_reason(threat: dict[str, Any], path: dict[str, Any]) -> str:
-    """Why the threat applies as the kind the path is written as, else the threat's own reason."""
-    return str((threat.get("reasons") or {}).get(path["category"]) or threat["reason"])
+    """Why the threat applies as the kind the path is written as, else the threat's own reason; without the
+    platform note."""
+    reason = (threat.get("reasons") or {}).get(path["category"]) or threat["reason"]
+    return without_platform_note(str(reason))
 
 
 def _asset_facts(context: FrozenContext, style: WriterStyle) -> dict[str, Any]:
@@ -522,9 +515,10 @@ def _critical_service(context: FrozenContext) -> str | None:
     return redact(service) if service else None
 
 
-def _without_citations(statements: tuple[str, ...]) -> tuple[str, ...]:
-    """The versions as a writer may read them: without any cited sentence."""
-    kept = (" ".join(s for s in _SENTENCE_END.split(st) if not markers_of(s)) for st in statements)
+def _versions_as_writer_reads(statements: tuple[str, ...]) -> tuple[str, ...]:
+    """The versions as a writer may read them: without any cited sentence or the platform note."""
+    cleaned = map(without_platform_note, statements)
+    kept = (" ".join(s for s in _SENTENCE_END.split(st) if not markers_of(s)) for st in cleaned)
     return tuple(text for text in kept if text)
 
 
@@ -592,7 +586,7 @@ def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding
     (any while intelligence is off), any marker the writer wrote and instructions echoed from untrusted
     evidence, in the evidence passage too (its other faults only keep it from being cited)."""
     reasons = tuple(reason for _, reason in draft.system_reasons)
-    texts = (draft.title, draft.statement, draft.risk, *draft.assumptions, draft.why_applies, *reasons)
+    texts = (draft.title, draft.statement, draft.risk, *draft.assumptions, *reasons)
     text = "\n".join(texts)
     given = _brief_text(brief).casefold()  # a label or number the brief gives was supplied, not made up
     advisory_given = given if brief.style is WriterStyle.EVIDENCE_STORY else ""
@@ -700,24 +694,8 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
     prompt = writer_prompt(brief)
     systems = tuple(system.name for system in brief.supporting_systems)
     read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    draft = ask_ai_and_check(
-        chat, AiTask.WRITE_SCENARIO, prompt, read, first_answer_check=_platform_wording_problems
-    )
+    draft = ask_ai_and_check(chat, AiTask.WRITE_SCENARIO, prompt, read)
     return _reviewed(chat, brief, draft)
-
-
-#: The assumptions' own wording: in any other field the writer is asked once to rewrite it.
-_PLATFORM_WORDING = "recorded in the platform"
-
-
-def _platform_wording_problems(answer: dict[str, Any]) -> list[str]:
-    """The fields other than assumptions that use the platform wording, as one re-ask problem."""
-    fields = [
-        key
-        for key, value in answer.items()
-        if key != "assumptions" and _PLATFORM_WORDING in json.dumps(value).casefold()
-    ]
-    return [AnswerProblem.PLATFORM_WORDING.format(fields=", ".join(fields))] if fields else []
 
 
 def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:
@@ -777,7 +755,6 @@ def _read_draft(
         assumptions=tuple(assumption.strip() for assumption in reply.assumptions),
         entry_point=entry_point,
         system_reasons=reasons,
-        why_applies=" ".join((reply.why_applies or "").split()),
         evidence_statement=" ".join((reply.evidence_statement or "").split()),
     )
     return draft, []
@@ -841,7 +818,6 @@ def written_record(
         "title": draft.title,
         "statement": statement,
         "risk_statement": draft.risk,
-        "why_applies": draft.why_applies or None,
         "assumptions": list(draft.assumptions),
         **_threat_content(path, threat),
         **_systems_content(run, path, brief, draft),
@@ -862,7 +838,8 @@ def written_record(
 
 def _prompt_version_of(style: WriterStyle) -> str:
     """Which prompts wrote a scenario: the evidence story's or the original writer's."""
-    return StoryLimits.PROMPT_VERSION if style is WriterStyle.EVIDENCE_STORY else WRITER_PROMPT_VERSION
+    evidence_story = style is WriterStyle.EVIDENCE_STORY
+    return PromptVersion.SCENARIO_WRITER_EVIDENCE if evidence_story else PromptVersion.SCENARIO_WRITER
 
 
 def _cited(brief: WriterBrief, draft: ScenarioDraft) -> tuple[str, list[dict[str, Any]]]:

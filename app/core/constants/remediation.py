@@ -23,7 +23,6 @@ class Remediation:
     RATING_DECIMALS: Final = 4  # ... 4 of them after the point
     STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code
     REASON_MAX_CHARS: Final = 300  # the AI's problems quoted in a failed version's error message
-    PROMPT_VERSION: Final = "remediation-5"  # stored on every plan version the prompt writes
     #: The code at the head of a control label ("CID-0477 · Social Engineering"): what the label names.
     LABEL_CODE_PATTERN: Final = r"[^\s·•|:—–]+"
     #: What only code may state in a plan's action_plan: the schedule (a time span, a date, the critical path,
