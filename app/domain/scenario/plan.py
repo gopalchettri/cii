@@ -320,7 +320,7 @@ def _landscape_text(
 # --- the planner's prompts (prompts/gate.txt, prompts/gap_fill.txt)
 
 #: Bumped by hand whenever a planner prompt changes; frozen on every plan.
-PLANNER_PROMPT_VERSION = "planner-6"
+PLANNER_PROMPT_VERSION = "planner-7"
 _PROMPTS = Path(__file__).with_name("prompts")
 _GATE_RULES = (_PROMPTS / "gate.txt").read_text(encoding="utf-8")
 _GAP_FILL_RULES = (_PROMPTS / "gap_fill.txt").read_text(encoding="utf-8")

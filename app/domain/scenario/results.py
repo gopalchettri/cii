@@ -24,7 +24,6 @@ from app.core.constants import (
     RunActionOutcome,
     RunKind,
     RunOverall,
-    ScenarioDisplay,
     ScenarioStatus,
     ScopeType,
     SessionState,
@@ -269,8 +268,6 @@ def build_scenario_view(
 def _scenario_text(content: dict[str, Any]) -> ScenarioText:
     """What the scenario says, v1's route words included."""
     threat, route = content.get("threat") or {}, content.get("route") or {}
-    statement, why = content.get("statement"), content.get("why_applies")
-    shown = f"{statement}{ScenarioDisplay.WHY_APPLIES_JOIN}{why}" if statement and why else statement
     status = route.get("status")
     return ScenarioText(
         threat_category=content.get("category"),
@@ -279,7 +276,7 @@ def _scenario_text(content: dict[str, Any]) -> ScenarioText:
         threat_name=threat.get("name"),
         supporting_systems_involved=_systems_involved(content),
         scenario_title=content.get("title"),
-        scenario_statement=shown,
+        scenario_statement=content.get("statement"),
         risk_statement=content.get("risk_statement"),
         assumptions=content.get("assumptions") or [],
         route_status=ROUTE_WORDS.get(str(status), str(status).upper()) if status else None,

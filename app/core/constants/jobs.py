@@ -178,10 +178,6 @@ class ValidationStatus(StrEnum):
     WARNING = "warning"
 
 
-class ScenarioDisplay:
-    WHY_APPLIES_JOIN: Final = "\n\nWhy this threat applies: "  # between the statement and why_applies
-
-
 class RunKind(StrEnum):
     GENERATED = "generated"  # threats, paths and scenarios made by the engine
     MANUAL = "manual"  # one hand-written scenario (a remediation request): born done

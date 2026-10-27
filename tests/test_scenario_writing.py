@@ -30,13 +30,14 @@ from app.core.constants import (
     Route,
     RunKind,
     ScenarioStatus,
+    StrideCategory,
     ValidationStatus,
     WriterStyle,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
-from app.domain.scenario.plan import planned_threat_record
+from app.domain.scenario.plan import gap_fill_prompt, planned_threat_record, relevance_gate_prompt
 from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
     PLAN_CHECK_SYSTEM_PROMPT,
@@ -269,6 +270,24 @@ def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_js
     assert CHAT_TEMPERATURES[AiTask.PLAN_CHECK] == 0.0
 
 
+def test_the_impact_comes_from_the_threats_own_action_and_platform_words_stay_in_assumptions() -> None:
+    """Every prompt bans an added step, keeps "not recorded" wording in assumptions and asks why, not how."""
+    gate = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
+    gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3, ())[1]
+    for prompt in (gate, gap):
+        assert "directly causes the loss the STRIDE category line describes" in prompt
+        assert "only through an added step that is not part of the threat" in prompt
+        assert "it never retells the attack steps" in prompt
+    assert "LIBRARY-GAP BOUNDARY" not in gap and "TSG_SCENARIO_TARGET" not in gap
+    writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
+    assert "never add a step that is not part of the threat" in writer
+    assert 'The words "not recorded in the platform" belong only in assumptions' in writer
+    assert "the primary impact comes from an added step that is not part of the threat" in reviewer
+    assert "every action its name states is its own" in gate
+    assert "not recorded in the platform" not in reviewer  # code checks that wording, not the reviewer
+    assert '"9": "holds"' in reviewer and "Broken when it retells the scenario's sequence" in reviewer
+
+
 def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does() -> None:
     """A label the brief gives is supplied; an advisory id from the asset's own facts blocks while off."""
     brief = _brief_of(_plan_threat())
@@ -315,6 +334,16 @@ def test_every_broken_rule_is_a_note_and_a_changed_threat_is_a_mismatch() -> Non
     assert [note.code for note in notes] == [FindingCode.SCENARIO_MISMATCH] and not check.same_threat
 
 
+def test_a_why_it_applies_that_retells_the_attack_is_a_rule_9_note() -> None:
+    """The reviewer's rule 9 verdict is read like the others: a note, never a blocker."""
+    rules = {"1": "holds", "9": 'broken: "uses the stolen login, then encrypts" - retells the attack'}
+    check, notes = _plan_checked({"rules": rules, "same_threat": True, "same_impact": True})
+    assert check.status == PlanCheckStatus.INCONSISTENT
+    assert [(note.code, note.message) for note in notes] == [
+        (FindingCode.PLAN_CHECK, 'Rule 9: "uses the stolen login, then encrypts" - retells the attack')
+    ]
+
+
 def test_an_unusable_plan_check_is_a_warning_and_an_outage_retries_the_job() -> None:
     check, notes = _plan_checked({"consistent": "maybe"}, {"verdict": "fine"})
     assert check == PlanCheck(PlanCheckStatus.UNCHECKED)
@@ -344,6 +373,16 @@ def test_an_unreadable_answer_is_asked_once_more_and_twice_fails_the_scenario() 
     chat = _chat_answering([{"title": "x"}, {"title": "y"}], [])
     with pytest.raises(UnreadableAiAnswer):
         write_scenario(chat, _brief_of(_plan_threat()))
+
+
+def test_the_platform_wording_outside_assumptions_is_asked_once_more_and_never_fails_the_scenario() -> None:
+    """The clean draft keeps it in assumptions (one call); in the statement the writer is asked again."""
+    leaked = draft_answer(_CLEAN) | {"scenario_statement": "Access is assumed, not recorded in the platform."}
+    chat = _chat_answering([leaked, draft_answer(_CLEAN)], [_CONSISTENT])
+    assert write_scenario(chat, _brief_of(_plan_threat())).draft == _READ
+    assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
+    chat = _chat_answering([leaked, leaked], [_CONSISTENT])
+    assert write_scenario(chat, _brief_of(_plan_threat())).draft.statement == leaked["scenario_statement"]
 
 
 def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None:
@@ -517,7 +556,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     view = build_scenario_view(record)
     text = view.scenario
     assert record["_id"] == scenario_id("run-1", "p1", 1) and view.status == ScenarioStatus.DONE
-    assert text.scenario_statement == f"{_CLEAN.statement}\n\nWhy this threat applies: {WHY_APPLIES}"
+    assert text.scenario_statement == _CLEAN.statement  # why_applies is never appended
     assert [actor.actor_name for actor in view.actors] == ["Cybercriminal"]
     assert [
         (s.supporting_system, s.is_applicable, s.is_entry_point) for s in text.supporting_systems_involved

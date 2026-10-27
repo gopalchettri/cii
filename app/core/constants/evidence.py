@@ -207,7 +207,7 @@ class EvidenceMode(StrEnum):
 
 
 class StoryLimits:
-    PROMPT_VERSION: Final = "scenario writer-evidence-1"  # stored as content.prompt_version of a story
+    PROMPT_VERSION: Final = "scenario writer-evidence-2"  # stored as content.prompt_version of a story
 
 
 class Precedent:

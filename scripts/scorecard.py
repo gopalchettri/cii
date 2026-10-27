@@ -63,7 +63,8 @@ def evidence(card: dict[str, Any]) -> str:
     entries = content.get("evidence") or []
     if evidence_note(card):
         return f"cites {sorted(cited)} though written without evidence" if cited or entries else ""
-    if content.get("prompt_version") != StoryLimits.PROMPT_VERSION:
+    story_prompts = StoryLimits.PROMPT_VERSION.rpartition("-")[0]  # the evidence story's prompts, any version
+    if not (content.get("prompt_version") or "").startswith(story_prompts):
         return f"cites {sorted(cited)} with intelligence off" if cited or entries else ""
     if not cited:
         return "cites no evidence"

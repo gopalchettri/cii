@@ -340,7 +340,7 @@ class ScenarioText(BaseModel):
     threat_name: str | None
     supporting_systems_involved: list[SystemInvolved]
     scenario_title: str | None
-    scenario_statement: str | None  # the statement, then "Why this threat applies: ..."
+    scenario_statement: str | None  # the writer's statement alone
     risk_statement: str | None
     assumptions: list[str]
     # STANDALONE: no link between systems claimed; ASSUMED: it relies on a link the platform does not record.

@@ -10,6 +10,7 @@ import pytest
 from app.core import config
 from app.core.config import Settings
 from app.core.constants import StoryLimits
+from app.domain.scenario.write import WRITER_PROMPT_VERSION
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))  # it imports debug_tools from its own folder
@@ -54,7 +55,9 @@ def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None
     assert scorecard.evidence({"content": story | {"statement": "Abuse [2].", "evidence": [entry]}}) == (
         "markers [2] name no stored source"
     )
-    plain = {"prompt_version": "scenario writer-1", "statement": "Abuse.", "risk_statement": "Stop."}
+    older = story | {"prompt_version": "scenario writer-evidence-1"}  # a story written before a prompt bump
+    assert scorecard.evidence({"content": older | {"statement": "Abuse [1].", "evidence": [entry]}}) == ""
+    plain = {"prompt_version": WRITER_PROMPT_VERSION, "statement": "Abuse.", "risk_statement": "Stop."}
     assert scorecard.evidence({"content": plain}) == ""
     assert (
         scorecard.evidence({"content": plain | {"statement": "Abuse [1]."}})
@@ -74,7 +77,7 @@ def test_a_nearest_story_and_one_written_without_evidence_pass() -> None:
     for mode in ("nearest", "source-documented"):
         uncited = {"content": story | {"statement": "Abuse.", "evidence": [entry], "evidence_mode": mode}}
         assert scorecard.evidence(uncited) == "cites no evidence"
-    plain = {"prompt_version": "scenario writer-1", "statement": "Abuse.", "risk_statement": "Stop."}
+    plain = {"prompt_version": WRITER_PROMPT_VERSION, "statement": "Abuse.", "risk_statement": "Stop."}
     without = {"content": plain | {"evidence_mode": "inferred", "evidence": []}}
     assert scorecard.evidence(without) == "" and scorecard.evidence_note(without) == scorecard.WRITTEN_WITHOUT
     assert scorecard.WRITTEN_WITHOUT == "no evidence found: written without"

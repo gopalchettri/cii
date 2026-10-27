@@ -227,6 +227,10 @@ class AnswerProblem(StrEnum):
     )
     ENTRY_POINT_NOT_OFFERED = "entry_point must be one of entry_point_options, copied exactly: {options}"
     SYSTEM_REASONS_MISSING = "system_reasons must give one short sentence for each of: {names}"
+    PLATFORM_WORDING = (
+        '{fields}: the words "not recorded in the platform" belong only in assumptions; rewrite without '
+        "them, keep any condition hypothetical and add no new fact"
+    )
 
 
 class Controls:

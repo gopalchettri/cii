@@ -1144,7 +1144,7 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
 6. **Reply contract** (`gate.txt`, `RelevanceVerdict`): `{"verdicts": [{"slot", "relevant", "systems", "entry_points", "reason", "impact", "confidence", "needs", "attacker", "attacker_reason"}, …]}`, exactly one per slot; a rejected threat (`relevant` false) answers only `slot`, `relevant`, `reason` and `needs` (`planner-6`), so most of a batch's answer is short. The fields mean:
    - `systems`: every system the threat involves, judged with the asset and all its systems together. [] means the asset itself.
    - `entry_points`: the systems among `systems` an attacker could really get in through.
-   - `reason`: one sentence naming systems by name, with any assumption written as "assumes … - not recorded in the platform".
+   - `reason`: one sentence naming systems by name, with any assumption written as "assumes … - not recorded in the platform". For a relevant threat it says why the threat fits the asset (its recorded role, technology, interfaces or data, or the sector's attacker motive) and how its own action causes the kind's loss, never the attack steps; for a rejected one, why not. It becomes the writer's `why_it_applies` (section 8.1).
    - `impact`: HIGH, MEDIUM or LOW.
    - `confidence`: 0-100.
    - `needs`: any component the threat requires that no recorded fact mentions.
@@ -1176,7 +1176,7 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
 | Denial of Service | R27 | yes | SYS2, SYS3 | HIGH | 65 | Nation-state/APT |
 | Elevation of Privilege | R42 | yes | SYS2, SYS3 | HIGH | 75 | Nation-state/APT |
 
-**Why R36 (Spoofing) was rejected.** The library files lib:281 under Spoofing too. The gate judges whether the threat *belongs to this kind*, as `gate.txt` requires ("it belongs to this category"). Its reason: *"OT protocol command abuse is not a Spoofing threat; it describes misuse of legitimate protocol commands rather than impersonation of a trusted entity."* So lib:281 has no Spoofing path.
+**Why R36 (Spoofing) was rejected.** The library files lib:281 under Spoofing too. The gate judges whether the threat *belongs to this kind*, as `gate.txt` requires ("it belongs to this category"): one of the threat's own actions (every action its name states) must directly cause the loss the kind's definition describes. A threat that reaches that loss only through an added step that is not part of it (for example a data theft put under Tampering by also altering the records it copies) does not belong. Its reason: *"OT protocol command abuse is not a Spoofing threat; it describes misuse of legitimate protocol commands rather than impersonation of a trusted entity."* So lib:281 has no Spoofing path.
 
 ### 5.6 Checking the answers
 
@@ -1243,7 +1243,11 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 1. **When it runs** (`_CategoryJudge.fill_gap`): only when the kind has nothing accepted *after* the two checks, *and* every threat of its bucket was judged. A kind with an empty bucket counts as fully judged, with `checked` = 0.
 2. **Prompt.** `gap_fill_prompt` sends the system message from 5.5 and `LANDSCAPE:…`, `STRIDE category: …` and `prompts/gap_fill.txt`. The prompt includes:
    - how many library threats were judged (`{checked}`);
-   - the names of the kind's library threats that were not kept, which must never be proposed again.
+   - the names of the kind's library threats that were not kept, which must never be proposed again;
+   - only a threat whose own action directly causes the kind's loss, never one that needs an added step to reach it;
+   - a reason that says why the threat fits, never the attack steps, as in the gate (5.5).
+
+   The prompt speaks only to the AI: when gap fill may run is decided by code (step 1), not by the prompt.
 
    It is task `gap_fill`, temperature 0.0. Reply: `{"applies": true, "threat_type", "threat", "attacker", "systems", "reason"}` or `{"applies": false, "reason"}` (`GapFillResponse`, checked by `_read_proposal`; type + threat at most 3,500 characters).
 3. **Library repeat** (`_is_library_threat`): `snapshot.find_threats([(threat, kind)], top_k=10, allowed_types=…)` searches the kind's threats that fit the run's asset types (hybrid search, 5.9). `_best_match` then reranks the hits' names against the proposal. A best score ≥ `THREAT_SIMILARITY_THRESHOLD` (default 75) loses the proposal as `library_repeat`.
@@ -1443,7 +1447,7 @@ The real record of `e6e2f9ec043f7c21`. Its `path_id` was **checked**: sha256 of 
 > **In plain words:** The plan is saved on the session in one step, together with a full record of why each candidate was left out. A reviewer can always ask "why these scenarios and not others?". The plan also records which AI models and which library version made it. The first six scenarios are then handed to the writing step, all six at once. The handover and the plan are saved together, so the work can never be lost or done twice.
 
 **How**
-1. `plan |= {"frozen_at": now, "made_with": _made_with(library_stamp)}`. `made_with` holds `chat_models` (the chat model and any fallback), `embedding_model`, `rerank_model` and the library stamp per table. `prompt_version` is `PLANNER_PROMPT_VERSION` (`planner-6` in the code now).
+1. `plan |= {"frozen_at": now, "made_with": _made_with(library_stamp)}`. `made_with` holds `chat_models` (the chat model and any fallback), `embedding_model`, `rerank_model` and the library stamp per table. `prompt_version` is `PLANNER_PROMPT_VERSION` (`planner-7` in the code now).
 2. `set_and_first_batch(plan["paths"], INITIAL_SET_SIZE)` (default 6) works in two steps:
    - `next_set_paths` takes the best 6 selected, unwritten paths by rank;
    - `next_paths_to_write` takes up to `Generation.WRITER_BATCH` (6) of them, never-tried first, then by rank, as `[{"path_id", "replaces": null}]`.
@@ -2057,7 +2061,8 @@ Industroyer nor the 2015 attack.
 
 **e. The reviewer reads the same block.** `plan_check_prompt` sends the PLAN, the same evidence block and the
 draft. The reviewer answers `evidence_supported`: true only when the passage states nothing but the cited entry's
-facts, plus at most one "could" or "may" link to this scenario. *Example*, the reviewer's whole answer:
+facts, plus at most one "could" or "may" link to this scenario that adds no behaviour the entry does not state.
+*Example*, the reviewer's whole answer (a run from before rule 9):
 `{"rules": {"1": "holds", … "8": "holds"}, "same_threat": true, "same_impact": true, "evidence_supported": true}`.
 
 **f. Code decides and cites.** `_passage_problem` refuses the writer's passage when it is empty, over the
@@ -2325,6 +2330,16 @@ Where each key came from:
    - 14 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
      and access; supporting systems; attacker type; the scenario statement; the risk statement; the title; safe
      and hypothetical; other scenarios; evidence; category shapes; system reasons; why it applies.
+   - When the threat and the category pull apart: every action the threat's name states happens, and the
+     primary impact comes from one of them; no added step (a precursor or side action) is invented to reach
+     the category's impact (rules 1 and 12).
+   - "not recorded in the platform" appears only in `assumptions`, and an assumption never removes a
+     safeguard to make the impact worse (rule 2). Code checks the wording: an answer that uses it in another
+     field is asked once more to rewrite it (`write.py` `_platform_wording_problems`).
+   - The passage's closing "could" or "may" sentence uses only the behaviour the cited entry states, or is
+     left out (rule 11).
+   - `why_applies` says why the threat fits the asset (its role, technology, interfaces or data, or the
+     sector's attacker motive), never a retelling of the attack (rule 14).
    - The risk opening per category: Spoofing "Loss of assurance that ...", Tampering "Loss of trust in ...",
      Repudiation "Loss of accountability for ...", Information Disclosure "Exposure of ...", Denial of Service
      "Disruption of ..." or "Loss of ...", Elevation of Privilege "Loss of control over ...".
@@ -2342,9 +2357,9 @@ Where each key came from:
    | `why_applies` | `content.why_applies` |
    | `evidence_statement` | the cited passage at the end of the statement, and the entry's `supports` (section 8.6) |
 
-7. **Prompt version.** Stored as `content.prompt_version`: "scenario writer-evidence-1"
-   (`StoryLimits.PROMPT_VERSION`) for an evidence story, "scenario writer-1" (`WRITER_PROMPT_VERSION`) for the
-   original style.
+7. **Prompt version.** Stored as `content.prompt_version`: "scenario writer-evidence-2"
+   (`StoryLimits.PROMPT_VERSION`) for an evidence story, "scenario writer-2" (`WRITER_PROMPT_VERSION`) for the
+   original style. Both styles use `writer.txt` and `reviewer.txt`, so a change to either bumps both.
 
 **In the example**
 
@@ -2476,8 +2491,9 @@ near copy.
 ### 8.5 The reviewer (`check_against_plan`)
 
 > **In plain words:** A second AI acts as an editor. It reads the plan, the evidence and the draft, and checks
-> eight rules: the same threat, the right attacker, only the listed systems, no invented links between systems,
-> the right kind of impact, a matching risk, nothing invented, and no real-world claims outside the passage.
+> nine rules: the same threat, the right attacker, only the listed systems, no invented links between systems,
+> the right kind of impact, a matching risk, nothing invented, no real-world claims outside the passage, and a
+> "why it applies" that says why the threat fits rather than retelling the attack.
 > A broken rule is shown to the human reviewer as a note. A draft about a different threat or impact is
 > stopped.
 
@@ -2491,22 +2507,27 @@ near copy.
    - `PLAN:` and the BRIEF record plus `critical_service` (`_critical_service`, from the asset context);
    - the same evidence block as the writer saw (story only);
    - `SCENARIO:` and the draft as the writer answered it (`draft_answer`).
-4. **The 8 rules:**
-   1. Same threat, no second threat.
+4. **The 9 rules:**
+   1. Same threat, no second threat: every action the threat's name states is there, and the primary impact
+      does not come from an added step that is not part of the threat.
    2. Attacker identity: no other attacker or real-world group carries out the attack.
    3. System names and coverage: no unlisted system is named, and every supporting system has a reason.
    4. No cross-system links: nothing moves between systems.
    5. Category-aligned primary impact.
    6. Risk alignment and scope.
-   7. Grounding and possibility: nothing invented; "could" or "may", never certain.
+   7. Grounding and possibility: nothing invented; "could" or "may", never certain; a consequence that rests
+      on a safeguard assumed missing breaks it.
    8. No citation, no precedent outside `evidence_statement`.
+   9. Why it applies: `why_applies` says why the threat fits the asset, never retells the attack.
 
-   Rules 1-8 and the verdicts `same_threat` and `same_impact` judge every field except
-   `evidence_statement`. Only `evidence_supported` judges the passage: true only if it states nothing but the
-   cited entry's facts, plus at most one "could" or "may" link to this scenario.
+   Rules 1-9 and the verdicts `same_threat` and `same_impact` judge every field except
+   `evidence_statement`. `same_threat` is also false when an added step, not the threat, causes the primary
+   impact. Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's
+   facts, plus at most one "could" or "may" link to this scenario that adds no behaviour the entry does not
+   state.
 5. **The answer contract** (`PlanCheckAnswer`):
    ```text
-   {"rules": {"1": "holds" | "broken: \"<exact words>\" - <reason>", ... "8": ...},
+   {"rules": {"1": "holds" | "broken: \"<exact words>\" - <reason>", ... "9": ...},
     "same_threat": true|false, "same_impact": true|false, "evidence_supported": true|false}
    ```
    Every verdict must be "holds" or start with "broken". `same_threat` and `same_impact` are required, so an answer without them
@@ -2533,7 +2554,7 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 ```
 
 - Model `openai/Kimi-K2.6`: 2,434 tokens in, 62 tokens out, 1.1 seconds, logged at 08:18:35.326 UTC.
-- All 8 rules hold, so there is no note and the status is `consistent`. `same_threat` and `same_impact` are
+- All 8 rules hold (the run predates rule 9), so there is no note and the status is `consistent`. `same_threat` and `same_impact` are
   true, so there is no blocker. `evidence_supported` is true, so the writer's passage may be cited.
 - Stored: `"plan_check": {"status": "consistent", "problems": [], "unsupported": [], "same_threat": true,
   "same_impact": true}`.

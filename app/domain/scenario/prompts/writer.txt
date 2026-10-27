@@ -29,7 +29,7 @@ SCHEMA
 - assumptions: short, specific sentences; [] when none are needed.
 - entry_point: an exact BRIEF.entry_point_options value; "" if the list is empty.
 - system_reasons: exactly one key for every BRIEF.supporting_systems name, copied exactly; no missing or extra keys.
-- why_applies: one sentence grounded in the supplied why_it_applies.
+- why_applies: one sentence grounded in the supplied why_it_applies on why the threat fits the asset (rule 14); never a retelling of the attack.
 - evidence_statement: only the evidence passage described in rule 11; "" when no EVIDENCE is supplied.
 
 GENERATION LOGIC
@@ -42,18 +42,20 @@ CORE RULES
 
 1. ONE ASSET-LEVEL EVENT, ONE SPECIFIED THREAT, ONE PRIMARY IMPACT
 Keep the asset as the assessment subject and target of the final consequence. Carry out the specified threat_type/threat in a recognizable way. Do not substitute a nearby threat to fit evidence.
+Every action the threat's name states (for example the encryption, the data theft and the extortion in "ransomware with data theft extortion") must happen in the story as the attacker's action; they are parts of one threat, not unrelated actions, and of alternatives the name joins with "or", one is enough. The primary impact must come from one of those actions itself; never add a step that is not part of the threat (a precursor or side action) to reach the category's impact.
 Describe one coherent event with one primary impact matching the supplied category. Several systems may contribute independently to that event when BRIEF marks them applicable and supports their participation.
-Do not bundle unrelated threat actions or different primary impacts into a generic scenario just to reduce the count. Initial access is a precondition unless acquiring that access is itself the specified threat.
+Do not bundle unrelated threat actions or different primary impacts into a generic scenario just to reduce the count. Initial access is a precondition unless acquiring that access is itself the specified threat or an action its name states.
 
 2. EXPLICIT CAUSALITY AND GROUNDING
 Make clear who acts, what access/precondition is required, what action constitutes the specified threat, what condition of the asset is affected and what primary impact follows.
 Use only BRIEF facts and directly reasonable consequences. Do not invent products, versions, vulnerabilities, users, interfaces, integrations, settings, controls, regulations, processes, services, capabilities, incidents, dates, costs or technical details.
 Unknown means unknown, not absent or confirmed. Remove unnecessary dependencies on unknown facts. List an essential missing detail as: "assumes <specific condition> - not recorded in the platform". Keep that condition explicitly conditional in the narrative.
+The words "not recorded in the platform" belong only in assumptions, never in scenario_statement, risk_statement or any other field. Never assume a control or safeguard is missing to make the consequence worse: an assumption may supply a precondition the threat needs, never a missing defence that enlarges the impact.
 Do not assume that an unrecorded technology, component, supporting system or business process exists merely to make the threat plausible.
 
 3. ENTRY POINT AND ACCESS
 Copy entry_point exactly from one BRIEF.entry_point_options value, or return "" when there are no options. An entry point does not prove permission or establish access to another system.
-State access as a precondition only when supported, otherwise make the essential missing condition explicit as an assumption. Do not describe how access was acquired unless acquiring it is the specified threat. In that case distinguish prior access from the acquisition action.
+State access as a precondition only when supported, otherwise make the essential missing condition explicit as an assumption. Do not describe how access was acquired unless acquiring it is the specified threat or an action its name states. In that case distinguish prior access from the acquisition action.
 
 4. SUPPORTING SYSTEM CONTRIBUTIONS WITHOUT REPETITION
 Use the supplied applicability flags unchanged. Do not select additional systems or change "no" to "yes" to broaden coverage.
@@ -109,7 +111,7 @@ Use EVIDENCE only to ground the specified threat action and write evidence_state
 - With no EVIDENCE, return evidence_statement as "".
 - For a cited entry with technique: open "In real-world attacks,"; include its exact supplied title in double quotes after "the technique", or "the related technique" when evidence_mode is "nearest". Describe only its recorded purpose/behavior. Name who used it only if its facts supply that identity; do not invent an actor to complete the sentence.
 - For a cited entry with about instead: state only its facts in plain language. Do not call it a technique or name a user of it unless the facts do so.
-- End with at most one "could" or "may" sentence connecting the evidence to this event's primary impact, only when justified. Do not claim the evidence establishes that this asset was attacked or is exploitable.
+- End with at most one "could" or "may" sentence connecting the evidence to this event's primary impact. That sentence may use only the behavior the cited entry states; when that behavior does not lead to this event's primary impact, write no such sentence. Do not claim the evidence establishes that this asset was attacked or is exploitable.
 - Add no unsupported name, date, victim, place, incident, number, source name or claim. Include no [n] marker, code, advisory identifier or URL.
 - Outside evidence_statement, include no real-world precedent, named public group, malware/campaign name, technique label, attack-pattern code, advisory identifier, source name, URL or evidence marker.
 - Unknown asset conditions are assumptions, not evidence claims. Do not reshape the specified threat to match a cited or related technique.
@@ -123,7 +125,7 @@ The primary impact and risk opening must match the supplied category:
 - Information Disclosure: which information may be exposed and to whom. Open with "Exposure of ...".
 - Denial of Service: which asset capability/service may be unavailable or degraded. Open with "Disruption of ..." or "Loss of ...".
 - Elevation of Privilege: which permission boundary may be crossed and what unauthorized access that represents. Open with "Loss of control over ...".
-Follow the opening with the adverse event naming the exact asset. Explain the primary loss/exposure, not hypothetical later uses of access or information. Never force an unsupported category-specific detail into the story.
+Follow the opening with the adverse event naming the exact asset. Explain the primary loss/exposure, not hypothetical later uses of access or information. Never force an unsupported category-specific detail, or an added action to reach this category's loss, into the story.
 
 13. SYSTEM REASONS
 Return one short sentence for every exact supporting-system name supplied in BRIEF:
@@ -133,17 +135,18 @@ Return one short sentence for every exact supporting-system name supplied in BRI
 Use "could" or "may" where describing potential actions. Do not name an unlisted system or use a reason to create a cross-system link.
 
 14. WHY IT APPLIES
-Write one plain sentence based on the supplied why_it_applies explaining why the specified threat/category fits the asset and its recorded role. Name only applicable listed systems where needed. Add no facts or systems marked "no".
+Write one plain sentence based on the supplied why_it_applies explaining why the specified threat/category fits the asset: its recorded role, technology, interfaces or data, or the sector's attacker motive, and which of the threat's own actions causes this category's loss. Never retell the scenario's attack steps or what happens on each system. Put any assumption why_it_applies states in assumptions, not here. Name only applicable listed systems where needed. Add no facts or systems marked "no".
 
 GENERATOR FINAL CHECK
 Verify before returning:
 - Exactly the eight required fields, valid JSON and no anatomy/additional prose.
 - One specified threat, one coherent asset-level event and one primary consequence.
+- Every action the threat's name states happens (one of any "or" alternatives), and the primary impact comes from one of them with no added step.
 - Every "yes" system has a concise independent contribution; the common asset consequence is explained once.
 - No activity on "no" or unknown-applicability systems; supplied applicability unchanged; exact system_reasons keys and allowed entry point.
 - No invented access, cross-system connection, data transfer, capability or business process.
-- Essential missing details listed as assumptions and kept conditional.
-- Scenario, risk, title, system reasons and why_applies describe the same event and category.
+- Essential missing details listed as assumptions and kept conditional; "not recorded in the platform" appears only in assumptions, and no safeguard is assumed missing to enlarge the impact.
+- Scenario, risk, title and system reasons describe the same event and category; why_applies gives why the threat fits, not the event again.
 - Evidence comes only from the unambiguous cited entry, appears only in evidence_statement and contains no markers or prohibited identifiers.
 - Hypothetical language, concise sentences, no padding and no operational attack instructions.
 - All statement word upper bounds respected. Do not add repetition to meet lower targets.

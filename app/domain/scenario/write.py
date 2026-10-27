@@ -191,7 +191,7 @@ def blocking_finding_code(written: WrittenScenario) -> str:
 # --- the writer's and the reviewer's prompts
 
 #: Stored on every scenario it writes.
-WRITER_PROMPT_VERSION = "scenario writer-1"
+WRITER_PROMPT_VERSION = "scenario writer-2"
 _PROMPTS = Path(__file__).with_name("prompts")
 WRITER_SYSTEM_PROMPT = (_PROMPTS / "writer.txt").read_text(encoding="utf-8")
 PLAN_CHECK_SYSTEM_PROMPT = (_PROMPTS / "reviewer.txt").read_text(encoding="utf-8")
@@ -700,7 +700,24 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
     prompt = writer_prompt(brief)
     systems = tuple(system.name for system in brief.supporting_systems)
     read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    return _reviewed(chat, brief, ask_ai_and_check(chat, AiTask.WRITE_SCENARIO, prompt, read))
+    draft = ask_ai_and_check(
+        chat, AiTask.WRITE_SCENARIO, prompt, read, first_answer_check=_platform_wording_problems
+    )
+    return _reviewed(chat, brief, draft)
+
+
+#: The assumptions' own wording: in any other field the writer is asked once to rewrite it.
+_PLATFORM_WORDING = "recorded in the platform"
+
+
+def _platform_wording_problems(answer: dict[str, Any]) -> list[str]:
+    """The fields other than assumptions that use the platform wording, as one re-ask problem."""
+    fields = [
+        key
+        for key, value in answer.items()
+        if key != "assumptions" and _PLATFORM_WORDING in json.dumps(value).casefold()
+    ]
+    return [AnswerProblem.PLATFORM_WORDING.format(fields=", ".join(fields))] if fields else []
 
 
 def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:

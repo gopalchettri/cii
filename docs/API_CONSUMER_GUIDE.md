@@ -304,7 +304,7 @@ Headers: identity headers.
 | `scenario.threat_type` / `.threat_name` | string or null | |
 | `scenario.supporting_systems_involved[]` | object[] | `supporting_system_id`, `supporting_system`, `is_entry_point`, `justification`, `is_applicable` |
 | `scenario.scenario_title` | string or null | |
-| `scenario.scenario_statement` | string or null | statement + "Why this threat applies: ..." |
+| `scenario.scenario_statement` | string or null | the scenario statement only (no "Why this threat applies") |
 | `scenario.risk_statement` | string or null | |
 | `scenario.assumptions` | string[] | |
 | `scenario.route_status` | string or null | `STANDALONE` or `ASSUMED` |
