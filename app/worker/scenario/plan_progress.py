@@ -71,7 +71,7 @@ class PlanProgress:
             LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"], reason=reason
         )
         counted = (ScenarioOutcome.ABANDONED,) if card is None else (card, ScenarioOutcome.ABANDONED)
-        states = {path_id: state | {"abandoned_reason": reason}}
+        states = {path_id: state | {"abandoned_reason": reason, "settled_epoch": self._lease.epoch}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
         in_set = [path for key, path in self.paths.items() if key in self._set]
@@ -91,7 +91,12 @@ class PlanProgress:
         counted."""
         # ponytail: best_reserve may still pick it as this set's spare; flag it if spares must be fresh
         self._set.discard(path_id)
-        self.record({path_id: state | {"abandoned": False}}, {"job.set": sorted(self._set)}, (card,))
+        settled = state | {"abandoned": False, "settled_epoch": self._lease.epoch}
+        self.record({path_id: settled}, {"job.set": sorted(self._set)}, (card,))
+
+    def settled_by_this_job(self, path_id: str) -> bool:
+        """True when a delivery of this job (its epoch) already settled the path: it is not written again."""
+        return bool(self.paths[path_id].get("settled_epoch") == self._lease.epoch)
 
     def record(
         self,

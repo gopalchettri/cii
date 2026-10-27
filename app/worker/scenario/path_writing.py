@@ -166,9 +166,9 @@ class PathSaver:
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
     def to_write(self, batch: list[str], replaces: dict[str, str], regenerate: bool) -> list[str]:
-        """The batch's paths still to write; a path an earlier delivery wrote is served here with no AI call
-        (`replaces`: a regenerate's versions to replace, each written afresh; its other paths are outage
-        cards' paths, written again even once given up)."""
+        """The batch's paths still to write; a path an earlier delivery wrote is served here with no AI call,
+        one it settled is not written again (`replaces`: a regenerate's versions to replace, each written
+        afresh; its other paths are outage cards' paths, written again even once given up)."""
         to_write = self._versions_to_write(replaces) if replaces else []
         paths, run_id = self._progress.paths, self._run["_id"]
         first_writes = [key for key in batch if key not in replaces]
@@ -181,7 +181,10 @@ class PathSaver:
         )
         if written:
             self._progress.record({row["path_id"]: _served_by(row["_id"]) for row in written})
-        return to_write + [key for key in open_paths if is_still_to_write(paths[key], reopen=regenerate)]
+        settled = self._progress.settled_by_this_job
+        return to_write + [
+            key for key in open_paths if is_still_to_write(paths[key], reopen=regenerate) and not settled(key)
+        ]
 
     def save(self, path_id: str, outcome: PathOutcome, started_at: datetime | None = None) -> None:
         """Save one path's outcome, then its state on the plan. `started_at`: when its AI work began (None:
