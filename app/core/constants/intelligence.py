@@ -118,11 +118,6 @@ class IntelUrl:
     NVD_API: Final = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     ICS_CSAF: Final = "https://raw.githubusercontent.com/cisagov/CSAF/develop/csaf_files/OT/white/"
     ICS_CHANGES: Final = ICS_CSAF + "changes.csv"  # "<year>/<file>.json","<change time>", newest first
-    TERMS_NVD: Final = "https://nvd.nist.gov/developers/terms-of-use"
-    TERMS_CISA: Final = "https://www.cisa.gov/news-events/cybersecurity-advisories"
-    TERMS_KEV: Final = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
-    TERMS_EPSS: Final = "https://www.first.org/epss/"
-    TERMS_ATTACK: Final = "https://attack.mitre.org/resources/legal-and-branding/terms-of-use/"
 
 
 #: Hours between fetches of a source (ATT&CK is a large file that changes with a release).
