@@ -37,7 +37,7 @@ from app.core.exceptions import (
 from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields, retry_notice
 from app.realtime.publisher import publish_mapping_status, publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
-from app.worker.lease_renewal import handed_back_at_shutdown, keep_lease_alive
+from app.worker.lease_renewal import give_job_back, keep_lease_alive
 
 log = structlog.get_logger(__name__)
 
@@ -138,7 +138,7 @@ def run_leased_job(
     if not lease.record["job"].get("waiting"):
         publish(record_id)
     try:
-        with keep_lease_alive(lease), handed_back_at_shutdown(task.name, lease):
+        with keep_lease_alive(lease, lambda: give_job_back(task.name, lease)):
             work(lease)
     except LeaseLost:
         _end_lost_delivery(collection, record_id)

@@ -195,7 +195,7 @@ class RunControls:
                 self._sessions, self._scenarios, self._record_id, (scenario_id, attempts), self._task_id
             )
             # Background work: on a local CPU reranker any waiting foreground rerank goes first.
-            with keep_lease_alive(lease), background_reranks():
+            with keep_lease_alive(lease, lease.give_back), background_reranks():
                 mapping = self._mapper.map_controls(scenario, self._context, self._snapshot)
         except ControlsNotMapped as exc:
             self._fail(scenario_id, attempts, exc.code, exc.message)
@@ -256,3 +256,15 @@ class _ScenarioLease:
         return self._scenarios.update_scenario_controls(
             self.record_id, self._task_id, self._attempts, Status.RUNNING
         )
+
+    def give_back(self) -> bool:
+        """For a stopping worker: the scenario queued again with its attempt returned, then the run's delivery
+        lease freed and its next delivery sent (once per run); False once the scenario was taken over."""
+        if not self._scenarios.update_scenario_controls(
+            self.record_id, self._task_id, self._attempts, Status.QUEUED, attempt_returned=True
+        ):
+            return False
+        log.info(LogEvent.JOB_HANDED_BACK, record_id=self.record_id, attempt=self._attempts)
+        if self._sessions.release_controls_delivery(self._session_id, self._task_id):
+            send_job(TaskName.MAP_CONTROLS, self._session_id, 0)  # the epoch is never checked for controls
+        return True

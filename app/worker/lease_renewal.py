@@ -1,11 +1,11 @@
-"""A job's lease kept alive while its work runs (app/worker/jobs.py runs the work): renewed from a background
-thread while the job keeps checking its signal, and handed back to the queue when its worker stops."""
+"""A lease kept alive while its work runs (app/worker/jobs.py runs a job's work): renewed from a background
+thread while the work keeps checking its signal, and given back when its worker stops."""
 
 import contextlib
 import contextvars
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Protocol
 
@@ -21,8 +21,9 @@ from app.worker.heartbeat import mark_worker_hung
 
 log = structlog.get_logger(__name__)
 
-#: The jobs this worker runs now, each with its task and a copy of its context (its log fields, request id).
-_running: dict[JobLease, tuple[str, contextvars.Context]] = {}
+#: The leases held here that a stopping worker gives back, by signal: each one's give-back and a copy of its
+#: work's context (its log fields, request id).
+_held: dict[LeaseSignal, tuple[Callable[[], bool], contextvars.Context]] = {}
 
 
 class RenewableLease(Protocol):
@@ -34,11 +35,14 @@ class RenewableLease(Protocol):
 
 
 @contextmanager
-def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
+def keep_lease_alive(
+    lease: RenewableLease, give_back: Callable[[], bool] | None = None
+) -> Generator[None, None, None]:
     """Renew the lease every Lease.RENEW_EVERY_SECONDS while the work runs, from a background thread. A
     renewal that finds the lease lost (a cancel), or a job that made no lease check for Lease.STALL_SECONDS
     (hung: the reaper then takes it over), sets the job's signal: its next AI call raises LeaseLost
-    (core/lease_signal.py), as its fenced writes do once the lease is gone."""
+    (core/lease_signal.py), as its fenced writes do once the lease is gone. `give_back` frees the lease for
+    another worker when this one stops (hand_back_running_jobs), True once it did."""
     stopped = threading.Event()
     with lease_lost_signal(lease.record_id) as lost:
         renewer = threading.Thread(  # in the job's context: its lines keep the task, module and request id
@@ -48,9 +52,12 @@ def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
             daemon=True,
         )
         renewer.start()
+        if give_back is not None:
+            _held[lost] = (give_back, contextvars.copy_context())
         try:
             yield
         finally:
+            _held.pop(lost, None)
             stopped.set()
             renewer.join()
 
@@ -78,27 +85,27 @@ def _renewed_while_working(lease: RenewableLease, lost: LeaseSignal) -> bool:
         return True
 
 
-@contextmanager
-def handed_back_at_shutdown(task: str, lease: JobLease) -> Generator[None, None, None]:
-    """While the work runs, a stopping worker can hand the job back (hand_back_running_jobs)."""
-    _running[lease] = (task, contextvars.copy_context())
-    try:
-        yield
-    finally:
-        del _running[lease]
-
-
 def hand_back_running_jobs(after_seconds: float = 0) -> None:
-    """After `after_seconds` (time for running jobs to finish), queues every job still running here again."""
+    """After `after_seconds` (time for running work to finish), gives back every lease still held here; its
+    work then stops at its next lease check (an AI call or wait), not at its next renewal."""
     time.sleep(after_seconds)
-    for lease, (task, context) in _running.copy().items():
-        context.run(_hand_back, task, lease)
+    for lost, (give_back, context) in _held.copy().items():
+        if context.run(_given_back, give_back):
+            lost.set()
 
 
-def _hand_back(task: str, lease: JobLease) -> None:
-    """The job queued again and sent now, with the attempt this delivery used given back; nothing when the job
-    is no longer this delivery's or its signal is set (a stalled job's attempt counts: the reaper takes it).
-    The old delivery then stops at its next AI call or write (LeaseLost)."""
+def _given_back(give_back: Callable[[], bool]) -> bool:
+    """give_back(), unless the work's lease is lost already (a stalled job's attempt counts: the reaper takes
+    it over); False when nothing was given back (the lease lost meanwhile, or the store down: it runs out)."""
+    with contextlib.suppress(LeaseLost, *MONGO_UNAVAILABLE_ERRORS):
+        raise_if_lease_lost()
+        return give_back()
+    return False
+
+
+def give_job_back(task: str, lease: JobLease) -> bool:
+    """The job queued again and sent now, with the attempt this delivery used given back; LeaseLost once the
+    job is no longer this delivery's."""
     given_back = {
         "status": Status.QUEUED,
         "job.due_at": utc_now(),
@@ -108,8 +115,7 @@ def _hand_back(task: str, lease: JobLease) -> None:
         "job.worker": None,
         "job.retry": None,
     }
-    with contextlib.suppress(LeaseLost, *MONGO_UNAVAILABLE_ERRORS):  # down: the reaper re-queues it later
-        raise_if_lease_lost()
-        lease.update_job(given_back)
-        log.info(LogEvent.JOB_HANDED_BACK, record_id=lease.record_id, attempt=lease.attempts)
-        send_job(TaskName(task), lease.record_id, lease.epoch, priority=Worker.NEXT_STAGE_PRIORITY)
+    lease.update_job(given_back)
+    log.info(LogEvent.JOB_HANDED_BACK, record_id=lease.record_id, attempt=lease.attempts)
+    send_job(TaskName(task), lease.record_id, lease.epoch, priority=Worker.NEXT_STAGE_PRIORITY)
+    return True

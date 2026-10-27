@@ -36,10 +36,17 @@ from app.data_access.jobs.job_repository import JobLease, JobRepository
 from app.search.service import _SnapshotKeeper
 from app.worker import heartbeat, jobs, lease_renewal, lifecycle
 from app.worker.lease_renewal import keep_lease_alive
+from tests.test_control_mapping import (  # noqa: F401 - mapping_run: a fixture used by name
+    _controls_of,
+    _deliver,
+    _run_record,
+    _ScoresByText,
+    mapping_run,
+)
 from tests.test_deploy import _all_deployments
 
-#: The queues whose tasks run under run_leased_job: their workers hand jobs back when they stop.
-LEASED_QUEUES = {Queue.THREATS, Queue.SCENARIOS, Queue.REMEDIATION, Queue.SERVICEMAPPER}
+#: The queues whose tasks hold a lease keep_lease_alive renews: their workers hand it back when they stop.
+LEASED_QUEUES = {Queue.THREATS, Queue.SCENARIOS, Queue.CONTROLS, Queue.REMEDIATION, Queue.SERVICEMAPPER}
 
 
 def _records() -> Any:
@@ -192,6 +199,8 @@ def test_a_stopping_worker_gives_its_running_job_back_without_using_an_attempt(
         stopping = threading.Thread(target=lease_renewal.hand_back_running_jobs)  # as the shutdown thread
         stopping.start()
         stopping.join(5)
+        with pytest.raises(LeaseLost):  # its next AI call or wait stops it, not its renewal up to 30 s later
+            raise_if_lease_lost()
         lease.update_job({"plan": "late"})  # the old delivery's next write
 
     with structlog.contextvars.bound_contextvars(request_id="req-stop"), pytest.raises(Ignore):
@@ -215,14 +224,60 @@ def test_a_stalled_job_is_not_handed_back_with_its_attempt_returned(monkeypatch:
     assert lease is not None
     sends: list[tuple] = []
     monkeypatch.setattr(lease_renewal, "send_job", lambda *args, **_options: sends.append(args) or True)
-    with (
-        lease_lost_signal(record_id) as lost,
-        lease_renewal.handed_back_at_shutdown(TaskName.FIND_THREATS, lease),
-    ):
-        lost.set()  # its renewer gave up: no lease check for Lease.STALL_SECONDS
+    monkeypatch.setattr(Lease, "RENEW_EVERY_SECONDS", 0.01)
+    monkeypatch.setattr(Lease, "STALL_SECONDS", 0.05, raising=False)
+    with keep_lease_alive(lease, lambda: lease_renewal.give_job_back(TaskName.FIND_THREATS, lease)):
+        time.sleep(0.3)  # no lease check: its renewer gave up (Lease.STALL_SECONDS)
         lease_renewal.hand_back_running_jobs()
     job = _records().find_one({"_id": record_id})
     assert (job["status"], job["job"]["attempts"], sends) == (Status.RUNNING, 1, [])  # the reaper takes it
+
+
+class _StopsTheWorkerMidMapping(_ScoresByText):
+    """Scores as _ScoresByText; once every scenario of the turn is being mapped, the worker is told to stop,
+    then each mapping makes its next AI call."""
+
+    def __init__(self, scores: dict[str, float], scenarios: int) -> None:
+        super().__init__(scores)
+        self.stopped: list[str] = []  # the scenarios whose next AI call found their lease given back
+        self.all_mapping = threading.Barrier(scenarios, action=_stop_the_worker)
+
+    def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+        self.all_mapping.wait(timeout=5)
+        try:
+            raise_if_lease_lost()  # as each AI call does first
+        except LeaseLost as lost:
+            self.stopped.append(str(lost))
+            raise
+        return super().score_relevance(query, documents)
+
+
+def _stop_the_worker() -> None:
+    """The shutdown thread's hand-back."""
+    stopping = threading.Thread(target=lease_renewal.hand_back_running_jobs)
+    stopping.start()
+    stopping.join(5)
+
+
+def test_a_stopping_controls_worker_gives_its_scenarios_back_without_using_an_attempt(
+    mapping_run: dict[str, Any],  # noqa: F811 - the imported fixture
+) -> None:
+    """A deploy stopped worker-controls mid-mapping: each scenario kept its lease until it ran out, the
+    sweep's re-run used another of its Controls.MAX_ATTEMPTS, and the run's delivery lease held off every
+    other delivery meanwhile."""
+    record_id = mapping_run["record_id"]
+    scenario_ids = [f"{record_id}-1", f"{record_id}-2"]
+    mapping_run["rerank"] = _StopsTheWorkerMidMapping({"Backup policy": 70.0}, scenarios=2)
+    assert _deliver(record_id, "stopping") == 0
+    assert sorted(mapping_run["rerank"].stopped) == scenario_ids  # each at its next AI call
+    for scenario_id in scenario_ids:
+        controls = _controls_of(scenario_id)
+        assert (controls["status"], controls["attempts"], controls["lease_until"]) == (Status.QUEUED, 0, None)
+    assert "controls_delivery" not in _run_record(record_id)  # any delivery may take the run now
+    assert mapping_run["sent"] == [(TaskName.MAP_CONTROLS, record_id, 0)]  # one message for the run
+    mapping_run["rerank"] = _ScoresByText({"Backup policy": 70.0})
+    assert _deliver(record_id, "next") == 2
+    assert [_controls_of(scenario_id)["attempts"] for scenario_id in scenario_ids] == [1, 1]  # the same try
 
 
 def test_a_worker_told_to_stop_hands_its_jobs_back_before_its_pod_is_killed(

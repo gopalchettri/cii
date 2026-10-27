@@ -283,9 +283,9 @@ class ThreatScenarioSessionRepository(MongoRepository):
         until = utc_now() + timedelta(seconds=Controls.LEASE_SECONDS)
         return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.until": until}})
 
-    def release_controls_delivery(self, session_id: str, task_id: str) -> None:
-        """tsg_sessions: the delivery lease ended."""
-        self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
+    def release_controls_delivery(self, session_id: str, task_id: str) -> bool:
+        """tsg_sessions: the delivery lease ended; False when `task_id` no longer held it."""
+        return self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
 
     def note_controls_retry(self, session_id: str, task_id: str, notice: Record) -> bool:
         """tsg_sessions: the delivery's outage notice, kept until the lease is next claimed, handed over or

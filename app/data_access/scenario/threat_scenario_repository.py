@@ -354,12 +354,15 @@ class ThreatScenarioRepository(MongoRepository):
         outcome: Status,
         mapping: Record | None = None,
         error: Record | None = None,
+        attempt_returned: bool = False,
     ) -> bool:
         """tsg_scenarios: the claim's outcome, only while it still holds (task id + attempts + running;
         Celery reuses a task id on a redelivery): RUNNING renews the lease, DONE saves `mapping`, QUEUED gives
-        it back (FAILED once Controls.MAX_ATTEMPTS were used), FAILED saves `error`. False once taken over."""
+        it back (FAILED once Controls.MAX_ATTEMPTS were used; `attempt_returned`: the claim's attempt is not
+        counted), FAILED saves `error`. False once taken over."""
         now = utc_now()
-        if outcome == Status.QUEUED and attempts >= Controls.MAX_ATTEMPTS:
+        counted = attempts - 1 if attempt_returned else attempts
+        if outcome == Status.QUEUED and counted >= Controls.MAX_ATTEMPTS:
             outcome = Status.FAILED
         if outcome == Status.RUNNING:
             changes: Record = {"controls.lease_until": now + timedelta(seconds=Controls.LEASE_SECONDS)}
@@ -369,7 +372,7 @@ class ThreatScenarioRepository(MongoRepository):
         else:
             changes = {"controls.status": outcome, "controls.error": error}
             if outcome == Status.QUEUED:
-                changes["controls.queued_at"] = now
+                changes |= {"controls.queued_at": now, "controls.attempts": counted}
         if outcome != Status.RUNNING:
             changes["controls.lease_until"] = None
         fence = {
