@@ -70,3 +70,44 @@ def test_a_regenerate_that_meets_its_runs_delete_leaves_the_plan_as_it_was(
     runs.update_one({"_id": before["session_id"]}, {"$unset": {DELETING_MARK: ""}})  # the delete stopped
     again = _post(client, api_key, remediation_id, "regenerate", {})
     assert (again.status_code, again.json()["version"]) == (202, 2), again.text
+
+
+@pytest.mark.parametrize(
+    ("first_review", "review_meanwhile", "accepted_version", "decision"),
+    [("reject", "accept", 1, Decision.ACCEPTED), (None, "reject", None, Decision.REJECTED)],
+)
+def test_a_review_landing_before_the_regenerate_undoes_its_append_is_kept(  # noqa: PLR0913 — fixtures
+    client: TestClient,
+    api_key: str,
+    world: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    first_review: str | None,
+    review_meanwhile: str,
+    accepted_version: int | None,
+    decision: Decision,
+) -> None:
+    """v1 is reviewed between the regenerate's append and its undo: the plan's decision follows that review,
+    not the regenerate's earlier read."""
+    remediation_id = _done_plan(client, api_key, world)
+    if first_review is not None:
+        assert _post(client, api_key, remediation_id, first_review, {"version": 1}).status_code == 200
+    plans, runs = container.get_remediation_repository(), get_mongodb()[Collection.SESSIONS]
+    session_id, real_append = _record(remediation_id)["session_id"], plans.create_remediation_plan_version
+    answers: list[Any] = []
+
+    def appended_then_reviewed_then_the_delete_marks(*args: Any) -> bool:
+        appended = real_append(*args)
+        answers.append(_post(client, api_key, remediation_id, review_meanwhile, {"version": 1}))
+        runs.update_one({"_id": session_id}, {"$set": {DELETING_MARK: datetime.now(UTC)}})
+        return appended
+
+    with monkeypatch.context() as raced:
+        raced.setattr(plans, "create_remediation_plan_version", appended_then_reviewed_then_the_delete_marks)
+        refused = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
+    assert answers[0].status_code == 200, answers[0].text
+    after = _record(remediation_id)
+    assert (len(after["versions"]), after["versions"][0]["decision"]) == (1, decision)  # v1 as reviewed
+    assert (after["accepted_version"], after["decision"]) == (accepted_version, decision)
+    status = _status(client, api_key, remediation_id).json()
+    assert (status["accepted_version"], status["decision"]) == (accepted_version, decision)

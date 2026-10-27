@@ -13,8 +13,8 @@ from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
 from app.models.remediation.plan import RemediationStatus, RemediationSummary
 
-#: What a new version changes at the top of the record, put back as read when it is undone.
-_VERSION_STARTED_FIELDS = ("job", "status", "decision", "finished_at", "cancelled")
+#: What a new version changes at the top of the record, put back as read when it is undone (not the decision).
+_VERSION_STARTED_FIELDS = ("job", "status", "finished_at", "cancelled")
 #: What a regenerate or a review reads first: never a snapshot or a plan.
 _CHANGE_FIELDS = {
     "entity_id": 1,
@@ -47,6 +47,39 @@ _DECISION_WITH_A_NEW_VERSION = {
         Decision.PENDING,
         Decision.ACCEPTED,
     ]
+}
+#: Whether a version still waits for a decision: the latest one, or an older done one, left pending.
+_A_VERSION_WAITS = {
+    "$anyElementTrue": [
+        {
+            "$map": {
+                "input": "$versions",
+                "as": "v",
+                "in": {
+                    "$and": [
+                        {"$eq": ["$$v.decision", Decision.PENDING]},
+                        {
+                            "$or": [
+                                {"$eq": ["$$v.version", "$job.epoch"]},
+                                {"$eq": ["$$v.status", Status.DONE]},
+                            ]
+                        },
+                    ]
+                },
+            }
+        }
+    ]
+}
+#: The record's decision from its versions as they stand, the rule decision_change applies: accepted while one
+#: is accepted, pending while one waits, else rejected.
+_RECORD_DECISION = {
+    "$switch": {
+        "branches": [
+            {"case": {"$ne": [{"$ifNull": ["$accepted_version", None]}, None]}, "then": Decision.ACCEPTED},
+            {"case": _A_VERSION_WAITS, "then": Decision.PENDING},
+        ],
+        "default": Decision.REJECTED,
+    }
 }
 #: The decision stamp's fields, cleared on a version put back to pending.
 _STAMP_FIELDS = ("decided_by", "decided_by_client", "decided_at", "review_comment")
@@ -184,8 +217,9 @@ class RemediationRepository(MongoRepository):
 
     def undo_remediation_plan_version(self, read: dict[str, Any], version: int) -> None:
         """Removes `version`, appended after `read` (a "change" read) and never sent, from tsg_remediations:
-        the plan as read again (a regenerate that lost the race with its run's delete). decision_seq still
-        moves on, so a decision read in between reads again."""
+        the plan as read again (a regenerate that lost the race with its run's delete), with its decision from
+        the versions as they stand, so a decision written meanwhile is kept. decision_seq still moves on, so a
+        decision read in between reads again."""
         restored = {
             field: {"$literal": read[field]} if field in read else "$$REMOVE"
             for field in _VERSION_STARTED_FIELDS
@@ -200,7 +234,8 @@ class RemediationRepository(MongoRepository):
                         "decision_seq": {"$add": ["$decision_seq", 1]},
                         "updated_at": utc_now(),
                     }
-                }
+                },
+                {"$set": {"decision": _RECORD_DECISION}},
             ],
         )
 
