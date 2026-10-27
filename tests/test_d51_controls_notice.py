@@ -24,12 +24,12 @@ from app.domain.scenario.write import written_record
 from app.models.scenario.views import session_status_from_record
 from app.models.scenario.write import PlanCheck, WrittenScenario
 from app.services.jobs.job_service import _run_job
+from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
 from tests.planner_samples import CONTEXT
 from tests.test_controls_fixes import (  # noqa: F401 - fixture
     _deliver,
     _Raising,
-    _ScoresByText,
     _set_controls,
     run,
 )
@@ -74,11 +74,17 @@ def test_a_controls_outage_shows_a_retry_notice_until_the_next_claim(
     retries: int,
 ) -> None:
     """The run's board shows stage controls, the outage, the try and when the next comes (the sweep's re-send
-    after the last); the next delivery's claim clears it."""
+    after the last), and its watchers are told once it is stored; the next delivery's claim clears it while
+    controls still wait."""
     record_id = run["record_id"]
     run["rerank"] = _Raising(Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN))
     monkeypatch.setattr(scenario_tasks.map_controls, "retry", lambda *_, **__: RuntimeError("retry"))
-    run["published"].clear()
+    seen_by_watchers: list[Any] = []  # the notice a stream re-reading the status would see at each publish
+    monkeypatch.setattr(
+        controls_job,
+        "publish_session_status",
+        lambda run_id: seen_by_watchers.append(_shown_retrying(run_id)[0]),
+    )
     scenario_tasks.map_controls.apply(args=(record_id, 0), task_id="task-1", retries=retries)
     last = retries >= Controls.MAX_MESSAGE_RETRIES
     delay = Controls.RESEND_QUEUED_AFTER_SECONDS if last else Lease.RETRY_DELAYS_SECONDS[0]
@@ -92,9 +98,9 @@ def test_a_controls_outage_shows_a_retry_notice_until_the_next_claim(
     )
     expected_at = datetime.now(UTC) + timedelta(seconds=delay)
     assert abs((retrying.retry_at - expected_at).total_seconds()) < 5
-    assert run["published"][-1][0] == record_id
-    run["rerank"] = _ScoresByText({"Backup policy": 70.0})
-    assert _deliver(record_id) == 1
+    assert seen_by_watchers[-1] == retrying  # the recount's publish came before the notice was stored
+    # The retry's claim; its card still waits, so only the claim's reset can hide the notice.
+    assert container.get_threat_scenario_session_repository().claim_controls_delivery(record_id, "task-1")
     assert _shown_retrying(record_id) == (None, None)
 
 
