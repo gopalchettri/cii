@@ -46,7 +46,7 @@ from app.data_access.jobs.job_repository import (
     failed_job_fields,
 )
 from app.domain.scenario.review import regenerate_batch, why_ids_cannot_be_regenerated
-from app.domain.scenario.write import _newest_within, scenario_id
+from app.domain.scenario.write import scenario_id
 from app.models.admin.api_clients import Principal
 from app.models.scenario.views import ScenarioIdsRequest, SessionStatus, session_status_from_record
 from app.worker.scenario import path_writing
@@ -323,7 +323,7 @@ def _regenerate(client: TestClient, api_key: str, record_id: str, scenario_ids: 
 def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
     client: TestClient, api_key: str, queued: list[tuple[Any, ...]], fake_chat: Any
 ) -> None:
-    """T-SCN-24: 202 {epoch 2}; the job writes version 2 (pending, `replaces` v1, told to differ from v1),
+    """T-SCN-24: 202 {epoch 2}; the job writes version 2 (pending, `replaces` v1, never shown v1's text),
     then supersedes v1, which stays accepted; the path is served by v2; the run ends complete."""
     record_id = _written_run(["Threat 1", "Threat 2"])
     first = scenario_id(record_id, "p1", 1)
@@ -339,7 +339,7 @@ def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
     old = _scenarios().find_one({"_id": first})
     assert (old["superseded_by"], old["decision"]) == (second["_id"], Decision.ACCEPTED)
     briefs = [prompt for task, prompt in fake_chat.calls[calls_before:] if task == AiTask.WRITE_SCENARIO]
-    assert briefs and '"other_scenarios"' in briefs[0] and old["content"]["statement"] in briefs[0]
+    assert briefs and old["content"]["statement"] not in briefs[0]  # written afresh: no earlier text to copy
     run = _sessions().find_one({"_id": record_id})
     served = {path["path_id"]: path["served"] for path in run["plan"]["paths"]}
     assert served["p1"] == second["_id"]
@@ -633,13 +633,6 @@ def test_regenerate_takes_an_ai_outage_card_and_writes_it_in_place() -> None:
         "unreadable": TargetProblem.FAILURE_SCENARIO,
     }
     assert regenerate_batch(["busy"], targets) == [{"path_id": "p1", "replaces": None}]
-
-
-def test_the_writer_sees_the_newest_versions_that_fit() -> None:
-    """S41 review: a path regenerated many times never pushes the prompt past the model input; the newest
-    versions are kept, oldest first."""
-    assert _newest_within(("a" * 10, "b" * 10, "c" * 10), 25) == ("b" * 10, "c" * 10)
-    assert _newest_within(("a" * 30,), 25) == ()
 
 
 def test_a_failed_job_never_leaves_the_run_reading_running() -> None:

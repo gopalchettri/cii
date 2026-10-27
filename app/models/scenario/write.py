@@ -52,7 +52,7 @@ class WriterBrief:
     why_it_applies: str  # the relevance check's reason, systems by name
     systems: tuple[dict[str, Any], ...]  # the threat's systems, each its name plus recorded facts
     other_systems: tuple[str, ...]  # the run's other systems, by name: never part of this scenario
-    other_scenarios: tuple[str, ...] = ()  # the statements of the path's other versions (regenerate only)
+    threat_actions: tuple[str, ...] = ()  # the actions the threat's name states; (): the writer splits it
     style: WriterStyle = WriterStyle.ORIGINAL
     # Evidence docs in the plan's order, best first: the writer's grounding; the first citable one is [1].
     evidence: tuple[dict[str, Any], ...] = ()
@@ -133,6 +133,7 @@ class PlanCheckAnswer(BaseModel):
     """The reviewer's answer: per numbered rule "holds" or 'broken: "<exact words>" - <reason>'."""
 
     rules: dict[str, str]
+    threat_actions: dict[str, str] = {}  # per listed action: "carried out", "only named" or "missing"
     same_threat: bool  # required, so a reviewer that leaves them out is re-asked, never assumed
     same_impact: bool
     evidence_supported: bool | None = None  # only True counts: none given keeps code's own sentence

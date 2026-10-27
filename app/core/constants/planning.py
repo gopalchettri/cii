@@ -227,6 +227,8 @@ class AnswerProblem(StrEnum):
     )
     ENTRY_POINT_NOT_OFFERED = "entry_point must be one of entry_point_options, copied exactly: {options}"
     SYSTEM_REASONS_MISSING = "system_reasons must give one short sentence for each of: {names}"
+    THREAT_ACTIONS_REQUIRED = 'the reply must be {"actions": [...]}: a non-empty list of short verb phrases'
+    THREAT_ACTION_VERDICTS_REQUIRED = "threat_actions must judge every item of PLAN.threat.threat_actions"
 
 
 class Controls:

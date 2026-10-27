@@ -24,6 +24,17 @@ def brief_system_names(user_prompt: str) -> list[str]:
     return [system["name"] for system in brief.get("supporting_systems") or []]
 
 
+def _the_name_as_its_action(user_prompt: str) -> dict[str, Any]:
+    """The split's answer when a test is about something else: the threat's name is its one action."""
+    return {"actions": [json.loads(user_prompt.rsplit("THREAT: ", 1)[1])]}
+
+
+#: The responder of a task no test needs to answer; a test's own responder or queue comes first.
+_DEFAULT_RESPONDERS: dict[AiTask, Callable[[str], dict[str, Any]]] = {
+    AiTask.THREAT_ACTIONS: _the_name_as_its_action
+}
+
+
 def items_in(user_prompt: str, heading: str) -> list[dict[str, Any]]:
     """The JSON list a planner prompt carries after `heading` ("CANDIDATES", "THREATS")."""
     return json.loads(user_prompt.rsplit(f"\n{heading}:\n", 1)[1])
@@ -74,7 +85,8 @@ class FakeChatModel:
 
     def _answer(self, task: AiTask, user_prompt: str) -> dict[str, Any]:
         self.calls.append((task, user_prompt))
-        answer: Answer = self.queued[task].pop(0) if self.queued[task] else self.responders[task]
+        queued = self.queued[task]
+        answer: Answer = queued.pop(0) if queued else self.responders.get(task) or _DEFAULT_RESPONDERS[task]
         if isinstance(answer, BaseException):
             raise answer
         answered = answer(user_prompt) if callable(answer) else answer

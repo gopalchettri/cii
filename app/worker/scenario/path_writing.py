@@ -2,7 +2,7 @@
 version in the job's thread (PathSaver), a written scenario checked for a near copy right before its save."""
 
 import dataclasses
-from collections import defaultdict
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -22,7 +22,7 @@ from app.core.constants import (
     WriterStyle,
     Writing,
 )
-from app.core.exceptions import TEMPORARY_ERRORS, JobFailed, LeaseLost, PathNotWritable
+from app.core.exceptions import TEMPORARY_ERRORS, JobFailed, LeaseLost, PathNotWritable, Unavailable
 from app.data_access.jobs.job_repository import JobLease
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
 from app.domain.scenario.plan import is_still_to_write
@@ -35,9 +35,9 @@ from app.domain.scenario.write import (
     generation_stamp,
     is_final,
     live_library_of,
-    narrative_of,
     path_style,
     scenario_id,
+    split_threat_actions,
     title_candidates,
     write_scenario,
     written_record,
@@ -74,21 +74,16 @@ class PathWriter:
         self._live = live_library_of(library)
         self._context = FrozenContext.from_record(run["context"])
         self.threats = {threat["key"]: threat for threat in run["plan"]["threats"]}
+        self._actions: dict[str, tuple[str, ...] | Unavailable] = {}  # each threat's split (or its outage)
+        self._split_locks: dict[str, threading.Lock] = {}  # one per threat
 
-    def write(self, path: dict[str, Any], other_scenarios: tuple[str, ...] = ()) -> PathOutcome:
-        """In a pool thread: build one path's brief in its own style and write its scenario
-        (`other_scenarios`: the versions a regenerate must differ from). An outage or a job-wide failure is
-        raised."""
+    def write(self, path: dict[str, Any]) -> PathOutcome:
+        """In a pool thread: build one path's brief in its own style, with its threat's actions, and write its
+        scenario. An outage or a job-wide failure is raised."""
         try:
-            brief = build_brief(
-                self.threats,
-                path,
-                self._context,
-                self._budget,
-                self._live,
-                other_scenarios=other_scenarios,
-                style=path_style(self.threats, path, self._style),
-            )
+            style = path_style(self.threats, path, self._style)
+            brief = build_brief(self.threats, path, self._context, self._budget, self._live, style=style)
+            brief = dataclasses.replace(brief, threat_actions=self._threat_actions(brief.threat))
             return brief, write_scenario(self._chat, brief)
         except PathNotWritable as exc:
             return PathFailure(exc.code, exc.message, final=True)
@@ -100,6 +95,20 @@ class PathWriter:
             log.exception(LogEvent.WRITER_PATH_FAILED, path_id=path["path_id"])
             unexpected = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
             return PathFailure(ErrorCode.INTERNAL_ERROR, unexpected)
+
+    def _threat_actions(self, threat: str) -> tuple[str, ...]:
+        """The actions `threat`'s name states, split once per delivery; its other paths wait for it, and an
+        outage is raised to each with no second ask."""
+        with self._split_locks.setdefault(threat, threading.Lock()):  # dict.setdefault is atomic
+            if threat not in self._actions:
+                try:
+                    self._actions[threat] = split_threat_actions(self._chat, threat)
+                except Unavailable as exc:
+                    self._actions[threat] = exc
+            found = self._actions[threat]
+        if isinstance(found, Unavailable):
+            raise found
+        return found
 
 
 def save_with_unique_title(
@@ -162,13 +171,11 @@ class PathSaver:
         self._threats, self._scenarios = threats, scenarios
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
-    def to_write(
-        self, batch: list[str], replaces: dict[str, str], regenerate: bool
-    ) -> dict[str, tuple[str, ...]]:
-        """The batch's paths still to write, each with the statements it must differ from; a path an earlier
-        delivery wrote is served here with no AI call (`replaces`: a regenerate's versions to replace; its
-        other paths are outage cards' paths, written again even once given up)."""
-        to_write = self._versions_to_write(replaces) if replaces else {}
+    def to_write(self, batch: list[str], replaces: dict[str, str], regenerate: bool) -> list[str]:
+        """The batch's paths still to write; a path an earlier delivery wrote is served here with no AI call
+        (`replaces`: a regenerate's versions to replace, each written afresh; its other paths are outage
+        cards' paths, written again even once given up)."""
+        to_write = self._versions_to_write(replaces) if replaces else []
         paths, run_id = self._progress.paths, self._run["_id"]
         first_writes = [key for key in batch if key not in replaces]
         open_paths = [key for key in first_writes if is_still_to_write(paths[key], reopen=regenerate)]
@@ -180,7 +187,7 @@ class PathSaver:
         )
         if written:
             self._progress.record({row["path_id"]: _served_by(row["_id"]) for row in written})
-        return to_write | {key: () for key in open_paths if is_still_to_write(paths[key], reopen=regenerate)}
+        return to_write + [key for key in open_paths if is_still_to_write(paths[key], reopen=regenerate)]
 
     def save(self, path_id: str, outcome: PathOutcome, started_at: datetime | None = None) -> None:
         """Save one path's outcome, then its state on the plan. `started_at`: when its AI work began (None:
@@ -214,29 +221,23 @@ class PathSaver:
         #     return
         self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats)
 
-    def _versions_to_write(self, replaces: dict[str, str]) -> dict[str, tuple[str, ...]]:
-        """A regenerate's paths still to write, each with its versions' statements (oldest first). A next
-        version an earlier delivery saved is finished here; a target no longer written is skipped."""
+    def _versions_to_write(self, replaces: dict[str, str]) -> list[str]:
+        """A regenerate's paths still to write. A next version an earlier delivery saved is finished here; a
+        target no longer written is skipped."""
         run_id = self._run["_id"]
         versions = self._scenarios.list(
-            fields="version",
-            sort="version",
-            session_id=run_id,
-            path_id_in=sorted(replaces),
-            status=ScenarioStatus.DONE,
+            fields="version", session_id=run_id, path_id_in=sorted(replaces), status=ScenarioStatus.DONE
         )
         by_id = {row["_id"]: row for row in versions}
-        statements: defaultdict[str, list[str]] = defaultdict(list)
-        for row in versions:
-            statements[row["path_id"]].append(narrative_of(row["content"]))  # never its evidence passage
-        to_write: dict[str, tuple[str, ...]] = {}
+        to_write: list[str] = []
         healed: dict[str, dict[str, Any]] = {}
         for path_id, target_id in replaces.items():
             if (target := by_id.get(target_id)) is None:
                 continue
             successor = target["superseded_by"] or scenario_id(run_id, path_id, target["version"] + 1)
             if not target["superseded_by"] and successor not in by_id:
-                self._replaced[path_id], to_write[path_id] = target, tuple(statements[path_id])
+                self._replaced[path_id] = target
+                to_write.append(path_id)
                 continue
             if not target["superseded_by"]:
                 supersede_scenario_version(self._scenarios, target_id, successor)

@@ -1178,7 +1178,7 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
 | Denial of Service | R27 | yes | SYS2, SYS3 | HIGH | 65 | Nation-state/APT |
 | Elevation of Privilege | R42 | yes | SYS2, SYS3 | HIGH | 75 | Nation-state/APT |
 
-**Why R36 (Spoofing) was rejected.** The library files lib:281 under Spoofing too. The gate judges whether the threat *belongs to this kind*, as `[scenario.gate]` requires ("it belongs to this category"): one of the threat's own actions (every action its name states) must directly cause the loss the kind's definition describes. A threat that reaches that loss only through an added step that is not part of it (for example a data theft put under Tampering by also altering the records it copies) does not belong. Its reason: *"OT protocol command abuse is not a Spoofing threat; it describes misuse of legitimate protocol commands rather than impersonation of a trusted entity."* So lib:281 has no Spoofing path.
+**Why R36 (Spoofing) was rejected.** The library files lib:281 under Spoofing too. The gate judges whether the threat *belongs to this kind*, as `[scenario.gate]` requires ("it belongs to this category"): one of the threat's own actions (every action its name states) must directly cause the loss the kind's definition describes. A threat that reaches that loss only through an added step that is not part of it (for example a data theft put under Tampering by also altering the records it copies) does not belong. An action that only obtains a credential, secret or session (stealing or phishing credentials, stealing a session) causes only the stolen secret exposed (Information Disclosure), and anything later done with it is an added step; only when the threat's name says it is used ("takeover", "misuse", "abuse"; "theft" and "phishing" are not use) is that use its own action, which may cause Spoofing, Elevation of Privilege or any other loss the use itself directly causes (D38). Its reason: *"OT protocol command abuse is not a Spoofing threat; it describes misuse of legitimate protocol commands rather than impersonation of a trusted entity."* So lib:281 has no Spoofing path.
 
 ### 5.6 Checking the answers
 
@@ -1247,6 +1247,8 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
    - how many library threats were judged (`{checked}`);
    - the names of the kind's library threats that were not kept, which must never be proposed again;
    - only a threat whose own action directly causes the kind's loss, never one that needs an added step to reach it;
+     an action that only obtains a credential, secret or session causes only the secret exposed, unless the
+     name states its use, as in the gate (5.5);
    - a reason that says why the threat fits, never the attack steps, as in the gate (5.5).
 
    The prompt speaks only to the AI: when gap fill may run is decided by code (step 1), not by the prompt.
@@ -1583,10 +1585,10 @@ checks are §8; saving one scenario is §9.
    with a `failure`, or a search that named no snapshot, the path is not written now. It joins the batch's
    outages as `Unavailable("The evidence search could not be made for this attack path: …")`; when the AI stopped
    the search, as that outage (`intel_search.outage`) in its own words (`outage_message`).
-10. **Write in parallel, save as each ends.** `write_at_once` runs `PathWriter.write` (brief, writer and checks,
-    §8) for each path in a `ThreadPoolExecutor` of `min(6, paths)` threads (`Generation.WRITER_BATCH`). Each
-    outcome is saved in the job's own thread by `PathSaver.save` as soon as it completes (§9), and a saved
-    scenario that serves its path sends `tsg_map_controls` at once (`BatchWriter._save`), so its controls are
+10. **Write in parallel, save as each ends.** `write_at_once` runs `PathWriter.write` (threat actions, brief,
+    writer and checks, §8) for each path in a `ThreadPoolExecutor` of `min(6, paths)` threads
+    (`Generation.WRITER_BATCH`). Each outcome is saved in the job's own thread by `PathSaver.save` as soon as
+    it completes (§9), and a saved scenario that serves its path sends `tsg_map_controls` at once (`BatchWriter._save`), so its controls are
     mapped while the other paths are still being written. An outage in one path is collected, never raised there.
 11. **After the batch.**
     - `send_job(tsg_map_controls)` once more, if any path of the batch is served (§10): a delivery that died
@@ -1687,7 +1689,8 @@ The run we follow: the threat "OT protocol command abuse" on the Traffic Control
     malicious software, has used the technique "Command Message"…")*
 15. **A second AI confirms the passage says only what the record says; code checks it is plain and short, then adds
     it with [1].** *(reviewer answer `"evidence_supported": true`; no marker, link or id in it; the statement ends
-    "…could tamper with traffic signal operations [1].")*
+    "…could tamper with traffic signal operations [1]." This run predates D38: today that closing link sentence
+    makes the reviewer answer false, and code's own sentence is cited; see 8.6.)*
 16. **Store the cited record with its link and the whole search, and pass its defences to the controls step.**
     *(one stored entry, `n: 1`, link https://attack.mitre.org/techniques/T1691/001; every candidate and decision in
     `intel_search`; controls query line "Mitigations (MITRE ATT&CK): Out-of-Band Communications Channel; Network
@@ -2041,7 +2044,7 @@ for another kind) with its title, `facts`, `applicability` when set, and `"cited
 - `_safe_facts` redacts each fact, removes ids and links, strips anything that looks like the block's delimiters,
   sanitises it again (at most 320 characters) and drops an unsafe one.
 - The block holds **no `ref`, score, `url` or source**.
-- The writer prompt (`app/prompts.toml` `[scenario.writer]`, rule 11) says to use only the entry marked `"cited": true` to ground the
+- The writer prompt (`app/prompts.toml` `[scenario.writer]`, rule 10) says to use only the entry marked `"cited": true` to ground the
   threat action and to write `evidence_statement`; outside that passage, no precedent, group, technique label, id,
   source or marker (§8.2).
 
@@ -2063,8 +2066,8 @@ Industroyer nor the 2015 attack.
 
 **e. The reviewer reads the same block.** `plan_check_prompt` sends the PLAN, the same evidence block and the
 draft. The reviewer answers `evidence_supported`: true only when the passage states nothing but the cited entry's
-facts, plus at most one "could" or "may" link to this scenario that adds no behaviour the entry does not state.
-*Example*, the reviewer's whole answer:
+facts; a sentence linking them to this scenario or asset makes it false. *Example*, the reviewer's whole answer
+(this run predates that rule, D38; see 8.6):
 `{"rules": {"1": "holds", … "8": "holds"}, "same_threat": true, "same_impact": true, "evidence_supported": true}`.
 
 **f. Code decides and cites.** `_passage_problem` refuses the writer's passage when it is empty, over the
@@ -2152,6 +2155,7 @@ the job's own thread to be saved (section 9).
 
 ```mermaid
 flowchart TB
+    A["Threat actions (AI)<br/>once per threat per job"] --> B
     B["Brief (code)<br/>build_brief"] --> W["Writer (AI)<br/>write_scenario"]
     W --> R{"Answer readable?<br/>_read_draft, one re-ask"}
     R -- no --> F["Failure card<br/>generation_failed"]
@@ -2170,14 +2174,16 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 ### 8.1 The brief (`PathWriter.write` → `build_brief`)
 
 > **In plain words:** Before any AI is asked, code builds a short fact sheet (the "brief") for this one
-> scenario: the asset, the attacker type, the threat, why it applies and which systems take part. Code first
-> checks the plan is still sound, for example that the threat is still in the library. The AI never sees a
-> database number, and names of systems that are not part of this scenario are taken out of the text.
+> scenario: the asset, the attacker type, the threat, the actions its name states, why it applies and which
+> systems take part. Code first checks the plan is still sound, for example that the threat is still in the
+> library. The AI never sees a database number, and names of systems that are not part of this scenario are
+> taken out of the text.
 
 **How**
-1. `PathWriter.write(path, other_scenarios)` calls `build_brief` (`app/domain/scenario/write.py`) with the
-   session's frozen context, the plan's threats, the facts budget, the live library and the path's style
-   (`path_style`: an evidence story only when the threat holds an entry to cite; section 7).
+1. `PathWriter.write(path)` gets the threat's actions (step 10), then calls `build_brief`
+   (`app/domain/scenario/write.py`) with the session's frozen context, the plan's threats, the facts budget,
+   the live library, the path's style (`path_style`: an evidence story only when the threat holds an entry to
+   cite; section 7) and those actions.
 2. **Is the path still writable?** Three checks can stop it. `_path_threat` and `_check_still_live` run first;
    `_path_systems` runs when the system facts are read (step 5). Each raises `PathNotWritable`, which becomes a
    final failure card (section 9). The messages are in `PathProblem` (`app/core/constants/scenario.py`).
@@ -2224,18 +2230,26 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    | `threat.threat_type` | the threat type's name, without a library code (`threat_name_without_code`) |
    | `threat.threat` | the threat's name, without a library code |
    | `threat.why_it_applies` | step 7 |
+   | `threat.threat_actions` | step 10; only when the list is not empty |
    | `systems` | step 5: each path system, name first, then its facts |
    | `entry_point_options` | step 8 |
    | `supporting_systems` | every system of the session, each `{name, applicable: "yes" or "no"}`; "yes" when it is on this path |
-   | `other_scenarios` | regenerate only (step 10) |
 
    `critical_service` is not a BRIEF key of its own; it is added to the reviewer's PLAN only (section 8.5).
    The brief also carries the threat's evidence for a story (section 7), shown in a separate block.
-10. **On a regenerate**, `other_scenarios` holds the path's older versions, so the new one differs.
-    `PathSaver._versions_to_write` reads each version's narrative without its evidence passage
-    (`narrative_of`). `_versions_as_writer_reads` drops the platform note and any sentence with a `[n]` marker. `_newest_within` keeps the
-    newest versions within a quarter of the budget (7,500 characters with a 30,000 budget), oldest first,
-    redacted, each with the note "- not recorded in the platform" removed (an older version may hold it).
+   A regenerate's brief is built the same way: it holds no text of the path's earlier versions (12.5, D40).
+10. **The threat's actions** (`app/prompts.toml` `[scenario.threat_actions]`, D40). One small AI call splits
+    the threat's name into the concrete acts the attacker carries out, each a short verb phrase. `PathWriter`
+    asks once per threat per writing job and keeps the answer for the job's other paths of that threat (a dict
+    under a lock, since paths are written in a pool). Task `threat_actions`, temperature 0.0, `max_tokens`
+    2,048. The prompt has general rules only: a noun such as "theft" or "extortion" becomes the act itself;
+    an act joined by "and" or "with" is one act; words that only describe the target, account or means stay
+    with their act; alternatives joined by "or" stay together as one act. Its five examples are invented,
+    from other fields (card skimming, ticket misuse, pickpocketing, mailbox theft, forgery), never library
+    threats. The answer is `{"actions": [...]}`; the threat's name is in the user prompt. A usable answer
+    gives a tuple of non-empty phrases. An unreadable or cut-off answer gives `()`: the BRIEF then has no
+    `threat_actions`, and the writer and the reviewer split the name themselves (D39's rule). An outage
+    (`Unavailable`) is raised, and the path waits as for the writer.
 
 **In the example**
 
@@ -2291,7 +2305,7 @@ Where each key came from:
   has no `entry_system`). With turns, code offers only the path's `entry_system`.
 - `supporting_systems` lists all four session systems. SYS1 (Enterprise Command & Control Centre Platform) and
   SYS4 (Incident Detection & Response Platform) are "no" because they are not on this path.
-- There is no `other_scenarios`: this is a first write, not a regenerate.
+- There is no `threat.threat_actions`: this run predates the split step (D40).
 - The whole BRIEF is 1,404 characters, far under the 30,000-character facts budget, so `cut_to_fit` cut
   nothing.
 
@@ -2324,27 +2338,40 @@ Where each key came from:
    `<<<UNTRUSTED_EVIDENCE_END>>>` (section 7).
 4. **Temperature.** `CHAT_TEMPERATURES` (`app/core/constants/common.py`) maps `write_scenario` to `None`, so
    `_build_request_options` sends no temperature and the provider's default applies. The other tasks
-   (relevance gate, gap fill, plan check, remediation plan) are sent 0.0. The model's profile adds the rest; for
-   `openai/Kimi-K2.6` (`app/ai/profiles.py`): a 90 s timeout, JSON mode and `reasoning_effort` "none";
+   (relevance gate, gap fill, threat actions, plan check, remediation plan) are sent 0.0. The model's profile
+   adds the rest; for `openai/Kimi-K2.6` (`app/ai/profiles.py`): a 90 s timeout, JSON mode and `reasoning_effort` "none";
    `max_tokens` is the task's 3,072 (`CHAT_MAX_OUTPUT_TOKENS`), or the model's 12,288 while its thinking is on.
 5. **The prompt's stable structure.** The writer prompt has uncommitted edits by the owner, so only the parts that
    stay the same are described here:
    - Exactly seven JSON fields, nothing else (table below).
    - The three word-limit slots. "The upper number of each range is a hard limit"; the lower number is a
      target. Code counts no words in the scenario and risk statements, and cuts nothing.
-   - 13 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
+   - 12 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
      and access; supporting systems; attacker type; the scenario statement; the risk statement; the title; safe
-     and hypothetical; other scenarios; evidence; category shapes; system reasons.
+     and hypothetical; evidence; category shapes; system reasons. The rule on other scenarios is gone: the
+     writer is never shown another scenario's text (D40).
+   - The threat's actions first: GENERATION LOGIC opens with `BRIEF.threat.threat_actions`, the concrete
+     actions the threat's name states (section 8.1, step 10). The story carries out each one as the attacker's
+     action, in a realistic order, in its own words and concrete to the asset (never the list's wording,
+     which read badly when pasted); naming the threat is not carrying it out (rule 1 and the final check:
+     "carried out, not only named"). Rule 6 step 3 is the slot for them: carry out every listed action once,
+     at asset level or on the systems it involves, then give each "yes" system its own contribution (rule 4).
+     When the list is absent, the writer splits the name itself by a general rule that names no threat: each
+     act joined by "and", "with" or a comma is one action, two names for the same act are one, a word that
+     only describes the target, account or means is not an action, and of alternatives joined by "or", one
+     is enough (D39, D40).
    - When the threat and the category pull apart: every action the threat's name states happens, and the
      primary impact comes from one of them; no added step (a precursor or side action) is invented to reach
-     the category's impact (rules 1 and 12).
+     the category's impact (rules 1 and 11). When acquiring access is the threat, its primary impact is what
+     the acquisition itself causes or a use of the access its name states, never a later use of the access
+     its name does not state (rules 1 and 3).
    - An essential missing detail goes in `assumptions` as "assumes <specific condition>" and stays
      conditional in the narrative; an assumption never removes a safeguard to make the impact worse
      (rule 2). An assumption the BRIEF's `why_it_applies` states goes in `assumptions` too. No prompt
      mentions "not recorded in the platform", and the writer's inputs are cleaned of it (section 8.1), so
      the AI never writes it; the API adds it to each shown assumption (section 12.2).
-   - The passage's closing "could" or "may" sentence uses only the behaviour the cited entry states, or is
-     left out (rule 11).
+   - The passage states only the cited entry's facts: no sentence linking them to this asset or event, and
+     never a claim that the evidence shows this asset was attacked or is exploitable (rule 10).
    - The risk opening per category: Spoofing "Loss of assurance that ...", Tampering "Loss of trust in ...",
      Repudiation "Loss of accountability for ...", Information Disclosure "Exposure of ...", Denial of Service
      "Disruption of ..." or "Loss of ...", Elevation of Privilege "Loss of control over ...".
@@ -2448,7 +2475,8 @@ asked for, left out):
    - `call_with_retries` (`app/ai/common.py`) makes 3 quick retries, 0.5, 1 and 2 s apart, when the provider is
      busy or unreachable; an HTTP 429 waits longer and asks the same model again. A timeout is not retried
      there; the fallback model answers instead.
-   - `max_tokens` is the task's own cap (`CHAT_MAX_OUTPUT_TOKENS`: `write_scenario` 3,072, `plan_check` 2,048),
+   - `max_tokens` is the task's own cap (`CHAT_MAX_OUTPUT_TOKENS`: `write_scenario` 3,072, `plan_check` and
+     `threat_actions` 2,048),
      the model's limit while its thinking is on. An answer cut off at the cap (`finish_reason` "length", outcome
      `truncated`) is asked once more at the model's full limit; cut off again, it raises `TruncatedAiAnswer`,
      which also becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused
@@ -2501,8 +2529,8 @@ near copy.
 > **In plain words:** A second AI acts as an editor. It reads the plan, the evidence and the draft, and checks
 > eight rules: the same threat, the right attacker, only the listed systems, no invented links between systems,
 > the right kind of impact, a matching risk, nothing invented, and no real-world claims outside the passage.
-> A broken rule is shown to the human reviewer as a note. A draft about a different threat or impact is
-> stopped.
+> A broken rule is shown to the human reviewer as a note (a part of the threat only named, not carried out, is
+> one). A draft about a different threat or impact is stopped.
 
 **How**
 1. `check_against_plan(chat, brief, draft)` builds the prompt with `plan_check_prompt` and calls
@@ -2511,12 +2539,18 @@ near copy.
    style code appends `[scenario.reviewer]` `no_evidence`: any `[n]` marker or real-world event breaks rule 8, and
    `evidence_supported` is false.
 3. **User prompt**, in this order:
-   - `PLAN:` and the BRIEF record plus `critical_service` (`_critical_service`, from the asset context);
+   - `PLAN:` and the BRIEF record plus `critical_service` (`_critical_service`, from the asset context); so
+     PLAN carries `threat.threat_actions` whenever the writer's BRIEF did;
    - the same evidence block as the writer saw (story only);
    - `SCENARIO:` and the draft as the writer answered it (`draft_answer`).
-4. **The 8 rules:**
-   1. Same threat, no second threat: every action the threat's name states is there, and the primary impact
-      does not come from an added step that is not part of the threat.
+4. **The 8 rules.** The review procedure first answers, for each item of `PLAN.threat.threat_actions`, in
+   `threat_actions`: "carried out" only when `scenario_statement` describes the attacker doing it, "only
+   named" when it appears only in the threat's name or a label, "missing" otherwise (D40). Without that list
+   it answers `{}` and splits the name itself for rule 1 (D39's general rule; of alternatives joined by "or",
+   one is enough).
+   1. Same threat, no second threat: every action the threat's name states is carried out, not only named,
+      and the primary impact does not come from an added step that is not part of the threat. Using access
+      the threat only obtains to do something its name does not state is such an added step.
    2. Attacker identity: no other attacker or real-world group carries out the attack.
    3. System names and coverage: no unlisted system is named, and every supporting system has a reason.
    4. No cross-system links: nothing moves between systems.
@@ -2528,19 +2562,25 @@ near copy.
 
    Rules 1-8 and the verdicts `same_threat` and `same_impact` judge every field except
    `evidence_statement`. `same_threat` is also false when an added step, not the threat, causes the primary
-   impact. Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's
-   facts, plus at most one "could" or "may" link to this scenario that adds no behaviour the entry does not
-   state.
+   impact (using access the threat only obtains to do something its name does not state is one). A stated
+   action missing or only named breaks rule 1 (a note, not a blocker: a blocked draft is not rewritten, so
+   blocking would drop the scenario). The per-action field exists because an omission has no words to
+   quote: in the experiments the reviewer caught 0 of 3 incomplete drafts with rule 1's quoted verdict alone,
+   and 3 of 3 with `threat_actions` (D40). Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's facts; any
+   sentence linking the evidence to this scenario or asset makes it false.
 5. **The answer contract** (`PlanCheckAnswer`):
    ```text
    {"rules": {"1": "holds" | "broken: \"<exact words>\" - <reason>", ... "8": ...},
+    "threat_actions": {"<each listed action>": "carried out" | "only named" | "missing"},
     "same_threat": true|false, "same_impact": true|false, "evidence_supported": true|false}
    ```
    Every verdict must be "holds" or start with "broken". `same_threat` and `same_impact` are required, so an answer without them
-   is asked again. `evidence_supported` is optional, and only `true` counts.
+   is asked again. `threat_actions` defaults to `{}`. `evidence_supported` is optional, and only `true` counts.
 6. **How the results are used:**
    - Each broken rule becomes a `plan_check` **note**, "Rule n: <its words>", at most 300 characters, at most
-     10 (`_broken_rules`). The check's status is `inconsistent` when there is a note, else `consistent`.
+     10 (`_broken_rules`). Each `threat_actions` verdict other than "carried out" becomes one rule 1 note too,
+     naming the action and its verdict, within the same limits. The check's status is `inconsistent` when
+     there is a note, else `consistent`. An action not carried out is never a blocker.
    - `same_threat` or `same_impact` false is a `scenario_mismatch` **blocker** (`_mismatch`).
    - An answer still unusable after the re-ask, or cut off, gives a `plan_check_not_made` **warning**. The
      status is `unchecked`, and the scenario is still saved, flagged.
@@ -2560,6 +2600,7 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 ```
 
 - Model `openai/Kimi-K2.6`: 2,434 tokens in, 62 tokens out, 1.1 seconds, logged at 08:18:35.326 UTC.
+- The answer has no `threat_actions`: the run predates D40, and its PLAN had no list.
 - All 8 rules hold, so there is no note and the status is `consistent`. `same_threat` and `same_impact` are
   true, so there is no blocker. `evidence_supported` is true, so the writer's passage may be cited.
 - Stored: `"plan_check": {"status": "consistent", "problems": [], "unsupported": [], "same_threat": true,
@@ -2611,6 +2652,10 @@ So there was no `citation_removed` warning. Had the passage failed, code's own s
 been *In real-world attacks, Industroyer and the 2015 Ukraine Electric Power Attack campaign have used the
 technique "Command Message"*. (We computed this by running `_claim` on the stored entry; the run did not use
 it.)
+
+This run predates D38 (2026-10-27). Its last sentence, "Similar protocol command abuse could tamper with
+traffic signal operations", links the evidence to this asset. Today the writer writes no such sentence, and a
+reviewer that finds one answers `evidence_supported: false`, so code's own sentence above would be cited.
 
 The saved statement ends:
 
@@ -3390,9 +3435,9 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
 
 ### 12.5 Regenerate (new versions)
 
-> **In plain words:** The reviewer can ask for a scenario to be written again. The new version must be
-> told differently from the old ones, and it replaces the old one only once it is written and passes every
-> check; until then the old one stays. Each scenario keeps at most ten versions by default, so the cost of
+> **In plain words:** The reviewer can ask for a scenario to be written again. The new version is written
+> afresh, without showing the AI the old ones, and it replaces the old one only once it is written and passes
+> every check; until then the old one stays. Each scenario keeps at most ten versions by default, so the cost of
 > rewriting is bounded.
 
 **How: the API**
@@ -3456,9 +3501,8 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
    the same to an outage card it gives up as a repeat.
 9. `PathSaver._versions_to_write` reads every written version of the target paths, in version order.
    - A target whose next version (`scenario_id(session, path, version + 1)`) is not saved yet is written.
-     The writer gets every older version's narrative (`narrative_of`, without its evidence passage) as
-     `other_scenarios`, so the new one differs. The brief keeps the newest that fit a quarter of its
-     budget, with cited sentences removed (`_versions_as_writer_reads`, `_newest_within`).
+     It is written afresh from the brief and the threat's actions, like a first write: the writer sees no
+     text of any earlier version (D40). Given that text, it copied it.
    - A next version an earlier delivery already saved is finished here (superseded and served), with no AI
      call.
    - An outage card's path goes through `PathSaver.to_write` as the next set's would, even when the path was
@@ -3619,7 +3663,7 @@ In session `c21b4a67…` (7 paths planned), the next set at 03:15:59.675 found o
 | Read results | `GET /v1/sessions/{id}`, `.../results`, `.../scenarios/{sid}`, `.../plan-trace`, `.../events`, `GET /v1/entities/{eid}/scenarios` | the status board, the scenarios with evidence, controls and findings, the plan's trace, live updates | - |
 | Accept | `POST /v1/sessions/{id}/accept` | pending → accepted; one accepted version per path (`replace_accepted` swaps); `"all"` skips what it cannot accept. Audited only when something changed | - |
 | Reject | `POST /v1/sessions/{id}/scenarios/reject` | pending → rejected, final. Audited only when something changed | - |
-| Regenerate | `POST /v1/sessions/{id}/regenerate/scenarios` | a new version of each chosen current version, told differently; the old one is superseded only when the new one is written. 409 `version_limit_reached` at `REGENERATIONS_MAX_VERSION_COUNT` (default 10) versions | `tsg_write_scenarios` (epoch + 1); then `tsg_map_controls` |
+| Regenerate | `POST /v1/sessions/{id}/regenerate/scenarios` | a new version of each chosen current version, written afresh; the old one is superseded only when the new one is written. 409 `version_limit_reached` at `REGENERATIONS_MAX_VERSION_COUNT` (default 10) versions | `tsg_write_scenarios` (epoch + 1); then `tsg_map_controls` |
 | Next set | `POST /v1/sessions/{id}/scenarios/next-set` | the next `NEXT_SET_SIZE` (6) open paths, best rank first. With none left it resumes controls a cancel stopped (202), else 409 `nothing_left`, `target_reached` or `scenarios_abandoned` | `tsg_write_scenarios` (epoch + 1), or `tsg_map_controls` when resuming controls |
 | Promote | `POST /v1/sessions/{id}/scenarios/{sid}/promote-to-library` | an accepted scenario's AI-proposed threat goes to the curators | - |
 | Cancel | `POST /v1/sessions/{id}/cancel` | stops queued or running work, and controls still waiting | - |
@@ -3838,7 +3882,7 @@ stateDiagram-v2
     (`AiLimits.MODEL_COOL_DOWN_SECONDS`), so its calls do not each wait for it first.
   - **Answer length:** each chat task asks for at most its own `max_tokens` (`CHAT_MAX_OUTPUT_TOKENS`:
     `relevance_gate` 8,192, `service_mapper` 4,096, `write_scenario` 3,072, `plan_check` 2,048, about twice the
-    most an answered call used); other tasks, and a model whose thinking is on, ask for the model's limit. An
+    most an answered call used; `threat_actions` 2,048); other tasks, and a model whose thinking is on, ask for the model's limit. An
     answer cut off at its cap is recorded with outcome `truncated` and asked once more at the model's limit.
   - **Answers:** an unreadable answer is asked again once. A usable first answer that a task re-asks for its
     faults is kept when the re-ask is unusable or finds the AI busy or down. Every chat call that gets an
@@ -4009,7 +4053,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | Reviewer (plan check) | A second AI that checks the draft against the plan: same threat, same impact, evidence quoted faithfully. |
 | Blocker / warning / note | Blocker: the draft is not used. Warning: it is used, with a flag. Note: a remark for the person reviewing. |
 | Near-duplicate | A draft that repeats a scenario already held (same threat and kind, or the same words). It is never saved. |
-| Version / regenerate | Asking for a new version of a scenario, told differently. The old version stays until the new one is written. |
+| Version / regenerate | Asking for a new version of a scenario, written afresh. The old version stays until the new one is written. |
 | Control | A safeguard from our control library, e.g. "Technology Asset Inspections". |
 | Treatment plan | An AI-drafted plan to reduce an accepted scenario's risk, using library controls only. |
 | Lease / retry | How jobs are tracked: a job holds a short lease while it works and is retried if it stops, so work is never lost or done twice. |

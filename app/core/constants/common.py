@@ -125,6 +125,7 @@ class AiTask(StrEnum):
 
     RELEVANCE_GATE = "relevance_gate"
     GAP_FILL = "gap_fill"
+    THREAT_ACTIONS = "threat_actions"  # the actions a threat's name states, for the writer and reviewer
     WRITE_SCENARIO = "write_scenario"
     PLAN_CHECK = "plan_check"  # does the written scenario carry out its plan
     REMEDIATION_PLAN = "remediation_plan"
@@ -147,6 +148,7 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
+    AiTask.THREAT_ACTIONS: 0.0,
     AiTask.PLAN_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
@@ -160,6 +162,7 @@ CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.SERVICE_MAPPER: 4096,  # 1997, at 10 upstream and 10 downstream (SERVICE_MAPPER_*_TOTAL_COUNT)
     AiTask.WRITE_SCENARIO: 3072,  # 1158
     AiTask.PLAN_CHECK: 2048,  # 478
+    AiTask.THREAT_ACTIONS: 2048,  # the least: a few short phrases
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
@@ -235,6 +238,7 @@ class LogEvent(StrEnum):
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
+    WRITER_THREAT_ACTIONS_NOT_SPLIT = "writer.threat_actions_not_split"  # the writer and reviewer split it
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"
