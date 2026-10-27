@@ -218,11 +218,11 @@ class RunOverall(StrEnum):
 
     PENDING = "pending"  # nothing started yet
     IN_PROGRESS = "in_progress"  # wait: work is going on
-    AWAITING_REVIEW = "awaiting_review"  # scenarios wait for an accept or a reject
+    AWAITING_REVIEW = "awaiting_review"  # scenarios wait for a decision, AI outage cards for a regenerate
     AWAITING_NEXT_SET = "awaiting_next_set"  # all written ones decided; paths remain: ask for the next set
     COMPLETE = "complete"  # everything written and decided
-    ERROR = "error"  # the run failed: progress.error_message says why
-    CANCELLED = "cancelled"  # its owner stopped it: what was done stays readable
+    ERROR = "error"  # the run failed (once no control is still matched): progress.error_message says why
+    CANCELLED = "cancelled"  # its owner stopped it (or a done run's controls): what was done stays readable
 
 
 class SessionState(StrEnum):

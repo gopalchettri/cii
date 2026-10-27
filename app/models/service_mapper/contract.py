@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.constants import (
+    AbandonReason,
     AiOutage,
     MapperDecisionFailure,
     MapperLimits,
@@ -78,8 +79,9 @@ class EntityServices(BaseModel):
 class MappingError(BaseModel):
     code: str
     message: str
-    # The AI outage that failed it: ai_down, ai_unreachable, ai_busy, ai_timed_out; None for any other.
-    reason: AiOutage | None = None
+    # The AI outage that failed it: ai_down, ai_unreachable, ai_busy, ai_timed_out; job_abandoned: abandoned,
+    # never_started (AbandonReason); None for any other.
+    reason: AiOutage | AbandonReason | None = None
 
 
 class RelationshipCounts(BaseModel):

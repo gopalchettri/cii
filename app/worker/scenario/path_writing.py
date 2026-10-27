@@ -217,7 +217,8 @@ class PathSaver:
         # if not (final or state["attempts"] >= Generation.MAX_PATH_ATTEMPTS):
         #     self._progress.record({path_id: state | {"abandoned": False}})
         #     return
-        self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats, card)
+        outage = outcome.reason if isinstance(outcome, PathFailure) else None  # its card's: regenerable
+        self._progress.abandon(path_id, state | {"abandoned": True}, outage or reason, self._threats, card)
 
     def _versions_to_write(self, replaces: dict[str, str]) -> list[str]:
         """A regenerate's paths still to write. A next version an earlier delivery saved is finished here; a

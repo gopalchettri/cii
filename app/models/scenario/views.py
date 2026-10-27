@@ -17,6 +17,7 @@ from pydantic import (
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from app.core.constants import (
+    AbandonReason,
     ActionStatus,
     AiOutage,
     ControlMatchStatus,
@@ -310,11 +311,13 @@ class Progress(BaseModel):
 
 
 class RunError(BaseModel):
-    """Why a run failed: its job's error code and message, and the AI outage that failed it, if one did."""
+    """Why a run failed: its job's error code and message, and the AI outage that failed it, or why its job
+    was given up (job_abandoned)."""
 
     code: str
     message: str
-    reason: AiOutage | None = None  # ai_down, ai_unreachable, ai_busy, ai_timed_out; None for any other
+    # ai_down, ai_unreachable, ai_busy, ai_timed_out; job_abandoned: abandoned, never_started; else None.
+    reason: AiOutage | AbandonReason | None = None
 
 
 class RunBoard(BaseModel):

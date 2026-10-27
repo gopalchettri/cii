@@ -1,4 +1,8 @@
 {
+ "AbandonReason": {
+  "NEVER_STARTED": "never_started",
+  "WORKER_STOPPED": "abandoned"
+ },
  "ActionPriority": {
   "CRITICAL": "Critical",
   "HIGH": "High",

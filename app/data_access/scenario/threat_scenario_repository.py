@@ -10,6 +10,7 @@ from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
 from app.core.constants import (
+    AbandonReason,
     Collection,
     Controls,
     Decision,
@@ -365,7 +366,7 @@ class ThreatScenarioRepository(MongoRepository):
         if not session_ids:
             return []
         message = ErrorMessage.JOB_ABANDONED.format(attempts=Controls.MAX_ATTEMPTS)
-        error = {"code": ErrorCode.JOB_ABANDONED, "message": message}
+        error = {"code": ErrorCode.JOB_ABANDONED, "message": message, "reason": AbandonReason.WORKER_STOPPED}
         failed = {"controls.status": Status.FAILED, "controls.error": error, "controls.lease_until": None}
         self.collection.update_many(abandoned, {"$set": failed})
         return session_ids

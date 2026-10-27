@@ -8,6 +8,7 @@ from app.core.constants import (
     CONTROLS_EXHAUSTED,
     ROUTE_WORDS,
     SCOPE_ASSET_KEY,
+    AbandonReason,
     AiOutage,
     BoardMessage,
     ControlMatch,
@@ -126,11 +127,14 @@ def _failed_reason(run: SessionStatus) -> AiOutage | None:
 
 
 def _run_error(run: SessionStatus) -> RunError | None:
-    """The failed run's job error: code, message and AI outage reason; None unless the run failed."""
+    """The failed run's job error: code, message, and its AI outage or give-up reason; None unless the run
+    failed."""
     if run.status != Status.FAILED or not run.error:
         return None
-    error = run.error
-    return RunError(code=error.get("code", ""), message=error.get("message", ""), reason=_failed_reason(run))
+    error, stored = run.error, run.error.get("reason")
+    given_up = AbandonReason(stored) if stored and stored in AbandonReason else None
+    reason = _failed_reason(run) or given_up
+    return RunError(code=error.get("code", ""), message=error.get("message", ""), reason=reason)
 
 
 def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:
@@ -148,10 +152,11 @@ def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:
 
 
 def _overall_state(run: SessionStatus, threats: StageState, controls: StageState) -> RunOverall:
-    """What the reviewer does now: wait, review what is written, ask for the next set, or nothing."""
+    """What the reviewer does now: wait, review what is written, ask for the next set, or nothing; a terminal
+    value (error, complete, cancelled) only once no control is still being matched."""
     session = _SESSION_STATE[run.status]
     if session == SessionState.FAILED:
-        return RunOverall.ERROR
+        return RunOverall.IN_PROGRESS if controls == StageState.RUNNING else RunOverall.ERROR
     if session == SessionState.CANCELLED:
         return RunOverall.CANCELLED
     if threats == StageState.PENDING:
@@ -162,7 +167,11 @@ def _overall_state(run: SessionStatus, threats: StageState, controls: StageState
         return RunOverall.AWAITING_REVIEW
     if run.counts.get("remaining", 0):
         return RunOverall.AWAITING_NEXT_SET
-    return RunOverall.IN_PROGRESS if controls == StageState.RUNNING else RunOverall.COMPLETE
+    if run.counts.get("outage_cards", 0):  # a regenerate can still write them
+        return RunOverall.AWAITING_REVIEW
+    if controls == StageState.RUNNING:
+        return RunOverall.IN_PROGRESS
+    return RunOverall.CANCELLED if controls == StageState.CANCELLED else RunOverall.COMPLETE
 
 
 def _action_summary(
@@ -226,7 +235,7 @@ def _scenario_count(run: SessionStatus, threats: StageState) -> ScenarioCount:
         total=total,
         served=served,
         remaining=remaining,
-        complete=remaining == 0,
+        complete=remaining == 0 and not counts.get("outage_cards", 0),
         pending_review=counts.get("pending", 0),
         accepted=counts.get("accepted", 0),
         rejected=counts.get("rejected", 0),

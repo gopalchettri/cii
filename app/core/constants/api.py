@@ -12,7 +12,7 @@ class ErrorCode(StrEnum):
     CONFLICT = "conflict"
     UNAVAILABLE = "unavailable"
     INTERNAL_ERROR = "internal_error"
-    JOB_ABANDONED = "job_abandoned"  # its worker stopped renewing the lease Lease.MAX_ATTEMPTS times
+    JOB_ABANDONED = "job_abandoned"  # given up: error.reason (AbandonReason) says why
     # A job's own final errors (JobFailed): a retry cannot change them.
     PLAN_REFUSED = "plan_refused"  # the asset's facts cannot be planned
     ACTOR_LIBRARY_EMPTY = "actor_library_empty"  # no type links a live threat actor: no attacker to name

@@ -10,6 +10,7 @@ from pymongo.collection import Collection as MongoCollection
 from app.core.clock import utc_now
 from app.core.constants import (
     ADMIN_JOB_TASKS,
+    AbandonReason,
     AdminJobKind,
     AdminJobMessage,
     AdminJobs,
@@ -52,10 +53,8 @@ class AdminJobRepository(MongoRepository):
         """Creates `job` (with its created_at) as the active job of its kind in tsg_admin_jobs and returns its
         id; else the id of the active job of that kind. An abandoned one (its heartbeat ran out, or it never
         started) is failed and replaced."""
-        stale = {"kind": job["kind"], **_abandoned(job["created_at"])}
         if self._create_active(job) or (
-            self._finish(stale, Status.FAILED, job["created_at"], error=_ABANDONED_ERROR)
-            and self._create_active(job)
+            self.fail_stale_admin_jobs(job["created_at"], kind=job["kind"]) and self._create_active(job)
         ):
             return job["_id"]
         active = self.get(("_id",), kind=job["kind"], active=True)
@@ -124,17 +123,19 @@ class AdminJobRepository(MongoRepository):
             for row in self.collection.aggregate(pipeline)
         }
 
-    def fail_stale_admin_jobs(self, now: datetime) -> list[Record]:
-        """Fails every abandoned job (its heartbeat ran out: its worker died; or never started: its message
-        was lost), so none stays "running" until the next request of its kind; each one's id, kind and the
-        error saved."""
-        stale = _abandoned(now)
-        jobs = list(self.collection.find(stale, {"_id": 1, "kind": 1}))
-        return [
-            job | {"error": _ABANDONED_ERROR}
-            for job in jobs
-            if self._finish(stale | {"_id": job["_id"]}, Status.FAILED, now, error=_ABANDONED_ERROR)
-        ]
+    def fail_stale_admin_jobs(self, now: datetime, **where: Any) -> list[Record]:
+        """Fails every abandoned job of `where` (e.g. one kind): its heartbeat ran out (its worker died) or it
+        never started (its message was lost), so none stays "running" until the next request of its kind;
+        each one's id, kind and the error saved."""
+        stale = _abandoned(now) | where
+        failed = []
+        for job in self.collection.find(stale, {"_id": 1, "kind": 1, "status": 1}):
+            started = job.get("status") != Status.QUEUED
+            reason = AbandonReason.WORKER_STOPPED if started else AbandonReason.NEVER_STARTED
+            error = _ABANDONED_ERROR | {"reason": reason}
+            if self._finish(stale | {"_id": job["_id"]}, Status.FAILED, now, error=error):
+                failed.append({"_id": job["_id"], "kind": job.get("kind"), "error": error})
+        return failed
 
     def get_any_admin_job(self, job_id: str) -> Record | None:
         """The tsg_admin_jobs job with this id, whatever its kind, without its active flag."""

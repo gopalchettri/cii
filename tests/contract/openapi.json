@@ -1,6 +1,15 @@
 {
  "components": {
   "schemas": {
+   "AbandonReason": {
+    "description": "Why a job was given up (a job_abandoned error's reason); the job.failed lines carry the same words.",
+    "enum": [
+     "abandoned",
+     "never_started"
+    ],
+    "title": "AbandonReason",
+    "type": "string"
+   },
    "AcceptRequest": {
     "additionalProperties": false,
     "description": "Body of accept: TSG v1's `mode` body, or the v2 body (`scenario_ids` alone); an unknown field: 422.",
@@ -2195,9 +2204,13 @@
         "$ref": "#/components/schemas/AiOutage"
        },
        {
+        "$ref": "#/components/schemas/AbandonReason"
+       },
+       {
         "type": "null"
        }
-      ]
+      ],
+      "title": "Reason"
      }
     },
     "required": [
@@ -4534,7 +4547,7 @@
     "type": "object"
    },
    "RunError": {
-    "description": "Why a run failed: its job's error code and message, and the AI outage that failed it, if one did.",
+    "description": "Why a run failed: its job's error code and message, and the AI outage that failed it, or why its job\nwas given up (job_abandoned).",
     "properties": {
      "code": {
       "title": "Code",
@@ -4550,9 +4563,13 @@
         "$ref": "#/components/schemas/AiOutage"
        },
        {
+        "$ref": "#/components/schemas/AbandonReason"
+       },
+       {
         "type": "null"
        }
-      ]
+      ],
+      "title": "Reason"
      }
     },
     "required": [

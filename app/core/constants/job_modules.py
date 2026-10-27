@@ -42,6 +42,13 @@ ADMIN_JOB_TASKS: Final[dict[str, str]] = {
 }
 
 
+class AbandonReason(StrEnum):
+    """Why a job was given up (a job_abandoned error's reason); the job.failed lines carry the same words."""
+
+    WORKER_STOPPED = "abandoned"  # its worker stopped renewing its lease on every attempt
+    NEVER_STARTED = "never_started"  # sent again and again, or left queued, and no worker ever took it
+
+
 def module_of(kind: str) -> str:
     """The module of a task or admin job kind; "other" for one not listed."""
     return JOB_MODULES.get(kind, "other")

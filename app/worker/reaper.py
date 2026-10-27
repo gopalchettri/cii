@@ -13,6 +13,7 @@ from app.core import metrics
 from app.core.clock import utc_now
 from app.core.constants import (
     ADMIN_JOB_TASKS,
+    AbandonReason,
     ErrorCode,
     ErrorMessage,
     Lease,
@@ -65,7 +66,6 @@ def _announce_abandoned_admin_job(job: dict[str, Any]) -> None:
         task=task,
         module=module_of(task),
         record_id=job["_id"],
-        reason="abandoned",
         **job["error"],
     )
 
@@ -142,13 +142,14 @@ def _settle_expired_job(
         error = {
             "code": ErrorCode.JOB_ABANDONED,
             "message": ErrorMessage.JOB_ABANDONED.format(attempts=attempts),
+            "reason": AbandonReason.WORKER_STOPPED,
         }
         if not jobs.requeue_or_fail_expired_job(record, now, error):
             return  # its worker renewed or finished in between
         # Counted as a job failure: the worker died mid-job, so no task outcome was ever recorded, and
         # JobsFailing would otherwise never hear of this run.
         metrics.count_job(job["task"], "failure")
-        job_log.warning(LogEvent.JOB_FAILED, reason="abandoned", attempt=attempts, **error)
+        job_log.warning(LogEvent.JOB_FAILED, attempt=attempts, **error)
     else:
         if not jobs.requeue_or_fail_expired_job(record, now):
             return  # its worker renewed or finished in between
@@ -198,10 +199,11 @@ def _resend_queued_job(
         error = {
             "code": ErrorCode.JOB_ABANDONED,
             "message": ErrorMessage.JOB_NEVER_STARTED.format(sends=sends),
+            "reason": AbandonReason.NEVER_STARTED,
         }
         if jobs.resend_or_fail_unsent_job(record, now, counted=False, error=error):
             metrics.count_job(job["task"], "failure")
-            job_log.warning(LogEvent.JOB_FAILED, reason="never_started", sends=sends, **error)
+            job_log.warning(LogEvent.JOB_FAILED, sends=sends, **error)
             publish(record["_id"])
         return
     # Moving due_at forward first means one re-send per REQUEUE_QUEUED_AFTER_SECONDS, never one per minute.
