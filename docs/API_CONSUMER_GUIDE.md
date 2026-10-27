@@ -335,7 +335,7 @@ Headers: identity headers.
 | `controls_unavailable` / `controls_mapped` / `controls_mapping_exhausted` | bool | `controls_mapping_exhausted`: background mapping failed. The sweep tries it again after 30 minutes while it has tries left, never after 5. Not a blocker: a plan request (4.1) or a plan regenerate (4.5) maps it again at once |
 | `controls_mapping_exhaustion_reason` | string or null | |
 | `replaced_scenarios` | ScenarioView[] | only with `include_replaced=true`, newest first |
-| `scope` | object or null | `scope_key`, `scope_type` (`ASSET`/`SYSTEM`/`COMBINATION`), `supporting_system_ids`, `evidence` |
+| `scope` | object or null | `scope_key`, `scope_type` (`ASSET`/`SYSTEM`/`COMBINATION`), `supporting_system_ids`, `evidence` (always `[]`, kept for the response shape) |
 | `actor` | string or null | acting attacker's name |
 | `threat_source` / `threat_type_source` | string or null | `LIBRARY`, `AI_PROPOSED` |
 | `review_flags` | string[] | `AI_PROPOSED_TYPE`, `AI_PROPOSED_THREAT`, `ASSUMED_ROUTE`, `VALIDATION_EXCEPTION`, `PLAN_CHECK`, `NEAREST_CONTROL`, `CONTROL_LIBRARY_GAP` |

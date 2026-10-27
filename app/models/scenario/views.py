@@ -379,7 +379,7 @@ class ScopeView(BaseModel):
     scope_key: str  # "A", or "A+<system id>+..." for the systems the scenario goes through
     scope_type: ScopeType
     supporting_system_ids: list[int]
-    evidence: list[str]  # the writer's own why_applies; [] when none
+    evidence: list[str]  # always []: kept so the response keeps its shape; why_applies is never shown
 
 
 class LibraryEntry(BaseModel):

@@ -124,7 +124,7 @@ def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
         "scope_key": "A+214+215",
         "scope_type": "COMBINATION",
         "supporting_system_ids": [214, 215],
-        "evidence": ["ICS-specific malware fits the SCADA system and the ICS."],
+        "evidence": [],  # the stored why_applies is never shown
     }
     assert (view.review_flags, view.control_match_status) == ([], "EXACT")
     assert (view.controls_mapped, view.controls_unavailable, view.controls_mapping_exhausted) == (

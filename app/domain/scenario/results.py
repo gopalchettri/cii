@@ -458,12 +458,11 @@ def _scope_view(content: dict[str, Any]) -> ScopeView:
     """The asset, one system or a combination the scenario goes through."""
     ids = sorted(system["id"] for system in content.get("systems") or [])
     kind = ScopeType.ASSET if not ids else ScopeType.SYSTEM if len(ids) == 1 else ScopeType.COMBINATION
-    why = content.get("why_applies")
     return ScopeView(
         scope_key="+".join([SCOPE_ASSET_KEY, *map(str, ids)]),
         scope_type=kind,
         supporting_system_ids=ids,
-        evidence=[why] if why else [],
+        evidence=[],
     )
 
 

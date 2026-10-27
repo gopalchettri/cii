@@ -556,7 +556,8 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     view = build_scenario_view(record)
     text = view.scenario
     assert record["_id"] == scenario_id("run-1", "p1", 1) and view.status == ScenarioStatus.DONE
-    assert text.scenario_statement == _CLEAN.statement  # why_applies is never appended
+    assert text.scenario_statement == _CLEAN.statement  # why_applies is never shown, here or in the scope
+    assert view.scope is not None and view.scope.evidence == []
     assert [actor.actor_name for actor in view.actors] == ["Cybercriminal"]
     assert [
         (s.supporting_system, s.is_applicable, s.is_entry_point) for s in text.supporting_systems_involved
