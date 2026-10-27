@@ -183,8 +183,7 @@ def _report_dependency(name: Dependency, run: _Run) -> bool:
 
 def _report_workers(run: _Run) -> dict[str, int] | None:
     """Live workers per queue, set in tsg_workers_online; None when the count could not be read (logged
-    once per run: Redis may answer PING and still fail this read, e.g. on a key of the wrong type, and
-    /ready must say why it is 503)."""
+    once per run: Redis may answer PING and still fail this read, e.g. on a key of the wrong type)."""
     try:
         online: dict[str, int] = run.future.result(timeout=0)
     except Exception:  # noqa: BLE001 — a probe reports, it never raises
