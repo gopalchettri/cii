@@ -31,6 +31,7 @@ from app.models.jobs.views import (
     controls_retry_notice_of,
     retry_notice_of,
 )
+from app.models.remediation.plan import shown_plan_status
 from app.models.scenario.views import RunBoard, SessionStatus, session_status_from_record
 
 
@@ -145,19 +146,19 @@ def _run_job(record: dict[str, Any]) -> JobView:
 
 
 def _plan_job(record: dict[str, Any]) -> JobView:
-    """A remediation plan as the list shows it."""
-    job = record.get("job") or {}
+    """A remediation plan as the list shows it: queued while its job waits for another job."""
+    job, status = record.get("job") or {}, shown_plan_status(record)
     return JobView(
         kind=JobKind.REMEDIATION,
         session_id=record.get("session_id"),
         remediation_id=record["_id"],
         asset_id=record.get("asset_id"),
-        status=record["status"],
+        status=status,
         queued_at=job.get("due_at"),
         created_at=record.get("created_at"),
         attempts=job.get("attempts") or 0,
         user_id=record.get("user_id"),
-        retrying=retry_notice_of(record["status"], job.get("retry")),
+        retrying=retry_notice_of(status, job.get("retry")),
     )
 
 

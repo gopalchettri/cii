@@ -53,7 +53,7 @@ _LISTED_FIELDS = dict.fromkeys(
 _SCENARIO_SESSION_FIELDS = _LISTED_FIELDS | dict.fromkeys(
     ("context.asset.name", "step", "job.task", "counts", "controls_delivery.retry"), 1
 )
-_REMEDIATION_PLAN_FIELDS = _LISTED_FIELDS | dict.fromkeys(("session_id", "scenario_id"), 1)
+_REMEDIATION_PLAN_FIELDS = _LISTED_FIELDS | dict.fromkeys(("session_id", "scenario_id", "job.waiting"), 1)
 _SERVICE_MAPPING_FIELDS = _LISTED_FIELDS | {"created_by": 1}
 #: The status's summary of each kind of action: a cancel ends it as cancelled.
 _SUMMARY_OF: dict[str, str] = {

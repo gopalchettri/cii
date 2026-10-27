@@ -157,8 +157,8 @@ class JobRepository:
     ) -> JobLease | None:
         """Claim the job if it is due (queued), abandoned (running, lease expired) or this delivery's own lost
         claim (`retries`: its Celery retry count) for this task and epoch, returning its lease with `fields`
-        and _CLAIM_FIELDS as they were before the claim (job.attempts counted; a takeover's job.due_at is the
-        old lease's end); None for a duplicate, stale or early delivery."""
+        and _CLAIM_FIELDS as they were before the claim (job.attempts counted; a running job's job.due_at is
+        when it was last held, see _as_claimed); None for a duplicate, stale or early delivery."""
         now = utc_now()
         claimed = self._records.find_one_and_update(
             _claimable(record_id, epoch, task, now, task_id, retries),
@@ -336,10 +336,12 @@ class JobRepository:
 
 def _as_claimed(job: dict[str, Any], now: datetime) -> None:
     """The job's fields read before its claim, as the claim's lease sees them: its attempt counted (the
-    claim's $inc), and a takeover's due_at the old lease's end, its queue wait counted from then."""
+    claim's $inc), and a running job's due_at when it was last held, its queue wait counted from then: a
+    takeover's when the old lease ran out, a take-back's its own last claim or renewal."""
     job["attempts"] = job.get("attempts", 0) + 1
-    if (old_lease_end := job.pop("lease_until", None)) and old_lease_end < now:
-        job["due_at"] = old_lease_end
+    if old_lease_end := job.pop("lease_until", None):
+        last_held = old_lease_end - timedelta(seconds=Lease.SECONDS)
+        job["due_at"] = old_lease_end if old_lease_end < now else last_held
 
 
 def _claimable(

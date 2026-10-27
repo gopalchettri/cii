@@ -1,7 +1,8 @@
 """The claim path of a leased job: a retry takes back its own claim whose answer was lost, a takeover's queue
-wait counts from when the old lease ran out, a job waiting for another job never flickers running, and a
-refused send shows on the job's own status body."""
+wait counts from when the old lease ran out (a take-back's from its own last claim or renewal), a job waiting
+for another job never flickers running, and a refused send shows on the job's own status body."""
 
+import random
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -12,16 +13,21 @@ from celery.exceptions import Ignore
 from prometheus_client import REGISTRY
 from pymongo.errors import AutoReconnect
 
+from app import container
 from app.core.constants import Collection, Decision, ErrorMessage, Lease, Status, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import WaitingForAnotherJob
 from app.data_access.jobs.job_repository import JobLease, JobRepository, new_job
 from app.domain.scenario.results import build_board
 from app.domain.service_mapper.views import mapping_status
-from app.models.remediation.plan import RemediationStatus, RemediationSummary
+from app.models.admin.api_clients import Principal
+from app.models.remediation.plan import RemediationStatus, RemediationSummary, version_status
 from app.models.scenario.views import session_status_from_record
 from app.worker import celery_app, jobs
 from app.worker.celery_app import BrokerUnavailable, send_job
+
+#: This module's own organisation: other tests' work never shows in its jobs list.
+ENTITY = random.randint(10_000_000, 99_999_999)  # noqa: S311 - test data, not security
 
 
 class RetryRequested(Exception):
@@ -33,7 +39,7 @@ def _insert(collection: str, task: TaskName, status: Status = Status.QUEUED, **j
     record_id, now = uuid.uuid4().hex, datetime.now(UTC)
     record = {
         "_id": record_id,
-        "entity_id": 86,
+        "entity_id": ENTITY,
         "asset_id": 103,
         "tenant_id": "tenant-1",
         "scenario_id": uuid.uuid4().hex,  # one plan per scenario
@@ -120,8 +126,42 @@ def test_a_takeover_counts_its_wait_from_when_the_old_lease_ran_out(published: l
     assert get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})["job"]["attempts"] == 2
 
 
-def _plan_statuses(record_id: str) -> tuple[Status, Status, Status]:
-    """(latest_status, progress.generation, a list's latest_status) as a client reads the plan now."""
+def test_a_take_back_after_a_failed_give_back_counts_its_wait_from_its_own_last_claim(
+    monkeypatch: pytest.MonkeyPatch, published: list[str]
+) -> None:
+    """A MongoDB blip failed a job's write and then its give-back, so the record stayed running under a live
+    lease; the retry took it back counting its queue wait from the job's first due time, hours earlier: one
+    slow sample that raised JobQueueWaitHigh."""
+    record_id = _insert(
+        Collection.SESSIONS, TaskName.FIND_THREATS, due_at=datetime.now(UTC) - timedelta(hours=2)
+    )
+    real_update = JobLease.update_job
+
+    def store_down(*_args: Any, **_kwargs: Any) -> None:
+        raise AutoReconnect("store down")
+
+    def written_while_the_store_blips(lease: JobLease) -> None:
+        monkeypatch.setattr(JobLease, "update_job", store_down)
+        lease.update_job({"counts.written": 1})  # the job's write; its give-back then fails the same way
+
+    with pytest.raises(RetryRequested):
+        jobs.run_leased_job(
+            _task(retries=0), Collection.SESSIONS, record_id, 1, written_while_the_store_blips
+        )
+    monkeypatch.setattr(JobLease, "update_job", real_update)
+    assert get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})["status"] == Status.RUNNING
+    waits, slow = _queue_waits()
+    ran: list[int] = []
+    jobs.run_leased_job(
+        _task(retries=1), Collection.SESSIONS, record_id, 1, lambda lease: ran.append(lease.attempts)
+    )
+    assert ran == [2]  # taken back at once, not left to the reaper
+    assert _queue_waits() == (waits + 1, slow)
+
+
+def _plan_statuses(record_id: str) -> tuple[Status, ...]:
+    """(latest_status, progress.generation, a list's latest_status, its GET /v1/jobs row's status, the
+    latest version's status a decision reads) as a client reads the plan now."""
     plans = get_mongodb()[Collection.REMEDIATIONS]
     status = RemediationStatus.from_record(
         plans.find_one({"_id": record_id}, RemediationStatus.RECORD_FIELDS)
@@ -129,7 +169,18 @@ def _plan_statuses(record_id: str) -> tuple[Status, Status, Status]:
     listed = RemediationSummary.from_record(
         plans.find_one({"_id": record_id}, RemediationSummary.RECORD_FIELDS)
     )
-    return status.latest_status, status.progress.generation, listed.latest_status
+    caller = Principal(client_id="c1", user_id="u1", entity_id=ENTITY, tenant_id="tenant-1")
+    jobs_list = container.get_job_service().list_jobs(caller).jobs
+    job_row = next(job for job in jobs_list if job.remediation_id == record_id)
+    decided = container.get_remediation_repository().get(fields="change", _id=record_id)
+    decided_status = version_status(decided, {"version": decided["job"]["epoch"]})
+    return (
+        status.latest_status,
+        status.progress.generation,
+        listed.latest_status,
+        job_row.status,
+        decided_status,
+    )
 
 
 def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_once(
@@ -138,7 +189,7 @@ def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_onc
     """Each 15 s look claimed the plan (running, announced), then gave it back (queued, announced): the
     stream and the status flickered running and queued for as long as the controls were being mapped."""
     record_id = _insert(Collection.REMEDIATIONS, TaskName.WRITE_PLAN)
-    seen: list[tuple[Status, Status, Status]] = []
+    seen: list[tuple[Status, ...]] = []
 
     def controls_being_mapped(_lease: JobLease) -> None:
         seen.append(_plan_statuses(record_id))
@@ -153,15 +204,15 @@ def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_onc
         get_mongodb()[Collection.REMEDIATIONS].update_one(
             {"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}}
         )
-    assert seen[1] == (Status.QUEUED, Status.QUEUED, Status.QUEUED)  # the second look's claim: still queued
-    assert _plan_statuses(record_id) == (Status.QUEUED, Status.QUEUED, Status.QUEUED)
+    assert seen[1] == (Status.QUEUED,) * 5  # the second look's claim: still queued
+    assert _plan_statuses(record_id) == (Status.QUEUED,) * 5
 
     def runs(lease: JobLease) -> None:
         lease.renew_job()  # past the gate: its first fenced write
         seen.append(_plan_statuses(record_id))
 
     jobs.run_leased_job(_task(name=TaskName.WRITE_PLAN), Collection.REMEDIATIONS, record_id, 1, runs)
-    assert seen[2] == (Status.RUNNING, Status.RUNNING, Status.RUNNING)
+    assert seen[2] == (Status.RUNNING,) * 5
     assert published[2:] == [record_id]  # its end
 
 

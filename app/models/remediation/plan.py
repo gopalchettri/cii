@@ -145,7 +145,7 @@ class RemediationStatus(BaseModel):
     @classmethod
     def from_record(cls, record: dict[str, Any], scenario_accepted: bool) -> "RemediationStatus":
         """The status of a stored record whose scenario is (or is no longer) accepted."""
-        status, decision = _shown_status(record), Decision(record["decision"])
+        status, decision = shown_plan_status(record), Decision(record["decision"])
         job = record.get("job") or {}
         return cls(
             remediation_id=record["_id"],
@@ -181,9 +181,9 @@ def _overall(status: Status, decision: Decision, scenario_accepted: bool) -> Rem
     return RemediationProgress.ACCEPTED if decision == Decision.ACCEPTED else RemediationProgress.REJECTED
 
 
-def _shown_status(record: dict[str, Any]) -> Status:
-    """The latest version's status as shown: queued while its job waits for another job, though each look
-    briefly claims it (running)."""
+def shown_plan_status(record: dict[str, Any]) -> Status:
+    """The latest version's status as shown (every reader projects job.waiting): queued while its job waits
+    for another job, though each look briefly claims it (running)."""
     status = Status(record["status"])
     return Status.QUEUED if status == Status.RUNNING and (record.get("job") or {}).get("waiting") else status
 
@@ -191,7 +191,7 @@ def _shown_status(record: dict[str, Any]) -> Status:
 def version_status(record: dict[str, Any], item: dict[str, Any]) -> Status:
     """A version's status: the latest version's lives at the top of the record, an older one's on its item."""
     latest = item["version"] == record["job"]["epoch"]
-    return _shown_status(record) if latest else Status(item["status"])
+    return shown_plan_status(record) if latest else Status(item["status"])
 
 
 def _renamed_status(value: Any) -> Any:
@@ -442,7 +442,7 @@ class RemediationSummary(BaseModel):
             | {
                 "remediation_id": record["_id"],
                 "latest_version": record["job"]["epoch"],
-                "latest_status": _shown_status(record),
+                "latest_status": shown_plan_status(record),
             }
         )
 
