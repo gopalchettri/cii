@@ -15,6 +15,7 @@ from pymongo.errors import AutoReconnect
 
 from app import container
 from app.core.constants import Collection, Decision, ErrorMessage, Lease, Status, TaskName
+from app.core.constants.job_modules import module_of
 from app.core.database import get_mongodb
 from app.core.exceptions import WaitingForAnotherJob
 from app.data_access.jobs.job_repository import JobLease, JobRepository, new_job
@@ -101,7 +102,7 @@ def test_a_retry_takes_back_its_own_claim_whose_answer_was_lost(
 
 def _queue_waits() -> tuple[float, float]:
     """(waits observed, waits over a minute) of tsg_job_queue_wait_seconds for the threats task."""
-    labels = {"task": TaskName.FIND_THREATS}
+    labels = {"task": TaskName.FIND_THREATS, "module": module_of(TaskName.FIND_THREATS)}
     count = REGISTRY.get_sample_value("tsg_job_queue_wait_seconds_count", labels) or 0.0
     within = REGISTRY.get_sample_value("tsg_job_queue_wait_seconds_bucket", labels | {"le": "60.0"}) or 0.0
     return count, count - within
@@ -164,7 +165,7 @@ def _plan_statuses(record_id: str) -> tuple[Status, ...]:
     latest version's status a decision reads) as a client reads the plan now."""
     plans = get_mongodb()[Collection.REMEDIATIONS]
     status = RemediationStatus.from_record(
-        plans.find_one({"_id": record_id}, RemediationStatus.RECORD_FIELDS)
+        plans.find_one({"_id": record_id}, RemediationStatus.RECORD_FIELDS), scenario_accepted=True
     )
     listed = RemediationSummary.from_record(
         plans.find_one({"_id": record_id}, RemediationSummary.RECORD_FIELDS)
@@ -227,7 +228,7 @@ def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_onc
         (
             TaskName.WRITE_PLAN,
             "tsg_remediations",
-            lambda record: RemediationStatus.from_record(record).progress.retrying,
+            lambda record: RemediationStatus.from_record(record, True).progress.retrying,
         ),
         (TaskName.MAP_SERVICES, "tsg_service_mappings", lambda record: mapping_status(record).retrying),
     ],

@@ -37,6 +37,7 @@ from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.data_access.service_mapper.mapping_repository import MappingRepository
 from app.services.jobs.job_service import JobService
 from app.worker import jobs
 from app.worker.remediation import remediation_plan_job
@@ -131,7 +132,7 @@ def _work_control(sessions: Any) -> WorkControlRepository:
     """A job control whose tsg_sessions writes go through `sessions` (a proxy of the real collection)."""
     scenarios = ThreatScenarioRepository()
     runs = ThreatScenarioSessionRepository(sessions, scenarios=scenarios)
-    return WorkControlRepository(runs, scenarios, RemediationRepository())
+    return WorkControlRepository(runs, scenarios, RemediationRepository(), MappingRepository())
 
 
 def _requested_plan(client: TestClient, api_key: str, entity_id: int, **scenario: Any) -> tuple[str, str]:

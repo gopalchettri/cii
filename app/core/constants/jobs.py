@@ -93,9 +93,7 @@ class Worker:
     HEARTBEAT_SECONDS: Final = 20  # each worker pod tells /ready "alive" this often
     ONLINE_WITHIN_SECONDS: Final = 60  # /ready counts a worker only if its last beat is this recent
     HEARTBEAT_KEY: Final = "tsg:workers:{queue}"  # sorted set: member = worker hostname, score = last beat
-    #: Touched by the worker's heartbeat thread each beat, whatever Redis says; the pod's liveness probe reads
-    #: its age, so a broker outage never restarts a healthy worker (and kills its running jobs).
-    LIVENESS_FILE: Final = "/tmp/tsg-worker-alive"  # noqa: S108 — a per-pod marker, no data
+    LIVENESS_FILE: Final = "/tmp/tsg-worker-alive"  # noqa: S108 — touched each beat; probes read it, not Redis
     LIVENESS_MAX_AGE_SECONDS: Final = 180  # the probe fails when the file is older: hung or dead
     NEXT_STAGE_PRIORITY: Final = 0  # next stages, retries, the reaper's re-sends: Redis serves 0 first
     NEW_WORK_PRIORITY: Final = 3  # every other send; its list is <queue>\x06\x163, which old pods read too
