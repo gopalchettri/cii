@@ -14,6 +14,7 @@ from app.ai.common import outage_reason
 from app.core.clock import utc_now
 from app.core.constants import Dependency, IntelDocId, IntelLimits, IntelMessage, LogEvent
 from app.core.exceptions import TEMPORARY_ERRORS
+from app.core.lease_signal import start_thread_without_lease
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.data_access.external_intelligence.intel_snapshot_repository import IntelSnapshotRepository
@@ -96,7 +97,7 @@ class EvidenceIndexKeeper:
             future: Future[EvidenceIndex] = Future()
             self._running = future
         try:
-            threading.Thread(target=self._run, args=(future,), name="evidence-index", daemon=True).start()
+            start_thread_without_lease("evidence-index", self._run, future)
         except RuntimeError as exc:  # no thread to be had: never leave a build "running" for ever
             self._settle_failure(exc)
             future.set_exception(exc)
@@ -170,9 +171,7 @@ class EvidenceIndexKeeper:
                 return
             self._check_at = now + IntelLimits.SWITCH_CACHE_SECONDS
         try:
-            threading.Thread(
-                target=self._rebuild_if_pointer_is_newer, name="evidence-check", daemon=True
-            ).start()
+            start_thread_without_lease("evidence-check", self._rebuild_if_pointer_is_newer)
         except RuntimeError:
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO)
 

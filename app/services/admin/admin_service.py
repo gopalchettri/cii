@@ -21,6 +21,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import Conflict, DuplicateRecord, NotFound, Unavailable
+from app.core.logging import current_request_id
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.api_client_repository import ApiClientRepository
 from app.data_access.admin.audit_repository import AuditRepository
@@ -47,7 +48,7 @@ def queue_admin_job(
     one of its kind is queued or running; a send that raises or returns False (503) fails the job, so a job no
     worker will run never blocks the next."""
     job_id = job["_id"]
-    active_id = jobs.create_admin_job(job | {"created_at": utc_now()})
+    active_id = jobs.create_admin_job(job | {"created_at": utc_now(), "request_id": current_request_id()})
     if active_id != job_id:
         raise Conflict(in_progress, reason=ConflictReason.JOB_IN_PROGRESS, details={"job_id": active_id})
     sent = False

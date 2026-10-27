@@ -155,7 +155,7 @@ def update_call_metrics(
     metrics.AI_SECONDS.labels(task, model).observe(seconds)
     log.info(
         LogEvent.AI_CALL,
-        task=task,
+        ai_task=task,
         model=model,
         outcome=outcome,
         tokens_in=tokens_in,
@@ -180,7 +180,7 @@ def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is k
     try:
         records.create(record)
     except Exception:  # noqa: BLE001 - ponytail: the audit copy must never fail the AI call; logged instead
-        log.warning(LogEvent.AI_CALL_RECORD_FAILED, task=task, exc_info=True)
+        log.warning(LogEvent.AI_CALL_RECORD_FAILED, ai_task=task, exc_info=True)
 
 
 def find_earlier_answer(
@@ -199,9 +199,9 @@ def find_earlier_answer(
     try:
         reply = records.find_ok_response(job, prompt_hash(messages))
     except Exception:  # noqa: BLE001 - ponytail: a failed lookup only costs the AI call it would save
-        log.warning(LogEvent.AI_ANSWER_LOOKUP_FAILED, task=task, exc_info=True)
+        log.warning(LogEvent.AI_ANSWER_LOOKUP_FAILED, ai_task=task, exc_info=True)
         return None
     if reply is None or (answer := parse_json_object(reply)) is None or check(answer):
         return None
-    log.info(LogEvent.AI_ANSWER_REUSED, task=task)
+    log.info(LogEvent.AI_ANSWER_REUSED, ai_task=task)
     return answer, reply

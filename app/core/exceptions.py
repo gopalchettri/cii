@@ -6,6 +6,8 @@ from typing import Any, ClassVar
 
 from pymongo.errors import ConnectionFailure as MongoConnectionFailure
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import OutOfMemoryError as RedisOutOfMemoryError
+from redis.exceptions import ReadOnlyError as RedisReadOnlyError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
@@ -15,7 +17,13 @@ from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
 MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (MongoConnectionFailure,)
 
 
-REDIS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (RedisConnectionError, RedisTimeoutError)
+#: Redis also refuses writes for a while on a failover (READONLY replica) or when its memory is full.
+REDIS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    RedisReadOnlyError,
+    RedisOutOfMemoryError,
+)
 
 
 class AppError(Exception):

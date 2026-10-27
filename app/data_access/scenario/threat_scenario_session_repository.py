@@ -247,8 +247,8 @@ class ThreatScenarioSessionRepository(MongoRepository):
 
     def claim_controls_delivery(self, session_id: str, task_id: str) -> Record | None:
         """tsg_sessions: the session's delivery lease for `task_id` when free, expired, handed over or
-        already its own, never for a cancelled session; its frozen context, or None while another delivery
-        holds it."""
+        already its own, never for a cancelled session; its frozen context and job.request_id, or None while
+        another delivery holds it."""
         now = utc_now()
         free = [
             {"controls_delivery.until": {"$lt": now}},
@@ -258,9 +258,9 @@ class ThreatScenarioSessionRepository(MongoRepository):
         found = self.collection.find_one_and_update(
             {"_id": session_id, "status": {"$ne": Status.CANCELLED}, "$or": free},
             {"$set": {"controls_delivery": held}},
-            projection={"context": 1},
+            projection={"context": 1, "job.request_id": 1},
         )
-        return None if found is None else found.get("context", {})
+        return found
 
     def update_controls_delivery(self, session_id: str, task_id: str, hand_over: bool = False) -> bool:
         """tsg_sessions: the delivery lease extended; `hand_over`, its next turn queued: no holder, and the

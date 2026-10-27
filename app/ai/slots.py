@@ -10,7 +10,6 @@ to that model reserves it the same way and waits for it."""
 
 import math
 import random
-import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -26,7 +25,7 @@ from app.ai.retry_waits import busy_retry_wait, rate_limited_wait
 from app.core import metrics
 from app.core.constants import AI_OUTAGE_MESSAGES, AiLimits, AiOutage, AiOutageSource, ErrorMessage, LogEvent
 from app.core.exceptions import Unavailable
-from app.core.lease_signal import raise_if_lease_lost
+from app.core.lease_signal import raise_if_lease_lost, start_thread_without_lease
 
 log = structlog.get_logger(__name__)
 
@@ -61,7 +60,7 @@ class AiSlots:
             self._count_slots = redis.register_script(limiter_scripts.COUNT_SLOTS_SCRIPT)
             self._cut_limit = redis.register_script(limiter_scripts.CUT_LIMIT_SCRIPT)
             self._renew_leases = redis.register_script(limiter_scripts.RENEW_LEASES_SCRIPT)
-            threading.Thread(target=self._renew_leases_forever, name="ai-slot-leases", daemon=True).start()
+            start_thread_without_lease("ai-slot-leases", self._renew_leases_forever)
 
     @contextmanager
     def hold_slot(self, task: str, waits: bool = True) -> Iterator[None]:
@@ -99,7 +98,7 @@ class AiSlots:
             self._note_redis_failure()
             return
         if cut:
-            log.info(LogEvent.AI_LIMIT_CUT, key=self._key, limit=cut)
+            log.info(LogEvent.AI_LIMIT_CUT, limiter=self._key, limit=cut)
 
     def count_calls_in_progress(self) -> float:
         """Calls in progress across every pod (the tsg_ai_slots_in_use gauge); NaN when Redis cannot say, so a
@@ -139,7 +138,7 @@ class AiSlots:
                 raise_if_lease_lost()
                 if time.monotonic() + pause > deadline:
                     limit, waited = self.current_limit(), round(wait, 1)  # the cap or a 429's, the lower
-                    log.warning(LogEvent.AI_SLOTS_BUSY, key=self._key, limit=limit, waited_seconds=waited)
+                    log.warning(LogEvent.AI_SLOTS_BUSY, limiter=self._key, limit=limit, waited_seconds=waited)
                     metrics.AI_OUTAGES.labels(task, AiOutage.BUSY, AiOutageSource.LIMITER).inc()
                     raise Unavailable(ErrorMessage.AI_BUSY.format(seconds=round(wait)), reason=AiOutage.BUSY)
                 # Jittered: the threads that found every slot busy together do not all poll again together.
@@ -181,7 +180,7 @@ class AiSlots:
             self._skip_redis_until = time.monotonic() + AiLimits.REDIS_SKIP_SECONDS
         if not self._untracked_logged:
             self._untracked_logged = True
-            log.warning(LogEvent.AI_SLOTS_UNTRACKED, key=self._key, exc_info=True)
+            log.warning(LogEvent.AI_SLOTS_UNTRACKED, limiter=self._key, exc_info=True)
 
 
 class AiRequestRate:

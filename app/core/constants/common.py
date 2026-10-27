@@ -255,6 +255,8 @@ class LogEvent(StrEnum):
     EMBEDDING_STORED_SIZE_WRONG = "embedding.stored_size_wrong"
     JOB_STARTED = "job.started"  # every task: its id, record/job id, worker and the API request that sent it
     JOB_FINISHED = "job.finished"  # the same with its outcome and seconds
+    WORKER_START_FAILED = "worker.start_failed"  # a worker that cannot start says why before it exits
+    CONTROLS_SWEPT = "controls.swept"  # the controls sweep's requeued and abandoned mappings, by run
     JOB_NOT_CLAIMED = "job.not_claimed"  # with its reason: missing, other_epoch, other_task, not_due, ...
     CLOCK_OFF = "clock.off"  # this pod's clock differs from MongoDB's by more than Clock.WARN_OVER_SECONDS
     JOB_LEASE_LOST = "job.lease_lost"

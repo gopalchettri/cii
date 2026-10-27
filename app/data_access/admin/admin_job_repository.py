@@ -4,12 +4,24 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
+import structlog
 from pymongo.collection import Collection as MongoCollection
 
-from app.core.constants import AdminJobKind, AdminJobMessage, AdminJobs, Collection, ErrorCode, Status
+from app.core.constants import (
+    ADMIN_JOB_TASKS,
+    AdminJobKind,
+    AdminJobMessage,
+    AdminJobs,
+    Collection,
+    ErrorCode,
+    LogEvent,
+    Status,
+    module_of,
+)
 from app.core.exceptions import DuplicateRecord
 from app.data_access.base import MongoRepository, Record
 
+log = structlog.get_logger(__name__)
 _DAY_SECONDS = int(timedelta(days=1).total_seconds())
 
 
@@ -37,11 +49,12 @@ class AdminJobRepository(MongoRepository):
     def create_admin_job(self, job: Record) -> str | None:
         """Creates `job` (with its created_at) as the active job of its kind in tsg_admin_jobs and returns its
         id; else the id of the active job of that kind. One still unfinished AdminJobs.STALE_AFTER_SECONDS
-        after its creation (its worker died, its message was lost) is failed and replaced."""
+        after its creation, or its start once running (its worker died, its message was lost), is failed and
+        replaced."""
         stale_before = job["created_at"] - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS)
         abandoned = AdminJobMessage.ABANDONED.format(seconds=AdminJobs.STALE_AFTER_SECONDS)
         error = {"code": ErrorCode.JOB_ABANDONED, "message": abandoned}
-        stale = {"kind": job["kind"], "active": True, "created_at": {"$lt": stale_before}}
+        stale = {"kind": job["kind"], **_abandoned_before(stale_before)}
         if self._create_active(job) or (
             self._finish(stale, Status.FAILED, job["created_at"], error=error) and self._create_active(job)
         ):
@@ -66,12 +79,18 @@ class AdminJobRepository(MongoRepository):
     def update_admin_job_finished(
         self, job_id: str, now: datetime, *, result: Record | None = None, error: Record | None = None
     ) -> bool:
-        """Ends an active tsg_admin_jobs job, done with its result or failed with its error, once; False when
-        it was no longer active (taken over as abandoned: it keeps the outcome it already has)."""
+        """Ends an active tsg_admin_jobs job, done with its result or failed with its error and its
+        job.failed line, once; False when it was no longer active (taken over as abandoned: it keeps its
+        outcome)."""
         which = {"_id": job_id, "active": True}
-        if error is not None:
-            return self._finish(which, Status.FAILED, now, error=error)
-        return self._finish(which, Status.DONE, now, result=result)
+        if error is None:
+            return self._finish(which, Status.DONE, now, result=result)
+        if not self._finish(which, Status.FAILED, now, error=error):
+            return False
+        kind = (self.get(("kind",), _id=job_id) or {}).get("kind") or "unknown"
+        task = ADMIN_JOB_TASKS.get(kind, kind)
+        log.warning(LogEvent.JOB_FAILED, task=task, module=module_of(task), record_id=job_id, **error)
+        return True
 
     def list_recent_admin_jobs(
         self, since: datetime, statuses: Iterable[str] = (), kind: str | None = None, limit: int = 100
@@ -103,13 +122,10 @@ class AdminJobRepository(MongoRepository):
         }
 
     def fail_stale_admin_jobs(self, now: datetime) -> list[Record]:
-        """Fails every job still active AdminJobs.STALE_AFTER_SECONDS after its creation (its worker died or
-        its message was lost), so none stays "running" until the next request of its kind; each one's id,
-        kind and the error saved."""
-        stale = {
-            "active": True,
-            "created_at": {"$lt": now - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS)},
-        }
+        """Fails every job still active AdminJobs.STALE_AFTER_SECONDS after its creation, or its start once
+        running (its worker died or its message was lost), so none stays "running" until the next request of
+        its kind; each one's id, kind and the error saved."""
+        stale = _abandoned_before(now - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS))
         abandoned = AdminJobMessage.ABANDONED.format(seconds=AdminJobs.STALE_AFTER_SECONDS)
         error = {"code": ErrorCode.JOB_ABANDONED, "message": abandoned}
         jobs = list(self.collection.find(stale, {"_id": 1, "kind": 1}))
@@ -144,3 +160,11 @@ class AdminJobRepository(MongoRepository):
         """Ends the active job `which` matches; True when there was one."""
         ended = {"$set": {"status": status, "finished_at": now, **fields}, "$unset": {"active": ""}}
         return self.collection.update_one(which, ended).matched_count > 0
+
+
+def _abandoned_before(cutoff: datetime) -> Record:
+    """The active jobs started before `cutoff`, or never started and created before it."""
+    return {
+        "active": True,
+        "$or": [{"started_at": {"$lt": cutoff}}, {"started_at": None, "created_at": {"$lt": cutoff}}],
+    }

@@ -9,9 +9,9 @@ lease taken inside a job (a plan job mapping one scenario's controls) adds its s
 checked, the job's first."""
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import Context, ContextVar, copy_context
 
 from app.core.exceptions import LeaseLost
 
@@ -27,6 +27,18 @@ def lease_lost_signal(record_id: str) -> Iterator[threading.Event]:
         yield lost
     finally:
         _SIGNALS.reset(token)
+
+
+def context_without_lease() -> Context:
+    """A copy of the caller's context (its log fields) under no lease: for a thread every job shares."""
+    context = copy_context()
+    context.run(_SIGNALS.set, ())
+    return context
+
+
+def start_thread_without_lease(name: str, work: Callable[..., object], *args: object) -> None:
+    """A daemon thread running `work` in a copy of the caller's context (its log fields) under no lease."""
+    threading.Thread(target=context_without_lease().run, args=(work, *args), name=name, daemon=True).start()
 
 
 def raise_if_lease_lost() -> None:

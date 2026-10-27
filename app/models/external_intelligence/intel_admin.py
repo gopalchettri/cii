@@ -31,6 +31,7 @@ class IntelSourceRevoked(BaseModel):
 class IntelSourceApproved(BaseModel):
     source: IntelSource
     refresh_job_id: str | None = None  # the queued refresh of that source; none when one was already queued
+    refresh_not_queued: str | None = None  # why no refresh was queued (the job queue unreachable); else None
 
 
 class IntelSwitchOut(BaseModel):
@@ -39,6 +40,7 @@ class IntelSwitchOut(BaseModel):
     effective: bool  # on only when both are on
     changed_at: datetime | None = None
     changed_by: str | None = None
+    refresh_not_queued: str | None = None  # turned on, but its refresh could not be queued: why
 
 
 class EvidenceSettingsOut(BaseModel):

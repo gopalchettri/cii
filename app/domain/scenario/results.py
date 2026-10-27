@@ -12,6 +12,7 @@ from app.core.constants import (
     BoardMessage,
     ControlMatch,
     ControlMatchStatus,
+    Controls,
     Decision,
     FindingSeverity,
     GroundingStatus,
@@ -44,6 +45,7 @@ from app.models.scenario.views import (
     LibraryView,
     Progress,
     RunBoard,
+    RunError,
     ScenarioCount,
     ScenarioText,
     ScenarioView,
@@ -103,6 +105,7 @@ def build_board(run: SessionStatus) -> RunBoard:
         session_status=_SESSION_STATE[run.status],
         progress=progress,
         updated_at=run.updated_at,
+        error=_run_error(run),
     )
 
 
@@ -119,6 +122,14 @@ def _failed_reason(run: SessionStatus) -> AiOutage | None:
     """Which AI outage failed the run; None for any other failure."""
     reason = (run.error or {}).get("reason") if run.status == Status.FAILED else None
     return AiOutage(reason) if reason and reason in AiOutage else None
+
+
+def _run_error(run: SessionStatus) -> RunError | None:
+    """The failed run's job error: code, message and AI outage reason; None unless the run failed."""
+    if run.status != Status.FAILED or not run.error:
+        return None
+    error = run.error
+    return RunError(code=error.get("code", ""), message=error.get("message", ""), reason=_failed_reason(run))
 
 
 def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:
@@ -408,7 +419,7 @@ def _v1_fields(record: dict[str, Any], validation_status: ValidationStatus, note
         **_generation_fields(record),
         "scenario_number": record["version"],
         "library": None if generated else _library_view(threat),
-        **_controls_flags(controls.get("status")),
+        **_controls_flags(controls),
         "scope": _scope_view(content) if generated else None,
         "actor": _acting_attacker_name(content, failed),
         "threat_source": _threat_source(threat, "library_id") if generated else None,
@@ -451,9 +462,12 @@ def _controls_error(controls: dict[str, Any]) -> dict[str, Any] | None:
     return controls.get("error") if controls.get("status") in (Status.QUEUED, Status.FAILED) else None
 
 
-def _controls_flags(status: str | None) -> dict[str, Any]:
-    """v1's four controls flags for v2's one controls status."""
-    exhausted = status == Status.FAILED
+def _controls_flags(controls: dict[str, Any]) -> dict[str, Any]:
+    """v1's four controls flags for v2's controls: exhausted once failed with no attempt left."""
+    status, attempts = controls.get("status"), controls.get("attempts")
+    # As the sweep reads it (FAILED_WITH_ATTEMPTS_LEFT): a failure with attempts left is tried again.
+    attempts_left = isinstance(attempts, int) and attempts < Controls.MAX_ATTEMPTS
+    exhausted = status == Status.FAILED and not attempts_left
     return {
         "controls_unavailable": False,
         "controls_mapped": status == Status.DONE,

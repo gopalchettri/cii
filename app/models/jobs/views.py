@@ -90,11 +90,14 @@ class MonitoredJob(BaseModel):
     error: dict[str, Any] | None = None  # {code, message, reason?} of a failed job
     task_id: str | None = None
     worker: str | None = None
+    request_id: str | None = None  # the API request that queued it: its log lines carry the same id
+    lease_until: datetime | None = None  # a running job past this has lost its worker; None for admin jobs
+    resends: int | None = None  # times the reaper re-sent its lost message
 
 
 class QueueState(BaseModel):
     waiting: int | None  # messages not yet taken by a worker; None when the broker could not be read
-    workers_online: int
+    workers_online: int | None  # None when the worker heartbeats could not be read
 
 
 class JobMonitor(BaseModel):

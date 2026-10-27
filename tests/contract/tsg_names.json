@@ -10,5 +10,6 @@
  "Realtime.REMEDIATION_CHANNEL": "tsg:events:remediation:{remediation_id}",
  "Realtime.SESSION_CHANNEL": "tsg:events:session:{session_id}",
  "Worker.BROKER_KEY_PREFIX": "tsg:",
- "Worker.HEARTBEAT_KEY": "tsg:workers:{queue}"
+ "Worker.HEARTBEAT_KEY": "tsg:workers:{queue}",
+ "Worker.LIVENESS_FILE": "/tmp/tsg-worker-alive"
 }

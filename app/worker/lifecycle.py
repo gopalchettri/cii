@@ -2,6 +2,7 @@
 how it shuts down. Each function decorated with a signal is a Celery signal receiver."""
 
 import re
+import sys
 import time
 from typing import Any
 
@@ -41,11 +42,11 @@ def prepare_worker(sender: Any, **_: object) -> None:
     not run."""
     pool = get_implementation(sender.pool_cls).__module__
     if pool not in _SUPPORTED_POOLS:
-        raise SystemExit(ErrorMessage.WORKER_POOL_UNSUPPORTED.format(pool=pool))
+        raise _start_failed(ErrorMessage.WORKER_POOL_UNSUPPORTED.format(pool=pool))
     try:
         configure_logging(settings, log_file_role(sender.hostname))  # a bad CII_LOG_DIR stops the worker
     except OSError as exc:
-        raise SystemExit(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
+        raise _start_failed(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
     metrics.start_job_counters(TaskName)
     if queue_of(TaskName.REAP) in sender.app.amqp.queues.consume_from:  # -Q is read before worker_init
         metrics.start_reaper_clock()
@@ -55,11 +56,17 @@ def prepare_worker(sender: Any, **_: object) -> None:
     warm_up_external_intelligence(sender)  # before Celery starts the consumer and sends worker_ready
 
 
+def _start_failed(reason: str) -> SystemExit:
+    """Log why this process cannot start (with the exception in hand, if any); the SystemExit to raise."""
+    log.error(LogEvent.WORKER_START_FAILED, reason=reason, exc_info=sys.exc_info()[1] is not None)
+    return SystemExit(reason)
+
+
 def _serve_metrics(pool: str) -> None:
     try:
         start_http_server(settings.worker_metrics_port)
     except OSError as exc:
-        raise SystemExit(
+        raise _start_failed(
             ErrorMessage.WORKER_METRICS_PORT_BUSY.format(port=settings.worker_metrics_port)
         ) from exc
     log.info(LogEvent.WORKER_METRICS_SERVING, port=settings.worker_metrics_port, pool=pool)
@@ -74,7 +81,7 @@ def _prepare_stores_and_models() -> None:
     try:
         container.set_up_worker(JOB_COLLECTIONS)
     except Exception as exc:  # noqa: BLE001 — any start-up failure must stop the worker (SystemExit below)
-        raise SystemExit(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
+        raise _start_failed(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
     slots = container.get_ai_slots()  # AiSlotsSaturated reads both gauges
     metrics.AI_SLOTS_IN_USE.set_function(slots.count_calls_in_progress)
     metrics.AI_SLOTS_CAP.set_function(slots.current_limit)
@@ -87,7 +94,7 @@ def prepare_beat(**_: object) -> None:
     try:
         configure_logging(settings, "beat")
     except OSError as exc:
-        raise SystemExit(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
+        raise _start_failed(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
 
 
 def log_file_role(hostname: str) -> str:
@@ -132,6 +139,7 @@ def start_job_clock(task_id: str, task: Task, args: tuple | None = None, **_: ob
         module=module_of(task.name),
         worker=getattr(request, "hostname", None),
         **({"record_id": str(args[0])} if args else {}),
+        **({"epoch": args[1]} if args and len(args) > 1 else {}),
         **({"request_id": request_id} if request_id else {}),
     )
     _job_started[task_id] = time.perf_counter()

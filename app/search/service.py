@@ -11,6 +11,7 @@ import structlog
 
 from app.ai import EmbeddingModel
 from app.core.constants import EMBEDDING_SOURCE_TABLE, Cache, EmbeddingCorpus, LogEvent
+from app.core.lease_signal import context_without_lease, start_thread_without_lease
 from app.models.library.library import (
     LibraryActor,
     LibraryControl,
@@ -73,15 +74,14 @@ class _SnapshotKeeper:
             )
             if builds_it:
                 building = self._building = (library, Future())
+        # The build is every waiter's: under no caller's lease, so one job's cancel never fails the others.
         if current is not None and not wait:
             if builds_it and building is not None:
-                threading.Thread(
-                    target=self._build_and_share, args=building, name="library-indexes", daemon=True
-                ).start()
+                start_thread_without_lease("library-indexes", self._build_and_share, *building)
             return current
         assert building is not None
         if builds_it:
-            self._build_and_share(*building)
+            context_without_lease().run(self._build_and_share, *building)
         return building[1].result()
 
     def _build_and_share(self, library: LoadedLibraries, outcome: Future[LibrarySnapshot]) -> None:

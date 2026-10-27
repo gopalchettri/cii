@@ -14,14 +14,18 @@ RUNS = Counter("tsg_runs_total", "Runs started", ["kind"])
 SCENARIOS = Counter("tsg_scenarios_total", "Scenario paths settled, by outcome", ["outcome"])
 DECISIONS = Counter("tsg_decisions_total", "Scenarios newly accepted or rejected by reviewers", ["decision"])
 PLANS = Counter("tsg_plans_total", "Remediation plan versions settled, by outcome", ["outcome"])
+#: Up to Lease.MAX_JOB_SECONDS (3600 s), the longest a job may run.
 JOB_SECONDS = Histogram(
-    "tsg_job_seconds", "Background job duration", ["task"], buckets=(1, 5, 15, 30, 60, 120, 300, 600, 1800)
+    "tsg_job_seconds",
+    "Background job duration",
+    ["task"],
+    buckets=(1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600),
 )
 JOB_QUEUE_WAIT = Histogram(
     "tsg_job_queue_wait_seconds",
     "Time a job waited for a worker after it was due",
     ["task"],
-    buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800),
+    buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),
 )
 AI_CALLS = Counter("tsg_ai_calls_total", "AI calls by outcome", ["task", "model", "outcome"])
 #: source: the gateway refused, or TSG's own limiter did (app/core/constants AiOutageSource).

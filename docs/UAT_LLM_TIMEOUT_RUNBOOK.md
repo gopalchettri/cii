@@ -285,19 +285,19 @@ Then do step 4 again. Once the cause is fixed, do 5.2 again (leave out its first
    Only "The AI service timed out", or `"route": "proxy"` in 6.2, sends you back to step 3.
 
    "Every AI slot stayed busy" (reason `ai_busy`) is not a proxy fault. Two limits give this message. The
-   `ai.slots_busy` log line names the full one in its `key`:
+   `ai.slots_busy` log line names the full one in its `limiter`:
 
    ```
    oc -n ai-threatgen logs deploy/worker-scenarios | findstr ai.slots_busy
    oc -n ai-remediation logs deploy/worker-scenarios | findstr ai.slots_busy
    ```
 
-   - **`"key": "tsg:ai_slots"`:** the AI gateway answered 429 (too many requests), and TSG then limits its own AI
+   - **`"limiter": "tsg:ai_slots"`:** the AI gateway answered 429 (too many requests), and TSG then limits its own AI
      calls on every pod until 3 minutes pass with no 429 (D30). In Grafana, "Why the AI did not answer" shows them
      as busy; the "AI no answer" tile does not count them. A pod that stopped in the middle of a call stops counting
      within a minute, so restarting pods does not help: wait, or ask the gateway admin for a higher limit on TSG's
      key.
-   - **`"key": "tsg:ai_fallback_slots"`:** the fallback model's 16 slots (`CII_MAX_CONCURRENT_FALLBACK_CALLS`)
+   - **`"limiter": "tsg:ai_fallback_slots"`:** the fallback model's 16 slots (`CII_MAX_CONCURRENT_FALLBACK_CALLS`)
      stayed full, because the first model kept failing or timing out and every call went to the fallback. This is
      the timeout problem: go back to step 3.
 

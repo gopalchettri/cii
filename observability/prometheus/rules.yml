@@ -44,15 +44,35 @@ groups:
     rules:
       # Every `failure` outcome of a run job is final: a retry is counted as `retry`, so a failure is either
       # "failed after Lease.MAX_ATTEMPTS outage retries" or an unexpected error. Both leave a user with a failed
-      # run. The timer jobs are left out: a failed reaper pass or index build simply runs again on its timer
-      # (ReaperNotRunning watches the reaper; library.indexes_build_failed lines show a failing build).
+      # run. The timer jobs are left out: a failed reaper pass, control-mapping sweep or scheduled intel refresh
+      # simply runs again on its timer (ReaperNotRunning watches the reaper). An index build counts: an admin may
+      # have asked for it.
       - alert: JobsFailing
-        expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_build_library_indexes"}[15m])) > 0
+        expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_retry_controls|tsg_refresh_external_intelligence"}[15m])) > 0
         for: 1m
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.task }} jobs failed for good in the last 15 minutes."
           description: Open the TSG dashboard, table "Failed jobs", for why; click the run id for its whole story.
+
+      # A retry is an outage the job waits out (the AI, MongoDB or Redis): many of them mean runs crawl, and
+      # each one ends in JobsFailing after Lease.MAX_ATTEMPTS.
+      - alert: JobsRetrying
+        expr: sum by (task) (increase(tsg_jobs_total{outcome="retry"}[15m])) >= 5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.task }} jobs were sent back to retry 5 times or more in 15 minutes."
+          description: Something keeps failing for them. Open the TSG dashboard, "Why the AI did not answer" and the stores' tiles.
+
+      # Due jobs waiting for a free worker thread (tsg_job_queue_wait_seconds), by job type.
+      - alert: JobQueueWaitHigh
+        expr: histogram_quantile(0.95, sum by (le, task) (rate(tsg_job_queue_wait_seconds_bucket[15m]))) > 300
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.task }} jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
+          description: The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy.
 
       # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
       # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
@@ -132,6 +152,17 @@ groups:
         annotations:
           summary: Redis does not answer the API.
           description: Jobs cannot be queued and live updates stop. Check the Redis server.
+
+      # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
+      - alert: RedisEvictingKeys
+        expr: sum(increase(redis_evicted_keys_total[10m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Redis is full and dropped keys in the last 10 minutes; waiting jobs can be lost.
+          description: >-
+            The reaper re-sends lost jobs, late. Ask the Redis owner for more memory (or the noeviction policy)
+            and check what fills it.
 
       - alert: AiErrorRateHigh
         expr: sum(rate(tsg_ai_calls_total{outcome!~"ok|truncated"}[10m])) / sum(rate(tsg_ai_calls_total{outcome!="truncated"}[10m])) > 0.10

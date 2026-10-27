@@ -615,7 +615,12 @@ def check_against_plan(
         prompt = plan_check_prompt(brief, draft)
         unjudged = _unjudged_actions if brief.threat_actions else None
         answer: PlanCheckAnswer = ask_ai_and_check(
-            chat, AiTask.PLAN_CHECK, prompt, _read_plan_check, first_answer_check=unjudged
+            chat,
+            AiTask.PLAN_CHECK,
+            prompt,
+            _read_plan_check,
+            first_answer_check=unjudged,
+            reuse_earlier_answer=True,  # temperature 0: a retry's same ask gets the same answer, so read back
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, error=str(exc))
@@ -697,7 +702,9 @@ def split_threat_actions(chat: ChatModel, threat: str) -> tuple[str, ...]:
     and the reviewer then split the name themselves). An outage raises Unavailable."""
     prompt = _SPLIT["system"], f"{_SPLIT['text']}THREAT: {json.dumps(threat, ensure_ascii=False)}"
     try:
-        actions: tuple[str, ...] = ask_ai_and_check(chat, AiTask.THREAT_ACTIONS, prompt, _read_threat_actions)
+        actions: tuple[str, ...] = ask_ai_and_check(
+            chat, AiTask.THREAT_ACTIONS, prompt, _read_threat_actions, reuse_earlier_answer=True
+        )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         log.warning(LogEvent.WRITER_THREAT_ACTIONS_NOT_SPLIT, error=str(exc))
         return ()

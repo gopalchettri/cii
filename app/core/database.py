@@ -8,6 +8,8 @@ from pymongo.collection import Collection as MongoCollection
 from pymongo.database import Database
 from pymongo.errors import OperationFailure
 from redis import Redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -65,6 +67,8 @@ def get_redis_client() -> Redis:
         socket_keepalive=True,
         health_check_interval=Timeouts.REDIS_HEALTH_CHECK_SECONDS,
         decode_responses=True,
+        # No hidden retries (redis-py 6+ defaults Redis() to 3 with back-off): fail within the timeout.
+        retry=Retry(NoBackoff(), 0),
     )
 
 

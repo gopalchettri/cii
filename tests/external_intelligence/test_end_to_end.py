@@ -42,7 +42,7 @@ from tests.test_writing_job import (  # noqa: F401 - fixture used by name
 
 LIBRARY = ThreatLibrary(THREATS, ACTORS)  # the planner's threats and attackers, all live
 RESULTS_KEYS = [
-    "session_id", "entity_id", "asset_id", "asset_name", "user_id", "progress", "scenarios", "total",
+    "session_id", "entity_id", "asset_id", "asset_name", "user_id", "progress", "error", "scenarios", "total",
 ]  # fmt: skip
 
 

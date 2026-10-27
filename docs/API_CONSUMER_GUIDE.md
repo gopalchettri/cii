@@ -1,6 +1,6 @@
 # TSG API consumer guide: threat scenarios, remediation and service mapper
 
-Covers 18 endpoints. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/api/routers/service_mapper.py`, `app/models/**`.
+Covers 18 endpoints, and two operations endpoints in section 7. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/api/routers/service_mapper.py`, `app/models/**`.
 
 ## 1. Basics
 
@@ -171,6 +171,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | `progress.scenario_count.remaining` | int or null | paths still to write |
 | `progress.scenario_count.complete` | bool | nothing left to write |
 | `progress.scenario_count.pending_review` / `.accepted` / `.rejected` | int | review counts |
+| `error` | object or null | a failed run's `{code, message, reason}` (`reason` only for an AI outage); null otherwise |
 | `updated_at` | datetime | |
 
 `outcome` values: `running`, `complete`, `partial`, `failed`, `cancelled`.
@@ -1050,7 +1051,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `mapping_id` | string | keep it |
-| `status` | string | always `queued` in this answer, also on a replay: read the real state from 5.2 |
+| `status` | string | `queued` for a new mapping (or a new try); on a replay the mapping's real status (`queued`, `running`, `done`, `failed`) |
 | `generation` | int | `1`; on a replay, the generation this key started (a new try after an outage counts one more) |
 
 ```json
@@ -1410,3 +1411,50 @@ for (const f of decided.failed) console.warn(f.dependency_id, f.reason); // a 20
 const after = await tsg("GET", `${base}/status`);
 const reviewed = after.progress.relationships.pending === 0; // the review is complete
 ```
+
+## 7. Operations endpoints
+
+For operators and support, not for the UI. Source of truth: `app/api/routers/health.py`, `app/api/routers/admin.py`, `app/models/jobs/views.py`.
+
+### 7.1 `GET /ready`
+
+No key. `200` with `status: "ready"` when MongoDB answers, else `503` with `status: "not_ready"`. MongoDB is the only store every route needs, so it alone decides. Redis, SQL Server and each queue's live workers are reported in the body but never make it `503`: a Redis outage or a queue without a worker does not take the API out of service (a job sent then waits in its record and the reaper sends it again).
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | string | `ready` or `not_ready` |
+| `dependencies` | object | `{mongo, redis, sql: bool}`: each store up or down |
+| `workers` | object or null | live workers per queue; null when Redis could not be read |
+| `mongodb` | object or null | replica set, version, default write concern |
+
+`GET /health` (`200` while the process answers) is the liveness check.
+
+### 7.2 `GET /v1/admin/jobs`
+
+Header `X-Admin-Key`. Every job of every kind active in the last `hours`, newest first, and each queue's backlog.
+
+| Query | Type | Meaning |
+| --- | --- | --- |
+| `module` | string | `threat_scenarios`, `remediation`, `service_mapper`, `external_intelligence`, `library_embeddings`, `maintenance` |
+| `status` | string, repeatable | `queued`, `running`, `done`, `failed`, `cancelled` |
+| `kind` | string ≤ 64 | a task name (`tsg_map_services` ...) or an admin job kind |
+| `request_id` | string | only the jobs sent by this API call (the `request_id` of its error body or `X-Request-Id`) |
+| `hours` | int 1..2160 | default 24 |
+| `limit` | int 1..200 | default 100 |
+
+**Response** `200`: `{jobs: MonitoredJob[], queues: {<queue>: {waiting, workers_online}}}`. `waiting` is null when the broker could not be read; a Redis outage never makes this call `503`.
+
+| `MonitoredJob` field | Meaning |
+| --- | --- |
+| `id`, `module`, `kind`, `collection`, `entity_id` | what the job is and where its record lives |
+| `status` | `queued`, `running`, `done`, `failed`, `cancelled` |
+| `retrying` | waiting after an outage: `stage`, `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
+| `attempts` | tries used |
+| `created_at`, `started_at`, `finished_at` | when |
+| `error` | `{code, message, reason?}` of a failed job |
+| `task_id`, `worker` | the delivery running it (cleared when it is queued again) |
+| `request_id` | the API call that started it: search it in the logs to see every line of the job |
+| `lease_until` | a running job whose lease is in the past has a dead worker: the reaper queues it again |
+| `resends` | times the reaper sent a queued job again (only sends the broker took) |
+
+`GET /v1/admin/jobs/{job_id}` returns one `MonitoredJob`.

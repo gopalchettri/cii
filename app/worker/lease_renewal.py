@@ -1,6 +1,7 @@
 """A job's lease kept alive while its work runs (app/worker/jobs.py runs the work): renewed from a background
 thread, and the job's signal set once the lease is lost or the job has run too long."""
 
+import contextvars
 import threading
 import time
 from collections.abc import Generator
@@ -46,8 +47,11 @@ def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
                 log.warning(LogEvent.JOB_LEASE_RENEW_FAILED, record_id=lease.record_id, exc_info=True)
 
     with lease_lost_signal(lease.record_id) as lost:
-        renewer = threading.Thread(
-            target=renew_until_stopped, args=(lost,), name=f"lease-{lease.record_id}", daemon=True
+        renewer = threading.Thread(  # in the job's context: its lines keep the task, module and request id
+            target=contextvars.copy_context().run,
+            args=(renew_until_stopped, lost),
+            name=f"lease-{lease.record_id}",
+            daemon=True,
         )
         renewer.start()
         try:

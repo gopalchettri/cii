@@ -67,17 +67,56 @@ tests:
               summary: "tsg_find_threats jobs failed for good in the last 15 minutes."
               description: "Open the TSG dashboard, table \"Failed jobs\", for why; click the run id for its whole story."
 
-  # A failed reaper pass or index build runs again on its timer: not a failed run.
+  # A failed timer job (reaper pass, control-mapping sweep, scheduled intel refresh) runs again on its timer:
+  # not a failed run. A failed index build alerts: an admin may have asked for it.
   - interval: 1m
     input_series:
       - series: tsg_jobs_total{task="tsg_reap",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+      - series: tsg_jobs_total{task="tsg_retry_controls",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+      - series: tsg_jobs_total{task="tsg_refresh_external_intelligence",outcome="failure"}
         values: 0 0 1 1 1 1 1
       - series: tsg_jobs_total{task="tsg_build_library_indexes",outcome="failure"}
         values: 0 0 1 1 1 1 1
     alert_rule_test:
       - eval_time: 5m
         alertname: JobsFailing
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_build_library_indexes }
+            exp_annotations:
+              summary: "tsg_build_library_indexes jobs failed for good in the last 15 minutes."
+              description: "Open the TSG dashboard, table \"Failed jobs\", for why; click the run id for its whole story."
+
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_total{task="tsg_write_scenarios",outcome="retry"}
+        values: 0 0 10 10 10 10 10 10 10 10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: JobsRetrying
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_write_scenarios }
+            exp_annotations:
+              summary: "tsg_write_scenarios jobs were sent back to retry 5 times or more in 15 minutes."
+              description: "Something keeps failing for them. Open the TSG dashboard, \"Why the AI did not answer\" and the stores' tiles."
+
+  - interval: 1m
+    input_series:
+      - series: tsg_job_queue_wait_seconds_bucket{task="tsg_find_threats",le="300"}
+        values: 0x20
+      - series: tsg_job_queue_wait_seconds_bucket{task="tsg_find_threats",le="600"}
+        values: 0+10x20
+      - series: tsg_job_queue_wait_seconds_bucket{task="tsg_find_threats",le="+Inf"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: JobQueueWaitHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_find_threats }
+            exp_annotations:
+              summary: "tsg_find_threats jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
+              description: "The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy."
 
   # The reaper's last pass as Unix time (promtool's clock starts at 0), from the one worker that runs it:
   # a pass every minute for 10 minutes, then none.
@@ -244,6 +283,19 @@ tests:
             exp_annotations:
               summary: "Redis does not answer the API."
               description: "Jobs cannot be queued and live updates stop. Check the Redis server."
+
+  - interval: 1m
+    input_series:
+      - series: redis_evicted_keys_total{instance="redis-exporter:9121"}
+        values: 0 0 5 5 5 5
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RedisEvictingKeys
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Redis is full and dropped keys in the last 10 minutes; waiting jobs can be lost."
+              description: "The reaper re-sends lost jobs, late. Ask the Redis owner for more memory (or the noeviction policy) and check what fills it."
 
   - interval: 1m
     input_series:

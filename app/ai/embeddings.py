@@ -267,7 +267,7 @@ def _check_stored_vector_has_right_size(key: str, doc: Doc, dimensions: int) -> 
     if doc.get("dimensions") == dimensions and len(doc["vector"]) == 4 * dimensions:
         return True
     log.warning(
-        LogEvent.EMBEDDING_STORED_SIZE_WRONG, key=key, stored=doc.get("dimensions"), expected=dimensions
+        LogEvent.EMBEDDING_STORED_SIZE_WRONG, vector_id=key, stored=doc.get("dimensions"), expected=dimensions
     )
     return False
 

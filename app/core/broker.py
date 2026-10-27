@@ -1,4 +1,4 @@
-"""The Celery settings the workers and their probe (app/probe.py) share: a ping finds the worker's mailbox."""
+"""The Celery settings of the workers and of every process that sends them a job or reads a queue."""
 
 from typing import Any
 

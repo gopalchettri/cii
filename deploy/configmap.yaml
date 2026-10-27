@@ -226,15 +226,35 @@ data:                                            # one key per file
         rules:
           # Every `failure` outcome of a run job is final: a retry is counted as `retry`, so a failure is either
           # "failed after Lease.MAX_ATTEMPTS outage retries" or an unexpected error. Both leave a user with a failed
-          # run. The timer jobs are left out: a failed reaper pass or index build simply runs again on its timer
-          # (ReaperNotRunning watches the reaper; library.indexes_build_failed lines show a failing build).
+          # run. The timer jobs are left out: a failed reaper pass, control-mapping sweep or scheduled intel refresh
+          # simply runs again on its timer (ReaperNotRunning watches the reaper). An index build counts: an admin may
+          # have asked for it.
           - alert: JobsFailing
-            expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_build_library_indexes"}[15m])) > 0
+            expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_retry_controls|tsg_refresh_external_intelligence"}[15m])) > 0
             for: 1m
             labels: { severity: warning }
             annotations:
               summary: "{{ $labels.task }} jobs failed for good in the last 15 minutes."
               description: Open the TSG dashboard, table "Failed jobs", for why; click the run id for its whole story.
+
+          # A retry is an outage the job waits out (the AI, MongoDB or Redis): many of them mean runs crawl, and
+          # each one ends in JobsFailing after Lease.MAX_ATTEMPTS.
+          - alert: JobsRetrying
+            expr: sum by (task) (increase(tsg_jobs_total{outcome="retry"}[15m])) >= 5
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.task }} jobs were sent back to retry 5 times or more in 15 minutes."
+              description: Something keeps failing for them. Open the TSG dashboard, "Why the AI did not answer" and the stores' tiles.
+
+          # Due jobs waiting for a free worker thread (tsg_job_queue_wait_seconds), by job type.
+          - alert: JobQueueWaitHigh
+            expr: histogram_quantile(0.95, sum by (le, task) (rate(tsg_job_queue_wait_seconds_bucket[15m]))) > 300
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.task }} jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
+              description: The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy.
 
           # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
           # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
@@ -314,6 +334,17 @@ data:                                            # one key per file
             annotations:
               summary: Redis does not answer the API.
               description: Jobs cannot be queued and live updates stop. Check the Redis server.
+
+          # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
+          - alert: RedisEvictingKeys
+            expr: sum(increase(redis_evicted_keys_total[10m])) > 0
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: Redis is full and dropped keys in the last 10 minutes; waiting jobs can be lost.
+              description: >-
+                The reaper re-sends lost jobs, late. Ask the Redis owner for more memory (or the noeviction policy)
+                and check what fills it.
 
           - alert: AiErrorRateHigh
             expr: sum(rate(tsg_ai_calls_total{outcome!~"ok|truncated"}[10m])) / sum(rate(tsg_ai_calls_total{outcome!="truncated"}[10m])) > 0.10
@@ -481,7 +512,8 @@ data:                                            # one key per file
   loki.yaml: |                                   # storage and retention: a copy of observability/loki/loki.yaml
     # Loki, UAT and laptop: one process (all parts in one binary), files on local disk, logs kept 7 days (D-07).
     # Started with -config.expand-env=true: LOKI_DATA is the data folder (UAT: the /loki volume; laptop: set by
-    # scripts/monitoring.py). Its API is public under /loki/api/v1/… (owner, 2026-10-08) — read it through Grafana.
+    # scripts/monitoring.py). No public address in UAT (D31: oc port-forward); read it through Grafana, whose
+    # anonymous Viewer can query it (POST /grafana/api/ds/query).
     # ponytail: one pod; split into Loki's separate parts only when log volume, not queries, is the problem.
 
     auth_enabled: false
@@ -527,7 +559,7 @@ data:                                            # one key per file
       reject_old_samples: true
       reject_old_samples_max_age: 168h
       volume_enabled: true
-      # Its API is public (owner decision): nobody may delete logs through it. Retention still deletes old logs.
+      # Anyone who can query it (Grafana has no login) must not delete logs. Retention still deletes old logs.
       deletion_mode: disabled
 
     compactor:
@@ -1360,6 +1392,18 @@ data:                                            # one key per file
                           "AiRequestRateWaitHigh": {
                             "text": "A model's AI requests wait long for their turn (its requests-a-minute limit)",
                             "index": 23
+                          },
+                          "JobsRetrying": {
+                            "text": "Jobs keep retrying: something they need keeps failing",
+                            "index": 24
+                          },
+                          "JobQueueWaitHigh": {
+                            "text": "Jobs wait long for a worker",
+                            "index": 25
+                          },
+                          "RedisEvictingKeys": {
+                            "text": "Redis is full and drops keys: waiting jobs can be lost",
+                            "index": 26
                           }
                         }
                       }
@@ -2181,7 +2225,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -2698,7 +2742,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -6516,7 +6560,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
+              "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .attempt }} (attempt {{ . }}){{ end }}{{ with .ai_task }}  | AI {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .outcome }}  | {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
               "queryType": "range",
               "maxLines": 2000
             }

@@ -8,7 +8,7 @@ from fastapi import Request
 from fastapi.sse import ServerSentEvent
 
 from app.core.constants import Event, Header, Realtime
-from app.core.exceptions import NotFound
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, NotFound
 from app.realtime.event_hub import EventHub
 from app.services.admin.admin_service import AdminService
 
@@ -30,7 +30,11 @@ async def status_stream(
     last_sent = None
     async with hub.listen(channel) as updates:
         while True:
-            if not await asyncio.to_thread(still_allowed):
+            try:
+                allowed = await asyncio.to_thread(still_allowed)
+            except MONGO_UNAVAILABLE_ERRORS:
+                allowed = True  # a MongoDB blip skips this re-check, the stream goes on
+            if not allowed:
                 return
             try:
                 status = await asyncio.to_thread(read_status)

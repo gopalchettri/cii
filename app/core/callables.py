@@ -4,8 +4,8 @@ from collections.abc import Callable
 
 from app.core.constants import TaskName
 
-#: Queue a leased job: (task, record id, epoch).
-SendJob = Callable[[TaskName, str, int], None]
+#: Queue a leased job: (task, record id, epoch); False when the broker refused it (the reaper re-sends).
+SendJob = Callable[[TaskName, str, int], bool]
 #: Queue an admin job: (task, job id); False when the broker is unreachable.
 SendAdminJob = Callable[[TaskName, str], bool]
 #: Tell live-update streams that a record changed: (record id).

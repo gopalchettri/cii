@@ -101,8 +101,9 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     sends: list[tuple] = []
-    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args))
-    monkeypatch.setattr(reaper, "send_job", lambda *args, **_priority: sends.append(args))
+    # Each send is accepted by the broker (send_job's True): a refused one counts no re-send.
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args) or True)
+    monkeypatch.setattr(reaper, "send_job", lambda *args, **_priority: sends.append(args) or True)
     return sends
 
 
@@ -554,15 +555,6 @@ def test_no_process_but_the_reaper_s_worker_exports_its_last_pass() -> None:
     run = [sys.executable, "-c", code]
     result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
     assert result.stdout.strip().splitlines()[-1:] == ["False"], result.stdout + result.stderr
-
-
-def test_the_probe_app_loads_no_worker_code() -> None:
-    """Every startup and liveness probe imports it: app.worker would load the AI clients each time."""
-    run = [sys.executable, "-c", "import sys, app.probe; print(*sys.modules)"]
-    result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
-    loaded = result.stdout.split()
-    assert "app.probe" in loaded, result.stderr
-    assert [name for name in loaded if name.startswith(("app.worker", "litellm"))] == []
 
 
 def test_only_the_worker_that_runs_the_reaper_starts_on_time(monkeypatch: pytest.MonkeyPatch) -> None:

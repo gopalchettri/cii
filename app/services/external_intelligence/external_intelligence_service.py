@@ -23,7 +23,7 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.exceptions import Conflict, Invalid, NotFound
+from app.core.exceptions import Conflict, Invalid, NotFound, Unavailable
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.admin.embedding_repository import EmbeddingRepository
@@ -74,7 +74,7 @@ class ExternalIntelligenceService:
     def update_intelligence_switch_state(self, enabled: bool, changed_by: str) -> dict[str, Any]:
         """Set, audit and log the run-time switch (409 while the env master switch is off; a store that cannot
         be written raises, nothing changed or audited); turning it on also queues a refresh, so the first
-        data does not wait for the hourly check."""
+        data does not wait for the hourly check (`refresh_not_queued` says why when it could not be)."""
         if not self._settings.external_intelligence_enabled:  # nothing of the feature is written while off
             raise Conflict(IntelRefreshMessage.SWITCH_OFF)
         before = self._switch.state()
@@ -88,9 +88,8 @@ class ExternalIntelligenceService:
             after=_flags(after),
         )
         log.info(LogEvent.EXTERNAL_INTELLIGENCE_SWITCH_CHANGED, enabled=enabled, changed_by=changed_by)
-        if enabled and after.effective:
-            self._queue_refresh(changed_by)
-        return after.as_doc()
+        refresh = self._queue_refresh(changed_by) if enabled and after.effective else {}
+        return after.as_doc() | refresh
 
     def create_intelligence_refresh(
         self, requested_by: str, source: IntelSource | None = None
@@ -187,14 +186,17 @@ class ExternalIntelligenceService:
             target,
             after={"approved": True},
         )
-        return {"source": source, "refresh_job_id": self._queue_refresh(requested_by, source)}
+        return {"source": source, **self._queue_refresh(requested_by, source)}
 
-    def _queue_refresh(self, requested_by: str, source: IntelSource | None = None) -> str | None:
-        """Queue a refresh and return its job id; None when one is already queued or the switch is off."""
+    def _queue_refresh(self, requested_by: str, source: IntelSource | None = None) -> dict[str, Any]:
+        """Queue a refresh: its `refresh_job_id`, None when one is already queued or the switch is off; with
+        the job queue unreachable also `refresh_not_queued`, and the change that asked for it still stands."""
         try:
-            return self.create_intelligence_refresh(requested_by, source)["job_id"]
+            return {"refresh_job_id": self.create_intelligence_refresh(requested_by, source)["job_id"]}
         except Conflict:
-            return None  # one is already queued or running and does the work, or the switch is off
+            return {"refresh_job_id": None}  # one is already queued or running, or the switch is off
+        except Unavailable:
+            return {"refresh_job_id": None, "refresh_not_queued": IntelRefreshMessage.NOT_SENT.value}
 
     def _purge(self, source: IntelSource, existing_only: bool) -> int:
         """Unapprove the source (so no refresh writes it again), delete its records and cached vectors and

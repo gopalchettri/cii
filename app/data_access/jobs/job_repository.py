@@ -18,15 +18,18 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
+from app.core.logging import current_request_id
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
 
 
 def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[str, Any]:
-    """A queued job, due now, never claimed; `fields` add the task's own inputs."""
+    """A queued job, due now, never claimed, with the id of the API request that made it (each stage logs
+    it); `fields` add the task's own inputs."""
     return {
         "task": task,
         "epoch": epoch,
+        "request_id": current_request_id(),
         "task_id": None,
         "attempts": 0,
         "due_at": now,
@@ -118,10 +121,12 @@ class JobRepository:
         self._records = records
 
     def create_indexes(self) -> None:
-        """The reaper's two scans, each one index read, and GET /v1/admin/jobs's newest-first list."""
+        """The reaper's two scans and its failed-jobs count, each one index read, and GET /v1/admin/jobs's
+        newest-first list."""
         self._records.create_index([("status", 1), ("job.lease_until", 1)])
         self._records.create_index([("updated_at", -1)])
         self._records.create_index([("status", 1), ("job.due_at", 1)])
+        self._records.create_index([("status", 1), ("finished_at", 1)])
 
     def claim_job(
         self,
@@ -133,8 +138,8 @@ class JobRepository:
         worker: str = "",
     ) -> JobLease | None:
         """Claim the job if it is due (queued) or abandoned (running, lease expired) for this task and epoch,
-        returning its lease with `fields` of the record and job.due_at; None for a duplicate, stale or early
-        delivery."""
+        returning its lease with `fields` of the record, job.due_at and job.request_id; None for a duplicate,
+        stale or early delivery."""
         now = utc_now()
         claimed = self._records.find_one_and_update(
             _claimable(record_id, epoch, task, now),
@@ -151,7 +156,7 @@ class JobRepository:
                 },
                 "$inc": {"job.attempts": 1},
             },
-            projection=dict.fromkeys(("job.attempts", "job.due_at", *fields), 1),
+            projection=dict.fromkeys(("job.attempts", "job.due_at", "job.request_id", *fields), 1),
             return_document=ReturnDocument.AFTER,
         )
         if claimed is None:
@@ -257,9 +262,16 @@ class JobRepository:
     ) -> bool:
         """Queue an expired job again, due now (or fail it with `error`), only while it is running with the
         lease the reaper read; False when its worker renewed or finished in between. A requeue drops any
-        retry notice: the job waits because its worker was lost, not for an outage."""
+        retry notice and the lost delivery's task id and worker: the job waits because its worker was lost,
+        not for an outage."""
         changes = (
-            {"status": Status.QUEUED, "job.due_at": now, "job.retry": None}
+            {
+                "status": Status.QUEUED,
+                "job.due_at": now,
+                "job.retry": None,
+                "job.task_id": None,
+                "job.worker": None,
+            }
             if error is None
             else failed_job_fields(self._records.name, error, now)
         )
@@ -277,7 +289,7 @@ class JobRepository:
         """Move a queued job's due_at to now, counting the re-send when `counted` (or fail it with `error`),
         only while it is queued with the due_at the reaper read."""
         update = (
-            {"$set": {"job.due_at": now}, "$inc": {"job.resends": int(counted)}}
+            {"$set": {"job.due_at": now, "updated_at": now}, "$inc": {"job.resends": int(counted)}}
             if error is None
             else {"$set": {**failed_job_fields(self._records.name, error, now), "updated_at": now}}
         )
@@ -288,9 +300,15 @@ class JobRepository:
         }
         return bool(self._records.update_one(unchanged_since_read, update).modified_count)
 
+    def count_resend(self, record: dict[str, Any], resent_at: datetime) -> None:
+        """Count a re-send the broker took, while the job still waits with the due_at the re-send set."""
+        still_waiting = {"_id": record["_id"], "status": Status.QUEUED, "job.due_at": resent_at}
+        self._records.update_one(still_waiting, {"$inc": {"job.resends": 1}})
+
 
 def _claimable(record_id: str, epoch: int, task: str, now: datetime) -> dict[str, Any]:
-    """The job record a delivery may claim: this task and epoch, due (queued) or abandoned (lease expired)."""
+    """The job record a delivery may claim: this task and epoch, due (queued) or abandoned (lease expired)
+    with attempts left."""
     return {
         "_id": record_id,
         "job.epoch": epoch,
@@ -299,6 +317,11 @@ def _claimable(record_id: str, epoch: int, task: str, now: datetime) -> dict[str
             # Due only, so a duplicate message never runs a job before its back-off ends; the skew allows for
             # another pod's clock.
             {"status": Status.QUEUED, "job.due_at": {"$lte": now + _CLOCK_SKEW}},
-            {"status": Status.RUNNING, "job.lease_until": {"$lt": now}},
+            # Attempts left too: a redelivery never takes a job past Lease.MAX_ATTEMPTS (the reaper fails it).
+            {
+                "status": Status.RUNNING,
+                "job.lease_until": {"$lt": now},
+                "job.attempts": {"$lt": Lease.MAX_ATTEMPTS},
+            },
         ],
     }

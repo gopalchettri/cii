@@ -17,7 +17,7 @@ from prometheus_client import REGISTRY
 from prometheus_client.metrics import MetricWrapperBase
 
 import app.core.metrics  # noqa: F401 — registers every app metric
-from app.core.constants import AiOutageSource, Dependency, Queue, Worker
+from app.core.constants import AiOutageSource, Dependency, Lease, Queue, TaskName, Worker
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -64,11 +64,16 @@ BUILT_ALERTS = {
     "ClockSkew",
     # A model's AI requests waiting long for their turn under its own requests-a-minute limit.
     "AiRequestRateWaitHigh",
+    # 2026-10-28: Redis dropping keys, jobs retrying a lot, jobs waiting long for a worker.
+    "RedisEvictingKeys",
+    "JobsRetrying",
+    "JobQueueWaitHigh",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
     "redis_key_size",
     "redis_up",
+    "redis_evicted_keys_total",
     "flower_task_runtime_seconds_bucket",
     "flower_events_total",
     "flower_worker_number_of_currently_executing_tasks",
@@ -359,6 +364,64 @@ def test_ai_not_answering_and_its_tile_count_the_gateway_s_refusals_only() -> No
         if check["alertname"] == "AiNotAnswering" and check.get("exp_alerts") == []
     ]
     assert silent_for_the_limiter
+
+
+def test_every_alert_has_a_plain_name_on_the_dashboard() -> None:
+    """The "What is wrong right now" table names each alert in plain words, never by its code name."""
+    [table] = [panel for panel in _panels() if panel["title"] == "What is wrong right now"]
+    [alert_names] = [o for o in table["fieldConfig"]["overrides"] if o["matcher"]["options"] == "alertname"]
+    [mappings] = [p["value"] for p in alert_names["properties"] if p["id"] == "mappings"]
+    assert set(mappings[0]["options"]) == BUILT_ALERTS
+
+
+def test_jobs_failing_leaves_out_the_timer_jobs_but_not_index_builds() -> None:
+    """A failed reaper pass, control-mapping sweep or scheduled intel refresh runs again on its timer; an
+    index build may be an admin's request, so its failure alerts."""
+    [rule] = [rule for rule in _rules() if rule["alert"] == "JobsFailing"]
+    [left_out] = re.findall(r'task!~"([^"]+)"', rule["expr"])
+    timer_jobs = {TaskName.REAP, TaskName.RETRY_CONTROLS, TaskName.REFRESH_EXTERNAL_INTELLIGENCE}
+    assert set(left_out.split("|")) == timer_jobs
+
+
+def test_the_log_panels_and_runbook_read_the_ai_step_and_limiter_fields() -> None:
+    """AI log lines name their step `ai_task` (`task` is the job's) and their limiter `limiter`, not `key`."""
+    loki = {
+        p["title"]: t["expr"]
+        for p in _panels()
+        if p.get("datasource", {}).get("uid") == "loki"
+        for t in p["targets"]
+    }
+    tables = ("Errors and exceptions", "Warnings: things that went wrong and were handled")
+    for title in (*tables, "Everything about this id (newest at the top)"):
+        assert ".ai_task" in loki[title], title
+    assert not any(re.search(r"\.key\b", expr) for expr in loki.values())
+    runbook = (REPO / "docs" / "UAT_LLM_TIMEOUT_RUNBOOK.md").read_text(encoding="utf-8")
+    assert '"limiter": "tsg:ai_slots"' in runbook and '"key": "tsg:' not in runbook
+
+
+def test_following_a_run_shows_each_line_s_attempt_outcome_code_and_message() -> None:
+    """The trace panel and `debug_tools.py find` both show why a job ended and on which attempt."""
+    [trace] = [
+        t["expr"]
+        for p in _panels()
+        if p["title"].startswith("Everything about this id")
+        for t in p["targets"]
+    ]
+    fields = {"attempt": 2, "outcome": "retry", "code": "ai_unavailable", "message": "The AI did not answer"}
+    assert all(f"{{{{ with .{name} }}}}" in trace for name in fields)
+    sys.path.insert(0, str(REPO / "scripts"))
+    try:
+        debug_tools = importlib.import_module("debug_tools")
+    finally:
+        sys.path.remove(str(REPO / "scripts"))
+    short = debug_tools._short(json.dumps({"event": "job.finished", **fields}))
+    assert all(f"{name}={value}" in short for name, value in fields.items())
+
+
+def test_job_duration_and_queue_wait_buckets_reach_the_longest_job() -> None:
+    """A job may run Lease.MAX_JOB_SECONDS: a bucket below that hides every longer one in +Inf."""
+    for histogram in (app.core.metrics.JOB_SECONDS, app.core.metrics.JOB_QUEUE_WAIT):
+        assert Lease.MAX_JOB_SECONDS in histogram._upper_bounds, histogram
 
 
 def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
