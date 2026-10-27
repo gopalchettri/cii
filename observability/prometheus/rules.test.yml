@@ -551,7 +551,7 @@ tests:
           - exp_labels: { severity: warning }
             exp_annotations:
               summary: "The monitoring cannot read Redis, so the number of waiting jobs is unknown."
-              description: "Check redis-exporter's broker address (CII_REDIS_CELERY_BROKER_URL) and that Redis is up."
+              description: "Check redis-exporter's Redis login (tsg-redis-exporter in secrets.yaml on UAT, CII_REDIS_CELERY_BROKER_URL on the laptop) and that Redis is up."
 
   - interval: 1m
     input_series:

@@ -2,14 +2,18 @@
 
 from typing import Any
 
+from app.core.config import get_settings
 from app.core.constants import Timeouts, Worker
+from app.core.database import redis_tls_options
 
 
 def shared_celery_conf() -> dict[str, Any]:
-    """How messages are encoded, and the broker options that name the Redis keys, lists and channels."""
+    """How messages are encoded, and the broker's options: its TLS and the Redis keys, lists and channels."""
     return {
         "task_serializer": "json",
         "accept_content": ["json"],
+        # Set, never left to kombu: a bare rediss:// broker URL gets TLS that trusts any server certificate.
+        "broker_use_ssl": redis_tls_options(get_settings().redis_celery_broker_url),
         "broker_transport_options": {
             # Also the probe's: its poll gives back unacked messages older than this, never a running job's.
             "visibility_timeout": Worker.BROKER_VISIBILITY_SECONDS,

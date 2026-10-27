@@ -1,5 +1,6 @@
 """Readiness: every store answers and every routed queue has a live worker, and the MongoDB topology. Read by
-/ready and /metrics (app/api/routers/health.py) and each worker's heartbeat (its stores); logged at start."""
+/ready and /metrics (app/api/routers/health.py) and each worker's heartbeat (its stores); logged at
+start-up, with Redis' eviction policy."""
 
 import asyncio
 import threading
@@ -7,7 +8,7 @@ import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pymongo
 import structlog
@@ -106,6 +107,18 @@ def log_mongodb_topology() -> None:
         log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology(), write_concern=write_concern)
     except Exception:  # noqa: BLE001 — a report only: a store that does not answer fails elsewhere
         log.warning(LogEvent.MONGODB_TOPOLOGY, replica_set=None, exc_info=True)
+
+
+def log_redis_eviction_policy() -> None:
+    """One start-up line naming Redis' maxmemory-policy: an error unless noeviction, since any other policy
+    drops keys once Redis is full (a queue list, the AI limiters' state); never fails start-up."""
+    try:
+        policy = cast(dict[str, Any], get_redis_client().info("memory")).get("maxmemory_policy")
+    except Exception:  # noqa: BLE001 — a report only: a Redis that does not answer fails elsewhere
+        log.warning(LogEvent.REDIS_EVICTION_POLICY, maxmemory_policy=None, exc_info=True)
+        return
+    report = log.info if policy == "noeviction" else log.error
+    report(LogEvent.REDIS_EVICTION_POLICY, maxmemory_policy=policy)
 
 
 def check_readiness() -> Readiness:

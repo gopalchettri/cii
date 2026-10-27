@@ -57,7 +57,6 @@ celery_app.conf.update(
     task_routes=TASK_ROUTES,
     task_default_queue=Queue.MAINTENANCE,
     task_acks_late=True,  # acknowledged when the task ends: a worker that dies mid-task loses nothing
-    task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,  # a busy worker never holds messages another worker could run
     task_ignore_result=True,  # no result backend: every status lives in MongoDB
     # No Celery retry limit for any task (retry(max_retries=None) alone means "the task's default", 3): the

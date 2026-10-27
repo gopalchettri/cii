@@ -59,6 +59,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings (configmap.yaml)
             - secretRef: { name: tsg-secrets }     # passwords, keys, connection strings (secrets.yaml)
+            - secretRef: { name: tsg-redis-api }   # the API's own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls (intelligence feeds) go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -133,6 +134,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-worker }   # the workers' own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -203,6 +205,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-worker }   # the workers' own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -273,6 +276,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-worker }   # the workers' own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -343,6 +347,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-worker }   # the workers' own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -413,6 +418,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-worker }   # the workers' own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -484,6 +490,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-worker }   # the workers' own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
@@ -613,6 +620,7 @@ spec:                                            # what to run
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
+            - secretRef: { name: tsg-redis-beat }  # beat's own Redis user (secrets.yaml), over TLS
           env:                                   # the corporate proxy
             - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
             - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy

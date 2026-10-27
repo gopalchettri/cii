@@ -213,6 +213,7 @@ class LogEvent(StrEnum):
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
     DEPENDENCY_UNAVAILABLE = "dependency.unavailable"
     MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
+    REDIS_EVICTION_POLICY = "redis.eviction_policy"  # at start: maxmemory-policy, error unless noeviction
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"

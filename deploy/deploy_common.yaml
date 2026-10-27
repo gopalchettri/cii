@@ -47,8 +47,8 @@
 # Budget: ai-common's quota is 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
 # 6 Gi and 60 Gi. These pods' limits: about 2.3 CPU and 4.1 Gi; a restart adds up to 0.5 CPU and 1.1 Gi (one new
 # pod each for alertmanager, redis-exporter, kube-state-metrics and flower); volumes 22 Gi.
-# Security: Flower and redis-exporter read tsg-secrets here, so whoever may read Secrets in ai-common can read
-# TSG's passwords and keys.
+# Security: Flower reads tsg-secrets here, so whoever may read Secrets in ai-common can read TSG's passwords and
+# keys. Flower and redis-exporter each log in to Redis as their own user (tsg-redis-flower, tsg-redis-exporter).
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- access: read-only, namespaced, no cluster rights
@@ -704,8 +704,8 @@ spec:                                            # what to run
             seccompProfile: { type: RuntimeDefault }   # the default system-call filter
           imagePullPolicy: IfNotPresent          # pull only if missing
           env:                                   # what to read
-            - name: REDIS_ADDR                   # the Redis to read: the app's own broker URL (password included)
-              valueFrom: { secretKeyRef: { name: tsg-secrets, key: CII_REDIS_CELERY_BROKER_URL } }   # one copy, so a password change reaches both
+            - name: REDIS_ADDR                   # the Redis to read: its own read-only user's rediss:// URL (password included)
+              valueFrom: { secretKeyRef: { name: tsg-redis-exporter, key: REDIS_ADDR } }   # its own login (secrets.yaml), never the app's
             - { name: REDIS_DB, value: "1" }     # the job queues are Redis database 1
             - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS   # each queue is two Redis lists, tsg:<queue> (next stages) and tsg:<queue>\x06\x163 (new work): their lengths = jobs waiting
               value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_threats\x06\x163,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_scenarios\x06\x163,db$(REDIS_DB)=tsg:tsg_controls,db$(REDIS_DB)=tsg:tsg_controls\x06\x163,db$(REDIS_DB)=tsg:tsg_remediation,db$(REDIS_DB)=tsg:tsg_remediation\x06\x163,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_servicemapper\x06\x163,db$(REDIS_DB)=tsg:tsg_maintenance,db$(REDIS_DB)=tsg:tsg_maintenance\x06\x163,db$(REDIS_DB)=tsg:tsg_reaper,db$(REDIS_DB)=tsg:tsg_reaper\x06\x163"   # the seven queues, both lists each
@@ -807,7 +807,8 @@ spec:                                            # what to run
           command: [celery, -A, app.worker, flower, --address=0.0.0.0, --port=5555, --url_prefix=flower]   # Flower on port 5555, under /flower
           envFrom:                               # every app setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings (configmap.yaml)
-            - secretRef: { name: tsg-secrets }   # passwords and connection strings (secrets.yaml): the job queue's address
+            - secretRef: { name: tsg-secrets }   # passwords and keys (secrets.yaml): the app settings Flower loads to start
+            - secretRef: { name: tsg-redis-flower }   # its own Redis user (secrets.yaml), over TLS: the job queue it shows
           ports: [{ name: http, containerPort: 5555 }]   # Flower's port
           readinessProbe:                        # "ready" = may receive requests
             tcpSocket: { port: 5555 }            # the port accepts connections
