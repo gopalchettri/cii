@@ -7,6 +7,7 @@ a pod that dies without a word drops out within a minute."""
 import contextlib
 import threading
 from collections.abc import Iterable
+from pathlib import Path
 
 import structlog
 
@@ -49,6 +50,7 @@ class WorkerHeartbeat:
 
     def _beat_until_stopped(self) -> None:
         while True:
+            _touch_liveness_file()  # first and whatever Redis does: the pod's liveness probe reads its age
             try:
                 self.beat()
             except Exception:  # noqa: BLE001 — ANY Redis error (failover read-only, OOM, auth…) must not end
@@ -56,3 +58,9 @@ class WorkerHeartbeat:
                 log.warning(LogEvent.WORKER_HEARTBEAT_FAILED, exc_info=True)
             if self._stopped.wait(Worker.HEARTBEAT_SECONDS):
                 return
+
+
+def _touch_liveness_file() -> None:
+    """Mark this worker alive for its pod's liveness probe (the file's age), with no Redis involved."""
+    with contextlib.suppress(OSError):  # ponytail: no /tmp (a Windows laptop) means no probe to feed
+        Path(Worker.LIVENESS_FILE).touch()

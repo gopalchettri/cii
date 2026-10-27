@@ -12,7 +12,7 @@ from typing import Any, Final
 import structlog
 
 from app.core.config import Settings
-from app.core.redaction import MASKED, SECRET_FIELD_NAME
+from app.core.redaction import MASKED, SECRET_FIELD_NAME, redact
 
 #: Our loggers: every module's structlog.get_logger(__name__) ("app.…") and the request log ("http").
 _OUR_LOGGERS: Final = ("app", "http")
@@ -30,6 +30,18 @@ def mask_secret_values(_logger: Any, _name: str, event: MutableMapping[str, Any]
     for field_name in list(event):
         if SECRET_FIELD_NAME.search(field_name) and event[field_name]:
             event[field_name] = MASKED
+    return event
+
+
+#: Fields that hold error text (a traceback, an error's message, or a line's own message): redacted.
+_ERROR_TEXT_FIELDS: Final = ("event", "exception", "error", "reason", "message", "detail")
+
+
+def redact_error_text(_logger: Any, _name: str, event: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Secrets and personal data taken out of a line's error text; its other fields are left as they are."""
+    for field_name in _ERROR_TEXT_FIELDS:
+        if isinstance(event.get(field_name), str):
+            event[field_name] = redact(event[field_name])
     return event
 
 
@@ -57,6 +69,7 @@ def _json_formatter() -> structlog.stdlib.ProcessorFormatter:
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.processors.format_exc_info,
+            redact_error_text,  # after the traceback is text
             structlog.processors.JSONRenderer(),
         ],
     )
