@@ -86,6 +86,38 @@ def test_a_finished_run_whose_controls_were_cancelled_reads_cancelled() -> None:
     )
 
 
+def test_a_finished_run_whose_controls_were_cancelled_reads_cancelled_beside_failed_controls() -> None:
+    """A cancel leaves controls that failed for good as they are: the stage reads error, overall cancelled."""
+    counts = {"planned": 6, "written": 6, "accepted": 6, "controls_failed": 1, "controls_cancelled": 2}
+    board = build_board(_run(**_written(**counts)))
+    progress = board.progress
+    assert (progress.controls, progress.overall, board.session_status) == (
+        S.ERROR,
+        Overall.CANCELLED,
+        Session.COMPLETED,
+    )
+
+
+def test_cancelling_a_finished_runs_controls_answers_cancelled_when_one_failed_for_good(
+    client: TestClient,
+    api_key: str,  # noqa: F811 - the imported fixture
+    entity: int,  # noqa: F811 - the imported fixture
+) -> None:
+    """The cancel stops the waiting controls only; the answer still says the run's controls were stopped."""
+    run_id = _stored_run(entity, Status.DONE, counts={"planned": 3, "remaining": 0, "controls_waiting": 2})
+    failed_for_good = {"status": Status.FAILED, "attempts": Controls.MAX_ATTEMPTS}
+    _scenario(run_id, Status.FAILED, decision="accepted", controls=failed_for_good)
+    for _ in range(2):
+        _scenario(run_id, Status.QUEUED, decision="accepted")
+    board = client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity)).json()
+    progress = board["progress"]
+    assert (board["session_status"], progress["controls"], progress["overall"]) == (
+        Session.COMPLETED,
+        S.ERROR,
+        Overall.CANCELLED,
+    )
+
+
 def test_cancelling_a_finished_runs_controls_answers_cancelled(
     client: TestClient,
     api_key: str,  # noqa: F811 - the imported fixture

@@ -171,7 +171,8 @@ def _overall_state(run: SessionStatus, threats: StageState, controls: StageState
         return RunOverall.AWAITING_REVIEW
     if controls == StageState.RUNNING:
         return RunOverall.IN_PROGRESS
-    return RunOverall.CANCELLED if controls == StageState.CANCELLED else RunOverall.COMPLETE
+    # From the count, not the stage: a cancel leaves controls failed for good as they are, reading ERROR.
+    return RunOverall.CANCELLED if run.counts.get("controls_cancelled", 0) else RunOverall.COMPLETE
 
 
 def _action_summary(
