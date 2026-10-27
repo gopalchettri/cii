@@ -10,15 +10,23 @@ from typing import Any
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import Collection, JobControl, Lease, RunActionKind, RunActionOutcome, Status
+from app.core.constants import (
+    Collection,
+    JobControl,
+    Lease,
+    RunActionKind,
+    RunActionOutcome,
+    RunKind,
+    Status,
+)
 from app.data_access.jobs.job_repository import ended_job_fields
 from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.data_access.scenario.threat_scenario_repository import (
     FAILED_WITH_ATTEMPTS_LEFT,
     MAPPED_VERSIONS,
-    STOPPABLE_CONTROLS,
     SWEPT,
     ThreatScenarioRepository,
+    run_controls_to_stop,
     waiting_controls,
 )
 from app.data_access.scenario.threat_scenario_session_repository import (
@@ -88,9 +96,10 @@ class WorkControlRepository:
 
     def list_working_scenario_sessions(self, entity_id: int) -> Found:
         """The entity's scenario sessions whose job is queued or running, and the finished ones whose controls
-        are still being matched: two indexed reads."""
+        are still being matched (never a hand-written one's: its plan maps them, listed as the plan): two
+        indexed reads."""
         working = {"entity_id": entity_id, "status": {"$in": _WORKING}}
-        matching = {"entity_id": entity_id, "status": {"$nin": _WORKING}}
+        matching = {"entity_id": entity_id, "status": {"$nin": _WORKING}, "kind": {"$ne": RunKind.MANUAL}}
         matching["counts.controls_waiting"] = {"$gt": 0}  # the partial index holds only these
         return _oldest_first(self._sessions.collection, _SCENARIO_SESSION_FIELDS, (working, matching))
 
@@ -108,9 +117,10 @@ class WorkControlRepository:
         self, session_id: str, entity_id: int, who: dict[str, Any]
     ) -> tuple[bool, int]:
         """(whether the scenario session's job was stopped, how many scenarios' controls were): the job while
-        queued or running, the controls while waiting, being mapped or failed with attempts left; its controls
+        queued or running, the run's own controls (run_controls_to_stop, never a plan's); its controls
         delivery lease ended. Order: the session (job cancelled, delivery lease unset), its summary's outcome,
-        the cards, the counts, then the stamp on a finished session."""
+        the cards, the counts, then the stamp on a finished session. The later session writes match it only as
+        the stop left it: a next set queued meanwhile keeps its summary and is never stamped."""
         sessions, now = self._sessions.collection, utc_now()
         session, cancelled = {"_id": session_id, "entity_id": entity_id}, {**who, "at": now}
         stop_session = {
@@ -118,36 +128,62 @@ class WorkControlRepository:
             "$unset": {"controls_delivery": ""},
         }
         before = sessions.find_one_and_update(
-            {**session, "status": {"$in": _WORKING}}, stop_session, {"last_action.kind": 1}
+            {**session, "status": {"$in": _WORKING}}, stop_session, {"last_action.kind": 1, "job.epoch": 1}
         )
-        stopped = before is not None
-        summary = _SUMMARY_OF.get(str(((before or {}).get("last_action") or {}).get("kind")))
-        if stopped and summary:
-            sessions.update_one(
-                {"_id": session_id, f"{summary}.outcome": RunActionOutcome.RUNNING},
-                {"$set": {f"{summary}.outcome": RunActionOutcome.CANCELLED}},
-            )
+        if before is not None:
+            self._end_stopped_summary(before)
         controls = self._scenarios.collection.update_many(
-            {"session_id": session_id, "entity_id": entity_id, "$and": [STOPPABLE_CONTROLS, MAPPED_VERSIONS]},
+            {"session_id": session_id, "entity_id": entity_id, **run_controls_to_stop(now)},
             {"$set": {"controls.status": Status.CANCELLED, "controls.lease_until": None}},
         ).modified_count
         if controls:
             self._sessions.update_scenario_session_counts(session_id)
-        if controls and not stopped:  # a finished scenario session whose controls were still being matched
+        if controls and before is None:  # a finished scenario session whose controls were still being matched
             sessions.update_one(
-                session,
+                {**session, "status": {"$nin": _WORKING}},
                 {"$set": {"cancelled": cancelled, "updated_at": now}, "$unset": {"controls_delivery": ""}},
             )
-        return stopped, controls
+        return before is not None, controls
 
-    def cancel_remediation_plan(self, remediation_id: str, entity_id: int, who: dict[str, Any]) -> bool:
-        """The plan's job stopped while it is queued or running; who and when kept on the plan."""
+    def _end_stopped_summary(self, stopped: dict[str, Any]) -> None:
+        """The stopped action's summary (a next set's or a regenerate's) ends cancelled, only while the
+        session is still at the stopped job's epoch."""
+        summary = _SUMMARY_OF.get(str((stopped.get("last_action") or {}).get("kind")))
+        if summary:
+            self._sessions.collection.update_one(
+                {
+                    "_id": stopped["_id"],
+                    "job.epoch": (stopped.get("job") or {}).get("epoch"),
+                    f"{summary}.outcome": RunActionOutcome.RUNNING,
+                },
+                {"$set": {f"{summary}.outcome": RunActionOutcome.CANCELLED}},
+            )
+
+    def cancel_remediation_plan(
+        self, remediation_id: str, entity_id: int, who: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The plan's job stopped while it is queued or running, who and when kept on the plan; with it the
+        controls of its hand-written scenario, which only this plan maps (counts saved). The stopped plan's
+        scenario_id and session_id; None when nothing was stopped."""
         now = utc_now()
-        stopped = self._remediations.collection.update_one(
+        plan = self._remediations.collection.find_one_and_update(
             {"_id": remediation_id, "entity_id": entity_id, "status": {"$in": _WORKING}},
             {"$set": _cancelled_job({**who, "at": now}, now)},
+            {"scenario_id": 1, "session_id": 1},
         )
-        return bool(stopped.modified_count)
+        if plan is None:
+            return None
+        own_controls = {
+            "_id": plan["scenario_id"],
+            "source": RunKind.MANUAL,
+            "controls.status": {"$in": _WORKING},
+        }
+        stopped = self._scenarios.collection.update_one(
+            own_controls, {"$set": {"controls.status": Status.CANCELLED, "controls.lease_until": None}}
+        )
+        if stopped.modified_count and plan.get("session_id"):
+            self._sessions.update_scenario_session_counts(plan["session_id"])
+        return plan
 
     def resume_scenario_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
         """A scenario session resumed on purpose: the controls a cancel stopped wait again (how many), and a
@@ -193,18 +229,24 @@ class WorkControlRepository:
             {"$set": {"controls.status": Status.CANCELLED}},
         )
 
+    def list_working_plans(self, session_id: str, entity_id: int) -> list[dict[str, Any]]:
+        """The scenario session's remediation plans being written (queued or running), oldest first: each
+        one's id and scenario_id."""
+        working = {"session_id": session_id, "entity_id": entity_id, "status": {"$in": _WORKING}}
+        return list(self._remediations.collection.find(working, {"scenario_id": 1}).sort("created_at", 1))
+
     def _work_left(self, session_id: str, entity_id: int) -> bool:
         """Whether anything of the scenario session is still queued or running: its job, its mapped
-        scenarios' controls, or one of its plans."""
+        scenarios' controls (a hand-written scenario's are its plan's work), or one of its plans."""
         working, children = {"$in": _WORKING}, {"session_id": session_id, "entity_id": entity_id}
+        own_controls = {**children, "controls.status": working, "source": {"$ne": RunKind.MANUAL}}
         return any(
             records.find_one(query, {"_id": 1}) is not None
             for records, query in (
                 (self._sessions.collection, {"_id": session_id, "status": working}),
-                (self._scenarios.collection, {**children, "controls.status": working} | MAPPED_VERSIONS),
-                (self._remediations.collection, {**children, "status": working}),
+                (self._scenarios.collection, own_controls | MAPPED_VERSIONS),
             )
-        )
+        ) or bool(self.list_working_plans(session_id, entity_id))
 
     def delete_scenario_session(
         self, session_id: str, entity_id: int

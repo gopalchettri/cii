@@ -139,6 +139,10 @@ class JobControlMessage(StrEnum):
         "Session '{session_id}' still has work queued or running (a job, controls or a remediation plan): "
         "cancel it first, then delete."
     )
+    CANCEL_PLANS_FIRST = (
+        "Session '{session_id}' still has remediation plans being written ({remediation_ids}): cancel each "
+        "(POST .../scenarios/{{scenario_id}}/treatment-plan/cancel, details.plans_to_cancel), then delete."
+    )
 
 
 class Generation:

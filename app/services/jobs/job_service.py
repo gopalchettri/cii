@@ -17,7 +17,7 @@ from app.core.exceptions import Conflict
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.jobs import check_run_cancel_stopped_something, run_job_kind_and_status
+from app.domain.jobs import cancel_first, check_run_cancel_stopped_something, run_job_kind_and_status
 from app.domain.scenario.results import build_board
 from app.domain.scenario.review import check_session_of_caller
 from app.domain.shared.audit import audit_target, caller_actor
@@ -63,9 +63,10 @@ class JobService:
         return JobList(jobs=jobs, total=run_total + plan_total + mapping_total)
 
     def cancel_threat_scenario_session(self, principal: Principal, run: SessionStatus) -> RunBoard:
-        """Stop the run now: its job, and the controls still being matched for its scenarios. What is written
-        stays readable and decidable; a next set or regenerate resumes it on purpose. 409 when nothing of it
-        is queued or running."""
+        """Stop the run now: its job, and the controls still being matched for its scenarios (never a plan's:
+        a hand-written scenario's, or those a plan job maps now). What is written stays readable and
+        decidable; a next set or regenerate resumes it on purpose. 409 when nothing of it is queued or
+        running."""
         stopped, controls = self._work_control.cancel_scenario_session(
             run.session_id, principal.entity_id, _who(principal)
         )
@@ -82,11 +83,12 @@ class JobService:
 
     def delete_threat_scenario_session(self, principal: Principal, run: SessionStatus) -> SessionDeleted:
         """Remove the run for good, with its scenarios, their SQL operation records and its remediation plans.
-        409 cancel_first while anything of it is queued or running: nothing is ever deleted under a worker."""
+        409 cancel_first while anything of it is queued or running (naming the plans being written): nothing
+        is ever deleted under a worker."""
         deleted = self._work_control.delete_scenario_session(run.session_id, principal.entity_id)
         if deleted is None:  # still working, or a next set started first
-            message = JobControlMessage.CANCEL_FIRST.format(session_id=run.session_id)
-            raise Conflict(message, reason=ConflictReason.CANCEL_FIRST)
+            plans = self._work_control.list_working_plans(run.session_id, principal.entity_id)
+            raise cancel_first(run.session_id, plans)
         removed, plan_ids = deleted
         self._publish_session_status(run.session_id)  # a watcher's stream reads it gone: session.deleted
         for plan_id in plan_ids:  # and each plan's: remediation.deleted
@@ -99,13 +101,17 @@ class JobService:
         return SessionDeleted(session_id=run.session_id, **removed)
 
     def cancel_remediation_plan(self, principal: Principal, remediation_id: str) -> PlanCancelled:
-        """Stop a plan being written (409 when it is not); 404/403 come from the route's CallersPlan."""
-        if not self._work_control.cancel_remediation_plan(
+        """Stop a plan being written, with its hand-written scenario's controls (409 when it is not); 404/403
+        come from the route's CallersPlan. The plan's watchers and its run's are told."""
+        plan = self._work_control.cancel_remediation_plan(
             remediation_id, principal.entity_id, _who(principal)
-        ):
+        )
+        if plan is None:
             message = JobControlMessage.PLAN_NOTHING_TO_CANCEL.format(remediation_id=remediation_id)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         self._publish_remediation_status(remediation_id)
+        if plan.get("session_id"):  # its controls may have stopped: the run's counts changed
+            self._publish_session_status(plan["session_id"])
         target = audit_target(AuditTarget.REMEDIATION, remediation_id)
         self._audit.create_audit_record(AuditAction.PLAN_CANCELLED, caller_actor(principal), target)
         return PlanCancelled(remediation_id=remediation_id, status=Status.CANCELLED)

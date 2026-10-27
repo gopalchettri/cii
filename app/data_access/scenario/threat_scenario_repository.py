@@ -1,6 +1,7 @@
 """tsg_scenarios: the guarded save, the counts aggregate, the duplicate check's read, the guarded decision and
 each written scenario's controls lease. It never touches tsg_sessions."""
 
+import re
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
@@ -16,6 +17,7 @@ from app.core.constants import (
     Decision,
     ErrorCode,
     ErrorMessage,
+    Remediation,
     RunKind,
     ScenarioStatus,
     Status,
@@ -31,10 +33,6 @@ MAPPED_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": Decision.ACCEPT
 FAILED_WITH_ATTEMPTS_LEFT = {
     "controls.status": Status.FAILED,
     "controls.attempts": {"$lt": Controls.MAX_ATTEMPTS},
-}
-#: Controls not mapped yet that a cancel stops: waiting, being mapped, or failed with attempts left.
-STOPPABLE_CONTROLS = {
-    "$or": [{"controls.status": {"$in": [Status.QUEUED, Status.RUNNING]}}, FAILED_WITH_ATTEMPTS_LEFT]
 }
 #: Titles unique within a scenario session across every written version.
 TITLE_INDEX = "one_title_per_run_all_versions"
@@ -171,6 +169,22 @@ _CLAIMED_FIELDS = dict.fromkeys(
 )
 #: The scenarios the sweep looks after: written, never hand-written (those are mapped in their plan request).
 SWEPT = {"status": ScenarioStatus.DONE, "source": {"$ne": RunKind.MANUAL}}
+#: A plan job's controls claim still live at `now`: that mapping is its plan's work.
+_PLANS_LIVE_CLAIM = re.compile(f"{re.escape(Remediation.CONTROLS_CLAIM_SUFFIX)}$")
+
+
+def run_controls_to_stop(now: datetime) -> Record:
+    """The controls a run cancel stops, the run's own: a swept scenario's mapped version waiting, being mapped
+    or failed with attempts left; never a plan job's live claim (a plan maps them on purpose)."""
+    stoppable = {
+        "$or": [{"controls.status": {"$in": [Status.QUEUED, Status.RUNNING]}}, FAILED_WITH_ATTEMPTS_LEFT]
+    }
+    plans_claim = {
+        "controls.status": Status.RUNNING,
+        "controls.task_id": _PLANS_LIVE_CLAIM,
+        "controls.lease_until": {"$gte": now},
+    }
+    return {**SWEPT, "$and": [MAPPED_VERSIONS, stoppable], "$nor": [plans_claim]}
 
 
 def _running(task_id: str, now: datetime) -> Record:

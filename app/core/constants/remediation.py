@@ -10,6 +10,7 @@ class Remediation:
     MAX_CONTROL_REFS: Final = 50  # register controls, or a hand-written scenario's controls
     ALTERNATIVES: Final = 5  # library controls offered to replace an identified control that does not fit
     ALTERNATIVE_MATCH: Final = "alternative"  # an alternative's match, beside exact, nearest and given
+    CONTROLS_CLAIM_SUFFIX: Final = ":plan"  # ends a plan job's controls claim task id (its plan's mapping)
     MAX_ACTION_DAYS: Final = 3_650  # one action's duration; above it is capped with a warning
     STATEMENT_MAX_CHARS: Final = 4_000  # a hand-written scenario or risk statement
     NAME_MAX_CHARS: Final = 200  # risk owner, business division, a category name

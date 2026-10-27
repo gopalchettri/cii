@@ -1,5 +1,7 @@
-"""Job-control rules: what a working run is shown as, when a cancel found nothing to stop, and the answer to
-a click that lost the race with its run's delete."""
+"""Job-control rules: what a working run is shown as, when a cancel found nothing to stop, what a refused
+delete names, and the answer to a click that lost the race with its run's delete."""
+
+from typing import Any
 
 from app.core.constants import ConflictReason, JobControlMessage, JobKind, Status, TaskName
 from app.core.exceptions import Conflict
@@ -20,6 +22,20 @@ def check_run_cancel_stopped_something(session_id: str, job_stopped: bool, contr
     if not job_stopped and not controls_cancelled:
         message = JobControlMessage.NOTHING_TO_CANCEL.format(session_id=session_id)
         raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
+
+
+def cancel_first(session_id: str, working_plans: list[dict[str, Any]]) -> Conflict:
+    """409 cancel_first for a delete refused while something of the run is at work; the plans being written
+    named (a run cancel never stops one), each with its scenario_id for its own cancel route."""
+    to_cancel = [
+        {"remediation_id": plan["_id"], "scenario_id": plan.get("scenario_id")} for plan in working_plans
+    ]
+    if to_cancel:
+        names = ", ".join(plan["remediation_id"] for plan in to_cancel)
+        message = JobControlMessage.CANCEL_PLANS_FIRST.format(session_id=session_id, remediation_ids=names)
+    else:
+        message = JobControlMessage.CANCEL_FIRST.format(session_id=session_id)
+    return Conflict(message, reason=ConflictReason.CANCEL_FIRST, details={"plans_to_cancel": to_cancel})
 
 
 def run_being_deleted(session_id: str) -> Conflict:
