@@ -1617,6 +1617,17 @@
       "title": "Env Enabled",
       "type": "boolean"
      },
+     "refresh_job_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Refresh Job Id"
+     },
      "refresh_not_queued": {
       "anyOf": [
        {

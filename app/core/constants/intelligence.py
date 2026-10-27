@@ -91,6 +91,10 @@ class IntelRefreshMessage(StrEnum):
     NOT_SENT = "The job queue is unreachable: the refresh was not started. Try again shortly."
     SOURCE_NOT_APPROVED = "The source '{source}' is not approved; approve it before refreshing it."
     SWITCH_OFF = "External intelligence is off: nothing was refreshed."
+    SOURCES_FAILED = (
+        "These feeds could not be imported and keep their last good data: {sources}. "
+        "GET /v1/tsg/intel/health says why."
+    )
 
 
 class IntelWorkEvent(StrEnum):

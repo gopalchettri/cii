@@ -4,15 +4,18 @@ or an admin's refresh recorded on its job. A failed source keeps its last good d
 from collections.abc import Callable
 
 import structlog
+from celery.exceptions import Ignore
 
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, IntelRefreshMessage, IntelSource, IntelWorkEvent, TaskName
-from app.data_access.admin.admin_job_repository import AdminJobRepository
+from app.data_access.admin.admin_job_repository import AdminJobLease, AdminJobRepository
+from app.models.external_intelligence.refresh_summary import RefreshSummary
 from app.worker.celery_app import celery_app, current_worker
 from app.worker.external_intelligence.cancel_check import import_cancel_check
 from app.worker.external_intelligence.refresh_sources import SourceRefresher
 from app.worker.jobs import job_error_of
+from app.worker.lease_renewal import keep_lease_alive
 
 log = structlog.get_logger(__name__)
 
@@ -35,7 +38,9 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
     """Run an admin's refresh of its one source, or of the due ones, and record how it went on the job.
     The run-time switch was checked when the job was queued, so only the env master switch is checked here
     (the worker's cached run-time switch can lag a change by a minute). A late or repeated message finds the
-    job no longer active and does nothing; a failure is recorded, then raised."""
+    job no longer active and does nothing; its heartbeat beats while it runs. A failure is recorded, then
+    raised; one after the job was cancelled or abandoned keeps that outcome and ends as Ignore. A source that
+    failed (it keeps its last good data) fails the job, naming it."""
     now = utc_now()
     if not jobs.update_admin_job_running(job_id, now, **current_worker()):
         return
@@ -46,15 +51,28 @@ def run_refresh_job(job_id: str, jobs: AdminJobRepository, refresher: Callable[[
             error = {"code": ErrorCode.CONFLICT, "message": IntelRefreshMessage.SWITCH_OFF.value}
             jobs.update_admin_job_finished(job_id, utc_now(), error=error)
             return
-        with import_cancel_check(lambda: jobs.is_admin_job_active(job_id)):  # its cancel stops it early
+        with (
+            keep_lease_alive(AdminJobLease(jobs, job_id), watch_progress=False),
+            import_cancel_check(lambda: jobs.is_admin_job_active(job_id)),  # its cancel stops it early
+        ):
             if source is None:
                 summary = refresher().refresh_due_sources(now)
             else:
                 summary = refresher().refresh_one_source(source, now)
     except Exception as exc:
         log.warning(IntelWorkEvent.REFRESH_JOB_FAILED, job_id=job_id, exc_info=True)
-        jobs.update_admin_job_finished(job_id, utc_now(), error=job_error_of(exc))
+        if not jobs.update_admin_job_finished(job_id, utc_now(), error=job_error_of(exc)):
+            raise Ignore from exc  # cancelled or abandoned meanwhile: that outcome stands
         raise
-    # Done: the data refresh stands; an index the AI could not rebuild is told beside it (with its reason).
+    # The data refresh stands; an index the AI could not rebuild is told beside it (with its reason).
     index_error = {"index_error": summary.index_error} if summary.index_error else {}
-    jobs.update_admin_job_finished(job_id, utc_now(), result={"source": source} | index_error)
+    result = {"source": source} | index_error
+    jobs.update_admin_job_finished(job_id, utc_now(), result=result, error=_sources_failed(summary))
+
+
+def _sources_failed(summary: RefreshSummary) -> dict[str, str] | None:
+    """The job's error naming the sources whose import failed; None when none did."""
+    if not summary.failed:
+        return None
+    message = IntelRefreshMessage.SOURCES_FAILED.format(sources=", ".join(summary.failed))
+    return {"code": ErrorCode.UNAVAILABLE, "message": message}

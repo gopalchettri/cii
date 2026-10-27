@@ -48,7 +48,7 @@ class AdminJobKind(StrEnum):
 
 
 class AdminJobs:
-    STALE_AFTER_SECONDS: Final = 3_600  # a job unfinished this long is abandoned: the next request takes over
+    STALE_AFTER_SECONDS: Final = 3_600  # a job not started this long is abandoned: a new request takes over
     KEEP_DAYS: Final = 90  # tsg_admin_jobs retention (TTL on created_at)
 
 
@@ -56,7 +56,7 @@ class AdminJobMessage(StrEnum):
     IN_PROGRESS = "An embeddings build is already queued or running: details.job_id names it."
     NOT_FOUND = "Admin job '{job_id}' does not exist."
     NOT_SENT = "The job queue is unreachable: the build was not started. Try again shortly."
-    ABANDONED = "Still unfinished after {seconds} s (its worker stopped): marked failed; a new one can start."
+    ABANDONED = "Its worker stopped (or it never started in {seconds} s): marked failed; a new one can start."
 
 
 class Event(StrEnum):

@@ -2,6 +2,7 @@
 thread, and the job's signal set once the lease is lost or the job has run too long."""
 
 import contextvars
+import math
 import threading
 import time
 from collections.abc import Generator
@@ -25,13 +26,14 @@ class RenewableLease(Protocol):
 
 
 @contextmanager
-def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
+def keep_lease_alive(lease: RenewableLease, *, watch_progress: bool = True) -> Generator[None, None, None]:
     """Renew the lease every Lease.RENEW_EVERY_SECONDS while the work runs, from a background thread, for at
     most Lease.MAX_JOB_SECONDS: a hung job then loses its lease to the reaper, which counts the attempt. A
     renewal that finds the lease lost (a cancel), or the time limit, sets the job's signal: its next AI call
-    raises LeaseLost (core/lease_signal.py), as its next fenced write does."""
+    raises LeaseLost (core/lease_signal.py), as its next fenced write does. `watch_progress` False: a
+    heartbeat only (an admin job), renewed until the work ends."""
     stopped = threading.Event()
-    deadline = time.monotonic() + Lease.MAX_JOB_SECONDS
+    deadline = time.monotonic() + (Lease.MAX_JOB_SECONDS if watch_progress else math.inf)
 
     def renew_until_stopped(lost: threading.Event) -> None:
         while not stopped.wait(Lease.RENEW_EVERY_SECONDS):

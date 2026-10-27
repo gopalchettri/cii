@@ -112,6 +112,7 @@ def test_a_long_running_admin_job_is_not_failed_for_its_time_in_the_queue() -> N
             {"_id": job_id, "kind": kind, "status": Status.QUEUED, "created_at": long_ago}
         )
     assert jobs.update_admin_job_running(started_late, now - timedelta(minutes=5))
+    assert jobs.renew_admin_job(started_late, now)  # its heartbeat still beats
     failed = {job["_id"] for job in jobs.fail_stale_admin_jobs(now)}
     assert never_started in failed and started_late not in failed
     assert jobs.get_any_admin_job(started_late)["status"] == Status.RUNNING

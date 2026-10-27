@@ -2,11 +2,12 @@
 
 from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 import structlog
 from pymongo.collection import Collection as MongoCollection
 
+from app.core.clock import utc_now
 from app.core.constants import (
     ADMIN_JOB_TASKS,
     AdminJobKind,
@@ -14,6 +15,7 @@ from app.core.constants import (
     AdminJobs,
     Collection,
     ErrorCode,
+    Lease,
     LogEvent,
     Status,
     module_of,
@@ -48,15 +50,12 @@ class AdminJobRepository(MongoRepository):
 
     def create_admin_job(self, job: Record) -> str | None:
         """Creates `job` (with its created_at) as the active job of its kind in tsg_admin_jobs and returns its
-        id; else the id of the active job of that kind. One still unfinished AdminJobs.STALE_AFTER_SECONDS
-        after its creation, or its start once running (its worker died, its message was lost), is failed and
-        replaced."""
-        stale_before = job["created_at"] - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS)
-        abandoned = AdminJobMessage.ABANDONED.format(seconds=AdminJobs.STALE_AFTER_SECONDS)
-        error = {"code": ErrorCode.JOB_ABANDONED, "message": abandoned}
-        stale = {"kind": job["kind"], **_abandoned_before(stale_before)}
+        id; else the id of the active job of that kind. An abandoned one (its heartbeat ran out, or it never
+        started) is failed and replaced."""
+        stale = {"kind": job["kind"], **_abandoned(job["created_at"])}
         if self._create_active(job) or (
-            self._finish(stale, Status.FAILED, job["created_at"], error=error) and self._create_active(job)
+            self._finish(stale, Status.FAILED, job["created_at"], error=_ABANDONED_ERROR)
+            and self._create_active(job)
         ):
             return job["_id"]
         active = self.get(("_id",), kind=job["kind"], active=True)
@@ -71,10 +70,14 @@ class AdminJobRepository(MongoRepository):
     def update_admin_job_running(
         self, job_id: str, now: datetime, task_id: str | None = None, worker: str | None = None
     ) -> bool:
-        """Marks a queued tsg_admin_jobs job running; False when it is no longer queued (a late or repeated
-        message, so a redelivered copy never runs a second build)."""
+        """Marks a queued tsg_admin_jobs job running with its first heartbeat; False when it is no longer
+        queued (a late or repeated message, so a redelivered copy never runs a second build)."""
         changes = {"status": Status.RUNNING, "started_at": now, "task_id": task_id, "worker": worker}
-        return self.update(changes, _id=job_id, active=True, status=Status.QUEUED) > 0
+        return self.update(changes | _heartbeat(now), _id=job_id, active=True, status=Status.QUEUED) > 0
+
+    def renew_admin_job(self, job_id: str, now: datetime) -> bool:
+        """Stamps a running job's heartbeat; False once it ended."""
+        return self.update(_heartbeat(now), _id=job_id, active=True, status=Status.RUNNING) > 0
 
     def update_admin_job_finished(
         self, job_id: str, now: datetime, *, result: Record | None = None, error: Record | None = None
@@ -85,7 +88,7 @@ class AdminJobRepository(MongoRepository):
         which = {"_id": job_id, "active": True}
         if error is None:
             return self._finish(which, Status.DONE, now, result=result)
-        if not self._finish(which, Status.FAILED, now, error=error):
+        if not self._finish(which, Status.FAILED, now, error=error, result=result):
             return False
         kind = (self.get(("kind",), _id=job_id) or {}).get("kind") or "unknown"
         task = ADMIN_JOB_TASKS.get(kind, kind)
@@ -122,17 +125,15 @@ class AdminJobRepository(MongoRepository):
         }
 
     def fail_stale_admin_jobs(self, now: datetime) -> list[Record]:
-        """Fails every job still active AdminJobs.STALE_AFTER_SECONDS after its creation, or its start once
-        running (its worker died or its message was lost), so none stays "running" until the next request of
-        its kind; each one's id, kind and the error saved."""
-        stale = _abandoned_before(now - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS))
-        abandoned = AdminJobMessage.ABANDONED.format(seconds=AdminJobs.STALE_AFTER_SECONDS)
-        error = {"code": ErrorCode.JOB_ABANDONED, "message": abandoned}
+        """Fails every abandoned job (its heartbeat ran out: its worker died; or never started: its message
+        was lost), so none stays "running" until the next request of its kind; each one's id, kind and the
+        error saved."""
+        stale = _abandoned(now)
         jobs = list(self.collection.find(stale, {"_id": 1, "kind": 1}))
         return [
-            job | {"error": error}
+            job | {"error": _ABANDONED_ERROR}
             for job in jobs
-            if self._finish(stale | {"_id": job["_id"]}, Status.FAILED, now, error=error)
+            if self._finish(stale | {"_id": job["_id"]}, Status.FAILED, now, error=_ABANDONED_ERROR)
         ]
 
     def get_any_admin_job(self, job_id: str) -> Record | None:
@@ -162,9 +163,41 @@ class AdminJobRepository(MongoRepository):
         return self.collection.update_one(which, ended).matched_count > 0
 
 
-def _abandoned_before(cutoff: datetime) -> Record:
-    """The active jobs started before `cutoff`, or never started and created before it."""
+class AdminJobLease:
+    """A running admin job's heartbeat as keep_lease_alive renews it. Never lost: its cancel is read by the
+    job itself (is_admin_job_active), and a job ended meanwhile keeps that outcome."""
+
+    # ponytail: a hung (not crashed) job beats until its pod restarts; its cancel frees the kind at once.
+    # Add a stall cap like the leased jobs' if hung admin jobs show up.
+
+    def __init__(self, jobs: AdminJobRepository, record_id: str) -> None:
+        self._jobs, self.record_id = jobs, record_id
+
+    def renew(self) -> bool:
+        """Stamps the job's heartbeat; always True."""
+        self._jobs.renew_admin_job(self.record_id, utc_now())
+        return True
+
+
+_ABANDONED_ERROR: Final = {
+    "code": ErrorCode.JOB_ABANDONED,
+    "message": AdminJobMessage.ABANDONED.format(seconds=AdminJobs.STALE_AFTER_SECONDS),
+}
+
+
+def _heartbeat(now: datetime) -> Record:
+    """A running job's heartbeat: it is alive until lease_until."""
+    return {"lease_until": now + timedelta(seconds=Lease.SECONDS)}
+
+
+def _abandoned(now: datetime) -> Record:
+    """The active jobs whose heartbeat ran out, or with none (never started) created
+    AdminJobs.STALE_AFTER_SECONDS before `now`."""
+    never_started_before = now - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS)
     return {
         "active": True,
-        "$or": [{"started_at": {"$lt": cutoff}}, {"started_at": None, "created_at": {"$lt": cutoff}}],
+        "$or": [
+            {"lease_until": {"$lt": now}},
+            {"lease_until": None, "created_at": {"$lt": never_started_before}},
+        ],
     }

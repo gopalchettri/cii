@@ -61,7 +61,8 @@ class JobMonitorService:
             message = JobMonitorMessage.NOT_ADMIN_JOB.format(job_id=job_id, module=job.module)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         if not self._admin_jobs.cancel_admin_job(job_id, utc_now(), actor):
-            message = JobMonitorMessage.ALREADY_ENDED.format(job_id=job_id, status=job.status)
+            ended = self.get_job(job_id).status  # it may have ended since it was read
+            message = JobMonitorMessage.ALREADY_ENDED.format(job_id=job_id, status=ended)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         self._audit.create_audit_record(
             AuditAction.ADMIN_JOB_CANCELLED,
@@ -157,4 +158,5 @@ def _admin_job(record: dict[str, Any]) -> MonitoredJob:
         task_id=record.get("task_id"),
         worker=record.get("worker"),
         request_id=record.get("request_id"),
+        lease_until=record.get("lease_until"),  # its heartbeat while running
     )
