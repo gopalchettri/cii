@@ -1774,10 +1774,6 @@
                       "repair_scenario": {
                         "text": "Rewrite a scenario",
                         "index": 18
-                      },
-                      "link_check": {
-                        "text": "Check a cross-system link",
-                        "index": 19
                       }
                     }
                   }
@@ -2295,10 +2291,6 @@
                       "repair_scenario": {
                         "text": "Rewrite a scenario",
                         "index": 18
-                      },
-                      "link_check": {
-                        "text": "Check a cross-system link",
-                        "index": 19
                       }
                     }
                   }
@@ -3381,10 +3373,6 @@
                       "repair_scenario": {
                         "text": "Rewrite a scenario",
                         "index": 9
-                      },
-                      "link_check": {
-                        "text": "Check a cross-system link",
-                        "index": 10
                       }
                     }
                   }
@@ -4826,10 +4814,6 @@
                       "repair_scenario": {
                         "text": "Rewrite a scenario",
                         "index": 9
-                      },
-                      "link_check": {
-                        "text": "Check a cross-system link",
-                        "index": 10
                       }
                     }
                   }

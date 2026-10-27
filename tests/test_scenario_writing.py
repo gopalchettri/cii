@@ -316,18 +316,7 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "each one is carried out as the attacker's action, in your own words" in repair
     assert "keep every other rule" in repair
     named = ("ransomware", "data theft extortion", "ddos", "wiper", "phishing and mfa")  # no library threat
-    link = PROMPTS["scenario"]["link_check"]
-    prompts = (
-        gate,
-        gap,
-        writer,
-        reviewer,
-        repair,
-        _SPLIT["text"],
-        _SPLIT["system"],
-        link["text"],
-        link["system"],
-    )
+    prompts = (gate, gap, writer, reviewer, repair, _SPLIT["text"], _SPLIT["system"])
     assert [n for n in named for prompt in prompts if n in prompt.casefold()] == []
     assert "Using access the threat only obtains (a stolen credential, secret or session)" in reviewer
     assert "including using access the threat only obtains" in reviewer
@@ -340,29 +329,24 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
 
 
-def test_rule_4_breaks_only_on_a_real_link_between_two_supporting_systems() -> None:
-    """A link the scenario says breaks the rule (data or a credential passing between two systems, a shared
-    chain); the same attacker, a shared trait, effects reaching the asset and the attacker's own machines
-    never do by themselves, and the writer keeps each system's access its own."""
-    rule4 = PLAN_CHECK_SYSTEM_PROMPT.split("RULE 4")[1].split("RULE 5")[0]
-    assert "Broken only when SCENARIO says that two of PLAN's supporting systems are linked:" in rule4
-    assert "account or access works on more than one of them" in rule4 and "whoever uses it" in rule4
-    assert "a foothold on one used to reach another" in rule4 and "share a chain" not in rule4
-    for not_a_link in (
-        "the same attacker on several systems, each with its own access",
-        "the same kind of action, weakness or protocol on each",
-        "data or effects reaching the asset, and the consequence the systems share there",
-        "anything sent to the attacker's own machines",
-        "the attacker putting together what it took",
-        "the asset itself, which is not a supporting system",
+def test_the_asset_and_its_affected_systems_form_one_whole() -> None:
+    """Owner, D49: the asset and the systems the threat reaches are one whole, so they may work together;
+    the "no joining" rule, its reviewer rule 4 and the link check are gone, unreached systems stay out."""
+    writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
+    whole = 'The asset and its "yes" systems form one whole: they may work together where the event needs'
+    assert whole in writer and 'or through another "yes" system' in writer
+    assert "goes in assumptions (rule 2)" in writer
+    assert 'A "no" system must not be described as attacked or directly affected.' in writer  # unreached
+    for removed in (
+        "Each system's access is its own",
+        "Do not invent connections",
+        "cross-system",
+        "independent",
     ):
-        assert not_a_link in rule4
-    assert "a link you have to guess is not one" in rule4
-    assert "explicit or implied connection" not in rule4  # the wording that flagged any shared word
-    reviewer_example = '"The same attacker could also change the settings on System B." The same'
-    assert reviewer_example in PLAN_CHECK_SYSTEM_PROMPT
-    assert 'never "the same" credential, account, session or channel used on another' in WRITER_SYSTEM_PROMPT
-    assert '- Each "yes" system\'s access is its own: no credential' in WRITER_SYSTEM_PROMPT
+        assert removed not in writer
+    assert "RULE 4" not in reviewer and '"4": "holds"' not in reviewer and "Rule 4 violation" not in reviewer
+    assert "Check all seven rules (1-3 and 5-8) independently." in reviewer and "eight" not in reviewer
+    assert "link_check" not in PROMPTS["scenario"]
 
 
 def test_the_risk_opens_in_everyday_words_for_each_category() -> None:
@@ -637,7 +621,7 @@ _ACTIONS = ("pushing firmware", "hiding the change")
 _ALL_DONE = _CONSISTENT | {"threat_actions": dict.fromkeys(_ACTIONS, "carried out")}
 _ONE_MISSING = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out", _ACTIONS[1]: "missing"}}
 _MISSING_ONE_UNJUDGED = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out"}}
-_ALL_DONE_RULE_4_BROKEN = _ALL_DONE | {"rules": {"1": "holds", "4": 'broken: "x" - y'}}
+_ALL_DONE_RULE_5_BROKEN = _ALL_DONE | {"rules": {"1": "holds", "5": 'broken: "x" - y'}}
 _MISSING_NOTE = 'Rule 1: "hiding the change" is missing, not carried out'
 _REPAIR_TEXT = PROMPTS["scenario"]["writer"]["repair"]
 #: The calls of a draft written, reviewed and repaired, with the repair reviewed or not.
@@ -675,12 +659,7 @@ def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_rep
     [
         ([draft_answer(_CLEAN)], [_ONE_MISSING], _REVIEWED, None),  # still missing: no second repair
         ([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED], _REVIEWED, None),
-        (
-            [draft_answer(_CLEAN)],
-            [_ALL_DONE_RULE_4_BROKEN],
-            [*_REVIEWED, AiTask.LINK_CHECK],
-            None,
-        ),  # first held it
+        ([draft_answer(_CLEAN)], [_ALL_DONE_RULE_5_BROKEN], _REVIEWED, None),  # a rule the first held
         ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_threat": False}], _REVIEWED, None),
         ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_impact": False}], _REVIEWED, None),
         ([draft_answer(_CLEAN) | {"scenario_statement": "SYS7 helps."}], [], _NOT_REVIEWED, None),
@@ -749,73 +728,23 @@ def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> 
     assert _calls(twice) == [AiTask.WRITE_SCENARIO, AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
 
 
-def test_the_writer_names_each_action_s_sentence_and_the_link_check_needs_the_words() -> None:
-    """The writer's eighth field and its final check; the link check's definition, its never-a-link cases and
-    its answer, which names the two systems."""
-    writer, link = WRITER_SYSTEM_PROMPT, PROMPTS["scenario"]["link_check"]["text"]
+def test_the_writer_names_each_action_s_story_sentence() -> None:
+    """The writer's eighth field and its final check."""
+    writer = WRITER_SYSTEM_PROMPT
     assert '"action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>"' in writer
     assert "Include exactly these eight top-level fields" in writer and "Exactly the eight required" in writer
     assert "its value is copied word for word from scenario_statement and shows the attacker doing" in writer
     assert "still gets its own sentence in scenario_statement, never only in risk_statement" in writer
-    assert "Decide whether SCENARIO says that two of SYSTEMS are linked. Read all of it" in link
-    assert "the attacker moves from one of them to another: a foothold, session or malware on one" in link
-    assert '"quote": "<the exact words of SCENARIO that say it>"' in link  # its own words, checked by code
-    assert "the same attacker on each, with its own access there" in link
-    assert (
-        "a link you have to guess is not one" in link and '"systems": ["<one system>", "<the other>"]' in link
-    )
 
 
-_RULE_4 = 'broken: "the SCADA server of Grid Control Centre" - the Historian then takes the firmware'
-_QUOTE = "push firmware to the SCADA server"  # in _CLEAN's statement: the words the check itself quotes
-_LINKED = {"linked": True, "systems": ["SCADA  server", "historian"], "what": "the firmware", "quote": _QUOTE}
-_PROVED = f'Rule 4: "{_QUOTE}" - SCADA server and Historian: the firmware'
-_REVIEWERS = 'Rule 4: "the SCADA server of Grid Control Centre" - the Historian then takes the firmware'
-
-
-@pytest.mark.parametrize(
-    ("link_checks", "note"),
-    [
-        ([{"linked": False, "systems": [], "what": "", "quote": ""}], None),  # the reviewer guessed a link
-        ([_LINKED], _PROVED),  # the note carries the check's own quote and systems
-        ([_LINKED | {"systems": ["SCADA server", "SCADA server"]}, {"linked": False}], None),  # one system
-        ([_LINKED | {"systems": ["SCADA server", "Grid Control Centre"]}, _LINKED], _PROVED),  # the asset
-        (
-            [_LINKED | {"quote": "words the scenario never says"}, {"linked": False}],
-            None,
-        ),  # an invented quote
-        (
-            [{"linked": True}, {"linked": "yes"}],
-            _REVIEWERS,
-        ),  # unusable twice: a possible link is never hidden
-        ([Unavailable("AI down")], _REVIEWERS),
-    ],
-)
-def test_a_rule_4_break_stands_only_when_a_focused_check_quotes_two_linked_systems(
-    link_checks: list[Any], note: str | None
-) -> None:
-    """Root cause of wrong Rule 4 notes: the reviewer judges eight rules at once, decides before it reasons
-    and may quote the wrong words. Its break only triggers one narrow check that reads the whole scenario;
-    the break stands only when that check quotes words the scenario holds and names two different listed
-    systems, and then carries that proof."""
-    chat = _chat_answering([], [_CONSISTENT | {"rules": {"1": "holds", "4": _RULE_4}}])
-    chat.queue(AiTask.LINK_CHECK, *link_checks)
-    with capture_logs() as logs:
-        check, notes = check_against_plan(chat, _brief_of(_plan_threat()), _CLEAN)
-    assert [finding.message for finding in notes] == ([note] if note else [])
-    assert check.status is (PlanCheckStatus.INCONSISTENT if note else PlanCheckStatus.CONSISTENT)
-    outcomes = [log["outcome"] for log in logs if log["event"] == LogEvent.WRITER_LINK_CHECKED]
-    assert outcomes == ["kept" if note else "dropped"]
-    (asked, *_) = chat.asked(AiTask.LINK_CHECK)
-    assert 'SYSTEMS:\n["SCADA server", "Historian"]' in asked and _CLEAN.statement in asked
-    assert (
-        "Historian then takes" not in asked and "QUOTE" not in asked
-    )  # never the reviewer's words or reason
-
-
-def test_a_rule_4_that_holds_makes_no_link_check() -> None:
-    chat = _chat_answering([], [_CONSISTENT | {"rules": {"1": "holds", "4": "holds"}}])
-    check_against_plan(chat, _brief_of(_plan_threat()), _CLEAN)
+def test_a_rule_4_verdict_is_never_a_note_and_no_extra_call_is_made() -> None:
+    """Root cause removed (D49): joining the asset's affected systems is allowed, so no rule judges it. A
+    reviewer answer that still carries rule 4, as an older one could, gives no note; one review, no other
+    call."""
+    rules = {"1": "holds", "4": 'broken: "the Historian then takes the firmware" - systems joined'}
+    chat = _chat_answering([], [_CONSISTENT | {"rules": rules}])
+    check, notes = check_against_plan(chat, _brief_of(_plan_threat()), _CLEAN)
+    assert notes == () and check.status is PlanCheckStatus.CONSISTENT and check.problems == ()
     assert _calls(chat) == [AiTask.PLAN_CHECK]
 
 

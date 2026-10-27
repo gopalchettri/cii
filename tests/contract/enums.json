@@ -37,7 +37,6 @@
  "AiTask": {
   "EMBED": "embed",
   "GAP_FILL": "gap_fill",
-  "LINK_CHECK": "link_check",
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
   "REMEDIATION_PLAN": "remediation_plan",
@@ -51,7 +50,6 @@
   "ACTION_SENTENCES_MISSING": "action_sentences must quote the statement's sentence for each of: {actions}",
   "ENTRY_POINT_NOT_OFFERED": "entry_point must be one of entry_point_options, copied exactly: {options}",
   "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
-  "LINK_SYSTEMS_REQUIRED": "when linked, name two different SYSTEMS and quote SCENARIO's exact words",
   "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
   "SYSTEM_REASONS_MISSING": "system_reasons must give one short sentence for each of: {names}",
   "TEXT_REQUIRED": "must not be empty",

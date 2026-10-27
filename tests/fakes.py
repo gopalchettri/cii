@@ -29,17 +29,6 @@ def brief_system_names(user_prompt: str) -> list[str]:
     return [system["name"] for system in _brief(user_prompt).get("supporting_systems") or []]
 
 
-def _the_first_two_systems_linked(user_prompt: str) -> dict[str, Any]:
-    """The link check's answer when a test is about something else: the reviewer's Rule 4 break stands,
-    naming the first two SYSTEMS and quoting the scenario statement (no link when fewer are listed)."""
-    listed, scenario = user_prompt.split("SYSTEMS:\n", 1)[1].split("\nSCENARIO:\n", 1)
-    systems = json.loads(listed)
-    if len(systems) < 2:
-        return {"linked": False, "systems": [], "what": "", "quote": ""}
-    quote = json.loads(scenario)["scenario_statement"]
-    return {"linked": True, "systems": systems[:2], "what": "data passes between them", "quote": quote}
-
-
 def _the_name_as_its_action(user_prompt: str) -> dict[str, Any]:
     """The split's answer when a test is about something else: the threat's name is its one action."""
     return {"actions": [json.loads(user_prompt.rsplit("THREAT: ", 1)[1])]}
@@ -48,7 +37,6 @@ def _the_name_as_its_action(user_prompt: str) -> dict[str, Any]:
 #: The responder of a task no test needs to answer; a test's own responder or queue comes first.
 _DEFAULT_RESPONDERS: dict[AiTask, Callable[[str], dict[str, Any]]] = {
     AiTask.THREAT_ACTIONS: _the_name_as_its_action,
-    AiTask.LINK_CHECK: _the_first_two_systems_linked,
 }
 
 

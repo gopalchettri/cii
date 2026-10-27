@@ -2359,7 +2359,8 @@ Where each key came from:
      action, in a realistic order, in its own words and concrete to the asset (never the list's wording,
      which read badly when pasted); naming the threat is not carrying it out (rule 1 and the final check:
      "carried out, not only named"). Rule 6 step 3 is the slot for them: carry out every listed action once,
-     at asset level or on the systems it involves, then give each "yes" system its own contribution (rule 4).
+     at asset level or on the systems it involves, then give each "yes" system its own contribution (rule 4;
+     the asset and its "yes" systems are one whole and may work together, D49).
      When the list is absent, the writer splits the name itself by a general rule that names no threat: each
      act joined by "and", "with" or a comma is one action, two names for the same act are one, a word that
      only describes the target, account or means is not an action, and of alternatives joined by "or", one
@@ -2535,8 +2536,7 @@ near copy.
 ### 8.5 The reviewer (`check_against_plan`)
 
 > **In plain words:** A second AI acts as an editor. It reads the plan, the evidence and the draft, and checks
-> eight rules: the same threat, the right attacker, only the listed systems, no invented links between systems,
-> the right kind of impact, a matching risk, nothing invented, and no real-world claims outside the passage.
+> seven rules: the same threat, the right attacker, only the listed systems, the right kind of impact, a matching risk, nothing invented, and no real-world claims outside the passage.
 > A broken rule is shown to the human reviewer as a note (a part of the threat only named, not carried out, is
 > one). A draft about a different threat or impact is stopped.
 
@@ -2561,23 +2561,17 @@ near copy.
       the threat only obtains to do something its name does not state is such an added step.
    2. Attacker identity: no other attacker or real-world group carries out the attack.
    3. System names and coverage: no unlisted system is named, and every supporting system has a reason.
-   4. No cross-system links: broken only when the scenario says two supporting systems are linked (data,
-      commands, files or records pass between them, one depends on or controls another, or one credential,
-      session or foothold works on more than one). The same attacker on each system, the same kind of action,
-      effects reaching the asset, data sent to the attacker's own machines and the asset itself are never a
-      link by themselves (D45). A Rule 4 break is then checked once more, alone (task `link_check`,
-      `[scenario.link_check]`): given only the supporting systems and the whole scenario (never the reviewer's
-      words), it must quote the scenario's own words that link two different supporting systems; code checks the
-      quote is in the scenario and the names are listed systems. A proved link becomes the note, with that quote
-      and the two systems; no link turns the break to "holds"; an outage or a check that stays unusable keeps the
-      reviewer's break. Log `writer.link_checked`, outcome `kept` or `dropped` (D48).
+   4. Retired (D49): the asset and the systems the threat reaches are one whole, so they may work together
+      and nothing judges a link between them. Code drops any rule 4 verdict an answer still gives
+      (`Writing.RETIRED_RULES`), so no such note can come back. Systems the threat does not reach stay out of
+      the story (the writer's rule 4), and an unrecorded detail the story depends on is an assumption.
    5. Category-aligned primary impact.
    6. Risk alignment and scope.
    7. Grounding and possibility: nothing invented; "could" or "may", never certain; a consequence that rests
       on a safeguard assumed missing breaks it.
    8. No citation, no precedent outside `evidence_statement`.
 
-   Rules 1-8 and the verdicts `same_threat` and `same_impact` judge every field except
+   Rules 1-3 and 5-8 and the verdicts `same_threat` and `same_impact` judge every field except
    `evidence_statement`. `same_threat` is also false when an added step, not the threat, causes the primary
    impact (using access the threat only obtains to do something its name does not state is one). A stated
    action missing or only named breaks rule 1 (a note, not a blocker: a blocked draft is not rewritten, so

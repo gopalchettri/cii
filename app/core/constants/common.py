@@ -129,7 +129,6 @@ class AiTask(StrEnum):
     WRITE_SCENARIO = "write_scenario"
     REPAIR_SCENARIO = "repair_scenario"  # a draft written again for actions not carried out
     PLAN_CHECK = "plan_check"  # does the written scenario carry out its plan
-    LINK_CHECK = "link_check"  # do a flagged Rule 4 break's words really link two supporting systems
     REMEDIATION_PLAN = "remediation_plan"
     EMBED = "embed"
     RERANK = "rerank"
@@ -152,7 +151,6 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.GAP_FILL: 0.0,
     AiTask.THREAT_ACTIONS: 0.0,
     AiTask.PLAN_CHECK: 0.0,
-    AiTask.LINK_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
     AiTask.REPAIR_SCENARIO: None,
@@ -168,7 +166,6 @@ CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.REPAIR_SCENARIO: 3072,  # the writer's answer again
     AiTask.PLAN_CHECK: 2048,  # 478
     AiTask.THREAT_ACTIONS: 2048,  # the least: a few short phrases
-    AiTask.LINK_CHECK: 2048,  # the least: a verdict, two names and a phrase
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
@@ -246,7 +243,6 @@ class LogEvent(StrEnum):
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
     WRITER_THREAT_ACTIONS_NOT_SPLIT = "writer.threat_actions_not_split"  # the writer and reviewer split it
     WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
-    WRITER_LINK_CHECKED = "writer.link_checked"  # a flagged Rule 4 break "kept" or "dropped", with any error
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"

@@ -7,6 +7,7 @@ from typing import Final
 class Writing:
     MAX_PLAN_PROBLEMS: Final = 10  # the plan check's problems kept as notes ...
     PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
+    RETIRED_RULES: Final = frozenset({"4"})  # reviewer rules no longer asked: never a note (D49)
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
     PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows

@@ -92,14 +92,14 @@ First read BRIEF.threat.threat_actions: it lists the concrete actions the threat
 Read the exact asset name, recorded role/type/criticality, critical service, attacker type, threat_type, threat, category, why_it_applies, entry-point options, supporting-system facts, supplied applicability and evidence entries. Use fields in their supplied structure; do not assume an unprovided value exists.
 Define one consistent causal structure:
 attacker with supported or explicitly conditional access/precondition -> specified threat action on recorded components or information -> affected asset condition -> one primary asset-level consequence.
-Read the supplied applicability decisions; do not classify systems again. Select an allowed entry point, identify essential unknown conditions, draft the systems' concise independent contributions, and explain their common asset consequence once. Cross-check every output field against that same event.
+Read the supplied applicability decisions; do not classify systems again. Select an allowed entry point, identify essential unknown conditions, draft the systems' concise contributions, and explain their common asset consequence once. Cross-check every output field against that same event.
 
 CORE RULES
 
 1. ONE ASSET-LEVEL EVENT, ONE SPECIFIED THREAT, ONE PRIMARY IMPACT
 Keep the asset as the assessment subject and target of the final consequence. Carry out the specified threat_type/threat in a recognizable way. Do not substitute a nearby threat to fit evidence.
 Every action the threat's name states (split as GENERATION LOGIC says) must be carried out in the story as the attacker's action, not only named; they are parts of one threat, not unrelated actions, and of alternatives the name joins with "or", one is enough. The primary impact must come from one of those actions itself; never add a step that is not part of the threat (a precursor or side action) to reach the category's impact.
-Describe one coherent event with one primary impact matching the supplied category. Several systems may contribute independently to that event when BRIEF marks them applicable and supports their participation.
+Describe one coherent event with one primary impact matching the supplied category. Several systems may contribute to that event when BRIEF marks them applicable and supports their participation.
 Do not bundle unrelated threat actions or different primary impacts into a generic scenario just to reduce the count. Initial access is a precondition unless acquiring that access is itself the specified threat or an action its name states. When acquiring access is the specified threat, its primary impact is what the acquisition itself causes (for example the stolen secret exposed) or a use of that access its name states, never a later use its name does not state.
 
 2. EXPLICIT CAUSALITY AND GROUNDING
@@ -110,17 +110,15 @@ Never assume a control or safeguard is missing to make the consequence worse: an
 Do not assume that an unrecorded technology, component, supporting system or business process exists merely to make the threat plausible.
 
 3. ENTRY POINT AND ACCESS
-Copy entry_point exactly from one BRIEF.entry_point_options value, or return "" when there are no options. An entry point does not prove permission or establish access to another system.
+Copy entry_point exactly from one BRIEF.entry_point_options value, or return "" when there are no options. An entry point does not prove permission.
 State access as a precondition only when supported, otherwise make the essential missing condition explicit as an assumption. Do not describe how access was acquired unless acquiring it is the specified threat or an action its name states. In that case distinguish prior access from the acquisition action, and take its impact from the acquisition itself or a use of that access its name states, never from a later use its name does not state (rule 1).
 
 4. SUPPORTING SYSTEM CONTRIBUTIONS WITHOUT REPETITION
 Use the supplied applicability flags unchanged. Do not select additional systems or change "no" to "yes" to broaden coverage.
-- Each "yes" system must have one or two short sentences in scenario_statement identifying its own supported or conditional access precondition, the recorded component/information acted on, the specified threat action and its contribution to the SAME primary asset-level consequence.
+- Each "yes" system must have one or two short sentences in scenario_statement identifying how the attack reaches it (its own supported or conditional access, or through another "yes" system), the recorded component/information acted on, the specified threat action and its contribution to the SAME primary asset-level consequence.
 - Explain the shared business or operational consequence once. Do not repeat the opening, full attack narrative, detection discussion or risk statement for every system.
 - A "no" system must not be described as attacked or directly affected. Explain its exclusion in system_reasons without claiming that it is immune to other threats.
-- Do not infer access to one system from access to another. Do not transfer credentials, tokens, sessions, commands, files, records or data between systems. Each system's access is its own, even when the threat is about one account, credential, session or remote-access channel: write "On System B, the attacker could use a separate account held there", never "the same" credential, account, session or channel used on another system, and never data or tokens passing to another system.
-- Do not invent connections, communication, dependencies or cross-system attack sequences. Shared membership under the asset establishes none of these. A relationship may be described only when BRIEF explicitly establishes it and it is necessary for the specified event.
-- Finish each system's action and local contribution in its own sentence. Do not explain that contribution using an unsupported change or signal on another system.
+- The asset and its "yes" systems form one whole: they may work together where the event needs it (data or commands passing between them, one access or foothold reaching several). A detail the story depends on that BRIEF does not record goes in assumptions (rule 2).
 - Name only supplied systems. Describe people by recorded or generic role rather than inventing another system.
 - If applicability is missing, do not guess or describe direct activity on that system. Its system_reasons sentence must state that direct activity is not described because applicability is not supplied.
 
@@ -132,7 +130,7 @@ Names taken from public evidence may appear only in evidence_statement, when its
 Write one continuous narrative without headings or numbered beats:
 1) Open with this threat's specific malicious action, objective, target component or access precondition; name the exact asset and attacker type. Do not open with generic asset/platform background.
 2) State the selected entry point and access/precondition already held or explicitly assumed. If access acquisition is the threat, distinguish prior access from the acquisition action.
-3) Carry out every action in BRIEF.threat.threat_actions (without that list, every action of your own split) once, in a realistic order, at asset level or on the systems it involves; then give each "yes" system its concise independent contribution as required by rule 4. Do not repeat the whole event for each system.
+3) Carry out every action in BRIEF.threat.threat_actions (without that list, every action of your own split) once, in a realistic order, at asset level or on the systems it involves; then give each "yes" system its concise contribution as required by rule 4. Do not repeat the whole event for each system.
 4) State a relevant uncertainty or supported observation only when justified. Do not invent monitoring, alarms, logs, alerts or detection capabilities. Omit unsupported signals.
 5) Explain the single primary consequence for the exact asset, its recorded role and its critical service when supplied. Mention criticality only when recorded; do not invent a criticality rating.
 For OT, focus on the physical process, safety, integrity or availability as relevant to the category. For IT, focus on confidentiality, identity, information integrity or service availability as relevant to the category.
@@ -178,10 +176,10 @@ Complete the opening with the adverse event, naming the exact asset. Explain the
 
 12. SYSTEM REASONS
 Return one short sentence for every exact supporting-system name supplied in BRIEF:
-- "yes": explain the same independent access condition, specified action and contribution already described for that system. Add no new fact, action or impact.
+- "yes": explain the same access condition, specified action and contribution already described for that system. Add no new fact, action or impact.
 - "no": explain why the selected event does not act on that system, using the supplied scope/applicability. Do not claim the system is generally irrelevant, unaffected by all risks or immune.
 - Applicability missing: state that direct activity is not described because applicability is not supplied.
-Use "could" or "may" where describing potential actions. Do not name an unlisted system or use a reason to create a cross-system link.
+Use "could" or "may" where describing potential actions. Do not name an unlisted system.
 
 13. CLEAR, BALANCED LANGUAGE
 Write the title, scenario_statement, risk_statement and system_reasons for both readers: security staff, and operators, managers and auditors who are not security experts. Mix plain sentences with the correct technical terms; do not make the text so simple that the precise meaning is lost:
@@ -199,10 +197,9 @@ Verify before returning:
 - One specified threat, one coherent asset-level event and one primary consequence.
 - Every action the threat's name states is carried out, not only named (one of any "or" alternatives), and the primary impact comes from one of them with no added step.
 - action_sentences gives, for each listed action, its own sentence of scenario_statement in which the attacker does it; an action that only touches the asset as a whole (a demand, a message, a public claim) still gets its own sentence in scenario_statement, never only in risk_statement.
-- Every "yes" system has a concise independent contribution; the common asset consequence is explained once.
-- Each "yes" system's access is its own: no credential, account, session or channel works on more than one system, and nothing passes between systems (rule 4).
+- Every "yes" system has a concise contribution; the common asset consequence is explained once.
 - No activity on "no" or unknown-applicability systems; supplied applicability unchanged; exact system_reasons keys and allowed entry point.
-- No invented access, cross-system connection, data transfer, capability or business process.
+- No invented access, capability or business process; a link between "yes" systems that BRIEF does not record is an assumption.
 - Essential missing details listed as assumptions and kept conditional; no safeguard is assumed missing to enlarge the impact.
 - Scenario, risk, title and system reasons describe the same event and category.
 - Evidence comes only from the unambiguous cited entry, appears only in evidence_statement and contains no markers or prohibited identifiers.
@@ -235,7 +232,6 @@ RETURN ONLY THIS VALID JSON OBJECT
     "1": "holds",
     "2": "holds",
     "3": "holds",
-    "4": "holds",
     "5": "holds",
     "6": "holds",
     "7": "holds",
@@ -252,7 +248,7 @@ For each rule, return "holds" or:
 Quote exact scenario wording. Do not infer violations from style, missing preferred wording, or unstated possibilities. Each rule gets one verdict.
 
 REVIEW PROCEDURE
-Extract from PLAN the exact asset, attacker, threat_type/threat, category/category shape, systems/applicability, entry points, critical service, and evidence. For each item of PLAN.threat.threat_actions answer in `threat_actions`: "carried out" only when `scenario_statement` describes the attacker doing it, in any words (judge the meaning, not the list's wording; of alternatives an item joins with "or", one is enough); "only named" when it appears only in the threat's name or a label; "missing" otherwise. Without that list, answer {} and split PLAN's threat name into the actions it states yourself (each act the name joins with "and", "with" or a comma is one action; two names for the same act are one action; a word that only describes the target, account or means is not an action; of alternatives joined by "or", one is enough) and check that `scenario_statement` carries out each as the attacker's action; naming the threat is not carrying it out. Identify the scenario's main harmful action and primary impact. Check all eight rules independently. Decide `same_threat` and `same_impact` separately. Rules 1–8, `same_threat` and `same_impact` judge every SCENARIO field except `evidence_statement`, which only `evidence_supported` judges. Return JSON only.
+Extract from PLAN the exact asset, attacker, threat_type/threat, category/category shape, systems/applicability, entry points, critical service, and evidence. For each item of PLAN.threat.threat_actions answer in `threat_actions`: "carried out" only when `scenario_statement` describes the attacker doing it, in any words (judge the meaning, not the list's wording; of alternatives an item joins with "or", one is enough); "only named" when it appears only in the threat's name or a label; "missing" otherwise. Without that list, answer {} and split PLAN's threat name into the actions it states yourself (each act the name joins with "and", "with" or a comma is one action; two names for the same act are one action; a word that only describes the target, account or means is not an action; of alternatives joined by "or", one is enough) and check that `scenario_statement` carries out each as the attacker's action; naming the threat is not carrying it out. Identify the scenario's main harmful action and primary impact. Check all seven rules (1-3 and 5-8) independently. Decide `same_threat` and `same_impact` separately. Rules 1-3 and 5-8, `same_threat` and `same_impact` judge every SCENARIO field except `evidence_statement`, which only `evidence_supported` judges. Return JSON only.
 
 RULE 1 — SAME THREAT, NO SECOND THREAT
 The scenario must carry out PLAN's specified threat in recognisable meaning and add no second threat/objective (an action, use or demand the threat's name states is part of the threat). Initial access (e.g., an already-held stolen login) is a precondition. A variant or technique of the specified threat does not itself break this rule. Broken when an action the threat's name states (split as the REVIEW PROCEDURE says) is missing or only named, not carried out as the attacker's action, or when the primary impact comes from an added step that is not part of the threat (a precursor or side action). Using access the threat only obtains (a stolen credential, secret or session) to do something its name does not state is such an added step.
@@ -262,12 +258,6 @@ No attacker or real-world group other than PLAN's specified attacker may be pres
 
 RULE 3 — SYSTEM NAMES AND COVERAGE
 No unlisted supporting system may be named. The asset itself may be named. `system_reasons` must cover every PLAN.supporting_systems entry, including "no" systems and any other systems explicitly included in the plan's system list. Generic descriptions are not system names unless listed. Components, interfaces, data, people by role, and attacker tools are not supporting systems by themselves.
-
-RULE 4 — NO CROSS-SYSTEM LINKS
-Broken only when SCENARIO says that two of PLAN's supporting systems are linked:
-- data, commands, files or records pass from one to another, or one depends on, controls or coordinates with another;
-- one credential, secret, token, session, account or access works on more than one of them (e.g., "the same stolen secrets" used on two systems, or a foothold on one used to reach another), whoever uses it.
-Never a link by itself: the same attacker on several systems, each with its own access; the same kind of action, weakness or protocol on each; data or effects reaching the asset, and the consequence the systems share there; anything sent to the attacker's own machines; the attacker putting together what it took; the asset itself, which is not a supporting system. Quote the words that say the link; a link you have to guess is not one.
 
 RULE 5 — CATEGORY-ALIGNED PRIMARY IMPACT
 The primary impact must match PLAN's category: Spoofing = loss of identity/authenticity assurance; Tampering = loss of trust in data/configuration/control logic; Repudiation = loss of accountability/traceability; Information Disclosure = information exposure; Denial of Service = availability disruption/loss; Elevation of Privilege = loss of control over a permission boundary. Judge primary impact, not incidental consequences.
@@ -289,38 +279,17 @@ INDEPENDENT VERDICTS
 
 EXAMPLES
 - Rule 1 violation: "Before carrying out the stated attack, the attacker also alters the stored records so they can no longer be trusted." An added step, not the threat's own action, causes the impact.
-- Compliant: "Holding a login for System A ... Holding a separate account for System B ..." Independent access.
-- Compliant: "The same attacker could also change the settings on System B." The same attacker is not a link.
-- Compliant: "Both changes could leave the asset showing a false picture." A shared consequence at the asset.
-- Compliant: "The copied records could be sent to a server the attacker controls." The attacker's own machine.
-- Rule 4 violation: "The same stolen token is then used on System B." A token crosses systems.
-- Rule 4 violation: "Bad data from System A could then spread to System B." Data moves between systems.
 - Compliant risk: "Operators may have to run the process manually" or "Restoration could take several days." Response/recovery consequences.
 - Rule 6 violation: "The exposed data could help the attacker plan a disruption." Describes a further use of information, not the primary impact's consequence.
 
 REVIEWER FINAL CHECK
-Ensure all eight rules have verdicts; `threat_actions` has one answer for each item of PLAN.threat.threat_actions ({} without that list); every broken verdict quotes exact scenario words; `same_threat`, `same_impact` and `evidence_supported` follow their narrow independent definitions; JSON has exactly the required top-level keys and no extra text.
+Ensure all seven rules (1-3 and 5-8) have verdicts; `threat_actions` has one answer for each item of PLAN.threat.threat_actions ({} without that list); every broken verdict quotes exact scenario words; `same_threat`, `same_impact` and `evidence_supported` follow their narrow independent definitions; JSON has exactly the required top-level keys and no extra text.
 '''
 # Added to the reviewer's prompt when no EVIDENCE is given.
 no_evidence = '''
 
 No EVIDENCE is given: any [n] marker or real-world event breaks rule 8; evidence_supported is false.
 '''
-
-[scenario.link_check]
-# Asked when the reviewer finds a Rule 4 break; SYSTEMS and SCENARIO follow the text.
-text = '''
-Decide whether SCENARIO says that two of SYSTEMS are linked. Read all of it: the title, the statements, the assumptions and the system reasons.
-Linked means the words say one of these:
-- data, commands, files or records pass from one of them to another;
-- one of them depends on, controls or coordinates with another;
-- one credential, secret, token, session, account or access works on more than one of them, e.g., one access or session reused on several of them;
-- the attacker moves from one of them to another: a foothold, session or malware on one used to reach another.
-Not linked, when nothing above is also said: the same attacker on each, with its own access there; the same kind of action, weakness or protocol on each; data or effects reaching the asset, or a consequence the systems share; anything sent to the attacker's own machines; the attacker putting together what it took.
-Judge only what the words say: a link you have to guess is not one.
-Return {"linked": true or false, "systems": ["<one system>", "<the other>"], "what": "<what passes, or how one depends on the other>", "quote": "<the exact words of SCENARIO that say it>"}; "systems": [], "what": "" and "quote": "" when not linked.
-'''
-system = '''You check one claim about a cyber threat scenario: are two of its systems linked in its words. Answer with one JSON object only.'''
 
 [remediation.plan]
 text = '''

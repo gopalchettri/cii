@@ -766,7 +766,7 @@ def test_one_number_versions_every_prompt() -> None:
 def test_every_prompt_has_text_and_the_file_carries_the_version() -> None:
     """app/prompts.toml: every section has a non-empty text, and its version is PromptVersion.NUMBER."""
     sections = [prompt for group in PROMPTS.values() if isinstance(group, dict) for prompt in group.values()]
-    assert len(sections) == 8 and all(section["text"].strip() for section in sections)
+    assert len(sections) == 7 and all(section["text"].strip() for section in sections)
     assert PROMPTS["version"] == PromptVersion.NUMBER
 
 
