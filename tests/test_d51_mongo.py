@@ -241,7 +241,8 @@ def _settle_with(spy: SimpleNamespace) -> None:
     """The sweep's settle step reading tsg_scenarios through `spy`, which finds nothing, so no session is
     read."""
     scenarios = ThreatScenarioRepository(spy)  # type: ignore[arg-type]
-    WorkControlRepository(None, scenarios, RemediationRepository()).settle_stopped_scenario_sessions()  # type: ignore[arg-type]
+    work = WorkControlRepository(None, scenarios, RemediationRepository(), None)  # type: ignore[arg-type]
+    work.settle_stopped_scenario_sessions()
 
 
 def test_the_sweep_never_reads_controls_failed_for_good() -> None:
