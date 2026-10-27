@@ -740,7 +740,14 @@ def _drafted(chat: ChatModel, task: AiTask, brief: WriterBrief, prompt: ChatProm
         if brief.threat_actions
         else None
     )
-    draft: ScenarioDraft = ask_ai_and_check(chat, task, prompt, read, first_answer_check=acts)
+    draft: ScenarioDraft = ask_ai_and_check(
+        chat,
+        task,
+        prompt,
+        read,
+        first_answer_check=acts,
+        reuse_earlier_answer=True,  # a re-delivery reads its draft back; a new version is a new epoch
+    )
     return draft
 
 

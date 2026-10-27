@@ -144,7 +144,8 @@ class PromptVersion:
     REMEDIATION: Final = f"remediation-{NUMBER}"  # every remediation plan version
 
 
-#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a retry differs.
+#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a new action
+#: (a new epoch) gets a new answer, while a re-delivery of the same job reads its accepted answer back.
 CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,

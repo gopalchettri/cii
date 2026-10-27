@@ -25,7 +25,7 @@ class ScenarioStatus(StrEnum):
 
 
 class ScenarioOutcome(StrEnum):
-    """tsg_scenarios_total{outcome}: what each save settled for its path."""
+    """tsg_scenarios_total{outcome}: what each attempt settled for its path, counted once."""
 
     WRITTEN = "written"
     BLOCKED = "blocked"

@@ -58,42 +58,56 @@ class PlanProgress:
             raise LeaseLost(self._run_id)
 
     def abandon(
-        self, path_id: str, state: dict[str, Any], reason: str, threats: dict[str, dict[str, Any]]
+        self,
+        path_id: str,
+        state: dict[str, Any],
+        reason: str,
+        threats: dict[str, dict[str, Any]],
+        card: ScenarioOutcome | None = None,
     ) -> str | None:
-        """Give a path up for good, logged and counted; when the set's budget allows and a reserve exists, the
-        reserve takes its place in the same fenced write. Return the reserve's id, or None."""
+        """Give a path up for good, logged and counted with its last `card`; when the set's budget allows and
+        a reserve exists, the reserve takes its place in the same fenced write. Return its id, or None."""
         log.warning(
             LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"], reason=reason
         )
-        metrics.SCENARIOS.labels(ScenarioOutcome.ABANDONED).inc()
+        counted = (ScenarioOutcome.ABANDONED,) if card is None else (card, ScenarioOutcome.ABANDONED)
         states = {path_id: state | {"abandoned_reason": reason}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
         in_set = [path for key, path in self.paths.items() if key in self._set]
         reserve = best_reserve(self.paths.values(), threats, self._set) if budget_left(in_set) else None
         if reserve is None:
-            self.record(states)
+            self.record(states, counted=counted)
             return None
         replaced = {"selected": False, "unselected_reason": UnselectedReason.REPLACED_AFTER_FAILURE}
         states[path_id] |= replaced | {"replaced_by": reserve["path_id"]}
         states[reserve["path_id"]] = {"selected": True, "unselected_reason": None, "replaces": path_id}
         self._set.add(reserve["path_id"])
-        self.record(states, {"job.set": sorted(self._set)})
+        self.record(states, {"job.set": sorted(self._set)}, counted)
         return str(reserve["path_id"])
 
-    def leave_for_next_set(self, path_id: str, state: dict[str, Any]) -> None:
-        """Keep a path open but out of the set being written, so only a later set writes it."""
+    def leave_for_next_set(self, path_id: str, state: dict[str, Any], card: ScenarioOutcome) -> None:
+        """Keep a path open but out of the set being written, so only a later set writes it; its `card`
+        counted."""
         # ponytail: best_reserve may still pick it as this set's spare; flag it if spares must be fresh
         self._set.discard(path_id)
-        self.record({path_id: state | {"abandoned": False}}, {"job.set": sorted(self._set)})
+        self.record({path_id: state | {"abandoned": False}}, {"job.set": sorted(self._set)}, (card,))
 
-    def record(self, states: dict[str, dict[str, Any]], also: dict[str, Any] | None = None) -> None:
+    def record(
+        self,
+        states: dict[str, dict[str, Any]],
+        also: dict[str, Any] | None = None,
+        counted: tuple[ScenarioOutcome, ...] = (),
+    ) -> None:
         """Save attack path states, the plan's figures, the scenario counts and the plan note in one fenced
-        write, then send a live update. `also`: more fields for the same write."""
+        write, then count `counted` in tsg_scenarios_total (only the delivery whose write is taken does) and
+        send a live update. `also`: more fields for the same write."""
         for attack_path_id, state in states.items():
             self.paths[attack_path_id].update(state)
         figures = plan_counts(self.paths.values())
         self._sessions.update_scenario_session_plan(self._lease, states, figures, also)
+        for outcome in counted:
+            metrics.SCENARIOS.labels(outcome).inc()
         publish_session_status(self._run_id)
 
     def continue_or_finish(self) -> None:

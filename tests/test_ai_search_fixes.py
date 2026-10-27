@@ -1,4 +1,4 @@
-"""The shared library build under no job's lease, temperature-0 answers read back on a retry, and AI log
+"""The shared library build under no job's lease, a job's AI answers read back on a retry, and AI log
 fields that keep the job's task and show the limiter."""
 
 import threading
@@ -132,8 +132,8 @@ def test_a_retry_of_the_same_epoch_reads_back_the_split_and_a_new_prompt_is_aske
     assert len(calls) == 2
 
 
-def test_the_reviewer_split_and_remediation_plan_reuse_answers_and_the_writer_asks_afresh() -> None:
-    """The temperature-0 asks pass reuse_earlier_answer; the scenario writer never does."""
+def test_the_reviewer_split_remediation_plan_and_writer_reuse_answers() -> None:
+    """Every job ask passes reuse_earlier_answer: the scenario writer too (a new version is a new epoch)."""
     reuse_of: dict[AiTask, bool] = {}
 
     def recording_ask(task: AiTask, *_args: Any, reuse_earlier_answer: bool = False, **_options: Any) -> Any:
@@ -153,7 +153,7 @@ def test_the_reviewer_split_and_remediation_plan_reuse_answers_and_the_writer_as
         AiTask.THREAT_ACTIONS: True,
         AiTask.PLAN_CHECK: True,
         AiTask.REMEDIATION_PLAN: True,
-        AiTask.WRITE_SCENARIO: False,
+        AiTask.WRITE_SCENARIO: True,
     }
 
 

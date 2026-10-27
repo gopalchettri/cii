@@ -54,12 +54,6 @@ log = structlog.get_logger(__name__)
 PathOutcome = tuple[WriterBrief, WrittenScenario] | PathFailure
 #: What one path's work raises instead of returning a card: the job retries, fails or (lease lost) stops.
 _RAISED_FROM_A_PATH: tuple[type[Exception], ...] = (*TEMPORARY_ERRORS, JobFailed, LeaseLost)
-#: tsg_scenarios_total's outcome for each saved status.
-_OUTCOMES = {
-    ScenarioStatus.DONE: ScenarioOutcome.WRITTEN,
-    ScenarioStatus.BLOCKED: ScenarioOutcome.BLOCKED,
-    ScenarioStatus.FAILED: ScenarioOutcome.FAILED,
-}
 
 
 class PathWriter:
@@ -147,11 +141,11 @@ def _served_by(scenario: str) -> dict[str, Any]:
 
 
 def _log_saved(record: dict[str, Any], saved: bool, reason: str) -> None:
-    """Log one saved record and count it."""
+    """Log one saved record; count a written one (saved once: a card is counted with its path's state)."""
     shown = {"path_id": record["path_id"], "status": record["status"], "replaces": record.get("replaces")}
     log.info(LogEvent.WRITER_SCENARIO_SAVED, saved=saved, blocker=reason, **shown)
-    if saved:
-        metrics.SCENARIOS.labels(_OUTCOMES[record["status"]]).inc()
+    if saved and record["status"] == ScenarioStatus.DONE:
+        metrics.SCENARIOS.labels(ScenarioOutcome.WRITTEN).inc()
 
 
 class PathSaver:
@@ -212,14 +206,15 @@ class PathSaver:
             return
         # The next attempt's card replaces this one (the same id): why this one was rejected stays here.
         state = {"attempts": path["attempts"] + 1, "last_blocker": reason}
+        card = ScenarioOutcome(record["status"])  # counted with the path's state, by the write that is taken
         if reason == ErrorCode.UNAVAILABLE and state["attempts"] < Generation.MAX_PATH_ATTEMPTS:
-            self._progress.leave_for_next_set(path_id, state)  # an outage passes: a later set writes it
+            self._progress.leave_for_next_set(path_id, state, card)  # an outage passes: a later set writes it
             return
         # The writer's own retry is off; uncomment to retry a blocked path later, up to MAX_PATH_ATTEMPTS.
         # if not (final or state["attempts"] >= Generation.MAX_PATH_ATTEMPTS):
         #     self._progress.record({path_id: state | {"abandoned": False}})
         #     return
-        self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats)
+        self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats, card)
 
     def _versions_to_write(self, replaces: dict[str, str]) -> list[str]:
         """A regenerate's paths still to write. A next version an earlier delivery saved is finished here; a
