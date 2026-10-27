@@ -4,6 +4,7 @@ the job monitor answers."""
 from enum import StrEnum
 from typing import Final
 
+from app.core.constants.common import Collection
 from app.core.constants.jobs import AdminJobKind, TaskName
 
 
@@ -47,6 +48,16 @@ class AbandonReason(StrEnum):
 
     WORKER_STOPPED = "abandoned"  # its worker stopped renewing its lease on every attempt
     NEVER_STARTED = "never_started"  # sent again and again, or left queued, and no worker ever took it
+
+
+#: The collection whose record carries each task's leased job: a refused send is noted there. A controls send
+#: has no job record of its own (its scenarios carry it), so it is not listed.
+JOB_RECORD_COLLECTIONS: Final[dict[str, Collection]] = {
+    TaskName.FIND_THREATS: Collection.SESSIONS,
+    TaskName.WRITE_SCENARIOS: Collection.SESSIONS,
+    TaskName.WRITE_PLAN: Collection.REMEDIATIONS,
+    TaskName.MAP_SERVICES: Collection.SERVICE_MAPPINGS,
+}
 
 
 def module_of(kind: str) -> str:

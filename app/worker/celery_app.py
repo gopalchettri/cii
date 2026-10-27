@@ -10,13 +10,18 @@ Start (one deployment per queue; dev gives the mapper and maintenance separate w
     celery -A app.worker worker --pool=threads -c 4 -Q tsg_threats
     celery -A app.worker beat"""
 
+import contextlib
+from datetime import timedelta
+
 import structlog
 from celery import Celery, current_task
 from kombu.exceptions import OperationalError as BrokerUnavailable
 
 from app.core.broker import shared_celery_conf
+from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
+    JOB_RECORD_COLLECTIONS,
     TASK_ROUTES,
     Cache,
     Controls,
@@ -27,8 +32,10 @@ from app.core.constants import (
     TaskName,
     Worker,
 )
-from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, JobFailed
+from app.core.database import get_mongodb
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, REDIS_UNAVAILABLE_ERRORS, JobFailed
 from app.core.logging import current_request_id
+from app.data_access.jobs.job_repository import JobRepository
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
@@ -147,10 +154,25 @@ def send_admin_job(task: TaskName, job_id: str) -> bool:
 
 def send_job(task: TaskName, record_id: str, epoch: int, priority: int = Worker.NEW_WORK_PRIORITY) -> bool:
     """Queue a job whose record already says queued: ids only, the record holds the data. False when the
-    broker refused it (only logged: the reaper re-sends every record left queued)."""
+    broker refused it: logged and shown on the job's status, and the reaper re-sends every record left
+    queued."""
     try:
         celery_app.send_task(task, args=[record_id, epoch], headers=_request_id_header(), priority=priority)
     except (BrokerUnavailable, *REDIS_UNAVAILABLE_ERRORS):
         log.warning(LogEvent.JOB_SEND_FAILED, task=task, record_id=record_id, exc_info=True)
+        _show_unsent(task, record_id, epoch)
         return False
     return True
+
+
+def _show_unsent(task: TaskName, record_id: str, epoch: int) -> None:
+    """The refused send as the job's retry notice until the reaper's re-send. A task with no job record of
+    its own, or MongoDB down too, shows nothing (never raised: the caller's change is already saved)."""
+    collection = JOB_RECORD_COLLECTIONS.get(task)
+    if collection is None:
+        return
+    retry_at = utc_now() + timedelta(seconds=Lease.REQUEUE_QUEUED_AFTER_SECONDS)
+    # ponytail: the notice stays until the claim, even once a later re-send got through; clear it in the
+    # reaper's re-send if a stale "queue unreachable" ever confuses a user
+    with contextlib.suppress(*MONGO_UNAVAILABLE_ERRORS):
+        JobRepository(get_mongodb()[collection]).note_unsent_job(record_id, task, epoch, retry_at)

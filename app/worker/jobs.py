@@ -39,7 +39,7 @@ from app.core.exceptions import (
     LeaseLost,
     WaitingForAnotherJob,
 )
-from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields
+from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields, retry_notice
 from app.realtime.publisher import publish_mapping_status, publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
 from app.worker.lease_renewal import keep_lease_alive
@@ -137,10 +137,10 @@ def run_leased_job(
     `fields` the work reads. Every status change is announced to the record's subscribers."""
     publish = JOB_COLLECTIONS[collection]
     lease = _claim_or_ignore(task, collection, record_id, epoch, fields)
-    structlog.contextvars.bind_contextvars(  # the job (record, epoch, stage): a re-send finds its AI answers
-        record_id=record_id, epoch=epoch, task=task.name, attempt=lease.attempts
-    )
-    publish(record_id)
+    # A waiting job's look reads queued: nothing changed. ponytail: one that then runs is announced only at
+    # its end; its streams see it running at their next re-read (Realtime.RECHECK_SECONDS)
+    if not lease.record["job"].get("waiting"):
+        publish(record_id)
     try:
         with keep_lease_alive(lease):
             work(lease)
@@ -189,16 +189,16 @@ def _end_lost_delivery(collection: Collection, record_id: str) -> NoReturn:
 def _claim_or_ignore(
     task: Task, collection: Collection, record_id: str, epoch: int, fields: Iterable[str]
 ) -> JobLease:
-    """This delivery's lease on the job, its wait since due counted. A MongoDB outage retries the delivery;
-    one that comes shortly before its job is due is sent again for then; a job another delivery owns (or
-    finished) raises Ignore."""
+    """This delivery's lease on the job, its wait since due counted and its log lines bound to the job. A
+    MongoDB outage retries the delivery; one that comes shortly before its job is due is sent again for then;
+    a job another delivery owns (or finished) raises Ignore."""
     try:
         jobs = JobRepository(get_mongodb()[collection])
-        worker = getattr(task.request, "hostname", "") or ""
-        lease = jobs.claim_job(record_id, epoch, task.name, task.request.id, fields, worker)
+        worker, retries = getattr(task.request, "hostname", "") or "", getattr(task.request, "retries", 0)
+        lease = jobs.claim_job(record_id, epoch, task.name, task.request.id, fields, worker, retries)
     except MONGO_UNAVAILABLE_ERRORS as exc:
-        # Nothing is owned yet, so nothing to give back: the same message simply comes again after the first
-        # back-off instead of waiting for the reaper.
+        # The claim may be saved though its answer was lost: this retry (a higher retry count) takes its own
+        # claim back after the first back-off, never waiting for the reaper (job_repository._claimable).
         raise _retry_later(task, exc, Lease.RETRY_DELAYS_SECONDS[0]) from exc
     if lease is None:
         why = jobs.why_not_claimed(record_id, epoch, task.name)  # not due, missing, another epoch...
@@ -219,6 +219,9 @@ def _claim_or_ignore(
     if due_at := lease.record["job"].get("due_at"):
         waited = (utc_now() - due_at).total_seconds()
         metrics.record_queue_wait(task.name, waited)
+    structlog.contextvars.bind_contextvars(  # the job (record, epoch, stage): a re-send finds its AI answers
+        record_id=record_id, epoch=epoch, task=task.name, attempt=lease.attempts
+    )
     if request_id := lease.record["job"].get("request_id"):
         structlog.contextvars.bind_contextvars(request_id=request_id)  # also for a re-send without header
     return lease
@@ -232,7 +235,8 @@ def _retry_or_fail(task: Task, lease: JobLease, exc: Exception, publish: Callabl
         backoff = Lease.RETRY_DELAYS_SECONDS
         delay = backoff[min(lease.attempts, len(backoff)) - 1]
         due_at = utc_now() + timedelta(seconds=delay)
-        if not _give_back(lease, due_at, {"job.retry": _retry_notice(lease, exc, due_at)}):
+        notice = retry_notice(outage_reason(exc), describe_outage(exc), lease.attempts, due_at)
+        if not _give_back(lease, due_at, {"job.retry": notice}):
             return False
         log.warning(
             LogEvent.JOB_RETRY_SCHEDULED,
@@ -253,23 +257,26 @@ def _wait_for_other_job(
     task: Task, lease: JobLease, exc: WaitingForAnotherJob, collection: Collection
 ) -> NoReturn:
     """Another job holds what this one needs, a normal step and not an outage: give the job back with no
-    attempt used and no retry notice, and look again after the first back-off delay. Raises JobWaiting, or
-    ends the delivery when the job is no longer its own."""
+    attempt used and no retry notice, marked waiting (it reads queued, and its looks are not announced),
+    and look again after the first back-off delay. Raises JobWaiting, or ends the delivery when the job is
+    no longer its own."""
     # ponytail: polls at the first back-off (cheap); wake waiters if many ever wait
     delay = Lease.RETRY_DELAYS_SECONDS[0]
     due_at = utc_now() + timedelta(seconds=delay)
-    if not _give_back(lease, due_at, {"job.attempts": lease.attempts - 1, "job.retry": None}):
+    waiting = {"job.attempts": lease.attempts - 1, "job.retry": None, "job.waiting": True}
+    if not _give_back(lease, due_at, waiting):
         _end_lost_delivery(collection, lease.record_id)
     log.info(LogEvent.JOB_WAITING, record_id=lease.record_id, delay_seconds=delay, message=str(exc))
-    JOB_COLLECTIONS[collection](lease.record_id)
+    if not lease.record["job"].get("waiting"):  # only the wait's start is news
+        JOB_COLLECTIONS[collection](lease.record_id)
     task.retry(countdown=delay, throw=False, priority=Worker.NEXT_STAGE_PRIORITY)
     raise JobWaiting from exc
 
 
 def _give_back(lease: JobLease, due_at: datetime, changes: dict[str, Any]) -> bool:
     """The job queued again for `due_at` with `changes`; False when it is no longer this delivery's. If
-    MongoDB is down too, the record stays running with a live lease: the next delivery finds it still owned
-    and exits, and the reaper re-queues it once the lease runs out."""
+    MongoDB is down too, the record stays running with a live lease: this delivery's own retry takes it
+    back (job_repository._claimable), while any other delivery finds it still owned and exits."""
     queued = {"status": Status.QUEUED, "job.due_at": due_at, "job.lease_until": None}
     with contextlib.suppress(*MONGO_UNAVAILABLE_ERRORS):
         try:
@@ -277,18 +284,6 @@ def _give_back(lease: JobLease, due_at: datetime, changes: dict[str, Any]) -> bo
         except LeaseLost:
             return False
     return True
-
-
-def _retry_notice(lease: JobLease, exc: Exception, retry_at: datetime) -> dict[str, Any]:
-    """What the status shows until the next try is claimed (a RetryNotice but its stage): why it waits, which
-    try comes when."""
-    return {
-        "reason": outage_reason(exc),
-        "message": describe_outage(exc),
-        "attempt": lease.attempts,
-        "max_attempts": Lease.MAX_ATTEMPTS,
-        "retry_at": retry_at,
-    }
 
 
 def _retry_later(task: Task, exc: Exception, delay: int) -> Exception:

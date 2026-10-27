@@ -138,13 +138,14 @@ class RemediationStatus(BaseModel):
         "job.epoch": 1,
         "job.error": 1,
         "job.retry": 1,
+        "job.waiting": 1,
         "updated_at": 1,
     }
 
     @classmethod
     def from_record(cls, record: dict[str, Any], scenario_accepted: bool) -> "RemediationStatus":
         """The status of a stored record whose scenario is (or is no longer) accepted."""
-        status, decision = Status(record["status"]), Decision(record["decision"])
+        status, decision = _shown_status(record), Decision(record["decision"])
         job = record.get("job") or {}
         return cls(
             remediation_id=record["_id"],
@@ -180,10 +181,17 @@ def _overall(status: Status, decision: Decision, scenario_accepted: bool) -> Rem
     return RemediationProgress.ACCEPTED if decision == Decision.ACCEPTED else RemediationProgress.REJECTED
 
 
+def _shown_status(record: dict[str, Any]) -> Status:
+    """The latest version's status as shown: queued while its job waits for another job, though each look
+    briefly claims it (running)."""
+    status = Status(record["status"])
+    return Status.QUEUED if status == Status.RUNNING and (record.get("job") or {}).get("waiting") else status
+
+
 def version_status(record: dict[str, Any], item: dict[str, Any]) -> Status:
     """A version's status: the latest version's lives at the top of the record, an older one's on its item."""
     latest = item["version"] == record["job"]["epoch"]
-    return Status(record["status"] if latest else item["status"])
+    return _shown_status(record) if latest else Status(item["status"])
 
 
 def _renamed_status(value: Any) -> Any:
@@ -415,6 +423,7 @@ class RemediationSummary(BaseModel):
             "title",
             "risk_level",
             "job.epoch",
+            "job.waiting",
             "status",
             "accepted_version",
             "decision",
@@ -433,7 +442,7 @@ class RemediationSummary(BaseModel):
             | {
                 "remediation_id": record["_id"],
                 "latest_version": record["job"]["epoch"],
-                "latest_status": record["status"],
+                "latest_status": _shown_status(record),
             }
         )
 
