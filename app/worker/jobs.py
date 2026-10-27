@@ -266,7 +266,7 @@ def _wait_for_other_job(
         raise JobFailed(ErrorCode.JOB_ABANDONED, message) from exc
     # ponytail: polls at the first back-off (cheap); wake waiters if many ever wait
     delay = Lease.RETRY_DELAYS_SECONDS[0]
-    waiting = {"job.attempts": lease.attempts - 1, "job.retry": None, "job.waiting": True}
+    waiting: dict[str, Any] = {"job.attempts": lease.attempts - 1, "job.retry": None, "job.waiting": True}
     waiting["job.waiting_since"] = since
     if not _give_back(lease, now + timedelta(seconds=delay), waiting):
         _end_lost_delivery(collection, lease.record_id)
