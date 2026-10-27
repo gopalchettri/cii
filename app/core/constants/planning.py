@@ -244,6 +244,7 @@ class Controls:
     RETRY_FAILED_AFTER_SECONDS: Final = 1_800
     SWEEP_EVERY_SECONDS: Final = 300
     RESEND_QUEUED_AFTER_SECONDS: Final = 600  # a queued mapping no worker took: its message was lost
+    MAX_MESSAGE_RETRIES: Final = 3  # a delivery's outage retries before any claim (owner); the sweep re-sends
     PER_DELIVERY: Final = Generation.WRITER_BATCH  # mappings one delivery makes before the run's next turn
 
 

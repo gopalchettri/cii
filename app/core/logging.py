@@ -33,6 +33,13 @@ def mask_secret_values(_logger: Any, _name: str, event: MutableMapping[str, Any]
     return event
 
 
+def current_request_id() -> str | None:
+    """The id of the API request this code runs for (bound by the middleware, or by a worker from the job's
+    record); None outside one."""
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    return str(request_id) if request_id else None
+
+
 #: Added to every line, ours and the libraries'.
 _EVERY_LINE: Final = (
     structlog.contextvars.merge_contextvars,

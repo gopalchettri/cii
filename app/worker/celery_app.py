@@ -28,6 +28,7 @@ from app.core.constants import (
     Worker,
 )
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, JobFailed
+from app.core.logging import current_request_id
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
@@ -122,7 +123,7 @@ REQUEST_ID_HEADER = "tsg_request_id"
 def _request_id_header() -> dict[str, str]:
     """The id of the API request sending a job (bound by the API middleware), so one id finds the request and
     every log line of the work it started; {} outside a request (the reaper, beat)."""
-    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    request_id = current_request_id()
     return {REQUEST_ID_HEADER: request_id} if request_id else {}
 
 
