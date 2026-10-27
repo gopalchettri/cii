@@ -46,7 +46,7 @@ class ServiceMapperService:
         mappings: MappingRepository,
         history: MappingHistoryRepository,
         settings: Settings,
-        send_job: Callable[[TaskName, str, int], None],
+        send_job: Callable[[TaskName, str, int], bool],
         catalog: ServiceCatalogRepository,
         audit: AuditRepository,
         publish: Callable[[str], None],

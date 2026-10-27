@@ -71,15 +71,16 @@ celery_app.conf.update(
     worker_hijack_root_logger=False,
     broker_connection_retry_on_startup=True,
     beat_schedule={
+        # Three intervals to expire, not one: a worker clock a little ahead of beat's would drop every pass.
         TaskName.REAP: {
             "task": TaskName.REAP,
             "schedule": Lease.REAPER_EVERY_SECONDS,
-            "options": {"expires": Lease.REAPER_EVERY_SECONDS},
+            "options": {"expires": 3 * Lease.REAPER_EVERY_SECONDS},
         },
         TaskName.RETRY_CONTROLS: {
             "task": TaskName.RETRY_CONTROLS,
             "schedule": Controls.SWEEP_EVERY_SECONDS,
-            "options": {"expires": Controls.SWEEP_EVERY_SECONDS},
+            "options": {"expires": 3 * Controls.SWEEP_EVERY_SECONDS},
         },
         TaskName.BUILD_LIBRARY_INDEXES: {
             "task": TaskName.BUILD_LIBRARY_INDEXES,
@@ -144,10 +145,12 @@ def send_admin_job(task: TaskName, job_id: str) -> bool:
     return True
 
 
-def send_job(task: TaskName, record_id: str, epoch: int, priority: int = Worker.NEW_WORK_PRIORITY) -> None:
-    """Queue a job whose record already says queued: ids only, the record holds the data. A failed send is
-    only logged, because the reaper re-sends every record left queued (Lease.REQUEUE_QUEUED_AFTER_SECONDS)."""
+def send_job(task: TaskName, record_id: str, epoch: int, priority: int = Worker.NEW_WORK_PRIORITY) -> bool:
+    """Queue a job whose record already says queued: ids only, the record holds the data. False when the
+    broker refused it (only logged: the reaper re-sends every record left queued)."""
     try:
         celery_app.send_task(task, args=[record_id, epoch], headers=_request_id_header(), priority=priority)
     except (BrokerUnavailable, *REDIS_UNAVAILABLE_ERRORS):
         log.warning(LogEvent.JOB_SEND_FAILED, task=task, record_id=record_id, exc_info=True)
+        return False
+    return True

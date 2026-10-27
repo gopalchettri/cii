@@ -289,7 +289,7 @@ class JobRepository:
         """Move a queued job's due_at to now, counting the re-send when `counted` (or fail it with `error`),
         only while it is queued with the due_at the reaper read."""
         update = (
-            {"$set": {"job.due_at": now}, "$inc": {"job.resends": int(counted)}}
+            {"$set": {"job.due_at": now, "updated_at": now}, "$inc": {"job.resends": int(counted)}}
             if error is None
             else {"$set": {**failed_job_fields(self._records.name, error, now), "updated_at": now}}
         )
@@ -299,6 +299,11 @@ class JobRepository:
             "job.due_at": record["job"]["due_at"],
         }
         return bool(self._records.update_one(unchanged_since_read, update).modified_count)
+
+    def count_resend(self, record: dict[str, Any], resent_at: datetime) -> None:
+        """Count a re-send the broker took, while the job still waits with the due_at the re-send set."""
+        still_waiting = {"_id": record["_id"], "status": Status.QUEUED, "job.due_at": resent_at}
+        self._records.update_one(still_waiting, {"$inc": {"job.resends": 1}})
 
 
 def _claimable(record_id: str, epoch: int, task: str, now: datetime) -> dict[str, Any]:
