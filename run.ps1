@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Run or stop TSG v2 on this laptop: the API, the job worker, the maintenance worker, beat and the monitoring tools.
+    Run or stop TSG v2 on this laptop: the API, the job workers, the maintenance and reaper workers, beat and the
+    monitoring tools.
 
 .DESCRIPTION
     .\run.ps1            start everything, wait until /ready answers, open Grafana
@@ -58,13 +59,14 @@ $Monitoring = Join-Path $Root 'scripts\monitoring.py'
 $WorkerName = "scenarios@$env:COMPUTERNAME"  # named by module: logs/worker-scenarios.log
 $MapperWorkerName = "mapper@$env:COMPUTERNAME"
 $MaintenanceName = "maintenance@$env:COMPUTERNAME"
+$ReaperName = "reaper@$env:COMPUTERNAME"
 $ReadyUrl = 'http://127.0.0.1:8000/ready'
 $GrafanaUrl = 'http://localhost:3000/grafana/'
 
 # The commands of docs\RUNNING.md steps 8 and 9. The workers' names are explicit so stop can address them.
-# The maintenance worker has its own 3 threads (BLUEPRINT worker-maintenance, G198): the reaper and the controls
-# sweep never wait behind long jobs. With one worker for all queues, ten long mappings held every thread and a
-# lost job was never re-sent (live test 2026-10-11).
+# The reaper and the controls sweep have a worker of their own (worker-reaper): they never wait behind long
+# jobs. With one worker for all queues, ten long mappings held every thread and a lost job was never re-sent
+# (live test 2026-10-11); library builds and intelligence refreshes, up to an hour each, get the maintenance one.
 # tsg_controls stays in the job worker: the laptop's local CPU reranker is shared within one process.
 $Programs = [ordered]@{
     api         = @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000')
@@ -75,13 +77,16 @@ $Programs = [ordered]@{
                        '-Q', 'tsg_servicemapper', '-n', $MapperWorkerName, '--loglevel=INFO')
     maintenance = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '3',
                     '-Q', 'tsg_maintenance', '-n', $MaintenanceName, '--loglevel=INFO')
-    beat        = @('-m', 'celery', '-A', 'app.worker', 'beat', '--loglevel=INFO')
+    reaper      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
+                    '-Q', 'tsg_reaper', '-n', $ReaperName, '--loglevel=INFO')
+    beat       = @('-m', 'celery', '-A', 'app.worker', 'beat', '--loglevel=INFO')
 }
 # Settings a program's window gets on top of .env: each worker serves its metrics on its own port (9101 is the
 # VS Code debug worker's).
 $ProgramEnv = @{
     maintenance = @{ CII_WORKER_METRICS_PORT = '9102' }
     service_mapper = @{ CII_WORKER_METRICS_PORT = '9103' }
+    reaper = @{ CII_WORKER_METRICS_PORT = '9104' }
 }
 
 # PowerShell also takes the typographic apostrophes as quotes: each is doubled, or a folder such as
@@ -219,7 +224,7 @@ function Assert-CanStart {
         throw ("v1's worker or beat is running (process $($v1.ProcessId -join ', ')). v1 and v2 share Redis " +
                'databases 0 and 1: stop v1 first (its stop.ps1).')
     }
-    foreach ($port in 8000, 9100, 9102, 9103) {
+    foreach ($port in 8000, 9100, 9102, 9103, 9104) {
         $listener = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
                     Select-Object -First 1
         if ($listener) {
@@ -345,7 +350,7 @@ function Invoke-Start {
 
 function Invoke-Stop {
     $state = Read-State
-    $workers = @(foreach ($name in 'worker', 'service_mapper', 'maintenance') {
+    $workers = @(foreach ($name in 'worker', 'service_mapper', 'maintenance', 'reaper') {
         if ($state.Contains($name)) { try { Get-Owned $state[$name] } catch { $null } }
     }) | Where-Object { $_ }
     if ($workers -and -not (Test-Broker)) {
@@ -355,7 +360,7 @@ function Invoke-Stop {
         # stays "running" until its lease runs out (2 min), and /ready counts the dead worker for up to 1 min.
         Write-Host "Asking the workers to finish their running jobs (up to $DrainSeconds s)..." -ForegroundColor Cyan
         # A worker shuts down instead of answering, so celery reports "No nodes replied": expected.
-        $names = "$WorkerName,$MapperWorkerName,$MaintenanceName"
+        $names = "$WorkerName,$MapperWorkerName,$MaintenanceName,$ReaperName"
         Invoke-Native { & $Python -m celery -A app.worker control shutdown --destination $names --timeout 5 } |
             Out-Null
         $deadline = (Get-Date).AddSeconds($DrainSeconds)

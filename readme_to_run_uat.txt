@@ -60,7 +60,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 
 # 8. Start in this order: workers and beat FIRST, the API LAST
 #    (the API is "ready" only when every queue has a worker).
-#    Open 5 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
+#    Open 6 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
 
 #   The AI calls skip the corporate proxy by themselves: .env has CII_AI_BYPASS_PROXY=true (as v1's
 #   TSG_LITELLM_BYPASS_PROXY). Keep CII_LOG_LEVEL=INFO: DEBUG is for a short diagnosis only.
@@ -75,17 +75,23 @@ celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios,ts
 $env:CII_WORKER_METRICS_PORT = "9103"
 celery -A app.worker worker --pool=threads -c 2 -Q tsg_servicemapper -n mapper@%h --loglevel=INFO
 
-# Window 3 - maintenance worker (the reaper that re-sends lost jobs).
+# Window 3 - maintenance worker (library index builds, the intelligence refresh).
 #   !! RUN BOTH LINES, in this order, in the SAME window. The CII_WORKER_METRICS_PORT line gives this
 #   !! worker its own metrics port (9102). Without it the worker silently uses 9100, the job worker's port.
 #   !! After it starts, the first log line must say  "port": 9102  (if 9100, Ctrl+C and redo all lines).
 $env:CII_WORKER_METRICS_PORT = "9102"
 celery -A app.worker worker --pool=threads -c 3 -Q tsg_maintenance -n maintenance@%h --loglevel=INFO
 
-# Window 4 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
+# Window 4 - reaper worker (the reaper that re-sends lost jobs, the controls retry sweep; alone, never behind a long job).
+#   !! RUN BOTH LINES, in this order, in the SAME window: its own metrics port (9104), never the job worker's 9100.
+#   !! After it starts, the first log line must say  "port": 9104  (if 9100, Ctrl+C and redo both lines).
+$env:CII_WORKER_METRICS_PORT = "9104"
+celery -A app.worker worker --pool=threads -c 2 -Q tsg_reaper -n reaper@%h --loglevel=INFO
+
+# Window 5 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
 celery -A app.worker beat --loglevel=INFO
 
-# Window 5 - the API
+# Window 6 - the API
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 # 9. Check (browser)
@@ -176,14 +182,15 @@ python scripts/monitoring.py status
 
 # 13. Check that every celery worker is working (new window, .venv activated):
 python -c "from app.core.readiness import count_online_workers; from app.worker import ROUTED_QUEUES; print(count_online_workers(ROUTED_QUEUES))"
-#    each of tsg_threats, tsg_scenarios, tsg_controls, tsg_remediation, tsg_servicemapper, tsg_maintenance must show at least 1 (wait up to 20 s after start)
+#    each of tsg_threats, tsg_scenarios, tsg_controls, tsg_remediation, tsg_servicemapper, tsg_maintenance, tsg_reaper must show at least 1 (wait up to 20 s after start)
 celery -A app.worker inspect ping
-#    must answer pong from scenarios@..., mapper@... and maintenance@...
+#    must answer pong from scenarios@..., mapper@..., maintenance@... and reaper@...
 celery -A app.worker inspect active_queues
 #    scenarios@... serves tsg_threats + tsg_scenarios + tsg_controls + tsg_remediation; mapper@... serves tsg_servicemapper; maintenance@... serves
-#    tsg_maintenance (intelligence refresh, embeddings builds, the reaper). Each worker is named by its module:
+#    tsg_maintenance (intelligence refresh, embeddings builds); reaper@... serves tsg_reaper (the reaper, the controls retry sweep).
+#    Each worker is named by its module:
 #    its log file is logs/worker-<name>.log, and every job line carries module=<module> and worker=<name>@<host>.
-#    Beat is not in these checks: about 1 minute after it starts, the maint window must log tsg_reap, every minute.
+#    Beat is not in these checks: about 1 minute after it starts, the reaper window must log tsg_reap, every minute.
 #    Every job, queue and worker in one call (admin key; add &status=failed, &kind=tsg_map_services, &hours=72):
 curl.exe -H "X-Admin-Key: <CII_ADMIN_API_KEY>" "http://localhost:8000/v1/admin/jobs?status=queued&status=running&status=failed"
 #    One API call to its worker: take X-Request-ID from the API's answer, then

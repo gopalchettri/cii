@@ -8,7 +8,8 @@ class Queue(StrEnum):
     THREATS = "tsg_threats"
     SCENARIOS = "tsg_scenarios"
     CONTROLS = "tsg_controls"
-    MAINTENANCE = "tsg_maintenance"
+    MAINTENANCE = "tsg_maintenance"  # long admin jobs: library builds, intelligence refreshes
+    REAPER = "tsg_reaper"  # the reaper and the controls sweep alone: no long job takes their threads
     REMEDIATION = "tsg_remediation"
     SERVICEMAPPER = "tsg_servicemapper"
 
@@ -31,8 +32,8 @@ TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Cele
     TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
     TaskName.MAP_CONTROLS: {"queue": Queue.CONTROLS},
     TaskName.WRITE_PLAN: {"queue": Queue.REMEDIATION},
-    TaskName.REAP: {"queue": Queue.MAINTENANCE},
-    TaskName.RETRY_CONTROLS: {"queue": Queue.MAINTENANCE},
+    TaskName.REAP: {"queue": Queue.REAPER},
+    TaskName.RETRY_CONTROLS: {"queue": Queue.REAPER},
     TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
     TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
 }

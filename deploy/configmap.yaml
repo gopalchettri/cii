@@ -988,7 +988,7 @@ data:                                            # one key per file
           "id": 4,
           "type": "stat",
           "title": "Parts of the system",
-          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = library search, threat intelligence; reaper = the reaper and the controls retry sweep). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1074,6 +1074,18 @@ data:                                            # one key per file
               },
               "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_maintenance\"}), 1) or vector(-1)",
               "legendFormat": "Worker: maintenance",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "O",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_reaper\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: reaper",
               "instant": true,
               "range": false,
               "format": "time_series"

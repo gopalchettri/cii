@@ -105,7 +105,7 @@ oc -n ai-remediation get quota -o yaml | Select-String CrossNamespacePodAffinity
 
 **If a line is printed, or a later step says `insufficient quota to match these scopes`:** the cluster limits pods
 whose "spread over nodes" rule looks at another project, and every worker has such a rule (it keeps away from its
-twin). Send the cluster admin this: "Please allow at least 6 pods under the `CrossNamespacePodAffinity` quota scope
+twin). Send the cluster admin this: "Please allow at least 7 pods under the `CrossNamespacePodAffinity` quota scope
 in `ai-threatgen` and in `ai-remediation`." Wait for the answer before step 11.
 
 (Developers only: instead, remove the `namespaces:` line from each worker in `deploy\deploy_threatgen.yaml` and
@@ -346,8 +346,8 @@ see `NotFound`: that is fine. The API is down from here until step 12 is finishe
 ```powershell
 oc -n ai-threatgen scale deployment tsg-api celery-worker celery-worker-admin tsg-beat tsg-flower --replicas=0
 oc -n ai-remediation scale deployment celery-worker celery-exporter mssql-exporter mongodb-exporter --replicas=0
-oc -n ai-threatgen delete deployment api worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance beat --ignore-not-found
-oc -n ai-remediation delete deployment worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance --ignore-not-found
+oc -n ai-threatgen delete deployment api worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance worker-reaper beat --ignore-not-found
+oc -n ai-remediation delete deployment worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance worker-reaper --ignore-not-found
 oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
 oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
 oc -n ai-common delete route -l part-of=tsg-monitoring
@@ -402,7 +402,7 @@ oc apply -f deploy\deploy_remediation.yaml
 oc -n ai-remediation get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-remediation rollout status $_ --timeout=10m }
 ```
 
-**You should see:** 6 lines ending with `successfully rolled out` (one per worker).
+**You should see:** 7 lines ending with `successfully rolled out` (one per worker).
 
 **If a line times out:** see Part 5, "If something fails".
 
@@ -415,7 +415,7 @@ oc apply -f deploy\deploy_threatgen.yaml
 oc -n ai-threatgen get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
 ```
 
-**You should see:** 8 lines ending with `successfully rolled out` (the API, 6 workers, beat). This can take up to
+**You should see:** 9 lines ending with `successfully rolled out` (the API, 7 workers, beat). This can take up to
 6 minutes: pods wait for room in the quota while old pods stop.
 
 **If a line times out:** see Part 5, "If something fails".
@@ -940,8 +940,10 @@ Example: a user starts a run for one asset.
    once).
 4. When the user asks for a remediation plan, `tsg_remediation` gets a job. **worker-remediation** writes it.
 5. A service mapping goes to `tsg_servicemapper` and **worker-service-mapper**.
-6. **worker-maintenance** (`tsg_maintenance`) repairs stuck jobs every minute, retries failed control mapping,
-   rebuilds the library indexes and imports the outside intelligence.
+6. **worker-maintenance** (`tsg_maintenance`) rebuilds the library indexes and imports the outside intelligence
+   (jobs that can run for an hour).
+7. **worker-reaper** (`tsg_reaper`) repairs stuck jobs every minute and retries failed control mapping, on a queue
+   of its own: a long maintenance job never holds the thread a reaper pass needs.
 
 Because every kind of work has its own worker, a long remediation plan never waits behind scenario writing, and
 control mapping never waits behind a busy writer. A run's next step also goes ahead of new runs in its queue.
@@ -953,13 +955,14 @@ control mapping never waits behind a busy writer. A run's next step also goes ah
 | worker-controls | `tsg_controls` | 1 (maps 6 scenarios at once) | 100m / 250m | 640Mi / 1Gi |
 | worker-remediation | `tsg_remediation` | 2 | 250m / 500m | 640Mi / 1Gi |
 | worker-service-mapper | `tsg_servicemapper` | 2 | 250m / 500m | 640Mi / 1Gi |
-| worker-maintenance | `tsg_maintenance` | 3 | 100m / 250m | 768Mi / 1.5Gi |
+| worker-maintenance | `tsg_maintenance` | 3 | 100m / 150m | 768Mi / 1.5Gi |
+| worker-reaper | `tsg_reaper` | 2 | 50m / 100m | 320Mi / 384Mi |
 | api (ai-threatgen only, 2 pods) | - | - | 250m / 750m | 512Mi / 1Gi |
 | beat (ai-threatgen only, 1 pod) | - | - | 50m / 200m | 320Mi / 512Mi |
 | monitoring-proxy (ai-threatgen only, 1 pod: Grafana and Flower on the API's address) | - | - | 50m / 50m | 64Mi / 64Mi |
 
-Totals (limits): ai-threatgen 5.25 CPU and 10.56 Gi (6.0 CPU and 11.56 Gi while an API update runs, because
-its new pod starts before an old one stops); ai-remediation 3.5 CPU and 8 Gi.
+Totals (limits): ai-threatgen 5.25 CPU and 10.94 Gi (6.0 CPU and 11.94 Gi while an API update runs, because
+its new pod starts before an old one stops); ai-remediation 3.5 CPU and 8.38 Gi.
 
 ### Why these sizes: the AI sets the speed, not the pods
 
