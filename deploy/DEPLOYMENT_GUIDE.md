@@ -813,7 +813,7 @@ oc -n ai-common get deployment -l part-of=tsg-monitoring -o name | ForEach-Objec
 oc -n ai-threatgen rollout status deployment/monitoring-proxy --timeout=10m
 ```
 
-**You should see:** after each `deploy_*.yaml` file, one `successfully rolled out` line per Deployment: 6, then 8,
+**You should see:** after each `deploy_*.yaml` file, one `successfully rolled out` line per Deployment: 7, then 9,
 then 9 (8 in ai-common, then the monitoring proxy). The network rules print `created`, `configured` or
 `unchanged`. The two `delete` lines print `deleted` for the previous release's Routes on `threatgen-grafana` and its
 rule `monitoring-from-router` in ai-common, or `No resources found` and nothing once they are gone (a rollback brings
@@ -875,17 +875,22 @@ oc -n ai-threatgen get deployment -l app=monitoring-proxy -o name | ForEach-Obje
 Use the previous release's code folder (the one you kept in Part 4): `cd <previous code folder>`. Then, in this
 order:
 
-1. Remove the monitoring proxy and its two Routes from ai-threatgen. `oc apply` of the previous files never
-   deletes them, and the previous release's pods need their room in ai-threatgen's quota: with the proxy still
-   there, the API's update pod does not fit and the API never rolls back. Grafana and Flower are off the API's
-   address from here on.
+1. Remove the monitoring proxy and its two Routes from ai-threatgen, and worker-reaper from both projects.
+   `oc apply` of the previous files never deletes them, and the previous release's pods need their room in
+   ai-threatgen's quota: with the proxy still there, the API's update pod does not fit and the API never rolls
+   back. The previous release has no reaper worker (its worker-maintenance does that work), and worker-reaper's
+   100m would also push the API's update pod past the quota. Grafana and Flower are off the API's address from
+   here on.
 
    ```powershell
    oc -n ai-threatgen delete deployment,service,route -l part-of=tsg-monitoring
+   oc -n ai-threatgen delete deployment worker-reaper --ignore-not-found
+   oc -n ai-remediation delete deployment worker-reaper --ignore-not-found
    ```
 
    **You should see:** `deleted` for `deployment.apps/monitoring-proxy`, `service/monitoring-proxy`,
-   `route.route.openshift.io/grafana` and `route.route.openshift.io/flower`. The API's own Route `api` stays.
+   `route.route.openshift.io/grafana` and `route.route.openshift.io/flower`, then `deployment.apps "worker-reaper"
+   deleted` twice. The API's own Route `api` stays.
 
 2. Apply the previous settings, `deploy_remediation.yaml` and `deploy_threatgen.yaml`:
 

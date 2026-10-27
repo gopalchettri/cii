@@ -1,13 +1,13 @@
 # deploy_threatgen.yaml - TSG in project ai-threatgen (UAT is production): the API (2 copies), one worker per
-# queue (threats, scenarios, controls, remediation, service mapper, maintenance), beat (the timer), the API's
-# Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget.
+# queue (threats, scenarios, controls, remediation, service mapper, maintenance, reaper), beat (the timer), the
+# API's Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget.
 # Network rules: networkpolicy_threatgen.yaml. Settings: configmap.yaml, secrets.yaml.
 # Apply AFTER deploy_remediation.yaml is rolled out (new workers before a new API), and wait until it is rolled out:
 #   oc apply -f deploy/deploy_threatgen.yaml
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 # New release: replace the image tag (24-Oct-2026) everywhere in deploy_*.yaml with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5.2 CPU and 10.5 Gi, with the monitoring proxy
-# (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an API update adds one API pod (6 CPU, 11.56 Gi).
+# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5.2 CPU and 10.88 Gi, with the monitoring proxy
+# (deploy_common.yaml) 5.25 CPU and 10.94 Gi; an API update adds one API pod (6 CPU, 11.94 Gi).
 # A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
 # A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
 # update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it

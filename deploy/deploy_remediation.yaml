@@ -1,5 +1,5 @@
 # deploy_remediation.yaml - TSG in project ai-remediation (UAT is production): the second copy of every worker
-# (threats, scenarios, controls, remediation, service mapper, maintenance). The first copy of each runs in
+# (threats, scenarios, controls, remediation, service mapper, maintenance, reaper). The first copy of each runs in
 # ai-threatgen (deploy_threatgen.yaml). Both take jobs from the same queues in the same Redis, so they share the
 # work, and while one copy restarts the other serves its queue. No API and no beat here (beat must run exactly once).
 # Network rules: networkpolicy_remediation.yaml. Settings: configmap.yaml, secrets.yaml.
@@ -7,9 +7,10 @@
 #   oc apply -f deploy/deploy_remediation.yaml
 #   oc -n ai-remediation rollout status deployment -l part-of=tsg --timeout=10m
 # New release: replace the image tag (24-Oct-2026) everywhere in deploy_*.yaml with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 3.5 CPU and 8 Gi; an update starts no extra pod (maxSurge 0).
-# A stopping pod still counts until it has exited (up to 2 minutes), so when all 6 roll at once the last new pods can
-# be refused for a while ("exceeded quota" in the events). OpenShift retries and creates them once the old pods are gone.
+# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 3.5 CPU and 8.38 Gi; an update starts no extra pod
+# (maxSurge 0). A stopping pod still counts until it has exited (up to 2 minutes), so when all 7 roll at once the last
+# new pods can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates them once the
+# old pods are gone.
 # A worker is ready once its heartbeat has written /tmp/tsg-worker-alive (startupProbe), so rollout status waits
 # until every queue's worker has started here.
 # Each worker prefers a node its twin in ai-threatgen is not on, so one node failure leaves every queue served
