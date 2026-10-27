@@ -27,6 +27,7 @@ from app.models.jobs.views import (
     JobView,
     PlanCancelled,
     SessionDeleted,
+    controls_retry_notice_of,
     retry_notice_of,
 )
 from app.models.scenario.views import RunBoard, SessionStatus, session_status_from_record
@@ -127,7 +128,8 @@ def _run_job(record: dict[str, Any]) -> JobView:
         attempts=job.get("attempts") or 0,
         user_id=record.get("user_id"),
         progress=JobProgress(**{key: counts.get(key, 0) for key in JobProgress.model_fields}),
-        retrying=retry_notice_of(record["status"], job.get("retry"), record.get("step")),
+        retrying=retry_notice_of(record["status"], job.get("retry"), record.get("step"))
+        or controls_retry_notice_of(counts, (record.get("controls_delivery") or {}).get("retry")),
     )
 
 

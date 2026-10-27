@@ -58,6 +58,7 @@ from app.core.constants import (
     Writing,
 )
 from app.core.exceptions import PathNotWritable, Unavailable
+from app.core.logging import current_request_id
 from app.core.prompts import PROMPTS
 from app.core.redaction import redact
 from app.domain.external_intelligence.injection_patterns import ECHO_PATTERNS
@@ -933,7 +934,9 @@ def written_record(
         "rewritten": written.rewritten,
     }
     if status == ScenarioStatus.DONE:
-        record["controls"] = {"status": Status.QUEUED, "attempts": 0, "queued_at": now}
+        # The writer's request id: a later delivery maps this card under it, whatever the run's job is now.
+        writer = current_request_id()
+        record["controls"] = {"status": Status.QUEUED, "attempts": 0, "queued_at": now, "request_id": writer}
     return record
 
 

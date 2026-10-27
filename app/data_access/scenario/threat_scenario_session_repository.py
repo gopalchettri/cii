@@ -67,6 +67,7 @@ SESSION_STATUS_FIELDS: dict[str, int] = {
     "last_regen": 1,
     "cancelled": 1,
     "job.epoch": 1,
+    "controls_delivery.retry": 1,
 }
 _SESSION_FIELD_LISTS = {
     "status": SESSION_STATUS_FIELDS,
@@ -276,6 +277,11 @@ class ThreatScenarioSessionRepository(MongoRepository):
     def release_controls_delivery(self, session_id: str, task_id: str) -> None:
         """tsg_sessions: the delivery lease ended."""
         self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
+
+    def note_controls_retry(self, session_id: str, task_id: str, notice: Record) -> bool:
+        """tsg_sessions: the delivery's outage notice, kept until the lease is next claimed, handed over or
+        ended; False while another delivery holds the session."""
+        return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.retry": notice}})
 
     def list_scenario_sessions_with_live_delivery(self, session_ids: Iterable[str]) -> set[str]:
         """tsg_sessions: of `session_ids`, the ones a delivery maps now or whose next turn is on its way."""

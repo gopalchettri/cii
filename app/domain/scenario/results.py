@@ -37,7 +37,7 @@ from app.core.constants import (
 )
 from app.domain.scenario.plan import attacker_unsupported
 from app.models.external_intelligence.evidence_view import cited_evidence
-from app.models.jobs.views import retry_notice_of
+from app.models.jobs.views import controls_retry_notice_of, retry_notice_of
 from app.models.scenario.controls import control_view
 from app.models.scenario.views import (
     ActorView,
@@ -91,7 +91,8 @@ def build_board(run: SessionStatus) -> RunBoard:
         ),
         error_message=_stage_errors(run, controls),
         error_reason=_failed_reason(run),
-        retrying=retry_notice_of(run.status, run.retry, run.step),
+        retrying=retry_notice_of(run.status, run.retry, run.step)
+        or controls_retry_notice_of(run.counts, run.controls_retry),
         last_next_set=_action_summary(run, RunActionKind.NEXT_SET, run.last_next_set),
         last_regen=_action_summary(run, RunActionKind.REGENERATE, run.last_regen),
         scenario_count=_scenario_count(run, threats),

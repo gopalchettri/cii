@@ -41,7 +41,7 @@ _LISTED_FIELDS = dict.fromkeys(
     1,
 )
 _SCENARIO_SESSION_FIELDS = _LISTED_FIELDS | dict.fromkeys(
-    ("context.asset.name", "step", "job.task", "counts"), 1
+    ("context.asset.name", "step", "job.task", "counts", "controls_delivery.retry"), 1
 )
 _REMEDIATION_PLAN_FIELDS = _LISTED_FIELDS | dict.fromkeys(("session_id", "scenario_id"), 1)
 #: The status's summary of each kind of action: a cancel ends it as cancelled.

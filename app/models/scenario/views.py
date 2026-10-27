@@ -106,6 +106,7 @@ class SessionStatus(BaseModel):
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
     epoch: int = 0  # its job's epoch: a next set or regenerate queues only while it is unchanged
+    controls_retry: dict[str, Any] | None = None  # the outage its controls delivery waits out, as `retry`
 
 
 def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
@@ -135,6 +136,7 @@ def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
         last_regen=record.get("last_regen"),
         cancelled=record.get("cancelled"),
         epoch=job.get("epoch") or 0,
+        controls_retry=(record.get("controls_delivery") or {}).get("retry"),
     )
 
 

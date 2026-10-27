@@ -153,6 +153,7 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "session_id",
         "source",
         "controls.attempts",
+        "controls.request_id",
         "content.category",
         "content.title",
         "content.statement",
