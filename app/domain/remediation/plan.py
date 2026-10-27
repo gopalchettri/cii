@@ -450,7 +450,12 @@ def write_plan(chat: ChatModel, snapshot: dict[str, Any]) -> tuple[dict[str, Any
 
     try:
         draft: PlanDraft = ask_ai_and_check(
-            chat, AiTask.REMEDIATION_PLAN, plan_prompt(snapshot), _read_answer, check_first_answer
+            chat,
+            AiTask.REMEDIATION_PLAN,
+            plan_prompt(snapshot),
+            _read_answer,
+            check_first_answer,
+            reuse_earlier_answer=True,  # a retry after a crash reads back the plan its epoch already got
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         reason = shorten_text(str(exc), Remediation.REASON_MAX_CHARS)
