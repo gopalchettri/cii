@@ -127,6 +127,7 @@ class AiTask(StrEnum):
     GAP_FILL = "gap_fill"
     THREAT_ACTIONS = "threat_actions"  # the actions a threat's name states, for the writer and reviewer
     WRITE_SCENARIO = "write_scenario"
+    REPAIR_SCENARIO = "repair_scenario"  # a draft written again for actions not carried out
     PLAN_CHECK = "plan_check"  # does the written scenario carry out its plan
     REMEDIATION_PLAN = "remediation_plan"
     EMBED = "embed"
@@ -152,6 +153,7 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.PLAN_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
+    AiTask.REPAIR_SCENARIO: None,
 }
 
 #: Most answer tokens per chat task: twice the most an ok call used (dev, thinking off), at least 2048,
@@ -161,6 +163,7 @@ CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.RELEVANCE_GATE: 8192,  # most used: 3642 by a batch of 20 threats, 1877 by one of 10
     AiTask.SERVICE_MAPPER: 4096,  # 1997, at 10 upstream and 10 downstream (SERVICE_MAPPER_*_TOTAL_COUNT)
     AiTask.WRITE_SCENARIO: 3072,  # 1158
+    AiTask.REPAIR_SCENARIO: 3072,  # the writer's answer again
     AiTask.PLAN_CHECK: 2048,  # 478
     AiTask.THREAT_ACTIONS: 2048,  # the least: a few short phrases
 }
@@ -239,6 +242,7 @@ class LogEvent(StrEnum):
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
     WRITER_THREAT_ACTIONS_NOT_SPLIT = "writer.threat_actions_not_split"  # the writer and reviewer split it
+    WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"

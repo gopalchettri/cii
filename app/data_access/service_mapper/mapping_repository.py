@@ -41,7 +41,6 @@ class MappingRepository(MongoRepository):
         changes: dict[str, Any] = {
             "generation": seen_generation + 1,
             "status": Status.QUEUED,
-            "active": True,
             "job": next_job,
             "result": None,
             "updated_at": now,

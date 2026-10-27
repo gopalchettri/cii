@@ -75,9 +75,8 @@ def start_run(
 ) -> RunBoard:
     """Send `asset_id` and `supporting_system_id` (one id or a list; `service_id`, `sector_id`,
     `subsector_id` optional). 202 with the run's status; keep `session_id`. With an `Idempotency-Key`
-    header a retry is safe (the same key and body: 200, the same run). 409 `active_session_exists`: the
-    asset already has a run; 409 `intel_no_data`: external intelligence is on but nothing is imported
-    yet (group 4)."""
+    header a retry is safe (the same key and body: 200, the same run). 409 `intel_no_data`: external
+    intelligence is on but nothing is imported yet (group 4)."""
     board, created = scenarios.create_threat_scenario_session(principal, body, idempotency_key)
     if not created:
         response.status_code = 200  # a replay of the same Idempotency-Key: the run it started

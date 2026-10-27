@@ -492,22 +492,6 @@
      ]
     ]
    },
-   "entity_id_1_asset_id_1_decision_1": {
-    "key": [
-     [
-      "entity_id",
-      1
-     ],
-     [
-      "asset_id",
-      1
-     ],
-     [
-      "decision",
-      1
-     ]
-    ]
-   },
    "entity_id_1_created_at_-1": {
     "key": [
      [
@@ -800,22 +784,6 @@
       "$gt": 0
      }
     }
-   },
-   "entity_id_1_asset_id_1": {
-    "key": [
-     [
-      "entity_id",
-      1
-     ],
-     [
-      "asset_id",
-      1
-     ]
-    ],
-    "partialFilterExpression": {
-     "active": true
-    },
-    "unique": true
    },
    "entity_id_1_idempotency_key_1": {
     "key": [

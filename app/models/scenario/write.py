@@ -86,6 +86,7 @@ class PlanCheck:
     same_threat: bool = True  # the statement, and the cause its risk gives, carry the plan's threat
     same_impact: bool = True  # the risk is the consequence of that same scenario's impact
     evidence_supported: bool = False  # the passage states only its cited entry's facts
+    actions_not_carried_out: tuple[str, ...] = ()  # the brief's listed actions not judged "carried out"
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class WrittenScenario:
     plan_check: PlanCheck
     route: Route
     title_qualifier: str = ""  # the threat's name as a title carries it, to tell two same titles apart
+    rewritten: bool = False  # the draft is the writer's repair (_repaired), kept over its first draft
 
 
 @dataclass(frozen=True)

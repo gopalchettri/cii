@@ -199,7 +199,6 @@ def _start_regenerate(record_id: str, first: str) -> None:
         {
             "$set": {
                 "status": Status.QUEUED,
-                "active": True,
                 "job.task": TaskName.WRITE_SCENARIOS,
                 "job.epoch": 2,
                 "job.attempts": 0,

@@ -90,7 +90,7 @@ def manual_run_record(
     context: FrozenContext,
     now: datetime,
 ) -> dict[str, Any]:
-    """The manual run, born done and inactive so it never holds the asset's one active run."""
+    """The manual run, born done."""
     return {
         "_id": run_id,
         "kind": RunKind.MANUAL,
@@ -104,7 +104,6 @@ def manual_run_record(
         "context": context.to_record(),
         "status": Status.DONE,
         "step": Step.SCENARIOS,
-        "active": False,
         "plan_note": None,
         "last_action": None,
         "counts": {},  # counted from its scenario once saved (scenarios.update_scenario_session_counts)

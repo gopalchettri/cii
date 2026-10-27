@@ -47,18 +47,18 @@ Every error is `application/problem+json` (RFC 9457):
 | `request_id` | string | same as `X-Request-Id` header |
 | `reason` | string, optional | the rule that refused it (mostly on 409). Stable: branch on this. |
 | `errors` | array, optional | 422: `[{field, message}]`. Review 409s: `[{scenario_id, reason}]`. |
-| `details` | object, optional | facts you can act on, e.g. `active_session_id`, `remediation_id`, `system_ids` |
+| `details` | object, optional | facts you can act on, e.g. `remediation_id`, `system_ids`, `missing_facts` |
 
 ```json
 {
   "type": "about:blank",
   "title": "Conflict",
   "status": 409,
-  "detail": "Asset 1166 already has an active run.",
+  "detail": "Scenario '0c5dc06d-267d-5bb3-b9d3-1e027e1828e3' already has a plan (5f2b9c1e7a4d4e0b9c3a8d6f1e2b4c7a): regenerate it instead.",
   "code": "conflict",
   "request_id": "3f9a0c2e5b7d4a1e8c6f0b2d4e6a8c0e",
-  "reason": "active_session_exists",
-  "details": { "active_session_id": "938cc176aede40daa154f7c572cd2494" }
+  "reason": "plan_already_exists",
+  "details": { "remediation_id": "5f2b9c1e7a4d4e0b9c3a8d6f1e2b4c7a" }
 }
 ```
 
@@ -212,7 +212,6 @@ A set can be `complete` with `delivered` below `requested`: a path an outage sto
 | 403 | `asset_not_owned` | use an asset of your entity |
 | 403 | `system_not_linked` | `details.system_ids` are not linked to the asset |
 | 404 | — | `service_id` / `sector_id` / `subsector_id` unknown |
-| 409 | `active_session_exists` | the asset already has a run: use `details.active_session_id` |
 | 409 | `idempotency_key_conflict` | key reused for another body, used by a manual plan request, or its run was deleted: use a new key |
 | 409 | `intel_no_data` | external intelligence is on but empty; admin must import first |
 
@@ -535,7 +534,6 @@ Headers: identity headers, `Content-Type`.
 | 409 | `generation_in_progress` | wait for the current job |
 | 409 | `run_failed` / `run_cancelled` | start a new run |
 | 409 | `scenarios_not_regenerable` | `errors[]` `{scenario_id, reason}`: `unknown`, `failure_scenario` (a failure card that names no AI outage: it is not rewritten), `hand_written`, `version_not_current` (regenerate the newest), `duplicate_version` |
-| 409 | `asset_busy` | asset has another active run (`details.active_session_id`) |
 | 409 | `run_being_deleted` | the run is being deleted |
 | 409 | `intel_no_data` | external intelligence empty |
 
@@ -574,7 +572,6 @@ Headers: identity headers.
 | 409 | `nothing_left` | every selected path is written |
 | 409 | `target_reached` | the rest were left out by `TOTAL_SCENARIO_COUNT` |
 | 409 | `scenarios_abandoned` | every remaining path was given up |
-| 409 | `asset_busy` | another active run on the asset |
 | 409 | `run_being_deleted` | |
 | 409 | `intel_no_data` | |
 

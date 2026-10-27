@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from structlog.testing import capture_logs
 
 from app import container
 from app.ai import UnreadableAiAnswer
@@ -25,6 +26,7 @@ from app.core.constants import (
     ErrorCode,
     FindingCode,
     FindingSeverity,
+    LogEvent,
     PathProblem,
     PlanCheckStatus,
     Route,
@@ -293,12 +295,15 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert split in writer and split in reviewer
     assert "naming the threat is not carrying it out" in writer and "is carried out, not only named" in writer
     assert "in your own words and concrete to this asset" in writer and "never copy the list's" in writer
-    plain = writer.split("13. PLAIN ENGLISH")[1].split("GENERATOR FINAL CHECK")[0]  # anyone can read them
-    assert "who writes for operators, managers and auditors who are not security experts" in writer
-    assert "Short sentences, about 20 words at most" in plain and '"pretend to be", not "spoof"' in plain
+    plain = writer.split("13. CLEAR, BALANCED LANGUAGE")[1].split("GENERATOR FINAL CHECK")[0]  # both readers
+    assert "writes for security staff and for operators, managers and auditors who are not security" in writer
+    assert "Short sentences, about 20 words at most" in plain and "Mix plain sentences with" in plain
+    assert "Keep the precise security or technical term where it names the act" in plain  # not too simple
+    assert '"exfiltrate (copy out) the records"' in plain and 'not "Someone could make the tank' in plain
+    assert '"break into" or "take over", not "compromise"' not in plain  # no blanket swap of precise terms
     assert "each part its own short sentence" in writer and "one or two short sentences" in writer
-    assert "Write in plain English (rule 13)" in writer and "- Plain English: short sentences" in writer
-    assert "the category's loss (rule 11)" in plain and "locks" not in plain  # plain words keep the category
+    assert "Write in clear, balanced language (rule 13)" in writer and "- Clear, balanced language:" in writer
+    assert "the category's loss (rule 11)" in plain and "locks" not in plain  # clear words keep the category
     assert "in any words (judge the meaning, not the list's wording" in reviewer
     assert "or only named, not carried out as the attacker's action" in reviewer  # a rule 1 note
     stated = "the threat's name does not state"  # a use or objective the name states is the threat's own
@@ -306,8 +311,12 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert f"later uses of access or information {stated}" in writer
     assert "an action, use or demand the threat's name states is part of the threat" in reviewer
     assert f"gained access/information that {stated}" in reviewer
+    repair = PROMPTS["scenario"]["writer"]["repair"]  # code fills {actions} with the actions not carried out
+    assert "these listed actions (BRIEF.threat.threat_actions) were not carried out: {actions}." in repair
+    assert "each one is carried out as the attacker's action, in your own words" in repair
+    assert "keep every other rule" in repair
     named = ("ransomware", "data theft extortion", "ddos", "wiper", "phishing and mfa")  # no library threat
-    prompts = (gate, gap, writer, reviewer, _SPLIT["text"], _SPLIT["system"])
+    prompts = (gate, gap, writer, reviewer, repair, _SPLIT["text"], _SPLIT["system"])
     assert [n for n in named for prompt in prompts if n in prompt.casefold()] == []
     assert "Using access the threat only obtains (a stolen credential, secret or session)" in reviewer
     assert "including using access the threat only obtains" in reviewer
@@ -318,6 +327,53 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "every action its name states is its own" in gate
     assert [prompt for prompt in (gate, gap, writer, reviewer) if "recorded in the platform" in prompt] == []
     assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
+
+
+def test_rule_4_breaks_only_on_a_real_link_between_two_supporting_systems() -> None:
+    """A link the scenario says breaks the rule (data or a credential passing between two systems, a shared
+    chain); the same attacker, a shared trait, effects reaching the asset and the attacker's own machines
+    never do by themselves, and the writer keeps each system's access its own."""
+    rule4 = PLAN_CHECK_SYSTEM_PROMPT.split("RULE 4")[1].split("RULE 5")[0]
+    assert "Broken only when SCENARIO says that two of PLAN's supporting systems are linked:" in rule4
+    assert "account or access works on more than one of them" in rule4 and "whoever uses it" in rule4
+    assert "a foothold on one used to reach another" in rule4 and "share a chain" not in rule4
+    for not_a_link in (
+        "the same attacker on several systems, each with its own access",
+        "the same kind of action, weakness or protocol on each",
+        "data or effects reaching the asset, and the consequence the systems share there",
+        "anything sent to the attacker's own machines",
+        "the attacker putting together what it took",
+        "the asset itself, which is not a supporting system",
+    ):
+        assert not_a_link in rule4
+    assert "a link you have to guess is not one" in rule4
+    assert "explicit or implied connection" not in rule4  # the wording that flagged any shared word
+    reviewer_example = '"The same attacker could also change the settings on System B." The same'
+    assert reviewer_example in PLAN_CHECK_SYSTEM_PROMPT
+    assert 'never "the same" credential, account, session or channel used on another' in WRITER_SYSTEM_PROMPT
+    assert '- Each "yes" system\'s access is its own: no credential' in WRITER_SYSTEM_PROMPT
+
+
+def test_the_risk_opens_in_everyday_words_for_each_category() -> None:
+    """Each category keeps one fixed opening, in words anyone can read; no formal opening is left."""
+    shapes = WRITER_SYSTEM_PROMPT.split("11. CATEGORY SHAPES")[1].split("12. SYSTEM REASONS")[0]
+    for opening in (
+        '"People could no longer be sure that ..."',
+        '"People could no longer trust ..."',
+        '"No one could reliably tell who ..."',
+        '"Sensitive information in ... could be exposed to ..."',
+        '"could stop working or slow down"',
+        '"Someone could gain privileges in ... that they were never given"',
+    ):
+        assert opening in shapes
+    formal = (
+        "Loss of assurance",
+        "Loss of trust in",
+        "Loss of accountability",
+        "Exposure of",
+        "Loss of control",
+    )
+    assert [phrase for phrase in formal if phrase in WRITER_SYSTEM_PROMPT] == []
 
 
 def test_the_brief_never_carries_the_platform_note_of_an_older_record() -> None:
@@ -566,6 +622,96 @@ def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again()
     assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
 
 
+_ACTIONS = ("pushing firmware", "hiding the change")
+_ALL_DONE = _CONSISTENT | {"threat_actions": dict.fromkeys(_ACTIONS, "carried out")}
+_ONE_MISSING = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out", _ACTIONS[1]: "missing"}}
+_MISSING_ONE_UNJUDGED = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out"}}
+_ALL_DONE_RULE_4_BROKEN = _ALL_DONE | {"rules": {"1": "holds", "4": 'broken: "x" - y'}}
+_MISSING_NOTE = 'Rule 1: "hiding the change" is missing, not carried out'
+_REPAIR_TEXT = PROMPTS["scenario"]["writer"]["repair"]
+#: The calls of a draft written, reviewed and repaired, with the repair reviewed or not.
+_REVIEWED = [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
+_NOT_REVIEWED = _REVIEWED[:3]
+
+
+def _repair_answering(repairs: list[Any], checks: list[Any]) -> FakeChatModel:
+    """A writer whose first draft leaves "hiding the change" missing, then answers `repairs` and `checks`."""
+    chat = _chat_answering([draft_answer(_CLEAN)], [_ONE_MISSING, *checks])
+    chat.queue(AiTask.REPAIR_SCENARIO, *repairs)
+    return chat
+
+
+def _listed_brief() -> Any:
+    return dataclasses.replace(_brief_of(_plan_threat()), threat_actions=_ACTIONS)
+
+
+def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_repair_is_kept() -> None:
+    """The repair is the writer's prompt plus the actions not carried out, reviewed like any draft."""
+    repaired = dataclasses.replace(_CLEAN, statement=_CLEAN.statement + " They could then hide the change.")
+    chat = _repair_answering([draft_answer(repaired)], [_ALL_DONE])
+    with capture_logs() as logs:
+        written = write_scenario(chat, _listed_brief())
+    assert _calls(chat) == _REVIEWED
+    assert written.draft.statement == repaired.statement and written.findings == () and written.rewritten
+    assert written.plan_check == PlanCheck(PlanCheckStatus.CONSISTENT)
+    (write,), (repair,) = chat.asked(AiTask.WRITE_SCENARIO), chat.asked(AiTask.REPAIR_SCENARIO)
+    assert repair == write + _REPAIR_TEXT.replace("{actions}", '"hiding the change"')
+    assert [log["outcome"] for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED] == ["fixed"]
+
+
+@pytest.mark.parametrize(
+    ("repairs", "checks", "calls", "error"),
+    [
+        ([draft_answer(_CLEAN)], [_ONE_MISSING], _REVIEWED, None),  # still missing: no second repair
+        ([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED], _REVIEWED, None),
+        ([draft_answer(_CLEAN)], [_ALL_DONE_RULE_4_BROKEN], _REVIEWED, None),  # a rule the first held
+        ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_threat": False}], _REVIEWED, None),
+        ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_impact": False}], _REVIEWED, None),
+        ([draft_answer(_CLEAN) | {"scenario_statement": "SYS7 helps."}], [], _NOT_REVIEWED, None),
+        ([draft_answer(_CLEAN)], [{"verdict": "x"}, {"verdict": "y"}], [*_REVIEWED, AiTask.PLAN_CHECK], None),
+        ([Unavailable("AI down")], [], _NOT_REVIEWED, "Unavailable"),
+        ([{"title": "x"}, {"title": "y"}], [], [*_NOT_REVIEWED, _NOT_REVIEWED[2]], "UnreadableAiAnswer"),
+        ([truncated()], [], _NOT_REVIEWED, "TruncatedAiAnswer"),
+        ([draft_answer(_CLEAN)], [Unavailable("AI down")], _REVIEWED, "Unavailable"),
+    ],
+)
+def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_note(
+    repairs: list[Any], checks: list[Any], calls: list[AiTask], error: str | None
+) -> None:
+    """Still missing or left unjudged, a new broken rule, another threat, blocked, not reviewed, an outage or
+    an unusable answer: the first."""
+    chat = _repair_answering(repairs, checks)
+    with capture_logs() as logs:
+        written = write_scenario(chat, _listed_brief())
+    assert _calls(chat) == calls and written.draft == _READ and not written.rewritten
+    assert [finding.message for finding in written.findings] == [_MISSING_NOTE]
+    assert written.plan_check.actions_not_carried_out == ("hiding the change",)
+    (logged,) = [log for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED]
+    assert (logged["outcome"], logged.get("error")) == ("kept_first", error)
+
+
+def test_every_action_not_carried_out_is_named_in_the_repair_prompt() -> None:
+    both_missing = _CONSISTENT | {"threat_actions": dict.fromkeys(_ACTIONS, "missing")}
+    chat = _chat_answering([draft_answer(_CLEAN)], [both_missing, _ALL_DONE])
+    chat.queue(AiTask.REPAIR_SCENARIO, draft_answer(_CLEAN))
+    write_scenario(chat, _listed_brief())
+    (repair,) = chat.asked(AiTask.REPAIR_SCENARIO)
+    assert repair.endswith(_REPAIR_TEXT.replace("{actions}", '"pushing firmware", "hiding the change"'))
+
+
+def test_a_complete_draft_or_a_brief_without_listed_actions_is_never_repaired() -> None:
+    """Only the brief's own listed actions count: a reviewer's unlisted one is a note, never a repair."""
+    chat = _chat_answering([draft_answer(_CLEAN)], [_ALL_DONE])
+    assert write_scenario(chat, _listed_brief()).findings == ()
+    unlisted = _chat_answering([draft_answer(_CLEAN)], [_ONE_MISSING])  # reviewer verdicts, but no list
+    notes = write_scenario(unlisted, _brief_of(_plan_threat())).findings
+    assert [note.message for note in notes] == [_MISSING_NOTE]
+    invented = _ALL_DONE | {"threat_actions": _ALL_DONE["threat_actions"] | {"an unlisted act": "missing"}}
+    extra = _chat_answering([draft_answer(_CLEAN)], [invented])
+    assert write_scenario(extra, _listed_brief()).plan_check.actions_not_carried_out == ()
+    assert _calls(chat) == _calls(unlisted) == _calls(extra) == _REVIEWED[:2]
+
+
 def _scenarios() -> ThreatScenarioRepository:
     scenarios = container.get_threat_scenario_repository()
     scenarios.create_indexes()
@@ -713,6 +859,9 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     assert view.validation_status == ValidationStatus.OK and view.validation_notes == ["The impact is broad."]
     assert view.threat.threat_name == "Unauthorised firmware update" and view.threat.scope_rank == 3
     assert (view.controls_status, record["rewritten"], view.evidence) == ("queued", False, [])
+    assert written_record(run, path, _plan_threat(), brief, dataclasses.replace(written, rewritten=True))[
+        "rewritten"
+    ]
 
 
 def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None:

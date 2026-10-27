@@ -1766,6 +1766,14 @@
                       "rerank": {
                         "text": "Rank search results",
                         "index": 16
+                      },
+                      "threat_actions": {
+                        "text": "Split a threat's actions",
+                        "index": 17
+                      },
+                      "repair_scenario": {
+                        "text": "Rewrite a scenario",
+                        "index": 18
                       }
                     }
                   }
@@ -2275,6 +2283,14 @@
                       "rerank": {
                         "text": "Rank search results",
                         "index": 16
+                      },
+                      "threat_actions": {
+                        "text": "Split a threat's actions",
+                        "index": 17
+                      },
+                      "repair_scenario": {
+                        "text": "Rewrite a scenario",
+                        "index": 18
                       }
                     }
                   }
@@ -3349,6 +3365,14 @@
                       "rerank": {
                         "text": "Rank search results",
                         "index": 7
+                      },
+                      "threat_actions": {
+                        "text": "Split a threat's actions",
+                        "index": 8
+                      },
+                      "repair_scenario": {
+                        "text": "Rewrite a scenario",
+                        "index": 9
                       }
                     }
                   }
@@ -4782,6 +4806,14 @@
                       "rerank": {
                         "text": "Rank search results",
                         "index": 7
+                      },
+                      "threat_actions": {
+                        "text": "Split a threat's actions",
+                        "index": 8
+                      },
+                      "repair_scenario": {
+                        "text": "Rewrite a scenario",
+                        "index": 9
                       }
                     }
                   }

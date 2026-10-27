@@ -193,6 +193,7 @@ WRITER_SYSTEM_PROMPT: str = PROMPTS["scenario"]["writer"]["text"]
 PLAN_CHECK_SYSTEM_PROMPT: str = PROMPTS["scenario"]["reviewer"]["text"]
 #: With intelligence off, or nothing citable found: no evidence is fabricated or implied.
 NO_EVIDENCE: str = PROMPTS["scenario"]["writer"]["no_evidence"]
+_REPAIR: str = PROMPTS["scenario"]["writer"]["repair"]  # asks again for the actions not carried out
 _NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"]
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _LOOK_ALIKES = re.compile(
@@ -631,9 +632,21 @@ def check_against_plan(
         same_threat=answer.same_threat,
         same_impact=answer.same_impact,
         evidence_supported=answer.evidence_supported is True,
+        actions_not_carried_out=_not_carried_out(brief.threat_actions, answer),
     )
     notes = tuple(Finding(FindingCode.PLAN_CHECK, problem) for problem in problems)
     return check, notes + _mismatch(answer)
+
+
+def _not_carried_out(listed: tuple[str, ...], answer: PlanCheckAnswer) -> tuple[str, ...]:
+    """Each of the brief's `listed` actions the reviewer did not judge "carried out", one left unjudged
+    included."""
+    done = {
+        name_match_key(action)
+        for action, verdict in answer.threat_actions.items()
+        if verdict.strip().casefold() == "carried out"
+    }
+    return tuple(action for action in listed if name_match_key(action) not in done)
 
 
 def _broken_rules(answer: PlanCheckAnswer) -> tuple[str, ...]:
@@ -700,13 +713,51 @@ def _read_threat_actions(answer: dict[str, Any]) -> tuple[tuple[str, ...] | None
 
 
 def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
-    """The scenario for `brief`, written once, then checked and reviewed. An unreadable answer raises; an
-    outage raises Unavailable."""
-    prompt = writer_prompt(brief)
+    """The scenario for `brief`, written, checked and reviewed; one whose review is inconsistent with a listed
+    action not carried out is written once more (_repaired). An unreadable answer raises; an outage raises
+    Unavailable."""
+    first = _reviewed(chat, brief, _drafted(chat, AiTask.WRITE_SCENARIO, brief, writer_prompt(brief)))
+    check = first.plan_check
+    if check.status is PlanCheckStatus.INCONSISTENT and check.actions_not_carried_out:
+        return _repaired(chat, brief, first)
+    return first
+
+
+def _drafted(chat: ChatModel, task: AiTask, brief: WriterBrief, prompt: ChatPrompt) -> ScenarioDraft:
+    """The writer's draft for `brief`, asked with `prompt`."""
     systems = tuple(system.name for system in brief.supporting_systems)
     read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    draft = ask_ai_and_check(chat, AiTask.WRITE_SCENARIO, prompt, read)
-    return _reviewed(chat, brief, draft)
+    draft: ScenarioDraft = ask_ai_and_check(chat, task, prompt, read)
+    return draft
+
+
+def _repaired(chat: ChatModel, brief: WriterBrief, first: WrittenScenario) -> WrittenScenario:
+    """`first` written again, told the actions its review found not carried out; the repair is kept, marked
+    rewritten, only when it fixes `first` (_fixes), else `first`, as on an outage or an unusable answer."""
+    actions = first.plan_check.actions_not_carried_out
+    listed = ", ".join(json.dumps(action, ensure_ascii=False) for action in actions)
+    system, user = writer_prompt(brief)
+    prompt = system, user + _REPAIR.replace("{actions}", listed)
+    try:
+        repair = _reviewed(chat, brief, _drafted(chat, AiTask.REPAIR_SCENARIO, brief, prompt))
+    except (Unavailable, UnreadableAiAnswer, TruncatedAiAnswer) as exc:
+        log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", error=type(exc).__name__)
+        return first
+    fixed = _fixes(repair, first)
+    log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
+    return dataclasses.replace(repair, rewritten=True) if fixed else first
+
+
+def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
+    """True when `repair` was reviewed, is not blocked (another threat or impact blocks), carries out every
+    listed action and breaks no rule `first` held (each problem starts "Rule n:")."""
+    check = repair.plan_check
+    if check.status is PlanCheckStatus.UNCHECKED or check.actions_not_carried_out or is_blocked(repair):
+        return False  # a review not made is never a pass
+    repair_rules, first_rules = (
+        {problem.split(":", 1)[0] for problem in written.plan_check.problems} for written in (repair, first)
+    )
+    return repair_rules <= first_rules
 
 
 def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:
@@ -840,7 +891,7 @@ def written_record(
         "content": content,
         "findings": [finding_record(finding) for finding in written.findings],
         "plan_check": plan_check_record(written.plan_check),
-        "rewritten": False,  # stored field: scenarios are never rewritten
+        "rewritten": written.rewritten,
     }
     if status == ScenarioStatus.DONE:
         record["controls"] = {"status": Status.QUEUED, "attempts": 0, "queued_at": now}

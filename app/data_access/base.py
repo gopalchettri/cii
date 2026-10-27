@@ -10,7 +10,7 @@ from typing import Any
 import structlog
 from pymongo import ReplaceOne, ReturnDocument
 from pymongo.collection import Collection as MongoCollection
-from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure, PyMongoError
 
 from app.core.constants import ErrorMessage, LogEvent
 from app.core.database import expire_documents_after, get_mongodb
@@ -21,6 +21,7 @@ Record = dict[str, Any]
 Condition = Mapping[str, Any] | Callable[[Any], Mapping[str, Any]]
 
 _DUPLICATE_KEY = 11000  # MongoDB's error code for a value a unique index already holds
+_INDEX_NOT_FOUND = 27  # MongoDB's error code for dropping an index that is not there
 _INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
 #: The field create and save stamp with the record shape version; a record without it is version 1.
 SCHEMA_VERSION_FIELD = "schema_version"
@@ -227,6 +228,16 @@ def _projection(
 def _update_document(changes: Mapping[str, Any]) -> Mapping[str, Any]:
     """Plain fields go in $set; a document of $ operators is used as it is."""
     return changes if any(key.startswith("$") for key in changes) else {"$set": dict(changes)}
+
+
+def drop_retired_index(collection: MongoCollection, name: str) -> None:
+    """Drops the retired index `name`; none of that name (never built, or another process starting now
+    dropped it) and no collection yet are fine."""
+    try:
+        collection.drop_index(name)
+    except OperationFailure as exc:
+        if exc.code != _INDEX_NOT_FOUND:
+            raise
 
 
 def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> None:

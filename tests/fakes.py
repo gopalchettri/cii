@@ -96,7 +96,8 @@ class FakeChatModel:
         """A writer answer that gives no system_reasons gets one per supporting system of the brief it
         answers (G216), so a test about something else need not write them; a test of them gives its own
         (empty included)."""
-        if task != AiTask.WRITE_SCENARIO or not isinstance(answer, dict) or "system_reasons" in answer:
+        writes = (AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO)
+        if task not in writes or not isinstance(answer, dict) or "system_reasons" in answer:
             return answer
         names = brief_system_names(user_prompt)
         return {"system_reasons": {name: f"It could affect {name}." for name in names}} | answer

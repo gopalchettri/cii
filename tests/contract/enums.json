@@ -40,6 +40,7 @@
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
   "REMEDIATION_PLAN": "remediation_plan",
+  "REPAIR_SCENARIO": "repair_scenario",
   "RERANK": "rerank",
   "SERVICE_MAPPER": "service_mapper",
   "THREAT_ACTIONS": "threat_actions",
@@ -149,8 +150,6 @@
   "SQL_OPERATIONS": "tsg_sql_operations"
  },
  "ConflictReason": {
-  "ACTIVE_SESSION_EXISTS": "active_session_exists",
-  "ASSET_BUSY": "asset_busy",
   "ASSET_NOT_OWNED": "asset_not_owned",
   "CANCEL_FIRST": "cancel_first",
   "CHANGED_CONCURRENTLY": "changed_concurrently",
@@ -564,7 +563,6 @@
   "RUNNING": "running"
  },
  "RunClash": {
-  "ACTIVE_RUN": "active_run",
   "CHANGED": "changed",
   "DELETING": "deleting",
   "IDEMPOTENCY_KEY": "idempotency_key"

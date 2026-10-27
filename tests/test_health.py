@@ -300,14 +300,10 @@ def test_a_status_has_one_title_whoever_raises_it(client: TestClient) -> None:
 
 def test_a_refusal_carries_its_reason_fields_and_details(client: TestClient) -> None:
     """RFC 9457 problem body: `reason` says which rule refused, `errors` which fields, `details` what the
-    caller can act on (e.g. the id of the run already active on the asset)."""
+    caller can act on (e.g. the id of the admin job already running)."""
 
     def busy() -> None:
-        raise Conflict(
-            "Asset 103 already has an active run.",
-            reason="active_session_exists",
-            details={"active_session_id": "abc"},
-        )
+        raise Conflict("A job of this kind is running.", reason="job_in_progress", details={"job_id": "abc"})
 
     def invalid() -> None:
         raise Invalid(
@@ -318,9 +314,7 @@ def test_a_refusal_carries_its_reason_fields_and_details(client: TestClient) -> 
     client.app.add_api_route("/test-only/busy", busy)  # type: ignore[attr-defined]
     client.app.add_api_route("/test-only/invalid", invalid)  # type: ignore[attr-defined]
     conflict, refused = client.get("/test-only/busy").json(), client.get("/test-only/invalid").json()
-    assert conflict["reason"] == "active_session_exists" and conflict["details"] == {
-        "active_session_id": "abc"
-    }
+    assert conflict["reason"] == "job_in_progress" and conflict["details"] == {"job_id": "abc"}
     assert refused["errors"] == [{"field": "body.sector_id", "message": "Not the sub-sector's parent."}]
     assert "details" not in refused and "errors" not in conflict  # only what applies
 

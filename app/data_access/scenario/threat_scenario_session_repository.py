@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
-from pymongo.errors import DuplicateKeyError
 
 from app.core.clock import utc_now
 from app.core.constants import (
@@ -22,7 +21,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import DuplicateRecord, LeaseLost, NotFound
-from app.data_access.base import MongoRepository, Record
+from app.data_access.base import MongoRepository, Record, drop_retired_index
 from app.data_access.jobs.job_repository import JobLease, new_job
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.models.scenario.views import SessionStatus
@@ -30,17 +29,12 @@ from app.models.scenario.views import SessionStatus
 #: Set on a scenario session by the first step of its delete, in the update that checks no job of it is at
 #: work: from then on nothing new starts on it, so the delete's check for work is final.
 DELETING_MARK = "deleting_at"
-#: The unique indexes a clash is told apart by (MongoDB's default names, kept as built in UAT); any other
-#: clash is the idempotency key's.
-ACTIVE_SESSION_INDEX = "entity_id_1_asset_id_1"
+#: MongoDB's name for the _id index: a manual start's retry clashes on it, never the key.
 _ID_INDEX = "_id_"
+#: Dropped at start-up: the old one-active-run-per-asset index; runs of one asset are isolated.
+RETIRED_ACTIVE_RUN_INDEX = "entity_id_1_asset_id_1"
 
 _SESSION_INDEXES = (
-    {
-        "keys": [("entity_id", 1), ("asset_id", 1)],
-        "unique": True,
-        "partialFilterExpression": {"active": True},
-    },
     {
         "keys": [("entity_id", 1), ("idempotency_key", 1)],
         "unique": True,
@@ -128,14 +122,17 @@ class ThreatScenarioSessionRepository(MongoRepository):
         )
         self._scenarios = scenarios
 
+    def create_indexes(self) -> None:
+        """The validator and every index, after dropping the retired one-active-run-per-asset index."""
+        drop_retired_index(self.collection, RETIRED_ACTIVE_RUN_INDEX)
+        super().create_indexes()
+
     def create_scenario_session(self, record: dict[str, Any]) -> RunClash | None:
-        """Insert a new scenario session into tsg_sessions; None, or the unique rule that refused it."""
+        """Insert a new scenario session into tsg_sessions; None, or IDEMPOTENCY_KEY when the key is taken."""
         try:
             self.create(record)
-        except DuplicateRecord as clash:
-            return (
-                RunClash.ACTIVE_RUN if clash.index_name == ACTIVE_SESSION_INDEX else RunClash.IDEMPOTENCY_KEY
-            )
+        except DuplicateRecord:
+            return RunClash.IDEMPOTENCY_KEY
         return None
 
     def get_scenario_session_context(self, session_id: str) -> dict[str, Any]:
@@ -168,7 +165,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
     ) -> RunClash | None:
         """Queue a new write job (epoch + 1) on a tsg_sessions record only while it is as read: finished in
         step scenarios at the same epoch, with the same cancel stamp, and not being deleted. None when queued;
-        CHANGED or DELETING when it moved on; ACTIVE_RUN when another session of the asset is active."""
+        CHANGED or DELETING when it moved on."""
         still_as_read = {
             "_id": session.session_id,
             "entity_id": session.entity_id,
@@ -181,18 +178,14 @@ class ThreatScenarioSessionRepository(MongoRepository):
         epoch, now = session.epoch + 1, utc_now()
         queued = {
             "status": Status.QUEUED,
-            "active": True,
             "job": new_job(TaskName.WRITE_SCENARIOS, epoch, now, batch=batch, set=asked),
             "last_action": running_action(kind, now),
             **_running_summary(kind, batch, asked, epoch),
             "updated_at": now,
         }
-        try:
-            matched = self.collection.update_one(
-                still_as_read, {"$set": queued, "$unset": _CLEARED_BY_A_NEW_ACTION}
-            ).matched_count
-        except DuplicateKeyError:
-            return RunClash.ACTIVE_RUN
+        matched = self.collection.update_one(
+            still_as_read, {"$set": queued, "$unset": _CLEARED_BY_A_NEW_ACTION}
+        ).matched_count
         if matched:
             return None
         return RunClash.DELETING if self.is_being_deleted(session.session_id) else RunClash.CHANGED

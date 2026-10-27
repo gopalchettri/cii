@@ -20,7 +20,7 @@ from app.core.constants import (
     Status,
 )
 from app.core.exceptions import DuplicateRecord
-from app.data_access.base import Condition, MongoRepository, Record
+from app.data_access.base import Condition, MongoRepository, Record, drop_retired_index
 
 #: The versions a reviewer works with: the newest of each attack path, and any older one already decided.
 CURRENT_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": {"$ne": Decision.PENDING}}]}
@@ -53,12 +53,12 @@ _DUPLICATE_CHECK_FIELDS = (
     "content.systems.id",
 )
 
+#: Dropped at start-up: no query reads scenarios by asset; a duplicate check stays in its own session.
+RETIRED_ASSET_INDEX = "entity_id_1_asset_id_1_decision_1"
 _SCENARIO_INDEXES = (
     {"keys": [("session_id", ASCENDING), ("created_at", ASCENDING)]},
     {"keys": [("entity_id", ASCENDING), ("decision", ASCENDING), ("created_at", DESCENDING)]},
     {"keys": [("entity_id", ASCENDING), ("created_at", DESCENDING)]},
-    # The duplicate check's other sessions: the asset's own records, never the entity's whole register.
-    {"keys": [("entity_id", ASCENDING), ("asset_id", ASCENDING), ("decision", ASCENDING)]},
     {  # one accepted version per attack path, even under a race
         "keys": [("session_id", ASCENDING), ("path_id", ASCENDING)],
         "unique": True,
@@ -195,6 +195,11 @@ class ThreatScenarioRepository(MongoRepository):
             required=("_id", "session_id", "status"),
             schema_version=1,
         )
+
+    def create_indexes(self) -> None:
+        """The validator and every index, after dropping the retired asset index."""
+        drop_retired_index(self.collection, RETIRED_ASSET_INDEX)
+        super().create_indexes()
 
     def save_scenario(self, record: Record) -> bool:
         """Insert a scenario into tsg_scenarios, or replace its attack path's failure or blocked card (same

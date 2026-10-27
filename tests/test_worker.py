@@ -398,7 +398,7 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(
     assert _records().find_one({"_id": never_sent})["job"]["retry"]["reason"] == AiOutage.BUSY
     abandoned = _records().find_one({"_id": worn_out})
     assert abandoned["job"]["error"]["code"] == ErrorCode.JOB_ABANDONED
-    assert abandoned["active"] is False and abandoned["finished_at"] is not None  # the asset is free again
+    assert "active" not in abandoned and abandoned["finished_at"] is not None
     assert sorted(record_id for _, record_id, _ in sent) == sorted([expired, never_sent])
     assert priorities == [Worker.NEXT_STAGE_PRIORITY] * 2  # both ahead of new work: they waited already
     # The abandoned run counts as a job failure (JobsFailing): its dead worker never recorded an outcome.
@@ -930,7 +930,7 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     record = _records().find_one({"_id": stuck})
     assert sent == [] and record["status"] == Status.FAILED
     assert record["job"]["error"]["code"] == ErrorCode.JOB_ABANDONED and published == [stuck]
-    assert record["active"] is False and record["finished_at"] is not None
+    assert "active" not in record and record["finished_at"] is not None
     assert _job_samples("tsg_jobs_total", failures) == before + 1
     # A claim starts the count again: a job that once reached a worker is not given up for old re-sends.
     retried = _insert_job(resends=3)
@@ -955,14 +955,13 @@ def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch:
     assert 0 < renewed < 10
 
 
-def test_a_finished_job_frees_its_asset_and_says_when_it_ended(published: list[str]) -> None:
-    """Every end of a job sets active false and finished_at: otherwise the unique "one active run per asset"
-    index would block the asset for good after its first run."""
+def test_a_finished_job_says_when_it_ended_and_writes_no_active_field(published: list[str]) -> None:
+    """Every end of a job sets finished_at and writes no `active` field (nothing reads it, D44)."""
     record_id = _insert_job()
     finish = lambda lease: lease.update_job(ended_job_fields(Status.DONE))  # noqa: E731
     jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, finish)
     record = _records().find_one({"_id": record_id})
-    assert record["status"] == Status.DONE and record["active"] is False and record["finished_at"] is not None
+    assert record["status"] == Status.DONE and "active" not in record and record["finished_at"] is not None
 
 
 @pytest.mark.parametrize(
@@ -1003,7 +1002,7 @@ def test_a_job_failed_by_its_own_rule_keeps_its_code_and_is_not_retried(publishe
     with pytest.raises(JobFailed):
         jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, refuse)
     record = _records().find_one({"_id": record_id})
-    assert record["status"] == Status.FAILED and record["active"] is False and record["finished_at"]
+    assert record["status"] == Status.FAILED and "active" not in record and record["finished_at"]
     assert record["job"]["error"] == {
         "code": ErrorCode.PLAN_REFUSED,
         "message": "SYS2 has too little room in the landscape.",

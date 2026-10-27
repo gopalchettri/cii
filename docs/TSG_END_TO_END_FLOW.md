@@ -597,8 +597,8 @@ already holds, and every number above can be checked against a stored record.
 ### 4.1 How
 
 > **In plain words:** Every check runs before anything is saved, so a refused request leaves nothing
-> behind but the error. Only one session per asset can be active at a time. Sending the same request twice
-> with the same retry key never creates a second session.
+> behind but the error. Each start is its own session: sessions of one asset never block each other.
+> Sending the same request twice with the same retry key never creates a second session.
 
 #### Route, caller and body
 
@@ -758,7 +758,7 @@ already holds, and every number above can be checked against a stored record.
     | `request` | the body without `asset_id` |
     | `request_hash` | `request_fingerprint` of the whole body, `asset_id` included |
     | `context` | the frozen context |
-    | `status`, `step`, `active` | `"queued"`, `"threats"`, `true` |
+    | `status`, `step` | `"queued"`, `"threats"` |
     | `plan_note` | `null` |
     | `last_action` | `{kind: "start", outcome: "running", reason: null, started_at: now}` (`running_action`) |
     | `counts` | 10 counters at 0: `planned`, `written`, `remaining`, `failed`, `abandoned`, `accepted`, `rejected`, `pending`, `controls_waiting`, `controls_failed` |
@@ -768,11 +768,9 @@ already holds, and every number above can be checked against a stored record.
     | `schema_version` | `1`, stamped by the repository |
 
 11. **The insert:** `ThreatScenarioSessionRepository.create_scenario_session` writes it to `tsg_sessions`.
-    Two unique partial indexes guard the insert:
-    - `(entity_id, asset_id)` where `active` is true (index `entity_id_1_asset_id_1`): **one active session
-      per asset**. Two starts racing each other can never both win. The loser gets 409
-      `active_session_exists`, with `details.active_session_id`.
-    - `(entity_id, idempotency_key)` where the key exists. Any other clash is this one.
+    One unique partial index guards the insert: `(entity_id, idempotency_key)` where the key exists.
+    Another session of the asset never clashes: sessions of one asset are isolated (D43). The old
+    one-session-per-asset index `entity_id_1_asset_id_1` is dropped at start-up.
     - After a clash, when a key was sent, `_replay` runs again: a parallel start with the same key won, so
       its session is answered (200). Otherwise a key clash means the session that took the key was deleted
       meanwhile: 409 `idempotency_key_conflict`.
@@ -811,7 +809,6 @@ already holds, and every number above can be checked against a stored record.
 | The service, sector or sub-sector is unknown or deleted | 404 |
 | The `sector_id` is not the sub-sector's parent | 422 (`body.sector_id`) |
 | A required fact is not recorded; `name` is always required, for the asset and every system | 422 `required_facts_missing` |
-| The asset already has an active session | 409 `active_session_exists` |
 | The session that took the `Idempotency-Key` was deleted while this start ran | 409 `idempotency_key_conflict` |
 | MongoDB cannot be reached | 503 |
 | The job could not be sent to Redis | not an error: the reaper re-sends it |
@@ -842,8 +839,8 @@ Content-Type: application/json
 plan job, a second later, added the country to the AI's view of the asset, which it does only while the
 switch is on. So step 7 would have refused the start if the active snapshot held no records. The SQL call
 bound `@EntityID=125`, `@AssetID=1166`, `@SystemIDs='[1448, 1449, 1450, 1451]'`, `@ServiceID=1546`,
-`@SectorID=183`, `@SubsectorID=199`. No other session of asset 1166 was active, so the insert was not
-refused.
+`@SectorID=183`, `@SubsectorID=199`. No Idempotency-Key was sent, so no index could refuse the
+insert; another session of the asset never clashes (D43).
 
 **The facts that came back,** as the frozen `context` stored on the session:
 
@@ -935,7 +932,7 @@ creation, by `_new_run_record`, next to the stored values (read on 2026-10-19).
 | `context` | the JSON above | same: nothing changes it |
 | `status` | `"queued"` | `"done"` |
 | `step` | `"threats"` | `"scenarios"` |
-| `active` | `true` | `false` (the set ended at 08:18:36.195, `finished_at`) |
+| `active` | `true` then; not written now (D43) | `false` then; not written now (D44): the end of a set is `finished_at` (08:18:36.195) |
 | `plan_note` | `null` | `"51 attack paths selected; 6 written, 45 still to write, set by set."` |
 | `last_action` | `{kind: "start", outcome: "running", reason: null, started_at: 08:14:51.643}` | `outcome: "complete"`, the same `started_at` |
 | `counts` | the 10 counters at 0 | `planned` 51, `written` 6, `remaining` 45, `pending` 6, the rest 0, plus `controls_cancelled` and `replaced` |
@@ -2348,13 +2345,15 @@ Where each key came from:
      target. Code counts no words in the scenario and risk statements, and cuts nothing.
    - 13 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
      and access; supporting systems; attacker type; the scenario statement; the risk statement; the title; safe
-     and hypothetical; evidence; category shapes; system reasons; plain English. The rule on other scenarios is
+     and hypothetical; evidence; category shapes; system reasons; clear, balanced language. The rule on other scenarios is
      gone: the writer is never shown another scenario's text (D40).
-   - Plain English (rule 13, D41): the ROLE names the readers (operators, managers and auditors who are not
-     security experts); short sentences of about 20 words, everyday words, active voice, a technical term
-     explained the first time, an acronym spelled out; a few plain swaps and one invented contrast example. The
-     risk statement gives each part its own short sentence, and each system gets one or two short sentences.
-     Plain words never change the facts, the event or the category's loss.
+   - Clear, balanced language (rule 13, D41, D46): the ROLE names both readers (security staff, and operators,
+     managers and auditors who are not security experts); short sentences of about 20 words, active voice; the
+     precise technical term kept where it names the act, attack, component or data exactly, a less common one
+     explained in a few plain words the first time, an acronym spelled out; everyday words elsewhere, no vague
+     jargon; one invented contrast example that is neither too formal nor too simple. The risk statement gives
+     each part its own short sentence, and each system gets one or two short sentences. Clear words never change
+     the facts, the event or the category's loss.
    - The threat's actions first: GENERATION LOGIC opens with `BRIEF.threat.threat_actions`, the concrete
      actions the threat's name states (section 8.1, step 10). The story carries out each one as the attacker's
      action, in a realistic order, in its own words and concrete to the asset (never the list's wording,
@@ -2377,9 +2376,11 @@ Where each key came from:
      the AI never writes it; the API adds it to each shown assumption (section 12.2).
    - The passage states only the cited entry's facts: no sentence linking them to this asset or event, and
      never a claim that the evidence shows this asset was attacked or is exploitable (rule 10).
-   - The risk opening per category: Spoofing "Loss of assurance that ...", Tampering "Loss of trust in ...",
-     Repudiation "Loss of accountability for ...", Information Disclosure "Exposure of ...", Denial of Service
-     "Disruption of ..." or "Loss of ...", Elevation of Privilege "Loss of control over ...".
+   - The risk opening per category, in everyday words (D46): Spoofing "People could no longer be sure that
+     ...", Tampering "People could no longer trust ...", Repudiation "No one could reliably tell who ...", Information
+     Disclosure "Sensitive information in ... could be exposed to ...", Denial of Service "<the asset or its
+     service> could stop working or slow down", Elevation of Privilege "Someone could gain privileges in ... that
+     they were never given".
    - A final check list before answering.
 6. **The seven fields** (contract `ScenarioAnswer`, `app/models/scenario/write.py`):
 
@@ -2432,7 +2433,8 @@ asked for, left out):
 ```
 
 - Model `openai/Kimi-K2.6`: 3,274 tokens in, 536 tokens out, 6.0 seconds, logged at 08:18:34.166 UTC.
-- The risk opens with "Loss of trust in", the Tampering opening.
+- The risk opens with "Loss of trust in", the Tampering opening of that run; today's is "People could no longer
+  trust ..." (D46).
 - The scenario statement is 145 words and the risk statement 75 words. Both are under the default lower
   targets (150 and 100 words). That is allowed: the lower number is only a target, and code counts neither.
 - The run has 6 `write_scenario` calls for its 6 scenarios, so no answer needed a re-ask.
@@ -2558,7 +2560,11 @@ near copy.
       the threat only obtains to do something its name does not state is such an added step.
    2. Attacker identity: no other attacker or real-world group carries out the attack.
    3. System names and coverage: no unlisted system is named, and every supporting system has a reason.
-   4. No cross-system links: nothing moves between systems.
+   4. No cross-system links: broken only when the scenario says two supporting systems are linked (data,
+      commands, files or records pass between them, one depends on or controls another, or one credential,
+      session or foothold works on more than one). The same attacker on each system, the same kind of action,
+      effects reaching the asset, data sent to the attacker's own machines and the asset itself are never a
+      link by themselves (D45).
    5. Category-aligned primary impact.
    6. Risk alignment and scope.
    7. Grounding and possibility: nothing invented; "could" or "may", never certain; a consequence that rests
@@ -2594,6 +2600,15 @@ near copy.
 7. **What is stored** (`plan_check_record`): `{status, problems, unsupported: [], same_threat, same_impact}`.
    The verdicts are `null` when the check was not made. `evidence_supported` decides the passage (section 8.6)
    but is **not stored**.
+8. **One rewrite for a missing act** (`write_scenario`, D42). When the review is `inconsistent` and an act
+   the PLAN lists in `threat_actions` is not judged carried out (`actions_not_carried_out`: the PLAN's own
+   acts, an unjudged one included), the writer is asked once more, with task `repair_scenario`: the same
+   prompt plus `[scenario.writer]` `repair`, which names those acts. The rewrite is checked and reviewed like
+   any draft (8.4, 8.5). It replaces the first draft (`rewritten: true`) only if it is not blocked, keeps
+   `same_threat` and `same_impact` true, carries out every act and breaks no rule the first draft held.
+   Otherwise the first draft is kept with its notes, and so it is when the rewrite or its review hits an
+   outage or an unusable answer. Log `writer.scenario_repaired`, outcome `fixed` or `kept_first`. A complete
+   first draft costs no extra call.
 
 **In the example**
 
@@ -2765,9 +2780,9 @@ flowchart TB
    `path_id`, `version` (1, or the replaced version + 1), `source: "generated"`, `status`,
    `decision: "pending"`, `decided_by` and `decided_at` null, `replaces`, `superseded_by` null, `created_at`,
    `updated_at`; then `title_key` (`name_match_key` of the title), `content`, `findings` (code, severity,
-   message), `plan_check`, `rewritten: false`, and `controls` when done. `PathSaver` adds `generation`
-   (`generation_stamp`: the job's `epoch`, `started_at` when the path's AI work began, and `finished_at` = the
-   record's `created_at`). The repository adds `schema_version: 1`.
+   message), `plan_check`, `rewritten` (true when the repair was kept, D42), and `controls` when done.
+   `PathSaver` adds `generation` (`generation_stamp`: the job's `epoch`, `started_at` when the path's AI work
+   began, and `finished_at` = the record's `created_at`). The repository adds `schema_version: 1`.
 6. **Near-copy check** (`_near_copy_held_now` → `duplicate_of`). It runs only for a written scenario with no
    blocker yet, regenerates included. It is an **exact** check. There is **no embedding and no similarity
    threshold**.
@@ -3483,14 +3498,14 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
    2. `ThreatScenarioSessionRepository.update_scenario_session_job`: one update, only while the session is
       as read (same `job.epoch`; status `done`, `failed` or `cancelled`; step `scenarios`; the same cancel
       stamp; not being deleted). It sets:
-      - `status` `queued` and `active` true;
+      - `status` `queued`;
       - `job`: a new `tsg_write_scenarios` job (`new_job`) at **epoch + 1**, with `batch`;
       - `last_action {kind: regenerate, outcome: running, started_at}`;
       - `last_regen {outcome: running, requested: <batch size>, replaced: null, epoch}`;
       - and it clears `finished_at`, `timings.scenarios_s`, `timings.controls_s` and `cancelled`.
 
-      Clashes: 409 `asset_busy` (another session of the asset is active; `details.active_session_id`),
-      409 `run_being_deleted`, and 409 `generation_in_progress` (the session moved on since it was read).
+      Clashes: 409 `run_being_deleted`, and 409 `generation_in_progress` (the session moved on since it was
+      read). Another session of the asset never clashes (D43).
    3. Controls that a cancel stopped are resumed (`controls_were_cancelled` → `_resume_controls`).
    4. `tsg_write_scenarios` is sent at epoch + 1, a live update is published, and the audit row
       `run.regenerated` is written with `after {epoch, batch}`.
@@ -4031,7 +4046,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | Asset | The critical system being assessed, e.g. the Traffic Control Platform. |
 | Supporting system | A system the asset depends on. A scenario may involve one, several or all of them. |
 | IT / OT | Information technology (office and business systems) / operational technology (systems that control physical equipment, such as traffic signals). |
-| Session (run) | One assessment of one asset, from start to reviewed scenarios. Only one runs per asset at a time. |
+| Session (run) | One assessment of one asset, from start to reviewed scenarios. An asset may have several running at once; each is isolated. |
 | Frozen context | The asset's and systems' recorded facts, read once at the start and kept unchanged for the whole run. |
 | Threat library | Our approved list of threats, grouped by threat type, each linked to the attackers who could carry it out. |
 | Attacker (threat actor) | The type of attacker, e.g. "Cybercriminal" or "Nation-state". It is never a named group. |
