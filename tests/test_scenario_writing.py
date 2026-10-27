@@ -293,6 +293,13 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert split in writer and split in reviewer
     assert "naming the threat is not carrying it out" in writer and "is carried out, not only named" in writer
     assert "in your own words and concrete to this asset" in writer and "never copy the list's" in writer
+    plain = writer.split("13. PLAIN ENGLISH")[1].split("GENERATOR FINAL CHECK")[0]  # anyone can read them
+    assert "who writes for operators, managers and auditors who are not security experts" in writer
+    assert "Short sentences, about 20 words at most" in plain and '"pretend to be", not "spoof"' in plain
+    assert "each part its own short sentence" in writer and "one or two short sentences" in writer
+    assert "Write in plain English (rule 13)" in writer and "- Plain English: short sentences" in writer
+    assert "the category's loss (rule 11)" in plain and "locks" not in plain  # plain words keep the category
+    assert "in any words (judge the meaning, not the list's wording" in reviewer
     assert "or only named, not carried out as the attacker's action" in reviewer  # a rule 1 note
     stated = "the threat's name does not state"  # a use or objective the name states is the threat's own
     assert f"an objective {stated}" in writer and f"exposed information/access that {stated}" in writer
@@ -333,7 +340,7 @@ def test_the_split_and_both_prompts_carry_the_threats_actions() -> None:
     assert "When the list is absent, split the specified threat's name into the actions it states" in writer
     field = '"threat_actions": {"<each item of PLAN.threat.threat_actions, copied>": "carried out" | "only'
     assert field in reviewer and "For each item of PLAN.threat.threat_actions answer in `threat_" in reviewer
-    assert 'doing it (of alternatives an item joins with "or", one is enough)' in reviewer
+    assert 'wording; of alternatives an item joins with "or", one is enough)' in reviewer
     assert "Without that list, answer {} and split PLAN's threat name" in reviewer
     assert "`threat_actions` has one answer for each item of PLAN.threat.threat_actions" in reviewer
     assert "other_scenarios" not in writer and "described in rule 10" in writer and "12. SYSTEM" in writer

@@ -2346,10 +2346,15 @@ Where each key came from:
    - Exactly seven JSON fields, nothing else (table below).
    - The three word-limit slots. "The upper number of each range is a hard limit"; the lower number is a
      target. Code counts no words in the scenario and risk statements, and cuts nothing.
-   - 12 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
+   - 13 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
      and access; supporting systems; attacker type; the scenario statement; the risk statement; the title; safe
-     and hypothetical; evidence; category shapes; system reasons. The rule on other scenarios is gone: the
-     writer is never shown another scenario's text (D40).
+     and hypothetical; evidence; category shapes; system reasons; plain English. The rule on other scenarios is
+     gone: the writer is never shown another scenario's text (D40).
+   - Plain English (rule 13, D41): the ROLE names the readers (operators, managers and auditors who are not
+     security experts); short sentences of about 20 words, everyday words, active voice, a technical term
+     explained the first time, an acronym spelled out; a few plain swaps and one invented contrast example. The
+     risk statement gives each part its own short sentence, and each system gets one or two short sentences.
+     Plain words never change the facts, the event or the category's loss.
    - The threat's actions first: GENERATION LOGIC opens with `BRIEF.threat.threat_actions`, the concrete
      actions the threat's name states (section 8.1, step 10). The story carries out each one as the attacker's
      action, in a realistic order, in its own words and concrete to the asset (never the list's wording,
