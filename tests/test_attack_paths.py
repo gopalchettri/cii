@@ -21,6 +21,7 @@ from app.core.constants import (
     Lease,
     PlanMessage,
     PlanStage,
+    PromptVersion,
     RunActionKind,
     RunActionOutcome,
     ScenarioStatus,
@@ -32,7 +33,6 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import PlanRefused, Unavailable
 from app.domain.scenario.plan import (
-    PLANNER_PROMPT_VERSION,
     attack_path_categories,
     attack_path_confidence,
     attack_path_from_library,
@@ -334,7 +334,7 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
         0,
     )
     plan = run["plan"]
-    assert plan["prompt_version"] == PLANNER_PROMPT_VERSION and plan["frozen_at"] is not None
+    assert plan["prompt_version"] == PromptVersion.PLANNER and plan["frozen_at"] is not None
     assert sorted(threat["name"] for threat in plan["threats"]) == sorted([LOG_WIPE.name, ADMIN_ABUSE.name])
     best = min(plan["paths"], key=lambda path: path["rank"])["path_id"]
     assert run["job"]["set"] == [best] and run["job"]["batch"] == [{"path_id": best, "replaces": None}]

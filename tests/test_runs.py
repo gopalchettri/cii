@@ -367,13 +367,13 @@ def test_a_version_says_which_accepted_version_of_its_path_it_would_replace(
 
 
 def test_one_scenario_with_its_computed_fields(client: TestClient, api_key: str) -> None:
-    """T-SCN-11: the statement shown with why it applies, and validation_status computed; an unknown id in
-    the run → 404."""
+    """T-SCN-11: the statement shown alone, never with why it applies, and validation_status computed; an
+    unknown id in the run → 404."""
     session_id = _start(client, api_key).json()["session_id"]
     scenario_id = _scenario(session_id, "p1", 1)
     url = f"/v1/sessions/{session_id}/scenarios"
     shown = client.get(f"{url}/{scenario_id}", headers=_identity(api_key)).json()
-    assert shown["scenario"]["scenario_statement"] == "It stops.\n\nWhy this threat applies: It is exposed."
+    assert shown["scenario"]["scenario_statement"] == "It stops."
     assert (shown["validation_status"], shown["validation_errors"]) == ("warning", ["m"])
     assert client.get(f"{url}/{uuid.uuid4().hex}", headers=_identity(api_key)).status_code == 404
 

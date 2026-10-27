@@ -30,13 +30,14 @@ from app.core.constants import (
     Route,
     RunKind,
     ScenarioStatus,
+    StrideCategory,
     ValidationStatus,
     WriterStyle,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
-from app.domain.scenario.plan import planned_threat_record
+from app.domain.scenario.plan import gap_fill_prompt, planned_threat_record, relevance_gate_prompt
 from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
     PLAN_CHECK_SYSTEM_PROMPT,
@@ -71,7 +72,7 @@ from app.models.scenario.write import (
     ScenarioDraft,
     WrittenScenario,
 )
-from tests.fakes import WHY_APPLIES, FakeChatModel
+from tests.fakes import FakeChatModel
 from tests.planner_samples import CONTEXT, planned, system_row
 
 #: Everything the sample threats name is still active in the library.
@@ -82,7 +83,6 @@ _CLEAN = ScenarioDraft(
     "Loss of trusted control at Grid Control Centre could interrupt electricity transmission.",
     ("Assumes vendor sessions can update firmware - not recorded in the platform.",),
     "SCADA server",
-    why_applies=WHY_APPLIES,
 )
 #: The reasons the fake writer gives an answer that has none (tests/fakes.py): one per system of the brief.
 _REASONS = (("SCADA server", "It could affect SCADA server."), ("Historian", "It could affect Historian."))
@@ -267,6 +267,34 @@ def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_js
     assert system.startswith(PLAN_CHECK_SYSTEM_PROMPT) and json.loads(scenario_text) == draft_answer(_CLEAN)
     assert json.loads(plan_text)["critical_service"] == "Electricity transmission"
     assert CHAT_TEMPERATURES[AiTask.PLAN_CHECK] == 0.0
+
+
+def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_platform_note() -> None:
+    """Every prompt bans an added step and asks why, not how; none names the note code adds to assumptions."""
+    gate = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
+    gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3, ())[1]
+    for prompt in (gate, gap):
+        assert "directly causes the loss the STRIDE category line describes" in prompt
+        assert "only through an added step that is not part of the threat" in prompt
+        assert "it never retells the attack steps" in prompt
+    assert "LIBRARY-GAP BOUNDARY" not in gap and "TSG_SCENARIO_TARGET" not in gap
+    writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
+    assert "never add a step that is not part of the threat" in writer
+    assert 'List an essential missing detail in assumptions as: "assumes <specific condition>".' in writer
+    assert "the primary impact comes from an added step that is not part of the threat" in reviewer
+    assert "every action its name states is its own" in gate
+    assert [prompt for prompt in (gate, gap, writer, reviewer) if "recorded in the platform" in prompt] == []
+    assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
+
+
+def test_the_brief_never_carries_the_platform_note_of_an_older_record() -> None:
+    """A stored relevance reason or earlier version with the note reaches the writer without it."""
+    threat = _plan_threat(reason="The SCADA server takes firmware, assumes X - not recorded in the platform.")
+    path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
+    older = ("A cybercriminal could push firmware, assumed reachable, Not Recorded In The Platform.",)
+    brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, other_scenarios=older)
+    assert brief.why_it_applies == "The SCADA server takes firmware, assumes X."
+    assert brief.other_scenarios == ("A cybercriminal could push firmware, assumed reachable.",)
 
 
 def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does() -> None:
@@ -499,8 +527,8 @@ def test_a_clashing_title_takes_the_threat_name_then_a_number() -> None:
 
 
 def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
-    """What the job stores is what the API shows: the texts, why it applies, the attackers, every system
-    with its reason, the route, and validation from the findings."""
+    """What the job stores is what the API shows: the texts, the attackers, every system with its reason,
+    the route, and validation from the findings."""
     brief = _brief_of(_plan_threat())
     note = Finding(FindingCode.PLAN_CHECK, "The impact is broad.")
     check = PlanCheck(PlanCheckStatus.INCONSISTENT, ("The impact is broad.",))
@@ -517,7 +545,9 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     view = build_scenario_view(record)
     text = view.scenario
     assert record["_id"] == scenario_id("run-1", "p1", 1) and view.status == ScenarioStatus.DONE
-    assert text.scenario_statement == f"{_CLEAN.statement}\n\nWhy this threat applies: {WHY_APPLIES}"
+    assert text.scenario_statement == _CLEAN.statement
+    assert view.scope is not None and view.scope.evidence == []
+    assert "why_applies" not in record["content"] and "why_applies" not in ScenarioAnswer.model_fields
     assert [actor.actor_name for actor in view.actors] == ["Cybercriminal"]
     assert [
         (s.supporting_system, s.is_applicable, s.is_entry_point) for s in text.supporting_systems_involved

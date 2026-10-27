@@ -2,13 +2,13 @@
 corrective re-ask for a task that checks its answer, and one record per call (metrics, log line, audit copy in
 tsg_ai_calls)."""
 
-import math
 import time
 from collections.abc import Callable
 from functools import partial
 from typing import Any
 
 import litellm
+import structlog
 
 from app.ai.chat_messages import (
     build_conversation,
@@ -27,13 +27,7 @@ from app.ai.common import (
     count_and_convert_ai_errors,
 )
 from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
-from app.ai.slots import (
-    UNLIMITED_AI_REQUEST_RATE,
-    UNLIMITED_AI_SLOTS,
-    AiRequestRate,
-    AiSlots,
-    max_slot_hold_seconds,
-)
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
 from app.core.config import Settings
 from app.core.constants import (
     AiLimits,
@@ -41,10 +35,13 @@ from app.core.constants import (
     AiOutcome,
     AiTask,
     ErrorMessage,
+    LogEvent,
 )
 from app.core.exceptions import Unavailable
 from app.data_access.admin.ai_call_repository import AiCallRepository
 from app.models.ai.profiles import ChatModelProfile
+
+log = structlog.get_logger(__name__)
 
 #: A task's own check of an answer: the problems found, an empty list when the answer is right.
 AnswerChecker = Callable[[dict[str, Any]], list[str]]
@@ -95,8 +92,6 @@ class ChatModel:
         self._connection |= build_api_key_header(key_header, api_key)
         self._call_records = call_records
         self._slots = slots
-        # One slot covers the whole request, fallback included: the cap counts calls, not models.
-        self._slot_hold = _whole_request_hold_seconds(models, self._request_rates, fallback_slots)
         self._max_input_chars = min(profile.max_input_chars for _, profile in models)
 
     def ask_for_checked_json(
@@ -110,7 +105,8 @@ class ChatModel:
     ) -> dict[str, Any]:
         """A JSON answer `check_answer` accepts. A rejected first answer is asked again once, in the same
         conversation, with its problems (§9); a second rejection raises UnreadableAiAnswer. A usable first
-        answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable.
+        answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable or finds
+        the AI unavailable.
         `reuse_earlier_answer`: an ask this job already got an answer to that `check_answer` accepts (any
         delivery of the same record, epoch and stage) takes that answer from tsg_ai_calls, with no AI call."""
         messages = build_conversation(system_prompt, user_prompt)
@@ -125,9 +121,10 @@ class ChatModel:
         correction = _with_correction_turn(messages, reply, problems, self._max_input_chars)
         try:  # a first answer cut off at the task's cap: the re-ask goes at the model's own limit at once
             answer, _, _ = self._ask_and_read_answer(task, correction, reuse_check, capped)
-        except (UnreadableAiAnswer, TruncatedAiAnswer):
+        except (UnreadableAiAnswer, TruncatedAiAnswer, Unavailable) as exc:
             if usable is None:
                 raise
+            log.info(LogEvent.AI_FIRST_ANSWER_KEPT, task=task, reask_error=type(exc).__name__)
             return usable
         retry_problems = _find_answer_problems(answer, check_answer)
         if answer is not None and not retry_problems:
@@ -187,12 +184,11 @@ class ChatModel:
         outage: Unavailable | None = None
         now = time.monotonic()
         in_order = sorted(self._models, key=lambda pair: self._cooling_until.get(pair[0], 0) > now)
-        with self._slots.hold_slot(self._slot_hold):
+        with self._slots.hold_slot(task):  # one slot for the whole request: the cap counts calls, not models
             for model, profile in in_order:
                 slots = UNLIMITED_AI_SLOTS if model == self._models[0][0] else self._fallback_slots
-                hold = max_slot_hold_seconds(profile.timeout_seconds, self._request_rates[model].wait_seconds)
                 try:  # only the last model left waits for a fallback slot: one still to try answers sooner
-                    with slots.hold_slot(hold, waits=model == in_order[-1][0]):
+                    with slots.hold_slot(task, waits=model == in_order[-1][0]):
                         response, seconds = self._call_model(task, messages, model, profile, capped)
                 except Unavailable as exc:  # busy or down after its retries: the next model answers
                     if exc.reason == AiOutage.TIMED_OUT or isinstance(exc.__cause__, litellm.RateLimitError):
@@ -201,34 +197,21 @@ class ChatModel:
                     continue
                 self._cooling_until.pop(model, None)
                 return model, response, seconds
-        assert outage is not None  # at least one model is configured
-        raise outage
+            assert outage is not None  # at least one model is configured
+            raise outage  # inside the hold: a request no model answered never raises a 429's limit
 
     def _call_model(
         self, task: AiTask, messages: list[dict], model: str, profile: ChatModelProfile, capped: bool
     ) -> tuple[Any, float]:
         """One model's response and seconds, with retries."""
         options = build_request_options(profile, task, model, model in self._thinking_on, capped)
-        request = partial(litellm.completion, model=model, messages=messages, **self._connection, **options)
+        ask = partial(litellm.completion, model=model, messages=messages, **self._connection, **options)
         try:
             with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
-                return call_with_retries(request, self._request_rates[model], model=model)
+                return call_with_retries(ask, self._request_rates[model], self._slots, model=model, task=task)
         except AI_REFUSED_REPLY_ERRORS as exc:  # an answer, if a refusal: no other model is asked
             refused = ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error=type(exc).__name__)
             raise UnreadableAiAnswer(refused) from exc
-
-
-def _whole_request_hold_seconds(
-    models: list[tuple[str, ChatModelProfile]],
-    request_rates: dict[str, AiRequestRate],
-    fallback_slots: AiSlots,
-) -> int:
-    """The request's one slot outlives every model's longest run, the wait for a fallback slot too."""
-    runs = sum(
-        max_slot_hold_seconds(profile.timeout_seconds, request_rates[model].wait_seconds)
-        for model, profile in models
-    )
-    return runs + math.ceil(fallback_slots.wait_seconds)
 
 
 def _with_correction_turn(

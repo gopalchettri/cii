@@ -44,6 +44,9 @@ def create_mapping(
     mapper: Mapper,
     idempotency_key: IdempotencyKey = None,
 ) -> MappingAccepted:
+    """202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a
+    new try when the key's generation is still the latest and failed for an outage (`error.code`
+    `unavailable`)."""
     accepted, created = mapper.create_service_mapping(principal, body, idempotency_key)
     if not created:
         response.status_code = 200
@@ -112,6 +115,9 @@ def regenerate_mapping(
     mapper: Mapper,
     idempotency_key: IdempotencyKey = None,
 ) -> MappingAccepted:
+    """202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one
+    runs). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when
+    that generation is still the latest and failed for an outage (`error.code` `unavailable`)."""
     accepted, created = mapper.regenerate_service_mapping(principal, mapping_id, idempotency_key)
     if not created:
         response.status_code = 200
@@ -129,5 +135,6 @@ def decide_dependencies(
     mapper: Mapper,
 ) -> DependencyDecisionsResult:
     """Send `{"accept": [dependency_id, ...], "reject": [...]}`; either list may be null or empty. The valid
-    ids are saved together; `failed` lists each id that was not, and why."""
+    ids are saved together; `failed` lists each id that was not, and why. 409 until the mapping is `done`:
+    regenerate a `failed` one."""
     return mapper.decide_dependencies(principal, mapping_id, body)

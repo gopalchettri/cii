@@ -1197,7 +1197,7 @@
       "id": 10,
       "type": "stat",
       "title": "AI no answer",
-      "description": "AI calls that got no answer after their retries (down, unreachable, busy, timed out). Click to see them.",
+      "description": "AI calls the AI gateway left without an answer after their retries (down, unreachable, busy, timed out); refusals by TSG's own limiter are not counted. Click to see them.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1209,7 +1209,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum(increase(tsg_ai_outages_total[$__range]))) or vector(0)",
+          "expr": "round(sum(increase(tsg_ai_outages_total{source=\"gateway\"}[$__range]))) or vector(0)",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -3162,7 +3162,7 @@
       "id": 44,
       "type": "stat",
       "title": "Why the AI did not answer",
-      "description": "AI calls with no answer in the chosen time, by reason. Timed out or busy: the AI gateway is overloaded. Could not be reached: network, proxy or address. Server error: the gateway is broken.",
+      "description": "AI calls with no answer in the chosen time, by reason. Timed out or busy: the AI gateway is overloaded. Could not be reached: network, proxy or address. Server error: the gateway is broken. Busy also counts TSG's own limiter (source=limiter: no AI slot or request turn free within the wait), not the gateway; the \"AI no answer\" tile counts the gateway's only.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -5031,7 +5031,7 @@
       "id": 23,
       "type": "gauge",
       "title": "AI capacity in use",
-      "description": "AI calls running now out of CII_MAX_CONCURRENT_AI_CALLS. At 100 % new calls wait for a free slot.",
+      "description": "AI calls running now, out of the limit in force: CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower (0 = none). A 429 sets that limit to half the calls in flight at that moment; each answer raises it a little, and it is gone a few minutes after the last 429. At 100 % new calls wait for a free slot. No limit set: TSG runs at full speed.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

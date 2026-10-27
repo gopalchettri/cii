@@ -3,8 +3,54 @@
   "schemas": {
    "AcceptRequest": {
     "additionalProperties": false,
-    "description": "Body of accept. An unknown field is refused (422): a misspelt `replace_acepted` must not pass.",
+    "description": "Body of accept: TSG v1's `mode` body, or the v2 body (`scenario_ids` alone); an unknown field: 422.",
+    "examples": [
+     {
+      "mode": "subset",
+      "scenario_ids": [
+       "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+      ]
+     },
+     {
+      "mode": "all"
+     },
+     {
+      "mode": "subset",
+      "replace_accepted": true,
+      "scenario_ids": [
+       "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+      ]
+     },
+     {
+      "mode": "none"
+     },
+     {
+      "scenario_ids": [
+       "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+      ]
+     },
+     {
+      "scenario_ids": "all"
+     }
+    ],
     "properties": {
+     "mode": {
+      "anyOf": [
+       {
+        "enum": [
+         "all",
+         "subset",
+         "none"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "all: accept every scenario; subset: accept the scenario_ids; none: accept nothing. Leave it out to send the v2 body (scenario_ids alone).",
+      "title": "Mode"
+     },
      "replace_accepted": {
       "default": false,
       "title": "Replace Accepted",
@@ -25,14 +71,15 @@
        {
         "const": "all",
         "type": "string"
+       },
+       {
+        "type": "null"
        }
       ],
+      "description": "With mode subset: the ids to accept; left out with mode all or none. Without mode (the v2 body): required, a list or \"all\".",
       "title": "Scenario Ids"
      }
     },
-    "required": [
-     "scenario_ids"
-    ],
     "title": "AcceptRequest",
     "type": "object"
    },
@@ -3085,64 +3132,63 @@
     "description": "Body of `POST /v1/remediation`: v1's ONE request for both kinds of scenario (owner, 2026-10-15), each\nkind sending its own half (mixing them is a 422), and the register's data.",
     "examples": [
      {
-      "all_supporting_systems_applicable": 1,
       "existing_controls": [
        {
-        "control_code": "CII-CID-202"
-       },
-       "User Awareness"
+        "control_code": "CID-0365",
+        "control_name": "Denial of Service (DoS) Protection"
+       }
       ],
       "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
-      "existing_controls_all_supporting_system_applicable": 1,
       "final_risk_rating": 20,
       "impact_rating": 5,
       "impacted_business_division": "Power Generation Operations",
       "is_manual": false,
       "likelihood_rating": 4,
       "mitigation_end_date": "2026-12-31",
-      "mitigation_start_date": "2026-10-01",
-      "risk_identification_date": "2026-09-15T09:30:00Z",
+      "mitigation_start_date": "2026-11-01",
+      "risk_identification_date": "2026-10-26",
       "risk_level": "Critical",
       "risk_owner": "Head of OT Operations",
       "scenario_id": "<accepted scenario_id>",
-      "session_id": "<session_id>"
+      "session_id": "<session_id>",
+      "supporting_systems_applicable_to_existing_controls": [
+       214
+      ],
+      "supporting_systems_applicable_to_risk": [
+       214,
+       215
+      ]
      },
      {
-      "all_supporting_systems_applicable": 0,
       "existing_controls": [
        {
-        "control_code": "CII-CID-202",
-        "supporting_system_ids": [
-         2301
-        ]
+        "control_code": "CID-0001",
+        "control_name": "Asset Inventories"
        },
        {
-        "control_name": "User Awareness",
-        "supporting_system_ids": [
-         2301,
-         2302
-        ]
+        "control_code": "CID-0002",
+        "control_name": "Asset Governance"
        }
       ],
       "existing_controls_all_subsystems_justification": "Controls are deployed on corporate IT systems only.",
-      "existing_controls_all_supporting_system_applicable": 0,
       "final_risk_rating": 20,
       "impact_rating": 5,
       "impacted_business_division": "Power Generation Operations",
       "is_manual": true,
       "likelihood_rating": 4,
       "manual_scenario": {
-       "asset_id": 1166,
-       "entity_id": 1,
+       "asset_id": 88,
+       "entity_id": 69,
        "mapped_controls": [
         {
-         "control_code": "CII-CID-213"
+         "control_code": "CID-0005",
+         "control_name": "Decommissioning"
         }
        ],
        "risk_statement": "Operators lose process history and plant reporting stops for days.",
        "supporting_system_id": [
-        2301,
-        2302
+        214,
+        215
        ],
        "threat_category_name": "Tampering",
        "threat_name": "Ransomware encrypts the historian server",
@@ -3150,25 +3196,25 @@
        "threat_type_name": "Malware/Ransomware"
       },
       "mitigation_end_date": "2026-12-31",
-      "mitigation_start_date": "2026-10-01",
-      "risk_identification_date": "2026-09-15T09:30:00Z",
+      "mitigation_start_date": "2026-11-01",
+      "risk_identification_date": "2026-10-26",
       "risk_level": "Critical",
-      "risk_owner": "Head of OT Operations"
+      "risk_owner": "Head of OT Operations",
+      "supporting_systems_applicable_to_existing_controls": [
+       214
+      ],
+      "supporting_systems_applicable_to_risk": [
+       214,
+       215
+      ]
      }
     ],
     "properties": {
-     "all_supporting_systems_applicable": {
-      "description": "1: the risk applies to every supporting system linked to the asset; 0: only to the scenario's own systems.",
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "All Supporting Systems Applicable",
-      "type": "integer"
-     },
      "existing_controls": {
       "anyOf": [
        {
         "items": {
-         "$ref": "#/components/schemas/RegisterControlRef"
+         "$ref": "#/components/schemas/ControlRef"
         },
         "maxItems": 50,
         "type": "array"
@@ -3178,17 +3224,6 @@
        }
       ],
       "title": "Existing Controls"
-     },
-     "existing_controls_all_subsystems": {
-      "anyOf": [
-       {
-        "$ref": "#/components/schemas/YesNo"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "description": "Kept for older callers and not used: existing_controls_all_supporting_system_applicable decides."
      },
      "existing_controls_all_subsystems_justification": {
       "anyOf": [
@@ -3201,13 +3236,6 @@
        }
       ],
       "title": "Existing Controls All Subsystems Justification"
-     },
-     "existing_controls_all_supporting_system_applicable": {
-      "description": "1: the existing controls are on every supporting system linked to the asset; 0: each existing control lists the asset's supporting systems it is on (supporting_system_ids).",
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Existing Controls All Supporting System Applicable",
-      "type": "integer"
      },
      "final_risk_rating": {
       "minimum": 0.0,
@@ -3346,11 +3374,43 @@
       ],
       "description": "is_manual=false only: the run that holds the scenario.",
       "title": "Session Id"
+     },
+     "supporting_systems_applicable_to_existing_controls": {
+      "anyOf": [
+       {
+        "items": {
+         "exclusiveMinimum": 0.0,
+         "maximum": 2147483647.0,
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The supporting systems of the scenario's asset the existing controls are on, one list for them all; none (null, blank or []): they are on no supporting system. Only the systems the risk applies to count; a repeat is dropped.",
+      "title": "Supporting Systems Applicable To Existing Controls"
+     },
+     "supporting_systems_applicable_to_risk": {
+      "anyOf": [
+       {
+        "items": {
+         "exclusiveMinimum": 0.0,
+         "maximum": 2147483647.0,
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The supporting systems of the scenario's asset the risk applies to; none (null, blank or []): the risk is on the asset itself, on no supporting system. A repeat is dropped.",
+      "title": "Supporting Systems Applicable To Risk"
      }
     },
     "required": [
-     "all_supporting_systems_applicable",
-     "existing_controls_all_supporting_system_applicable",
      "is_manual"
     ],
     "title": "PlanRequest",
@@ -3404,7 +3464,7 @@
     "type": "string"
    },
    "PlanStarted": {
-    "description": "202 of `POST /v1/remediation` (200 on a replay of a hand-written request), with v1's two flags.",
+    "description": "202 of `POST /v1/remediation` (200 on a replay of a hand-written request; 202 when that replay writes\nan outage-failed version again), with v1's two flags.",
     "properties": {
      "is_manual": {
       "title": "Is Manual",
@@ -3765,67 +3825,6 @@
     ],
     "properties": {},
     "title": "RegenerateRequest",
-    "type": "object"
-   },
-   "RegisterControlRef": {
-    "additionalProperties": false,
-    "description": "An existing control in the register: the control, and the supporting systems it is on (required when\nexisting_controls_all_supporting_system_applicable is 0).",
-    "properties": {
-     "control_code": {
-      "anyOf": [
-       {
-        "maxLength": 100,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Control Code"
-     },
-     "control_id": {
-      "anyOf": [
-       {
-        "exclusiveMinimum": 0.0,
-        "maximum": 2147483647.0,
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Control Id"
-     },
-     "control_name": {
-      "anyOf": [
-       {
-        "maxLength": 500,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Control Name"
-     },
-     "supporting_system_ids": {
-      "anyOf": [
-       {
-        "items": {
-         "exclusiveMinimum": 0.0,
-         "maximum": 2147483647.0,
-         "type": "integer"
-        },
-        "type": "array"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Supporting System Ids"
-     }
-    },
-    "title": "RegisterControlRef",
     "type": "object"
    },
    "RejectResult": {
@@ -4233,7 +4232,7 @@
     "type": "object"
    },
    "RetryNotice": {
-    "description": "A stage waiting to try again after an outage; null once the stage succeeds, ends or fails.",
+    "description": "A stage waiting to try again after an outage; null once the next try starts or the stage ends.",
     "properties": {
      "attempt": {
       "title": "Attempt",
@@ -7204,7 +7203,7 @@
   },
   "/v1/remediation": {
    "post": {
-    "description": "Start writing a remediation plan for one scenario: v1's one request for both kinds.\n\n- **is_manual=false**: send `session_id` and `scenario_id` of an ACCEPTED scenario of that run.\n- **is_manual=true**: send `manual_scenario` (a scenario a person wrote) and an `Idempotency-Key` header.\n  TSG saves the scenario, accepts it and plans it. The same key and body again: 200, `replayed: true`.\n\nEvery other field is the register's data; all are optional. Answers 202 at once with `remediation_id`,\n`session_id` and `scenario_id`: keep the last two, because every later call on the plan takes them in its\naddress. No AI is called here: the plan job matches the scenario's controls (and a hand-written one's\nattacker) if they are missing, then writes the plan; poll `GET .../treatment-plan/status` until\n`latest_status` is `done`.\n\nErrors: 404 scenario unknown or not in that run; 403 another entity's; 409 `scenario_not_accepted`,\n`plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `control_library_empty`; 422 a\nfield, or the two kinds mixed.",
+    "description": "Start writing a remediation plan for one scenario: v1's one request for both kinds.\n\n- **is_manual=false**: send `session_id` and `scenario_id` of an ACCEPTED scenario of that run.\n- **is_manual=true**: send `manual_scenario` (a scenario a person wrote) and an `Idempotency-Key` header.\n  TSG saves the scenario, accepts it and plans it. The same key and body again: 200, `replayed: true`;\n  if that plan failed for an outage (`error.code` `unavailable`), its version is written again: 202.\n\nEvery other field is the register's data; all are optional. `supporting_systems_applicable_to_risk` names\nthe asset's systems the risk applies to (none: the asset itself), and\n`supporting_systems_applicable_to_existing_controls` those the existing controls are on (none: no\nsystem). Answers 202 at once with `remediation_id`, `session_id` and `scenario_id`: keep the last two,\nbecause every later call on the plan takes them in its address. No AI is called here: the plan job\nmatches the scenario's controls (and a hand-written one's attacker) if they are missing, then writes the\nplan; poll `GET .../treatment-plan/status` until `latest_status` is `done`.\n\nErrors: 404 scenario unknown or not in that run; 403 another entity's; 409 `scenario_not_accepted`,\n`plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `control_library_empty`,\n`run_being_deleted`; 422 a field, the two kinds mixed, or a listed system that is not a supporting\nsystem of the scenario's asset.",
     "operationId": "request_plan_v1_remediation_post",
     "parameters": [
      {
@@ -7474,6 +7473,7 @@
     ]
    },
    "post": {
+    "description": "202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a\nnew try when the key's generation is still the latest and failed for an outage (`error.code`\n`unavailable`).",
     "operationId": "create_mapping_v1_service_mapper_post",
     "parameters": [
      {
@@ -7713,7 +7713,7 @@
   },
   "/v1/service-mapper/{mapping_id}/dependencies/decision": {
    "post": {
-    "description": "Send `{\"accept\": [dependency_id, ...], \"reject\": [...]}`; either list may be null or empty. The valid\nids are saved together; `failed` lists each id that was not, and why.",
+    "description": "Send `{\"accept\": [dependency_id, ...], \"reject\": [...]}`; either list may be null or empty. The valid\nids are saved together; `failed` lists each id that was not, and why. 409 until the mapping is `done`:\nregenerate a `failed` one.",
     "operationId": "decide_dependencies_v1_service_mapper__mapping_id__dependencies_decision_post",
     "parameters": [
      {
@@ -7961,6 +7961,7 @@
   },
   "/v1/service-mapper/{mapping_id}/regenerate": {
    "post": {
+    "description": "202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one\nruns). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when\nthat generation is still the latest and failed for an outage (`error.code` `unavailable`).",
     "operationId": "regenerate_mapping_v1_service_mapper__mapping_id__regenerate_post",
     "parameters": [
      {
@@ -8552,7 +8553,7 @@
   },
   "/v1/sessions/{session_id}/accept": {
    "post": {
-    "description": "Send `{\"scenario_ids\": [\"...\"]}` or `{\"scenario_ids\": \"all\"}`. An accepted scenario can get a\nremediation plan (group 7). `replace_accepted: true` lets a newer version replace an accepted one.",
+    "description": "Send `{\"mode\": \"subset\", \"scenario_ids\": [\"...\"]}`, `{\"mode\": \"all\"}` or `{\"mode\": \"none\"}` (decides\nnothing), as TSG v1 does; `replace_accepted: true` (optional, with subset) lets a newer version replace an\naccepted one. The v2 body is also accepted: `{\"scenario_ids\": [\"...\"]}` or `{\"scenario_ids\": \"all\"}`. An\naccepted scenario can get a remediation plan (group 7).",
     "operationId": "accept_scenarios_v1_sessions__session_id__accept_post",
     "parameters": [
      {
@@ -8637,6 +8638,53 @@
     "requestBody": {
      "content": {
       "application/json": {
+       "examples": {
+        "v1_all": {
+         "summary": "Accept all (v1)",
+         "value": {
+          "mode": "all"
+         }
+        },
+        "v1_none": {
+         "summary": "Accept nothing (v1)",
+         "value": {
+          "mode": "none"
+         }
+        },
+        "v1_replace": {
+         "summary": "Accept a newer version in place of the accepted one (v1)",
+         "value": {
+          "mode": "subset",
+          "replace_accepted": true,
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        },
+        "v1_subset": {
+         "summary": "Accept some (v1)",
+         "value": {
+          "mode": "subset",
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        },
+        "v2_all": {
+         "summary": "Accept all (v2, also accepted)",
+         "value": {
+          "scenario_ids": "all"
+         }
+        },
+        "v2_subset": {
+         "summary": "Accept some (v2, also accepted)",
+         "value": {
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        }
+       },
        "schema": {
         "$ref": "#/components/schemas/AcceptRequest"
        }
@@ -9025,7 +9073,7 @@
   },
   "/v1/sessions/{session_id}/regenerate/scenarios": {
    "post": {
-    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again in the background (202); follow it with\n`GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`).",
+    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again in the background (202); follow it with\n`GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`). A card\nthat failed because the AI did not answer is written again in its place.",
     "operationId": "regenerate_scenarios_v1_sessions__session_id__regenerate_scenarios_post",
     "parameters": [
      {
@@ -10162,7 +10210,7 @@
   },
   "/v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/regenerate": {
    "post": {
-    "description": "Send `{}`: the next version (2, 3, ...) is written from the same register data and the scenario's\ncurrent controls; the earlier versions stay. Follow it with `.../status`, then accept the one you want:\n`.../review {\"decision\": \"accepted\", \"version\": 2}`. Allowed once the latest version is done, failed or\ncancelled; 409 `generation_in_progress` before that.",
+    "description": "Send `{}`: the next version (2, 3, ...) is written from the same register data and the scenario's\ncurrent controls; the earlier versions stay. Follow it with `.../status`, then accept the one you want:\n`.../review {\"decision\": \"accepted\", \"version\": 2}`. Allowed once the latest version is done, failed or\ncancelled; 409 `generation_in_progress` before that. A latest version that failed for an outage\n(`error.code` `unavailable`) is written again instead: the same version number, so it uses no version and\nthe version limit (409 `version_limit_reached`) does not stop it.",
     "operationId": "regenerate_plan_v1_sessions__session_id__scenarios__scenario_id__treatment_plan_regenerate_post",
     "parameters": [
      {

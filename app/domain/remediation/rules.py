@@ -19,6 +19,7 @@ from app.core.exceptions import Conflict, Forbidden, Invalid, NotFound
 from app.models.admin.api_clients import Principal
 from app.models.library.library import LibraryControl
 from app.models.remediation.plan import RemediationStatus, version_status
+from app.models.remediation.requests import SYSTEM_LISTS, PlanRequest
 
 
 def still_accepted(scenario: dict[str, Any] | None) -> bool:
@@ -76,6 +77,12 @@ def check_regenerable(read: dict[str, Any], remediation_id: str, max_version_cou
     return latest + 1
 
 
+def outage_failed(read: dict[str, Any]) -> bool:
+    """Whether the latest version failed for an AI or a store outage: it is written again in place."""
+    error = read["job"].get("error") or {}
+    return read["status"] == Status.FAILED and error.get("code") == ErrorCode.UNAVAILABLE
+
+
 def version_in_progress(remediation_id: str, version: int) -> Conflict:
     """409 generation_in_progress: the latest version is still being written."""
     message = RemediationMessage.VERSION_IN_PROGRESS.format(version=version, remediation_id=remediation_id)
@@ -114,18 +121,19 @@ def check_control_library(library: Sequence[LibraryControl]) -> None:
         raise Conflict(ErrorMessage.CONTROL_LIBRARY_EMPTY, reason=ErrorCode.CONTROL_LIBRARY_EMPTY)
 
 
-def check_register_systems(register: dict[str, Any], system_ids: Sequence[int]) -> None:
-    """422 naming each existing control's supporting_system_ids entry that is not a system of the asset."""
+def check_register_systems(body: PlanRequest, system_ids: Sequence[int]) -> None:
+    """422 naming each entry of the request's two system lists, at its place as sent, that is not a system
+    of the asset."""
     known = set(system_ids)
     errors = [
         {
-            "field": f"body.existing_controls[{position}].supporting_system_ids",
+            "field": f"body.{listed}[{position}]",
             "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(
                 system_id=system_id, known=", ".join(map(str, system_ids))
             ),
         }
-        for position, entry in enumerate(register.get("existing_controls") or [])
-        for system_id in entry.get("supporting_system_ids") or []
+        for listed in SYSTEM_LISTS
+        for position, system_id in enumerate(getattr(body, listed))
         if system_id not in known
     ]
     if errors:

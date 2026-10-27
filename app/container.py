@@ -87,8 +87,8 @@ def apply_proxy_once() -> None:
 
 @singleton
 def get_ai_slots() -> AiSlots:
-    cap = get_settings().max_concurrent_ai_calls
-    return AiSlots(get_redis_client() if cap else None, cap, _ai_slot_wait_seconds)
+    """Every AI call is recorded, at cap 0 too: a gateway 429 limits the calls then in flight."""
+    return AiSlots(get_redis_client(), get_settings().max_concurrent_ai_calls, _ai_slot_wait_seconds)
 
 
 @singleton

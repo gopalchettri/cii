@@ -410,7 +410,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
     """Review fix 4: on the job's last try, with another path of the batch written, the outage is that path's
-    own: a failure card and an attempt, and the path is given up; the run no longer fails."""
+    own: a failure card and an attempt, and the path is left to the next set; the run no longer fails."""
 
     def threat_two_times_out(user_prompt: str) -> dict[str, Any]:
         if '"Threat 2"' in user_prompt:
@@ -422,7 +422,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     _write_batch(_on_last_try(record_id))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[1]["failure"]["code"] == ErrorCode.UNAVAILABLE and run["plan"]["paths"][1]["attempts"] == 1
-    assert run["plan"]["paths"][1]["abandoned"] and run["status"] == Status.DONE
+    assert not run["plan"]["paths"][1]["abandoned"] and run["status"] == Status.DONE
 
 
 def test_a_path_the_ai_timed_out_on_gets_a_card_that_names_the_outage(

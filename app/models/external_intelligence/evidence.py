@@ -99,14 +99,16 @@ class EvidenceSearchRecord:
     # the audit row is only readable next to the model that gave the scores.
     rerank_model: str = ""
     outage: AiOutage | None = None  # the AI outage that stopped the search: what the held-back path tells
+    outage_message: str = ""  # that outage in its own words: a reranker wait is no gateway refusal
 
     def as_doc(self) -> dict[str, Any]:
-        """The audit as stored, its tuples as lists; `outage` only when the AI stopped the search."""
+        """The audit as stored, its tuples as lists; the outage fields only when the AI stopped the search."""
         doc = asdict(self) | {
             "asset_types": list(self.asset_types),
             "considered": [c.as_doc() for c in self.considered],
         }
-        return doc if self.outage else {key: value for key, value in doc.items() if key != "outage"}
+        outage_keys = ("outage", "outage_message")
+        return doc if self.outage else {key: value for key, value in doc.items() if key not in outage_keys}
 
 
 @dataclass(frozen=True)

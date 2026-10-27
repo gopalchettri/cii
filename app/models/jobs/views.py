@@ -11,7 +11,7 @@ from app.core.constants import AiOutage, JobKind, Status
 
 
 class RetryNotice(BaseModel):
-    """A stage waiting to try again after an outage; null once the stage succeeds, ends or fails."""
+    """A stage waiting to try again after an outage; null once the next try starts or the stage ends."""
 
     stage: str | None = None  # threats or scenarios on a run; None on a remediation plan
     reason: AiOutage | None  # ai_down, ai_unreachable, ai_busy, ai_timed_out; None: a store outage

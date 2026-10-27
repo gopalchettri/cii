@@ -4,15 +4,13 @@ from collections import defaultdict
 from dataclasses import asdict, replace
 from uuid import NAMESPACE_URL, uuid5
 
+from app.core.prompts import PROMPTS
 from app.domain.shared.names import is_same_name, name_match_key
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
 from app.models.service_mapper.generation import GeneratedAnswer, ProposedDependency, ResolvedDependency
 
-_TOO_VAGUE = (
-    "is too vague: name the specific service in at least two words "
-    "(a new name is fine when no catalog service provides it)"
-)
+_TOO_VAGUE: str = PROMPTS["service_mapper"]["generate"]["too_vague"]
 
 
 def reconcile(

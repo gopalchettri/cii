@@ -178,10 +178,6 @@ class ValidationStatus(StrEnum):
     WARNING = "warning"
 
 
-class ScenarioDisplay:
-    WHY_APPLIES_JOIN: Final = "\n\nWhy this threat applies: "  # between the statement and why_applies
-
-
 class RunKind(StrEnum):
     GENERATED = "generated"  # threats, paths and scenarios made by the engine
     MANUAL = "manual"  # one hand-written scenario (a remediation request): born done
@@ -239,7 +235,7 @@ class BoardMessage(StrEnum):
 
     ABANDONED = "{abandoned} attack path(s) could not be written."
     CONTROLS_FAILED = (
-        "Controls could not be matched for {failed} scenario(s) yet; they are tried again later."
+        "Controls could not be matched for {failed} scenario(s); request or regenerate a plan to try again."
     )
     CONTROLS_FAILED_MANUAL = (
         "Controls could not be matched for the hand-written scenario; regenerate its plan "

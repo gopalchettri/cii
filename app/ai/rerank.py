@@ -17,13 +17,7 @@ from app.ai.common import (
 )
 from app.ai.local_turns import LocalTurns
 from app.ai.profiles import RERANK_MODEL_PROFILES, find_model_profile
-from app.ai.slots import (
-    UNLIMITED_AI_REQUEST_RATE,
-    UNLIMITED_AI_SLOTS,
-    AiRequestRate,
-    AiSlots,
-    max_slot_hold_seconds,
-)
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
 from app.core import metrics
 from app.core.config import Settings
 from app.core.constants import AiLimits, AiOutcome, AiTask, ErrorMessage
@@ -75,8 +69,7 @@ class RerankModel:
 
     def _score_with_provider(self, query: str, documents: list[str]) -> tuple[list[float], float]:
         # call_with_retries is the only retry; a short answer is asked again too.
-        hold = max_slot_hold_seconds(self.profile.timeout_seconds, self._request_rate.wait_seconds)
-        with self._slots.hold_slot(hold):
+        with self._slots.hold_slot(AiTask.RERANK):
             return call_with_retries(
                 lambda: self._read_checked_scores(
                     litellm.rerank(
@@ -92,7 +85,9 @@ class RerankModel:
                     len(documents),
                 ),
                 self._request_rate,
+                self._slots,
                 model=self._model,
+                task=AiTask.RERANK,
             )
 
     def _read_checked_scores(self, response: Any, expected: int) -> list[float]:

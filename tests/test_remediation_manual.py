@@ -15,12 +15,14 @@ from sqlalchemy import Engine
 from app import container
 from app.core.config import get_settings
 from app.core.constants import (
+    AiOutage,
     AiTask,
     AuditAction,
     Collection,
     ConflictReason,
     ErrorCode,
     Header,
+    Lease,
     LibraryStatus,
     RemediationMessage,
     ResolveOutcome,
@@ -29,12 +31,14 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
+from app.core.exceptions import Unavailable
 from app.data_access.library.sql_operation_repository import SqlOperationRepository
 from app.data_access.library.threat_repository import ThreatRepository
 from app.data_access.scenario.asset_repository import AssetRepository
+from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.remediation.manual import manual_ids, manual_request_fingerprint
 from app.models.library.library import LibraryControl
-from app.models.remediation.requests import PlanRequest
+from app.models.remediation.requests import SYSTEM_LISTS, PlanRequest
 from app.services.remediation.remediation_plan_service import RemediationPlanService
 from tests.plan_addresses import plan_url
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
@@ -52,8 +56,7 @@ IDENTITY = {Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DES
 #: v1's hand-written request: is_manual, the entity and the threat's flat fields (asset 103 is entity 86's).
 BODY = {
     "is_manual": True,
-    "all_supporting_systems_applicable": 1,
-    "existing_controls_all_supporting_system_applicable": 1,
+    "supporting_systems_applicable_to_risk": [321, 322],
     "manual_scenario": {
         "asset_id": 103,
         "entity_id": 86,
@@ -124,38 +127,95 @@ def _runs_with_key(key: str) -> int:
     return get_mongodb()[Collection.SESSIONS].count_documents({"idempotency_key": key})
 
 
-def _on(*system_ids: int) -> dict[str, Any]:
-    """BODY sending the SCADA master station (321) alone, CII-CID-1 in the register on `system_ids`."""
+def _on(*system_ids: int, risk: tuple[int, ...] = (321, 322)) -> dict[str, Any]:
+    """BODY sending the SCADA master station (321) alone, the risk on `risk`, CII-CID-1 in the register and
+    the existing controls on `system_ids`."""
     return _with(supporting_system_id=[321]) | {
-        "existing_controls_all_supporting_system_applicable": 0,
-        "existing_controls": [{"control_code": "CII-CID-1", "supporting_system_ids": list(system_ids)}],
+        "supporting_systems_applicable_to_risk": list(risk),
+        "supporting_systems_applicable_to_existing_controls": list(system_ids),
+        "existing_controls": ["CII-CID-1"],
     }
 
 
-def test_existing_controls_name_the_assets_systems_and_a_refusal_saves_nothing(
+def _assessed(answer: Any, manual: dict[str, Any]) -> tuple[str, list[str], list[str]]:
+    """CII-CID-1's status, the systems it is on and those it is still needed on, once its plan is written."""
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(answer.json()["remediation_id"])
+    (row,) = _plan(answer.json()["remediation_id"])["versions"][0]["plan"]["control_assessment"]
+    on, needed = (
+        [system["name"] for system in row[key]] for key in ("protected_systems", "required_systems")
+    )
+    return row["implementation_status"], on, needed
+
+
+def test_the_lists_name_the_assets_systems_and_a_refusal_saves_nothing(
     client: TestClient, api_key: str, manual: dict[str, Any]
 ) -> None:
-    """Asset 103 has the SCADA master station (321) and the Process historian (322): a control on 323 (not
-    the asset's) is a 422 that saves nothing, so the same key then works; one on the historian, which the
-    request did not send, is accepted, and the risk on every system covers both of them."""
+    """Asset 103 has the SCADA master station (321, OT) and the Process historian (322, IT): 323 (not the
+    asset's) in either list is a 422 naming field and position as sent that saves nothing, so the same key
+    then works. The existing controls on the historian, which the request did not send, are accepted: the OT
+    control CII-CID-1 is still needed on the station. On the station while the risk is on the historian
+    alone, they are accepted too, and only the overlap counts: none."""
     key = uuid.uuid4().hex
-    refused = _post(client, api_key, _on(323), key)
-    assert refused.status_code == 422, refused.text
-    assert [error["message"] for error in refused.json()["errors"]] == [
-        RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=323, known="321, 322")
-    ]
+    for wrong, field in (
+        (_on(322, 322, 323), "existing_controls[2]"),
+        (_on(322, risk=(321, 321, 323)), "risk[2]"),
+    ):
+        refused = _post(client, api_key, wrong, key)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["errors"] == [
+            {
+                "field": f"body.supporting_systems_applicable_to_{field}",
+                "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=323, known="321, 322"),
+            }
+        ]
     assert _runs_with_key(key) == 0
     answer = _post(client, api_key, _on(322), key)
     assert answer.status_code == 202, answer.text
-    extending = plan_answer("CII-CID-1")
-    extending["controls_to_be_implemented"]["controls"][0]["description"] = "Extends signed firmware."
-    manual["chat"].queue(AiTask.REMEDIATION_PLAN, extending)
-    deliver(answer.json()["remediation_id"])
+    assert _assessed(answer, manual) == ("not_implemented", [], ["SCADA master station"])
     snapshot = _plan(answer.json()["remediation_id"])["versions"][0]["snapshot"]
     assert [system["name"] for system in snapshot["risk_scope"]["affected_systems"]] == [
         "SCADA master station",
         "Process historian",
     ]
+    outside = _post(client, api_key, _on(321, risk=(322,)), uuid.uuid4().hex)
+    assert outside.status_code == 202, outside.text
+    assert _assessed(outside, manual) == ("not_implemented", [], ["Process historian"])
+
+
+@pytest.mark.parametrize("none", [None, "", []], ids=["null", "blank", "empty"])
+def test_a_hand_written_request_listing_no_system_is_planned_at_the_asset_level(
+    client: TestClient, api_key: str, manual: dict[str, Any], monkeypatch: pytest.MonkeyPatch, none: Any
+) -> None:
+    """Both lists naming none: accepted, and CII-CID-1, an existing control, is implemented on no system (the
+    risk is on the asset itself). The risk on both systems, the existing controls on none: CII-CID-1 is still
+    needed on the station (an OT control). The lists are checked against SQL alone: the run is never read
+    back."""
+    reads: list[str] = []
+    read_context = ThreatScenarioSessionRepository.get_scenario_session_context
+
+    def counted(sessions: ThreatScenarioSessionRepository, session_id: str) -> dict[str, Any]:
+        reads.append(session_id)
+        return read_context(sessions, session_id)
+
+    monkeypatch.setattr(ThreatScenarioSessionRepository, "get_scenario_session_context", counted)
+    nowhere = _on() | dict.fromkeys(SYSTEM_LISTS, none)
+    answer = _post(client, api_key, nowhere, uuid.uuid4().hex)
+    assert (answer.status_code, reads) == (202, []), answer.text
+    covered = {"control_coverage": "covered", "controls": []}
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer(controls_to_be_implemented=covered))
+    deliver(answer.json()["remediation_id"])
+    (row,) = _plan(answer.json()["remediation_id"])["versions"][0]["plan"]["control_assessment"]
+    assert [row[key] for key in ("implementation_status", "protected_systems", "required_systems")] == [
+        "implemented",
+        [],
+        [],
+    ]
+    on_none = _on() | {"supporting_systems_applicable_to_existing_controls": none}
+    reads.clear()  # the plan job reads its run; the request never does
+    answer = _post(client, api_key, on_none, uuid.uuid4().hex)
+    assert (answer.status_code, reads) == (202, []), answer.text
+    assert _assessed(answer, manual) == ("not_implemented", [], ["SCADA master station"])
 
 
 def test_a_hand_written_scenario_is_saved_planned_and_replayed(
@@ -357,3 +417,56 @@ def test_a_deleted_runs_key_reused_with_another_wording_proposes_the_new_one(
     deliver(again.json()["remediation_id"])
     assert asked == ["Logic bomb", "Time bomb"]
     assert _scenario(first["scenario_id"])["content"]["threat"]["library_id"] == 902
+
+
+def _failed_for_outage(manual: dict[str, Any], remediation_id: str) -> None:
+    """The plan job's last try meets a busy AI: the plan fails for the outage."""
+    plans = get_mongodb()[Collection.REMEDIATIONS]
+    plans.update_one({"_id": remediation_id}, {"$set": {"job.attempts": Lease.MAX_ATTEMPTS - 1}})
+    busy = Unavailable("Every AI slot stayed busy.", reason=AiOutage.BUSY)
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, busy)
+    deliver(remediation_id)
+    assert _plan(remediation_id)["job"]["error"]["code"] == ErrorCode.UNAVAILABLE
+
+
+def test_the_same_request_after_an_outage_writes_the_plan_again_and_after_another_failure_replays_it(
+    client: TestClient, api_key: str, manual: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Busy on the plan job's last try: the same key and body queue version 1 again (202, sent once more); a
+    repeat while it waits, or one another repeat beat to the retry, replays it (200, nothing sent); a failure
+    of another kind replays as failed."""
+    key = uuid.uuid4().hex
+    planned = _post(client, api_key, BODY, key).json()
+    remediation_id, replayed = planned["remediation_id"], planned | {"replayed": True}
+    _failed_for_outage(manual, remediation_id)
+    retried = _post(client, api_key, BODY, key)
+    assert (retried.status_code, retried.json()) == (202, replayed), retried.text
+    assert manual["sent"] == [(TaskName.WRITE_PLAN, remediation_id, 1)] * 2
+    plan = _plan(remediation_id)
+    assert (plan["status"], plan["job"]["error"], len(plan["versions"])) == ("queued", None, 1)
+    again = _post(client, api_key, BODY, key)
+    assert (again.status_code, again.json()) == (200, replayed)
+    _failed_for_outage(manual, remediation_id)
+    plans = container.get_remediation_repository()
+    real_retry = plans.retry_remediation_plan_version
+
+    def retried_by_another_repeat(*args: Any) -> bool:
+        real_retry(*args)
+        return False
+
+    with monkeypatch.context() as raced:
+        raced.setattr(plans, "retry_remediation_plan_version", retried_by_another_repeat)
+        lost = _post(client, api_key, BODY, key)
+    assert (lost.status_code, lost.json()) == (200, replayed)
+    unusable = plan_answer("CII-CID-1", applicable_to_all_subsystems="Maybe")
+    manual["chat"].queue(AiTask.REMEDIATION_PLAN, unusable, unusable)
+    deliver(remediation_id)
+    failed = _post(client, api_key, BODY, key)
+    assert (failed.status_code, failed.json()["status"]) == (200, "failed")
+    outage = {"$set": {"job.error": {"code": ErrorCode.UNAVAILABLE, "message": "Busy."}}}
+    get_mongodb()[Collection.REMEDIATIONS].update_one({"_id": remediation_id}, outage)
+    not_accepted = {"$set": {"decision": "pending"}}  # its plan is read-only, as for a regenerate
+    get_mongodb()[Collection.SCENARIOS].update_one({"_id": planned["scenario_id"]}, not_accepted)
+    read_only = _post(client, api_key, BODY, key)
+    assert (read_only.status_code, read_only.json()["status"]) == (200, "failed")
+    assert len(manual["sent"]) == 2 and len(_plan(remediation_id)["versions"]) == 1

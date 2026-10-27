@@ -23,7 +23,6 @@ class Remediation:
     RATING_DECIMALS: Final = 4  # ... 4 of them after the point
     STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code
     REASON_MAX_CHARS: Final = 300  # the AI's problems quoted in a failed version's error message
-    PROMPT_VERSION: Final = "remediation-4"  # stored on every plan version the prompt writes
     #: The code at the head of a control label ("CID-0477 · Social Engineering"): what the label names.
     LABEL_CODE_PATTERN: Final = r"[^\s·•|:—–]+"
     #: What only code may state in a plan's action_plan: the schedule (a time span, a date, the critical path,
@@ -138,15 +137,15 @@ class RemediationMessage(StrEnum):
     CONTROL_REF_EMPTY = (
         "A control entry must name the control: send control_id, control_code or control_name."
     )
-    SYSTEMS_REQUIRED = (
-        "existing_controls[{position}] ({control}) sends no supporting_system_ids: each existing control "
-        "lists the supporting systems it is on when existing_controls_all_supporting_system_applicable is 0."
-    )
     SYSTEM_NOT_OF_ASSET = (
         "{system_id} is not a supporting system of this scenario's asset (its systems when its run "
         "started: {known})."
     )
-    REGISTER_SYSTEMS_INVALID = "An existing control names a supporting system its asset does not have."
+    REGISTER_SYSTEMS_INVALID = "A supporting system list names a system the scenario's asset does not have."
+    SYSTEM_FLAG_REMOVED = (
+        "{flag} is no longer accepted: send {replacement}, the list of the asset's supporting system ids, "
+        "instead."
+    )
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
     REFERENCES_INVALID = "Some control references cannot be resolved."

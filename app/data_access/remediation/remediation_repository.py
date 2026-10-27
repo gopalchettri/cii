@@ -1,5 +1,6 @@
 """tsg_remediations: one remediation plan per scenario (a unique index, race-free) with its versions, and the
-plan's guarded writes: a new version, a decision, and the plan job's version writes under its job lease."""
+plan's guarded writes: a new version, an outage-failed one queued again, a decision, and the plan job's
+version writes under its job lease."""
 
 from datetime import datetime
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import Collection, Decision, Status
+from app.core.constants import Collection, Decision, ErrorCode, Status
 from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
 from app.models.remediation.plan import RemediationStatus, RemediationSummary
@@ -19,6 +20,7 @@ _CHANGE_FIELDS = {
     "session_id": 1,
     "status": 1,
     "job.epoch": 1,
+    "job.error": 1,
     "accepted_version": 1,
     "decision_seq": 1,
     **{f"versions.{field}": 1 for field in ("version", "status", "decision")},
@@ -109,6 +111,32 @@ class RemediationRepository(MongoRepository):
         )
         return bool(appended.modified_count)
 
+    def retry_remediation_plan_version(
+        self, remediation_id: str, version: int, job: dict[str, Any], now: datetime
+    ) -> bool:
+        """Queues the latest `version` again in place with a fresh `job` on tsg_remediations, its snapshot
+        cleared; False unless it is still the latest and failed for an outage."""
+        retried = self.collection.update_one(
+            {
+                "_id": remediation_id,
+                "job.epoch": version,
+                "status": Status.FAILED,
+                "job.error.code": ErrorCode.UNAVAILABLE,
+            },
+            {
+                "$set": {
+                    "job": job,
+                    "status": Status.QUEUED,
+                    "active": True,
+                    "updated_at": now,
+                    "versions.$[v].snapshot": None,
+                },
+                "$unset": {"finished_at": ""},
+            },
+            array_filters=[{"v.version": version}],
+        )
+        return retried.modified_count == 1
+
     def update_remediation_plan_decision(
         self, remediation_id: str, seen_decision_seq: int, change: dict[str, Any]
     ) -> bool:
@@ -144,13 +172,18 @@ class RemediationRepository(MongoRepository):
             changes |= ended_job_fields(Status.DONE)
         lease.update_job(changes, [{"v.version": lease.epoch}])
 
-    def stop_remediation_plan_version(self, remediation_id: str, version: int) -> None:
+    def stop_remediation_plan_version(
+        self, remediation_id: str, version: int, outage: dict[str, Any] | None = None
+    ) -> None:
         """Ends `version`'s job cancelled on tsg_remediations while it still waits or runs (a regenerate that
-        lost the race with its run's delete)."""
+        lost the race with its run's delete); an in-place retry ends failed with its `outage` error again."""
         now = utc_now()
+        ended = ended_job_fields(Status.CANCELLED if outage is None else Status.FAILED, now)
+        if outage is not None:
+            ended["job.error"] = outage
         self.collection.update_one(
             {"_id": remediation_id, "job.epoch": version, "status": {"$in": [Status.QUEUED, Status.RUNNING]}},
-            {"$set": ended_job_fields(Status.CANCELLED, now) | {"updated_at": now}},
+            {"$set": ended | {"updated_at": now}},
         )
 
 

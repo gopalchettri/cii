@@ -69,7 +69,6 @@ class ScenarioDraft:
     assumptions: tuple[str, ...]
     entry_point: str  # one of the brief's entry_point_options; "" = the asset itself
     system_reasons: tuple[tuple[str, str], ...] = ()  # (system name, its one-sentence reason), brief order
-    why_applies: str = ""  # the writer's own sentence on why the threat applies ("" when it gave none)
     evidence_statement: str = ""  # a story's real-world passage from its cited entry ("" when none)
 
 
@@ -119,7 +118,6 @@ class ScenarioAnswer(BaseModel):
     assumptions: list[str]
     entry_point: str
     system_reasons: dict[str, str] = {}  # one sentence per supporting system, by name
-    why_applies: str | None = ""  # one sentence; none given (null too) is never a re-ask
     evidence_statement: str | None = ""  # none given is never a re-ask: code cites its own sentence
 
     @field_validator("scenario_title", "scenario_statement", "risk_statement")

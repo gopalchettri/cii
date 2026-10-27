@@ -81,6 +81,12 @@ class PlanProgress:
         self.record(states, {"job.set": sorted(self._set)})
         return str(reserve["path_id"])
 
+    def leave_for_next_set(self, path_id: str, state: dict[str, Any]) -> None:
+        """Keep a path open but out of the set being written, so only a later set writes it."""
+        # ponytail: best_reserve may still pick it as this set's spare; flag it if spares must be fresh
+        self._set.discard(path_id)
+        self.record({path_id: state | {"abandoned": False}}, {"job.set": sorted(self._set)})
+
     def record(self, states: dict[str, dict[str, Any]], also: dict[str, Any] | None = None) -> None:
         """Save attack path states, the plan's figures, the scenario counts and the plan note in one fenced
         write, then send a live update. `also`: more fields for the same write."""
@@ -129,8 +135,8 @@ class PlanProgress:
         self._lease.update_job(changes | ended_job_fields(Status.DONE))
 
     def finish_regenerate(self, replaced: int, requested: int) -> None:
-        """End a regenerate: complete when every target got its new version, partial when any kept its old
-        one, timed from the click."""
+        """End a regenerate: complete when every target was written (a new version, or an outage card in
+        place), partial when any was not, timed from the click."""
         outcome = RunActionOutcome.COMPLETE if replaced == requested else RunActionOutcome.PARTIAL
         started = self._last_action.get("started_at") or utc_now()
         self._lease.update_job(

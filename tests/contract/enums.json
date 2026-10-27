@@ -23,6 +23,10 @@
   "TIMED_OUT": "ai_timed_out",
   "UNREACHABLE": "ai_unreachable"
  },
+ "AiOutageSource": {
+  "GATEWAY": "gateway",
+  "LIMITER": "limiter"
+ },
  "AiOutcome": {
   "ERROR": "error",
   "OK": "ok",
@@ -632,9 +636,9 @@
   "GET_ASSET_CONTEXT": "tsg_GetAssetContext",
   "GET_CONTROL_LIBRARY": "tsg_GetControlLibrary",
   "GET_LIBRARY_STAMP": "tsg_GetLibraryStamp",
-  "GET_SECTORS_AND_SUBSECTORS": "Onboarding_GetSectorsAndSubsectorsList",
+  "GET_SECTORS_AND_SUBSECTORS": "tsg_Onboarding_GetSectorsAndSubsectorsList",
   "GET_SECTOR_SERVICE_MAPPINGS": "Onboarding_GetSectorServiceMappings",
-  "GET_SERVICES_WITH_SECTOR_DETAILS": "Onboarding_GetServicesWithSectorDetails",
+  "GET_SERVICES_WITH_SECTOR_DETAILS": "tsg_Onboarding_GetServicesWithSectorDetails",
   "GET_SERVICE_MAPPER_ASSOCIATIONS": "tsg_GetServiceMapperAssociations",
   "GET_THREAT_LIBRARY": "tsg_GetThreatLibrary",
   "IMPORT_THREAT_LIBRARY": "tsg_ImportThreatLibrary",

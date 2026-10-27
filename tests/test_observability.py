@@ -17,7 +17,7 @@ from prometheus_client import REGISTRY
 from prometheus_client.metrics import MetricWrapperBase
 
 import app.core.metrics  # noqa: F401 — registers every app metric
-from app.core.constants import Dependency, Queue, Worker
+from app.core.constants import AiOutageSource, Dependency, Queue, Worker
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -77,7 +77,7 @@ EXPORTER_METRICS = {
     "kube_pod_container_status_waiting_reason",
     "kube_pod_status_phase",
 }
-PUBLIC_PATHS = {"/grafana", "/flower", "/prometheus", "/alertmanager", "/loki"}
+PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
 WATCHED_APP_PROJECTS = ("ai-threatgen", "ai-remediation")  # TSG's own projects: every pod there is TSG's
 
 
@@ -214,7 +214,7 @@ def test_queue_backlog_watches_every_routed_queue_but_maintenance() -> None:
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
     """In ai-common, shared with the chatbot (D24); only the Role that lets it read the app's pods is in
-    each app project."""
+    each app project, and the monitoring proxy with its Routes in ai-threatgen (whose host they use)."""
     objects = _uat_objects()
     assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
     elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
@@ -222,7 +222,7 @@ def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
     }
     assert elsewhere == {
         (kind, project) for kind in ("Role", "RoleBinding") for project in ("ai-threatgen", "ai-remediation")
-    }
+    } | {(kind, "ai-threatgen") for kind in ("Deployment", "Service", "Route")}
     for deployment in _template_objects("Deployment"):
         pod = deployment["spec"]["template"]["spec"]
         assert pod["imagePullSecrets"] == [{"name": "quay-pull"}]
@@ -340,6 +340,27 @@ def test_a_fresh_start_never_reads_as_the_reaper_not_running() -> None:
     assert after_a_start and all(test["exp_samples"] == [] for test in after_a_start)
 
 
+def test_ai_not_answering_and_its_tile_count_the_gateway_s_refusals_only() -> None:
+    """AiNotAnswering and the "AI no answer" tile count source="gateway" only, not TSG's own limiter."""
+    gateway = f'tsg_ai_outages_total{{source="{AiOutageSource.GATEWAY}"}}'
+    [rule] = [rule for rule in _rules() if rule["alert"] == "AiNotAnswering"]
+    [tile] = [panel for panel in _panels() if panel["title"] == "AI no answer"]
+    for expr in (rule["expr"], *(target["expr"] for target in tile["targets"])):
+        assert re.findall(r"tsg_ai_outages_total\b[^\[]*", expr) == [gateway], expr
+    cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
+    series = [s["series"] for case in cases for s in case["input_series"]]
+    outages = [name for name in series if name.startswith("tsg_ai_outages_total")]
+    assert outages and all('source="' in name for name in outages)  # promtool sees the label filtered on
+    silent_for_the_limiter = [
+        check
+        for case in cases
+        if all(f'source="{AiOutageSource.LIMITER}"' in s["series"] for s in case["input_series"])
+        for check in case["alert_rule_test"]
+        if check["alertname"] == "AiNotAnswering" and check.get("exp_alerts") == []
+    ]
+    assert silent_for_the_limiter
+
+
 def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
     """Owner, 2026-10-23: one Flower link that is right where Grafana runs. Before: "Flower (jobs)" (/flower/)
     worked only in UAT and "Flower on the laptop" (localhost:5555) only on the laptop. Each environment's
@@ -374,7 +395,8 @@ def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
 
 def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
     """ai-common is shared with a chatbot: Prometheus scrapes, Alloy reads and kube-state-metrics' series keep
-    only TSG's pods there, and a restart there selects TSG's Deployments only."""
+    only TSG's pods there, its Services send only to TSG's pods, and a restart there selects TSG's Deployments
+    only."""
     uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
     jobs = {job["job_name"]: job for job in uat["scrape_configs"]}
     tsg_only = jobs["pods"]["relabel_configs"][0]
@@ -393,6 +415,9 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
         name, labels = deployment["metadata"]["name"], deployment["spec"]["template"]["metadata"]["labels"]
         assert re.fullmatch(tsg_only["regex"], labels["part-of"]), name
         assert re.fullmatch(kept["regex"], f"ai-common;{name}-7d9f8b6c5d-x2x4z"), name  # <rs hash>-<5 chars>
+    for service in _template_objects("Service"):  # never a chatbot pod with the same app label
+        if service["metadata"]["namespace"] == "ai-common":
+            assert service["spec"]["selector"]["part-of"] == "tsg-monitoring", service["metadata"]["name"]
     chatbot_pods = ["chatbot-api-7d9f8b6c5d-x2x4z", "grafana-agent-7d9f8b6c5d-x2x4z"]
     assert not [pod for pod in chatbot_pods if re.fullmatch(kept["regex"], f"ai-common;{pod}")]
     assert all(re.fullmatch(kept["regex"], f"{app};{chatbot_pods[0]}") for app in WATCHED_APP_PROJECTS)

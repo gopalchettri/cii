@@ -1,8 +1,8 @@
 @echo off
-rem Build the 7 monitoring images on Red Hat UBI 9, check each runs as OpenShift runs it, and push them to Quay.
+rem Build the 8 monitoring images on Red Hat UBI 9, check each runs as OpenShift runs it, and push them to Quay.
 rem
-rem   deploy\build-monitoring-images.bat                     all 7: build, check, push
-rem   deploy\build-monitoring-images.bat grafana             only this image (any of the 7 names)
+rem   deploy\build-monitoring-images.bat                     all 8: build, check, push
+rem   deploy\build-monitoring-images.bat grafana             only this image (any of the 8 names)
 rem   deploy\build-monitoring-images.bat grafana --no-push   build and check only
 rem
 rem The names and tags are the image: lines of deploy\deploy_common.yaml (change a version there, then run this;
@@ -25,6 +25,7 @@ set "VERSION_alloy=--version"
 set "VERSION_grafana=--version"
 set "VERSION_redis_exporter=-version"
 set "VERSION_kube-state-metrics=version"
+set "VERSION_nginx=-v"
 rem kube-state-metrics' version command refuses the --port flags its ENTRYPOINT adds, so it runs the bare binary.
 set "ENTRY_kube-state-metrics=--entrypoint /kube-state-metrics"
 rem The repo root (the folder above deploy\), saved before shift moves %%0.
@@ -107,7 +108,7 @@ rem Never overwrite a tag in Quay: the pods would keep running the old image. On
 rem not there; any other error (certificate, network) stops the build rather than risk an overwrite.
 if "%PUSH%"=="0" goto image_build
 call docker manifest inspect "%IMAGE%" >"%OUT%" 2>&1
-if not errorlevel 1 (echo ERROR: %IMAGE% is already in Quay. Build only the image whose version you changed: deploy\build-monitoring-images.bat NAME & exit /b 1)
+if not errorlevel 1 (echo ERROR: %IMAGE% is already in Quay. That is fine only if it is the UBI 9 build: check it, and build the others by name, as deploy\DEPLOYMENT_GUIDE.md Part 2, step 3 shows. & exit /b 1)
 findstr /l /c:"no such manifest:" "%OUT%" >nul && goto image_build
 type "%OUT%"
 echo ERROR: cannot check whether %IMAGE% is already in Quay: fix the error above, or use --no-push to build and check only.
@@ -126,10 +127,18 @@ type "%OUT%"
 findstr /l /c:"%BARE%" "%OUT%" >nul
 if errorlevel 1 (echo ERROR: %NAME% does not print version %BARE%. & exit /b 1)
 
+rem nginx only: the proxy's own config must load (nginx -t), as the pod runs it: a random user, the file mounted
+rem where deploy_common.yaml mounts it, the same arguments. Grafana's and Flower's names point at this container.
+if /i not "%NAME%"=="nginx" goto image_push
+call docker run --rm --user 1000870000:0 --add-host grafana.ai-common.svc.cluster.local:127.0.0.1 --add-host flower.ai-common.svc.cluster.local:127.0.0.1 -v "%CD%\observability\nginx:/etc/nginx/tsg:ro" "%IMAGE%" -t -e stderr -c /etc/nginx/tsg/nginx.conf >"%OUT%" 2>&1
+if errorlevel 1 (type "%OUT%" & echo ERROR: nginx does not accept observability\nginx\nginx.conf: fix it there and in deploy\configmap.yaml. & exit /b 1)
+type "%OUT%"
+
+:image_push
 rem Push it to Quay.
 if "%PUSH%"=="0" goto image_done
 call docker push "%IMAGE%"
-if errorlevel 1 (echo ERROR: docker push failed for %NAME%. Run docker login first. & exit /b 1)
+if errorlevel 1 (echo ERROR: docker push failed for %NAME%. If docker login said Login Succeeded, a "denied" or "unauthorized" above means your Quay user cannot create the repository dda-desc/%NAME%, or may not write to it: the Quay admin gives you Write on it, creating it if missing, or lets you create repositories in dda-desc. See deploy\DEPLOYMENT_GUIDE.md Part 1. & exit /b 1)
 :image_done
 set "DONE=%DONE% %IMAGE%"
 exit /b 0

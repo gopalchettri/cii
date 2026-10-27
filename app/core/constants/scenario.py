@@ -9,6 +9,7 @@ class Writing:
     PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
+    PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
     EVIDENCE_WORDS_SLOT: Final = "<evidence words>"  # the prompts' slot for EVIDENCE_STATEMENT_WORD_LIMIT
@@ -124,7 +125,7 @@ class TargetProblem(StrEnum):
     """Why one scenario id of a review call is refused (`errors[].reason`) or skipped (`skipped[].reason`)."""
 
     UNKNOWN = "unknown"  # not a served scenario of this run
-    FAILURE_SCENARIO = "failure_scenario"  # a failure card: the write job retries its path
+    FAILURE_SCENARIO = "failure_scenario"  # a failure card (on regenerate, only one naming no AI outage)
     ALREADY_REJECTED = "already_rejected"  # decisions are final; regenerate to get a new version
     ALREADY_ACCEPTED = "already_accepted"
     DUPLICATE_VERSION = "duplicate_version"  # two versions of one path, or another version already accepted
@@ -146,6 +147,9 @@ class PromotionOutcome(StrEnum):
 
 class ReviewMessage(StrEnum):
     IDS_REPEATED = "Each scenario may be sent only once."
+    SUBSET_NEEDS_IDS = "mode 'subset' needs scenario_ids: a list of scenario ids."
+    ONLY_WITH_SUBSET = "{field} is sent only with mode 'subset'."
+    MODE_VALUES = "mode is 'all', 'subset' or 'none': leave it out to send the v2 body."
     GENERATION_IN_PROGRESS = "Run '{session_id}' is still generating: try again once it is done."
     RUN_FAILED = "Run '{session_id}' failed before any scenario was written."
     RUN_CANCELLED = (

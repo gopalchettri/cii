@@ -46,7 +46,8 @@ APP_IMAGE = re.compile(
     rf"{re.escape(MIRROR)}/tsg-api:\d{{2}}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{{4}}(-\w+)?"
 )
 API_HOST = "threatgen-api.apps.dda-desc-az1-01.desccii.local"
-MONITORING_HOST = "threatgen-grafana.apps.dda-desc-az1-01.desccii.local"
+#: The nginx in ai-threatgen that puts Grafana and Flower on the API's host (deploy_common.yaml).
+PROXY = "monitoring-proxy"
 #: Each project's quota in limits (CPU, memory Gi, storage Gi); in ai-common, TSG's share of it (the chatbot
 #: has the rest).
 QUOTAS = {
@@ -97,6 +98,7 @@ EMBEDDED_CONFIGS = {
     "datasources.yaml": "observability/grafana/provisioning/datasources/datasources.yaml",
     "dashboards.yaml": "observability/grafana/provisioning/dashboards/dashboards.yaml",
     "tsg.json": "observability/grafana/dashboards/tsg.json",
+    "nginx.conf": "observability/nginx/nginx.conf",  # the monitoring proxy's: UAT only
 }
 #: How a pod names a ConfigMap or Secret it reads (envFrom, env valueFrom).
 REFERENCES = {
@@ -340,15 +342,21 @@ def test_no_pod_takes_the_project_s_service_variables() -> None:
 def test_every_object_is_in_its_file_s_project() -> None:
     for namespace, path in [*APP_FILES.items(), *NETWORK_FILES.items()]:
         assert {o["metadata"]["namespace"] for o in _objects(path)} == {namespace}, path.name
-    for item in _objects(COMMON_FILE):  # all in ai-common, but the right to read an app project's pods
-        where = item["metadata"]["namespace"]
-        if item["metadata"]["name"] == "tsg-monitoring-read-pods":
+    # All in ai-common, but the right to read an app project's pods, and the monitoring proxy with its Routes
+    # (only ai-threatgen may use the API's host).
+    for item in _objects(COMMON_FILE):
+        where, name = item["metadata"]["namespace"], item["metadata"]["name"]
+        if name == "tsg-monitoring-read-pods":
             assert where in APP_FILES, item["kind"]
+        elif name == PROXY or item["kind"] == "Route":
+            assert where == "ai-threatgen", (item["kind"], name)
         else:
-            assert where == MONITORING_NAMESPACE, (item["kind"], item["metadata"]["name"])
+            assert where == MONITORING_NAMESPACE, (item["kind"], name)
     for path, shared in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
         assert sorted(_shared(path, shared)) == sorted(WATCHED), path.name  # every project with TSG pods
-        others = {o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] != shared}
+        others = {
+            o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] not in {shared, PROXY}
+        }
         assert others == {MONITORING_NAMESPACE}, path.name  # the monitoring's files and Grafana's password
 
 
@@ -504,21 +512,6 @@ def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_all_three_projec
     assert f"--namespaces={','.join(WATCHED)}" in _container(_deployment("kube-state-metrics"))["args"]
 
 
-def test_every_route_is_https_on_its_host_and_no_two_share_a_path() -> None:
-    routes = _objects(*APP_FILES.values(), COMMON_FILE, kind="Route")
-    places = [(r["metadata"]["namespace"], r["spec"]["host"], r["spec"]["path"]) for r in routes]
-    assert len(places) == len(set(places))
-    assert {place[:2] for place in places} == {
-        ("ai-threatgen", API_HOST),
-        (MONITORING_NAMESPACE, MONITORING_HOST),
-    }
-    assert ("ai-threatgen", API_HOST, "/") in places
-    assert all(
-        r["spec"]["tls"] == {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}
-        for r in routes
-    )
-
-
 def test_both_projects_reach_the_same_stores_and_the_monitoring_and_router_reach_the_app() -> None:
     """Prometheus (ai-common) scrapes the API and the workers, the router sends the public https calls to the
     API, and every pod looks names up: a rule without these leaves the pods unreachable or blind."""
@@ -533,7 +526,8 @@ def test_both_projects_reach_the_same_stores_and_the_monitoring_and_router_reach
             if "to" not in rule
         ]
         assert any(ports >= DNS for ports in to_any_address), namespace
-    assert _ports_open_to(NETWORK_FILES["ai-threatgen"], ROUTER_PEER) == {8000}
+    # The API's port, and the monitoring proxy's (tests/test_deploy_monitoring_proxy.py checks it alone).
+    assert _ports_open_to(NETWORK_FILES["ai-threatgen"], ROUTER_PEER) == {8000, 8080}
 
 
 def test_each_project_may_reach_every_store_the_proxy_and_the_ai_gateway() -> None:

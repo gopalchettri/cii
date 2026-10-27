@@ -39,9 +39,9 @@ STRIDE_DEFINITIONS: Final[dict[StrideCategory, str]] = {
 
 class StoredProcedure(StrEnum):
     GET_SERVICE_MAPPER_ASSOCIATIONS = "tsg_GetServiceMapperAssociations"
-    GET_SECTORS_AND_SUBSECTORS = "Onboarding_GetSectorsAndSubsectorsList"
+    GET_SECTORS_AND_SUBSECTORS = "tsg_Onboarding_GetSectorsAndSubsectorsList"
     GET_SECTOR_SERVICE_MAPPINGS = "Onboarding_GetSectorServiceMappings"
-    GET_SERVICES_WITH_SECTOR_DETAILS = "Onboarding_GetServicesWithSectorDetails"
+    GET_SERVICES_WITH_SECTOR_DETAILS = "tsg_Onboarding_GetServicesWithSectorDetails"
     GET_ASSET_CONTEXT = "tsg_GetAssetContext"
     GET_THREAT_LIBRARY = "tsg_GetThreatLibrary"
     GET_CONTROL_LIBRARY = "tsg_GetControlLibrary"
@@ -236,7 +236,7 @@ class Controls:
     AI_THREAT_WORDS: Final = (  # a threat type or name about AI; acronyms match case-sensitively
         r"\b(?:AI|GenAI|LLMs?|ML)\b|(?i:artificial intelligence|machine learning|large language model)"
     )
-    MAX_ATTEMPTS: Final = 5  # then failed for good; the sweep retries only a failure with attempts left
+    MAX_ATTEMPTS: Final = 5  # then failed until a plan maps it; the sweep retries one with attempts left
     LEASE_SECONDS: Final = 120  # one scenario's mapping, and a run's delivery, renewed while it runs
     RETRY_FAILED_AFTER_SECONDS: Final = 1_800
     SWEEP_EVERY_SECONDS: Final = 300

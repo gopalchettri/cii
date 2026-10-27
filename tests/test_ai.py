@@ -21,7 +21,7 @@ from structlog.testing import capture_logs
 from app import ai, container
 from app.ai.common import UnusableAiAnswer
 from app.ai.profiles import CHAT_MODEL_PROFILES
-from app.ai.slots import AiRequestRate, AiSlots
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     CHAT_MAX_OUTPUT_TOKENS,
@@ -63,6 +63,10 @@ def _chat_model(*models: tuple[str, ChatModelProfile]) -> ai.ChatModel:
         "key",
         AiCallRepository(get_mongodb()["test_ai_calls"]),
     )
+
+
+#: call_with_retries' request rate and slots when a test needs no limit (a worker's: 429s waited out).
+_UNLIMITED = (UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS)
 
 
 def _ask(chat: ai.ChatModel, task: AiTask, system_prompt: str = "system", user_prompt: str = "user") -> dict:
@@ -108,7 +112,7 @@ def test_provider_outage_becomes_unavailable(monkeypatch: pytest.MonkeyPatch) ->
 def test_each_ai_outage_tells_the_ui_which_it_was(error: Exception, outage: AiOutage) -> None:
     """Down, unreachable, busy or timed out: its own reason and message (litellm's Timeout is also a lost
     connection, so a timeout must never read "unreachable"), and counted by that reason for the dashboard."""
-    labels = {"task": AiTask.RELEVANCE_GATE, "reason": outage}
+    labels = {"task": AiTask.RELEVANCE_GATE, "reason": outage, "source": "gateway"}
     before = REGISTRY.get_sample_value("tsg_ai_outages_total", labels) or 0
     with (
         pytest.raises(Unavailable) as raised,
@@ -132,9 +136,9 @@ def test_an_unmapped_server_error_is_retried_and_a_client_error_is_not(
         raise litellm.APIError(status, "gateway said no", llm_provider="openai", model="m")
 
     with pytest.raises(Unavailable), ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"):
-        ai.common.call_with_retries(lambda: failing(529), model="m")
+        ai.common.call_with_retries(lambda: failing(529), *_UNLIMITED, model="m", task=AiTask.RELEVANCE_GATE)
     with pytest.raises(litellm.APIError), ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"):
-        ai.common.call_with_retries(lambda: failing(413), model="m")
+        ai.common.call_with_retries(lambda: failing(413), *_UNLIMITED, model="m", task=AiTask.RELEVANCE_GATE)
     assert asked == [529] * (AiLimits.RETRIES + 1) + [413]
 
 
@@ -154,7 +158,7 @@ def test_an_unmapped_timed_out_status_is_not_asked_again_and_is_told_as_timed_ou
         pytest.raises(Unavailable) as raised,
         ai.common.count_and_convert_ai_errors(AiTask.RELEVANCE_GATE, "m"),
     ):
-        ai.common.call_with_retries(origin_timed_out, model="m")
+        ai.common.call_with_retries(origin_timed_out, *_UNLIMITED, model="m", task=AiTask.RELEVANCE_GATE)
     assert asked == [524] and raised.value.reason == AiOutage.TIMED_OUT
 
 
@@ -266,8 +270,8 @@ def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pyte
 def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 429 waits its Retry-After (at most 15 s), else 2, 5, 10, 15 s +-20%, at most 35 s in all, and asks
-    the same model again: kimi answers in ~5 s, the fallback glm-5.3 in 55-99 s."""
+    """A 429 waits 2, 5, 10, 15 s +-20%, or its Retry-After when longer (at most 60 s), at most 60 s in all,
+    and asks the same model again: kimi answers in ~5 s, the fallback glm-5.3 in 55-99 s."""
     waits: list[float] = []
     monkeypatch.setattr(ai.common, "sleep_unless_lease_lost", waits.append)
     retry_after = iter(["20", "3", "", "", ""])
@@ -285,17 +289,18 @@ def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
         "ok": True
     }
     assert asked == ["first"] * 5 + ["fallback"]
-    assert waits[:2] == [15, 3] and 8 <= waits[2] <= 12  # Retry-After capped, then the third default wait
-    assert sum(waits) == pytest.approx(AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS)  # the last wait cut to fit
+    assert waits[0] == 20 and 4 <= waits[1] <= 6 and 8 <= waits[2] <= 12 and 12 <= waits[3] <= 18
+    assert sum(waits) <= AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS
 
 
 def test_an_ai_call_s_seconds_leave_out_its_request_rate_waits() -> None:
     class SlowTurn:
-        def wait_for_turn(self) -> float:
+        def wait_for_turn(self, _task: str) -> float:
             time.sleep(0.2)
             return 0.2
 
-    _, seconds = ai.common.call_with_retries(lambda: None, SlowTurn(), model="m")  # type: ignore[arg-type]
+    slow, slots = SlowTurn(), UNLIMITED_AI_SLOTS
+    _, seconds = ai.common.call_with_retries(lambda: None, slow, slots, model="m", task="t")  # type: ignore[arg-type]
     assert seconds < 0.1
 
 
@@ -1010,6 +1015,33 @@ def test_an_answer_still_wrong_after_the_re_ask_is_unreadable(monkeypatch: pytes
     assert len(sent) == 2  # never a third call
 
 
+def test_a_usable_first_answer_is_kept_when_the_re_ask_finds_the_ai_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The re-ask only improves a usable answer: an outage then keeps that answer, never fails the job. A
+    first answer that is not usable still leaves the outage to the job's retry."""
+    _no_waiting(monkeypatch)
+    replies = iter(['{"relevant": true}'])
+
+    def answer_once_then_busy(**_: object) -> SimpleNamespace:
+        if (reply := next(replies, None)) is None:
+            raise _busy()
+        return _json_response(reply)
+
+    monkeypatch.setattr(litellm, "completion", answer_once_then_busy)
+    chat, faulted = _chat_model(), lambda _answer: ["a gap is missing"]
+    with capture_logs() as logs:
+        kept = chat.ask_for_checked_json(AiTask.RELEVANCE_GATE, "s", "u", _needs_relevant, faulted)
+    assert kept == {"relevant": True}
+    assert [entry["reask_error"] for entry in logs if entry["event"] == "ai.first_answer_kept"] == [
+        "Unavailable"
+    ]
+    replies = iter(['{"relevant": "maybe"}'])
+    with pytest.raises(Unavailable) as raised:
+        chat.ask_for_checked_json(AiTask.RELEVANCE_GATE, "s", "u", _needs_relevant, faulted)
+    assert raised.value.reason == AiOutage.BUSY
+
+
 def test_a_rejected_answer_too_long_to_quote_is_left_out_of_the_re_ask(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1212,7 +1244,7 @@ def test_a_fallback_asked_first_takes_no_slot_wait_while_the_cooling_model_is_st
     asked.clear()
     started = time.monotonic()
     try:
-        with fallback_slots.hold_slot(60):  # every fallback slot busy
+        with fallback_slots.hold_slot(AiTask.RELEVANCE_GATE):  # every fallback slot busy
             assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
     finally:
         get_redis_client().delete(key)
@@ -1282,11 +1314,13 @@ def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
     before = counted()
     api = AiRequestRate(None, "m", per_minute=0, wait_seconds=0, waits_out_rate_limits=False)
     with pytest.raises(litellm.RateLimitError):
-        ai.common.call_with_retries(rate_limited, api, model="m")
+        ai.common.call_with_retries(
+            rate_limited, api, UNLIMITED_AI_SLOTS, model="m", task=AiTask.RELEVANCE_GATE
+        )
     assert waits == [0.5, 1, 2] and counted() == before + AiLimits.RETRIES + 1
     waits.clear()
-    with pytest.raises(litellm.RateLimitError):
-        ai.common.call_with_retries(rate_limited, model="m")  # a worker's limiter
+    with pytest.raises(litellm.RateLimitError):  # a worker's limiter
+        ai.common.call_with_retries(rate_limited, *_UNLIMITED, model="m", task=AiTask.RELEVANCE_GATE)
     assert len(waits) == len(AiLimits.RATE_LIMITED_WAITS_SECONDS) and min(waits) > 1
     for builder in ("create_all_indexes", "get_chat_model", "get_embedding_model", "get_rerank_model"):
         monkeypatch.setattr(container, builder, lambda *_: None)
@@ -1305,7 +1339,7 @@ def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to
     turns: list[str] = []
 
     class CountedTurns(AiRequestRate):
-        def wait_for_turn(self) -> float:
+        def wait_for_turn(self, task: str) -> float:
             turns.append(self._model)
             return 0.0
 

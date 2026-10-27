@@ -24,7 +24,6 @@ from app.core.constants import (
     RunActionOutcome,
     RunKind,
     RunOverall,
-    ScenarioDisplay,
     ScenarioStatus,
     ScopeType,
     SessionState,
@@ -33,6 +32,7 @@ from app.core.constants import (
     Step,
     ThreatSource,
     ValidationStatus,
+    Writing,
 )
 from app.domain.scenario.plan import attacker_unsupported
 from app.models.external_intelligence.evidence_view import cited_evidence
@@ -269,8 +269,6 @@ def build_scenario_view(
 def _scenario_text(content: dict[str, Any]) -> ScenarioText:
     """What the scenario says, v1's route words included."""
     threat, route = content.get("threat") or {}, content.get("route") or {}
-    statement, why = content.get("statement"), content.get("why_applies")
-    shown = f"{statement}{ScenarioDisplay.WHY_APPLIES_JOIN}{why}" if statement and why else statement
     status = route.get("status")
     return ScenarioText(
         threat_category=content.get("category"),
@@ -279,12 +277,19 @@ def _scenario_text(content: dict[str, Any]) -> ScenarioText:
         threat_name=threat.get("name"),
         supporting_systems_involved=_systems_involved(content),
         scenario_title=content.get("title"),
-        scenario_statement=shown,
+        scenario_statement=content.get("statement"),
         risk_statement=content.get("risk_statement"),
-        assumptions=content.get("assumptions") or [],
+        assumptions=[_with_platform_note(text) for text in content.get("assumptions") or [] if text.strip()],
         route_status=ROUTE_WORDS.get(str(status), str(status).upper()) if status else None,
         also_applies=content.get("also_applies") or [],
     )
+
+
+def _with_platform_note(assumption: str) -> str:
+    """The assumption with code's platform note once; one already carrying it is shown as stored."""
+    if Writing.PLATFORM_NOTE.removeprefix(" - ").casefold() in assumption.casefold():
+        return assumption
+    return assumption.rstrip(". ") + Writing.PLATFORM_NOTE
 
 
 def _systems_involved(content: dict[str, Any]) -> list[SystemInvolved]:
@@ -461,12 +466,11 @@ def _scope_view(content: dict[str, Any]) -> ScopeView:
     """The asset, one system or a combination the scenario goes through."""
     ids = sorted(system["id"] for system in content.get("systems") or [])
     kind = ScopeType.ASSET if not ids else ScopeType.SYSTEM if len(ids) == 1 else ScopeType.COMBINATION
-    why = content.get("why_applies")
     return ScopeView(
         scope_key="+".join([SCOPE_ASSET_KEY, *map(str, ids)]),
         scope_type=kind,
         supporting_system_ids=ids,
-        evidence=[why] if why else [],
+        evidence=[],
     )
 
 

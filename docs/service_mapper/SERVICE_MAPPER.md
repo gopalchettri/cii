@@ -14,8 +14,10 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    the per-direction counts from `.env` (`SERVICE_MAPPER_UPSTREAM/DOWNSTREAM_TOTAL_COUNT`), then queues a job on
    `tsg_servicemapper`.
 2. The worker reads the SQL onboarding catalog (`app/worker/service_mapper/catalog_provider.py`): every service
-   with its sectors and subsectors (`Onboarding_GetServicesWithSectorDetails`, `tsg_GetServiceMapperAssociations`).
-3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `prompts/generate.txt` and a JSON user
+   with its sectors and subsectors (`tsg_Onboarding_GetSectorsAndSubsectorsList`,
+   `tsg_Onboarding_GetServicesWithSectorDetails`, `tsg_GetServiceMapperAssociations`: TSG's own procedures in
+   `scripts/sql`), and the onboarding platform's `Onboarding_GetSectorServiceMappings`.
+3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `app/prompts.toml` `[service_mapper.generate]` and a JSON user
    message with the selected service (with its recorded `known_upstream`/`known_downstream` when it is in the catalog), the counts (`upstream_count`, `downstream_count`, a
    maximum each) and `catalog`: **every** database service, grouped by sector and subsector, groups and services
    ordered most relevant first by hybrid search (`app/search/service_mapper.py`); the selected service is left
@@ -28,13 +30,20 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    keeps the first mention of a duplicate, and keeps a service in both lists where the AI ranked it higher. A
    new service that looks like a database one (same sector or subsector and a
    distinctive word in common, e.g. "Water Supply" and "Water Production & Transmission") is asked again too:
-   a service already in the database is never identified anew by the AI. An unusable re-ask keeps the first
-   answer.
+   a service already in the database is never identified anew by the AI. An unusable re-ask, or one that finds
+   the AI busy or down, keeps the first answer.
 5. `reconcile.py` maps each name to its catalog service (exact name, then a name form; services that share a name
    are told apart by sector and subsector), drops what is left of the above, keeps each service in one direction,
    caps each list at its count and stores the generation.
 6. A reviewer accepts or rejects each relationship (`POST .../dependencies/decision`); regenerate starts a new
-   generation with every relationship pending.
+   generation with every relationship pending. A generation that failed for an outage (`job.error.code`
+   `unavailable`) leaves no lasting mark: the same Idempotency-Key, on create or regenerate, starts a new try
+   while that key's generation is still the latest, instead of replaying the failed mapping; any other failure
+   replays as before. A create key that started a new try is also stored in `regen_keys`, so a regenerate sent
+   with that same key replays that generation. Use a fresh key for each request. A retried delivery of the same
+   generation reuses the AI answer it already got (`reuse_earlier_answer`, keyed on the generation), so a
+   regenerate always asks afresh. A relationship decision on a mapping that is not `done` is a 409: wait while it
+   generates, or regenerate it if it failed.
 
 ## Settings
 

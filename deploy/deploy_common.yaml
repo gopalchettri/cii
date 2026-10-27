@@ -1,40 +1,48 @@
 # deploy_common.yaml - TSG's monitoring and Flower in project ai-common (UAT is production): Prometheus (metrics
 # and alert rules), Alertmanager (firing alerts), Loki (logs), Alloy (ships the pods' logs to Loki), Grafana (the
 # one place to look), redis-exporter (jobs waiting per queue), kube-state-metrics (restarts, OOM kills) and Flower
-# (the live view of the background jobs); their volumes, Services, Routes and network rules; and the read-only
-# access they need in ai-threatgen and ai-remediation. Config files: configmap.yaml. Passwords: secrets.yaml.
+# (the live view of the background jobs); their volumes, Services and network rules; the monitoring proxy and its
+# Routes in ai-threatgen (Grafana and Flower on the API's address); and the read-only access they need in
+# ai-threatgen and ai-remediation. Config files: configmap.yaml. Passwords: secrets.yaml.
 #
-# Public addresses, without login (owner's decision):
-#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/       Grafana: the one place to look
-#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/flower/        Flower: background jobs (view only)
-#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/prometheus/    Prometheus: raw metrics, alert rules
-#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/alertmanager/  Alertmanager: firing alerts, silences
-#   https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/loki/          Loki's API (read it through Grafana)
+# Public addresses, without login (owner's decision), on the API's own host. OpenShift gives a host to one project
+# only, so their Routes are in ai-threatgen and go through the monitoring proxy there (nginx, below):
+#   https://threatgen-api.apps.dda-desc-az1-01.desccii.local/grafana/   Grafana: the one place to look
+#   https://threatgen-api.apps.dda-desc-az1-01.desccii.local/flower/    Flower: background jobs (view only)
+# No login means anyone who can reach the API's host can read every log line and metric: Grafana's anonymous
+# viewer may send any Loki or Prometheus query through its query API (POST /grafana/api/ds/query).
+# Prometheus, Alertmanager and Loki have no public address: open them with oc port-forward (the guide's Part 3).
 #
-# Apply AFTER configmap.yaml and secrets.yaml (and after deploy_threatgen.yaml is rolled out):
+# Apply AFTER configmap.yaml, secrets.yaml and networkpolicy_threatgen.yaml, and after deploy_threatgen.yaml is
+# rolled out (its smaller beat makes room for the proxy in ai-threatgen's quota):
 #   oc apply -f deploy/deploy_common.yaml
 #   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --watch
+#   oc -n ai-threatgen rollout status deployment/monitoring-proxy
 # A running pod never sees a changed config file or password: after a change, restart TSG's monitoring pods
-# (the -l keeps the chatbot's pods in this project running):
+# (the -l keeps the chatbot's pods in this project running), and the proxy in ai-threatgen:
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
+#   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
 # New release: Flower runs from the app image, so its tag (24-Oct-2026) changes with the deploy_*.yaml files.
 #
 # BEFORE THE FIRST APPLY - images. The cluster pulls only from Quay
-# (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc). The 7 monitoring images are built on Red Hat
+# (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc). The 8 monitoring images are built on Red Hat
 # UBI 9 (registry.access.redhat.com/ubi9:latest) by deploy\build-monitoring-images.bat from each program's
-# official release (kube-state-metrics from its source), and pushed to Quay under the names below.
+# official release (kube-state-metrics from its source; nginx is Red Hat's own UBI 9 nginx image), and pushed to
+# Quay under the names below.
 # Change a version by changing its image: line, then run: deploy\build-monitoring-images.bat <name>
 # (kube-state-metrics also needs SRC_SHA256 in deploy/images/kube-state-metrics/Dockerfile: the new tag's sha256).
 # The version on each image line is the one pin: scripts/monitoring.py installs the same versions on a laptop.
 #
-# FIRST TIME ONLY: the old monitoring ran in ai-remediation, and a Deployment's selector cannot change. Delete it
-# there by name (this also frees the threatgen-grafana host for ai-common):
+# FIRST TIME ONLY (deploy/DEPLOYMENT_GUIDE.md, Part 2, step 9): a Deployment's selector cannot change, so the
+# older copies go first. The old monitoring ran in ai-remediation: delete it there by name:
 #   oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
 #   oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
-#   oc -n ai-remediation get route    (delete any other Route still on threatgen-grafana.apps.dda-desc-az1-01.desccii.local)
+# In ai-common, shared with the chatbot, step 9 deletes by label, never by name: TSG's older copies of these
+# Deployments and their Routes (labelled part-of=tsg-observability under the older label prefix: TSG's, not the
+# chatbot's), and the previous release's Routes on the threatgen-grafana host (the new Routes live in ai-threatgen):
+#   oc -n ai-common delete route -l part-of=tsg-monitoring
 # The old volumes in ai-remediation (prometheus-data, loki-data, grafana-data) stay until the owner deletes them.
-# If "oc apply" here says "field is immutable", an older copy of that Deployment runs in ai-common: check it is
-# TSG's ("oc -n ai-common get deployment <name> --show-labels"), delete it by name and apply again.
+# If "oc apply" here says "field is immutable", an older copy of that Deployment is still in ai-common: step 9.
 #
 # Budget: ai-common's quota is 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
 # 6 Gi and 60 Gi. These pods' limits: about 2.3 CPU and 4.1 Gi; a restart adds up to 0.5 CPU and 1.1 Gi (one new
@@ -145,6 +153,25 @@ subjects:                                        # who gets it
   - kind: ServiceAccount                         # an identity pods run as
     name: kube-state-metrics                     # the kube-state-metrics ServiceAccount
     namespace: ai-common                         # in this project
+
+# Loki and Grafana write their volumes: each runs as its own identity, without rights, so the project's default
+# identity (shared with the chatbot, whose team may give it another SCC) never decides how they run.
+---
+apiVersion: v1                                   # core API version
+kind: ServiceAccount                             # the identity Loki runs as (no rights)
+metadata:                                        # the object's name and place
+  name: loki                                     # ServiceAccount name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+automountServiceAccountToken: false              # Loki never calls the OpenShift API: no token in its pod
+---
+apiVersion: v1                                   # core API version
+kind: ServiceAccount                             # the identity Grafana runs as (no rights)
+metadata:                                        # the object's name and place
+  name: grafana                                  # ServiceAccount name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+automountServiceAccountToken: false              # Grafana never calls the OpenShift API: no token in its pod
 
 # The app's two projects: the same three may read their pods (and Alloy their logs), nothing else.
 ---
@@ -272,7 +299,7 @@ spec:                                            # what to run
             - --storage.tsdb.path=/prometheus    # metrics are kept on the volume
             - --storage.tsdb.retention.time=15d  # keep 15 days
             - --storage.tsdb.retention.size=8GB  # and never more than 8 GB (the volume is 10 Gi)
-            - --web.external-url=https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/prometheus/   # its public address (it serves under /prometheus)
+            - --web.external-url=http://localhost:9090/prometheus/   # the address in its links: the guide's oc port-forward (it serves under /prometheus; no Route)
           ports: [{ name: http, containerPort: 9090 }]   # Prometheus' port
           readinessProbe:                        # "ready" = may receive requests
             httpGet: { path: /prometheus/-/ready, port: 9090 }   # Prometheus' own ready check
@@ -301,11 +328,11 @@ spec:                                            # what to run
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
 metadata:                                        # the object's name and place
-  name: prometheus                               # Service name (Grafana and the Route use it)
+  name: prometheus                               # Service name (Grafana uses it)
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  selector: { app: prometheus }                  # sends traffic to the pods labelled app=prometheus
+  selector: { app: prometheus, part-of: tsg-monitoring }   # sends traffic to TSG's Prometheus pod only (never a chatbot pod labelled app=prometheus)
   ports: [{ name: http, port: 9090, targetPort: 9090 }]   # port 9090 to the pod's port 9090
 
 # ---------------------------------------------------------------- Alertmanager (no alert channel yet)
@@ -342,7 +369,7 @@ spec:                                            # what to run
           args:                                  # start-up options
             - --config.file=/etc/alertmanager/alertmanager.yml   # receivers and routing (alertmanager-config)
             - --storage.path=/alertmanager       # silences live on a scratch folder and are lost on restart (ponytail: add a volume if that hurts)
-            - --web.external-url=https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/alertmanager/   # its public address (it serves under /alertmanager)
+            - --web.external-url=http://localhost:9093/alertmanager/   # the address in its links: the guide's oc port-forward (it serves under /alertmanager; no Route)
             - --cluster.listen-address=          # one Alertmanager: no peers to find
           ports: [{ name: http, containerPort: 9093 }]   # Alertmanager's port
           readinessProbe:                        # "ready" = may receive requests
@@ -372,11 +399,11 @@ spec:                                            # what to run
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
 metadata:                                        # the object's name and place
-  name: alertmanager                             # Service name (Prometheus, Grafana and the Route use it)
+  name: alertmanager                             # Service name (Prometheus and Grafana use it)
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  selector: { app: alertmanager }                # sends traffic to the pods labelled app=alertmanager
+  selector: { app: alertmanager, part-of: tsg-monitoring }   # sends traffic to TSG's Alertmanager pod only (never a chatbot pod labelled app=alertmanager)
   ports: [{ name: http, port: 9093, targetPort: 9093 }]   # port 9093 to the pod's port 9093
 
 # ---------------------------------------------------------------- Loki (logs, 7 days)
@@ -401,6 +428,7 @@ spec:                                            # what to run
         prometheus.io/path: /metrics             # at this path
     spec:                                        # pod settings
       enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
+      serviceAccountName: loki                   # runs as the loki identity, not the project's shared default
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: loki                             # container name
@@ -444,11 +472,11 @@ spec:                                            # what to run
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
 metadata:                                        # the object's name and place
-  name: loki                                     # Service name (Alloy, Grafana and the Route use it)
+  name: loki                                     # Service name (Alloy and Grafana use it)
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  selector: { app: loki }                        # sends traffic to the pods labelled app=loki
+  selector: { app: loki, part-of: tsg-monitoring }   # sends traffic to TSG's Loki pod only (never a chatbot pod labelled app=loki)
   ports: [{ name: http, port: 3100, targetPort: 3100 }]   # port 3100 to the pod's port 3100
 
 # ---------------------------------------------------------------- Alloy (the pods' logs -> Loki)
@@ -533,6 +561,7 @@ spec:                                            # what to run
       labels: { app: grafana, component: grafana, part-of: tsg-monitoring }   # component names it in the logs
     spec:                                        # pod settings
       enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
+      serviceAccountName: grafana                # runs as the grafana identity, not the project's shared default
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       initContainers:                            # runs to the end before Grafana starts
         - name: set-admin-password               # Grafana reads the admin password only when it creates its database: this sets a changed one
@@ -572,7 +601,9 @@ spec:                                            # what to run
             - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }   # anyone may look without a login
             - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: "Viewer" }   # ... but only look, never change
             - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }   # sends no usage data to Grafana Labs
-            - { name: GF_SERVER_ROOT_URL, value: "https://threatgen-grafana.apps.dda-desc-az1-01.desccii.local/grafana/" }   # its public address, for links
+            - { name: GF_SERVER_ENABLE_GZIP, value: "true" }   # compressed answers: fewer bytes through the router and the proxy
+            - { name: GF_METRICS_ENABLED, value: "false" }   # no /metrics page of its own: nothing scrapes it, and it would be public
+            - { name: GF_SERVER_ROOT_URL, value: "https://threatgen-api.apps.dda-desc-az1-01.desccii.local/grafana/" }   # its public address (the API's host, through the monitoring proxy), for links
             - { name: GF_SERVER_SERVE_FROM_SUB_PATH, value: "true" }   # it serves under /grafana
             - { name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /var/lib/grafana/dashboards/tsg.json }   # the TSG dashboard is the home page
             - { name: GRAFANA_DASHBOARDS, value: /var/lib/grafana/dashboards }   # the folder dashboards.yaml loads dashboards from
@@ -614,11 +645,11 @@ spec:                                            # what to run
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
 metadata:                                        # the object's name and place
-  name: grafana                                  # Service name (the Route uses it)
+  name: grafana                                  # Service name (the monitoring proxy forwards /grafana to it)
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  selector: { app: grafana }                     # sends traffic to the pods labelled app=grafana
+  selector: { app: grafana, part-of: tsg-monitoring }   # sends traffic to TSG's Grafana pod only (never a chatbot pod labelled app=grafana)
   ports: [{ name: http, port: 3000, targetPort: 3000 }]   # port 3000 to the pod's port 3000
 
 # ---------------------------------------------------------------- redis-exporter (jobs waiting per queue)
@@ -721,7 +752,7 @@ metadata:                                        # the object's name and place
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  selector: { app: kube-state-metrics }          # sends traffic to the pods labelled app=kube-state-metrics
+  selector: { app: kube-state-metrics, part-of: tsg-monitoring }   # sends traffic to TSG's kube-state-metrics pod only (never a chatbot pod with that app label)
   ports: [{ name: metrics, port: 8080, targetPort: 8080 }]   # port 8080 to the pod's port 8080
 
 # ---------------------------------------------------------------- Flower (the live view of the background jobs)
@@ -778,64 +809,89 @@ spec:                                            # what to run
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
 metadata:                                        # the object's name and place
-  name: flower                                   # Service name (the Route uses it)
+  name: flower                                   # Service name (the monitoring proxy forwards /flower to it)
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  selector: { app: flower }                      # sends traffic to the pods labelled app=flower
+  selector: { app: flower, part-of: tsg-monitoring }   # sends traffic to TSG's Flower pod only (never a chatbot pod labelled app=flower)
   ports: [{ name: http, port: 5555, targetPort: 5555 }]   # port 5555 to the pod's port 5555
 
-# ---------------------------------------------------------------- public paths on the monitoring host
+# ---------------------------------------------------------------- the monitoring proxy (in ai-threatgen)
+# OpenShift gives a host to one project only, and a Route reaches only a Service of its own project: the API's host
+# is ai-threatgen's. So the Routes for /grafana and /flower are there, and point at this nginx, which forwards them
+# to Grafana and Flower here in ai-common. Its config: ConfigMap monitoring-proxy (configmap.yaml); its network
+# rules: networkpolicy_threatgen.yaml and monitoring-from-proxy below. It lives in this file with the monitoring it
+# serves, and build-monitoring-images.bat builds its image with the others.
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one proxy running
+metadata:                                        # the object's name and place
+  name: monitoring-proxy                         # Deployment name
+  namespace: ai-threatgen                        # the API's project: only its Routes may use the API's host
+  labels: { app: monitoring-proxy, part-of: tsg-monitoring }   # labels on the Deployment itself
+spec:                                            # what to run
+  replicas: 1                                    # one copy: it forwards a few people's pages
+  strategy: { type: Recreate }                   # the old pod stops before the new one starts: no extra pod in ai-threatgen's quota
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: monitoring-proxy }       # pods labelled app=monitoring-proxy
+  template:                                      # the pod to run
+    metadata:                                    # pod labels
+      labels: { app: monitoring-proxy, component: monitoring-proxy, part-of: tsg-monitoring }   # component names it in the logs; app selects its network rules
+    spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services
+      automountServiceAccountToken: false        # nginx never calls the OpenShift API: no token in the pod
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry (already in ai-threatgen)
+      containers:                                # the programs in the pod
+        - name: nginx                            # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/nginx:1.24.0   # nginx, built on Red Hat's UBI 9 nginx image (deploy\build-monitoring-images.bat)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          args: [-e, stderr, -c, /etc/nginx/tsg/nginx.conf]   # errors to the pod log from the first line; the config below
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
+          ports: [{ name: http, containerPort: 8080 }]   # the proxy's port
+          readinessProbe:                        # "ready" = may receive requests
+            httpGet: { path: /healthz, port: 8080 }   # nginx answers itself (a Grafana restart does not take the proxy out)
+            initialDelaySeconds: 5               # first check after 5 s
+            periodSeconds: 10                    # then every 10 s
+          livenessProbe:                         # "alive" = the process answers; failing restarts the container
+            httpGet: { path: /healthz, port: 8080 }   # the same check
+            initialDelaySeconds: 10              # first check after 10 s
+            periodSeconds: 30                    # then every 30 s
+          volumeMounts:                          # folders from the volumes below
+            - { name: config, mountPath: /etc/nginx/tsg }   # nginx.conf
+          resources:                             # CPU and memory
+            requests: { cpu: 50m, memory: 64Mi }   # reserved for the pod: as much as its limit, which the quota counts anyway
+            limits: { cpu: 50m, memory: 64Mi }   # the most it may use (TLS ends at the router: it only passes bytes on)
+      volumes:                                   # where the folders come from
+        - name: config                           # the config file
+          configMap: { name: monitoring-proxy }  # from configmap.yaml (nginx.conf)
+---
+apiVersion: v1                                   # core API version
+kind: Service                                    # one stable address in front of the pod
+metadata:                                        # the object's name and place
+  name: monitoring-proxy                         # Service name (the two Routes below use it)
+  namespace: ai-threatgen                        # the proxy's project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # what it does
+  selector: { app: monitoring-proxy }            # sends traffic to the pods labelled app=monitoring-proxy
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]   # port 8080 to the pod's port 8080
+
+# ---------------------------------------------------------------- public paths on the API's host (in ai-threatgen)
+# The API's Route (deploy_threatgen.yaml) takes every other path: the router picks the longest path that matches.
 ---
 apiVersion: route.openshift.io/v1                # OpenShift Route API version
 kind: Route                                      # a public https address
 metadata:                                        # the object's name and place
   name: grafana                                  # Route name
-  namespace: ai-common                           # project
+  namespace: ai-threatgen                        # the API's project, which owns the host
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
-  path: /grafana                                 # this path
-  to: { kind: Service, name: grafana }           # forwards to the grafana Service
-  port: { targetPort: http }                     # on its http port
-  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
----
-apiVersion: route.openshift.io/v1                # OpenShift Route API version
-kind: Route                                      # a public https address
-metadata:                                        # the object's name and place
-  name: prometheus                               # Route name
-  namespace: ai-common                           # project
-  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
-spec:                                            # what it does
-  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
-  path: /prometheus                              # this path
-  to: { kind: Service, name: prometheus }        # forwards to the prometheus Service
-  port: { targetPort: http }                     # on its http port
-  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
----
-apiVersion: route.openshift.io/v1                # OpenShift Route API version
-kind: Route                                      # a public https address
-metadata:                                        # the object's name and place
-  name: alertmanager                             # Route name
-  namespace: ai-common                           # project
-  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
-spec:                                            # what it does
-  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
-  path: /alertmanager                            # this path
-  to: { kind: Service, name: alertmanager }      # forwards to the alertmanager Service
-  port: { targetPort: http }                     # on its http port
-  tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
----
-apiVersion: route.openshift.io/v1                # OpenShift Route API version
-kind: Route                                      # a public https address
-metadata:                                        # the object's name and place
-  name: loki                                     # Route name
-  namespace: ai-common                           # project
-  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
-spec:                                            # what it does
-  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
-  path: /loki                                    # this path
-  to: { kind: Service, name: loki }              # forwards to the loki Service
+  host: threatgen-api.apps.dda-desc-az1-01.desccii.local   # the API's host
+  path: /grafana                                 # this path (the API has none under it)
+  to: { kind: Service, name: monitoring-proxy }  # forwards to the monitoring proxy, which forwards to Grafana
   port: { targetPort: http }                     # on its http port
   tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
 ---
@@ -843,12 +899,12 @@ apiVersion: route.openshift.io/v1                # OpenShift Route API version
 kind: Route                                      # a public https address
 metadata:                                        # the object's name and place
   name: flower                                   # Route name
-  namespace: ai-common                           # project
+  namespace: ai-threatgen                        # the API's project, which owns the host
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # what it does
-  host: threatgen-grafana.apps.dda-desc-az1-01.desccii.local   # the monitoring host
-  path: /flower                                  # this path
-  to: { kind: Service, name: flower }            # forwards to the flower Service
+  host: threatgen-api.apps.dda-desc-az1-01.desccii.local   # the API's host
+  path: /flower                                  # this path (the API has none under it)
+  to: { kind: Service, name: monitoring-proxy }  # forwards to the monitoring proxy, which forwards to Flower
   port: { targetPort: http }                     # on its http port
   tls: { termination: edge, insecureEdgeTerminationPolicy: Redirect }   # https at the router; http is redirected to https
 
@@ -858,15 +914,19 @@ spec:                                            # what it does
 apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
 kind: NetworkPolicy                              # a firewall rule for pods
 metadata:                                        # the object's name and place
-  name: monitoring-from-router                   # rule name
+  name: monitoring-from-proxy                    # rule name
   namespace: ai-common                           # project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 spec:                                            # the rule
   podSelector: { matchLabels: { part-of: tsg-monitoring } }   # applies to TSG's monitoring pods only
   policyTypes: [Ingress]                         # controls incoming connections
   ingress:                                       # allowed incoming connections
-    - from:                                      # the OpenShift router (the public https addresses)
-        - namespaceSelector: { matchLabels: { policy-group.network.openshift.io/ingress: "" } }   # the router's project
+    - from:                                      # the monitoring proxy (Grafana and Flower's public addresses, in ai-threatgen)
+        - namespaceSelector: {}                  # any project ...
+          podSelector: { matchLabels: { app: monitoring-proxy, part-of: tsg-monitoring } }   # ... but only the monitoring proxy
+      ports:                                     # to these ports only
+        - { port: 3000, protocol: TCP }          # Grafana
+        - { port: 5555, protocol: TCP }          # Flower
 ---
 apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
 kind: NetworkPolicy                              # a firewall rule for pods

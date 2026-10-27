@@ -156,7 +156,11 @@ UAT works again here. But a later deployment would bring back the old settings, 
   - the `NO_PROXY` fix (D23);
   - a plan covers every system linked to the asset (D20);
   - a control counts only on systems of its asset type (D21);
-  - prompt `remediation-4`, and at most 5 controls per scenario (D22).
+  - the D34 remediation prompt, stored as `remediation-1` (D36), and at most 5 controls per scenario (D22);
+  - the plan request names supporting systems once per request (D34): the platform sends
+    `supporting_systems_applicable_to_risk` and `supporting_systems_applicable_to_existing_controls`.
+    `supporting_system_ids` inside an existing control is now a 422, and so is any of the old flags (the message
+    names the list to send instead). Tell the platform team before the release.
 - **It causes downtime.** Guide step 9 stops v1 and deletes the old v2 Deployments; UAT is down until the new API is
   running (guide step 12). Agree the release and a downtime window first.
 - **The DBA goes first.** The DBA must install every `scripts\sql\tsg_*.sql` in the UAT database, then
@@ -168,8 +172,8 @@ UAT works again here. But a later deployment would bring back the old settings, 
 - **The monitoring images must be in Quay** (guide step 3). Step 5 also installs the monitoring in `ai-common` (D24)
   and removes the one in `ai-remediation`. Guide step 3 builds these images on Red Hat UBI 9 and pushes them to
   `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`: `prometheus:v3.15.0`, `alertmanager:v0.34.1`,
-  `loki:3.7.8`, `alloy:v1.20.1`, `grafana:12.4.12`, `redis_exporter:v1.93.0`, `kube-state-metrics:v2.20.0` (the
-  `image:` lines of `deploy\deploy_common.yaml`). Check each one in the Quay web UI
+  `loki:3.7.8`, `alloy:v1.20.1`, `grafana:12.4.12`, `redis_exporter:v1.93.0`, `kube-state-metrics:v2.20.0`,
+  `nginx:1.24.0` (the `image:` lines of `deploy\deploy_common.yaml`). Check each one in the Quay web UI
   (`/repository/dda-desc/<name>?tab=tags`). If they cannot be built yet, wait with step 5 (Part A keeps UAT
   working).
 - **Tools:** run steps 5 and 6 in PowerShell, on a machine that can reach the cluster, with:
@@ -200,7 +204,9 @@ docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
   or the release's ZIP.
 - `build-monitoring-images.bat` stops at the first image that is already in Quay: guide step 3 says how to build
   only the missing ones.
-- A push that fails with `unauthorized` means the `docker login` failed: log in and run it again.
+- A push that fails with `denied` or `unauthorized` after `docker login` said `Login Succeeded` means your Quay
+  user cannot create the repository `dda-desc/<name>`, or may not write to it: the Quay admin gives you Write on it
+  (creating it if missing) or lets you create repositories in `dda-desc` (guide Part 1). Without `Login Succeeded`, log in and run it again.
 - The builds download from the internet (registry.access.redhat.com, packages.microsoft.com, PyPI, GitHub); the
   push needs the company network. If no machine has both, see `--no-push` at the top of `deploy\build-image.bat`.
 - At the end it prints the tag: today's date, such as `24-Oct-2026`. Write it down.
@@ -232,7 +238,9 @@ and they still carry the `NO_PROXY` from step 3.
 
 **5.4 If step 5 fails and UAT must work again now**, go back to v1 (the guide's "Roll back" section goes back one
 v2 release, not to v1): scale the new Deployments to 0 (`oc -n <project> scale deployment -l part-of=tsg
---replicas=0` in `ai-threatgen` and `ai-remediation`), delete the new Route `api`, apply the copies of v1's Routes
+--replicas=0` in `ai-threatgen` and `ai-remediation`, and `oc -n ai-threatgen scale deployment monitoring-proxy
+--replicas=0`), delete the new Routes on `threatgen-api` (`oc -n ai-threatgen delete route api grafana flower`:
+a v1 copy on the same address and path would be refused while they stay), apply the copies of v1's Routes
 saved in 5.2 (`oc apply -f <name>-route-v1.yaml`) and scale v1 back up to its old counts. Step 3's `NO_PROXY` is still on v1. v1's monitoring does not come back this
 way: bring it back from the v1 repository.
 
@@ -275,6 +283,23 @@ Then do step 4 again. Once the cause is fixed, do 5.2 again (leave out its first
      ```
 
    Only "The AI service timed out", or `"route": "proxy"` in 6.2, sends you back to step 3.
+
+   "Every AI slot stayed busy" (reason `ai_busy`) is not a proxy fault. Two limits give this message. The
+   `ai.slots_busy` log line names the full one in its `key`:
+
+   ```
+   oc -n ai-threatgen logs deploy/worker-scenarios | findstr ai.slots_busy
+   oc -n ai-remediation logs deploy/worker-scenarios | findstr ai.slots_busy
+   ```
+
+   - **`"key": "tsg:ai_slots"`:** the AI gateway answered 429 (too many requests), and TSG then limits its own AI
+     calls on every pod until 3 minutes pass with no 429 (D30). In Grafana, "Why the AI did not answer" shows them
+     as busy; the "AI no answer" tile does not count them. A pod that stopped in the middle of a call stops counting
+     within a minute, so restarting pods does not help: wait, or ask the gateway admin for a higher limit on TSG's
+     key.
+   - **`"key": "tsg:ai_fallback_slots"`:** the fallback model's 16 slots (`CII_MAX_CONCURRENT_FALLBACK_CALLS`)
+     stayed full, because the first model kept failing or timing out and every call went to the fallback. This is
+     the timeout problem: go back to step 3.
 
 ---
 

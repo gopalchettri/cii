@@ -123,7 +123,7 @@ _SCENARIO_FIELD_LISTS = {
     "version": ("path_id", "version", "superseded_by", "content.statement", "content.evidence.supports"),
     #: What finding an attack path's accepted version reads.
     "lookup": ("session_id", "path_id", "version", "decision", "superseded_by"),
-    #: What a review call reads of a target: its state and threat, never its text.
+    #: What a review call reads of a target: its state and threat (a failure card's outage), never its text.
     "target": (
         "path_id",
         "source",
@@ -133,6 +133,7 @@ _SCENARIO_FIELD_LISTS = {
         "content.threat",
         "controls.status",
         "decision_id",
+        "failure.reason",
     ),
     "path_id": ("path_id",),
 }

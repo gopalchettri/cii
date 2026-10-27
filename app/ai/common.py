@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 import litellm
 import structlog
 
-from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, AiRequestRate, busy_retry_wait, sleep_unless_lease_lost
+from app.ai.retry_waits import busy_retry_wait
+from app.ai.slots import AiRequestRate, AiSlots, sleep_unless_lease_lost
 from app.core import metrics
 from app.core.config import Settings
 from app.core.constants import (
@@ -21,6 +22,7 @@ from app.core.constants import (
     AI_TIMED_OUT_STATUSES,
     LITELLM_MODEL_PREFIX,
     AiOutage,
+    AiOutageSource,
     AiOutcome,
     ErrorCode,
     ErrorMessage,
@@ -199,28 +201,26 @@ def build_api_key_header(header: str, api_key: str, option: str = "extra_headers
 
 
 def call_with_retries[Answer](
-    call: Callable[[], Answer], request_rate: AiRequestRate = UNLIMITED_AI_REQUEST_RATE, *, model: str
+    call: Callable[[], Answer], request_rate: AiRequestRate, slots: AiSlots, *, model: str, task: str
 ) -> tuple[Answer, float]:
-    """(the answer, its seconds without the request-rate waits) of an AI call to `model` and the check of its
-    answer. Each request first waits its turn at `request_rate`, `model`'s own. Asked again when the provider
-    is busy or unreachable or the answer came back short: AiLimits.RETRIES times, 0.5 s, 1 s, 2 s apart; a
-    rate-limited request (HTTP 429, counted) as request_rate.wait_after_rate_limit says. The only retries:
-    litellm's own are switched off (app/ai/__init__.py). After the last, the outage reaches the caller.
-
-    A call that timed out is not asked again here (owner, 2026-10-10): the provider is overloaded, and asking
-    again would hold the worker another full timeout (90-120 s) each time and add to its load. The fallback
-    model answers instead, or the job's own back-off asks later."""
-    started = time.perf_counter()
+    """(the answer, its seconds without the request-rate waits) of an AI call to `model` for `task` and the
+    check of its answer. Each request first waits its turn at `request_rate`, `model`'s own. Asked again when
+    the provider is busy or unreachable or the answer came back short: AiLimits.RETRIES times, 0.5 s, 1 s, 2 s
+    apart; a 429 (counted) as request_rate.wait_after_rate_limit says. Each 429 is told to `slots`, the limit
+    on calls in flight (an answer is told as its slot is freed). litellm's own retries are off
+    (app/ai/__init__.py). A call that timed out is not asked again: the fallback model answers, or the job's
+    own back-off asks later."""
+    started, attempt = time.perf_counter(), 0
     rate_waits = rate_limited_waits = 0.0
-    attempt = 0
     while True:
-        rate_waits += request_rate.wait_for_turn()
+        rate_waits += request_rate.wait_for_turn(task)
         try:
-            return call(), time.perf_counter() - started - rate_waits
+            answer, seconds = call(), time.perf_counter() - started - rate_waits
         except litellm.Timeout:
             raise
         except litellm.RateLimitError as exc:
             metrics.AI_RATE_LIMITED.labels(model).inc()
+            slots.note_rate_limited()  # the gateway is full: fewer calls at once, on every pod
             retry_after = exc.response.headers.get("retry-after")
             wait = request_rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
             if wait is None:
@@ -233,6 +233,8 @@ def call_with_retries[Answer](
             wait = busy_retry_wait(attempt)
             if wait is None or not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
                 raise
+        else:
+            return answer, seconds
         sleep_unless_lease_lost(wait)
         attempt += 1
 
@@ -241,17 +243,19 @@ def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
     """A provider outage, counted and logged, as the Unavailable that tells the UI which outage it was."""
     metrics.AI_CALLS.labels(task, model, AiOutcome.UNAVAILABLE).inc()
     # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it is
-    # logged: the class, the HTTP status and the reason only, never the message (it may hold the gateway URL).
+    # logged with the gateway's Retry-After and limit type, never the message (it may hold the gateway URL).
     outage = ai_outage_of(error)
-    metrics.AI_OUTAGES.labels(task, outage).inc()
-    status = getattr(error, "status_code", None)
+    metrics.AI_OUTAGES.labels(task, outage, AiOutageSource.GATEWAY).inc()
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
     log.warning(
         LogEvent.AI_CALL_UNAVAILABLE,
         task=task,
         model=model,
         error=type(error).__name__,
-        status=status,
+        status=getattr(error, "status_code", None),
         reason=outage,
+        retry_after=headers.get("retry-after"),
+        limit_type=headers.get("rate_limit_type"),  # LiteLLM's: requests, tokens or max_parallel_requests
     )
     return Unavailable(AI_OUTAGE_MESSAGES[outage], reason=outage)
 

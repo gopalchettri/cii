@@ -47,17 +47,21 @@ def request_plan(
 
     - **is_manual=false**: send `session_id` and `scenario_id` of an ACCEPTED scenario of that run.
     - **is_manual=true**: send `manual_scenario` (a scenario a person wrote) and an `Idempotency-Key` header.
-      TSG saves the scenario, accepts it and plans it. The same key and body again: 200, `replayed: true`.
+      TSG saves the scenario, accepts it and plans it. The same key and body again: 200, `replayed: true`;
+      if that plan failed for an outage (`error.code` `unavailable`), its version is written again: 202.
 
-    Every other field is the register's data; all are optional. Answers 202 at once with `remediation_id`,
-    `session_id` and `scenario_id`: keep the last two, because every later call on the plan takes them in its
-    address. No AI is called here: the plan job matches the scenario's controls (and a hand-written one's
-    attacker) if they are missing, then writes the plan; poll `GET .../treatment-plan/status` until
-    `latest_status` is `done`.
+    Every other field is the register's data; all are optional. `supporting_systems_applicable_to_risk` names
+    the asset's systems the risk applies to (none: the asset itself), and
+    `supporting_systems_applicable_to_existing_controls` those the existing controls are on (none: no
+    system). Answers 202 at once with `remediation_id`, `session_id` and `scenario_id`: keep the last two,
+    because every later call on the plan takes them in its address. No AI is called here: the plan job
+    matches the scenario's controls (and a hand-written one's attacker) if they are missing, then writes the
+    plan; poll `GET .../treatment-plan/status` until `latest_status` is `done`.
 
     Errors: 404 scenario unknown or not in that run; 403 another entity's; 409 `scenario_not_accepted`,
-    `plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `control_library_empty`; 422 a
-    field, or the two kinds mixed."""
+    `plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `control_library_empty`,
+    `run_being_deleted`; 422 a field, the two kinds mixed, or a listed system that is not a supporting
+    system of the scenario's asset."""
     planned, created = plans.create_remediation_plan(principal, body, idempotency_key)
     if not created:
         response.status_code = 200
@@ -106,7 +110,9 @@ def regenerate_plan(
     """Send `{}`: the next version (2, 3, ...) is written from the same register data and the scenario's
     current controls; the earlier versions stay. Follow it with `.../status`, then accept the one you want:
     `.../review {"decision": "accepted", "version": 2}`. Allowed once the latest version is done, failed or
-    cancelled; 409 `generation_in_progress` before that."""
+    cancelled; 409 `generation_in_progress` before that. A latest version that failed for an outage
+    (`error.code` `unavailable`) is written again instead: the same version number, so it uses no version and
+    the version limit (409 `version_limit_reached`) does not stop it."""
     return plans.regenerate_remediation_plan(principal, plan.remediation_id)
 
 

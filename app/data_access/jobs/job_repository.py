@@ -148,6 +148,7 @@ class JobRepository:
                     "job.started_at": now,
                     "job.lease_until": now + timedelta(seconds=Lease.SECONDS),
                     "job.resends": 0,  # it reached a worker: the reaper's re-send count starts again
+                    "job.retry": None,  # the next try runs: the last try's outage notice no longer applies
                     "updated_at": now,
                 },
                 "$inc": {"job.attempts": 1},

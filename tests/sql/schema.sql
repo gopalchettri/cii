@@ -13,7 +13,7 @@ CREATE TABLE dbo.ctm_scan_entity (
     description TEXT NULL, operating_system NVARCHAR(255) NULL, location NVARCHAR(255) NULL, criticality INT NULL,
     target_rto_hours DECIMAL(18, 0) NULL, target_rpo_hours DECIMAL(18, 0) NULL, priority INT NULL,
     data_handled NVARCHAR(MAX) NULL, can_service_continue_without_asset BIT NULL,
-    has_disaster_recovery_setup BIT NULL);
+    has_disaster_recovery_setup BIT NULL, is_deleted BIT NOT NULL DEFAULT 0);
 CREATE TABLE dbo.onboarding_services (
     id INT IDENTITY PRIMARY KEY, name NVARCHAR(255) NOT NULL, description NVARCHAR(MAX) NULL,
     sector_id INT NULL, is_deleted BIT NOT NULL DEFAULT 0);
@@ -43,6 +43,9 @@ CREATE TABLE dbo.ctm_scan_entity_supporting_system (
 CREATE TABLE dbo.[option] (id INT IDENTITY PRIMARY KEY, code NVARCHAR(20) NULL);
 CREATE TABLE dbo.option_value (
     id INT IDENTITY PRIMARY KEY, name NVARCHAR(50) NULL, value INT NULL, option_id INT NULL);
+CREATE TABLE dbo.onboarding_dependencies (
+    id INT IDENTITY PRIMARY KEY, source_type NVARCHAR(50) NOT NULL, source_id INT NOT NULL,
+    target_type NVARCHAR(50) NOT NULL, target_id INT NOT NULL, dependency_type_id INT NOT NULL);
 
 -- Library tables (TSG reads them all; the write procedures write the threat ones).
 CREATE TABLE dbo.Threat_Category (

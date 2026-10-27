@@ -1,8 +1,10 @@
-"""What never reaches an AI model: secrets and personal data in free text, empty or placeholder facts, and
-database ids."""
+"""What never reaches an AI model: secrets and personal data in free text, empty or placeholder facts,
+database ids and code's platform note."""
 
+import re
 from typing import Any
 
+from app.core.constants import Writing
 from app.core.redaction import redact
 
 #: Dropdown labels and filler that carry no fact ("NA" is a real option in the platform's lists).
@@ -38,6 +40,13 @@ DATABASE_KEYS = frozenset(
         "control_id",
     }
 )
+#: Code's platform note on a shown assumption, with any punctuation or space before it, in any case.
+_PLATFORM_NOTE = re.compile(r"\W*" + re.escape(Writing.PLATFORM_NOTE.removeprefix(" - ")), re.IGNORECASE)
+
+
+def without_platform_note(text: str) -> str:
+    """`text` without code's platform note: the AI never reads it, so never writes it."""
+    return _PLATFORM_NOTE.sub("", text)
 
 
 def _redacted(value: Any) -> Any:

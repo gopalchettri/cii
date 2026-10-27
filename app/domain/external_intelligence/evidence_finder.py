@@ -80,10 +80,9 @@ class EvidenceFinder:
         if searched:
             results = self._search_all(search, requests, stale, approved)
         else:  # nothing to search: settled empty, or no snapshot yet (search.snapshot_id says which)
-            snapshot, outage = search.snapshot_id, search.outage
-            results = [
-                EvidenceResult((), self._record(search, r, snapshot, False, outage=outage)) for r in requests
-            ]
+            snapshot, outage, words = search.snapshot_id, search.outage, search.outage_message
+            waiting = [self._record(search, r, snapshot, False, (), None, outage, words) for r in requests]
+            results = [EvidenceResult((), record) for record in waiting]
         return results, _summary(search, results, stale and searched, searched)
 
     def _search_all(
@@ -103,7 +102,8 @@ class EvidenceFinder:
             log.warning(
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=len(requests), exc_info=True
             )
-            lost = [self._record(search, r, snapshot, stale, (), down, outage_reason(exc)) for r in requests]
+            outage = outage_reason(exc)
+            lost = [self._record(search, r, snapshot, stale, (), down, outage, str(exc)) for r in requests]
             return [EvidenceResult((), record) for record in lost]
 
         def rank_one(position: int) -> EvidenceResult:
@@ -111,10 +111,11 @@ class EvidenceFinder:
             request = requests[position]
             try:
                 scored = self._rerank(search, request.text, candidates[position])
-            except _SEARCH_ERRORS as exc:  # the reranker: this request alone goes without evidence
+            except _SEARCH_ERRORS as exc:  # the reranker: this request alone gets no evidence now
                 log.warning(LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=1, exc_info=True)
                 outage = outage_reason(exc)
-                return EvidenceResult((), self._record(search, request, snapshot, stale, (), down, outage))
+                record = self._record(search, request, snapshot, stale, (), down, outage, str(exc))
+                return EvidenceResult((), record)
             checker = ProductLinkChecker(request.recorded_products)
             evidence, considered = self._selector.select(scored, checker)
             return EvidenceResult(evidence, self._record(search, request, snapshot, stale, considered))
@@ -155,8 +156,9 @@ class EvidenceFinder:
         considered: tuple[Considered, ...] = (),
         failure: EvidenceSearchFailure | None = None,
         outage: AiOutage | None = None,
+        outage_message: str = "",
     ) -> EvidenceSearchRecord:
-        """The audit of one request's search, naming the reranker whose scores the threshold cut."""
+        """The audit of one request's search, with the reranker and any outage in its own words."""
         types = tuple(sorted(request.asset_types))
         return EvidenceSearchRecord(
             request.text,
@@ -168,6 +170,7 @@ class EvidenceFinder:
             failure,
             search.rerank_model,
             outage,
+            outage_message if outage else "",  # a fault not the AI's keeps its driver text out of the audit
         )
 
 

@@ -14,6 +14,7 @@ from app.core.constants import (
     LibrarySource,
     LibraryStatus,
     LogEvent,
+    PromptVersion,
     Remediation,
     RemediationMessage,
     ResolveOutcome,
@@ -94,7 +95,7 @@ class RemediationPlanJob:
             "status": Status.DONE,
             "plan": plan,
             "warnings": warnings,
-            "prompt_version": Remediation.PROMPT_VERSION,
+            "prompt_version": PromptVersion.REMEDIATION,
             "completed_at": utc_now(),
         }
         self._remediations.update_remediation_plan_version(lease, written, done=True)

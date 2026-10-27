@@ -1,5 +1,6 @@
 # networkpolicy_threatgen.yaml - network rules for TSG's pods in project ai-threatgen (deploy_threatgen.yaml).
-# They apply only to pods labelled part-of=tsg: other pods in the project are not touched.
+# They apply only to pods labelled part-of=tsg and to the monitoring proxy (deploy_common.yaml): other pods in the
+# project are not touched.
 # Once a rule selects a pod, everything not listed is blocked: a new outside address needs a line here.
 # Apply:  oc apply -f deploy/networkpolicy_threatgen.yaml
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
@@ -53,3 +54,34 @@ spec:                                            # the rule
       ports: [{ port: 1444, protocol: TCP }]     # SQL Server port
     - to: [{ ipBlock: { cidr: 10.228.146.3/32 } }]     # MongoDB: every run, scenario, plan and job
       ports: [{ port: 27018, protocol: TCP }]    # MongoDB port
+
+# ---------------------------------------------------------------- the monitoring proxy: router in, Grafana and Flower out
+# It puts Grafana and Flower (in ai-common) on the API's address; it reaches nothing else.
+---
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: monitoring-proxy                         # rule name
+  namespace: ai-threatgen                        # project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+spec:                                            # the rule
+  podSelector: { matchLabels: { app: monitoring-proxy } }   # applies to the monitoring proxy only
+  policyTypes: [Ingress, Egress]                 # controls incoming and outgoing connections
+  ingress:                                       # allowed incoming connections
+    - from:                                      # the OpenShift router (the public https address)
+        - namespaceSelector: { matchLabels: { policy-group.network.openshift.io/ingress: "" } }   # the router's project
+      ports: [{ port: 8080, protocol: TCP }]     # to the proxy's port only
+  egress:                                        # allowed outgoing connections
+    - ports:                                     # DNS (it looks up Grafana's and Flower's addresses at start), to any address
+        - { port: 53, protocol: UDP }            # DNS
+        - { port: 53, protocol: TCP }            # DNS over TCP (large answers)
+        - { port: 5353, protocol: UDP }          # where OpenShift's DNS pods really listen
+        - { port: 5353, protocol: TCP }          # the same over TCP
+    - to:                                        # Grafana
+        - namespaceSelector: {}                  # any project ...
+          podSelector: { matchLabels: { app: grafana, part-of: tsg-monitoring } }   # ... but only TSG's Grafana (in ai-common)
+      ports: [{ port: 3000, protocol: TCP }]     # Grafana's port
+    - to:                                        # Flower
+        - namespaceSelector: {}                  # any project ...
+          podSelector: { matchLabels: { app: flower, part-of: tsg-monitoring } }   # ... but only TSG's Flower (in ai-common)
+      ports: [{ port: 5555, protocol: TCP }]     # Flower's port

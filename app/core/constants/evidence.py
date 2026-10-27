@@ -206,10 +206,6 @@ class EvidenceMode(StrEnum):
     INFERRED = "inferred"
 
 
-class StoryLimits:
-    PROMPT_VERSION: Final = "scenario writer-evidence-1"  # stored as content.prompt_version of a story
-
-
 class Precedent:
     """The sentence code cites in an evidence story when the writer's own passage cannot be: from the cited
     entry's own facts; and why the passage was not cited."""

@@ -159,7 +159,6 @@ def _content(scenario: ManualScenario, threat: dict[str, Any], context: FrozenCo
         "title": None,
         "statement": scenario.threat_scenario,
         "risk_statement": scenario.risk_statement,
-        "why_applies": None,
         "assumptions": [],
         "category": threat["category"],
         "category_id": threat["category_id"],
