@@ -1120,7 +1120,8 @@ all 16 glm-5.3 places are busy), then tries kimi again.
 
 - A worker updates by stopping its old pod first (no extra pod in the quota); its twin in the other project serves
   meanwhile. A stopping worker gets 120 s: after 90 s it puts the jobs it is still running back on their queue,
-  without using up a try, so another worker carries them on.
+  without using up a try, so another worker carries them on (not an index build or an import: the next
+  scheduled one does that work).
 - The API starts its new pod before it stops an old one, so it never goes down during an update.
 - Each worker prefers a node its twin is not on, and the two API pods different nodes, so one node failure stops
   neither a queue nor the API. Preferred only: a pod still starts when no other node fits.

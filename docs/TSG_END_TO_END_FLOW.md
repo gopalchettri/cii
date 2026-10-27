@@ -3966,7 +3966,8 @@ stateDiagram-v2
       `CII_MAX_CONCURRENT_AI_CALLS` or the one a gateway 429 set, the lower; 0 = none) show NaN when Redis
       cannot say.
     - **Source label:** a call refused by TSG's own limiter (no slot or request turn within the wait: an API
-      call, since a worker waits until its lease ends) is an `ai_busy` outage counted with `source="limiter"`
+      call, or a worker's try of a full fallback model while another model is left; a worker otherwise waits
+      until its lease ends) is an `ai_busy` outage counted with `source="limiter"`
       in `tsg_ai_outages_total`; the gateway's own refusals carry `source="gateway"`, and only those raise the
       `AiNotAnswering` alert.
   - **Busy or down:** three quick retries (0.5, 1, 2 s) when the provider is busy or unreachable or the answer
