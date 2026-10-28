@@ -273,6 +273,7 @@ class LogEvent(StrEnum):
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
+    WORKER_RERANKER_PRELOAD_FAILED = "worker.reranker_preload_failed"  # the first rerank loads it instead
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"
     WORKER_NONE_ONLINE = "worker.none_online"
     WORKERS_UNKNOWN = "worker.count_unknown"

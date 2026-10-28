@@ -4,9 +4,9 @@
   "tsg_find_threats": "tsg_threats",
   "tsg_map_controls": "tsg_controls",
   "tsg_map_services": "tsg_servicemapper",
-  "tsg_reap": "tsg_maintenance",
+  "tsg_reap": "tsg_reaper",
   "tsg_refresh_external_intelligence": "tsg_maintenance",
-  "tsg_retry_controls": "tsg_maintenance",
+  "tsg_retry_controls": "tsg_reaper",
   "tsg_write_plan": "tsg_remediation",
   "tsg_write_scenarios": "tsg_scenarios"
  },

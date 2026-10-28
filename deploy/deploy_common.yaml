@@ -1,9 +1,10 @@
 # deploy_common.yaml - TSG's monitoring and Flower in project ai-common (UAT is production): Prometheus (metrics
 # and alert rules), Alertmanager (firing alerts), Loki (logs), Alloy (ships the pods' logs to Loki), Grafana (the
 # one place to look), redis-exporter (jobs waiting per queue), kube-state-metrics (restarts, OOM kills) and Flower
-# (the live view of the background jobs); their volumes, Services and network rules; the monitoring proxy and its
+# (the live view of the background jobs); the reaper worker (TSG's reaper and controls sweep, queue tsg_reaper);
+# their volumes, Services and network rules; the monitoring proxy and its
 # Routes in ai-threatgen (Grafana and Flower on the API's address); and the read-only access they need in
-# ai-threatgen and ai-remediation. Config files: configmap.yaml. Passwords: secrets.yaml.
+# ai-threatgen, the app's one project. Config files: configmap.yaml. Passwords: secrets.yaml.
 #
 # Public addresses, without login (owner's decision), on the API's own host. OpenShift gives a host to one project
 # only, so their Routes are in ai-threatgen and go through the monitoring proxy there (nginx, below):
@@ -13,7 +14,11 @@
 # viewer may send any Loki or Prometheus query through its query API (POST /grafana/api/ds/query).
 # Prometheus, Alertmanager and Loki have no public address: open them with oc port-forward (the guide's Part 3).
 #
-# Apply AFTER configmap.yaml, secrets.yaml and networkpolicy_threatgen.yaml, and after deploy_threatgen.yaml is
+# The reaper worker (part-of=tsg) goes FIRST, before deploy_threatgen.yaml: the new API is ready only once every
+# queue, tsg_reaper included, has a live worker:
+#   oc apply -f deploy/deploy_common.yaml -l part-of=tsg
+#   oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
+# Apply the rest AFTER configmap.yaml, secrets.yaml and networkpolicy_threatgen.yaml, and after deploy_threatgen.yaml is
 # rolled out (its smaller beat makes room for the proxy in ai-threatgen's quota):
 #   oc apply -f deploy/deploy_common.yaml
 #   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --watch
@@ -22,6 +27,8 @@
 # (the -l keeps the chatbot's pods in this project running), and the proxy in ai-threatgen:
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
 #   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
+# The reaper worker is an app pod: restart it with the app's pods (new settings, passwords or image tag):
+#   oc -n ai-common rollout restart deployment/worker-reaper
 # New release: Flower runs from the app image, so its tag (24-Oct-2026) changes with the deploy_*.yaml files.
 #
 # BEFORE THE FIRST APPLY - images. The cluster pulls only from Quay
@@ -34,21 +41,20 @@
 # The version on each image line is the one pin: scripts/monitoring.py installs the same versions on a laptop.
 #
 # FIRST TIME ONLY (deploy/DEPLOYMENT_GUIDE.md, Part 2, step 9): a Deployment's selector cannot change, so the
-# older copies go first. The old monitoring ran in ai-remediation: delete it there by name:
-#   oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
-#   oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
-# In ai-common, shared with the chatbot, step 9 deletes by label, never by name: TSG's older copies of these
-# Deployments and their Routes (labelled part-of=tsg-observability under the older label prefix: TSG's, not the
-# chatbot's), and the previous release's Routes on the threatgen-grafana host (the new Routes live in ai-threatgen):
+# older copies go first. In ai-common, shared with the chatbot, step 9 deletes by label, never by name: TSG's older
+# copies of these Deployments and their Routes (labelled part-of=tsg-observability under the older label prefix:
+# TSG's, not the chatbot's), and the previous release's Routes on the threatgen-grafana host (the new Routes live in
+# ai-threatgen):
 #   oc -n ai-common delete route -l part-of=tsg-monitoring
-# The old volumes in ai-remediation (prometheus-data, loki-data, grafana-data) stay until the owner deletes them.
+# TSG no longer runs in ai-remediation: Part 2, step 11 removes what earlier releases left there.
 # If "oc apply" here says "field is immutable", an older copy of that Deployment is still in ai-common: step 9.
 #
 # Budget: ai-common's quota is 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
-# 6 Gi and 60 Gi. These pods' limits: about 2.3 CPU and 4.1 Gi; a restart adds up to 0.5 CPU and 1.1 Gi (one new
-# pod each for alertmanager, redis-exporter, kube-state-metrics and flower); volumes 21 Gi.
-# Security: Flower and redis-exporter read tsg-secrets here, so whoever may read Secrets in ai-common can read
-# TSG's passwords and keys.
+# 6 Gi and 60 Gi. These pods' limits: about 2.45 CPU and 4.8 Gi (the reaper worker 150m and 768Mi of it); a restart
+# adds up to 0.5 CPU and 1.1 Gi (one new pod each for alertmanager, redis-exporter, kube-state-metrics and flower;
+# the reaper worker stops its old pod first); volumes 21 Gi.
+# Security: Flower, redis-exporter and the reaper worker read tsg-secrets here, so whoever may read Secrets in
+# ai-common can read TSG's passwords and keys.
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- access: read-only, namespaced, no cluster rights
@@ -173,7 +179,7 @@ metadata:                                        # the object's name and place
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 automountServiceAccountToken: false              # Grafana never calls the OpenShift API: no token in its pod
 
-# The app's two projects: the same three may read their pods (and Alloy their logs), nothing else.
+# The app's project: the same three may read its pods (and Alloy their logs), nothing else.
 ---
 apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
 kind: Role                                       # what may be done in that project
@@ -191,32 +197,6 @@ kind: RoleBinding                                # gives the Role to identities
 metadata:                                        # the object's name and place
   name: tsg-monitoring-read-pods                 # RoleBinding name
   namespace: ai-threatgen                        # the API's project
-  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
-roleRef:                                         # the Role given
-  apiGroup: rbac.authorization.k8s.io            # access rules API group
-  kind: Role                                     # a Role in this project
-  name: tsg-monitoring-read-pods                 # the Role above
-subjects:                                        # who gets it: the three monitoring identities from ai-common
-  - { kind: ServiceAccount, name: prometheus, namespace: ai-common }   # Prometheus: finds the pods to scrape
-  - { kind: ServiceAccount, name: alloy, namespace: ai-common }   # Alloy: reads the pods' logs
-  - { kind: ServiceAccount, name: kube-state-metrics, namespace: ai-common }   # kube-state-metrics: watches the pods
----
-apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
-kind: Role                                       # what may be done in that project
-metadata:                                        # the object's name and place
-  name: tsg-monitoring-read-pods                 # Role name
-  namespace: ai-remediation                      # the twin workers' project
-  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
-rules:                                           # the allowed actions
-  - apiGroups: [""]                              # core objects
-    resources: [pods, pods/log]                  # pods and their logs
-    verbs: [get, list, watch]                    # read them, nothing else
----
-apiVersion: rbac.authorization.k8s.io/v1         # access rules API version
-kind: RoleBinding                                # gives the Role to identities
-metadata:                                        # the object's name and place
-  name: tsg-monitoring-read-pods                 # RoleBinding name
-  namespace: ai-remediation                      # the twin workers' project
   labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
 roleRef:                                         # the Role given
   apiGroup: rbac.authorization.k8s.io            # access rules API group
@@ -688,7 +668,7 @@ spec:                                            # what to run
               valueFrom: { secretKeyRef: { name: tsg-secrets, key: CII_REDIS_CELERY_BROKER_URL } }   # one copy, so a password change reaches both
             - { name: REDIS_DB, value: "1" }     # the job queues are Redis database 1
             - name: REDIS_EXPORTER_CHECK_SINGLE_KEYS   # each queue is two Redis lists, tsg:<queue> (next stages) and tsg:<queue>\x06\x163 (new work): their lengths = jobs waiting
-              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_threats\x06\x163,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_scenarios\x06\x163,db$(REDIS_DB)=tsg:tsg_controls,db$(REDIS_DB)=tsg:tsg_controls\x06\x163,db$(REDIS_DB)=tsg:tsg_remediation,db$(REDIS_DB)=tsg:tsg_remediation\x06\x163,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_servicemapper\x06\x163,db$(REDIS_DB)=tsg:tsg_maintenance,db$(REDIS_DB)=tsg:tsg_maintenance\x06\x163"   # the six queues, both lists each
+              value: "db$(REDIS_DB)=tsg:tsg_threats,db$(REDIS_DB)=tsg:tsg_threats\x06\x163,db$(REDIS_DB)=tsg:tsg_scenarios,db$(REDIS_DB)=tsg:tsg_scenarios\x06\x163,db$(REDIS_DB)=tsg:tsg_controls,db$(REDIS_DB)=tsg:tsg_controls\x06\x163,db$(REDIS_DB)=tsg:tsg_remediation,db$(REDIS_DB)=tsg:tsg_remediation\x06\x163,db$(REDIS_DB)=tsg:tsg_servicemapper,db$(REDIS_DB)=tsg:tsg_servicemapper\x06\x163,db$(REDIS_DB)=tsg:tsg_maintenance,db$(REDIS_DB)=tsg:tsg_maintenance\x06\x163,db$(REDIS_DB)=tsg:tsg_reaper,db$(REDIS_DB)=tsg:tsg_reaper\x06\x163"   # the seven queues, both lists each
             - { name: REDIS_EXPORTER_INCL_SYSTEM_METRICS, value: "false" }   # no host metrics
           ports: [{ name: metrics, containerPort: 9121 }]   # its metrics port
           readinessProbe:                        # "ready" = may receive requests
@@ -726,7 +706,7 @@ spec:                                            # what to run
         - name: kube-state-metrics               # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/kube-state-metrics:v2.20.0   # kube-state-metrics, built on UBI 9 (deploy\build-monitoring-images.bat)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          args: ["--namespaces=ai-threatgen,ai-remediation,ai-common", --resources=pods]   # the pods of the app's two projects and this one (restarts, OOM kills, pods that never start)
+          args: ["--namespaces=ai-threatgen,ai-common", --resources=pods]   # the pods of the app's project and this one (restarts, OOM kills, pods that never start)
           ports: [{ name: metrics, containerPort: 8080 }]   # its metrics port
           readinessProbe:                        # "ready" = may receive requests
             httpGet: { path: /healthz, port: 8080 }   # its own health check
@@ -815,6 +795,66 @@ metadata:                                        # the object's name and place
 spec:                                            # what it does
   selector: { app: flower, part-of: tsg-monitoring }   # sends traffic to TSG's Flower pod only (never a chatbot pod labelled app=flower)
   ports: [{ name: http, port: 5555, targetPort: 5555 }]   # port 5555 to the pod's port 5555
+
+# ---------------------------------------------------------------- the reaper worker (TSG's app, in this project)
+# The reaper (puts lost jobs back) and the controls sweep, alone on queue tsg_reaper, so a long library build or
+# intelligence refresh on worker-maintenance never holds the thread a reaper pass needs. It runs here, where TSG's
+# share has room; ai-threatgen's quota has none. It reaches only Redis and MongoDB (network rules at the end).
+---
+apiVersion: apps/v1                              # Deployment API version
+kind: Deployment                                 # keeps one reaper worker running
+metadata:                                        # the object's name and place
+  name: worker-reaper                            # Deployment name
+  namespace: ai-common                           # project
+  labels: { app: worker-reaper, part-of: tsg }   # labels on the Deployment itself: TSG's app, not its monitoring
+spec:                                            # what to run
+  replicas: 1                                    # one copy: one reaper pass at a time is enough
+  strategy:                                      # how an update replaces the pod
+    type: RollingUpdate                          # replace the pod
+    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in TSG's share
+  selector:                                      # which pods belong to this Deployment
+    matchLabels: { app: worker-reaper }          # pods labelled app=worker-reaper
+  template:                                      # the pod to run
+    metadata:                                    # pod labels and notes
+      labels: { app: worker-reaper, component: worker, part-of: tsg }   # component becomes Prometheus' job name; part-of = TSG's app (logs, rules)
+      annotations:                               # notes read by Prometheus
+        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
+        prometheus.io/port: "9100"               # on this port
+        prometheus.io/path: /metrics             # at this path
+    spec:                                        # pod settings
+      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
+      automountServiceAccountToken: false        # the app never calls the OpenShift API
+      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
+      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
+      containers:                                # the programs in the pod
+        - name: worker                           # container name
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release, with the deploy_*.yaml files)
+          imagePullPolicy: IfNotPresent          # pull only if missing
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_reaper]   # 2 threads on the tsg_reaper queue: a reaper pass never waits behind the sweep
+          envFrom:                               # every setting, as environment variables
+            - configMapRef: { name: tsg-config }   # plain settings (configmap.yaml: the same copy in this project)
+            - secretRef: { name: tsg-secrets }     # secrets (secrets.yaml: the same copy in this project)
+          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
+          startupProbe:                          # "started" = this very worker answers; until then the pod is not ready
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # the same ping as below
+            initialDelaySeconds: 20              # first check after 20 s
+            periodSeconds: 15                    # then every 15 s until it answers
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 20                 # no answer within about 5 minutes = restart
+          livenessProbe:                         # "alive" = this very worker answers through the queue
+            exec: { command: [sh, -c, 'celery -A app.probe inspect ping -d "celery@$HOSTNAME" --timeout 10'] }   # ping this worker by its own name (app.probe loads no job code: quick and light)
+            initialDelaySeconds: 120             # first check after 2 minutes
+            periodSeconds: 60                    # then every minute
+            timeoutSeconds: 30                   # each check may take 30 s
+            failureThreshold: 3                  # 3 failures in a row = restart
+          resources:                             # CPU and memory
+            requests: { cpu: 50m, memory: 512Mi }   # reserved for the pod: a pass is a few MongoDB queries a minute
+            limits: { cpu: 150m, memory: 768Mi }   # the most it may use: the worker plus a probe's ping process
+          securityContext:                       # locked down
+            allowPrivilegeEscalation: false      # cannot gain more rights
+            runAsNonRoot: true                   # never runs as root
+            capabilities: { drop: [ALL] }        # no special Linux rights
+            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
 
 # ---------------------------------------------------------------- the monitoring proxy (in ai-threatgen)
 # OpenShift gives a host to one project only, and a Route reaches only a Service of its own project: the API's host
@@ -940,3 +980,41 @@ spec:                                            # the rule
   ingress:                                       # allowed incoming connections
     - from:                                      # pods of this project (Grafana to Prometheus, Alloy to Loki, Prometheus to every exporter)
         - podSelector: {}                        # any pod in this project
+
+# ---------------------------------------------------------------- network rules: TSG's reaper worker
+# They select only pods labelled part-of=tsg (the reaper worker): the chatbot's pods and TSG's monitoring are not
+# touched. Once a rule selects the pod, everything not listed is blocked: a new outside address needs a line here.
+---
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: tsg-app-ingress                          # rule name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # the rule
+  podSelector: { matchLabels: { part-of: tsg } } # applies to TSG's app pods here only (the reaper worker)
+  policyTypes: [Ingress]                         # controls incoming connections
+  ingress:                                       # allowed incoming connections
+    - from:                                      # TSG's monitoring in this project (Prometheus), never the chatbot's pods
+        - podSelector: { matchLabels: { part-of: tsg-monitoring } }   # TSG's monitoring pods only
+      ports: [{ port: 9100, protocol: TCP }]     # the worker's /metrics
+---
+apiVersion: networking.k8s.io/v1                 # NetworkPolicy API version
+kind: NetworkPolicy                              # a firewall rule for pods
+metadata:                                        # the object's name and place
+  name: tsg-app-egress                           # rule name
+  namespace: ai-common                           # project
+  labels: { part-of: tsg }                       # marks it as TSG's
+spec:                                            # the rule
+  podSelector: { matchLabels: { part-of: tsg } } # applies to TSG's app pods here only (the reaper worker)
+  policyTypes: [Egress]                          # controls outgoing connections
+  egress:                                        # allowed outgoing connections
+    - ports:                                     # DNS (name lookups), to any address
+        - { port: 53, protocol: UDP }            # DNS
+        - { port: 53, protocol: TCP }            # DNS over TCP (large answers)
+        - { port: 5353, protocol: UDP }          # where OpenShift's DNS pods really listen
+        - { port: 5353, protocol: TCP }          # the same over TCP
+    - to: [{ ipBlock: { cidr: 10.228.146.4/32 } }]     # Redis: job queues, heartbeat, live updates
+      ports: [{ port: 6379, protocol: TCP }]     # Redis port
+    - to: [{ ipBlock: { cidr: 10.228.146.3/32 } }]     # MongoDB: the jobs the reaper repairs and the sweep re-sends
+      ports: [{ port: 27018, protocol: TCP }]    # MongoDB port

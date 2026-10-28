@@ -37,8 +37,9 @@ Have all of these ready:
       **Command Line Tools** → **Download oc for Windows**. Unzip `oc.exe` into e.g. `C:\tools`, run
       `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';C:\tools', 'User')`
       and open a new PowerShell window. Check: `oc version --client` prints `Client Version: 4...`.
-- [ ] An OpenShift user with **admin** rights in `ai-threatgen`, `ai-remediation` and `ai-common` (the monitoring
-      creates roles in them). Ask the cluster admin.
+- [ ] An OpenShift user with **admin** rights in `ai-threatgen` and `ai-common` (the monitoring creates roles in
+      them), and, once, rights to delete TSG's objects in `ai-remediation` (Part 2, step 11: TSG no longer runs
+      there). Ask the cluster admin.
 - [ ] A Quay user name and password that may push to `dda-desc` **and create new repositories there**: each
       monitoring image is a new repository (step 3 lists them). If your user may not create repositories, the Quay
       admin creates them first, with Write for your user. Ask the cluster admin who the Quay admin is.
@@ -77,12 +78,11 @@ Have all of these ready:
 ```powershell
 docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
 oc auth can-i create rolebindings -n ai-threatgen
-oc auth can-i create rolebindings -n ai-remediation
 oc auth can-i create rolebindings -n ai-common
 ```
 
 **You should see:** `Logged into "https://..." as "<you>" using the token provided.` from the `oc login` line, then
-`Login Succeeded`, then `yes` three times.
+`Login Succeeded`, then `yes` twice.
 
 **If not:**
 - `Use insecure connections? (y/n)`: the cluster uses its own certificate. Type `y`.
@@ -94,23 +94,17 @@ The login lasts about a day. If an `oc` command later says `Unauthorized`, do th
 
 ### Step 2. Check the projects' quotas
 
-**Do:**
+**Do:** check ai-threatgen, where the app runs (6 CPU, 12 Gi memory, 60 Gi storage):
 
 ```powershell
-oc -n ai-threatgen get quota -o yaml | Select-String CrossNamespacePodAffinity
-oc -n ai-remediation get quota -o yaml | Select-String CrossNamespacePodAffinity
+oc -n ai-threatgen describe quota
 ```
 
-**You should see:** nothing at all.
+**You should see:** each quota with a `Used` and a `Hard` column. `limits.cpu` and `limits.memory` must have a Hard of
+at least `6` and `12Gi`: TSG's pods there need 6 CPU and 11.56 Gi while the API updates (Part 6). TSG's own pods are
+part of `Used`: they are replaced, not added.
 
-**If a line is printed, or a later step says `insufficient quota to match these scopes`:** the cluster limits pods
-whose "spread over nodes" rule looks at another project, and every worker has such a rule (it keeps away from its
-twin). Send the cluster admin this: "Please allow at least 6 pods under the `CrossNamespacePodAffinity` quota scope
-in `ai-threatgen` and in `ai-remediation`." Wait for the answer before step 11.
-
-(Developers only: instead, remove the `namespaces:` line from each worker in `deploy\deploy_threatgen.yaml` and
-`deploy\deploy_remediation.yaml`, and its check in `tests\test_deploy.py`, and commit it. A worker and its twin may
-then share a node.)
+**If Hard is lower:** send the cluster admin those quota lines and wait for more room before step 12.
 
 **Then check ai-common**, where the monitoring runs (its quota is shared with the chatbot):
 
@@ -122,7 +116,8 @@ oc -n ai-common get limitrange
 
 **You should see:** each quota with a `Used` and a `Hard` column (or `No resources found`), then `No resources found`
 for the limit range. For `limits.cpu`, `limits.memory` and `requests.storage`, Hard minus Used must leave at least
-2.8 CPU, 5.2Gi and 21Gi for TSG's monitoring (the `Budget:` lines at the top of `deploy\deploy_common.yaml`). What TSG
+2.95 CPU, 5.9Gi and 21Gi for TSG's monitoring and its reaper worker (the `Budget:` lines at the top of
+`deploy\deploy_common.yaml`). What TSG
 already has there is part of these numbers, not extra, so add it back first: its pods are replaced, and its claims
 `prometheus-data`, `loki-data` and `grafana-data` (`oc -n ai-common get pvc` shows them) are used again.
 
@@ -202,29 +197,28 @@ deploy\build-image.bat
 ```powershell
 $old = (Select-String -Path deploy\deploy_threatgen.yaml -Pattern 'tsg-api:(\S+)' | Select-Object -First 1).Matches[0].Groups[1].Value
 $new = '<tag from step 4>'
-foreach ($f in 'deploy_threatgen.yaml', 'deploy_remediation.yaml', 'deploy_common.yaml') { $p = Join-Path $PWD "deploy\$f"; [IO.File]::WriteAllText($p, [IO.File]::ReadAllText($p).Replace("tsg-api:$old", "tsg-api:$new")) }
+foreach ($f in 'deploy_threatgen.yaml', 'deploy_common.yaml') { $p = Join-Path $PWD "deploy\$f"; [IO.File]::WriteAllText($p, [IO.File]::ReadAllText($p).Replace("tsg-api:$old", "tsg-api:$new")) }
 Select-String -Path deploy\deploy_*.yaml -Pattern 'tsg-api:'
 ```
 
-**You should see:** 15 lines (8 from `deploy_threatgen.yaml`, 6 from `deploy_remediation.yaml`, 1 from
-`deploy_common.yaml`), each with `tsg-api:<your tag>` and then a `#` note.
+**You should see:** 9 lines (8 from `deploy_threatgen.yaml`, 1 from `deploy_common.yaml`), each with
+`tsg-api:<your tag>` and then a `#` note.
 
 **If a line shows another tag:** open that file in Notepad and change the tag on that line by hand.
 
-### Step 6. Copy the image login to the other two projects
+### Step 6. Copy the image login to ai-common
 
-The pods need the Quay login (`quay-pull`) in every project. It already exists in `ai-threatgen`.
+The pods need the Quay login (`quay-pull`) in both projects. It already exists in `ai-threatgen`.
 
 **Do:**
 
 ```powershell
 oc -n ai-threatgen extract secret/quay-pull --keys=.dockerconfigjson "--to=$env:TEMP" --confirm
-oc -n ai-remediation create secret generic quay-pull --type=kubernetes.io/dockerconfigjson "--from-file=.dockerconfigjson=$env:TEMP\.dockerconfigjson"
 oc -n ai-common create secret generic quay-pull --type=kubernetes.io/dockerconfigjson "--from-file=.dockerconfigjson=$env:TEMP\.dockerconfigjson"
 Remove-Item "$env:TEMP\.dockerconfigjson"
 ```
 
-**You should see:** first the file it wrote (e.g. `C:\Users\<you>\AppData\Local\Temp\.dockerconfigjson`), then `secret/quay-pull created` twice.
+**You should see:** first the file it wrote (e.g. `C:\Users\<you>\AppData\Local\Temp\.dockerconfigjson`), then `secret/quay-pull created`.
 
 **If it says `already exists`:** fine, it is there.
 
@@ -302,14 +296,16 @@ Save and close.
 Then:
 
 ```powershell
-Select-String -Path deploy\secrets.yaml -CaseSensitive -Pattern '^[^#]*(CHANGE_ME|_USER:|_PASSWORD@|_OR_MORE_CHARACTERS)'
+Select-String -Path deploy\secrets.yaml -CaseSensitive -Pattern '^[^#]*(CHANGE_ME|_USER:|_PASSWORD@|_OR_MORE_CHARACTERS|ai-remediation)'
 oc apply -f deploy\secrets.yaml
 ```
 
 **You should see:** the first line prints nothing, then `secret/... created` (or `configured`) for each secret.
 
 **If the first line prints something:** that line still has a `CHANGE_ME` word, or the end of one (e.g. `_USER`).
-Replace the whole word and run the two lines again.
+Replace the whole word and run the two lines again. A line with `namespace: ai-remediation` comes from an earlier
+release's `secrets.yaml` (TSG no longer runs there): delete that Secret's 8 lines, from the `- apiVersion: v1` above
+it to the `stringData: *secrets` below it, save, and run the two lines again.
 
 Keep `deploy\secrets.yaml` private. It is never committed to git.
 
@@ -345,13 +341,9 @@ see `NotFound`: that is fine. The API is down from here until step 12 is finishe
 
 ```powershell
 oc -n ai-threatgen scale deployment tsg-api celery-worker celery-worker-admin tsg-beat tsg-flower --replicas=0
-oc -n ai-remediation scale deployment celery-worker celery-exporter mssql-exporter mongodb-exporter --replicas=0
 oc -n ai-threatgen delete deployment api worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance beat --ignore-not-found
-oc -n ai-remediation delete deployment worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance --ignore-not-found
-oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
-oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
 oc -n ai-common delete route -l part-of=tsg-monitoring
-foreach ($p in 'ai-threatgen', 'ai-remediation', 'ai-common') { "== $p"; oc -n $p get route | findstr threatgen }
+foreach ($p in 'ai-threatgen', 'ai-common') { "== $p"; oc -n $p get route | findstr threatgen }
 ```
 
 **You should see:** `scaled`, `deleted`, `NotFound` or `No resources found` lines (`NotFound` and `No resources
@@ -359,9 +351,9 @@ found` are fine), then, under each `== <project>`, the Routes that use a `threat
 with the chatbot, TSG's Routes are deleted by their label, never by name: a chatbot Route may have the same name.
 
 **If the last command lists an old Route**, delete it, or the new one cannot take its address. Old means: in
-`ai-threatgen`, any Route except `api`, `grafana` and `flower`; in `ai-remediation` and `ai-common`, any Route listed
-(the `threatgen-grafana` Routes there were TSG's older ones: the new Routes live in `ai-threatgen`). Delete an old
-Route with:
+`ai-threatgen`, any Route except `api`, `grafana` and `flower`; in `ai-common`, any Route listed (the
+`threatgen-grafana` Routes there were TSG's older ones: the new Routes live in `ai-threatgen`). Delete an old Route
+with:
 
 ```powershell
 oc -n <project> delete route <name>
@@ -388,34 +380,55 @@ oc -n ai-common delete deployment,route -l app.kubernetes.io/part-of=tsg-observa
 **Do:**
 
 ```powershell
-oc apply -f deploy\networkpolicy_threatgen.yaml -f deploy\networkpolicy_remediation.yaml
+oc apply -f deploy\networkpolicy_threatgen.yaml
 ```
 
 **You should see:** `networkpolicy.networking.k8s.io/... created` (or `configured`) for each rule.
 
-### Step 11. Start the workers in ai-remediation
+### Step 11. Remove TSG from ai-remediation (once)
+
+TSG runs only in `ai-threatgen` and `ai-common` (owner, 28-Oct-2026). Earlier releases also ran a second copy of
+every worker, and older ones the monitoring, in `ai-remediation`. These commands remove what TSG left there. TSG's
+objects carry the label `part-of=tsg` or `part-of=tsg-monitoring`, so nothing else in the project is touched; the
+older monitoring is deleted by its TSG names. `NotFound` and `No resources found` are fine.
 
 **Do:**
 
 ```powershell
-oc apply -f deploy\deploy_remediation.yaml
-oc -n ai-remediation get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-remediation rollout status $_ --timeout=10m }
+oc -n ai-remediation scale deployment celery-worker celery-exporter mssql-exporter mongodb-exporter --replicas=0
+oc -n ai-remediation delete deployment,networkpolicy,configmap,secret -l part-of=tsg
+oc -n ai-remediation delete role,rolebinding -l part-of=tsg-monitoring
+oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
+oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
+oc -n ai-remediation get deployment,networkpolicy,configmap,secret,role,rolebinding -l 'part-of in (tsg,tsg-monitoring)'
+oc -n ai-remediation get route | findstr threatgen
 ```
 
-**You should see:** 6 lines ending with `successfully rolled out` (one per worker).
+**You should see:** `scaled`, `deleted`, `NotFound` or `No resources found` lines, then `No resources found` from the
+`get` line and nothing from the last line. The older monitoring's volumes there (`prometheus-data`, `loki-data`,
+`grafana-data`) stay until the owner deletes them.
 
-**If a line times out:** see Part 5, "If something fails".
+**If the last line lists a Route:** it holds a `threatgen` address the new Routes need. Delete it:
+`oc -n ai-remediation delete route <name>`.
 
-### Step 12. Start the API, the workers and beat in ai-threatgen
+**If a line says `Forbidden`:** ask the cluster admin for rights to delete these in `ai-remediation` (Part 1), or to
+run these lines for you.
+
+### Step 12. Start the reaper worker in ai-common, then the API, the workers and beat in ai-threatgen
 
 **Do:**
 
 ```powershell
+oc apply -f deploy\deploy_common.yaml -l part-of=tsg
+oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 oc apply -f deploy\deploy_threatgen.yaml
 oc -n ai-threatgen get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
 ```
 
-**You should see:** 8 lines ending with `successfully rolled out` (the API, 6 workers, beat). This can take up to
+**You should see:** `deployment.apps/worker-reaper created` (with its two network rules, `tsg-app-ingress` and
+`tsg-app-egress`, and nothing else from that file yet) and its `successfully rolled out`, then 8 lines ending with
+`successfully rolled out` (the API, 6 workers, beat). The reaper worker comes first: the API is ready only once
+every queue has a live worker, `tsg_reaper` included. This can take up to
 6 minutes: pods wait for room in the quota while old pods stop.
 
 **If a line times out:** see Part 5, "If something fails".
@@ -667,7 +680,7 @@ To see each pod's memory (compare it with the pod's limit in Part 6, and raise t
 
 ```powershell
 oc adm top pods -n ai-threatgen
-oc adm top pods -n ai-remediation
+oc adm top pods -n ai-common -l part-of=tsg-monitoring
 ```
 
 ---
@@ -744,7 +757,9 @@ Select-String -Path deploy\secrets.example.yaml -Pattern '^\s+([A-Z_]+):' | ForE
 ```
 
 **You should see:** nothing. A name printed is a new secret: copy its line from `secrets.example.yaml` into your
-`secrets.yaml`, with the real value.
+`secrets.yaml`, with the real value. Then run the check in Part 2, step 7 (the `Select-String` line before
+`oc apply`): a `secrets.yaml` from a release before 28-Oct-2026 still has a Secret for `ai-remediation`, which that
+step says how to delete.
 
 Then apply both, and restart the monitoring so it loads its new config files (the app pods load the new settings
 in step 7):
@@ -798,11 +813,11 @@ deletes by label, because ai-common is shared with the chatbot. The volumes stay
 oc -n ai-common delete deployment,route -l app.kubernetes.io/part-of=tsg-observability
 ```
 
-**Then do** (every release):
+**Then do** (every release). The reaper worker comes first, for the same reason as in Part 2, step 12:
 
 ```powershell
-oc apply -f deploy\deploy_remediation.yaml
-oc -n ai-remediation get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-remediation rollout status $_ --timeout=10m }
+oc apply -f deploy\deploy_common.yaml -l part-of=tsg
+oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 oc apply -f deploy\deploy_threatgen.yaml
 oc -n ai-threatgen get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
 oc apply -f deploy\networkpolicy_threatgen.yaml
@@ -813,13 +828,19 @@ oc -n ai-common get deployment -l part-of=tsg-monitoring -o name | ForEach-Objec
 oc -n ai-threatgen rollout status deployment/monitoring-proxy --timeout=10m
 ```
 
-**You should see:** after each `deploy_*.yaml` file, one `successfully rolled out` line per Deployment: 6, then 8,
-then 9 (8 in ai-common, then the monitoring proxy). The network rules print `created`, `configured` or
+**You should see:** after each `deploy_*.yaml` file, one `successfully rolled out` line per Deployment: 8, then 9
+(8 in ai-common, then the monitoring proxy). The network rules print `created`, `configured` or
 `unchanged`. The two `delete` lines print `deleted` for the previous release's Routes on `threatgen-grafana` and its
 rule `monitoring-from-router` in ai-common, or `No resources found` and nothing once they are gone (a rollback brings
 them back): Grafana and Flower now have their Routes in ai-threatgen, through the monitoring proxy.
 
+While a worker restarts, its queue's jobs wait (nothing is lost) and the API stays ready.
+
 **If a line times out:** see Part 5, "If something fails".
+
+**Then, only once** (the first release from 28-Oct-2026): remove TSG's workers and the rest of TSG from
+`ai-remediation`, after the lines above, so they serve their queues until the new workers in ai-threatgen are up.
+Do Part 2, step 11.
 
 ### Step 8. Check
 
@@ -847,9 +868,8 @@ the events, in the left column below.
 | `unauthorized` in a `Failed to pull image` event | The cluster's Quay login may not read that image, or the image was never pushed: Quay answers the same for both. Run the check in Part 2, step 6 (the lines after "Then check"): its table says which, and what to do. The pods try again by themselves within 5 minutes. |
 | `manifest unknown` in a `Failed to pull image` event | That tag is not in Quay. A monitoring image: Part 2, step 3, by name. `tsg-api`: Part 2, steps 4 and 5. |
 | `exceeded quota` | Wait up to 6 minutes (old pods still stopping). Still failing: `oc -n <project> describe quota`, and Part 2, step 2. |
-| `insufficient quota to match these scopes` | The cluster lets a pod's spreading rule look at another project only under a special quota: Part 2, step 2. |
 | `CreateContainerConfigError` | A secret or setting is missing: Part 2, steps 7 and 8. |
-| `field is immutable` | An older Deployment with the same name is still there. In `ai-threatgen` or `ai-remediation`: Part 2, step 9. In `ai-common` (the chatbot runs there too): run `oc -n ai-common get deployment <name> --show-labels`. If it shows `part-of=tsg-monitoring`, `part-of=tsg` or `app.kubernetes.io/part-of=tsg-observability` (TSG's older label), it is TSG's: run `oc -n ai-common delete deployment <name>` and apply again (the end of Part 2, step 9 removes all the older ones at once). Otherwise it is not TSG's: do not delete it, ask its owner (the chatbot team). |
+| `field is immutable` | An older Deployment with the same name is still there. In `ai-threatgen`: Part 2, step 9. In `ai-common` (the chatbot runs there too): run `oc -n ai-common get deployment <name> --show-labels`. If it shows `part-of=tsg-monitoring`, `part-of=tsg` or `app.kubernetes.io/part-of=tsg-observability` (TSG's older label), it is TSG's: run `oc -n ai-common delete deployment <name>` and apply again (the end of Part 2, step 9 removes all the older ones at once). Otherwise it is not TSG's: do not delete it, ask its owner (the chatbot team). |
 | `Pending` | The last lines (Events) of `oc -n <project> describe pod <name>` say why. `unbound ... PersistentVolumeClaims`: run `oc -n <project> get pvc`. A claim that is `Pending` with an empty `STORAGECLASS` means the cluster has no default storage class: ask the cluster admin which one to use (the other claims there show one) and tell the developer, who names it in `deploy\deploy_common.yaml`. With that new file, delete the `Pending` claim (it holds no data yet: `oc -n <project> delete pvc <name>`) and apply again. Otherwise ask the cluster admin for storage. |
 | `/ready` answers `not_ready` (503) | Each `false` in its answer is a missing store or worker. A worker: `oc -n <project> logs deployment/<that worker>` shows why. |
 | `CrashLoopBackOff` | `oc -n <project> logs deployment/<name> --previous` shows why (often a setting). |
@@ -860,10 +880,10 @@ the events, in the left column below.
 Edit and apply the file (Part 2, step 7 or 8), then restart one project at a time:
 
 ```powershell
-oc -n ai-remediation rollout restart deployment -l part-of=tsg
-oc -n ai-remediation get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-remediation rollout status $_ --timeout=10m }
 oc -n ai-threatgen rollout restart deployment -l part-of=tsg
 oc -n ai-threatgen get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
+oc -n ai-common rollout restart deployment/worker-reaper
+oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
 oc -n ai-common get deployment -l part-of=tsg-monitoring -o name | ForEach-Object { oc -n ai-common rollout status $_ --timeout=10m }
 oc -n ai-threatgen rollout restart deployment -l app=monitoring-proxy
@@ -887,18 +907,20 @@ order:
    **You should see:** `deleted` for `deployment.apps/monitoring-proxy`, `service/monitoring-proxy`,
    `route.route.openshift.io/grafana` and `route.route.openshift.io/flower`. The API's own Route `api` stays.
 
-2. Apply the previous settings, `deploy_remediation.yaml` and `deploy_threatgen.yaml`:
+2. Apply the previous settings and `deploy_threatgen.yaml`:
 
    ```powershell
    oc apply -f deploy\configmap.yaml
-   oc apply -f deploy\deploy_remediation.yaml
-   oc -n ai-remediation get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-remediation rollout status $_ --timeout=10m }
    oc apply -f deploy\deploy_threatgen.yaml
    oc -n ai-threatgen get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
    ```
 
-   **You should see:** `configured` or `unchanged` for each setting, then 6, then 8 lines ending with
+   **You should see:** `configured` or `unchanged` for each setting, then 8 lines ending with
    `successfully rolled out`.
+
+   A previous release from before 28-Oct-2026 also has `deploy_remediation.yaml`: do not apply it, TSG no longer
+   runs in `ai-remediation`. Its `configmap.yaml` and `deploy_common.yaml` (step 3) put a few objects back there:
+   after step 3, remove them again with Part 2, step 11.
 
 3. Last, apply the previous `deploy_common.yaml` and restart the monitoring, so it loads the previous alert rules
    and dashboard:
@@ -918,15 +940,23 @@ order:
 
 Read this once to understand the setup. You do not need it to deploy.
 
-### Three projects
+### Two projects
 
 | Project | What runs there | Why |
 |---|---|---|
-| `ai-threatgen` | The API (2 pods), beat (the scheduler, 1 pod), the monitoring proxy (1 pod: Grafana and Flower on the API's address) and one copy of every worker | Users and other systems call the API here. |
-| `ai-remediation` | A second copy (a "twin") of every worker | While one copy restarts or its node fails, its twin keeps the same queue moving. |
-| `ai-common` | Monitoring: Grafana, Prometheus, Alertmanager, Loki, Alloy, redis-exporter, kube-state-metrics, and Flower | Shared with the chatbot, so the app projects keep their quota for the app. |
+| `ai-threatgen` | The app: the API (2 pods), one worker per queue, beat (the scheduler, 1 pod), and the monitoring proxy (1 pod: Grafana and Flower on the API's address) | Users and other systems call the API here. |
+| `ai-common` | Monitoring: Grafana, Prometheus, Alertmanager, Loki, Alloy, redis-exporter, kube-state-metrics, and Flower | Shared with the chatbot, so the app's project keeps its quota for the app. |
 
-Each app project has a quota of 6 CPU and 12 Gi of memory, counted on the pods' limits.
+Nothing of TSG runs in `ai-remediation` (owner, 28-Oct-2026).
+
+Quotas, counted on the pods' limits: `ai-threatgen` 6 CPU, 12 Gi memory, 60 Gi storage; `ai-common` 6 CPU, 16 Gi,
+180 Gi, of which TSG keeps to 3 CPU, 6 Gi and 60 Gi (the chatbot has the rest).
+
+The monitoring in ai-common sees the app across the project line: Prometheus and Alloy find the app's pods, and
+kube-state-metrics watches them, through a read-only Role in ai-threatgen (`tsg-monitoring-read-pods`); ai-threatgen's
+network rules let TSG's monitoring pods scrape the API (port 8000) and the workers (9100); Flower and redis-exporter
+read the job queues in Redis with the same `tsg-secrets`; and the monitoring proxy in ai-threatgen forwards
+`/grafana` and `/flower` to ai-common.
 
 ### One worker for each kind of work
 
@@ -940,13 +970,14 @@ Example: a user starts a run for one asset.
    once).
 4. When the user asks for a remediation plan, `tsg_remediation` gets a job. **worker-remediation** writes it.
 5. A service mapping goes to `tsg_servicemapper` and **worker-service-mapper**.
-6. **worker-maintenance** (`tsg_maintenance`) repairs stuck jobs every minute, retries failed control mapping,
-   rebuilds the library indexes and imports the outside intelligence.
+6. **worker-maintenance** (`tsg_maintenance`) rebuilds the library indexes and imports the outside intelligence.
+7. **worker-reaper** (`tsg_reaper`, in ai-common) repairs stuck jobs every minute and retries failed control
+   mapping, alone on its queue, so a long import never delays the repair of a stuck job.
 
 Because every kind of work has its own worker, a long remediation plan never waits behind scenario writing, and
 control mapping never waits behind a busy writer. A run's next step also goes ahead of new runs in its queue.
 
-| Pod (in both projects unless noted) | Queue | Jobs at once | CPU request / limit | Memory request / limit |
+| Pod (1 each unless noted) | Queue | Jobs at once | CPU request / limit | Memory request / limit |
 |---|---|---|---|---|
 | worker-threats | `tsg_threats` | 2 | 500m / 1 | 1Gi / 1.5Gi |
 | worker-scenarios | `tsg_scenarios` | 2 | 500m / 1 | 1Gi / 2Gi |
@@ -954,12 +985,15 @@ control mapping never waits behind a busy writer. A run's next step also goes ah
 | worker-remediation | `tsg_remediation` | 2 | 250m / 500m | 640Mi / 1Gi |
 | worker-service-mapper | `tsg_servicemapper` | 2 | 250m / 500m | 640Mi / 1Gi |
 | worker-maintenance | `tsg_maintenance` | 3 | 100m / 250m | 768Mi / 1.5Gi |
-| api (ai-threatgen only, 2 pods) | - | - | 250m / 750m | 512Mi / 1Gi |
-| beat (ai-threatgen only, 1 pod) | - | - | 50m / 200m | 320Mi / 512Mi |
-| monitoring-proxy (ai-threatgen only, 1 pod: Grafana and Flower on the API's address) | - | - | 50m / 50m | 64Mi / 64Mi |
+| worker-reaper (in ai-common) | `tsg_reaper` | 2 | 50m / 150m | 512Mi / 768Mi |
+| api (2 pods) | - | - | 250m / 750m | 512Mi / 1Gi |
+| beat | - | - | 50m / 200m | 320Mi / 512Mi |
+| monitoring-proxy (Grafana and Flower on the API's address) | - | - | 50m / 50m | 64Mi / 64Mi |
 
-Totals (limits): ai-threatgen 5.25 CPU and 10.56 Gi (6.0 CPU and 11.56 Gi while an API update runs, because
-its new pod starts before an old one stops); ai-remediation 3.5 CPU and 8 Gi.
+Totals (limits) in ai-threatgen: 5.25 CPU and 10.56 Gi (6.0 CPU and 11.56 Gi while an API update runs, because
+its new pod starts before an old one stops). That leaves no room for a second copy of any worker, so the reaper
+worker runs in ai-common. TSG's monitoring and reaper worker in ai-common: about 2.45 CPU and 4.8 Gi, 21 Gi of
+volumes.
 
 ### Why these sizes: the AI sets the speed, not the pods
 
@@ -968,13 +1002,14 @@ at most 180 (`CII_CHAT_REQUESTS_PER_MINUTE`), which leaves room as long as nothi
 (still to be confirmed).
 
 Example: a kimi call takes about 5 seconds, so 180 a minute is about 15 calls running at once for all of TSG (every
-pod in both projects).
+pod together).
 
 - One user alone: threat finding asks 8 questions at once. A measured run (36 questions, still 4 at once) took
   about 1.5 minutes; with 8 at once expect about a minute (not yet measured).
-- 10 users start runs together: 4 runs find threats at once (2 in each worker-threats pod) and the other 6 wait
-  their turn in `tsg_threats`. kimi's turns are handed out 3 a second in arrival order, so all 10 finish threat
-  finding in a few minutes.
+- 10 users start runs together: 2 runs find threats at once (the worker-threats pod's 2 jobs) and the other 8 wait
+  their turn in `tsg_threats`. 2 runs at 8 questions each already ask for about the 15 calls kimi allows, so a
+  second worker-threats pod would mostly wait for kimi too: at about a minute a run, all 10 finish threat finding in
+  roughly 5 minutes (not yet measured).
 - More pods or more jobs at once would not be faster: they would only wait longer for kimi's turn. That is why the
   threats and scenarios workers run 2 jobs at a time.
 
@@ -1003,10 +1038,11 @@ all 16 glm-5.3 places are busy), then tries kimi again.
 
 ### Updates and node failures
 
-- A worker updates by stopping its old pod first (no extra pod in the quota); its twin in the other project serves
-  meanwhile.
+- A worker updates by stopping its old pod first (no extra pod in the quota). Its queue's jobs wait until the new
+  pod answers (usually a minute or two) and nothing is lost: a job a stopped worker had not finished goes back to
+  the queue. The API stays ready meanwhile: its readiness allows 6 minutes, longer than a worker's slowest start.
 - The API starts its new pod before it stops an old one, so it never goes down during an update.
-- Each worker prefers a node its twin is not on, and the two API pods different nodes, so one node failure stops
-  neither a queue nor the API. Preferred only: a pod still starts when no other node fits.
+- The two API pods prefer different nodes, so one node failure never stops the API. Preferred only: a pod still
+  starts when no other node fits. A worker on a failed node is started again on another; its queue waits meanwhile.
 - No pod takes OpenShift's automatic service variables (`<SERVICE>_PORT=tcp://...`): each finds a service by its
   DNS name. That keeps a program such as Flower from reading them as its own settings.

@@ -519,6 +519,7 @@
  "Queue": {
   "CONTROLS": "tsg_controls",
   "MAINTENANCE": "tsg_maintenance",
+  "REAPER": "tsg_reaper",
   "REMEDIATION": "tsg_remediation",
   "SCENARIOS": "tsg_scenarios",
   "SERVICEMAPPER": "tsg_servicemapper",

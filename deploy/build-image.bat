@@ -7,7 +7,7 @@ rem   deploy\build-image.bat 24-Oct-2026-2     use this tag (a second build on t
 rem   deploy\build-image.bat --no-push         build and check only
 rem
 rem Log in first: docker login quay-quay-registry.apps.dda-desc-az1-01.desccii.local
-rem Then put the printed tag in deploy\deploy_threatgen.yaml, deploy_remediation.yaml and deploy_common.yaml.
+rem Then put the printed tag in deploy\deploy_threatgen.yaml and deploy_common.yaml.
 setlocal EnableExtensions DisableDelayedExpansion
 
 set "REGISTRY=quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
@@ -63,7 +63,7 @@ if errorlevel 1 (echo ERROR: docker push failed. Run docker login first. & goto 
 echo.
 echo Image:  %IMAGE%
 echo Tag:    %TAG%
-echo Next:   put %TAG% in deploy\deploy_threatgen.yaml, deploy\deploy_remediation.yaml and deploy\deploy_common.yaml,
+echo Next:   put %TAG% in deploy\deploy_threatgen.yaml and deploy\deploy_common.yaml,
 echo         then follow deploy\DEPLOYMENT_GUIDE.md
 popd
 endlocal

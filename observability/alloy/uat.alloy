@@ -1,5 +1,5 @@
 // Alloy in UAT / production: ships the stdout of TSG's pods (pod label part-of: tsg or tsg-monitoring) in the
-// app's two projects and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
+// app's project (ai-threatgen) and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
 // folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop uses local.alloy: same
 // labels, read from log files instead.
 
@@ -11,7 +11,7 @@ logging {
 discovery.kubernetes "pods" {
   role = "pod"
   namespaces {
-    names = ["ai-threatgen", "ai-remediation", "ai-common"] // a namespaced Role in each allows nothing more
+    names = ["ai-threatgen", "ai-common"] // a namespaced Role in each allows nothing more
   }
 }
 

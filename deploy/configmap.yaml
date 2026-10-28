@@ -1,17 +1,17 @@
 # configmap.yaml - every ConfigMap TSG needs on OpenShift (UAT is production).
-#   1. tsg-config: the app's plain (non-secret) settings, the same in ai-threatgen, ai-remediation and ai-common.
+#   1. tsg-config: the app's plain (non-secret) settings, the same in ai-threatgen and ai-common.
 #   2. The monitoring's config files (Prometheus, Alertmanager, Loki, Alloy, Grafana), all in ai-common, and the
 #      monitoring proxy's (nginx: Grafana and Flower on the API's address), in ai-threatgen.
 # Passwords, keys and connection strings are NOT here: they are in secrets.yaml.
 # Apply:  oc apply -f deploy/configmap.yaml
 # A running pod never sees a changed setting: after a change, restart TSG's pods in each project (the -l leaves
-# every other Deployment alone: v1's in the app projects, the chatbot's in ai-common):
-#   oc -n ai-remediation rollout restart deployment -l part-of=tsg
-#   oc -n ai-remediation rollout status deployment -l part-of=tsg --timeout=10m
+# every other Deployment alone: v1's in ai-threatgen, the chatbot's in ai-common):
 #   oc -n ai-threatgen rollout restart deployment -l part-of=tsg
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
 #   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --timeout=10m
+#   oc -n ai-common rollout restart deployment/worker-reaper
+#   oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 #   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
 #   oc -n ai-threatgen rollout status deployment/monitoring-proxy --timeout=10m
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
@@ -26,7 +26,7 @@ items:                                           # one tsg-config per project th
       name: tsg-config                           # the name every TSG pod reads its settings from (envFrom)
       namespace: ai-threatgen                    # the API, one worker per queue and beat run here
       labels: { part-of: tsg }                   # marks it as TSG's
-    data: &settings                              # "&settings" names this block: the two projects below reuse it unchanged
+    data: &settings                              # "&settings" names this block: ai-common's copy below reuses it unchanged
       CII_ENV: "uat"                             # environment name; anything but "dev" gets production's safety checks
       CII_CORS_ORIGINS: "CHANGE_ME_UI_ORIGIN"    # CHANGE: the platform UI's https address(es), comma-separated; "*" stops start-up
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
@@ -76,13 +76,6 @@ items:                                           # one tsg-config per project th
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place
       name: tsg-config                           # the same name, read the same way
-      namespace: ai-remediation                  # the second copy of every worker runs here
-      labels: { part-of: tsg }                   # marks it as TSG's
-    data: *settings                              # "*settings" = exactly the settings written above
-  - apiVersion: v1                               # core API version
-    kind: ConfigMap                              # plain, non-secret settings
-    metadata:                                    # the object's name and place
-      name: tsg-config                           # the same name, read the same way
       namespace: ai-common                       # Flower runs here (it loads the app's settings to start)
       labels: { part-of: tsg }                   # marks it as TSG's
     data: *settings                              # "*settings" = exactly the settings written above
@@ -103,8 +96,8 @@ data:                                            # one key per file
   prometheus.yml: |                              # which pods to scrape: a copy of observability/prometheus/prometheus.yml
     # Prometheus in UAT / production (OpenShift). The laptop uses prometheus.local.yml: same rules, same paths.
     #
-    # Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's two projects (ai-threatgen,
-    # ai-remediation) and in ai-common (the monitoring, Flower) that carries the annotations below is scraped, one
+    # Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's project (ai-threatgen) and in
+    # ai-common (the monitoring, Flower) that carries the annotations below is scraped, one
     # target per pod. ai-common is shared with a chatbot: its pods are left out, whatever they carry.
     #   prometheus.io/scrape: "true"
     #   prometheus.io/port:   "<a containerPort the pod declares>"   (api 8000, worker 9100, flower 5555 …)
@@ -129,8 +122,8 @@ data:                                            # one key per file
       - job_name: pods
         kubernetes_sd_configs:
           - role: pod
-            namespaces: # the app's two projects and the monitoring's; a namespaced Role in each allows nothing more
-              names: [ai-threatgen, ai-remediation, ai-common]
+            namespaces: # the app's project and the monitoring's; a namespaced Role in each allows nothing more
+              names: [ai-threatgen, ai-common]
         relabel_configs:
           # TSG's pods only: the chatbot's pods in ai-common must not join TSG's jobs and alerts.
           - source_labels: [__meta_kubernetes_pod_label_part_of]
@@ -163,8 +156,8 @@ data:                                            # one key per file
             target_label: pod
 
       # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
-      # over the labels of the kube-state-metrics pod itself. It reports every pod of the three projects: keep the
-      # app projects' pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
+      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep the
+      # app project's pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
       # (<deployment>-<replicaset hash>-<5 characters>). tests/test_observability.py checks the names.
       - job_name: kube-state-metrics
         honor_labels: true
@@ -172,7 +165,7 @@ data:                                            # one key per file
           - targets: ["kube-state-metrics:8080"]
         metric_relabel_configs:
           - source_labels: [namespace, pod]
-            regex: "(ai-threatgen|ai-remediation);.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower)-[a-z0-9]+-[a-z0-9]{5}"
+            regex: "ai-threatgen;.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
             action: keep
 
       - job_name: prometheus
@@ -546,7 +539,7 @@ metadata:                                        # the object's name and place
 data:                                            # one key per file
   config.alloy: |                                # which pods' logs to read: a copy of observability/alloy/uat.alloy
     // Alloy in UAT / production: ships the stdout of TSG's pods (pod label part-of: tsg or tsg-monitoring) in the
-    // app's two projects and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
+    // app's project (ai-threatgen) and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
     // folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop uses local.alloy: same
     // labels, read from log files instead.
 
@@ -558,7 +551,7 @@ data:                                            # one key per file
     discovery.kubernetes "pods" {
       role = "pod"
       namespaces {
-        names = ["ai-threatgen", "ai-remediation", "ai-common"] // a namespaced Role in each allows nothing more
+        names = ["ai-threatgen", "ai-common"] // a namespaced Role in each allows nothing more
       }
     }
 
@@ -956,7 +949,7 @@ data:                                            # one key per file
           "id": 4,
           "type": "stat",
           "title": "Parts of the system",
-          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = library search, threat intelligence; reaper = the reaper and the controls retry sweep). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1042,6 +1035,18 @@ data:                                            # one key per file
               },
               "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_maintenance\"}), 1) or vector(-1)",
               "legendFormat": "Worker: maintenance",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "O",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_reaper\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: reaper",
               "instant": true,
               "range": false,
               "format": "time_series"

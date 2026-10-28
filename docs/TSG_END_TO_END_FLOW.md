@@ -3961,8 +3961,8 @@ stateDiagram-v2
   maintenance worker and beat, starts the monitoring tools, and waits for `/ready`. `.\run.ps1 stop` stops them
   cleanly.
 - **OpenShift:** plain YAML applied with `oc apply -f` (D25). `deploy/deploy_threatgen.yaml` runs the API
-  (2 replicas), one worker per queue and beat in project `ai-threatgen`; `deploy/deploy_remediation.yaml` adds a
-  twin of every worker in project `ai-remediation`. The workers (D29; threads, CPU and memory limits):
+  (2 replicas), one worker per queue and beat in project `ai-threatgen`, the app's only project (D50). The workers
+  (D29; threads, CPU and memory limits):
   `worker-threats` 2, 1 CPU, 1536Mi; `worker-scenarios` 2, 1 CPU, 2Gi (the only one holding the evidence
   index); `worker-controls` 1, 250m, 1Gi; `worker-remediation` 2, 500m, 1Gi; `worker-service-mapper` 2, 500m,
   1Gi; `worker-maintenance` 3, 250m, 1536Mi; the API 750m, 1Gi each, beat 200m, 512Mi. The image runs numpy's maths
@@ -3971,10 +3971,10 @@ stateDiagram-v2
   64Mi, requests = limits) in `ai-threatgen`: Grafana and Flower are on the API's host at `/grafana` and `/flower`,
   without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus
   and Alertmanager have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
-  (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
+  (ConfigMap `tsg-config` in both projects, and the monitoring's config files) and `deploy/secrets.yaml`
   (Secret `tsg-secrets`, copied from `deploy/secrets.example.yaml`, never committed); network rules are
-  `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
-  settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each project's rollouts awaited by their `part-of` label.
+  `deploy/networkpolicy_threatgen.yaml`. Apply order: secrets and settings, network rules, `ai-threatgen`,
+  `ai-common`, each project's rollouts awaited by their `part-of` label.
   `deploy/DEPLOYMENT_GUIDE.md` has every step and check.
 
 ---

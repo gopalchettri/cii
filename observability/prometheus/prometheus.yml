@@ -1,7 +1,7 @@
 # Prometheus in UAT / production (OpenShift). The laptop uses prometheus.local.yml: same rules, same paths.
 #
-# Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's two projects (ai-threatgen,
-# ai-remediation) and in ai-common (the monitoring, Flower) that carries the annotations below is scraped, one
+# Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's project (ai-threatgen) and in
+# ai-common (the monitoring, Flower) that carries the annotations below is scraped, one
 # target per pod. ai-common is shared with a chatbot: its pods are left out, whatever they carry.
 #   prometheus.io/scrape: "true"
 #   prometheus.io/port:   "<a containerPort the pod declares>"   (api 8000, worker 9100, flower 5555 …)
@@ -26,8 +26,8 @@ scrape_configs:
   - job_name: pods
     kubernetes_sd_configs:
       - role: pod
-        namespaces: # the app's two projects and the monitoring's; a namespaced Role in each allows nothing more
-          names: [ai-threatgen, ai-remediation, ai-common]
+        namespaces: # the app's project and the monitoring's; a namespaced Role in each allows nothing more
+          names: [ai-threatgen, ai-common]
     relabel_configs:
       # TSG's pods only: the chatbot's pods in ai-common must not join TSG's jobs and alerts.
       - source_labels: [__meta_kubernetes_pod_label_part_of]
@@ -60,8 +60,8 @@ scrape_configs:
         target_label: pod
 
   # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
-  # over the labels of the kube-state-metrics pod itself. It reports every pod of the three projects: keep the
-  # app projects' pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
+  # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep the
+  # app project's pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
   # (<deployment>-<replicaset hash>-<5 characters>). tests/test_observability.py checks the names.
   - job_name: kube-state-metrics
     honor_labels: true
@@ -69,7 +69,7 @@ scrape_configs:
       - targets: ["kube-state-metrics:8080"]
     metric_relabel_configs:
       - source_labels: [namespace, pod]
-        regex: "(ai-threatgen|ai-remediation);.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower)-[a-z0-9]+-[a-z0-9]{5}"
+        regex: "ai-threatgen;.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
         action: keep
 
   - job_name: prometheus

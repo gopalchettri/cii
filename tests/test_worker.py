@@ -575,7 +575,7 @@ def test_only_the_worker_that_runs_the_reaper_starts_on_time(monkeypatch: pytest
     assert _last_reaper_pass() == 0
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
     before = time.time()
-    lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
+    lifecycle.prepare_worker(_worker_starting("threads", Queue.REAPER))
     assert before <= _last_reaper_pass() <= time.time()
 
 

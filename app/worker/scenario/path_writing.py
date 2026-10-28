@@ -78,8 +78,7 @@ class PathWriter:
         self._split_locks: dict[str, threading.Lock] = {}  # one per threat
 
     def write(self, path: dict[str, Any]) -> PathOutcome:
-        """In a pool thread: build one path's brief in its own style, with its threat's actions, and write its
-        scenario. An outage or a job-wide failure is raised."""
+        """In a pool thread: a path's brief (its style, its threat's actions) and scenario; outages raise."""
         try:
             style = path_style(self.threats, path, self._style)
             brief = build_brief(self.threats, path, self._context, self._budget, self._live, style=style)
@@ -96,9 +95,12 @@ class PathWriter:
             unexpected = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
             return PathFailure(ErrorCode.INTERNAL_ERROR, unexpected)
 
+    def split_ahead(self, path: dict[str, Any]) -> None:
+        """Split a path's threat now, before its write takes it; a refused path raises, with no AI call."""
+        self._threat_actions(build_brief(self.threats, path, self._context, self._budget, self._live).threat)
+
     def _threat_actions(self, threat: str) -> tuple[str, ...]:
-        """The actions `threat`'s name states, split once per delivery; its other paths wait for it, and an
-        outage is raised to each with no second ask."""
+        """`threat`'s actions, split once per delivery; an outage is kept and raised to each of its paths."""
         with self._split_locks.setdefault(threat, threading.Lock()):  # dict.setdefault is atomic
             if threat not in self._actions:
                 try:

@@ -30,7 +30,7 @@ alert says when one is not.
 
    ```
    oc -n ai-threatgen get pods -o wide
-   oc -n ai-remediation get pods -o wide
+   oc -n ai-common get pods -o wide -l part-of=tsg-monitoring
    ```
 
 2. Check the node's time sync (needs cluster-admin; changes nothing):
@@ -54,4 +54,4 @@ clock is from the shell's; within about ±2 s is fine.
 NS=ai-threatgen; for p in $(oc get pods -n $NS -o name); do here=$(date -u +%s); there=$(oc exec -n $NS ${p#pod/} -- date -u +%s 2>/dev/null); node=$(oc get $p -n $NS -o jsonpath='{.spec.nodeName}'); if [ -n "$there" ]; then echo "$p node=$node pod_minus_here=$((there-here))s"; else echo "$p node=$node (no date command)"; fi; done
 ```
 
-Run it again with `NS=ai-remediation`.
+TSG's app pods all run in `ai-threatgen`.
