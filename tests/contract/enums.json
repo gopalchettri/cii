@@ -151,7 +151,6 @@
   "REMEDIATIONS": "tsg_remediations",
   "SCENARIOS": "tsg_scenarios",
   "SERVICE_MAPPINGS": "tsg_service_mappings",
-  "SERVICE_MAPPING_HISTORY": "tsg_service_mapping_history",
   "SESSIONS": "tsg_sessions",
   "SQL_OPERATIONS": "tsg_sql_operations"
  },
@@ -432,10 +431,10 @@
   "PENDING": "pending"
  },
  "MapperConflict": {
-  "GENERATION_IN_PROGRESS": "generation_in_progress"
+  "GENERATION_IN_PROGRESS": "generation_in_progress",
+  "GENERATION_LIMIT_REACHED": "generation_limit_reached"
  },
  "MapperDecisionFailure": {
-  "DECISION_FINAL": "decision_final",
   "DEPENDENCY_NOT_FOUND": "dependency_not_found"
  },
  "MappingOverall": {

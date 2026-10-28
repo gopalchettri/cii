@@ -21,5 +21,5 @@ def map_services(self: Task, record_id: str, epoch: int) -> None:
         record_id,
         epoch,
         generate,
-        fields=("request", "limits", "pending_archive"),
+        fields=("request", "limits", "result"),
     )

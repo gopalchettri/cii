@@ -38,7 +38,7 @@ from app.data_access.jobs.job_repository import new_job
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.remediation.remediation_repository import RemediationRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository
+from app.data_access.service_mapper.mapping_repository import RETIRED_CREATE_KEY_INDEX, MappingRepository
 from app.models.external_intelligence.intel_record import RejectedRecord
 from app.worker import jobs
 from tests import test_review as review
@@ -290,11 +290,10 @@ def test_start_up_drops_the_retired_failed_controls_index() -> None:
     assert "controls.status_1_controls.last_attempt_at_1" not in scenarios.collection.index_information()
 
 
-def test_archived_mapping_generations_are_kept_and_an_old_expiry_index_is_dropped() -> None:
-    """Owner 2026-10-28: replaced Service Mapper answers are never deleted. A database that already built
-    the 90-day expiry index loses it at start-up, so MongoDB deletes nothing from the history."""
-    history = MappingHistoryRepository()
-    history.collection.create_index("archived_at", expireAfterSeconds=int(timedelta(days=90).total_seconds()))
-    history.create_indexes()
-    indexes = history.collection.index_information()
-    assert [name for name, index in indexes.items() if "expireAfterSeconds" in index] == []
+def test_start_up_drops_the_retired_mapping_create_key_index() -> None:
+    """Owner 2026-10-28: a mapping keeps every Idempotency-Key it ran in request_keys; the index on the first
+    request's key goes at start-up."""
+    mappings = MappingRepository()
+    mappings.collection.create_index([("tenant_id", 1), ("entity_id", 1), ("create_key", 1)])
+    mappings.create_indexes()
+    assert RETIRED_CREATE_KEY_INDEX not in mappings.collection.index_information()

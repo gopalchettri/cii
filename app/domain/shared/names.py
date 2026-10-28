@@ -120,6 +120,11 @@ def is_same_name(known: str, written: str) -> bool:
     return name_match_key(written) in _form_keys(known)
 
 
+def are_one_name(first: str, second: str) -> bool:
+    """Whether two names are one in two forms, either way round ("PGS", "Power Generation System (PGS)")."""
+    return is_same_name(first, second) or is_same_name(second, first)
+
+
 def find_name_mentions(name: str, text: str) -> list[tuple[int, int]]:
     """Where `text` names `name`, in any of its forms, whole words only, singular or plural."""
     patterns = (_asset_name_pattern(form, plural=True) for form in _name_variants(name))

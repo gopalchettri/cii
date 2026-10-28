@@ -1,4 +1,4 @@
-"""Authenticated Service Mapper creation, polling, listing, regeneration and relationship decision APIs."""
+"""Authenticated Service Mapper generation, polling, listing, regeneration and relationship decision APIs."""
 
 from collections.abc import AsyncIterator
 from functools import partial
@@ -40,9 +40,13 @@ def create_mapping(
     mapper: Mapper,
     idempotency_key: IdempotencyKey,
 ) -> MappingAccepted:
-    """202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a
-    new try when the key's generation is still the latest and failed for an outage (`error.code`
-    `unavailable`). Without a key, the same body again within a minute is 409 `duplicate_request`."""
+    """Generate. A service (name, sector and subsector) has one mapping per entity: the first call makes it
+    and starts run 1 (202); a later call starts its next run with these details (202, same `mapping_id`),
+    which only adds services the mapping does not hold yet. While a run goes on, the same body answers 200
+    with it and another body 409 `generation_in_progress`; past SERVICE_MAPPER_MAX_GENERATIONS runs, 409
+    `generation_limit_reached`. After a run that found nothing new, the same body answers 200 with the mapping
+    as it is (no run, none used) until the counts or the catalog change. The same Idempotency-Key answers 200
+    with the run it started; without a key, the same body again within a minute is 409 `duplicate_request`."""
     accepted, created = mapper.create_service_mapping(
         principal, body, idempotency_key.value, derived=idempotency_key.derived
     )
@@ -113,9 +117,11 @@ def regenerate_mapping(
     mapper: Mapper,
     idempotency_key: IdempotencyKey,
 ) -> MappingAccepted:
-    """202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one
-    runs). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when
-    that generation is still the latest and failed for an outage (`error.code` `unavailable`). Without a
+    """202 starts the mapping's next run with the details it holds: it only adds services the mapping does
+    not hold yet; every service and decision stays. 409 `generation_in_progress` while a run goes on, 409
+    `generation_limit_reached` past SERVICE_MAPPER_MAX_GENERATIONS runs (a failed run does not count). After
+    a run that found nothing new, 200 with the mapping as it is (no run, none used) until its details, the
+    counts or the catalog change. The same Idempotency-Key answers 200 with the run it started; without a
     key, a repeat within a minute is 409 `duplicate_request`."""
     accepted, created = mapper.regenerate_service_mapping(
         principal, mapping_id, idempotency_key.value, derived=idempotency_key.derived
@@ -136,6 +142,6 @@ def decide_dependencies(
     mapper: Mapper,
 ) -> DependencyDecisionsResult:
     """Send `{"accept": [dependency_id, ...], "reject": [...]}`; either list may be null or empty. The valid
-    ids are saved together; `failed` lists each id that was not, and why. 409 until the mapping is `done`:
-    regenerate a `failed` one."""
+    ids are saved together, a changed decision too; `failed` lists each id that was not, and why. Allowed
+    while a later run goes on; 409 while the mapping has no services yet."""
     return mapper.decide_dependencies(principal, mapping_id, body)

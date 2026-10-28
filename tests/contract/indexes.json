@@ -647,46 +647,6 @@
    }
   }
  },
- "tsg_service_mapping_history": {
-  "indexes": {
-   "_id_": {
-    "key": [
-     [
-      "_id",
-      1
-     ]
-    ]
-   },
-   "mapping_id_1_generation_-1": {
-    "key": [
-     [
-      "mapping_id",
-      1
-     ],
-     [
-      "generation",
-      -1
-     ]
-    ]
-   }
-  },
-  "options": {
-   "validationAction": "error",
-   "validationLevel": "moderate",
-   "validator": {
-    "$jsonSchema": {
-     "bsonType": "object",
-     "required": [
-      "_id",
-      "mapping_id",
-      "generation",
-      "tenant_id",
-      "entity_id"
-     ]
-    }
-   }
-  }
- },
  "tsg_service_mappings": {
   "indexes": {
    "_id_": {
@@ -696,6 +656,28 @@
       1
      ]
     ]
+   },
+   "one_mapping_per_service": {
+    "key": [
+     [
+      "tenant_id",
+      1
+     ],
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "service_key",
+      1
+     ]
+    ],
+    "partialFilterExpression": {
+     "service_key": {
+      "$type": "string"
+     }
+    },
+    "unique": true
    },
    "status_1_finished_at_1": {
     "key": [
@@ -733,28 +715,6 @@
      ]
     ]
    },
-   "tenant_id_1_entity_id_1_create_key_1": {
-    "key": [
-     [
-      "tenant_id",
-      1
-     ],
-     [
-      "entity_id",
-      1
-     ],
-     [
-      "create_key",
-      1
-     ]
-    ],
-    "partialFilterExpression": {
-     "create_key": {
-      "$type": "string"
-     }
-    },
-    "unique": true
-   },
    "tenant_id_1_entity_id_1_created_at_-1": {
     "key": [
      [
@@ -768,6 +728,22 @@
      [
       "created_at",
       -1
+     ]
+    ]
+   },
+   "tenant_id_1_entity_id_1_request_keys.key_1": {
+    "key": [
+     [
+      "tenant_id",
+      1
+     ],
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "request_keys.key",
+      1
      ]
     ]
    },
@@ -811,7 +787,6 @@
       "tenant_id",
       "entity_id",
       "status",
-      "generation",
       "job"
      ]
     }

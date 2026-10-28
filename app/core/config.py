@@ -60,6 +60,10 @@ class AiOutputSettings(BaseSettings):
     service_mapper_downstream_total_count: int = Field(
         default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
     )
+    # Runs per mapping, the first included (Generate, then Generate again or Regenerate); 0 = no limit.
+    service_mapper_max_generations: int = Field(
+        default=5, ge=0, validation_alias="SERVICE_MAPPER_MAX_GENERATIONS"
+    )
 
     @model_validator(mode="after")
     def refuse_output_limits_that_cannot_work(self) -> "AiOutputSettings":

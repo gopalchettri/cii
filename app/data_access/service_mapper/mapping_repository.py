@@ -1,17 +1,19 @@
-"""MongoDB Service Mapper records, guarded generations and authoritative relationship decisions."""
+"""MongoDB Service Mapper records: one per service, runs that only add services, relationship decisions."""
 
 from datetime import datetime
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
 
-from app.core.clock import utc_now
-from app.core.constants import Collection, Status
+from app.core.constants import Collection, Status, TaskName
 from app.data_access.base import MongoRepository, drop_retired_index
-from app.data_access.jobs.job_repository import JobLease, ended_job_fields
+from app.data_access.jobs.job_repository import JobLease, ended_job_fields, new_job
 
-#: Dropped at start-up: the expiry index on archived generations; they are kept (owner, 2026-10-28).
-RETIRED_HISTORY_EXPIRY_INDEX = "archived_at_1"
+#: The unique index that keeps one mapping per service of an entity (DuplicateRecord.index_name).
+ONE_MAPPING_PER_SERVICE = "one_mapping_per_service"
+#: Dropped at start-up: the Idempotency-Key index of a mapping's first request; keys are in request_keys.
+RETIRED_CREATE_KEY_INDEX = "tenant_id_1_entity_id_1_create_key_1"
+_GENERATING = [Status.QUEUED, Status.RUNNING]
 
 
 class MappingRepository(MongoRepository):
@@ -23,68 +25,75 @@ class MappingRepository(MongoRepository):
                 # the entity's mappings being generated, oldest first: GET /v1/jobs
                 {"keys": [("tenant_id", 1), ("entity_id", 1), ("status", 1), ("created_at", 1)]},
                 {
-                    "keys": [("tenant_id", 1), ("entity_id", 1), ("create_key", 1)],
+                    "keys": [("tenant_id", 1), ("entity_id", 1), ("service_key", 1)],
+                    "name": ONE_MAPPING_PER_SERVICE,
                     "unique": True,
-                    "partialFilterExpression": {"create_key": {"$type": "string"}},
+                    "partialFilterExpression": {"service_key": {"$type": "string"}},
                 },
+                {"keys": [("tenant_id", 1), ("entity_id", 1), ("request_keys.key", 1)]},
             ),
-            required=("_id", "tenant_id", "entity_id", "status", "generation", "job"),
+            required=("_id", "tenant_id", "entity_id", "status", "job"),
         )
 
-    def start_generation(
+    def create_indexes(self) -> None:
+        """The validator and every index, after dropping the retired create-key index."""
+        drop_retired_index(self.collection, RETIRED_CREATE_KEY_INDEX)
+        super().create_indexes()
+
+    def start_next_run(
         self,
         mapping_id: str,
-        seen_generation: int,
-        seen_seq: int,
-        next_job: dict[str, Any],
-        key_hash: str | None,
-        frozen: dict[str, Any],
+        seen_run: int,
+        request: dict[str, Any],
+        input_hash: str,
         limits: dict[str, int],
+        key_hash: str,
         now: datetime,
     ) -> bool:
-        """CAS: a decision or another regeneration since the read makes this attempt retry."""
-        changes: dict[str, Any] = {
-            "generation": seen_generation + 1,
-            "status": Status.QUEUED,
-            "job": next_job,
-            "result": None,
-            "updated_at": now,
-            "finished_at": None,
-            "pending_archive": frozen,
-            "limits": limits,
-        }
-        if key_hash is not None:
-            changes[f"regen_keys.{key_hash}"] = seen_generation + 1
-        changed = self.collection.update_one(
+        """Queue run `seen_run + 1` with `request`; False when another call started a run since the read."""
+        run = seen_run + 1
+        started = self.collection.update_one(
+            {"_id": mapping_id, "job.epoch": seen_run, "status": {"$nin": _GENERATING}},
             {
-                "_id": mapping_id,
-                "generation": seen_generation,
-                "decision_seq": seen_seq,
-                "status": {"$in": [Status.DONE, Status.FAILED]},
+                "$set": {
+                    "status": Status.QUEUED,
+                    "job": new_job(TaskName.MAP_SERVICES, run, now, requested_at=now),
+                    "request": request,
+                    "input_hash": input_hash,
+                    "limits": limits,
+                    "updated_at": now,
+                    "finished_at": None,
+                },
+                "$push": {"request_keys": request_key(key_hash, run, input_hash, now)},
             },
-            {"$set": changes, "$inc": {"decision_seq": 1}},
         )
-        return bool(changed.modified_count)
+        return bool(started.modified_count)
 
-    def clear_pending_archive(self, mapping_id: str, archived_generation: int) -> None:
-        self.collection.update_one(
-            {"_id": mapping_id, "pending_archive.generation": archived_generation},
-            {"$unset": {"pending_archive": ""}},
+    def finish_generation(self, lease: JobLease, found: dict[str, Any]) -> None:
+        """Add the run's new dependencies after those the mapping holds, never rewriting those (a reviewer may
+        have decided some while it ran), and how many it found."""
+        done = {**ended_job_fields(Status.DONE), "last_run_found": len(found["dependencies"])}
+        counted = {"$inc": {"generations_done": 1}}
+        if lease.record.get("result") is None:  # an older record whose only generation failed: no list yet
+            lease.update_job({**done, "result": found}, operators=counted)
+            return
+        lease.update_job(
+            {
+                **done,
+                "result.selected_service": found["selected_service"],
+                "result.catalog_version": found["catalog_version"],
+            },
+            operators={**counted, "$push": {"result.dependencies": {"$each": found["dependencies"]}}},
         )
-
-    def finish_generation(self, lease: JobLease, result: dict[str, Any]) -> None:
-        lease.update_job({"result": result, **ended_job_fields(Status.DONE)})
 
     def decide_dependencies(
         self,
         mapping_id: str,
-        generation: int,
-        seen_seq: int,
         changes: list[tuple[str, str, bool]],
         by: str,
         at: datetime,
-    ) -> bool:
-        """Saves every (dependency_id, direction, accepted) in one update; CAS on generation, decision_seq."""
+    ) -> None:
+        """Saves every (dependency_id, direction, accepted) in one update."""
         ids = dict.fromkeys(dependency_id for dependency_id, _direction, _accepted in changes)
         slots = {dependency_id: f"d{i}" for i, dependency_id in enumerate(ids)}
         fields: dict[str, Any] = {"updated_at": at}
@@ -97,44 +106,13 @@ class MappingRepository(MongoRepository):
                 f"{prefix}.reviewed_datetime": at,
                 f"{prefix}.reviewed_by": by,
             }
-        decided = self.collection.update_one(
-            {
-                "_id": mapping_id,
-                "generation": generation,
-                "decision_seq": seen_seq,
-                "status": Status.DONE,
-            },
-            {"$set": fields, "$inc": {"decision_seq": 1}},
+        self.collection.update_one(
+            {"_id": mapping_id},
+            {"$set": fields},
             array_filters=[{f"{slot}.dependency_id": dependency_id} for dependency_id, slot in slots.items()],
         )
-        return bool(decided.modified_count)
 
 
-class MappingHistoryRepository(MongoRepository):
-    def __init__(self, collection: str | MongoCollection = Collection.SERVICE_MAPPING_HISTORY) -> None:
-        super().__init__(
-            collection,
-            indexes=({"keys": [("mapping_id", 1), ("generation", -1)]},),
-            required=("_id", "mapping_id", "generation", "tenant_id", "entity_id"),
-        )
-
-    def create_indexes(self) -> None:
-        """The validator and every index, after dropping the retired expiry index."""
-        drop_retired_index(self.collection, RETIRED_HISTORY_EXPIRY_INDEX)
-        super().create_indexes()
-
-    def archive(self, mapping: dict[str, Any]) -> None:
-        """Save the frozen generation kept in the header until this write succeeds."""
-        self.save(
-            {
-                "_id": f"{mapping['_id']}:{mapping['generation']}",
-                "mapping_id": mapping["_id"],
-                "generation": mapping["generation"],
-                "tenant_id": mapping["tenant_id"],
-                "entity_id": mapping["entity_id"],
-                "status": mapping["status"],
-                "result": mapping.get("result"),
-                "error": mapping.get("error"),
-                "archived_at": utc_now(),
-            }
-        )
+def request_key(key_hash: str, run: int, input_hash: str, at: datetime) -> dict[str, Any]:
+    """One Idempotency-Key's claim: the run it started, with which details, and when."""
+    return {"key": key_hash, "generation": run, "input_hash": input_hash, "at": at}

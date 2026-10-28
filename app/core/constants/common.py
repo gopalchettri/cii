@@ -38,7 +38,6 @@ class Step(StrEnum):
 
 class Collection(StrEnum):
     SERVICE_MAPPINGS = "tsg_service_mappings"
-    SERVICE_MAPPING_HISTORY = "tsg_service_mapping_history"
     SESSIONS = "tsg_sessions"
     SCENARIOS = "tsg_scenarios"
     API_CLIENTS = "tsg_api_clients"

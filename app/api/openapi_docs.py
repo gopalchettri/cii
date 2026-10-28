@@ -48,8 +48,9 @@ _GROUPS: dict[ApiTag, str] = {
         "`X-Admin-Key`."
     ),
     ApiTag.SERVICE_MAPPER: (
-        "Generate upstream and downstream service dependencies from a described service, review each "
-        "relationship, and regenerate a new version. Requires the caller identity headers."
+        "Generate upstream and downstream service dependencies from a described service (one mapping per "
+        "service), review each relationship, and regenerate to add more. Requires the caller identity "
+        "headers."
     ),
 }
 

@@ -29,12 +29,12 @@ Every run, scenario, plan and mapping belongs to the entity in `X-Entity-Id`. Un
 | `POST /v1/sessions` | optional. Same key + same body → `200` with the same run. Same key, other body → `409 idempotency_key_conflict`. |
 | `POST /v1/remediation`, `is_manual=true` | optional. Same key + same body → `200`, `replayed: true`. Same key, other body → `409 idempotency_key_conflict`. If that plan failed for an outage (`error.code` `unavailable`), the same key and body write its latest version again: `202`, `replayed: true`, `status: queued` (it can then also answer `409 run_being_deleted` or `control_library_empty`). |
 | `POST /v1/remediation`, `is_manual=false` | accepted but ignored. A repeat → `409 plan_already_exists`. |
-| `POST /v1/service-mapper` | optional. Same key + same body → `200` with the same `mapping_id`; when that key's generation is still the mapping's latest and failed for an outage (`error.code` `unavailable`), `202` with a new try (the next `generation`). Same key, other body → `409` (no `reason`). |
-| `POST /v1/service-mapper/{mapping_id}/regenerate` | optional. Same key → `200` with the generation it started, or `202` with a new try when that generation failed for an outage and is still the latest. |
+| `POST /v1/service-mapper` | optional. Same key + same body → `200` with the same `mapping_id` and the run (`generation`) it started. Same key, other body → `409` (no `reason`). |
+| `POST /v1/service-mapper/{mapping_id}/regenerate` | optional. Same key → `200` with the run it started. |
 
 Keys are one namespace per entity across `POST /v1/sessions` and manual `POST /v1/remediation`: a key used on one → `409 idempotency_key_conflict` on the other. `POST /v1/service-mapper` keys are a namespace of their own. Use a fresh key (e.g. a UUID) per new request.
 
-**No key sent.** The server makes one from who calls (tenant, entity, user and API client), the method, the path, the exact body and a fixed 60 s window. The same request again in the same window → `409 duplicate_request`: `detail` names the first record and how many seconds ago it started; `details` has its ids (`session_id`; `session_id` and `scenario_id` for a hand-written plan; `mapping_id`; `mapping_id` and `generation` for a regenerate) and `started_seconds_ago`. It is never replayed. The windows are fixed, so a repeat that crosses a window's edge starts new work. To send two identical requests on purpose, give each its own key.
+**No key sent.** The server makes one from who calls (tenant, entity, user and API client), the method, the path, the exact body and a fixed 60 s window. The same request again in the same window → `409 duplicate_request`: `detail` names the first record and how many seconds ago it started; `details` has its ids (`session_id`; `session_id` and `scenario_id` for a hand-written plan; `mapping_id` and `generation` for a service mapping) and `started_seconds_ago`. It is never replayed. The windows are fixed, so a repeat that crosses a window's edge starts new work. To send two identical requests on purpose, give each its own key.
 
 **The response header.** Each answer of these routes (`202`, a `200` replay, a `409`) carries `Idempotency-Key`: your key, or the one the server made (`derived-...`). CORS exposes it. A key you send always replays, the echoed one too: after a lost `202`, send the same body with the echoed key to get the first answer (`200`).
 
@@ -151,6 +151,9 @@ POST /v1/service-mapper ─► 202 {mapping_id, status: "queued", generation: 1}
 GET /v1/service-mapper/{id} ─► upstream_services[], downstream_services[] (take dependency_id from here)
         │
 POST /v1/service-mapper/{id}/dependencies/decision {"accept": [...], "reject": [...]} ─► 200 (+ failed[])
+        │
+POST /v1/service-mapper (same service) or POST /v1/service-mapper/{id}/regenerate
+        ─► 202 {same mapping_id, generation: 2}: adds only new services; every service and decision stays
 ```
 
 ## 3. Threat Scenario endpoints
@@ -1046,7 +1049,9 @@ Describe one service: TSG finds the services it depends on (**upstream**) and th
 
 Not covered here: `GET /v1/service-mapper` (list an entity's mappings) and `GET /v1/entities/{listed_entity_id}/services` (the entity's catalog services).
 
-Regenerate, in short (`POST /v1/service-mapper/{mapping_id}/regenerate`, a new generation): `202` starts the next generation of a `done` or `failed` mapping; `409 generation_in_progress` while one is queued or running. The same `Idempotency-Key` answers `200` with the generation it started, or `202` with a new try when that generation failed for an outage and is still the latest. With no key, the same regenerate again in the same 60 s window answers `409 duplicate_request` (`details.mapping_id`, `details.generation`; section 1).
+One mapping per service: a service (its `service_name`, `sector` and `subsector`, letter case and spacing ignored) has one mapping per entity. The first `POST /v1/service-mapper` makes it (run 1); a later one for the same service, or a regenerate, starts its next run on the same `mapping_id`. A run only adds services the mapping does not hold yet: every service, `dependency_id` and decision stays. `SERVICE_MAPPER_MAX_GENERATIONS` (default 5, `0` = no limit) caps the runs per mapping, the first included; a failed run does not count.
+
+Regenerate, in short (`POST /v1/service-mapper/{mapping_id}/regenerate`, no body): `202` starts the next run with the details the mapping holds; `409 generation_in_progress` while a run is queued or running (`details.mapping_id`); `409 generation_limit_reached` once the mapping has had its runs (`details.max_generations`). After a run that found no new service, `200` with the mapping as it is and no run, until its details, the catalog or the counts change. The same `Idempotency-Key` answers `200` with the run it started. With no key, the same regenerate again in the same 60 s window answers `409 duplicate_request` (`details.mapping_id`, `details.generation`; section 1).
 
 Path param for every `/v1/service-mapper/{mapping_id}` route:
 
@@ -1058,7 +1063,7 @@ Every such route: unknown mapping (or another tenant's) → `404` (`No such mapp
 
 ### 5.1 `POST /v1/service-mapper`
 
-Start a mapping for one service. Returns `202` at once; the services are found in the background.
+Start a mapping for one service, or its next run when the service has one already. Returns `202` at once; the services are found in the background.
 
 Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 
@@ -1082,13 +1087,13 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 }
 ```
 
-**Response** `202` (`200` on replay; `202` when a replay starts a new try after an outage): `MappingAccepted`
+**Response** `202` (`200` on a replay, or while the same body's run goes on): `MappingAccepted`
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `mapping_id` | string | keep it |
-| `status` | string | `queued` for a new mapping (or a new try); on a replay the mapping's real status (`queued`, `running`, `done`, `failed`) |
-| `generation` | int | `1`; on a replay, the generation this key started (a new try after an outage counts one more) |
+| `status` | string | `queued` for a new run; on a `200` the mapping's real status (`queued`, `running`, `done`, `failed`) |
+| `generation` | int | the run: `1` for a new mapping, one more for each later run; on a replay, the run this key started |
 
 ```json
 { "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9", "status": "queued", "generation": 1 }
@@ -1100,13 +1105,16 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | --- | --- | --- |
 | 422 | — | fix `errors[]`: a field missing, blank or too long; no entity names or more than 20; an entity name repeated; unknown field |
 | 409 | — | `Idempotency-Key` used before with another body (`This Idempotency-Key was already used for another mapping input.`): use a new key |
-| 409 | `duplicate_request` | the same request with no key in the same 60 s window: `details.mapping_id` is the mapping it started |
+| 409 | `duplicate_request` | the same request with no key in the same 60 s window: `details.mapping_id` is the mapping it ran |
+| 409 | `generation_in_progress` | the service's mapping is running with other details (`details.mapping_id`): wait for that run, then send again |
+| 409 | `generation_limit_reached` | the service's mapping has had its runs (`details.mapping_id`, `details.max_generations`) |
 
 Notes:
 - Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`). A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
 - `sector`, `subsector` and `entity_names` are free text for the AI: names, not ids, and not checked against the catalog. The mapping belongs to the entity in `X-Entity-Id`, whatever `entity_names` says.
-- How many services to find per direction is a server setting (default 10 upstream and 10 downstream); 5.3 shows it as `summary.max_upstream` / `summary.max_downstream`. Fewer come back when fewer are defensible.
-- A replay (same key, same body) after the mapping failed for an outage (`error.code` `unavailable`) starts a new try (`202`, `generation` one more), but only while this key's generation is still the latest: once another request started a later generation, the same key replays (`200`). After any other failure it replays (`200`) and the mapping stays `failed`. A create replay never answers `409 generation_in_progress`.
+- How many new services one run finds per direction is a server setting (default 10 upstream and 10 downstream); 5.3 shows it as `summary.max_upstream` / `summary.max_downstream`. Fewer come back when fewer are defensible.
+- The same service again (same `service_name`, `sector` and `subsector`; the other fields may differ): the next run of its mapping, with this body's details, which the mapping keeps. While its run is queued or running, the same body answers `200` with it (no second run) and another body `409 generation_in_progress`.
+- Nothing new to find: after a run that found no new service, the same body answers `200` with the mapping as it is (`status: done`, the same `generation`) and starts no run, none used. The AI would get the same prompt and give the same answer. Change the details, or wait for a change to the catalog or the per-direction counts.
 
 ### 5.2 `GET /v1/service-mapper/{mapping_id}/status`
 
@@ -1121,10 +1129,12 @@ Headers: identity headers.
 | `mapping_id` | string | |
 | `entity_id` | int | |
 | `user_id` | string or null | who created it (`X-User-Id`) |
-| `status` | string | the generation's job: `queued`, `running`, `done`, `failed`, `cancelled` |
-| `generation` | int | `1` for the first; one more each time the mapping is regenerated |
-| `progress.overall` | string | what to do now: `generating` (queued or running: wait), `done` (decide the services, 5.5), `failed` (`error` says why), `cancelled` |
-| `progress.relationships.total` / `.accepted` / `.rejected` / `.pending` | int | the current generation's services and their decisions; all `0` while generating |
+| `status` | string | the latest run's job: `queued`, `running`, `done`, `failed`, `cancelled` |
+| `generation` | int | the latest run: `1` for the first; one more for each later run (5.1 again, or regenerate) |
+| `generations_done` | int | runs that finished; a failed run does not count |
+| `max_generations` | int | the most runs a mapping may have, the first included (`SERVICE_MAPPER_MAX_GENERATIONS`; `0` = no limit) |
+| `progress.overall` | string | what to do now: `generating` (queued or running: wait; services found earlier can be decided meanwhile), `done` (decide the services, 5.5), `failed` (`error` says why), `cancelled` |
+| `progress.relationships.total` / `.accepted` / `.rejected` / `.pending` | int | the mapping's services and their decisions; a run going on adds to them when it ends |
 | `retrying` | object or null | waiting after an AI or store outage: `stage` (null), `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
 | `error` | object or null | when `failed`: `{code, message, reason}` |
 | `created_at` / `updated_at` | datetime | |
@@ -1136,6 +1146,8 @@ Headers: identity headers.
   "user_id": "e2e-tester",
   "status": "done",
   "generation": 3,
+  "generations_done": 3,
+  "max_generations": 5,
   "progress": {
     "overall": "done",
     "relationships": { "total": 14, "accepted": 0, "rejected": 0, "pending": 14 }
@@ -1155,8 +1167,8 @@ Headers: identity headers.
 | 403 | — | another entity's mapping |
 
 Notes:
-- A failed generation's `error`: `code: internal_error` with `The AI answer did not satisfy the Service Mapper output contract.` or `The AI answer was too long for the model; ...`; or `code: unavailable` with `reason` `ai_down`, `ai_unreachable`, `ai_busy` or `ai_timed_out` when the AI stayed unavailable through every retry; or `code: job_abandoned` with `reason` `abandoned` (its worker stopped on every attempt) or `never_started` (never taken).
-- A failed generation stays `failed`: it is not retried by itself and never turns `done`. Regenerate it (see the start of section 5). After an outage (`error.code` `unavailable`) you can also send the same create request again with the same `Idempotency-Key`, while that key's generation is still the latest: that starts a new try.
+- A failed run's `error`: `code: internal_error` with `The AI answer did not satisfy the Service Mapper output contract.` or `The AI answer was too long for the model; ...`; or `code: unavailable` with `reason` `ai_down`, `ai_unreachable`, `ai_busy` or `ai_timed_out` when the AI stayed unavailable through every retry; or `code: job_abandoned` with `reason` `abandoned` (its worker stopped on every attempt) or `never_started` (never taken).
+- A failed run stays `failed`: it is not retried by itself and never turns `done`. Everything the mapping held stays, and the run does not count toward the limit: send 5.1 again or regenerate (see the start of section 5).
 - `done` means the services are ready to decide, not that they are decided. The review is complete when `progress.relationships.pending` is `0`.
 - `retrying` is set only while the job is `queued` for its next try after an outage, or after the job queue refused the send (`reason` null, `The queue and live-update service is unreachable.`). It is null again once that try starts.
 - `cancelled` belongs to the shared status vocabulary; no call cancels a mapping today.
@@ -1172,12 +1184,12 @@ Headers: identity headers.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `mapping_id` | string | |
-| `status` / `generation` | string / int | as 5.2 |
+| `status` / `generation` / `generations_done` / `max_generations` | string / int | as 5.2 |
 | `upstream_services[]` | object[] | services the mapped service depends on (below) |
 | `downstream_services[]` | object[] | services that depend on it (below) |
 | `summary.unique_services` | int | services in both lists |
 | `summary.upstream_count` / `.downstream_count` | int | how many in each list |
-| `summary.max_upstream` / `.max_downstream` | int | the most asked for per direction (the server setting) |
+| `summary.max_upstream` / `.max_downstream` | int | the most new services one run may add per direction (the server setting) |
 | `error` / `retrying` | object or null | as 5.2 |
 | `created_at` / `updated_at` | datetime | |
 
@@ -1192,6 +1204,7 @@ Each service in `upstream_services[]` / `downstream_services[]`:
 | `dependency_reason` | string | why it is a direct dependency, in this direction; starts `Recorded:` when the onboarding catalog records the link, else `Inferred:` |
 | `applicability` | string or null | when it applies; `null` = always |
 | `ai_suggested` | bool | `true` when it is not from the catalog (`service_id` is `null`) |
+| `generation` | int or null | the run that found it (`null` for a service found before runs were counted) |
 | `isAccepted` | bool or null | `null` pending, `true` accepted, `false` rejected |
 | `accepted_datetime` / `accepted_by` | datetime / string, or null | set for an accepted service only; `accepted_by` = the decider's `X-User-Id`. Who rejected a service, and when, is not returned. |
 
@@ -1202,6 +1215,8 @@ Trimmed (the full answer has 4 upstream and 10 downstream services):
   "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9",
   "status": "done",
   "generation": 3,
+  "generations_done": 3,
+  "max_generations": 5,
   "upstream_services": [
     {
       "dependency_id": "6ad43b3b40155429bc486d476fce7fa0",
@@ -1212,6 +1227,7 @@ Trimmed (the full answer has 4 upstream and 10 downstream services):
       "dependency_reason": "Provides cooling water and process water required for thermal power plant operations and steam cycle management.",
       "applicability": "Applicable to thermal generation plants (fossil fuel, nuclear, concentrated solar thermal) ...",
       "ai_suggested": true,
+      "generation": 1,
       "isAccepted": null,
       "accepted_datetime": null,
       "accepted_by": null
@@ -1227,6 +1243,7 @@ Trimmed (the full answer has 4 upstream and 10 downstream services):
       "dependency_reason": "Directly consumes electrical energy supplied through the grid for traction power and station operations.",
       "applicability": null,
       "ai_suggested": false,
+      "generation": 3,
       "isAccepted": null,
       "accepted_datetime": null,
       "accepted_by": null
@@ -1248,10 +1265,10 @@ Trimmed (the full answer has 4 upstream and 10 downstream services):
 | 403 | — | another entity's mapping |
 
 Notes:
-- Both lists are empty until `status` is `done` (and stay empty after a failure). A `done` mapping may also have empty lists, when the AI found nothing defensible: then there is nothing to decide.
-- Each list is ordered by relevance, strongest first.
+- Both lists are empty until the first run is `done` (and stay empty if it failed). A run may add nothing, when the AI found nothing new and defensible.
+- Each list holds the first run's services first, then each later run's, each run's strongest first.
 - A service is in one direction only. (A mapping generated by an older version may list one service in both, with the same `dependency_id`.)
-- A new generation replaces both lists with new `dependency_id`s; the old generation's decisions stay with it.
+- A later run never changes or removes a service, its `dependency_id` or its decision. It only adds services the mapping does not hold yet, in either direction or under another form of the name.
 
 ### 5.4 `GET /v1/service-mapper/{mapping_id}/events` (SSE)
 
@@ -1303,14 +1320,16 @@ Headers: identity headers, `Content-Type`.
 | --- | --- | --- |
 | `failed[]` | object[] | the ids not saved; `[]` when every id was saved |
 | `failed[].dependency_id` | string | |
-| `failed[].reason` | string | `dependency_not_found`: not in the current generation; `decision_final`: it already has the other decision |
-| `failed[].message` | string | `No such dependency in the current generation.` / `This recommendation was already decided differently; decisions are final.` |
+| `failed[].reason` | string | `dependency_not_found`: not in this mapping |
+| `failed[].message` | string | `No such dependency in this mapping.` |
 
 ```json
 {
   "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9",
   "status": "done",
   "generation": 3,
+  "generations_done": 3,
+  "max_generations": 5,
   "upstream_services": ["... as 5.3, each isAccepted updated ..."],
   "downstream_services": ["..."],
   "summary": { "unique_services": 14, "upstream_count": 4, "downstream_count": 10, "max_upstream": 10, "max_downstream": 10 },
@@ -1322,7 +1341,7 @@ Headers: identity headers, `Content-Type`.
     {
       "dependency_id": "0000000000000000000000000000dead",
       "reason": "dependency_not_found",
-      "message": "No such dependency in the current generation."
+      "message": "No such dependency in this mapping."
     }
   ]
 }
@@ -1335,14 +1354,13 @@ Headers: identity headers, `Content-Type`.
 | 422 | — | fix `errors[]`. Field `body`: nothing to decide (`Name at least one dependency_id in accept or reject.`), an id in both lists, more than 200 ids in all. Field `body.accept` / `body.reject`: one list over 200 items. Field `body.accept.N` / `body.reject.N`: an id over 64 chars. Unknown field. |
 | 404 | — | unknown mapping |
 | 403 | — | another entity's mapping |
-| 409 | — | `status` is not `done` (`The mapping is not done: wait while it generates, or regenerate it if it failed.`): wait for `done` (5.2); a `failed` mapping never gets there: regenerate it. |
-| 409 | `generation_in_progress` | `A round is already running for this mapping.`: another change kept landing at the same moment (e.g. a new generation started). Read 5.3 again and retry with its ids. |
+| 409 | — | the mapping has no services yet (`The mapping has no services to decide yet: wait for its first run, or regenerate it if it failed.`): wait for its first run (5.2) |
 
 Notes:
 - **A `200` does not mean every id was saved: always check `failed[]`.** It is `200` even when every id failed.
-- Ids from an earlier generation come back as `dependency_not_found`: after a new generation, read 5.3 again and use its ids.
+- Decisions can be sent while a later run goes on: a run only adds services, so it never undoes a decision.
 - An id decides that service's relationship in the direction it is listed in (in both, for an older mapping that lists it twice).
-- Decisions are final: accept → reject (or the reverse) comes back in `failed` as `decision_final`. Sending the same decision again changes nothing and is not a failure, so retries are safe.
+- A decision can be changed: send the other one (accept → reject, or the reverse); `accepted_datetime` / `accepted_by` follow it, and every change is audited. Sending the same decision again changes nothing and is not a failure, so retries are safe.
 - The valid ids are saved together in one update; the answer already shows them decided, and one `mapping.updated` event follows (5.4).
 - An accepted service counts as approved at once; there is no separate review of the whole mapping. Any caller of the same entity may decide; `accepted_by` records the `X-User-Id`.
 
@@ -1431,7 +1449,7 @@ const mapping = await tsg("POST", "/v1/service-mapper", {
   entity_names: ["Road Transport Authority"],
 }, { "Idempotency-Key": crypto.randomUUID() });
 
-// Wait for the generation (5.2); or stream `.../events` and stop when overall is not "generating".
+// Wait for the run (5.2); or stream `.../events` and stop when overall is not "generating".
 const base = `/v1/service-mapper/${mapping.mapping_id}`;
 let status;
 do {

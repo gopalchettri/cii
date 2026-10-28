@@ -184,7 +184,7 @@ def test_the_reaper_stores_why_it_gave_each_job_up() -> None:
     board = build_board(session_status_from_record(_records().find_one({"_id": worn_out})))
     assert board.error is not None and board.error.reason == AbandonReason.WORKER_STOPPED
     assert board.progress.error_reason is None  # an AI outage's reason only
-    shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}))
+    shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}), 5)
     assert shown.error is not None and shown.error.reason == AbandonReason.WORKER_STOPPED
 
 

@@ -73,6 +73,18 @@ def test_service_mapper_counts_come_from_the_environment(monkeypatch: pytest.Mon
     )
 
 
+def test_service_mapper_runs_per_mapping_default_to_5_and_0_means_no_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-28: SERVICE_MAPPER_MAX_GENERATIONS, the first run included; 0 = no limit."""
+    assert Settings.model_fields["service_mapper_max_generations"].default == 5
+    monkeypatch.setenv("SERVICE_MAPPER_MAX_GENERATIONS", "0")
+    assert Settings().service_mapper_max_generations == 0  # type: ignore[call-arg]
+    monkeypatch.setenv("SERVICE_MAPPER_MAX_GENERATIONS", "-1")
+    with pytest.raises(ValidationError, match="SERVICE_MAPPER_MAX_GENERATIONS"):
+        Settings()  # type: ignore[call-arg]
+
+
 def test_operational_limits_come_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CII_MAX_REQUEST_MB", "3")
     monkeypatch.setenv("CII_MAX_CONCURRENT_AI_CALLS", "0")  # 0 = no limit

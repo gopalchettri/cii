@@ -1,5 +1,6 @@
 """AI dependency generation with a checked JSON answer; items reconcile cannot settle are asked again once."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import ValidationError
@@ -25,10 +26,11 @@ def generate_result(
     catalog: CatalogSnapshot,
     generation: tuple[str, int],
     counts: tuple[int, int],
+    held: Sequence[dict] = (),
 ) -> dict:
-    """The reconciled dependencies of (mapping_id, generation)."""
-    answer = generate_answer(chat, search, request, catalog, counts)
-    return reconcile(*generation, request, answer, catalog, *counts)
+    """The reconciled new dependencies of (mapping_id, run): those the mapping does not hold (`held`) yet."""
+    answer = generate_answer(chat, search, request, catalog, counts, held)
+    return reconcile(*generation, request, answer, catalog, *counts, held)
 
 
 def generate_answer(
@@ -37,24 +39,19 @@ def generate_answer(
     request: CreateMappingRequest,
     catalog: CatalogSnapshot,
     counts: tuple[int, int],
+    held: Sequence[dict] = (),
 ) -> GeneratedAnswer:
     """AI creates both directions from every catalog service grouped by sector and subsector, adding a new
-    service only where none provides it. The AI sees names only, never a catalog ID; a first answer with items
-    reconcile cannot settle itself is asked again once with why."""
-    services = _most_relevant_first(search, request, catalog)
-    budget = min(
-        int(chat.max_prompt_chars * MapperLimits.PROMPT_SHARE),
-        chat.max_prompt_chars - len(_SYSTEM) - MapperLimits.PROMPT_RESERVE_CHARS,
-    )
-    prompt = _user_prompt(request, catalog, services, counts)
-    if len(_SYSTEM) + len(prompt) > budget:
-        # ponytail: a catalog too large for one prompt keeps its services most similar to the selected one.
-        prompt = _user_prompt(request, catalog, [], counts)
-        for kept in range(1, len(services) + 1):
-            longer = _user_prompt(request, catalog, services[:kept], counts)
-            if len(_SYSTEM) + len(longer) > budget:
-                break
-            prompt = longer
+    service only where none provides it; a later run's catalog leaves out the services the mapping holds
+    (`held`, named in already_mapped). Names only, never a catalog ID; a first answer with items reconcile
+    cannot settle itself is asked again once with why."""
+    held_ids = {dependency["service_id"] for dependency in held}
+    services = [
+        service
+        for service in _most_relevant_first(search, request, catalog)
+        if service.service_id not in held_ids
+    ]
+    prompt = _fitted_prompt(chat, request, catalog, services, counts, held)
 
     def check(answer: dict[str, Any]) -> list[str]:
         try:
@@ -71,6 +68,31 @@ def generate_answer(
         AiTask.SERVICE_MAPPER, _SYSTEM, prompt, check, dropped_items, reuse_earlier_answer=True
     )
     return GeneratedAnswer.model_validate(answer)
+
+
+def _fitted_prompt(
+    chat: ChatModel,
+    request: CreateMappingRequest,
+    catalog: CatalogSnapshot,
+    services: list[CatalogService],
+    counts: tuple[int, int],
+    held: Sequence[dict],
+) -> str:
+    """The user prompt with every service, or with the most relevant that fit the model's input budget."""
+    budget = min(
+        int(chat.max_prompt_chars * MapperLimits.PROMPT_SHARE),
+        chat.max_prompt_chars - len(_SYSTEM) - MapperLimits.PROMPT_RESERVE_CHARS,
+    )
+    prompt = _user_prompt(request, catalog, services, counts, held)
+    if len(_SYSTEM) + len(prompt) > budget:
+        # ponytail: a catalog too large for one prompt keeps its services most similar to the selected one.
+        prompt = _user_prompt(request, catalog, [], counts, held)
+        for kept in range(1, len(services) + 1):
+            longer = _user_prompt(request, catalog, services[:kept], counts, held)
+            if len(_SYSTEM) + len(longer) > budget:
+                break
+            prompt = longer
+    return prompt
 
 
 def _most_relevant_first(
@@ -107,15 +129,27 @@ def _user_prompt(
     catalog: CatalogSnapshot,
     services: list[CatalogService],
     counts: tuple[int, int],
+    held: Sequence[dict],
 ) -> str:
+    already = {"already_mapped": _already_mapped(held)} if held else {}
     return as_json(
         {
             "selected_service": request.model_dump() | _selected_known_dependencies(request, catalog),
             "upstream_count": counts[0],
             "downstream_count": counts[1],
+            **already,
             "catalog": _catalog_groups(catalog, services),
         }
     )
+
+
+def _already_mapped(held: Sequence[dict]) -> dict[str, list[str]]:
+    """The names the mapping holds in each direction (names only: no id reaches the AI)."""
+    names: dict[str, list[str]] = {"upstream": [], "downstream": []}
+    for dependency in held:
+        for direction in dependency["relations"]:
+            names[direction].append(dependency["service_name"])
+    return names
 
 
 def _selected_known_dependencies(request: CreateMappingRequest, catalog: CatalogSnapshot) -> dict[str, str]:

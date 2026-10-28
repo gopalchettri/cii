@@ -35,7 +35,7 @@ from app.data_access.scenario.asset_repository import AssetRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
-from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
+from app.data_access.service_mapper.mapping_repository import MappingRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import rerank_gate_for
 from app.domain.scenario.controls import ControlMapper
@@ -299,7 +299,6 @@ def get_external_intelligence_service() -> ExternalIntelligenceService:
 def get_service_mapper_service() -> ServiceMapperService:
     return ServiceMapperService(
         get_mapping_repository(),
-        get_mapping_history_repository(),
         get_settings(),
         send_job,
         get_service_catalog_repository(),
@@ -329,15 +328,9 @@ def get_mapping_repository() -> MappingRepository:
 
 
 @singleton
-def get_mapping_history_repository() -> MappingHistoryRepository:
-    return MappingHistoryRepository()
-
-
-@singleton
 def get_service_mapper_job() -> ServiceMapperJob:
     return ServiceMapperJob(
         get_mapping_repository(),
-        get_mapping_history_repository(),
         get_service_catalog_provider(),
         get_service_candidate_search(),
         get_chat_model(),
@@ -492,7 +485,6 @@ def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
         get_threat_scenario_repository(),
         get_remediation_repository(),
         get_mapping_repository(),
-        get_mapping_history_repository(),
         get_audit_repository(),
         get_ai_call_repository(),
         get_embedding_repository(),

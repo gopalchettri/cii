@@ -117,12 +117,18 @@ class JobLease:
             "job.attempts": self.attempts,
         }
 
-    def update_job(self, changes: dict[str, Any], array_filters: list[dict[str, Any]] | None = None) -> None:
+    def update_job(
+        self,
+        changes: dict[str, Any],
+        array_filters: list[dict[str, Any]] | None = None,
+        operators: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         """Write `changes` to the job record while this delivery owns it, else raise LeaseLost;
-        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]. A job claimed while
-        it waited for another job reads queued until this first write after its wait (job.waiting cleared)."""
+        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]; `operators` adds
+        other update operators to the same write, e.g. {"$push": ...}. A job claimed while it waited for
+        another job reads queued until this first write after its wait (job.waiting cleared)."""
         waited = {"job.waiting": None} if (self.record.get("job") or {}).get("waiting") else {}
-        update = {"$set": {**waited, **changes, "updated_at": utc_now()}}
+        update = {**(operators or {}), "$set": {**waited, **changes, "updated_at": utc_now()}}
         if self._records.update_one(self.fence, update, array_filters=array_filters).matched_count != 1:
             raise LeaseLost(self.record_id)
 
