@@ -293,15 +293,35 @@ def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
     assert sum(waits) <= AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS
 
 
-def test_an_ai_call_s_seconds_leave_out_its_request_rate_waits() -> None:
+def test_an_ai_call_s_seconds_leave_out_its_request_rate_and_slot_waits() -> None:
+    """tsg_ai_seconds and the call records time the AI alone: a model's pause, its turn and a busy AI slot
+    (each waited 0.2 s here) are left out, so a 429 episode never reads as a slow model."""
+
     class SlowTurn:
-        def wait_for_turn(self, _task: str) -> float:
+        def wait_for_send_time(self, _task: str) -> float:
             time.sleep(0.2)
             return 0.2
 
-    slow, slots = SlowTurn(), UNLIMITED_AI_SLOTS
-    _, seconds = ai.common.call_with_retries(lambda: None, slow, slots, model="m", task="t")  # type: ignore[arg-type]
-    assert seconds < 0.1
+        def wait_for_turn(self, _task: str, _tokens: int = 0) -> float:
+            time.sleep(0.2)
+            return 0.2
+
+    slots = AiSlots(get_redis_client(), cap=1, wait_seconds=5, key=f"tsg:test_seconds:{uuid.uuid4().hex}")
+    busy, release = threading.Event(), threading.Event()
+
+    def hold_a_while() -> None:
+        with slots.hold_slot("t"):
+            busy.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold_a_while)
+    holder.start()
+    assert busy.wait(5)
+    threading.Timer(0.4, release.set).start()  # the slot frees 0.2 s after the pause ends
+    started = time.monotonic()
+    _, seconds = ai.common.call_with_retries(lambda: None, SlowTurn(), slots, model="m", task="t")  # type: ignore[arg-type]
+    holder.join(5)
+    assert time.monotonic() - started >= 0.55 and seconds < 0.1
 
 
 def test_a_task_s_answer_cap_applies_under_its_model_s_limit_unless_the_model_thinks() -> None:
@@ -1334,13 +1354,16 @@ def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
 def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """kimi-k2.5 and glm-5.3 each have their own requests-a-minute limit: a fallback request spends glm's."""
+    """kimi-k2.5 and glm-5.3 each have their own requests-a-minute limit: a fallback request spends glm's.
+    Every try states its prompt's estimated tokens, for a tokens-a-minute limit."""
     _no_waiting(monkeypatch)
     turns: list[str] = []
+    sizes: list[int] = []
 
     class CountedTurns(AiRequestRate):
-        def wait_for_turn(self, task: str) -> float:
+        def wait_for_turn(self, task: str, tokens: int = 0) -> float:
             turns.append(self._model)
+            sizes.append(tokens)
             return 0.0
 
     def first_model_overloaded(**kwargs: object) -> SimpleNamespace:
@@ -1357,6 +1380,9 @@ def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to
     )
     assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
     assert turns == ["first"] * (AiLimits.RETRIES + 1) + ["fallback"]
+    prompt = ai.chat_messages.build_conversation("system", "user")
+    expected = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
+    assert expected > 0 and sizes == [expected] * len(turns)
 
 
 def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
@@ -1374,6 +1400,7 @@ def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
             "chat_fallback_requests_per_minute": 12,
             "embedding_requests_per_minute": 13,
             "rerank_requests_per_minute": 14,
+            "chat_tokens_per_minute": 15,
         }
     )
     monkeypatch.setattr(container, "get_settings", lambda: settings)
@@ -1387,11 +1414,11 @@ def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
         rerank._model: rerank._request_rate,
     }
     assert all(rate._model == model for model, rate in rates.items())  # its own model's Redis key
-    assert {model: rate._per_minute for model, rate in rates.items()} == {
-        "litellm_proxy/kimi-k2.5": 11,
-        "litellm_proxy/glm-5.3": 12,
-        "litellm_proxy/qwen3-embedding-8b": 13,
-        "litellm_proxy/qwen3-reranker-8b": 14,
+    assert {model: (rate._per_minute, rate._tokens_per_minute) for model, rate in rates.items()} == {
+        "litellm_proxy/kimi-k2.5": (11, 15),  # CII_CHAT_TOKENS_PER_MINUTE paces the main chat model alone
+        "litellm_proxy/glm-5.3": (12, 0),
+        "litellm_proxy/qwen3-embedding-8b": (13, 0),
+        "litellm_proxy/qwen3-reranker-8b": (14, 0),
     }
 
 

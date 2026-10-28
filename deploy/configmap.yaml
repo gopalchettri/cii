@@ -50,6 +50,7 @@ items:                                           # one tsg-config per project th
       CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE: "0"     # the same for the fallback model (glm-5.3); 0 = no limit: set it when the gateway admin gives glm-5.3's limit
       CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # the same for the embedding model; 0 = no limit: set it when the gateway admin gives its limit
       CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: set it when the gateway admin gives its limit
+      CII_CHAT_TOKENS_PER_MINUTE: "0"                # tokens a minute to kimi-k2.5 across all pods (its 429s say limit_type "tokens"), estimated from each prompt's size, answers not counted: set it well below the limit the gateway admin gives; 0 = no limit
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)
       TOTAL_SCENARIO_COUNT: "15"                 # most scenarios a run produces
       INITIAL_SET_SIZE: "6"                      # scenarios written first, so a reviewer can start reading
@@ -441,8 +442,8 @@ data:                                            # one key per file
               description: >-
                 More work is sent to {{ $labels.model }} than its requests-a-minute setting allows
                 (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE
-                or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a
-                minute, then raise its setting; the dashboard's 429 panel shows refusals.
+                or CII_RERANK_REQUESTS_PER_MINUTE; kimi's tokens: CII_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether
+                that model takes more, then raise its setting; the dashboard's 429 panel shows refusals.
 
       - name: tsg-audit
         rules:

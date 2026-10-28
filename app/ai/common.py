@@ -201,31 +201,31 @@ def build_api_key_header(header: str, api_key: str, option: str = "extra_headers
 
 
 def call_with_retries[Answer](
-    call: Callable[[], Answer], request_rate: AiRequestRate, slots: AiSlots, *, model: str, task: str
+    call: Callable[[], Answer], rate: AiRequestRate, slots: AiSlots, *, model: str, task: str, tokens: int = 0
 ) -> tuple[Answer, float]:
-    """(the answer, its seconds without the request-rate waits) of an AI call to `model` for `task` and the
-    check of its answer. Each request first waits its turn at `request_rate`, `model`'s own. Asked again when
-    the provider is busy or unreachable or the answer came back short: AiLimits.RETRIES times, 0.5 s, 1 s, 2 s
-    apart; a 429 (counted) as request_rate.wait_after_rate_limit says. Each 429 is told to `slots`, the limit
-    on calls in flight (an answer is told as its slot is freed). litellm's own retries are off
-    (app/ai/__init__.py). A call that timed out is not asked again: the fallback model answers, or the job's
-    own back-off asks later."""
+    """(the answer, its seconds without the request-turn and slot waits) of an AI call to `model` for `task`
+    and the check of its answer. Each attempt waits out `rate`'s pause or line holding no slot, then holds a
+    slot of `slots` for its own turn (`tokens`: its size) and the call alone. A 429 pauses `rate` on every pod
+    and is told to `slots`. Asked again when busy, unreachable or short: AiLimits.RETRIES times, 0.5, 1, 2 s
+    apart; a 429 (counted) as rate.wait_after_rate_limit says. A timed-out call is not asked again."""
     started, attempt = time.perf_counter(), 0
-    rate_waits = rate_limited_waits = 0.0
+    waits = rate_limited_waits = 0.0  # request turns and AI slots: not the call's own seconds
     while True:
-        rate_waits += request_rate.wait_for_turn(task)
+        waits += rate.wait_for_send_time(task)  # a 429's pause or a long line: waited holding no slot
         try:
-            answer, seconds = call(), time.perf_counter() - started - rate_waits
+            with slots.hold_slot(task) as slot_wait:  # per attempt: a 429's Retry-After keeps no slot
+                waits += slot_wait + rate.wait_for_turn(task, tokens)  # spaced as sent, after any slot wait
+                answer, seconds = call(), time.perf_counter() - started - waits
         except litellm.Timeout:
             raise
         except litellm.RateLimitError as exc:
             metrics.AI_RATE_LIMITED.labels(model).inc()
             slots.note_rate_limited()  # the gateway is full: fewer calls at once, on every pod
             retry_after = exc.response.headers.get("retry-after")
-            wait = request_rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
+            wait = rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
             if wait is None:
                 raise
-            rate_limited_waits += wait
+            rate_limited_waits += rate.pause(wait)  # the model waits too, so no line of 429s follows
         except Exception as exc:
             unmapped = is_unmapped_outage(exc)  # a timed-out status is a timeout too: not asked again
             if unmapped and ai_outage_of(exc) is AiOutage.TIMED_OUT:

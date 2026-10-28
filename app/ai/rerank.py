@@ -76,27 +76,26 @@ class RerankModel:
             self._loaded_local_model()
 
     def _score_with_provider(self, query: str, documents: list[str]) -> tuple[list[float], float]:
-        # call_with_retries is the only retry; a short answer is asked again too.
-        with self._slots.hold_slot(AiTask.RERANK):
-            return call_with_retries(
-                lambda: self._read_checked_scores(
-                    litellm.rerank(
-                        model=self._model,
-                        query=query,
-                        documents=documents,
-                        top_n=len(documents),
-                        api_base=self._base_url,
-                        api_key=self._api_key,
-                        timeout=self.profile.timeout_seconds,
-                        **self._key_header,
-                    ),
-                    len(documents),
+        # call_with_retries is the only retry and holds an AI slot per try; a short answer is asked again too.
+        return call_with_retries(
+            lambda: self._read_checked_scores(
+                litellm.rerank(
+                    model=self._model,
+                    query=query,
+                    documents=documents,
+                    top_n=len(documents),
+                    api_base=self._base_url,
+                    api_key=self._api_key,
+                    timeout=self.profile.timeout_seconds,
+                    **self._key_header,
                 ),
-                self._request_rate,
-                self._slots,
-                model=self._model,
-                task=AiTask.RERANK,
-            )
+                len(documents),
+            ),
+            self._request_rate,
+            self._slots,
+            model=self._model,
+            task=AiTask.RERANK,
+        )
 
     def _read_checked_scores(self, response: Any, expected: int) -> list[float]:
         """0-100 per document, in input order, checked: exactly one score per document, each a probability

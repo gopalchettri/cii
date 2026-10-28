@@ -484,7 +484,7 @@ tests:
           - exp_labels: { severity: warning, model: litellm_proxy/kimi-k2.5 }
             exp_annotations:
               summary: "litellm_proxy/kimi-k2.5 requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
-              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a minute, then raise its setting; the dashboard's 429 panel shows refusals."
+              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; kimi's tokens: CII_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise its setting; the dashboard's 429 panel shows refusals."
 
   - interval: 1m
     input_series:

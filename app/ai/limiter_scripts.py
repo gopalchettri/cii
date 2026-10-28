@@ -82,6 +82,24 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 return redis.call('ZCARD', KEYS[1])
 """
 
+#: KEYS[1] a model's next send time: the seconds until it (0 when past), reserving nothing.
+SECONDS_TO_SEND_TIME_SCRIPT = """
+local now_parts = redis.call('TIME')
+local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
+return tostring(math.max(0, tonumber(redis.call('GET', KEYS[1]) or now) - now))
+"""
+
+#: KEYS[1] a model's next send time, moved to at least ARGV[1] s from now: a 429 pauses it on every pod.
+PAUSE_SEND_TIME_SCRIPT = """
+local now_parts = redis.call('TIME')
+local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
+local pause_end = now + tonumber(ARGV[1])
+if pause_end > tonumber(redis.call('GET', KEYS[1]) or 0) then
+  redis.call('SET', KEYS[1], tostring(pause_end), 'PX', math.ceil(tonumber(ARGV[1]) * 1000))
+end
+return 1
+"""
+
 #: KEYS[1] the next send time · ARGV[1] seconds between two requests · ARGV[2] the longest wait accepted.
 #: The seconds to wait, that send time then reserved; -1, nothing reserved, when the wait would be longer.
 RESERVE_SEND_TIME_SCRIPT = """

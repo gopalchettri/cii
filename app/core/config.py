@@ -170,8 +170,7 @@ class Settings(AiOutputSettings):
     # key, so this bounds what anyone can make a pod read. One limit for all (owner, 2026-10-09): no endpoint
     # takes file uploads; one that does gets its own limit by its address, never by the Content-Type.
     max_request_mb: int = Field(default=2, gt=0)
-    # Most AI calls at once across all pods; 0 = no fixed limit, only the one a gateway 429 sets (AiSlots).
-    # v1 runs 16 (TSG_MAX_CONCURRENT_LLM_CALLS). Enforced by app/ai/slots.py: a call waits for a free slot.
+    # Most AI calls at once, all pods; a call waits for a free slot (AiSlots). 0 = only a 429's limit; v1 16.
     max_concurrent_ai_calls: int = Field(default=16, ge=0)
     max_concurrent_fallback_calls: int = Field(default=0, ge=0)  # the same for the fallback model's calls
     # Each model's own AI requests a minute, all pods, retries included (AiRequestRate); 0 = no limit.
@@ -179,6 +178,7 @@ class Settings(AiOutputSettings):
     chat_fallback_requests_per_minute: int = Field(default=0, ge=0)
     embedding_requests_per_minute: int = Field(default=0, ge=0)
     rerank_requests_per_minute: int = Field(default=0, ge=0)
+    chat_tokens_per_minute: int = Field(default=0, ge=0)  # the chat model's, all pods; big requests wait more
 
     # How many scenarios a run writes
     # 0 = every valid path found; N = the N most relevant, the rest kept in the plan as target_reached.

@@ -205,10 +205,7 @@ class _EmbeddingProvider:
         self._request_rate = request_rate
 
     def embed_batch(self, batch: list[str]) -> list[bytes]:
-        with (
-            self._slots.hold_slot(AiTask.EMBED),
-            count_and_convert_ai_errors(AiTask.EMBED, self._model),
-        ):
+        with count_and_convert_ai_errors(AiTask.EMBED, self._model):  # a slot per attempt: call_with_retries
             vectors, seconds = call_with_retries(
                 lambda: self._read_checked_vectors(self._call_provider(batch), batch),
                 self._request_rate,

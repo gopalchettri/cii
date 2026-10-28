@@ -98,10 +98,12 @@ def get_ai_fallback_slots() -> AiSlots:
     return AiSlots(redis, cap, _ai_slot_wait_seconds, AiLimits.FALLBACK_SLOTS_KEY)
 
 
-def ai_request_rate_for(model: str, per_minute: int) -> AiRequestRate:
+def ai_request_rate_for(model: str, per_minute: int, tokens_per_minute: int = 0) -> AiRequestRate:
     """`model`'s own request-rate limiter, with this process's waits; each gateway builds its model's once."""
-    redis = get_redis_client() if per_minute else None
-    return AiRequestRate(redis, model, per_minute, _ai_slot_wait_seconds, _waits_out_rate_limits)
+    redis = get_redis_client() if per_minute or tokens_per_minute else None
+    return AiRequestRate(
+        redis, model, per_minute, _ai_slot_wait_seconds, _waits_out_rate_limits, tokens_per_minute
+    )
 
 
 @singleton
@@ -127,7 +129,9 @@ def get_chat_model() -> ChatModel:
         settings,
         get_ai_call_repository(),
         get_ai_slots(),
-        ai_request_rate_for(settings.chat_model, settings.chat_requests_per_minute),
+        ai_request_rate_for(
+            settings.chat_model, settings.chat_requests_per_minute, settings.chat_tokens_per_minute
+        ),
         get_ai_fallback_slots(),
         ai_request_rate_for(settings.chat_fallback_model, settings.chat_fallback_requests_per_minute),
     )

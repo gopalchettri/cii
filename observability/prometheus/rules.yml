@@ -261,8 +261,8 @@ groups:
           description: >-
             More work is sent to {{ $labels.model }} than its requests-a-minute setting allows
             (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE
-            or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a
-            minute, then raise its setting; the dashboard's 429 panel shows refusals.
+            or CII_RERANK_REQUESTS_PER_MINUTE; kimi's tokens: CII_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether
+            that model takes more, then raise its setting; the dashboard's 429 panel shows refusals.
 
   - name: tsg-audit
     rules:

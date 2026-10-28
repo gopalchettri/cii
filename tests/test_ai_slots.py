@@ -154,6 +154,43 @@ def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
         assert time.monotonic() - started < 3
 
 
+def test_a_tokens_a_minute_limit_spaces_requests_by_their_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UAT's 429s say limit_type "tokens": CII_CHAT_TOKENS_PER_MINUTE=60000 spaces a 600-token request 0.6 s
+    from the next, a 6000-token one 6 s more; the requests-a-minute spacing applies when it is longer; a
+    request of no stated size, or no tokens limit, is not spaced by tokens."""
+    slept: list[float] = []
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    redis = get_redis_client()
+    sized = AiRequestRate(redis, "tokens-only", per_minute=0, wait_seconds=30, tokens_per_minute=60_000)
+    for tokens in (600, 6000, 600):  # each request's size spaces the one after it; no sleep is real here
+        sized.wait_for_turn(TASK, tokens)
+    assert slept[0] < 0.1 and slept[1:] == [pytest.approx(0.6, abs=0.1), pytest.approx(6.6, abs=0.1)]
+    assert sized.wait_for_turn(TASK, 0) == 0 and len(slept) == 3  # no stated size: not spaced, no Redis call
+    both = AiRequestRate(redis, "both-limits", per_minute=20, wait_seconds=30, tokens_per_minute=60_000)
+    for _ in range(2):
+        both.wait_for_turn(TASK, 600)  # 3 s a request beats 0.6 s of tokens
+    assert slept[-1] == pytest.approx(3, abs=0.1)
+    assert AiRequestRate(redis, "m", 0, 30, tokens_per_minute=0).wait_for_turn(TASK, 10**6) == 0
+
+
+def test_a_429_pauses_its_model_on_every_pod(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once a refused call frees its slot, the calls queued for its model would each draw a 429 of their own.
+    A 429 moves the model's next send time its wait away on every pod: a worker waits it out holding no slot,
+    the API answers its caller at once; a shorter pause never cuts a longer one; a model with no limit is not
+    paused (no Redis)."""
+    slept: list[float] = []
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    redis = get_redis_client()
+    pod_a, pod_b = (AiRequestRate(redis, "paused", per_minute=600, wait_seconds=120) for _ in range(2))
+    assert pod_a.pause(60) == 60
+    pod_b.pause(10)
+    assert pod_b.wait_for_send_time(TASK) == pytest.approx(60, abs=0.5) and slept == [slept[0]]
+    with pytest.raises(Unavailable):
+        AiRequestRate(redis, "paused", per_minute=600, wait_seconds=30).wait_for_send_time(TASK)
+    unlimited = AiRequestRate(None, "free", per_minute=0, wait_seconds=5)
+    assert unlimited.pause(60) == 60 and unlimited.wait_for_send_time(TASK) == 0
+
+
 def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
     limiter = AiSlots(get_redis_client(), cap=4, wait_seconds=5)
     with limiter.hold_slot(TASK), limiter.hold_slot(TASK):
@@ -215,8 +252,7 @@ def test_an_answered_call_costs_two_redis_round_trips(monkeypatch: pytest.Monkey
 
     with monkeypatch.context() as watched:
         watched.setattr(redis, "execute_command", recorded)
-        with limiter.hold_slot(TASK):
-            call_with_retries(lambda: "answer", UNLIMITED_AI_REQUEST_RATE, limiter, model="m", task=TASK)
+        call_with_retries(lambda: "answer", UNLIMITED_AI_REQUEST_RATE, limiter, model="m", task=TASK)
     assert sent == ["EVALSHA", "EVALSHA"]
     limiter.note_rate_limited()  # nothing in flight: the floor, 4
     with pytest.raises(RuntimeError), limiter.hold_slot(TASK):

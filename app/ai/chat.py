@@ -184,21 +184,21 @@ class ChatModel:
         outage: Unavailable | None = None
         now = time.monotonic()
         in_order = sorted(self._models, key=lambda pair: self._cooling_until.get(pair[0], 0) > now)
-        with self._slots.hold_slot(task):  # one slot for the whole request: the cap counts calls, not models
-            for model, profile in in_order:
-                slots = UNLIMITED_AI_SLOTS if model == self._models[0][0] else self._fallback_slots
-                try:  # only the last model left waits for a fallback slot: one still to try answers sooner
-                    with slots.hold_slot(task, waits=model == in_order[-1][0]):
-                        response, seconds = self._call_model(task, messages, model, profile, capped)
-                except Unavailable as exc:  # busy or down after its retries: the next model answers
-                    if exc.reason == AiOutage.TIMED_OUT or isinstance(exc.__cause__, litellm.RateLimitError):
-                        self._cooling_until[model] = time.monotonic() + AiLimits.MODEL_COOL_DOWN_SECONDS
-                    outage = exc
-                    continue
-                self._cooling_until.pop(model, None)
-                return model, response, seconds
-            assert outage is not None  # at least one model is configured
-            raise outage  # inside the hold: a request no model answered never raises a 429's limit
+        for model, profile in in_order:  # each try holds a main slot (call_with_retries), whichever model
+            slots = UNLIMITED_AI_SLOTS if model == self._models[0][0] else self._fallback_slots
+            try:  # only the last model left waits for a fallback slot: one still to try answers sooner
+                # ponytail: kept through glm's 429 waits; its cap (16) is never cut. Per try if it ever fills.
+                with slots.hold_slot(task, waits=model == in_order[-1][0]):
+                    response, seconds = self._call_model(task, messages, model, profile, capped)
+            except Unavailable as exc:  # busy or down after its retries: the next model answers
+                if exc.reason == AiOutage.TIMED_OUT or isinstance(exc.__cause__, litellm.RateLimitError):
+                    self._cooling_until[model] = time.monotonic() + AiLimits.MODEL_COOL_DOWN_SECONDS
+                outage = exc
+                continue
+            self._cooling_until.pop(model, None)
+            return model, response, seconds
+        assert outage is not None  # at least one model is configured
+        raise outage
 
     def _call_model(
         self, task: AiTask, messages: list[dict], model: str, profile: ChatModelProfile, capped: bool
@@ -206,9 +206,10 @@ class ChatModel:
         """One model's response and seconds, with retries."""
         options = build_request_options(profile, task, model, model in self._thinking_on, capped)
         ask = partial(litellm.completion, model=model, messages=messages, **self._connection, **options)
+        rate, tokens = self._request_rates[model], _estimated_tokens(messages)
         try:
             with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
-                return call_with_retries(ask, self._request_rates[model], self._slots, model=model, task=task)
+                return call_with_retries(ask, rate, self._slots, model=model, task=task, tokens=tokens)
         except AI_REFUSED_REPLY_ERRORS as exc:  # an answer, if a refusal: no other model is asked
             refused = ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error=type(exc).__name__)
             raise UnreadableAiAnswer(refused) from exc
@@ -225,6 +226,12 @@ def _with_correction_turn(
     if reply and count_prompt_chars(quoted) <= max_chars:
         return quoted
     return [*messages, correction]
+
+
+def _estimated_tokens(messages: list[dict]) -> int:
+    """A prompt's tokens, erring high (its answer's are left out), for a tokens-a-minute limit."""
+    # ponytail: input only, at 3 chars a token (4.3-6.1 measured), covers a typical answer; count usage if not
+    return count_prompt_chars(messages) // AiLimits.PROMPT_CHARS_PER_TOKEN
 
 
 def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChecker) -> list[str]:
