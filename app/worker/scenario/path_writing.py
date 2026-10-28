@@ -54,12 +54,6 @@ log = structlog.get_logger(__name__)
 PathOutcome = tuple[WriterBrief, WrittenScenario] | PathFailure
 #: What one path's work raises instead of returning a card: the job retries, fails or (lease lost) stops.
 _RAISED_FROM_A_PATH: tuple[type[Exception], ...] = (*TEMPORARY_ERRORS, JobFailed, LeaseLost)
-#: tsg_scenarios_total's outcome for each saved status.
-_OUTCOMES = {
-    ScenarioStatus.DONE: ScenarioOutcome.WRITTEN,
-    ScenarioStatus.BLOCKED: ScenarioOutcome.BLOCKED,
-    ScenarioStatus.FAILED: ScenarioOutcome.FAILED,
-}
 
 
 class PathWriter:
@@ -78,8 +72,7 @@ class PathWriter:
         self._split_locks: dict[str, threading.Lock] = {}  # one per threat
 
     def write(self, path: dict[str, Any]) -> PathOutcome:
-        """In a pool thread: build one path's brief in its own style, with its threat's actions, and write its
-        scenario. An outage or a job-wide failure is raised."""
+        """In a pool thread: a path's brief (its style, its threat's actions) and scenario; outages raise."""
         try:
             style = path_style(self.threats, path, self._style)
             brief = build_brief(self.threats, path, self._context, self._budget, self._live, style=style)
@@ -96,9 +89,12 @@ class PathWriter:
             unexpected = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
             return PathFailure(ErrorCode.INTERNAL_ERROR, unexpected)
 
+    def split_ahead(self, path: dict[str, Any]) -> None:
+        """Split a path's threat now, before its write takes it; a refused path raises, with no AI call."""
+        self._threat_actions(build_brief(self.threats, path, self._context, self._budget, self._live).threat)
+
     def _threat_actions(self, threat: str) -> tuple[str, ...]:
-        """The actions `threat`'s name states, split once per delivery; its other paths wait for it, and an
-        outage is raised to each with no second ask."""
+        """`threat`'s actions, split once per delivery; an outage is kept and raised to each of its paths."""
         with self._split_locks.setdefault(threat, threading.Lock()):  # dict.setdefault is atomic
             if threat not in self._actions:
                 try:
@@ -147,11 +143,11 @@ def _served_by(scenario: str) -> dict[str, Any]:
 
 
 def _log_saved(record: dict[str, Any], saved: bool, reason: str) -> None:
-    """Log one saved record and count it."""
+    """Log one saved record; count a written one (saved once: a card is counted with its path's state)."""
     shown = {"path_id": record["path_id"], "status": record["status"], "replaces": record.get("replaces")}
     log.info(LogEvent.WRITER_SCENARIO_SAVED, saved=saved, blocker=reason, **shown)
-    if saved:
-        metrics.SCENARIOS.labels(_OUTCOMES[record["status"]]).inc()
+    if saved and record["status"] == ScenarioStatus.DONE:
+        metrics.SCENARIOS.labels(ScenarioOutcome.WRITTEN).inc()
 
 
 class PathSaver:
@@ -172,9 +168,9 @@ class PathSaver:
         self._replaced: dict[str, dict[str, Any]] = {}  # a regenerate: each path's version still to replace
 
     def to_write(self, batch: list[str], replaces: dict[str, str], regenerate: bool) -> list[str]:
-        """The batch's paths still to write; a path an earlier delivery wrote is served here with no AI call
-        (`replaces`: a regenerate's versions to replace, each written afresh; its other paths are outage
-        cards' paths, written again even once given up)."""
+        """The batch's paths still to write; a path an earlier delivery wrote is served here with no AI call,
+        one it settled is not written again (`replaces`: a regenerate's versions to replace, each written
+        afresh; its other paths are outage cards' paths, written again even once given up)."""
         to_write = self._versions_to_write(replaces) if replaces else []
         paths, run_id = self._progress.paths, self._run["_id"]
         first_writes = [key for key in batch if key not in replaces]
@@ -187,7 +183,10 @@ class PathSaver:
         )
         if written:
             self._progress.record({row["path_id"]: _served_by(row["_id"]) for row in written})
-        return to_write + [key for key in open_paths if is_still_to_write(paths[key], reopen=regenerate)]
+        settled = self._progress.settled_by_this_job
+        return to_write + [
+            key for key in open_paths if is_still_to_write(paths[key], reopen=regenerate) and not settled(key)
+        ]
 
     def save(self, path_id: str, outcome: PathOutcome, started_at: datetime | None = None) -> None:
         """Save one path's outcome, then its state on the plan. `started_at`: when its AI work began (None:
@@ -212,14 +211,16 @@ class PathSaver:
             return
         # The next attempt's card replaces this one (the same id): why this one was rejected stays here.
         state = {"attempts": path["attempts"] + 1, "last_blocker": reason}
+        card = ScenarioOutcome(record["status"])  # counted with the path's state, by the write that is taken
         if reason == ErrorCode.UNAVAILABLE and state["attempts"] < Generation.MAX_PATH_ATTEMPTS:
-            self._progress.leave_for_next_set(path_id, state)  # an outage passes: a later set writes it
+            self._progress.leave_for_next_set(path_id, state, card)  # an outage passes: a later set writes it
             return
         # The writer's own retry is off; uncomment to retry a blocked path later, up to MAX_PATH_ATTEMPTS.
         # if not (final or state["attempts"] >= Generation.MAX_PATH_ATTEMPTS):
         #     self._progress.record({path_id: state | {"abandoned": False}})
         #     return
-        self._progress.abandon(path_id, state | {"abandoned": True}, reason, self._threats)
+        outage = outcome.reason if isinstance(outcome, PathFailure) else None  # its card's: regenerable
+        self._progress.abandon(path_id, state | {"abandoned": True}, outage or reason, self._threats, card)
 
     def _versions_to_write(self, replaces: dict[str, str]) -> list[str]:
         """A regenerate's paths still to write. A next version an earlier delivery saved is finished here; a
@@ -291,7 +292,7 @@ class PathSaver:
         self, target_id: str, code: ErrorCode, message: str, reason: AiOutage | None = None
     ) -> None:
         """Log why a regenerate wrote no new version and note it on the old one, with the AI outage if one."""
-        log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, reason=message)
+        log.warning(LogEvent.WRITER_REGENERATE_FAILED, scenario_id=target_id, code=code, message=message)
         error = {"code": code, "message": message, "at": utc_now()}
         error |= {"reason": reason} if reason else {}
         changes = {"regenerate_error": error, "updated_at": error["at"]}

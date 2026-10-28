@@ -1,5 +1,6 @@
 """Database clients: MongoDB for TSG data, SQL Server through stored procedures only."""
 
+import ssl
 from typing import Any, Final
 
 import pyodbc
@@ -41,6 +42,10 @@ def get_mongodb() -> Database:
         connectTimeoutMS=Timeouts.MONGO_MS,
         socketTimeoutMS=Timeouts.MONGO_SOCKET_MS,  # pymongo's default is no limit
         waitQueueTimeoutMS=Timeouts.MONGO_MS,  # every pooled connection busy: fail fast, never wait for ever
+        # A write a failover cannot roll back, whatever the server's default; a standalone (dev) takes it as
+        # w:1. Bounded below the socket timeout, so a lagging replica set answers WTimeoutError (an outage).
+        w="majority",
+        wTimeoutMS=Timeouts.MONGO_MAJORITY_WRITE_MS,
         tz_aware=True,
     )
     return client[settings.mongo_db]
@@ -59,16 +64,30 @@ def expire_documents_after(collection: MongoCollection, field: str, seconds: int
         )
 
 
+def redis_tls_options(url: str) -> dict[str, Any]:
+    """The TLS options of every Redis client and the broker: a rediss:// server's certificate and host name
+    always verified (against CII_REDIS_CA_FILE when set); none for a plain redis:// URL."""
+    if not url.startswith("rediss://"):
+        return {}
+    return {
+        "ssl_cert_reqs": ssl.CERT_REQUIRED,
+        "ssl_ca_certs": get_settings().redis_ca_file or None,
+        "ssl_check_hostname": True,
+    }
+
+
 @singleton
 def get_redis_client() -> Redis:
+    url = get_settings().redis_url
     return Redis.from_url(
-        get_settings().redis_url,
+        url,
         socket_timeout=Timeouts.REDIS_SECONDS,
         socket_keepalive=True,
         health_check_interval=Timeouts.REDIS_HEALTH_CHECK_SECONDS,
         decode_responses=True,
         # No hidden retries (redis-py 6+ defaults Redis() to 3 with back-off): fail within the timeout.
         retry=Retry(NoBackoff(), 0),
+        **redis_tls_options(url),
     )
 
 

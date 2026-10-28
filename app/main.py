@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origin_list,
         allow_methods=["GET", "POST", "PUT", "DELETE"],  # exactly the methods the routers use
         allow_headers=[h.value for h in Header] + ["Content-Type"],
-        expose_headers=[Header.REQUEST_ID],
+        expose_headers=[Header.REQUEST_ID, Header.IDEMPOTENCY_KEY],
     )
     app.add_middleware(RequestContextMiddleware)  # added last = outermost: CORS answers get a request id too
     register_exception_handlers(app)

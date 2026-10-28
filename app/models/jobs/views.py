@@ -7,17 +7,17 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.core.constants import AiOutage, JobKind, Status
+from app.core.constants import AiOutage, JobKind, Status, Step
 
 
 class RetryNotice(BaseModel):
     """A stage waiting to try again after an outage; null once the next try starts or the stage ends."""
 
-    stage: str | None = None  # threats or scenarios on a run; None on a remediation plan
+    stage: str | None = None  # threats, scenarios or controls on a run; None on a remediation plan
     reason: AiOutage | None  # ai_down, ai_unreachable, ai_busy, ai_timed_out; None: a store outage
     message: str  # what to tell the user
-    attempt: int  # the try that failed
-    max_attempts: int  # the job fails after this many
+    attempt: int  # the try that failed (controls: the delivery message's try)
+    max_attempts: int  # the job fails after this many (controls: after the last the sweep re-sends)
     retry_at: datetime  # when the next try starts
 
 
@@ -28,6 +28,12 @@ def retry_notice_of(
     if not retry or status not in (Status.QUEUED, Status.RUNNING):
         return None
     return RetryNotice(stage=stage, **retry)
+
+
+def controls_retry_notice_of(counts: dict[str, Any], retry: dict[str, Any] | None) -> RetryNotice | None:
+    """The controls delivery's stored notice (controls_delivery.retry) as a status shows it: only while
+    controls wait."""
+    return retry_notice_of(Status.QUEUED, retry, Step.CONTROLS) if counts.get("controls_waiting") else None
 
 
 class JobProgress(BaseModel):
@@ -45,6 +51,7 @@ class JobView(BaseModel):
     kind: JobKind
     session_id: str | None
     remediation_id: str | None = None
+    mapping_id: str | None = None  # a service mapping's
     asset_id: int | None
     asset_name: str | None = None
     status: Status  # queued or running
@@ -52,12 +59,12 @@ class JobView(BaseModel):
     created_at: datetime | None
     attempts: int = 0
     user_id: str | None = None
-    progress: JobProgress | None = None  # a run's; None for a remediation plan
+    progress: JobProgress | None = None  # a run's; None for a remediation plan or a service mapping
     retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
 
 
 class JobList(BaseModel):
-    jobs: list[JobView]  # oldest first; at most JobControl.LIST_MAX runs and as many plans
+    jobs: list[JobView]  # oldest first; at most JobControl.LIST_MAX of each kind (runs, plans, mappings)
     total: int  # all of them, though the list was cut
 
 

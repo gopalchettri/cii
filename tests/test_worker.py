@@ -41,6 +41,7 @@ from app.core.constants import (
     StoredProcedure,
     TaskName,
     Worker,
+    module_of,
 )
 from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable, WaitingForAnotherJob
@@ -538,37 +539,25 @@ def test_every_job_outcome_series_starts_at_zero_when_the_worker_starts(
     lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
     for task in TaskName:
         for outcome in metrics.JOB_OUTCOMES:
-            assert REGISTRY.get_sample_value("tsg_jobs_total", {"task": task, "outcome": outcome}) is not None
+            labels = {"task": task, "module": module_of(task), "outcome": outcome}
+            assert REGISTRY.get_sample_value("tsg_jobs_total", labels) is not None
 
 
 def _last_reaper_pass() -> float:
     return metrics.REAPER_LAST_PASS.collect()[0].samples[0].value
 
 
-def test_no_process_but_the_reaper_s_worker_exports_its_last_pass() -> None:
+def test_no_process_but_the_reaper_s_worker_exports_its_reaper_times() -> None:
     """Before: every process that loads the metrics exported 0 (the API, every worker, Flower), so right
-    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending)."""
+    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending).
+    Both gauges: the last start (ReaperNotRunning) and the last finished pass (ReaperFailing)."""
     code = (
         "import app.main, app.worker.lifecycle; from prometheus_client import generate_latest; "
-        "print(b'tsg_reaper_last_pass' in generate_latest())"
+        "print(b'tsg_reaper_last_' in generate_latest())"
     )
     run = [sys.executable, "-c", code]
     result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
     assert result.stdout.strip().splitlines()[-1:] == ["False"], result.stdout + result.stderr
-
-
-def test_only_the_worker_that_runs_the_reaper_starts_on_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Before: ReaperNotRunning read a rise in tsg_jobs_total, and the first pass after a start comes before
-    Prometheus' first scrape, so every start showed it (and the beat tile DOWN) for a minute. The worker that
-    runs the reaper is on time from its own start; no other worker stands in for it."""
-    metrics.REAPER_LAST_PASS.set(0)
-    monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    lifecycle.prepare_worker(_worker_starting("threads", Queue.THREATS, Queue.SCENARIOS))
-    assert _last_reaper_pass() == 0
-    monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    before = time.time()
-    lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
-    assert before <= _last_reaper_pass() <= time.time()
 
 
 def test_each_reaper_pass_records_when_it_ended_and_a_failed_one_does_not(
@@ -605,8 +594,7 @@ def test_celery_keeps_the_log_level_cii_log_level_chose() -> None:
 
 
 def _job_failures() -> float:
-    labels = {"task": TaskName.FIND_THREATS, "outcome": "failure"}
-    return REGISTRY.get_sample_value("tsg_jobs_total", labels) or 0.0
+    return _job_samples("tsg_jobs_total", {"task": TaskName.FIND_THREATS, "outcome": "failure"})
 
 
 def test_a_job_the_reaper_failed_cannot_be_finished_by_its_old_owner(
@@ -667,7 +655,7 @@ def test_a_delivery_that_cannot_claim_its_job_logs_why() -> None:
     not_due = why(queued)
     assert not_due["reason"] == "not_due" and 370 < not_due["due_in_seconds"] <= 376
     running = _insert_job(Status.RUNNING, worker="celery@worker-threats", lease_until=datetime.now(UTC))
-    assert why(running) == {"reason": "leased", "worker": "celery@worker-threats"}
+    assert why(running) == {"reason": "leased", "job_worker": "celery@worker-threats"}
     assert why(_insert_job(Status.FAILED)) == {"reason": "status_failed"}
     with capture_logs() as logs, pytest.raises(Ignore):
         jobs.run_leased_job(_task("early"), Collection.SESSIONS, queued, 1, lambda _lease: None)
@@ -766,7 +754,7 @@ def test_every_task_is_registered_and_routed() -> None:
 
 
 def _job_samples(name: str, labels: dict[str, str]) -> float:
-    return REGISTRY.get_sample_value(name, labels) or 0.0
+    return REGISTRY.get_sample_value(name, {"module": module_of(labels["task"]), **labels}) or 0.0
 
 
 def test_a_delivery_that_finds_its_job_taken_is_ignored_not_counted(published: list[str]) -> None:
@@ -930,11 +918,11 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     assert _records().find_one({"_id": retried})["job"]["resends"] == 0
 
 
-def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_job_that_stops_checking_its_lease_stops_renewing_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hung job (a deadlock, an endless loop) stops renewing, so the reaper takes it over, and makes no more
     AI calls meanwhile."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
-    monkeypatch.setattr(jobs.Lease, "MAX_JOB_SECONDS", 0.1)
+    monkeypatch.setattr(jobs.Lease, "STALL_SECONDS", 0.1)
     renewals: list[int] = []
     lease = SimpleNamespace(record_id="hung", renew=lambda: renewals.append(1) or True)
     with jobs.keep_lease_alive(lease):  # type: ignore[arg-type]

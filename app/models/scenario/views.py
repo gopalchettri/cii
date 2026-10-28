@@ -17,6 +17,7 @@ from pydantic import (
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from app.core.constants import (
+    AbandonReason,
     ActionStatus,
     AiOutage,
     ControlMatchStatus,
@@ -106,6 +107,7 @@ class SessionStatus(BaseModel):
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
     epoch: int = 0  # its job's epoch: a next set or regenerate queues only while it is unchanged
+    controls_retry: dict[str, Any] | None = None  # the outage its controls delivery waits out, as `retry`
 
 
 def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
@@ -135,6 +137,7 @@ def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
         last_regen=record.get("last_regen"),
         cancelled=record.get("cancelled"),
         epoch=job.get("epoch") or 0,
+        controls_retry=(record.get("controls_delivery") or {}).get("retry"),
     )
 
 
@@ -308,11 +311,14 @@ class Progress(BaseModel):
 
 
 class RunError(BaseModel):
-    """Why a run failed: its job's error code and message, and the AI outage that failed it, if one did."""
+    """Why a run failed: its job's error code and message, and the AI outage that failed it, or why its job
+    was given up (job_abandoned)."""
 
     code: str
     message: str
-    reason: AiOutage | None = None  # ai_down, ai_unreachable, ai_busy, ai_timed_out; None for any other
+    # ai_down, ai_unreachable, ai_busy, ai_timed_out; job_abandoned: abandoned, never_started,
+    # waited_too_long; else None.
+    reason: AiOutage | AbandonReason | None = None
 
 
 class RunBoard(BaseModel):

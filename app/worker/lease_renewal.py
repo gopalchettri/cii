@@ -1,19 +1,30 @@
-"""A job's lease kept alive while its work runs (app/worker/jobs.py runs the work): renewed from a background
-thread, and the job's signal set once the lease is lost or the job has run too long."""
+"""A lease kept alive while its work runs (app/worker/jobs.py runs a job's work): renewed from a background
+thread while the work keeps checking its signal, and given back when its worker stops."""
 
+import contextlib
 import contextvars
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Protocol
 
 import structlog
 
-from app.core.constants import Lease, LogEvent
-from app.core.lease_signal import lease_lost_signal
+from app.core import metrics
+from app.core.clock import utc_now
+from app.core.constants import Lease, LogEvent, Status, TaskName, Worker
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
+from app.core.lease_signal import LeaseSignal, lease_lost_signal, raise_if_lease_lost
+from app.data_access.jobs.job_repository import JobLease
+from app.worker.celery_app import send_job
+from app.worker.heartbeat import mark_worker_hung
 
 log = structlog.get_logger(__name__)
+
+#: The leases held here that a stopping worker gives back, by signal: each one's give-back and a copy of its
+#: work's context (its log fields, request id).
+_held: dict[LeaseSignal, tuple[Callable[[], bool], contextvars.Context]] = {}
 
 
 class RenewableLease(Protocol):
@@ -25,37 +36,92 @@ class RenewableLease(Protocol):
 
 
 @contextmanager
-def keep_lease_alive(lease: RenewableLease) -> Generator[None, None, None]:
-    """Renew the lease every Lease.RENEW_EVERY_SECONDS while the work runs, from a background thread, for at
-    most Lease.MAX_JOB_SECONDS: a hung job then loses its lease to the reaper, which counts the attempt. A
-    renewal that finds the lease lost (a cancel), or the time limit, sets the job's signal: its next AI call
-    raises LeaseLost (core/lease_signal.py), as its next fenced write does."""
+def keep_lease_alive(
+    lease: RenewableLease, give_back: Callable[[], bool] | None = None, *, watch_progress: bool = True
+) -> Generator[None, None, None]:
+    """Renew the lease every Lease.RENEW_EVERY_SECONDS while the work runs, from a background thread. A
+    renewal that finds the lease lost (a cancel), or a job that made no lease check for Lease.STALL_SECONDS
+    (hung: the reaper then takes it over), sets the job's signal: its next AI call raises LeaseLost
+    (core/lease_signal.py), as its fenced writes do once the lease is gone. `give_back` frees the lease for
+    another worker when this one stops (hand_back_running_jobs), True once it did. `watch_progress` False: a
+    heartbeat only (an admin job), renewed until the work ends."""
     stopped = threading.Event()
-    deadline = time.monotonic() + Lease.MAX_JOB_SECONDS
-
-    def renew_until_stopped(lost: threading.Event) -> None:
-        while not stopped.wait(Lease.RENEW_EVERY_SECONDS):
-            if time.monotonic() >= deadline:
-                log.warning(LogEvent.JOB_TOO_LONG, record_id=lease.record_id, seconds=Lease.MAX_JOB_SECONDS)
-                lost.set()  # no more AI calls; its writes fail (LeaseLost) once the reaper takes the job over
-                return
-            try:
-                if not lease.renew():
-                    lost.set()  # no more AI calls; the work's next fenced write raises LeaseLost too
-                    return
-            except Exception:  # noqa: BLE001 — a store blip must not end renewing; the next round retries
-                log.warning(LogEvent.JOB_LEASE_RENEW_FAILED, record_id=lease.record_id, exc_info=True)
-
     with lease_lost_signal(lease.record_id) as lost:
         renewer = threading.Thread(  # in the job's context: its lines keep the task, module and request id
             target=contextvars.copy_context().run,
-            args=(renew_until_stopped, lost),
+            args=(_renew_until_stopped, lease, lost, stopped, watch_progress),
             name=f"lease-{lease.record_id}",
             daemon=True,
         )
         renewer.start()
+        if give_back is not None:
+            _held[lost] = (give_back, contextvars.copy_context())
         try:
             yield
         finally:
+            _held.pop(lost, None)
             stopped.set()
             renewer.join()
+
+
+def _renew_until_stopped(
+    lease: RenewableLease, lost: LeaseSignal, stopped: threading.Event, watch_progress: bool
+) -> None:
+    """Renews until the work ends or the lease is lost. Python cannot stop a thread: one still running
+    Lease.HUNG_AFTER_SECONDS after its lease was lost marks its worker hung, and the pod restarts."""
+    while not stopped.wait(Lease.RENEW_EVERY_SECONDS):
+        if not _renewed_while_working(lease, lost, watch_progress):
+            lost.set()  # no more AI calls; the work's next fenced write raises LeaseLost too
+            if not stopped.wait(Lease.HUNG_AFTER_SECONDS):
+                mark_worker_hung(lease.record_id)
+            return
+
+
+def _renewed_while_working(lease: RenewableLease, lost: LeaseSignal, watch_progress: bool) -> bool:
+    """One renewal: False once the lease is lost, or (`watch_progress`) when the job made no lease check for
+    STALL_SECONDS: counted as hung."""
+    if watch_progress and (silent := time.monotonic() - lost.checked_at) >= Lease.STALL_SECONDS:
+        log.warning(LogEvent.JOB_STALLED, record_id=lease.record_id, seconds=round(silent))
+        metrics.JOBS_HUNG.inc()
+        return False
+    try:
+        return lease.renew()
+    except Exception:  # noqa: BLE001 — a store blip must not end renewing; the next round retries
+        log.warning(LogEvent.JOB_LEASE_RENEW_FAILED, record_id=lease.record_id, exc_info=True)
+        return True
+
+
+def hand_back_running_jobs(after_seconds: float = 0) -> None:
+    """After `after_seconds` (time for running work to finish), gives back every lease still held here; its
+    work then stops at its next lease check (an AI call or wait), not at its next renewal."""
+    time.sleep(after_seconds)
+    for lost, (give_back, context) in _held.copy().items():
+        if context.run(_given_back, give_back):
+            lost.set()
+
+
+def _given_back(give_back: Callable[[], bool]) -> bool:
+    """give_back(), unless the work's lease is lost already (a stalled job's attempt counts: the reaper takes
+    it over); False when nothing was given back (the lease lost meanwhile, or the store down: it runs out)."""
+    with contextlib.suppress(LeaseLost, *MONGO_UNAVAILABLE_ERRORS):
+        raise_if_lease_lost()
+        return give_back()
+    return False
+
+
+def give_job_back(task: str, lease: JobLease) -> bool:
+    """The job queued again and sent now, with the attempt this delivery used given back; LeaseLost once the
+    job is no longer this delivery's."""
+    given_back = {
+        "status": Status.QUEUED,
+        "job.due_at": utc_now(),
+        "job.lease_until": None,
+        "job.attempts": lease.attempts - 1,
+        "job.task_id": None,
+        "job.worker": None,
+        "job.retry": None,
+    }
+    lease.update_job(given_back)
+    log.info(LogEvent.JOB_HANDED_BACK, record_id=lease.record_id, attempt=lease.attempts)
+    send_job(TaskName(task), lease.record_id, lease.epoch, priority=Worker.NEXT_STAGE_PRIORITY)
+    return True

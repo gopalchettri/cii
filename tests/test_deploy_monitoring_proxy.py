@@ -129,6 +129,7 @@ def test_only_the_router_reaches_the_proxy_and_the_proxy_only_tsg_s_grafana_and_
         allowed
         for common in _objects(COMMON_FILE, kind="NetworkPolicy")
         if common["metadata"]["namespace"] == MONITORING_NAMESPACE
+        and common["spec"]["podSelector"] == {"matchLabels": {"part-of": "tsg-monitoring"}}  # not the reaper
         for allowed in _allowed(common, "ingress")
         if allowed[0] != _peer(OWN_PROJECT)
     }

@@ -254,7 +254,7 @@ PLAN_REQUEST_EXAMPLES: list[JsonValue] = [
         ],
         **_REGISTER_EXAMPLE,
     },
-    # A hand-written scenario (send an Idempotency-Key header with it): TSG saves it, accepts it and plans it.
+    # A hand-written scenario: TSG saves it, accepts it and plans it.
     {
         "is_manual": True,
         "manual_scenario": {
@@ -310,7 +310,7 @@ class PlanRequest(BaseModel):
     mitigation_end_date: CalendarDate = None
     is_manual: bool = Field(
         description="false: the scenario already exists in TSG (send session_id + scenario_id). true: a "
-        "person wrote it (send manual_scenario and an Idempotency-Key header); TSG saves it and plans it."
+        "person wrote it (send manual_scenario); TSG saves it and plans it."
     )
     session_id: _RecordId = Field(None, description="is_manual=false only: the run that holds the scenario.")
     scenario_id: _RecordId = Field(None, description="is_manual=false only: the accepted scenario to plan.")

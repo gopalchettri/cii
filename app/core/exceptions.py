@@ -5,6 +5,8 @@ from http import HTTPStatus
 from typing import Any, ClassVar
 
 from pymongo.errors import ConnectionFailure as MongoConnectionFailure
+from pymongo.errors import ExecutionTimeout as MongoExecutionTimeout
+from pymongo.errors import WriteConcernError as MongoWriteConcernError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import OutOfMemoryError as RedisOutOfMemoryError
 from redis.exceptions import ReadOnlyError as RedisReadOnlyError
@@ -12,9 +14,17 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
 
-#: Driver errors meaning "the store is unreachable right now" (timeouts, lost connections, no primary).
-#: The API answers them with 503 + Retry-After; workers retry them with back-off.
-MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (MongoConnectionFailure,)
+#: Driver errors meaning "the store cannot serve us right now": unreachable (timeouts, lost connections, no
+#: primary), past its time limit, or a write the replicas did not confirm (WTimeoutError is a
+#: WriteConcernError; a bulk write raises it through app/data_access/base.py bulk_write). The API answers
+#: them with 503 + Retry-After; workers retry them with back-off.
+#: ponytail: a misconfigured write concern is retried as an outage too and fails as unavailable after
+#: Lease.MAX_ATTEMPTS (the start-up mongodb.topology line shows it).
+MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
+    MongoConnectionFailure,
+    MongoExecutionTimeout,
+    MongoWriteConcernError,
+)
 
 
 #: Redis also refuses writes for a while on a failover (READONLY replica) or when its memory is full.

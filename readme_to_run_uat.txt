@@ -10,8 +10,8 @@ cd "C:\GopalChettri\Projects\desc-ai-modules\cii"
 # v1 must be STOPPED first (v1 and v2 share the Redis keys "tsg:*" on the same databases).
 # The OpenShift v2 pods must be scaled to 0 first too: they share the Redis queues and would take this laptop's jobs:
 #   oc -n ai-threatgen scale deployment -l part-of=tsg --replicas=0
-#   oc -n ai-remediation scale deployment -l part-of=tsg --replicas=0
-#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, steps 11 and 12)
+#   oc -n ai-common scale deployment/worker-reaper --replicas=0
+#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, step 12)
 # The DBA must already have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
 
 # The env MUST be named .venv (dot-prefixed).
@@ -60,7 +60,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 
 # 8. Start in this order: workers and beat FIRST, the API LAST
 #    (the API is "ready" only when every queue has a worker).
-#    Open 5 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
+#    Open 6 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
 
 #   The AI calls skip the corporate proxy by themselves: .env has CII_AI_BYPASS_PROXY=true (as v1's
 #   TSG_LITELLM_BYPASS_PROXY). Keep CII_LOG_LEVEL=INFO: DEBUG is for a short diagnosis only.
@@ -75,17 +75,23 @@ celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios,ts
 $env:CII_WORKER_METRICS_PORT = "9103"
 celery -A app.worker worker --pool=threads -c 2 -Q tsg_servicemapper -n mapper@%h --loglevel=INFO
 
-# Window 3 - maintenance worker (the reaper that re-sends lost jobs).
+# Window 3 - maintenance worker (library index builds, the intelligence refresh).
 #   !! RUN BOTH LINES, in this order, in the SAME window. The CII_WORKER_METRICS_PORT line gives this
 #   !! worker its own metrics port (9102). Without it the worker silently uses 9100, the job worker's port.
 #   !! After it starts, the first log line must say  "port": 9102  (if 9100, Ctrl+C and redo all lines).
 $env:CII_WORKER_METRICS_PORT = "9102"
 celery -A app.worker worker --pool=threads -c 3 -Q tsg_maintenance -n maintenance@%h --loglevel=INFO
 
-# Window 4 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
+# Window 4 - reaper worker (the reaper that re-sends lost jobs, the controls retry sweep; alone, never behind a long job).
+#   !! RUN BOTH LINES, in this order, in the SAME window: its own metrics port (9104), never the job worker's 9100.
+#   !! After it starts, the first log line must say  "port": 9104  (if 9100, Ctrl+C and redo both lines).
+$env:CII_WORKER_METRICS_PORT = "9104"
+celery -A app.worker worker --pool=threads -c 2 -Q tsg_reaper -n reaper@%h --loglevel=INFO
+
+# Window 5 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
 celery -A app.worker beat --loglevel=INFO
 
-# Window 5 - the API
+# Window 6 - the API
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 # 9. Check (browser)
@@ -111,14 +117,13 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #         reach the AI gateway. llmapi.govai.ae must be on the pods' NO_PROXY so the calls go to it directly.
 #    1. See what runs (changes nothing):
 #         oc -n ai-threatgen get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
-#         oc -n ai-remediation get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
 #    FULL STEPS, with every check and the undo: docs\UAT_LLM_TIMEOUT_RUNBOOK.md. In short:
-#    2. Test from inside EACH app pod (the API and every worker, both projects; changes nothing). Copy it exactly:
+#    2. Test from inside EACH app pod (the API and every worker, in ai-threatgen; changes nothing). Copy it exactly:
 #       no double quotes inside the single quotes (Windows PowerShell 5.1 breaks them):
 #         oc -n <project> exec deploy/<name> -- sh -c 'echo NO_PROXY=$NO_PROXY no_proxy=$no_proxy; curl -s -m 30 -o /dev/null -w default:%{http_code} https://llmapi.govai.ae/health/liveliness; echo ,exit=$?; curl -s -m 30 --noproxy llmapi.govai.ae -o /dev/null -w direct:%{http_code} https://llmapi.govai.ae/health/liveliness; echo ,exit=$?'
 #       "default:000" and "direct:200" = this problem.
 #    3. Unblock now: record the settings (oc -n <project> set env deploy --all --list), then on EVERY app
-#       deployment of BOTH projects (API, every worker, beat; not flower, not the monitoring), one at a time:
+#       deployment in ai-threatgen (API, every worker, beat; not flower, not the monitoring), one at a time:
 #         oc -n <project> set env deploy/<name> NO_PROXY=localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae no_proxy=localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae
 #         oc -n <project> rollout status deploy/<name> --timeout=15m
 #    4. Check: step 2 again on every changed deployment (both lines list llmapi.govai.ae, "default:200,exit=0");
@@ -126,7 +131,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #    5. For good: deploy from this repository, step by step: deploy\DEPLOYMENT_GUIDE.md (plain YAML applied with
 #       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first): its Part 2, step 9.
 #       Never delete the old v1 deployments before v2 is accepted: they are the way back (the guide's "Roll back").
-#    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line (both projects):
+#    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line:
 #         oc -n <project> logs deploy/worker-scenarios | findstr ai.gateway_route
 
 # 10. Create an API key (admin key = CII_ADMIN_API_KEY from .env). It is shown ONCE - copy it.
@@ -176,14 +181,15 @@ python scripts/monitoring.py status
 
 # 13. Check that every celery worker is working (new window, .venv activated):
 python -c "from app.core.readiness import count_online_workers; from app.worker import ROUTED_QUEUES; print(count_online_workers(ROUTED_QUEUES))"
-#    each of tsg_threats, tsg_scenarios, tsg_controls, tsg_remediation, tsg_servicemapper, tsg_maintenance must show at least 1 (wait up to 20 s after start)
+#    each of tsg_threats, tsg_scenarios, tsg_controls, tsg_remediation, tsg_servicemapper, tsg_maintenance, tsg_reaper must show at least 1 (wait up to 20 s after start)
 celery -A app.worker inspect ping
-#    must answer pong from scenarios@..., mapper@... and maintenance@...
+#    must answer pong from scenarios@..., mapper@..., maintenance@... and reaper@...
 celery -A app.worker inspect active_queues
 #    scenarios@... serves tsg_threats + tsg_scenarios + tsg_controls + tsg_remediation; mapper@... serves tsg_servicemapper; maintenance@... serves
-#    tsg_maintenance (intelligence refresh, embeddings builds, the reaper). Each worker is named by its module:
+#    tsg_maintenance (intelligence refresh, embeddings builds); reaper@... serves tsg_reaper (the reaper, the controls retry sweep).
+#    Each worker is named by its module:
 #    its log file is logs/worker-<name>.log, and every job line carries module=<module> and worker=<name>@<host>.
-#    Beat is not in these checks: about 1 minute after it starts, the maint window must log tsg_reap, every minute.
+#    Beat is not in these checks: about 1 minute after it starts, the reaper window must log tsg_reap, every minute.
 #    Every job, queue and worker in one call (admin key; add &status=failed, &kind=tsg_map_services, &hours=72):
 curl.exe -H "X-Admin-Key: <CII_ADMIN_API_KEY>" "http://localhost:8000/v1/admin/jobs?status=queued&status=running&status=failed"
 #    One API call to its worker: take X-Request-ID from the API's answer, then

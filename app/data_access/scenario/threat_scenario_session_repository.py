@@ -67,6 +67,7 @@ SESSION_STATUS_FIELDS: dict[str, int] = {
     "last_regen": 1,
     "cancelled": 1,
     "job.epoch": 1,
+    "controls_delivery.retry": 1,
 }
 _SESSION_FIELD_LISTS = {
     "status": SESSION_STATUS_FIELDS,
@@ -74,7 +75,7 @@ _SESSION_FIELD_LISTS = {
     "attack_paths": {"plan.paths": 1},
     "plan_trace": {"plan_trace": 1, "plan.paths": 1},
     "plan_threat": {"plan.threats.$": 1},
-    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1},
+    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1, "created_at": 1},
     "writing": {
         "entity_id": 1,
         "asset_id": 1,
@@ -245,6 +246,15 @@ class ThreatScenarioSessionRepository(MongoRepository):
         found = self.collection.find_one({"_id": session_id}, {DELETING_MARK: 1})
         return found is None or DELETING_MARK in found
 
+    def is_cancelled(self, session_id: str) -> bool:
+        """Whether the owner's cancel stands on the scenario session: its job stopped, or its controls (the
+        `cancelled` stamp, cleared by a resume or a new action)."""
+        # ponytail: read before a plan's claim is handed back; a run cancel landing between this read and
+        # that write leaves the card queued (a second run cancel stops it). Keeping the cancel on the card
+        # closes it.
+        stands = {"_id": session_id, "$or": [{"status": Status.CANCELLED}, {"cancelled": {"$ne": None}}]}
+        return self.collection.find_one(stands, {"_id": 1}) is not None
+
     def claim_controls_delivery(self, session_id: str, task_id: str) -> Record | None:
         """tsg_sessions: the session's delivery lease for `task_id` when free, expired, handed over or
         already its own, never for a cancelled session; its frozen context and job.request_id, or None while
@@ -273,9 +283,14 @@ class ThreatScenarioSessionRepository(MongoRepository):
         until = utc_now() + timedelta(seconds=Controls.LEASE_SECONDS)
         return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.until": until}})
 
-    def release_controls_delivery(self, session_id: str, task_id: str) -> None:
-        """tsg_sessions: the delivery lease ended."""
-        self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
+    def release_controls_delivery(self, session_id: str, task_id: str) -> bool:
+        """tsg_sessions: the delivery lease ended; False when `task_id` no longer held it."""
+        return self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
+
+    def note_controls_retry(self, session_id: str, task_id: str, notice: Record) -> bool:
+        """tsg_sessions: the delivery's outage notice, kept until the lease is next claimed, handed over or
+        ended; False while another delivery holds the session."""
+        return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.retry": notice}})
 
     def list_scenario_sessions_with_live_delivery(self, session_ids: Iterable[str]) -> set[str]:
         """tsg_sessions: of `session_ids`, the ones a delivery maps now or whose next turn is on its way."""

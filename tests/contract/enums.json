@@ -1,4 +1,9 @@
 {
+ "AbandonReason": {
+  "NEVER_STARTED": "never_started",
+  "WAITED_TOO_LONG": "waited_too_long",
+  "WORKER_STOPPED": "abandoned"
+ },
  "ActionPriority": {
   "CRITICAL": "Critical",
   "HIGH": "High",
@@ -154,6 +159,7 @@
   "ASSET_NOT_OWNED": "asset_not_owned",
   "CANCEL_FIRST": "cancel_first",
   "CHANGED_CONCURRENTLY": "changed_concurrently",
+  "DUPLICATE_REQUEST": "duplicate_request",
   "DUPLICATE_VERSION": "duplicate_version",
   "GENERATION_IN_PROGRESS": "generation_in_progress",
   "IDEMPOTENCY_KEY_CONFLICT": "idempotency_key_conflict",
@@ -399,6 +405,7 @@
   "CONTROLS": "controls",
   "REMEDIATION": "remediation",
   "SCENARIOS": "scenarios",
+  "SERVICE_MAPPING": "service_mapping",
   "THREATS": "threats"
  },
  "LibraryBanner": {
@@ -519,6 +526,7 @@
  "Queue": {
   "CONTROLS": "tsg_controls",
   "MAINTENANCE": "tsg_maintenance",
+  "REAPER": "tsg_reaper",
   "REMEDIATION": "tsg_remediation",
   "SCENARIOS": "tsg_scenarios",
   "SERVICEMAPPER": "tsg_servicemapper",
@@ -530,6 +538,7 @@
   "CANCELLED": "cancelled",
   "FAILED": "failed",
   "GENERATING": "generating",
+  "READ_ONLY": "read_only",
   "REJECTED": "rejected"
  },
  "ResolveOutcome": {

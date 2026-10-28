@@ -124,7 +124,7 @@ class ChatModel:
         except (UnreadableAiAnswer, TruncatedAiAnswer, Unavailable) as exc:
             if usable is None:
                 raise
-            log.info(LogEvent.AI_FIRST_ANSWER_KEPT, ai_task=task, reask_error=type(exc).__name__)
+            log.info(LogEvent.AI_FIRST_ANSWER_KEPT, ai_task=task, error_type=type(exc).__name__)
             return usable
         retry_problems = _find_answer_problems(answer, check_answer)
         if answer is not None and not retry_problems:

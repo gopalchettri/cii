@@ -10,6 +10,8 @@ from tests.test_deploy_monitoring_images import GUIDE
 
 #: Every object a rollback must remove before it applies the previous release, and only those.
 PROXY_DELETE = "oc -n ai-threatgen delete deployment,service,route -l part-of=tsg-monitoring"
+#: The worker the previous release does not have: `oc apply` of its files leaves it running the newer code.
+NEW_WORKER_DELETES = ["oc -n ai-common delete deployment worker-reaper --ignore-not-found"]
 
 
 def _section(start: str, end: str) -> str:
@@ -19,11 +21,14 @@ def _section(start: str, end: str) -> str:
 
 
 def test_a_rollback_removes_the_monitoring_proxy_before_it_applies_the_previous_release() -> None:
-    """A rollback frees the proxy's quota, then loads the previous settings, app and monitoring rules."""
+    """A rollback frees the proxy's quota and removes the reaper worker the previous release lacks, then loads
+    the previous settings, app and monitoring rules."""
     rollback = _section("### Roll back to the previous release", "## Part 6.")
     removed = rollback.index(PROXY_DELETE)
     assert removed < rollback.index("Apply the previous") and removed < rollback.index("oc apply -f")
-    assert [line for line in rollback.splitlines() if "delete deployment worker" in line] == []
+    worker_deletes = [line.strip() for line in rollback.splitlines() if "delete deployment worker" in line]
+    assert worker_deletes == NEW_WORKER_DELETES
+    assert max(rollback.index(line) for line in NEW_WORKER_DELETES) < rollback.index("oc apply -f")
     settings = rollback.index("oc apply -f deploy\\configmap.yaml")
     assert settings < rollback.index("oc apply -f deploy\\deploy_threatgen.yaml")
     restarted = rollback.index("oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring")

@@ -14,7 +14,6 @@ from app.core.constants import (
     ControlMatch,
     Decision,
     ErrorCode,
-    Header,
     LibraryRowKind,
     LibraryStatus,
     PlanMessage,
@@ -42,11 +41,8 @@ MANUAL_PATH = "manual"
 Errors = list[dict[str, str]]
 
 
-def check_manual_request(principal: Principal, body: PlanRequest, key: str | None) -> ManualScenario:
-    """The hand-written scenario asked for: 422 without an Idempotency-Key, 403 for another entity's."""
-    if not key:
-        message = RemediationMessage.IDEMPOTENCY_KEY_REQUIRED
-        raise Invalid(message, errors=[{"field": f"header.{Header.IDEMPOTENCY_KEY}", "message": message}])
+def check_manual_request(principal: Principal, body: PlanRequest) -> ManualScenario:
+    """The hand-written scenario asked for: 403 for another entity's."""
     manual = body.manual_scenario
     assert manual is not None  # PlanRequest: is_manual=true
     if manual.entity_id != principal.entity_id:

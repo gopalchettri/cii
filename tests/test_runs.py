@@ -3,7 +3,7 @@ from the SQL test database (entity 86 owns asset 103 with systems 321 and 322; 3
 
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
 from app import container
+from app.api import dependencies
 from app.core.config import get_settings
 from app.core.constants import (
     Collection,
@@ -68,7 +69,9 @@ def runs_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -
 
 
 def _start(client: TestClient, api_key: str, body: dict[str, Any] = START, **headers: str) -> Any:
-    return client.post("/v1/sessions", json=body, headers=_identity(api_key) | headers)
+    """A start with a new Idempotency-Key, unless `headers` name one: each call is a new request."""
+    new_key = {Header.IDEMPOTENCY_KEY: uuid.uuid4().hex}
+    return client.post("/v1/sessions", json=body, headers=_identity(api_key) | new_key | headers)
 
 
 def _run(session_id: str) -> dict[str, Any]:
@@ -185,16 +188,29 @@ def test_a_wrong_sector_names_the_field(client: TestClient, api_key: str) -> Non
     assert [error["field"] for error in errors] == ["body.sector_id"]
 
 
-def test_two_starts_on_one_asset_at_once_are_two_runs(client: TestClient, api_key: str) -> None:
-    """T-SCN-06: two parallel starts on the same asset both get 202, each its own run."""
+def _in_parallel(send: Callable[[], Any]) -> list[Any]:
+    """Two of the same request at once, their answers by status."""
     answers: list[Any] = []
-    starts = [threading.Thread(target=lambda: answers.append(_start(client, api_key))) for _ in range(2)]
+    starts = [threading.Thread(target=lambda: answers.append(send())) for _ in range(2)]
     for start in starts:
         start.start()
     for start in starts:
         start.join()
-    assert [answer.status_code for answer in answers] == [202, 202]
-    assert len({answer.json()["session_id"] for answer in answers}) == 2
+    return sorted(answers, key=lambda answer: answer.status_code)
+
+
+def test_two_starts_on_one_asset_at_once(
+    client: TestClient, api_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-SCN-06: two parallel starts on the same asset, each with its own key, are two runs; the same start
+    sent twice at once with no key is one run, the other refused 409 duplicate_request naming it."""
+    keyed = _in_parallel(lambda: _start(client, api_key))
+    assert [answer.status_code for answer in keyed] == [202, 202]
+    assert len({answer.json()["session_id"] for answer in keyed}) == 2
+    monkeypatch.setattr(dependencies, "epoch_seconds", lambda: 1_800_000_000.0)  # one window for both
+    keyless = _in_parallel(lambda: client.post("/v1/sessions", json=START, headers=_identity(api_key)))
+    assert [answer.status_code for answer in keyless] == [202, 409]
+    assert keyless[1].json()["details"]["session_id"] == keyless[0].json()["session_id"]
 
 
 def test_the_same_idempotency_key_replays_and_another_asset_is_refused(

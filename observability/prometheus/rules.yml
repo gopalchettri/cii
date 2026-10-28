@@ -2,7 +2,8 @@
 # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
 # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
 # Grafana Alerting. Planned with its metric: IntelStale (M12).
-# No alert channel yet (D-05): firing alerts show in Grafana (home dashboard, Alerting) and at /alertmanager.
+# Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
+# Alerting) and at /alertmanager.
 
 groups:
   - name: tsg-api
@@ -45,7 +46,8 @@ groups:
       # Every `failure` outcome of a run job is final: a retry is counted as `retry`, so a failure is either
       # "failed after Lease.MAX_ATTEMPTS outage retries" or an unexpected error. Both leave a user with a failed
       # run. The timer jobs are left out: a failed reaper pass, control-mapping sweep or scheduled intel refresh
-      # simply runs again on its timer (ReaperNotRunning watches the reaper). An index build counts: an admin may
+      # simply runs again on its timer (ReaperNotRunning and ReaperFailing watch the reaper). An index build
+      # counts: an admin may
       # have asked for it.
       - alert: JobsFailing
         expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_retry_controls|tsg_refresh_external_intelligence"}[15m])) > 0
@@ -76,13 +78,14 @@ groups:
 
       # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
       # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
-      # The age of the last pass, not a rise in tsg_jobs_total: the first pass after a start comes before
+      # The age of the last start, not a rise in tsg_jobs_total: the first pass after a start comes before
       # Prometheus' first scrape, so a rise was never seen and every start showed this for a minute. Only the
-      # worker that runs the reaper exports it; none for 10 minutes (that worker gone) is the same problem.
+      # worker that runs the reaper exports it, from its first pass on; none for 10 minutes (that worker gone,
+      # or restarted and never sent the reaper) is the same problem. Passes that start but fail: ReaperFailing.
       - alert: ReaperNotRunning
         expr: >-
-          time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
-          or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+          time() - max(tsg_reaper_last_start_timestamp_seconds) > 600
+          or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
         for: 5m
         labels: { severity: critical }
         annotations:
@@ -129,14 +132,60 @@ groups:
           summary: No worker is taking {{ $labels.queue }} jobs; they wait until one starts.
           description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
 
+  # Jobs that never ran or never ended: the job outcomes alone cannot show them.
+  - name: tsg-jobs-unfinished
+    rules:
+      # Beat sends the reaper (ReaperNotRunning is quiet) but no pass ends: each fails (MongoDB down) or hangs.
+      # A pass that never finished is exported nowhere, so none for 10 minutes counts too.
+      - alert: ReaperFailing
+        expr: >-
+          (time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
+          or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m]))
+          and time() - max(tsg_reaper_last_start_timestamp_seconds) <= 600
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: The reaper starts but no pass has finished for 15 minutes; stuck jobs are not repaired.
+          description: >-
+            Its passes fail or hang. Check MongoDB first (the stores' tiles); the "Errors and exceptions" table
+            shows why tsg_reap failed. If nothing fails, restart the worker that runs the reaper.
+
+      # Beat's timer messages (reaper, control-mapping sweep, index build, intel check) carry an expiry, which
+      # Celery stamps on beat's clock and checks on the worker's: a beat clock behind, or a stuck worker, drops
+      # them unrun. Each drop is counted as outcome="expired" (app/worker/lifecycle.py).
+      - alert: ScheduledJobsExpiring
+        expr: sum by (task) (increase(tsg_jobs_total{outcome="expired"}[15m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.task }} timer jobs were dropped unrun: they reached a worker after their expiry."
+          description: >-
+            Check that the worker taking them is not stuck or too busy, then the clock of beat's node against
+            the workers': oc debug node/<node> -- chroot /host chronyc tracking.
+
+      # A job with no lease check (AI call or wait) for Lease.STALL_SECONDS stops renewing its lease
+      # (app/worker/lease_renewal.py): the reaper gives it to another worker; its thread may still hold a slot.
+      - alert: JobHung
+        expr: sum(increase(tsg_jobs_hung_total[1h])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: A job made no progress for 15 minutes and was stopped as hung in the last hour.
+          description: >-
+            Grafana Explore, Loki: {app="tsg"} |= "job.stalled" names it (record_id, task). The reaper runs it
+            again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts
+            its pod.
+
   - name: tsg-dependencies
     rules:
+      # The API (each /ready and scrape) and every worker (each heartbeat) report the stores they reach: by
+      # job, so the alert names which one lost it. SQL Server: the API only.
       - alert: MongoDown
-        expr: min(tsg_dependency_up{name="mongo"}) == 0
+        expr: min by (job) (tsg_dependency_up{name="mongo"}) == 0
         for: 3m
         labels: { severity: critical }
         annotations:
-          summary: MongoDB does not answer the API.
+          summary: MongoDB does not answer the {{ $labels.job }}.
           description: Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL.
       - alert: SqlDown
         expr: min(tsg_dependency_up{name="sql"}) == 0
@@ -146,11 +195,11 @@ groups:
           summary: SQL Server does not answer the API.
           description: Asset and library data cannot be read. Check the SQL Server and its connection settings.
       - alert: RedisDown
-        expr: min(tsg_dependency_up{name="redis"}) == 0
+        expr: min by (job) (tsg_dependency_up{name="redis"}) == 0
         for: 3m
         labels: { severity: critical }
         annotations:
-          summary: Redis does not answer the API.
+          summary: Redis does not answer the {{ $labels.job }}.
           description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
       # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
@@ -234,6 +283,25 @@ groups:
         annotations:
           summary: The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served).
           description: Check SQL Server; the "Errors and exceptions" table shows each library.check_failed line.
+
+  - name: tsg-logs
+    rules:
+      # Alloy gives up on a batch after its retries; Loki refuses lines too old, too long or over its rate. Both
+      # are up, so TargetDown is quiet. Loki makes its counter at its first refusal, already above 0, which
+      # increase() cannot see: a counter new in the last 15 minutes counts too.
+      - alert: LogLinesLost
+        expr: >-
+          sum(increase(loki_write_dropped_entries_total[15m])) > 0
+          or sum(increase(loki_discarded_samples_total[15m])) > 0
+          or count(loki_write_dropped_entries_total > 0 unless loki_write_dropped_entries_total offset 15m)
+          or count(loki_discarded_samples_total > 0 unless loki_discarded_samples_total offset 15m)
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them.
+          description: >-
+            Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate).
+            UAT: oc -n ai-common logs deployment/alloy, then deployment/loki.
 
   - name: tsg-platform
     rules:

@@ -12,7 +12,7 @@ from app.ai.slots import AiRequestRate, AiSlots
 from app.core.config import get_settings
 from app.core.constants import ROUTED_QUEUES, AiLimits
 from app.core.database import get_mongodb, get_redis_client, get_stored_procedure_client
-from app.core.readiness import count_online_workers, log_mongodb_topology
+from app.core.readiness import count_online_workers, log_mongodb_topology, log_redis_eviction_policy
 from app.core.singletons import singleton
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.ai_call_repository import AiCallRepository
@@ -373,6 +373,7 @@ def get_work_control_repository() -> WorkControlRepository:
         get_threat_scenario_session_repository(),
         get_threat_scenario_repository(),
         get_remediation_repository(),
+        get_mapping_repository(),
     )
 
 
@@ -513,22 +514,25 @@ def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
 
 
 def set_up_api() -> None:
-    """The API's start-up: every index, the MongoDB topology line, then the AI gateways (building one looks up
-    its model's profile: a model with no profile stops start-up here)."""
+    """The API's start-up: every index, the MongoDB topology and Redis eviction policy lines, then the AI
+    gateways (building one looks up its model's profile: a model with no profile stops start-up here)."""
     create_all_indexes()
     log_mongodb_topology()
+    log_redis_eviction_policy()
     get_chat_model()
     get_embedding_model()
     get_rerank_model()
 
 
 def set_up_worker(job_collections: Iterable[str]) -> None:
-    """A worker's start-up, as the API's: every index (the reaper's scans included), then the AI gateways,
-    which take the worker's longer AI slot wait and wait out a rate-limited request."""
+    """A worker's start-up, as the API's: every index (the reaper's scans included), the Redis eviction policy
+    line, then the AI gateways, which take the worker's longer AI slot wait and wait out a rate-limited
+    request."""
     global _ai_slot_wait_seconds, _waits_out_rate_limits
     _ai_slot_wait_seconds = AiLimits.WORKER_SLOT_WAIT_SECONDS
     _waits_out_rate_limits = True
     create_all_indexes(job_collections)
+    log_redis_eviction_policy()
     get_chat_model()
     get_embedding_model()
     get_rerank_model()

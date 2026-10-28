@@ -144,7 +144,8 @@ class PromptVersion:
     REMEDIATION: Final = f"remediation-{NUMBER}"  # every remediation plan version
 
 
-#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a retry differs.
+#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a new action
+#: (a new epoch) gets a new answer, while a re-delivery of the same job reads its accepted answer back.
 CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
@@ -212,6 +213,7 @@ class LogEvent(StrEnum):
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
     DEPENDENCY_UNAVAILABLE = "dependency.unavailable"
     MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
+    REDIS_EVICTION_POLICY = "redis.eviction_policy"  # at start: maxmemory-policy, error unless noeviction
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
@@ -224,8 +226,8 @@ class LogEvent(StrEnum):
     AI_REQUEST_RATE_BUSY = "ai.request_rate_busy"
     AI_SLOTS_BUSY = "ai.slots_busy"
     AI_SLOT_FREE_FAILED = "ai.slot_free_failed"
-    # Redis failed: at cap 0 AI calls go ahead uncounted and unlimited; at any cap a 429 or an answer could
-    # not change the limit
+    # Redis failed: at cap 0 AI calls go ahead uncounted and unlimited, and requests unspaced; at any cap a
+    # 429 or an answer could not change the limit
     AI_SLOTS_UNTRACKED = "ai.slots_untracked"
     AI_LIMIT_CUT = "ai.limit_cut"  # a gateway 429 set the limit on AI calls in flight
     LIBRARY_RELOADED = "library.reloaded"
@@ -267,13 +269,16 @@ class LogEvent(StrEnum):
     JOB_FAILED = "job.failed"
     JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
     JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback
-    JOB_TOO_LONG = "job.too_long"
+    JOB_STALLED = "job.stalled"  # no lease check for Lease.STALL_SECONDS: it stopped renewing its lease
+    JOB_HANDED_BACK = "job.handed_back"  # a stopping worker queued its running job again, no attempt used
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
+    WORKER_RERANKER_PRELOAD_FAILED = "worker.reranker_preload_failed"  # the first rerank loads it instead
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"
+    WORKER_JOB_HUNG = "worker.job_hung"  # a job thread ignored its lost lease: the liveness probe restarts it
     WORKER_NONE_ONLINE = "worker.none_online"
     WORKERS_UNKNOWN = "worker.count_unknown"
     EVENT_PUBLISH_FAILED = "event.publish_failed"

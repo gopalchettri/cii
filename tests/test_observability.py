@@ -68,6 +68,12 @@ BUILT_ALERTS = {
     "RedisEvictingKeys",
     "JobsRetrying",
     "JobQueueWaitHigh",
+    # Reaper passes that start but never finish; timer messages dropped unrun; a job stopped as hung.
+    "ReaperFailing",
+    "ScheduledJobsExpiring",
+    "JobHung",
+    # Log lines Alloy dropped or Loki refused while both were up.
+    "LogLinesLost",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
@@ -81,9 +87,11 @@ EXPORTER_METRICS = {
     "kube_pod_container_status_last_terminated_reason",
     "kube_pod_container_status_waiting_reason",
     "kube_pod_status_phase",
+    "loki_write_dropped_entries_total",  # Alloy's loki.write
+    "loki_discarded_samples_total",  # Loki itself
 }
 PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
-WATCHED_APP_PROJECTS = ("ai-threatgen", "ai-remediation")  # TSG's own projects: every pod there is TSG's
+WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's own project: every pod there is TSG's
 
 
 def _monitoring_script():
@@ -153,7 +161,7 @@ def test_every_metric_in_alerts_and_dashboard_exists() -> None:
         name
         for query in _prometheus_queries()
         # Quoted label values left out: task="tsg_reap" names a task, not a metric.
-        for name in re.findall(r"\b(?:tsg|redis|flower|kube)_[a-z_]+\b", re.sub(r'"[^"]*"', '""', query))
+        for name in re.findall(r"\b(?:tsg|redis|flower|kube|loki)_[a-z_]+\b", re.sub(r'"[^"]*"', '""', query))
     }
     assert used - known == set()
     named_stores = {
@@ -219,15 +227,17 @@ def test_queue_backlog_watches_every_routed_queue_but_maintenance() -> None:
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
     """In ai-common, shared with the chatbot (D24); only the Role that lets it read the app's pods is in
-    each app project, and the monitoring proxy with its Routes in ai-threatgen (whose host they use)."""
+    the app's project, ai-threatgen, with the monitoring proxy and its Routes (whose host they use)."""
     objects = _uat_objects()
     assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
     elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
         (o["kind"], "ai-common") for o in objects
     }
     assert elsewhere == {
-        (kind, project) for kind in ("Role", "RoleBinding") for project in ("ai-threatgen", "ai-remediation")
-    } | {(kind, "ai-threatgen") for kind in ("Deployment", "Service", "Route")}
+        (kind, project)
+        for kind in ("Role", "RoleBinding", "Deployment", "Service", "Route")
+        for project in WATCHED_APP_PROJECTS
+    }
     for deployment in _template_objects("Deployment"):
         pod = deployment["spec"]["template"]["spec"]
         assert pod["imagePullSecrets"] == [{"name": "quay-pull"}]
@@ -331,13 +341,13 @@ def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() 
 def test_a_fresh_start_never_reads_as_the_reaper_not_running() -> None:
     """Before: ReaperNotRunning and the beat tile read a rise in tsg_jobs_total. The first pass after a start
     comes before Prometheus' first scrape, so for a minute after every start the alert was pending and the
-    tile DOWN. Both read the age of the last pass now, and rules.test.yml checks that exact expression right
+    tile DOWN. Both read the age of the last start now, and rules.test.yml checks that exact expression right
     after a start (promtool runs it)."""
     [rule] = [rule for rule in _rules() if rule["alert"] == "ReaperNotRunning"]
     [tiles] = [panel for panel in _panels() if panel["title"] == "Parts of the system"]
     [beat] = [target["expr"] for target in tiles["targets"] if target["legendFormat"] == "Scheduler (beat)"]
     for expr in (rule["expr"], beat):
-        assert "tsg_reaper_last_pass_timestamp_seconds" in expr and "increase(" not in expr, expr
+        assert "tsg_reaper_last_start_timestamp_seconds" in expr and "increase(" not in expr, expr
     cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
     after_a_start = [
         test for case in cases for test in case.get("promql_expr_test", []) if test["expr"] == rule["expr"]
@@ -490,7 +500,8 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
         for line in path.read_text(encoding="utf-8").splitlines()
         if "-n ai-common rollout restart deployment" in line
     ]
-    assert restarts and all(line.endswith(" -l part-of=tsg-monitoring") for line in restarts)
+    allowed = (" -l part-of=tsg-monitoring", " deployment/worker-reaper")  # by label, or TSG's reaper by name
+    assert restarts and all(line.endswith(allowed) for line in restarts)
 
 
 def _promtool() -> str | None:
@@ -800,4 +811,4 @@ def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> Non
     )
     (worker,) = [job for job in local["scrape_configs"] if job["job_name"] == "worker"]
     targets = {target for config in worker["static_configs"] for target in config["targets"]}
-    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 2
+    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 3

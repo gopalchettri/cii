@@ -1,17 +1,17 @@
 # configmap.yaml - every ConfigMap TSG needs on OpenShift (UAT is production).
-#   1. tsg-config: the app's plain (non-secret) settings, the same in ai-threatgen, ai-remediation and ai-common.
+#   1. tsg-config: the app's plain (non-secret) settings, the same in ai-threatgen and ai-common.
 #   2. The monitoring's config files (Prometheus, Alertmanager, Loki, Alloy, Grafana), all in ai-common, and the
 #      monitoring proxy's (nginx: Grafana and Flower on the API's address), in ai-threatgen.
 # Passwords, keys and connection strings are NOT here: they are in secrets.yaml.
 # Apply:  oc apply -f deploy/configmap.yaml
 # A running pod never sees a changed setting: after a change, restart TSG's pods in each project (the -l leaves
-# every other Deployment alone: v1's in the app projects, the chatbot's in ai-common):
-#   oc -n ai-remediation rollout restart deployment -l part-of=tsg
-#   oc -n ai-remediation rollout status deployment -l part-of=tsg --timeout=10m
+# every other Deployment alone: v1's in ai-threatgen, the chatbot's in ai-common):
 #   oc -n ai-threatgen rollout restart deployment -l part-of=tsg
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
 #   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --timeout=10m
+#   oc -n ai-common rollout restart deployment/worker-reaper
+#   oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 #   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
 #   oc -n ai-threatgen rollout status deployment/monitoring-proxy --timeout=10m
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
@@ -24,12 +24,13 @@ items:                                           # one tsg-config per project th
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place
       name: tsg-config                           # the name every TSG pod reads its settings from (envFrom)
-      namespace: ai-threatgen                    # the API, one worker per queue and beat run here
+      namespace: ai-threatgen                    # the API, beat and every worker but the reaper's run here
       labels: { part-of: tsg }                   # marks it as TSG's
-    data: &settings                              # "&settings" names this block: the two projects below reuse it unchanged
+    data: &settings                              # "&settings" names this block: ai-common's copy below reuses it unchanged
       CII_ENV: "uat"                             # environment name; anything but "dev" gets production's safety checks
       CII_CORS_ORIGINS: "CHANGE_ME_UI_ORIGIN"    # CHANGE: the platform UI's https address(es), comma-separated; "*" stops start-up
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
+      CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
       CII_CHAT_BASE_URL: "https://llmapi.govai.ae"                 # the AI gateway the chat models are called on
       CII_CHAT_MODEL: "litellm_proxy/kimi-k2.5"                    # main chat model (threats, scenarios, plans)
       CII_CHAT_MODEL_THINKING: "false"                             # false = the model's "thinking" mode off (faster)
@@ -76,14 +77,7 @@ items:                                           # one tsg-config per project th
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place
       name: tsg-config                           # the same name, read the same way
-      namespace: ai-remediation                  # the second copy of every worker runs here
-      labels: { part-of: tsg }                   # marks it as TSG's
-    data: *settings                              # "*settings" = exactly the settings written above
-  - apiVersion: v1                               # core API version
-    kind: ConfigMap                              # plain, non-secret settings
-    metadata:                                    # the object's name and place
-      name: tsg-config                           # the same name, read the same way
-      namespace: ai-common                       # Flower runs here (it loads the app's settings to start)
+      namespace: ai-common                       # worker-reaper and Flower run here (Flower loads the settings to start)
       labels: { part-of: tsg }                   # marks it as TSG's
     data: *settings                              # "*settings" = exactly the settings written above
 
@@ -103,8 +97,8 @@ data:                                            # one key per file
   prometheus.yml: |                              # which pods to scrape: a copy of observability/prometheus/prometheus.yml
     # Prometheus in UAT / production (OpenShift). The laptop uses prometheus.local.yml: same rules, same paths.
     #
-    # Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's two projects (ai-threatgen,
-    # ai-remediation) and in ai-common (the monitoring, Flower) that carries the annotations below is scraped, one
+    # Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's project (ai-threatgen) and in
+    # ai-common (the monitoring, Flower, worker-reaper) that carries the annotations below is scraped, one
     # target per pod. ai-common is shared with a chatbot: its pods are left out, whatever they carry.
     #   prometheus.io/scrape: "true"
     #   prometheus.io/port:   "<a containerPort the pod declares>"   (api 8000, worker 9100, flower 5555 …)
@@ -129,8 +123,8 @@ data:                                            # one key per file
       - job_name: pods
         kubernetes_sd_configs:
           - role: pod
-            namespaces: # the app's two projects and the monitoring's; a namespaced Role in each allows nothing more
-              names: [ai-threatgen, ai-remediation, ai-common]
+            namespaces: # the app's project and the monitoring's; a namespaced Role in each allows nothing more
+              names: [ai-threatgen, ai-common]
         relabel_configs:
           # TSG's pods only: the chatbot's pods in ai-common must not join TSG's jobs and alerts.
           - source_labels: [__meta_kubernetes_pod_label_part_of]
@@ -161,10 +155,14 @@ data:                                            # one key per file
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+          # Alerts and the dashboard name a target by instance: <project>/<pod>, not the pod's IP:port.
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+            separator: /
+            target_label: instance
 
       # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
-      # over the labels of the kube-state-metrics pod itself. It reports every pod of the three projects: keep the
-      # app projects' pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
+      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep the
+      # app project's pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
       # (<deployment>-<replicaset hash>-<5 characters>). tests/test_observability.py checks the names.
       - job_name: kube-state-metrics
         honor_labels: true
@@ -172,7 +170,7 @@ data:                                            # one key per file
           - targets: ["kube-state-metrics:8080"]
         metric_relabel_configs:
           - source_labels: [namespace, pod]
-            regex: "(ai-threatgen|ai-remediation);.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower)-[a-z0-9]+-[a-z0-9]{5}"
+            regex: "ai-threatgen;.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
             action: keep
 
       - job_name: prometheus
@@ -184,7 +182,8 @@ data:                                            # one key per file
     # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
     # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
     # Grafana Alerting. Planned with its metric: IntelStale (M12).
-    # No alert channel yet (D-05): firing alerts show in Grafana (home dashboard, Alerting) and at /alertmanager.
+    # Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
+    # Alerting) and at /alertmanager.
 
     groups:
       - name: tsg-api
@@ -227,7 +226,8 @@ data:                                            # one key per file
           # Every `failure` outcome of a run job is final: a retry is counted as `retry`, so a failure is either
           # "failed after Lease.MAX_ATTEMPTS outage retries" or an unexpected error. Both leave a user with a failed
           # run. The timer jobs are left out: a failed reaper pass, control-mapping sweep or scheduled intel refresh
-          # simply runs again on its timer (ReaperNotRunning watches the reaper). An index build counts: an admin may
+          # simply runs again on its timer (ReaperNotRunning and ReaperFailing watch the reaper). An index build
+          # counts: an admin may
           # have asked for it.
           - alert: JobsFailing
             expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_retry_controls|tsg_refresh_external_intelligence"}[15m])) > 0
@@ -258,13 +258,14 @@ data:                                            # one key per file
 
           # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
           # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
-          # The age of the last pass, not a rise in tsg_jobs_total: the first pass after a start comes before
+          # The age of the last start, not a rise in tsg_jobs_total: the first pass after a start comes before
           # Prometheus' first scrape, so a rise was never seen and every start showed this for a minute. Only the
-          # worker that runs the reaper exports it; none for 10 minutes (that worker gone) is the same problem.
+          # worker that runs the reaper exports it, from its first pass on; none for 10 minutes (that worker gone,
+          # or restarted and never sent the reaper) is the same problem. Passes that start but fail: ReaperFailing.
           - alert: ReaperNotRunning
             expr: >-
-              time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
-              or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+              time() - max(tsg_reaper_last_start_timestamp_seconds) > 600
+              or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
             for: 5m
             labels: { severity: critical }
             annotations:
@@ -311,14 +312,60 @@ data:                                            # one key per file
               summary: No worker is taking {{ $labels.queue }} jobs; they wait until one starts.
               description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
 
+      # Jobs that never ran or never ended: the job outcomes alone cannot show them.
+      - name: tsg-jobs-unfinished
+        rules:
+          # Beat sends the reaper (ReaperNotRunning is quiet) but no pass ends: each fails (MongoDB down) or hangs.
+          # A pass that never finished is exported nowhere, so none for 10 minutes counts too.
+          - alert: ReaperFailing
+            expr: >-
+              (time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
+              or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m]))
+              and time() - max(tsg_reaper_last_start_timestamp_seconds) <= 600
+            for: 5m
+            labels: { severity: critical }
+            annotations:
+              summary: The reaper starts but no pass has finished for 15 minutes; stuck jobs are not repaired.
+              description: >-
+                Its passes fail or hang. Check MongoDB first (the stores' tiles); the "Errors and exceptions" table
+                shows why tsg_reap failed. If nothing fails, restart the worker that runs the reaper.
+
+          # Beat's timer messages (reaper, control-mapping sweep, index build, intel check) carry an expiry, which
+          # Celery stamps on beat's clock and checks on the worker's: a beat clock behind, or a stuck worker, drops
+          # them unrun. Each drop is counted as outcome="expired" (app/worker/lifecycle.py).
+          - alert: ScheduledJobsExpiring
+            expr: sum by (task) (increase(tsg_jobs_total{outcome="expired"}[15m])) > 0
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.task }} timer jobs were dropped unrun: they reached a worker after their expiry."
+              description: >-
+                Check that the worker taking them is not stuck or too busy, then the clock of beat's node against
+                the workers': oc debug node/<node> -- chroot /host chronyc tracking.
+
+          # A job with no lease check (AI call or wait) for Lease.STALL_SECONDS stops renewing its lease
+          # (app/worker/lease_renewal.py): the reaper gives it to another worker; its thread may still hold a slot.
+          - alert: JobHung
+            expr: sum(increase(tsg_jobs_hung_total[1h])) > 0
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: A job made no progress for 15 minutes and was stopped as hung in the last hour.
+              description: >-
+                Grafana Explore, Loki: {app="tsg"} |= "job.stalled" names it (record_id, task). The reaper runs it
+                again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts
+                its pod.
+
       - name: tsg-dependencies
         rules:
+          # The API (each /ready and scrape) and every worker (each heartbeat) report the stores they reach: by
+          # job, so the alert names which one lost it. SQL Server: the API only.
           - alert: MongoDown
-            expr: min(tsg_dependency_up{name="mongo"}) == 0
+            expr: min by (job) (tsg_dependency_up{name="mongo"}) == 0
             for: 3m
             labels: { severity: critical }
             annotations:
-              summary: MongoDB does not answer the API.
+              summary: MongoDB does not answer the {{ $labels.job }}.
               description: Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL.
           - alert: SqlDown
             expr: min(tsg_dependency_up{name="sql"}) == 0
@@ -328,11 +375,11 @@ data:                                            # one key per file
               summary: SQL Server does not answer the API.
               description: Asset and library data cannot be read. Check the SQL Server and its connection settings.
           - alert: RedisDown
-            expr: min(tsg_dependency_up{name="redis"}) == 0
+            expr: min by (job) (tsg_dependency_up{name="redis"}) == 0
             for: 3m
             labels: { severity: critical }
             annotations:
-              summary: Redis does not answer the API.
+              summary: Redis does not answer the {{ $labels.job }}.
               description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
           # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
@@ -417,6 +464,25 @@ data:                                            # one key per file
               summary: The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served).
               description: Check SQL Server; the "Errors and exceptions" table shows each library.check_failed line.
 
+      - name: tsg-logs
+        rules:
+          # Alloy gives up on a batch after its retries; Loki refuses lines too old, too long or over its rate. Both
+          # are up, so TargetDown is quiet. Loki makes its counter at its first refusal, already above 0, which
+          # increase() cannot see: a counter new in the last 15 minutes counts too.
+          - alert: LogLinesLost
+            expr: >-
+              sum(increase(loki_write_dropped_entries_total[15m])) > 0
+              or sum(increase(loki_discarded_samples_total[15m])) > 0
+              or count(loki_write_dropped_entries_total > 0 unless loki_write_dropped_entries_total offset 15m)
+              or count(loki_discarded_samples_total > 0 unless loki_discarded_samples_total offset 15m)
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them.
+              description: >-
+                Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate).
+                UAT: oc -n ai-common logs deployment/alloy, then deployment/loki.
+
       - name: tsg-platform
         rules:
           - alert: TargetDown
@@ -475,7 +541,7 @@ data:                                            # one key per file
               summary: "{{ $labels.pod }} ran out of memory and was restarted."
               description: Raise its memory limit in deploy/, or find what used the memory (the "What is slow" row).
 
-# Alertmanager: where alerts go (nowhere yet, D-05)
+# Alertmanager: where alerts go (by email; fill in its CHANGE_ME_ values here and in observability/alertmanager/alertmanager.yml)
 ---
 apiVersion: v1                                   # core API version
 kind: ConfigMap                                  # Alertmanager's config, mounted at /etc/alertmanager
@@ -486,19 +552,39 @@ metadata:                                        # the object's name and place
 data:                                            # one key per file
   alertmanager.yml: |                            # receivers and routing: a copy of observability/alertmanager/alertmanager.yml
     # Alertmanager, UAT and laptop. Runs with --web.external-url=<host>/alertmanager/.
-    # D-05: no alert channel yet. Firing alerts show in Grafana (home dashboard and Alerting) and at /alertmanager.
-    # When the owner names a channel, add it to `receivers` (email_configs, webhook_configs …) and point the
-    # route at it.
+    # Alerts are sent by email (D-05). Two senders are set up; the `receiver:` line under `route:` picks the one used:
+    #   company-smtp  the company's mail relay
+    #   gmail         smtp.gmail.com:587 (STARTTLS), signed in with a Google app password
+    # Every CHANGE_ME_ value is a placeholder: put in the relay, the sender and the recipients here and in the copy in
+    # deploy/configmap.yaml. Passwords never go here: each is a file from Secret tsg-monitoring (deploy/secrets.yaml),
+    # mounted at /etc/alertmanager-secrets (deploy/deploy_common.yaml). The laptop has no such folder, so its
+    # Alertmanager cannot sign in and sends nothing. Firing alerts also show in Grafana (home dashboard and Alerting)
+    # and at /alertmanager.
 
     route:
-      receiver: none
+      receiver: company-smtp # where alerts go: company-smtp or gmail
       group_by: [alertname]
       group_wait: 30s
       group_interval: 5m
       repeat_interval: 4h
 
     receivers:
-      - name: none
+      - name: company-smtp
+        email_configs:
+          - smarthost: CHANGE_ME_RELAY_HOST:587 # the relay's host:port; it must offer STARTTLS (require_tls)
+            from: CHANGE_ME_SENDER@company.example
+            to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+            auth_username: CHANGE_ME_RELAY_USER
+            auth_password_file: /etc/alertmanager-secrets/smtp-relay-password # SMTP_RELAY_PASSWORD
+            send_resolved: true # also say when an alert has cleared
+      - name: gmail
+        email_configs:
+          - smarthost: smtp.gmail.com:587 # STARTTLS (require_tls)
+            from: CHANGE_ME_SENDER@gmail.com
+            to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+            auth_username: CHANGE_ME_SENDER@gmail.com # the same Gmail address
+            auth_password_file: /etc/alertmanager-secrets/gmail-app-password # GMAIL_APP_PASSWORD
+            send_resolved: true # also say when an alert has cleared
 
 # Loki: log storage
 ---
@@ -578,9 +664,9 @@ metadata:                                        # the object's name and place
 data:                                            # one key per file
   config.alloy: |                                # which pods' logs to read: a copy of observability/alloy/uat.alloy
     // Alloy in UAT / production: ships the stdout of TSG's pods (pod label part-of: tsg or tsg-monitoring) in the
-    // app's two projects and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
-    // folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop uses local.alloy: same
-    // labels, read from log files instead.
+    // app's project (ai-threatgen) and in ai-common (the monitoring, Flower, worker-reaper) to Loki, through the
+    // Kubernetes API (no host folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop
+    // uses local.alloy: same labels, read from log files instead.
 
     logging {
       level  = "info"
@@ -590,7 +676,7 @@ data:                                            # one key per file
     discovery.kubernetes "pods" {
       role = "pod"
       namespaces {
-        names = ["ai-threatgen", "ai-remediation", "ai-common"] // a namespaced Role in each allows nothing more
+        names = ["ai-threatgen", "ai-common"] // a namespaced Role in each allows nothing more
       }
     }
 
@@ -988,7 +1074,7 @@ data:                                            # one key per file
           "id": 4,
           "type": "stat",
           "title": "Parts of the system",
-          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = library search, threat intelligence; reaper = the reaper and the controls retry sweep). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper started a pass in the last 5 minutes (one started before its worker restarted counts). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1079,12 +1165,24 @@ data:                                            # one key per file
               "format": "time_series"
             },
             {
+              "refId": "O",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_reaper\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: reaper",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
               "refId": "F",
               "datasource": {
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "(time() - max(tsg_reaper_last_pass_timestamp_seconds) < 300) * 0 + 1 or vector(0)",
+              "expr": "(time() - max(max_over_time(tsg_reaper_last_start_timestamp_seconds[10m])) < 300) * 0 + 1 or vector(0)",
               "legendFormat": "Scheduler (beat)",
               "instant": true,
               "range": false,
@@ -1404,6 +1502,22 @@ data:                                            # one key per file
                           "RedisEvictingKeys": {
                             "text": "Redis is full and drops keys: waiting jobs can be lost",
                             "index": 26
+                          },
+                          "ReaperFailing": {
+                            "text": "The reaper starts but fails: stuck jobs are not repaired",
+                            "index": 27
+                          },
+                          "ScheduledJobsExpiring": {
+                            "text": "Timer jobs are dropped unrun: a clock is off or a worker is stuck",
+                            "index": 28
+                          },
+                          "JobHung": {
+                            "text": "A job hung and was stopped: it runs again on another worker",
+                            "index": 29
+                          },
+                          "LogLinesLost": {
+                            "text": "Log lines were lost on the way to Loki",
+                            "index": 30
                           }
                         }
                       }
@@ -1943,7 +2057,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|too_long)\"` [$__range])) or vector(0)",
+              "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|stalled)\"` [$__range])) or vector(0)",
               "queryType": "instant"
             }
           ],
@@ -2225,7 +2339,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error_type }}{{ .error_type }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -2358,8 +2472,8 @@ data:                                            # one key per file
                             "text": "A job could not renew its lease",
                             "index": 14
                           },
-                          "job.too_long": {
-                            "text": "A job ran too long and was stopped",
+                          "job.stalled": {
+                            "text": "A job made no progress for 15 minutes",
                             "index": 15
                           },
                           "job.send_failed": {
@@ -2742,7 +2856,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error_type }}{{ .error_type }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -2875,8 +2989,8 @@ data:                                            # one key per file
                             "text": "A job could not renew its lease",
                             "index": 14
                           },
-                          "job.too_long": {
-                            "text": "A job ran too long and was stopped",
+                          "job.stalled": {
+                            "text": "A job made no progress for 15 minutes",
                             "index": 15
                           },
                           "job.send_failed": {
@@ -5153,7 +5267,7 @@ data:                                            # one key per file
           "id": 61,
           "type": "table",
           "title": "Jobs now, by kind and status",
-          "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute. For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
+          "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute; this shows the count of its newest pass (a worker that missed the latest passes keeps an older one). For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -5165,7 +5279,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max by (kind, status) (tsg_jobs_current) > 0",
+              "expr": "max by (kind, status) (tsg_jobs_current and on (instance) topk(1, tsg_reaper_last_pass_timestamp_seconds)) > 0",
               "legendFormat": "__auto",
               "instant": true,
               "range": false,

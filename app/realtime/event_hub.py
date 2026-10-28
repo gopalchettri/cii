@@ -17,6 +17,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.core.config import get_settings
 from app.core.constants import ErrorMessage, LogEvent, Realtime, Timeouts
+from app.core.database import redis_tls_options
 from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS
 
 log = structlog.get_logger(__name__)
@@ -76,8 +77,12 @@ class EventHub:
             await asyncio.sleep(Realtime.RECONNECT_SECONDS)
 
     async def _read_until_disconnected(self) -> None:
+        url = get_settings().redis_url
         redis = AsyncRedis.from_url(
-            get_settings().redis_url, socket_connect_timeout=Timeouts.REDIS_SECONDS, decode_responses=True
+            url,
+            socket_connect_timeout=Timeouts.REDIS_SECONDS,
+            decode_responses=True,
+            **redis_tls_options(url),
         )
         async with redis, redis.pubsub() as subscription:
             await subscription.psubscribe(Realtime.CHANNEL_PATTERN)

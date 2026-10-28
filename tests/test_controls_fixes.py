@@ -234,6 +234,9 @@ def test_a_message_stops_retrying_an_outage_after_its_last_retry(
     assert result.successful() is not retried
     stopped = [entry for entry in logs if entry.get("reason") == "outage_retries_used"]
     assert [entry["event"] for entry in stopped] == ([] if retried else [LogEvent.JOB_NOT_CLAIMED])
+    assert [(entry["attempt"], entry["message"]) for entry in stopped] == (
+        [] if retried else [(retries + 1, "mongo down")]
+    )
 
 
 @pytest.mark.parametrize(

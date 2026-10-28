@@ -133,7 +133,7 @@ class EvidenceIndexKeeper:
                 self._told_no_data = True
                 log.warning(LogEvent.EXTERNAL_INTELLIGENCE_NO_DATA, action=IntelMessage.NO_DATA_YET.value)
             return
-        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error=type(exc).__name__)
+        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error_type=type(exc).__name__)
 
     def _settle_failure(self, exc: Exception) -> None:
         """End a failed build: wanted again after a pause, doubled per failure except a first-build outage."""

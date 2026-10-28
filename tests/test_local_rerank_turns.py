@@ -2,9 +2,11 @@
 mapping (40 controls per scenario, one prediction at a time); now a waiting foreground call goes before any
 waiting background one, mapping scores a few documents per turn, and a stopped job never predicts."""
 
+import sys
 import threading
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 from prometheus_client import REGISTRY
@@ -131,6 +133,39 @@ def test_a_rerank_outside_background_work_is_foreground() -> None:
     with ai.background_reranks():
         assert ai.reranks_in_background()
     assert not ai.reranks_in_background()
+
+
+class _SlowLoad:
+    """The local model's class: each load counted and slow, as a cold load (about 50 s) is."""
+
+    loads = 0
+
+    def __init__(self, _name: str) -> None:
+        type(self).loads += 1
+        time.sleep(0.2)
+
+    def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        return [0.5] * len(pairs)
+
+
+def test_a_preload_racing_the_first_rerank_loads_the_model_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before: the first set after every worker start waited about 50 s for the cold load. The worker now
+    preloads from a thread at start; a rerank arriving meanwhile waits for that load, never starts another."""
+    _SlowLoad.loads = 0
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(CrossEncoder=_SlowLoad))
+    rerank, errors = ai.RerankModel("test-local-rerank", RerankModelProfile(timeout_seconds=5), "", ""), []
+    preload = _start(rerank.preload, background=False, errors=errors)
+    scenario = _start(lambda: rerank.score_relevance("scenario", ["a"]), background=False, errors=errors)
+    for thread in (preload, scenario):
+        thread.join(10)
+    assert errors == [] and _SlowLoad.loads == 1
+
+
+def test_a_proxy_reranker_has_nothing_to_preload(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SlowLoad.loads = 0
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(CrossEncoder=_SlowLoad))
+    ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key").preload()
+    assert _SlowLoad.loads == 0
 
 
 @pytest.mark.parametrize("documents", [[], ["only one"]])

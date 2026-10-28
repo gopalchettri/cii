@@ -286,12 +286,11 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     assert next_set.status_code == 409
 
 
-def test_the_key_is_required_and_names_one_request(
+def test_a_key_names_one_request(
     client: TestClient, api_key: str, manual: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No key: 422. The key with another body, a generated run's key (even with this body's fingerprint), or
-    a parallel request whose upsert met the first's run: 409, nothing proposed."""
-    assert _post(client, api_key, BODY, None).status_code == 422
+    """The key with another body, a generated run's key (even with this body's fingerprint), or a parallel
+    request whose upsert met the first's run: 409, nothing proposed."""
     key = uuid.uuid4().hex
     assert _post(client, api_key, BODY, key).status_code == 202
     another = _with(threat_scenario="Another attack, written differently.")

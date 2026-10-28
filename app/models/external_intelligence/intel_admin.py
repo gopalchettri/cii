@@ -40,6 +40,7 @@ class IntelSwitchOut(BaseModel):
     effective: bool  # on only when both are on
     changed_at: datetime | None = None
     changed_by: str | None = None
+    refresh_job_id: str | None = None  # the refresh turning it on queued; none when one was already queued
     refresh_not_queued: str | None = None  # turned on, but its refresh could not be queued: why
 
 

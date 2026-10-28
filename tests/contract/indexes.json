@@ -480,10 +480,14 @@
      ]
     ]
    },
-   "controls.status_1_controls.last_attempt_at_1": {
+   "controls.status_1_controls.attempts_1_controls.last_attempt_at_1": {
     "key": [
      [
       "controls.status",
+      1
+     ],
+     [
+      "controls.attempts",
       1
      ],
      [
@@ -500,6 +504,18 @@
      ],
      [
       "controls.queued_at",
+      1
+     ]
+    ]
+   },
+   "created_at_1_session_id_1": {
+    "key": [
+     [
+      "created_at",
+      1
+     ],
+     [
+      "session_id",
       1
      ]
     ]
@@ -752,6 +768,26 @@
      [
       "created_at",
       -1
+     ]
+    ]
+   },
+   "tenant_id_1_entity_id_1_status_1_created_at_1": {
+    "key": [
+     [
+      "tenant_id",
+      1
+     ],
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "status",
+      1
+     ],
+     [
+      "created_at",
+      1
      ]
     ]
    },

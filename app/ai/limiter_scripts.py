@@ -1,8 +1,15 @@
 """The Lua scripts the AI call limiters (app/ai/slots.py) run on Redis: each is one atomic step, timed by
 the Redis server's own clock (TIME), so pods whose clocks differ still agree."""
 
-#: KEYS[1] the slots · KEYS[2] the limit a 429 set · ARGV[1] the cap (0 = none) · ARGV[2] the lease's seconds
-#: · ARGV[3] the call's id. 1 = taken, 0 = every slot is busy. No cap and no limit: always taken.
+#: KEYS[1] the slots · KEYS[2] the limit a 429 set · KEYS[3] the waiting line · KEYS[4] each waiter's last
+#: poll · ARGV[1] the cap (0 = none) · ARGV[2] the lease's seconds · ARGV[3] the call's id · ARGV[4] seconds
+#: after its last poll a waiter leaves the line · ARGV[5] the caller's wait · ARGV[6] '1': its last try, so a
+#: refusal also takes it out of the line. 1 = taken, 0 = not its turn. No cap and no limit: always taken, no
+#: line. With one, the line decides: a free slot goes to the first in it. A waiter's place is when it stops
+#: waiting (its first poll + its wait), so the API's callers (30 s) go ahead of every worker (whose wait only
+#: its lease ends), each in the order they came.
+#: ponytail: a waiter that stops without its last try (a lost lease, a dead pod) keeps its place for up to
+#: ARGV[4] s; leave the line on LeaseLost if those pauses ever matter.
 TAKE_FREE_SLOT_SCRIPT = """
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
@@ -10,7 +17,21 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 local cap = tonumber(ARGV[1])
 local limit = tonumber(redis.call('HGET', KEYS[2], 'limit'))
 if limit and (cap == 0 or limit < cap) then cap = math.floor(limit) end
-if cap > 0 and redis.call('ZCARD', KEYS[1]) >= cap then return 0 end
+if cap > 0 then
+  for _, waiter in ipairs(redis.call('ZRANGEBYSCORE', KEYS[4], '-inf', now - tonumber(ARGV[4]))) do
+    redis.call('ZREM', KEYS[3], waiter)
+    redis.call('ZREM', KEYS[4], waiter)
+  end
+  redis.call('ZADD', KEYS[3], 'NX', now + tonumber(ARGV[5]), ARGV[3])
+  local served = redis.call('ZRANK', KEYS[3], ARGV[3]) < cap - redis.call('ZCARD', KEYS[1])
+  if served or ARGV[6] == '1' then
+    redis.call('ZREM', KEYS[3], ARGV[3])
+    redis.call('ZREM', KEYS[4], ARGV[3])
+  else
+    redis.call('ZADD', KEYS[4], now, ARGV[3])
+  end
+  if not served then return 0 end
+end
 redis.call('ZADD', KEYS[1], now + tonumber(ARGV[2]), ARGV[3])
 return 1
 """

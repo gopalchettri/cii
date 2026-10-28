@@ -1,5 +1,6 @@
 """Readiness: every store answers and every routed queue has a live worker, and the MongoDB topology. Read by
-/ready and /metrics (app/api/routers/health.py) and logged at start-up."""
+/ready and /metrics (app/api/routers/health.py) and each worker's heartbeat (its stores); logged at
+start-up, with Redis' eviction policy."""
 
 import asyncio
 import threading
@@ -7,7 +8,7 @@ import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pymongo
 import structlog
@@ -99,21 +100,47 @@ def describe_mongodb_topology() -> dict[str, Any]:
 
 
 def log_mongodb_topology() -> None:
-    """One start-up line naming the MongoDB topology (API and each worker); never fails start-up."""
+    """One start-up line naming the MongoDB topology (API and each worker) and the write concern every write
+    uses; never fails start-up."""
     try:
-        log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology())
+        write_concern = get_mongodb().write_concern.document
+        log.info(LogEvent.MONGODB_TOPOLOGY, **describe_mongodb_topology(), write_concern=write_concern)
     except Exception:  # noqa: BLE001 — a report only: a store that does not answer fails elsewhere
         log.warning(LogEvent.MONGODB_TOPOLOGY, replica_set=None, exc_info=True)
+
+
+def log_redis_eviction_policy() -> None:
+    """One start-up line naming Redis' maxmemory-policy: an error unless noeviction, since any other policy
+    drops keys once Redis is full (a queue list, the AI limiters' state); never fails start-up."""
+    try:
+        policy = cast(dict[str, Any], get_redis_client().info("memory")).get("maxmemory_policy")
+    except Exception:  # noqa: BLE001 — a report only: a Redis that does not answer fails elsewhere
+        log.warning(LogEvent.REDIS_EVICTION_POLICY, maxmemory_policy=None, exc_info=True)
+        return
+    report = log.info if policy == "noeviction" else log.error
+    report(LogEvent.REDIS_EVICTION_POLICY, maxmemory_policy=policy)
 
 
 def check_readiness() -> Readiness:
     """Each store up or down, and live workers per queue; sets tsg_dependency_up and tsg_workers_online.
     A check still running Timeouts.READY_CHECK_SECONDS after it started counts as down."""
     runs, workers_run = _start_runs()
-    pending, left = _still_within_bound([*runs.values(), workers_run])
+    _wait_within_bound([*runs.values(), workers_run])
+    return _results(runs, workers_run)
+
+
+def check_stores(names: Iterable[Dependency]) -> dict[Dependency, bool]:
+    """Each named store up or down, set in tsg_dependency_up: a worker's own view, which no /metrics shows."""
+    runs = {name: _current_run(name, _DEPENDENCY_CHECKS[name]) for name in names}
+    _wait_within_bound(list(runs.values()))
+    return {name: _report_dependency(name, run) for name, run in runs.items()}
+
+
+def _wait_within_bound(runs: list[_Run]) -> None:
+    """Wait for the runs still inside their bound, at most what is left of it."""
+    pending, left = _still_within_bound(runs)
     if pending:
         wait([run.future for run in pending], timeout=left)
-    return _results(runs, workers_run)
 
 
 async def check_readiness_without_a_thread() -> Readiness:

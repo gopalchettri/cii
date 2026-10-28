@@ -287,7 +287,7 @@ def test_overall_progress_takes_the_first_that_applies(
         "job": {"epoch": 2, "error": None, "retry": retry},
         "updated_at": NOW,
     }
-    shown = RemediationStatus.from_record(record)
+    shown = RemediationStatus.from_record(record, scenario_accepted=True)
     assert (shown.progress.overall, shown.latest_version) == (overall, 2)
     notice = shown.progress.retrying
     assert (notice is not None) is (overall == RemediationProgress.GENERATING)
@@ -328,10 +328,10 @@ def test_the_accepted_version_is_shown_else_the_newest_done() -> None:
         "updated_at": NOW,
         "versions": [item | {"version": 1, "plan": {"not": "a plan"}}, item | {"version": 2}],
     }  # fmt: skip
-    result = RemediationResult.from_records(record, None, include_history=False)
+    result = RemediationResult.from_records(record, None, True, include_history=False)
     assert (result.shown_version, result.versions) == (2, None)
     with pytest.raises(KeyError):  # the malformed plan is read only for the history
-        RemediationResult.from_records(record, None, include_history=True)
+        RemediationResult.from_records(record, None, True, include_history=True)
 
 
 def test_accepting_moves_the_one_accepted_version_and_a_repeat_changes_nothing() -> None:

@@ -119,9 +119,7 @@ class RemediationPlanJob:
             changes: dict[str, Any] = {"content.actors": actors}
             if pending.get("proposal"):
                 actor_ids = tuple(actor["id"] for actor in actors)
-                changes |= _propose_manual_threat(
-                    self._threats, self._audit, scenario["_id"], scenario["content"], actor_ids, pending["by"]
-                )
+                changes |= _propose_while_held(self._threats, self._audit, lease, scenario, actor_ids)
             scenario = self._scenarios.update_manual_scenario_findings(
                 scenario["_id"], changes, PLANNED_SCENARIO_FIELDS
             )
@@ -158,7 +156,7 @@ class RemediationPlanJob:
         by another job."""
         if active_mapped_controls(scenario, by_id):
             return scenario["controls"]
-        scenario_id, task_id = scenario["_id"], f"{lease.task_id}:plan"
+        scenario_id, task_id = scenario["_id"], f"{lease.task_id}{Remediation.CONTROLS_CLAIM_SUFFIX}"
         remap = (scenario.get("controls") or {}).get("status") == Status.DONE  # mapped, but nothing active
         claimed = self._scenarios.claim_scenario_controls_by_id(scenario_id, task_id, remap)
         if claimed is not None:
@@ -184,13 +182,8 @@ class RemediationPlanJob:
             self._settle(claimed)
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
-            # A generated scenario's queued again, a hand-written one's failed; a stopped job keeps no error.
-            outcome = Status.FAILED if claimed.get("source") == RunKind.MANUAL else Status.QUEUED
-            freed_error: dict[str, str] | None = None
-            if isinstance(exc, TEMPORARY_ERRORS):
-                freed_error = outage_error(exc)
-            elif not isinstance(exc, LeaseLost):
-                freed_error = job_error_of(exc)
+            run_cancelled = self._sessions.is_cancelled(claimed["session_id"])
+            outcome, freed_error = _freed_controls(claimed, exc, run_cancelled)
             self._scenarios.update_scenario_controls(
                 scenario_id, task_id, attempts, outcome, error=freed_error
             )
@@ -227,6 +220,39 @@ class _ControlsLease:
         return self._scenarios.update_scenario_controls(
             self.record_id, self._task_id, self._attempts, Status.RUNNING
         )
+
+
+def _freed_controls(
+    claimed: dict[str, Any], exc: Exception, run_cancelled: bool
+) -> tuple[Status, dict[str, str] | None]:
+    """(outcome, error) of a controls claim given back after `exc`. Cancelled with no error when stopped on
+    purpose: a generated scenario's while its run's cancel stands, a hand-written one's (only its plan maps
+    them) when the job was stopped (a lost lease). Else a stopped job's queued again with no error; after an
+    outage or a fault, saying why: a hand-written one's failed, a generated one's queued."""
+    manual = claimed.get("source") == RunKind.MANUAL
+    if (run_cancelled and not manual) or (manual and isinstance(exc, LeaseLost)):
+        return Status.CANCELLED, None
+    if isinstance(exc, LeaseLost):
+        return Status.QUEUED, None
+    error = outage_error(exc) if isinstance(exc, TEMPORARY_ERRORS) else job_error_of(exc)
+    return (Status.FAILED if manual else Status.QUEUED), error
+
+
+def _propose_while_held(
+    threats: ThreatRepository,
+    audit: AuditRepository,
+    lease: JobLease,
+    scenario: dict[str, Any],
+    actor_ids: tuple[int, ...],
+) -> dict[str, Any]:
+    """The hand-written scenario's new wording proposed (_propose_manual_threat) only while the job still
+    holds its lease: a plan cancelled and its run deleted meanwhile proposes nothing."""
+    # ponytail: a cancel and delete landing between this renewal and the proposal still propose; closing that
+    # needs one transaction across MongoDB and SQL Server.
+    if not lease.renew_job():
+        raise LeaseLost(lease.record_id)
+    content, by = scenario["content"], scenario["pending"]["by"]
+    return _propose_manual_threat(threats, audit, scenario["_id"], content, actor_ids, by)
 
 
 def _propose_manual_threat(

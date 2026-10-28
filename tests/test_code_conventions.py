@@ -1,6 +1,6 @@
-"""Guards for the owner's code rules: no inline text for log event names or exception messages; folders
-follow the architecture layers (BLUEPRINT §5) and calls go one way; database code only in data_access/; every
-data shape in models/; no god class, function or file."""
+"""Guards for the owner's code rules: no inline text for log event names or exception messages; one log field
+name per meaning; folders follow the architecture layers (BLUEPRINT §5) and calls go one way; database code
+only in data_access/; every data shape in models/; no god class, function or file."""
 
 import ast
 import importlib
@@ -20,6 +20,19 @@ INLINE_LOG_EVENT = re.compile(r"\blog\.(debug|info|warning|error|exception)\(\s*
 INLINE_RAISE_MESSAGE = re.compile(r"\braise\s+\w+\(\s*[\"']")
 #: The pod's own clock read directly: every "now" comes from app/core/clock.py, MongoDB's clock.
 POD_CLOCK_READ = re.compile(r"\bdatetime\.(now|utcnow|today)\(|\btime\.time\(\)|\bdate\.today\(")
+#: Calls whose keyword names become log fields: structlog's levels and its bound context.
+LOG_LEVELS = {"debug", "info", "warning", "error", "exception", "critical"}
+LOG_FIELD_CALLS = LOG_LEVELS | {"bind", "bind_contextvars", "bound_contextvars"}
+#: Log field names with a meaning that already has a name, and the name to use.
+LOG_FIELD_SYNONYMS = {
+    "attempts": "attempt (the job's attempt number)",
+    "retries": "attempt (the job's attempt number)",
+    "sends": "resends (the reaper's re-sends of a job that never started)",
+    "job_id": "record_id (the record a job runs on, an admin job's too)",
+    "error": "message (its text) or error_type (its class name)",
+    "cause": "message (its text) or error_type (its class name)",
+    "reask_error": "error_type (its class name)",
+}
 
 #: Which layers each layer may import (BLUEPRINT §5): the diagram's arrows. A layer always may import itself.
 ALLOWED_IMPORTS: dict[str, set[str]] = {
@@ -119,6 +132,55 @@ def _offending_lines(pattern: re.Pattern[str]) -> list[str]:
 
 def test_log_event_names_come_from_the_log_event_enum() -> None:
     assert _offending_lines(INLINE_LOG_EVENT) == [], "use app.constants.LogEvent"
+
+
+def _spread_keys(value: ast.expr) -> list[str]:
+    """The keys of a dict literal spread into a call, through `a if b else c`."""
+    if isinstance(value, ast.IfExp):
+        return _spread_keys(value.body) + _spread_keys(value.orelse)
+    if isinstance(value, ast.Dict):
+        return [
+            key.value for key in value.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        ]
+    return []
+
+
+def _log_field_names(call: ast.Call) -> list[str]:
+    """The field names a log call writes: its keywords and the keys of the dict literals it spreads."""
+    spread = [
+        name for keyword in call.keywords if keyword.arg is None for name in _spread_keys(keyword.value)
+    ]
+    return [keyword.arg for keyword in call.keywords if keyword.arg] + spread
+
+
+def _is_log_call(call: ast.Call) -> bool:
+    """A structlog call: by its method's name, or by its first argument, an event (`write(LogEvent.X)`)."""
+    if isinstance(call.func, ast.Attribute) and call.func.attr in LOG_FIELD_CALLS:
+        return True
+    first = call.args[0] if call.args else None
+    return (
+        isinstance(first, ast.Attribute)
+        and isinstance(first.value, ast.Name)
+        and first.value.id.endswith("Event")
+    )
+
+
+def test_every_log_field_has_one_name_per_meaning() -> None:
+    """The log panels and debug_tools.py read one name per meaning; `reason` is a code, text is `message`."""
+    calls = [
+        (source, node)
+        for source in APP_SOURCES
+        for node in ast.walk(_tree(source))
+        if isinstance(node, ast.Call) and _is_log_call(node)
+    ]
+    assert len(calls) > 100, f"the guard sees {len(calls)} log calls"
+    offenders = [
+        f"{_name(source)}:{call.lineno} {field}: use {LOG_FIELD_SYNONYMS[field]}"
+        for source, call in calls
+        for field in _log_field_names(call)
+        if field in LOG_FIELD_SYNONYMS
+    ]
+    assert offenders == [], "\n".join(offenders)
 
 
 def test_exception_messages_come_from_constants() -> None:

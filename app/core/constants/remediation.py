@@ -10,6 +10,7 @@ class Remediation:
     MAX_CONTROL_REFS: Final = 50  # register controls, or a hand-written scenario's controls
     ALTERNATIVES: Final = 5  # library controls offered to replace an identified control that does not fit
     ALTERNATIVE_MATCH: Final = "alternative"  # an alternative's match, beside exact, nearest and given
+    CONTROLS_CLAIM_SUFFIX: Final = ":plan"  # ends a plan job's controls claim task id (its plan's mapping)
     MAX_ACTION_DAYS: Final = 3_650  # one action's duration; above it is capped with a warning
     STATEMENT_MAX_CHARS: Final = 4_000  # a hand-written scenario or risk statement
     NAME_MAX_CHARS: Final = 200  # risk owner, business division, a category name
@@ -116,6 +117,7 @@ class RemediationProgress(StrEnum):
     FAILED = "failed"  # the latest version failed
     CANCELLED = "cancelled"  # its owner stopped the latest version being written
     GENERATING = "generating"  # the latest version is queued or running
+    READ_ONLY = "read_only"  # no version decided, and its scenario is no longer accepted: nothing to review
     AWAITING_REVIEW = "awaiting_review"  # no version decided yet
     REJECTED = "rejected"
     ACCEPTED = "accepted"
@@ -179,7 +181,6 @@ class RemediationMessage(StrEnum):
     CHANGED_CONCURRENTLY = (
         "Remediation plan '{remediation_id}' changed while this decision was made: read it again."
     )
-    IDEMPOTENCY_KEY_REQUIRED = "A hand-written scenario needs an Idempotency-Key header."
     THREAT_REFS_INVALID = "The threat, its type or its category does not match the library."
     UNKNOWN_ID = "No live or pending library row has id {id}."
     ID_NAME_DISAGREE = "Id {id} is the library's '{library_name}', not '{name}'."

@@ -3,6 +3,7 @@ how it shuts down. Each function decorated with a signal is a Celery signal rece
 
 import re
 import sys
+import threading
 import time
 from typing import Any
 
@@ -11,15 +12,18 @@ from celery import Task, signals
 from celery.concurrency import get_implementation
 from prometheus_client import start_http_server
 
+from app.ai import RerankModel
 from app.core import metrics
-from app.core.constants import ErrorMessage, LogEvent, TaskName, module_of
+from app.core.constants import ErrorMessage, LogEvent, TaskName, Worker, module_of
 from app.core.database import get_mongodb, get_stored_procedure_client
+from app.core.lease_signal import start_thread_without_lease
 from app.core.logging import configure_logging
 from app.core.readiness import log_mongodb_topology
 from app.worker.celery_app import REQUEST_ID_HEADER, queue_of, settings
 from app.worker.external_intelligence.warm_up import start_following_active_snapshot, warm_up_intelligence
 from app.worker.heartbeat import WorkerHeartbeat
 from app.worker.jobs import JOB_COLLECTIONS, JobWaiting
+from app.worker.lease_renewal import hand_back_running_jobs
 
 log = structlog.get_logger(__name__)
 
@@ -48,18 +52,17 @@ def prepare_worker(sender: Any, **_: object) -> None:
     except OSError as exc:
         raise _start_failed(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
     metrics.start_job_counters(TaskName)
-    if queue_of(TaskName.REAP) in sender.app.amqp.queues.consume_from:  # -Q is read before worker_init
-        metrics.start_reaper_clock()
     _serve_metrics(pool)
     _prepare_stores_and_models()
     log_mongodb_topology()
     warm_up_external_intelligence(sender)  # before Celery starts the consumer and sends worker_ready
+    preload_local_reranker(sender)
 
 
-def _start_failed(reason: str) -> SystemExit:
+def _start_failed(message: str) -> SystemExit:
     """Log why this process cannot start (with the exception in hand, if any); the SystemExit to raise."""
-    log.error(LogEvent.WORKER_START_FAILED, reason=reason, exc_info=sys.exc_info()[1] is not None)
-    return SystemExit(reason)
+    log.error(LogEvent.WORKER_START_FAILED, message=message, exc_info=sys.exc_info()[1] is not None)
+    return SystemExit(message)
 
 
 def _serve_metrics(pool: str) -> None:
@@ -124,6 +127,27 @@ def warm_up_external_intelligence(sender: Any) -> None:
     start_following_active_snapshot(settings, switch, container.get_evidence_index_keeper)
 
 
+def preload_local_reranker(sender: Any) -> threading.Thread | None:
+    """On a worker that writes scenarios or maps controls, load the reranker from a daemon thread, so the
+    first set after a start does not wait for the laptop's cold load; the worker consumes meanwhile."""
+    reranking = (queue_of(TaskName.WRITE_SCENARIOS), queue_of(TaskName.MAP_CONTROLS))
+    if not any(queue in sender.app.amqp.queues.consume_from for queue in reranking):
+        return None
+    from app import container
+
+    rerank = container.get_rerank_model()
+    thread = threading.Thread(target=_preload, args=(rerank,), name="rerank-preload", daemon=True)
+    thread.start()
+    return thread
+
+
+def _preload(rerank: RerankModel) -> None:
+    try:
+        rerank.preload()
+    except Exception:  # noqa: BLE001 — never stops the worker: the first rerank loads it instead
+        log.warning(LogEvent.WORKER_RERANKER_PRELOAD_FAILED, exc_info=True)
+
+
 @signals.task_prerun.connect
 def start_job_clock(task_id: str, task: Task, args: tuple | None = None, **_: object) -> None:
     """Every task's start, logged with what identifies it: its record or job id (its first argument), its
@@ -156,11 +180,28 @@ def record_job_outcome(
     if outcome == "ignored":
         log.info(LogEvent.JOB_FINISHED, outcome=outcome)  # another delivery owns the job: no job done
         return  # a delivery that found its job owned by another did no job: no outcome, no duration
-    metrics.JOBS.labels(task.name, outcome).inc()
+    metrics.count_job(task.name, outcome)
     seconds = None if started is None else time.perf_counter() - started
     if seconds is not None and outcome != "waiting":  # a look for another job's work, not a job's run
-        metrics.JOB_SECONDS.labels(task.name).observe(seconds)
+        metrics.record_job_seconds(task.name, seconds)
     log.info(LogEvent.JOB_FINISHED, outcome=outcome, seconds=None if seconds is None else round(seconds, 1))
+
+
+@signals.task_revoked.connect
+def record_expired_delivery(sender: Task, request: Any = None, expired: bool = False, **_: object) -> None:
+    """Counts a timer message the worker dropped unrun because it arrived after its expiry (beat's clock
+    behind the worker's, or its worker stuck). Runs on the consumer thread: nothing of the task is bound."""
+    if expired:
+        metrics.count_job(sender.name, "expired")
+        job = {"task": sender.name, "module": module_of(sender.name), "task_id": getattr(request, "id", None)}
+        log.warning(LogEvent.JOB_FINISHED, outcome="expired", **job)
+
+
+@signals.worker_shutting_down.connect
+def hand_back_jobs_when_stopping(**_: object) -> None:
+    """A stopping worker queues the jobs still running Worker.HAND_BACK_AFTER_SECONDS later again, no attempt
+    used, before its pod is killed. In a thread: Celery sends this signal from its OS signal handler."""
+    start_thread_without_lease("hand-back", hand_back_running_jobs, Worker.HAND_BACK_AFTER_SECONDS)
 
 
 @signals.worker_shutdown.connect

@@ -36,12 +36,16 @@ class AiLimits:
     FALLBACK_SLOTS_KEY: Final = "tsg:ai_fallback_slots"  # the same for the fallback model's calls alone
     REQUEST_RATE_KEY: Final = "tsg:ai_next_request:{model}"  # when that model's next request may be sent
     API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
-    WORKER_SLOT_WAIT_SECONDS: Final = 300
+    # ponytail: a day stands for "no clock of its own": a worker waits for an AI slot or request turn until
+    # its job's lease ends (a cancel, or the reaper taking a stalled job over), long before this.
+    WORKER_SLOT_WAIT_SECONDS: Final = 86_400
     SLOT_LEASE_SECONDS: Final = 60  # a slot not renewed this long ends: a dead process frees it this soon
     SLOT_RENEW_SECONDS: Final = 20  # each process renews the slots it holds this often
-    REDIS_SKIP_SECONDS: Final = 30  # at cap 0, AI calls leave a Redis that just failed alone this long
+    # AI calls (at cap 0) and request turns leave a Redis that just failed alone this long
+    REDIS_SKIP_SECONDS: Final = 30
     SLOT_FIRST_PAUSE_SECONDS: Final = 0.05  # polls for a free slot start this often, doubling ...
-    SLOT_MAX_PAUSE_SECONDS: Final = 1.0  # ... up to this
+    SLOT_MAX_PAUSE_SECONDS: Final = 0.25  # ... up to this: the first in line sees a freed slot this soon
+    SLOT_WAITER_STALE_SECONDS: Final = 5  # a waiter that has not polled this long leaves the line
     LOCAL_RERANK_TURN_DOCUMENTS: Final = 6  # documents one turn at the local CPU reranker scores
     REASK_MAX_PROBLEMS: Final = 20  # the one corrective re-ask lists at most this many problems ...
     REASK_PROBLEM_CHARS: Final = 200  # ... each cut to this

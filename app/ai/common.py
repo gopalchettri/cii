@@ -251,7 +251,7 @@ def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
         LogEvent.AI_CALL_UNAVAILABLE,
         ai_task=task,
         model=model,
-        error=type(error).__name__,
+        error_type=type(error).__name__,
         status=getattr(error, "status_code", None),
         reason=outage,
         retry_after=headers.get("retry-after"),
@@ -285,9 +285,9 @@ def count_and_convert_ai_errors(
         raise
     except AI_CONFIGURATION_ERRORS as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.ERROR).inc()
-        status, error = getattr(exc, "status_code", None), type(exc).__name__
-        log.error(LogEvent.AI_CALL_REFUSED, ai_task=task, model=model, error=error, status=status)
-        message = ErrorMessage.AI_MISCONFIGURED.format(model=model, error=error, status=status)
+        status, error_type = getattr(exc, "status_code", None), type(exc).__name__
+        log.error(LogEvent.AI_CALL_REFUSED, ai_task=task, model=model, error_type=error_type, status=status)
+        message = ErrorMessage.AI_MISCONFIGURED.format(model=model, error=error_type, status=status)
         raise JobFailed(ErrorCode.AI_MISCONFIGURED, message) from exc
     except IncompleteAiAnswer as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.UNREADABLE).inc()

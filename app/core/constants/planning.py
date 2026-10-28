@@ -174,7 +174,7 @@ class ThreatFinding:
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
     CATEGORIES_AT_ONCE: Final = 6  # STRIDE categories judged in parallel
-    AI_BATCHES_AT_ONCE: Final = 8  # gate batches of all categories share one pool this size
+    AI_BATCHES_AT_ONCE: Final = 16  # gate batches of all categories share one pool this size (36 calls: 38 s)
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id

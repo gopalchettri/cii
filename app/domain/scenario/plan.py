@@ -28,6 +28,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     STRIDE_DEFINITIONS,
     ActorRole,
+    AiOutage,
     AiTask,
     AttackerCheck,
     CandidateRejection,
@@ -586,7 +587,7 @@ class _CategoryJudge:
         if isinstance(error, UnreadableAiAnswer) and not self._last_attempt:
             self._unavailable.set()
             raise Unavailable(str(error)) from error
-        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, category=category, check=check, error=str(error))
+        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, category=category, check=check, message=str(error))
 
     def _propose(self, audit: CategoryAudit) -> tuple[PlannedThreat | None, dict[str, Any] | None]:
         """The AI's one proposal, kept when it is no library threat already judged, its type matches a library
@@ -1310,7 +1311,8 @@ def next_paths_to_write(paths: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def plan_counts(paths: Iterable[dict[str, Any]]) -> dict[str, int]:
-    """The plan's figures; `remaining` is what a next set can still write."""
+    """The plan's figures; `remaining` is what a next set can still write, `outage_cards` the paths given up
+    for an AI outage whose card a regenerate can still write (a replaced one too)."""
     paths = list(paths)
     selected = [path for path in paths if path["selected"]]
     replaced = UnselectedReason.REPLACED_AFTER_FAILURE
@@ -1319,6 +1321,12 @@ def plan_counts(paths: Iterable[dict[str, Any]]) -> dict[str, int]:
         "remaining": sum(is_still_to_write(path) for path in selected),
         "abandoned": sum(bool(path["abandoned"]) for path in selected),
         "replaced": sum(path.get("unselected_reason") == replaced for path in paths),
+        # ponytail: a path given up before its give-up named the AI outage reads "unavailable" and is not
+        # counted (its run reads complete), though its card regenerates; backfill from the cards if needed.
+        "outage_cards": sum(
+            bool(path["abandoned"]) and not path["served"] and path.get("abandoned_reason") in AiOutage
+            for path in paths
+        ),
     }
 
 

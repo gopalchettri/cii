@@ -33,6 +33,7 @@ QUEUES = (
     "tsg_remediation",
     "tsg_servicemapper",
     "tsg_maintenance",
+    "tsg_reaper",
 )
 QUEUE_KEY_PREFIX = "tsg:"  # app/core/constants/jobs.py Worker.BROKER_KEY_PREFIX
 #: Each queue's two lists (next stages, new work): Worker.*_PRIORITY in app/core/constants, named by kombu.

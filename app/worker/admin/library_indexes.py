@@ -3,9 +3,11 @@ when an admin asks for it now (#18, an embeddings build with its own job record)
 
 from typing import Any
 
+from celery.exceptions import Ignore
+
 from app.core.clock import utc_now
 from app.core.constants import LIBRARY_OF_CORPUS, AuditAction, AuditTarget, Status, TaskName
-from app.data_access.admin.admin_job_repository import AdminJobRepository
+from app.data_access.admin.admin_job_repository import AdminJobLease, AdminJobRepository
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.admin.embedding_repository import EmbeddingRepository
 from app.domain.shared.audit import audit_target
@@ -14,6 +16,7 @@ from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
 from app.worker.celery_app import celery_app, current_worker
 from app.worker.jobs import job_error_of
+from app.worker.lease_renewal import keep_lease_alive
 
 
 @celery_app.task(name=TaskName.BUILD_LIBRARY_INDEXES)
@@ -46,21 +49,24 @@ def run_embeddings_job(
     audit: AuditRepository,
 ) -> None:
     """Reads the library now (an edit made a moment ago is built now, not after the next stamp check), builds
-    every library's vectors, and records the row counts and how many vectors were made while it ran. A failure
-    (SQL Server unreachable while reading the library included: never "done" on the old library) is recorded,
-    then raised (counted like any failed job). Audited only when this job ended the record: one taken over as
-    abandoned keeps that outcome."""
+    every library's vectors, and records the row counts and how many vectors were made while it ran, its
+    heartbeat beating meanwhile. A failure (SQL Server unreachable while reading the library included: never
+    "done" on the old library) is recorded, then raised (counted like any failed job). Audited only when this
+    job ended the record: one cancelled or taken over as abandoned keeps that outcome, and its failure ends
+    the delivery as Ignore (never counted)."""
     started_at = utc_now()
     if not jobs.update_admin_job_running(job_id, started_at, **current_worker()):
         return  # done, failed or taken over already: a late or repeated message
     try:
-        library.reload_if_library_changed()  # raises, unlike the background check: the job must say so
-        snapshot = search.snapshot(wait=True)
-        made = vectors.count_library_vectors_made_since(started_at)
+        with keep_lease_alive(AdminJobLease(jobs, job_id), watch_progress=False):
+            library.reload_if_library_changed()  # raises, unlike the background check: the job must say so
+            snapshot = search.snapshot(wait=True)
+            made = vectors.count_library_vectors_made_since(started_at)
     except Exception as exc:
         error = job_error_of(exc)
-        if jobs.update_admin_job_finished(job_id, utc_now(), error=error):
-            _audit_finished(audit, job_id, {"status": Status.FAILED, "error": error})
+        if not jobs.update_admin_job_finished(job_id, utc_now(), error=error):
+            raise Ignore from exc  # cancelled or abandoned meanwhile: that outcome stands
+        _audit_finished(audit, job_id, {"status": Status.FAILED, "error": error})
         raise
     result = {
         "counts": library_counts(snapshot),

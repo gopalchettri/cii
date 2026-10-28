@@ -9,13 +9,13 @@ from functools import partial
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Request, Response
-from fastapi import Header as HeaderParam
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from app.api.dependencies import (
     Caller,
     CallersPlan,
     CallersRun,
+    IdempotencyKey,
     Limit,
     Offset,
     ScenarioId,
@@ -28,7 +28,6 @@ from app.core.constants import (
     ApiTag,
     Decision,
     Event,
-    Header,
     Limits,
 )
 from app.models.scenario.views import (
@@ -69,17 +68,18 @@ def start_run(
     response: Response,
     principal: Caller,
     scenarios: Scenarios,
-    idempotency_key: Annotated[
-        str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
-    ] = None,
+    idempotency_key: IdempotencyKey,
 ) -> RunBoard:
     """Send `asset_id` and `supporting_system_id` (one id or a list; `service_id`, `sector_id`,
     `subsector_id` optional). 202 with the run's status; keep `session_id`. With an `Idempotency-Key`
-    header a retry is safe (the same key and body: 200, the same run). 409 `intel_no_data`: external
-    intelligence is on but nothing is imported yet (group 4)."""
-    board, created = scenarios.create_threat_scenario_session(principal, body, idempotency_key)
+    header a retry is safe (the same key and body: 200, the same run); without one, the same request again
+    within a minute is 409 `duplicate_request`. 409 `intel_no_data`: external intelligence is on but
+    nothing is imported yet (group 4)."""
+    board, created = scenarios.create_threat_scenario_session(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
-        response.status_code = 200  # a replay of the same Idempotency-Key: the run it started
+        response.status_code = 200  # a replay of the caller's Idempotency-Key: the run it started
     return board
 
 

@@ -1,6 +1,7 @@
 """tsg_scenarios: the guarded save, the counts aggregate, the duplicate check's read, the guarded decision and
 each written scenario's controls lease. It never touches tsg_sessions."""
 
+import re
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
@@ -10,11 +11,13 @@ from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
 from app.core.constants import (
+    AbandonReason,
     Collection,
     Controls,
     Decision,
     ErrorCode,
     ErrorMessage,
+    Remediation,
     RunKind,
     ScenarioStatus,
     Status,
@@ -30,10 +33,6 @@ MAPPED_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": Decision.ACCEPT
 FAILED_WITH_ATTEMPTS_LEFT = {
     "controls.status": Status.FAILED,
     "controls.attempts": {"$lt": Controls.MAX_ATTEMPTS},
-}
-#: Controls not mapped yet that a cancel stops: waiting, being mapped, or failed with attempts left.
-STOPPABLE_CONTROLS = {
-    "$or": [{"controls.status": {"$in": [Status.QUEUED, Status.RUNNING]}}, FAILED_WITH_ATTEMPTS_LEFT]
 }
 #: Titles unique within a scenario session across every written version.
 TITLE_INDEX = "one_title_per_run_all_versions"
@@ -55,8 +54,11 @@ _DUPLICATE_CHECK_FIELDS = (
 
 #: Dropped at start-up: no query reads scenarios by asset; a duplicate check stays in its own session.
 RETIRED_ASSET_INDEX = "entity_id_1_asset_id_1_decision_1"
+#: Dropped at start-up: it read every failed card, those failed for good too (the attempts index replaces it).
+RETIRED_FAILED_CONTROLS_INDEX = "controls.status_1_controls.last_attempt_at_1"
 _SCENARIO_INDEXES = (
     {"keys": [("session_id", ASCENDING), ("created_at", ASCENDING)]},
+    {"keys": [("created_at", ASCENDING), ("session_id", ASCENDING)]},  # the sweep's recent sessions, covered
     {"keys": [("entity_id", ASCENDING), ("decision", ASCENDING), ("created_at", DESCENDING)]},
     {"keys": [("entity_id", ASCENDING), ("created_at", DESCENDING)]},
     {  # one accepted version per attack path, even under a race
@@ -71,7 +73,13 @@ _SCENARIO_INDEXES = (
         "name": TITLE_INDEX,
     },
     {"keys": [("controls.status", ASCENDING), ("controls.queued_at", ASCENDING)]},
-    {"keys": [("controls.status", ASCENDING), ("controls.last_attempt_at", ASCENDING)]},
+    {  # the sweep's failed and abandoned controls: attempts before time, so spent cards are never read
+        "keys": [
+            ("controls.status", ASCENDING),
+            ("controls.attempts", ASCENDING),
+            ("controls.last_attempt_at", ASCENDING),
+        ]
+    },
     {"keys": [("session_id", ASCENDING), ("controls.status", ASCENDING)]},
     {  # count_scenarios_of_session reads this index only, never a document
         "keys": [(field, ASCENDING) for field in ("session_id", *_COUNTED_FIELDS)],
@@ -144,6 +152,7 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "session_id",
         "source",
         "controls.attempts",
+        "controls.request_id",
         "content.category",
         "content.title",
         "content.statement",
@@ -160,6 +169,22 @@ _CLAIMED_FIELDS = dict.fromkeys(
 )
 #: The scenarios the sweep looks after: written, never hand-written (those are mapped in their plan request).
 SWEPT = {"status": ScenarioStatus.DONE, "source": {"$ne": RunKind.MANUAL}}
+#: A plan job's controls claim task id: that mapping is its plan's work.
+_PLANS_CLAIM_TASK_ID = re.compile(f"{re.escape(Remediation.CONTROLS_CLAIM_SUFFIX)}$")
+
+
+def run_controls_to_stop(now: datetime) -> Record:
+    """The controls a run cancel stops, the run's own: a swept scenario's mapped version waiting, being mapped
+    or failed with attempts left; never a plan job's live claim (a plan maps them on purpose)."""
+    stoppable = {
+        "$or": [{"controls.status": {"$in": [Status.QUEUED, Status.RUNNING]}}, FAILED_WITH_ATTEMPTS_LEFT]
+    }
+    plans_claim = {
+        "controls.status": Status.RUNNING,
+        "controls.task_id": _PLANS_CLAIM_TASK_ID,
+        "controls.lease_until": {"$gte": now},
+    }
+    return {**SWEPT, "$and": [MAPPED_VERSIONS, stoppable], "$nor": [plans_claim]}
 
 
 def _running(task_id: str, now: datetime) -> Record:
@@ -197,8 +222,9 @@ class ThreatScenarioRepository(MongoRepository):
         )
 
     def create_indexes(self) -> None:
-        """The validator and every index, after dropping the retired asset index."""
-        drop_retired_index(self.collection, RETIRED_ASSET_INDEX)
+        """The validator and every index, after dropping the retired ones."""
+        for retired in (RETIRED_ASSET_INDEX, RETIRED_FAILED_CONTROLS_INDEX):
+            drop_retired_index(self.collection, retired)
         super().create_indexes()
 
     def save_scenario(self, record: Record) -> bool:
@@ -307,6 +333,19 @@ class ThreatScenarioRepository(MongoRepository):
             return_document=ReturnDocument.AFTER,
         )
 
+    def get_plans_controls_claim(self, scenario_id: str) -> Record | None:
+        """tsg_scenarios: a generated scenario while a plan job's claim holds its controls running (its lease
+        live or not): its session_id and the claim's controls.task_id and controls.attempts; else None."""
+        held = {
+            "_id": scenario_id,
+            "source": {"$ne": RunKind.MANUAL},
+            "controls.status": Status.RUNNING,
+            "controls.task_id": _PLANS_CLAIM_TASK_ID,
+        }
+        return self.collection.find_one(
+            held, {"session_id": 1, "controls.task_id": 1, "controls.attempts": 1}
+        )
+
     def update_scenario_controls(
         self,
         scenario_id: str,
@@ -315,12 +354,15 @@ class ThreatScenarioRepository(MongoRepository):
         outcome: Status,
         mapping: Record | None = None,
         error: Record | None = None,
+        attempt_returned: bool = False,
     ) -> bool:
         """tsg_scenarios: the claim's outcome, only while it still holds (task id + attempts + running;
         Celery reuses a task id on a redelivery): RUNNING renews the lease, DONE saves `mapping`, QUEUED gives
-        it back (FAILED once Controls.MAX_ATTEMPTS were used), FAILED saves `error`. False once taken over."""
+        it back (FAILED once Controls.MAX_ATTEMPTS were used; `attempt_returned`: the claim's attempt is not
+        counted), FAILED saves `error`. False once taken over."""
         now = utc_now()
-        if outcome == Status.QUEUED and attempts >= Controls.MAX_ATTEMPTS:
+        counted = attempts - 1 if attempt_returned else attempts
+        if outcome == Status.QUEUED and counted >= Controls.MAX_ATTEMPTS:
             outcome = Status.FAILED
         if outcome == Status.RUNNING:
             changes: Record = {"controls.lease_until": now + timedelta(seconds=Controls.LEASE_SECONDS)}
@@ -330,7 +372,7 @@ class ThreatScenarioRepository(MongoRepository):
         else:
             changes = {"controls.status": outcome, "controls.error": error}
             if outcome == Status.QUEUED:
-                changes["controls.queued_at"] = now
+                changes |= {"controls.queued_at": now, "controls.attempts": counted}
         if outcome != Status.RUNNING:
             changes["controls.lease_until"] = None
         fence = {
@@ -354,7 +396,7 @@ class ThreatScenarioRepository(MongoRepository):
         if not session_ids:
             return []
         message = ErrorMessage.JOB_ABANDONED.format(attempts=Controls.MAX_ATTEMPTS)
-        error = {"code": ErrorCode.JOB_ABANDONED, "message": message}
+        error = {"code": ErrorCode.JOB_ABANDONED, "message": message, "reason": AbandonReason.WORKER_STOPPED}
         failed = {"controls.status": Status.FAILED, "controls.error": error, "controls.lease_until": None}
         self.collection.update_many(abandoned, {"$set": failed})
         return session_ids
