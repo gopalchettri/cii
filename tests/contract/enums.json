@@ -138,6 +138,11 @@
   "NEEDS_UNRECORDED": "needs_unrecorded",
   "NOT_RELEVANT": "not_relevant"
  },
+ "ChatModule": {
+  "REMEDIATION": "remediation",
+  "SCENARIO": "scenario",
+  "SERVICE_MAPPER": "service_mapper"
+ },
  "Collection": {
   "ADMIN_JOBS": "tsg_admin_jobs",
   "AI_CALLS": "tsg_ai_calls",

@@ -14,7 +14,7 @@ from prometheus_client import start_http_server
 
 from app.ai import RerankModel
 from app.core import metrics
-from app.core.constants import ErrorMessage, LogEvent, TaskName, Worker, module_of
+from app.core.constants import AiLimits, ErrorMessage, LogEvent, TaskName, Worker, module_of
 from app.core.database import get_mongodb, get_stored_procedure_client
 from app.core.lease_signal import start_thread_without_lease
 from app.core.logging import configure_logging
@@ -85,9 +85,13 @@ def _prepare_stores_and_models() -> None:
         container.set_up_worker(JOB_COLLECTIONS)
     except Exception as exc:  # noqa: BLE001 — any start-up failure must stop the worker (SystemExit below)
         raise _start_failed(ErrorMessage.WORKER_START_FAILED.format(reason=exc)) from exc
-    slots = container.get_ai_slots()  # AiSlotsSaturated reads both gauges
-    metrics.AI_SLOTS_IN_USE.set_function(slots.count_calls_in_progress)
-    metrics.AI_SLOTS_CAP.set_function(slots.current_limit)
+    pools = {
+        AiLimits.SEARCH_POOL: container.get_ai_slots()
+    }  # AiSlotsSaturated reads both gauges, pool by pool
+    pools |= {module: main for module, (main, _) in container.get_module_ai_slots().items()}
+    for pool, slots in pools.items():
+        metrics.AI_SLOTS_IN_USE.labels(pool).set_function(slots.count_calls_in_progress)
+        metrics.AI_SLOTS_CAP.labels(pool).set_function(slots.current_limit)
 
 
 @signals.beat_init.connect

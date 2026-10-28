@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import structlog
 from prometheus_client import REGISTRY
+from pydantic import SecretStr
 from structlog.testing import capture_logs
 
 from app import ai, container
@@ -28,6 +29,7 @@ from app.core.constants import (
     AiLimits,
     AiOutage,
     AiTask,
+    ChatModule,
     EmbeddingCorpus,
     ErrorCode,
     TaskName,
@@ -1158,8 +1160,8 @@ def test_a_job_that_lost_its_lease_never_calls_the_ai(monkeypatch: pytest.Monkey
 def test_at_most_cap_fallback_calls_run_at_once_and_the_first_model_is_never_capped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CII_MAX_CONCURRENT_FALLBACK_CALLS: when kimi fails, glm (~77 s a call) would otherwise take ~230 calls
-    at once at 180 requests a minute."""
+    """CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS: when kimi fails, glm (~77 s a call) would otherwise take
+    ~230 calls at once at 180 requests a minute."""
     _no_waiting(monkeypatch)
     lock, in_flight, most = threading.Lock(), {"first": 0, "fallback": 0}, {"first": 0, "fallback": 0}
     failing = {"first"}
@@ -1342,7 +1344,7 @@ def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
     with pytest.raises(litellm.RateLimitError):  # a worker's limiter
         ai.common.call_with_retries(rate_limited, *_UNLIMITED, model="m", task=AiTask.RELEVANCE_GATE)
     assert len(waits) == len(AiLimits.RATE_LIMITED_WAITS_SECONDS) and min(waits) > 1
-    for builder in ("create_all_indexes", "get_chat_model", "get_embedding_model", "get_rerank_model"):
+    for builder in ("create_all_indexes", "build_ai_gateways"):
         monkeypatch.setattr(container, builder, lambda *_: None)
     monkeypatch.setattr(container, "_waits_out_rate_limits", False)
     monkeypatch.setattr(container, "_ai_slot_wait_seconds", AiLimits.API_SLOT_WAIT_SECONDS)
@@ -1389,23 +1391,8 @@ def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Before: one limiter for the whole gateway, so embedding, rerank and glm requests spent kimi's."""
-    settings = container.get_settings().model_copy(
-        update={
-            "chat_model": "litellm_proxy/kimi-k2.5",
-            "chat_fallback_model": "litellm_proxy/glm-5.3",
-            "embedding_model": "litellm_proxy/qwen3-embedding-8b",
-            "rerank_model": "litellm_proxy/qwen3-reranker-8b",
-            "rerank_base_url": "http://ai.invalid",
-            "chat_requests_per_minute": 11,
-            "chat_fallback_requests_per_minute": 12,
-            "embedding_requests_per_minute": 13,
-            "rerank_requests_per_minute": 14,
-            "chat_tokens_per_minute": 15,
-        }
-    )
-    monkeypatch.setattr(container, "get_settings", lambda: settings)
-    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
-    chat = container.get_chat_model._build()
+    _with_module_settings(monkeypatch)
+    chat = container._chat_model_of(ChatModule.SCENARIO)
     embedding = container.get_embedding_model._build()
     rerank = container.get_rerank_model._build()
     rates = {  # by the model each request goes to
@@ -1415,11 +1402,95 @@ def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
     }
     assert all(rate._model == model for model, rate in rates.items())  # its own model's Redis key
     assert {model: (rate._per_minute, rate._tokens_per_minute) for model, rate in rates.items()} == {
-        "litellm_proxy/kimi-k2.5": (11, 15),  # CII_CHAT_TOKENS_PER_MINUTE paces the main chat model alone
-        "litellm_proxy/glm-5.3": (12, 0),
+        KIMI: (11, 15),  # a module's tokens a minute pace its main chat model alone
+        GLM: (12, 0),
         "litellm_proxy/qwen3-embedding-8b": (13, 0),
         "litellm_proxy/qwen3-reranker-8b": (14, 0),
     }
+
+
+def test_each_module_s_chat_model_has_its_own_model_key_thinking_and_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-28: CII_<MODULE>_CHAT_... A module's set line wins, a blank one is the shared CII_CHAT_
+    one; its fallback is its own alone (blank = none, so no fallback limits). Each module's slots and request
+    turns are its own Redis keys, so its 429s and limits never touch another module's."""
+    _with_module_settings(monkeypatch)
+
+    def shown(module: ChatModule) -> tuple[object, ...]:
+        chat = container._chat_model_of(module)
+        turns = {
+            model: (r._per_minute, r._tokens_per_minute, r._key) for model, r in chat._request_rates.items()
+        }
+        connection = (chat._connection["api_base"], chat._connection["api_key"], sorted(chat._thinking_on))
+        slots = [(pool._key, pool._cap) for pool in (chat._slots, chat._fallback_slots)]
+        return [name for name, _ in chat._models], connection, turns, slots
+
+    def turn(module: str, model: str) -> str:
+        return AiLimits.REQUEST_RATE_KEY.format(model=f"{module}:{model}")
+
+    def slots(module: str, cap: int, fallback_cap: int) -> list[tuple[str, int]]:
+        return [
+            (f"{AiLimits.SLOTS_KEY}:{module}", cap),
+            (f"{AiLimits.FALLBACK_SLOTS_KEY}:{module}", fallback_cap),
+        ]
+
+    assert shown(ChatModule.SCENARIO) == (
+        [KIMI, GLM],
+        ("http://shared.invalid", "shared-key", []),
+        {KIMI: (11, 15, turn("scenario", KIMI)), GLM: (12, 0, turn("scenario", GLM))},
+        slots("scenario", 7, 2),
+    )
+    assert shown(ChatModule.REMEDIATION) == (  # its own key on its own gateway, glm thinking, no fallback
+        [GLM],
+        ("http://own.invalid", "own-key", [GLM]),
+        {GLM: (21, 22, turn("remediation", GLM))},
+        slots("remediation", 3, 0),
+    )
+    assert shown(ChatModule.SERVICE_MAPPER) == (  # every line blank: the shared ones; no fallback of its own
+        [KIMI],
+        ("http://shared.invalid", "shared-key", []),
+        {KIMI: (11, 15, turn("service_mapper", KIMI))},
+        slots("service_mapper", 7, 0),
+    )
+
+
+KIMI, GLM = "litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"
+
+
+def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shared chat lines; the scenario module's own fallback; remediation's own everything; the service
+    mapper's lines all blank but a fallback limit, which counts for nothing without a fallback model."""
+    settings = container.get_settings().model_copy(
+        update={
+            "chat_base_url": "http://shared.invalid",
+            "chat_api_key": SecretStr("shared-key"),
+            "chat_model": KIMI,
+            "chat_model_thinking": False,
+            "chat_requests_per_minute": 11,
+            "chat_tokens_per_minute": 15,
+            "max_concurrent_ai_calls": 7,
+            "embedding_model": "litellm_proxy/qwen3-embedding-8b",
+            "rerank_model": "litellm_proxy/qwen3-reranker-8b",
+            "rerank_base_url": "http://ai.invalid",
+            "embedding_requests_per_minute": 13,
+            "rerank_requests_per_minute": 14,
+            "scenario_chat_fallback_model": GLM,
+            "scenario_chat_fallback_requests_per_minute": 12,
+            "scenario_max_concurrent_fallback_calls": 2,
+            "remediation_chat_base_url": "http://own.invalid",
+            "remediation_chat_api_key": SecretStr("own-key"),
+            "remediation_chat_model": GLM,
+            "remediation_chat_model_thinking": True,
+            "remediation_chat_requests_per_minute": 21,
+            "remediation_chat_tokens_per_minute": 22,
+            "remediation_max_concurrent_ai_calls": 3,
+            "service_mapper_max_concurrent_fallback_calls": 5,
+        }
+    )
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
+    monkeypatch.setattr(container, "get_module_ai_slots", container.get_module_ai_slots._build)
 
 
 def test_a_batch_another_process_stored_meanwhile_is_not_sent_again(monkeypatch: pytest.MonkeyPatch) -> None:

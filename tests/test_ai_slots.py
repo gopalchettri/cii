@@ -224,8 +224,8 @@ def test_a_redis_that_refuses_writes_shows_unknown_and_never_breaks_a_scrape(
     """READONLY (a replica after a failover) or MISCONF: the count script writes, so it fails. Both gauges
     show NaN and /metrics still answers, instead of a 500 for every metric."""
     limiter = AiSlots(get_redis_client(), cap=4, wait_seconds=5)
-    metrics.AI_SLOTS_IN_USE.set_function(limiter.count_calls_in_progress)
-    metrics.AI_SLOTS_CAP.set_function(limiter.current_limit)
+    metrics.AI_SLOTS_IN_USE.labels(AiLimits.SEARCH_POOL).set_function(limiter.count_calls_in_progress)
+    metrics.AI_SLOTS_CAP.labels(AiLimits.SEARCH_POOL).set_function(limiter.current_limit)
 
     def read_only(*_: object, **__: object) -> None:
         raise ResponseError("READONLY You can't write against a read only replica.")
@@ -233,7 +233,7 @@ def test_a_redis_that_refuses_writes_shows_unknown_and_never_breaks_a_scrape(
     with monkeypatch.context() as replica:
         replica.setattr(limiter._redis, "execute_command", read_only)
         scraped = generate_latest().decode()
-    assert "tsg_ai_slots_in_use NaN" in scraped and "tsg_ai_slots_cap NaN" in scraped
+    assert all(f'tsg_ai_slots_{gauge}{{pool="search"}} NaN' in scraped for gauge in ("in_use", "cap"))
 
 
 def test_an_answered_call_costs_two_redis_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:

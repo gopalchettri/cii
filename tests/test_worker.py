@@ -411,8 +411,7 @@ def test_a_worker_makes_every_index_its_reaper_scans_at_start_up(monkeypatch: py
     """Each of the reaper's two scans reads one index; without them it scans whole collections."""
     made: list[object] = []
     monkeypatch.setattr(container, "create_all_indexes", made.append)
-    for gateway in ("get_chat_model", "get_embedding_model", "get_rerank_model"):
-        monkeypatch.setattr(container, gateway, lambda: None)
+    monkeypatch.setattr(container, "build_ai_gateways", lambda: None)
     lifecycle._prepare_stores_and_models()
     assert made == [jobs.JOB_COLLECTIONS]
 
@@ -433,7 +432,7 @@ def test_a_worker_whose_ai_model_has_no_profile_refuses_to_start(monkeypatch: py
         raise ValueError("No profile for AI model 'typo'")
 
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    monkeypatch.setattr(container, "get_chat_model", no_profile)
+    monkeypatch.setattr(container, "get_remediation_chat_model", no_profile)  # any module's model
     with pytest.raises(SystemExit, match="typo"):
         lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
 

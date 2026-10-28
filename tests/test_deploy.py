@@ -19,7 +19,16 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import LITELLM_MODEL_PREFIX, Controls, Generation, Lease, Queue, ThreatFinding, Worker
+from app.core.constants import (
+    LITELLM_MODEL_PREFIX,
+    ChatModule,
+    Controls,
+    Generation,
+    Lease,
+    Queue,
+    ThreatFinding,
+    Worker,
+)
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -56,6 +65,7 @@ SECRET_NAMES = {
     "CII_REDIS_URL",
     "CII_REDIS_CELERY_BROKER_URL",
     "CII_CHAT_API_KEY",
+    *(f"CII_{module.upper()}_CHAT_API_KEY" for module in ChatModule),
     "CII_EMBEDDING_API_KEY",
     "CII_RERANK_API_KEY",
     "CII_ADMIN_API_KEY",
@@ -65,10 +75,14 @@ SECRET_NAMES = {
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
 STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
 DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
-#: Each AI model and the base URL its calls go to.
+#: Each AI model and the base URL its calls go to; a module's blank URL is CII_CHAT_BASE_URL.
 GATEWAYS = (
     ("CII_CHAT_MODEL", "CII_CHAT_BASE_URL"),
-    ("CII_CHAT_FALLBACK_MODEL", "CII_CHAT_BASE_URL"),
+    *(
+        (f"CII_{module.upper()}_CHAT_{model}", f"CII_{module.upper()}_CHAT_BASE_URL")
+        for module in ChatModule
+        for model in ("MODEL", "FALLBACK_MODEL")
+    ),
     ("CII_EMBEDDING_MODEL", "CII_EMBEDDING_BASE_URL"),
     ("CII_RERANK_MODEL", "CII_RERANK_BASE_URL"),
 )
@@ -584,7 +598,9 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
     settings = _settings()
     assert settings["CII_AI_BYPASS_PROXY"] == "true"
     gateways = {
-        settings[url] for model, url in GATEWAYS if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)
+        settings.get(url) or settings["CII_CHAT_BASE_URL"]
+        for model, url in GATEWAYS
+        if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)
     }
     assert gateways
     for address in gateways:
@@ -709,12 +725,16 @@ def test_the_image_gets_only_what_it_runs() -> None:
 def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
     """Each AI worker's own threads x AI calls per job x replicas, summed over a project, near
     CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and times out the job), far fewer leaves the cap
-    unused. With no cap (0), the chat
-    model's requests-a-minute limit paces the calls: it is set, and within what kimi-k2.5 takes."""
+    unused. With no cap (0), each module's requests-a-minute limit paces its chat calls: each is set, and on
+    the one key they share they add up to within what kimi-k2.5 takes."""
     settings = _settings()
     cap = int(settings["CII_MAX_CONCURRENT_AI_CALLS"])
     if cap == 0:
-        assert 0 < int(settings["CII_CHAT_REQUESTS_PER_MINUTE"]) <= CHAT_MODEL_REQUESTS_PER_MINUTE
+        shared = settings["CII_CHAT_REQUESTS_PER_MINUTE"]
+        limits = [
+            int(settings.get(f"CII_{m.upper()}_CHAT_REQUESTS_PER_MINUTE") or shared) for m in ChatModule
+        ]
+        assert all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
         return
     calls_per_job = {
         Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,

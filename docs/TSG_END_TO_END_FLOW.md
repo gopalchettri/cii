@@ -1139,7 +1139,7 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    - one thread per kind (`ThreatFinding.CATEGORIES_AT_ONCE` = 6);
    - one shared pool for the gate calls of all kinds (`ThreatFinding.AI_BATCHES_AT_ONCE` = 8), so at most 8 gate calls run at once per plan.
 
-   `run_in_shared_pool` returns results in STRIDE order. Every chat call also holds one Redis AI slot (`CII_MAX_CONCURRENT_AI_CALLS`, across all pods) and waits its turn under its model's own requests a minute (`CII_CHAT_REQUESTS_PER_MINUTE`, the fallback's `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`; section 15). Once one gate call finds the AI unavailable, no new one starts: the job is retried anyway.
+   `run_in_shared_pool` returns results in STRIDE order. Every chat call also holds one of the scenario module's Redis AI slots (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS`, blank = `CII_MAX_CONCURRENT_AI_CALLS`, across all pods) and waits its turn under its model's own requests a minute (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`, the fallback's `CII_SCENARIO_CHAT_FALLBACK_REQUESTS_PER_MINUTE`; section 15). Once one gate call finds the AI unavailable, no new one starts: the job is retried anyway.
 2. **Slots.** `_CategoryJudge.judge_category` numbers the kind's whole bucket `R1`, `R2`, … (`ThreatFinding.RECORD_SLOT`). `_candidate_for_gate` gives each candidate `{slot, threat_type, threat, attackers}`, with library codes removed. `attackers` holds the type's linked actors.
 3. **Batches.** `_judge` splits the slots with `itertools.batched(items, GATE_BATCH_SIZE)` (10), so R41-R50 is the 5th batch. `_judge_batch` makes one call per batch: `ask_ai_and_check(chat, AiTask.RELEVANCE_GATE, relevance_gate_prompt(…), _read_verdicts)`.
 4. **Prompt** (`relevance_gate_prompt`). Every AI prompt and the prompt version live in one file, `app/prompts.toml`, one section per prompt, loaded once by `app/core/prompts.py` into `PROMPTS` (D37). The gate's is `[scenario.gate]`.
@@ -1517,7 +1517,7 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 
 | Case | What happens (code) |
 |---|---|
-| AI busy or down | 3 quick retries 0.5, 1 and 2 s apart (`call_with_retries`); an HTTP 429 (rate limited) waits and asks the same model again (section 15); a timeout goes straight to the fallback model (`CII_CHAT_FALLBACK_MODEL`). Still down → `Unavailable` → the job is given back and retried after 15, 30, 60 and 120 s (`Lease.RETRY_DELAYS_SECONDS`); on the 5th attempt it fails `unavailable` |
+| AI busy or down | 3 quick retries 0.5, 1 and 2 s apart (`call_with_retries`); an HTTP 429 (rate limited) waits and asks the same model again (section 15); a timeout goes straight to the module's fallback model (`CII_<MODULE>_CHAT_FALLBACK_MODEL`). Still down → `Unavailable` → the job is given back and retried after 15, 30, 60 and 120 s (`Lease.RETRY_DELAYS_SECONDS`); on the 5th attempt it fails `unavailable` |
 | Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan waits for its next try. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503; a worker waits for its AI slot or request turn until its lease ends, so TSG's own limiter is never the cause here) or `ai_timed_out`; null for a store outage. A send the job queue refused is told the same way (reason null, "The queue and live-update service is unreachable.", `retry_at` the reaper's re-send 120 s on). An AI outage in the evidence search (intelligence on) is told the same way. The claim of the next try, a hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
 | Answer with problems | asked again once with the problems; still wrong on a normal attempt → `Unavailable` (job retried); on the last attempt → that batch or proposal is skipped and planning goes on (`_retry_or_skip`) |
 | Answer cut off, or prompt too long | a reply cut off at the task's `max_tokens` is asked once more at the model's full limit (section 15); still cut off, or a prompt too long → `TruncatedAiAnswer`: skipped on any attempt, never retried |
@@ -2501,14 +2501,16 @@ asked for, left out):
    `generation_failed` (section 9).
 6. **The `ChatModel` wrapper**, briefly:
    - A prompt longer than the smallest `max_input_chars` raises `TruncatedAiAnswer` before any call.
-   - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of `CII_MAX_CONCURRENT_AI_CALLS` (16; 0 in
-     UAT: no fixed limit, only the one a gateway 429 sets, section 15), shared by every pod. A worker waits for
+   - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of its module's pool
+     (`CII_<MODULE>_MAX_CONCURRENT_AI_CALLS`, blank = `CII_MAX_CONCURRENT_AI_CALLS`: 16; 0 in UAT: no fixed limit,
+     only the one a gateway 429 sets, section 15), shared by every pod. A worker waits for
      its slot until its lease ends (`AiLimits.WORKER_SLOT_WAIT_SECONDS`, 86,400 s, stands for no clock).
    - Every request, each retry included, first waits its turn under its model's own limit:
-     `CII_CHAT_REQUESTS_PER_MINUTE`, or the fallback's `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE` (`AiRequestRate`,
-     section 15).
-   - `_call_first_available_model` tries `CII_CHAT_MODEL`, then `CII_CHAT_FALLBACK_MODEL` only when the first
-     is busy or down, within `CII_MAX_CONCURRENT_FALLBACK_CALLS`. A model that timed out, or stayed rate-limited,
+     its module's `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE`, or the fallback's
+     `CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE` (`AiRequestRate`, section 15).
+   - `_call_first_available_model` tries the module's model (`CII_<MODULE>_CHAT_MODEL`, blank = `CII_CHAT_MODEL`),
+     then its own fallback (`CII_<MODULE>_CHAT_FALLBACK_MODEL`, blank = none) only when the first is busy or down,
+     within `CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS`. A model that timed out, or stayed rate-limited,
      is asked last for the next 120 s in that process (`AiLimits.MODEL_COOL_DOWN_SECONDS`). Each model uses its own profile.
    - `call_with_retries` (`app/ai/common.py`) makes 3 quick retries, 0.5, 1 and 2 s apart, when the provider is
      busy or unreachable; an HTTP 429 waits longer and asks the same model again. A timeout is not retried
@@ -3967,21 +3969,32 @@ stateDiagram-v2
 - **AI calls:** LiteLLM for chat and embeddings, and for rerank when `CII_RERANK_BASE_URL` is set (empty in
   dev: a local rerank model). In UAT one gateway key serves chat, embedding and rerank
   for every pod, and each model has its own requests-a-minute limit on it (kimi-k2.5: 192).
+  - **Per module (owner, 2026-10-28):** threat scenarios (finding and writing), remediation plans and the service
+    mapper each have their own chat model, key, thinking and limits: `CII_SCENARIO_...`, `CII_REMEDIATION_...` and
+    `CII_SERVICE_MAPPER_...`, each a shared `CII_CHAT_` / `CII_MAX_CONCURRENT_AI_CALLS` line with the module after
+    `CII_` (`.env.example` lists all 11). A blank line is the shared one; a blank fallback model means none, and
+    its other fallback lines are ignored. Each module's chat calls have their own slots and request turns (below),
+    so one module's 429 never pauses or cuts another's, nor the search calls'. On one shared key the modules split
+    its limits (UAT: 140, 25 and 15 requests a minute).
   - **Request rate:** every request, each retry included, first waits its turn at its model's own limiter:
     N a minute spaces that model's requests 60 / N s apart across all pods (`AiRequestRate`, one Redis key per
-    model, `tsg:ai_next_request:{model}`, timed by the Redis server's clock), so one model's queue never delays
-    another's. `CII_CHAT_REQUESTS_PER_MINUTE` (UAT: 180, a margin under kimi-k2.5's 192, assuming nothing else
-    uses kimi on the key), `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
+    module and model, `tsg:ai_next_request:{module}:{model}`, a search model's `tsg:ai_next_request:{model}`, timed
+    by the Redis server's clock), so one queue never delays another's. Each module's
+    `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE` (UAT: 140, 25 and 15, together a margin under kimi-k2.5's 192 on the
+    one key) and `CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
     `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0 until the gateway admin gives each model's limit). The API waits at
     most 30 s for its turn, else an outage (`ai_busy`); a worker waits until its lease ends (a cancel, or the
     reaper taking over a stalled job). `tsg_ai_request_rate_wait_seconds{model}` records every request's wait,
     0 included. 0 = no limit. A Redis error while a turn is reserved (Redis down, hung, or refusing writes)
     lets the request go ahead unspaced, logged once as `ai.slots_untracked`, and leaves Redis alone for 30 s
     (`REDIS_SKIP_SECONDS`).
-  - **At once:** at most `CII_MAX_CONCURRENT_AI_CALLS` calls across all pods (Redis slots, `tsg:ai_slots`): 16
+  - **At once:** per pool, the search calls' (`tsg:ai_slots`) and each module's chat calls'
+    (`tsg:ai_slots:{module}`, its own `CII_<MODULE>_MAX_CONCURRENT_AI_CALLS` when set), at most
+    `CII_MAX_CONCURRENT_AI_CALLS` calls across all pods: 16
     by default, 0 in UAT: no fixed limit, so each model's request rate is the limit until the gateway answers
     429.
-    - **The 429 limit:** a gateway 429 then sets one limit for every pod (`tsg:ai_slots:limit`,
+    - **The 429 limit:** a gateway 429 then sets one limit on its pool for every pod (`tsg:ai_slots:limit`, a
+      module's `tsg:ai_slots:{module}:limit`,
       `AiSlots.note_rate_limited`): half the calls in flight at that moment, never below 4
       (`AiLimits.ADAPTIVE_LIMIT_FLOOR`), at most one cut every 5 s. A cut never raises the limit: when half is
       not lower, the limit stays. Each answered call raises it by 1 / limit, and it is gone 180 s after the last
@@ -4016,9 +4029,10 @@ stateDiagram-v2
     when that is longer (at most 60 s; a shorter one is not asked again sooner), at most 60 s of waits in all,
     then the fallback; the API, which answers a caller, retries a 429 as any busy answer. A timeout is not
     retried there.
-  - **Fallback:** `CII_CHAT_FALLBACK_MODEL` answers when the first model is busy, down or timed out, at most
-    `CII_MAX_CONCURRENT_FALLBACK_CALLS` calls at once across all pods (Redis slots `tsg:ai_fallback_slots`; 16
-    in UAT, 0 = no limit; the first model is never capped by it). A model that timed out, or stayed
+  - **Fallback:** a module's own `CII_<MODULE>_CHAT_FALLBACK_MODEL` (blank = none; UAT: glm-5.3) answers when
+    its first model is busy, down or timed out, at most `CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS` calls at once
+    across all pods (Redis slots `tsg:ai_fallback_slots:{module}`; UAT: 12, 2 and 2, 0 = no limit; the first model
+    is never capped by it). A model that timed out, or stayed
     rate-limited through its waits, is asked last for the next 120 s in that process
     (`AiLimits.MODEL_COOL_DOWN_SECONDS`), so its calls do not each wait for it first.
   - **Answer length:** each chat task asks for at most its own `max_tokens` (`CHAT_MAX_OUTPUT_TOKENS`:
@@ -4183,12 +4197,11 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `EVIDENCE_KEPT_PER_THREAT` | 3 (1-10) | intelligence records kept per threat; the writer sees them all and cites one (section 7.3) |
 | `THREAT_CONTEXT_COUNTRY` | United Arab Emirates | the country an evidence story reads |
 | `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5); a treatment-plan version that failed for an outage is written again in place and uses no version |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | AI calls at once, all pods |
-| `CII_CHAT_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 180) | requests a minute to `CII_CHAT_MODEL`, all pods, retries included: that model's own limit, kimi-k2.5's 192 in UAT (section 15) |
-| `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the fallback chat model, the embedding model and the reranker, each its own |
-| `CII_MAX_CONCURRENT_FALLBACK_CALLS` | 0, no limit (UAT: 16) | calls at once to the fallback chat model, all pods |
-| `CII_CHAT_MODEL`, `CII_CHAT_FALLBACK_MODEL` | - | the chat model and its fallback |
-| `CII_CHAT_MODEL_THINKING`, `CII_CHAT_FALLBACK_MODEL_THINKING` | false | each chat model's thinking (LiteLLM gateway models): false = off |
+| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | AI calls at once, all pods, per pool: the search calls', and each module's chat calls' where its own line is blank |
+| `CII_CHAT_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 180) | requests a minute to a module's main chat model where its own line is blank, all pods, retries included (section 15) |
+| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the embedding model and the reranker, each its own |
+| `CII_CHAT_MODEL`, `CII_CHAT_MODEL_THINKING` | -, false | the shared chat model and its thinking (LiteLLM gateway models: false = off) |
+| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | blank = the shared line | each module's own chat model, URL, key, thinking and limits, 11 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT: requests a minute 140, 25 and 15; fallback glm-5.3, at most 12, 2 and 2 calls at once |
 | `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |
 
 ---

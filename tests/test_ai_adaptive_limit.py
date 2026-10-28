@@ -20,8 +20,16 @@ from structlog.testing import capture_logs
 
 from app import ai, container
 from app.ai import slots as slots_module
-from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, AiRequestRate, AiSlots
-from app.core.constants import AiLimits, AiOutage, AiOutageSource, AiTask, EmbeddingCorpus, LogEvent
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
+from app.core.constants import (
+    AiLimits,
+    AiOutage,
+    AiOutageSource,
+    AiTask,
+    ChatModule,
+    EmbeddingCorpus,
+    LogEvent,
+)
 from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
@@ -435,8 +443,8 @@ def test_four_calls_waiting_out_429s_never_stop_the_other_calls(monkeypatch: pyt
 
 
 def test_a_429_from_the_fallback_model_limits_every_ai_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """kimi and glm share the gateway's key with the embedder and the reranker: a 429 from either sets the
-    one limit on the main slots. A request no model answered never raises it."""
+    """A module's main and fallback model share its slots: a 429 from either sets the one limit on them. A
+    request no model answered never raises it."""
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (0, 0, 0, 0))
     monkeypatch.setattr(AiLimits, "RETRY_FIRST_WAIT_SECONDS", 0)
 
@@ -481,7 +489,7 @@ def test_with_no_cap_a_redis_outage_never_fails_an_ai_call_and_is_logged_once(
         pass
 
 
-def _provide(getter: str, built: AiSlots, monkeypatch: pytest.MonkeyPatch) -> None:
+def _provide(getter: str, built: object, monkeypatch: pytest.MonkeyPatch) -> None:
     """The container hands out `built` as if it had built it."""
     provider = singleton(lambda: built)
     provider()
@@ -491,22 +499,27 @@ def _provide(getter: str, built: AiSlots, monkeypatch: pytest.MonkeyPatch) -> No
 def test_the_dashboard_shows_the_limit_in_force_and_every_call_in_flight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """tsg_ai_slots_cap is the limit in force (0 = none); tsg_ai_slots_in_use counts calls at cap 0 too."""
-    slots = _limited()
-    _provide("get_ai_slots", slots, monkeypatch)
+    """tsg_ai_slots_cap is the limit in force (0 = none); tsg_ai_slots_in_use counts calls at cap 0 too. One
+    pair per pool: the search calls' and each module's, each on its own."""
+    search, scenario = _limited(), AiSlots(get_redis_client(), 0, 30, f"{AiLimits.SLOTS_KEY}:scenario")
+    _provide("get_ai_slots", search, monkeypatch)
+    _provide("get_module_ai_slots", {ChatModule.SCENARIO: (scenario, UNLIMITED_AI_SLOTS)}, monkeypatch)
     for kept in ("_ai_slot_wait_seconds", "_waits_out_rate_limits"):  # set_up_worker changes them
         monkeypatch.setattr(container, kept, getattr(container, kept))
-    for builder in ("create_all_indexes", "get_chat_model", "get_embedding_model", "get_rerank_model"):
+    for builder in ("create_all_indexes", "build_ai_gateways"):
         monkeypatch.setattr(container, builder, lambda *_: None)
     lifecycle._prepare_stores_and_models()
-    assert REGISTRY.get_sample_value("tsg_ai_slots_cap") == 0
-    with slots.hold_slot(TASK), slots.hold_slot(TASK):
-        slots.note_rate_limited()
-        shown = (
-            REGISTRY.get_sample_value("tsg_ai_slots_in_use"),
-            REGISTRY.get_sample_value("tsg_ai_slots_cap"),
+
+    def shown(pool: str) -> tuple[float | None, float | None]:
+        return tuple(
+            REGISTRY.get_sample_value(f"tsg_ai_slots_{gauge}", {"pool": pool}) for gauge in ("in_use", "cap")
         )
-    assert shown == (2, AiLimits.ADAPTIVE_LIMIT_FLOOR)
+
+    assert shown(AiLimits.SEARCH_POOL) == shown(ChatModule.SCENARIO) == (0, 0)
+    with scenario.hold_slot(TASK), scenario.hold_slot(TASK):
+        scenario.note_rate_limited()
+        assert shown(ChatModule.SCENARIO) == (2, AiLimits.ADAPTIVE_LIMIT_FLOOR)
+        assert shown(AiLimits.SEARCH_POOL) == (0, 0)
 
 
 def test_tsg_s_own_refusals_are_counted_apart_from_the_gateway_s(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -526,3 +539,53 @@ def test_tsg_s_own_refusals_are_counted_apart_from_the_gateway_s(monkeypatch: py
     with pytest.raises(Unavailable):
         kimi.wait_for_turn(TASK)
     assert counted() == before + 2
+
+
+def test_a_429_in_one_module_never_slows_another_module_or_the_search_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-28: each module its own chat model, key and limits. A 429 to remediation's kimi cuts
+    remediation's slots and pauses its kimi turns for 5 s; the scenario module's kimi answers at once, and
+    neither its slots nor the search calls' are cut."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (5.0, 5.0, 5.0, 5.0))
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_TOTAL_WAIT_SECONDS", 5)
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
+    kimi = "litellm_proxy/kimi-k2.5"
+    update = {"chat_model": kimi, "chat_requests_per_minute": 600, "chat_tokens_per_minute": 0}
+    update |= {
+        f"{module}_{name}": "" for module in ChatModule for name in ("chat_model", "chat_fallback_model")
+    }
+    settings = container.get_settings().model_copy(update=update)
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
+    monkeypatch.setattr(container, "_waits_out_rate_limits", True)  # a worker waits out a 429
+    _provide("get_module_ai_slots", container.get_module_ai_slots._build(), monkeypatch)
+    remediation, scenario = (
+        container._chat_model_of(m) for m in (ChatModule.REMEDIATION, ChatModule.SCENARIO)
+    )
+
+    def refused(**_: object) -> None:
+        raise litellm.RateLimitError("busy", llm_provider="litellm_proxy", model=kimi)
+
+    with monkeypatch.context() as no_sleeping:  # its 5 s waits pass at once; the pause stays in Redis
+        no_sleeping.setattr(litellm, "completion", refused)
+        no_sleeping.setattr(ai.common, "sleep_unless_lease_lost", lambda _seconds: None)
+        no_sleeping.setattr(slots_module, "sleep_unless_lease_lost", lambda _seconds: None)
+        with pytest.raises(Unavailable):
+            remediation.ask_for_checked_json(TASK, "system", "user", lambda _answer: [])
+    redis = get_redis_client()
+
+    def cut_and_paused(module: str) -> tuple[str | None, int]:
+        paused = redis.exists(AiLimits.REQUEST_RATE_KEY.format(model=f"{module}:{kimi}"))
+        return redis.hget(f"{AiLimits.SLOTS_KEY}:{module}:limit", "limit"), paused
+
+    assert cut_and_paused(ChatModule.REMEDIATION) == (str(AiLimits.ADAPTIVE_LIMIT_FLOOR), 1)
+    assert cut_and_paused(ChatModule.SCENARIO) == (None, 0)
+    assert redis.hget(AiLimits.SLOTS_LIMIT_KEY, "limit") is None  # the search calls'
+    answer = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))], usage=None
+    )
+    monkeypatch.setattr(litellm, "completion", lambda **_: answer)
+    started = time.monotonic()
+    assert scenario.ask_for_checked_json(TASK, "system", "user", lambda _answer: []) == {"ok": True}
+    assert time.monotonic() - started < 2  # not remediation's 5 s pause

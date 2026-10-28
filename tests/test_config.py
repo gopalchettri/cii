@@ -8,8 +8,9 @@ import pytest
 import structlog
 from pydantic import ValidationError
 
+from app.ai.module_chat import module_chat
 from app.core.config import Settings, get_settings
-from app.core.constants import Env, LogEvent
+from app.core.constants import ChatModule, Env, LogEvent
 from app.core.logging import configure_logging
 
 REPO = Path(__file__).resolve().parents[1]
@@ -51,6 +52,32 @@ def test_env_files_match_settings(name: str) -> None:
     grafana = {key for key in keys if key.startswith("GF_")}
     missing, unknown = sorted(settings - keys), sorted(keys - settings - EXTRA_ENV_KEYS - grafana)
     assert (missing, unknown) == ([], []), f"{name}: missing {missing}, not read by the app {unknown}"
+
+
+def test_a_module_s_own_chat_line_wins_and_a_blank_one_is_the_shared_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-28: CII_<MODULE>_CHAT_... 0 (no limit) and false (thinking off) are set values, never
+    blank; a module's fallback lines count only with a fallback model of its own."""
+    monkeypatch.setenv("CII_CHAT_MODEL_THINKING", "true")
+    monkeypatch.setenv("CII_CHAT_REQUESTS_PER_MINUTE", "180")
+    monkeypatch.setenv("CII_REMEDIATION_CHAT_MODEL", "litellm_proxy/glm-5.3")
+    monkeypatch.setenv("CII_REMEDIATION_CHAT_MODEL_THINKING", "false")
+    monkeypatch.setenv("CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE", "0")
+    monkeypatch.setenv("CII_REMEDIATION_CHAT_FALLBACK_MODEL", "litellm_proxy/kimi-k2.5")
+    monkeypatch.setenv("CII_REMEDIATION_MAX_CONCURRENT_FALLBACK_CALLS", "3")
+    monkeypatch.setenv("CII_SERVICE_MAPPER_CHAT_MODEL", "")
+    monkeypatch.setenv("CII_SERVICE_MAPPER_MAX_CONCURRENT_FALLBACK_CALLS", "3")  # no fallback model: none
+    settings = Settings()  # type: ignore[call-arg]
+    own, shared = (module_chat(settings, m) for m in (ChatModule.REMEDIATION, ChatModule.SERVICE_MAPPER))
+    assert (own.model, own.model_thinking, own.requests_per_minute) == ("litellm_proxy/glm-5.3", False, 0)
+    assert (own.fallback_model, own.max_concurrent_fallback_calls) == ("litellm_proxy/kimi-k2.5", 3)
+    assert (shared.model, shared.model_thinking, shared.requests_per_minute) == (
+        settings.chat_model,
+        True,
+        180,
+    )
+    assert (shared.fallback_model, shared.max_concurrent_fallback_calls) == ("", 0)
 
 
 def test_the_plan_version_cap_is_configurable_within_one_to_forty(monkeypatch: pytest.MonkeyPatch) -> None:

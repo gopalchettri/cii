@@ -19,7 +19,7 @@ from structlog.testing import capture_logs
 import app.ai  # noqa: F401  # caps the library loggers on import
 from app.ai.common import apply_proxy_settings, merged_no_proxy
 from app.core.config import Settings, get_settings
-from app.core.constants import LogEvent
+from app.core.constants import ChatModule, LogEvent
 
 GATEWAY = "https://llmapi.example:443/v1"
 COMPANY_PROXY = "http://proxy.test:8080"  # what Windows' own proxy setting (Internet Options) names
@@ -33,7 +33,11 @@ def _settings(bypass: bool, proxy_url: str = "") -> Settings:
             "proxy_url": SecretStr(proxy_url),
             "chat_model": "litellm_proxy/chat",
             "chat_base_url": GATEWAY,
-            "chat_fallback_model": "",
+            **{
+                f"{module}_{name}": ""
+                for module in ChatModule
+                for name in ("chat_model", "chat_fallback_model")
+            },
             "embedding_model": "litellm_proxy/embed",
             "embedding_base_url": "llmapi.example",  # no scheme: still read as a host
             "rerank_model": "openai/rerank",  # not a LiteLLM gateway model: its host keeps the proxy
@@ -61,6 +65,16 @@ def test_the_gateway_goes_on_no_proxy_once_and_keeps_what_was_there() -> None:
     apply_proxy_settings(_settings(True))  # a second call adds no host twice
     assert os.environ["NO_PROXY"] == "localhost,llmapi.example"
     assert os.environ["no_proxy"].split(",")[-1] == "llmapi.example"  # Linux tools read the lowercase one
+
+
+def test_a_module_s_own_gateway_goes_on_no_proxy_too() -> None:
+    """Owner 2026-10-28: a module may call its chat model on its own gateway (CII_<MODULE>_CHAT_BASE_URL)."""
+    own = {
+        "remediation_chat_base_url": "https://own-gateway.example",
+        "remediation_chat_model": "litellm_proxy/x",
+    }
+    apply_proxy_settings(_settings(True).model_copy(update=own))
+    assert os.environ["NO_PROXY"].split(",") == ["localhost", "llmapi.example", "own-gateway.example"]
 
 
 def test_off_leaves_the_proxy_in_charge() -> None:

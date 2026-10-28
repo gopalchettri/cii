@@ -13,11 +13,16 @@ from app.ai.profiles import (
     UnknownModelProfile,
     find_model_profile,
 )
+from app.core.constants import ChatModule
 from app.models.ai.profiles import ChatModelProfile
 
 _PROFILES_BY_SETTING = {
     "CII_CHAT_MODEL": CHAT_MODEL_PROFILES,
-    "CII_CHAT_FALLBACK_MODEL": CHAT_MODEL_PROFILES,
+    **{
+        f"CII_{module.upper()}_CHAT_{model}": CHAT_MODEL_PROFILES
+        for module in ChatModule
+        for model in ("MODEL", "FALLBACK_MODEL")
+    },
     "CII_EMBEDDING_MODEL": EMBEDDING_MODEL_PROFILES,
     "CII_RERANK_MODEL": RERANK_MODEL_PROFILES,
 }
@@ -28,7 +33,7 @@ def test_every_model_named_in_env_example_has_a_profile() -> None:
     for setting, profiles in _PROFILES_BY_SETTING.items():
         match = re.search(rf"^{setting}=(\S*)", env_example, re.MULTILINE)
         assert match, setting
-        if match.group(1):  # an empty fallback model is allowed
+        if match.group(1):  # an empty module model (the shared one) or fallback (none) is allowed
             find_model_profile(profiles, match.group(1))
 
 

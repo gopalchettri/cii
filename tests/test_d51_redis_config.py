@@ -90,8 +90,7 @@ def test_the_api_and_every_worker_log_the_eviction_policy_at_start_up(
     monkeypatch.setattr(container, "log_redis_eviction_policy", lambda: logged.append("policy"))
     monkeypatch.setattr(container, "log_mongodb_topology", lambda: None)
     monkeypatch.setattr(container, "create_all_indexes", lambda *_: None)
-    for gateway in ("get_chat_model", "get_embedding_model", "get_rerank_model"):
-        monkeypatch.setattr(container, gateway, lambda: None)
+    monkeypatch.setattr(container, "build_ai_gateways", lambda: None)
     for worker_setting in ("_ai_slot_wait_seconds", "_waits_out_rate_limits"):  # set_up_worker changes them
         monkeypatch.setattr(container, worker_setting, getattr(container, worker_setting))
     container.set_up_api()

@@ -28,7 +28,6 @@ from app.ai.common import (
 )
 from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
 from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
-from app.core.config import Settings
 from app.core.constants import (
     AiLimits,
     AiOutage,
@@ -39,6 +38,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import Unavailable
 from app.data_access.admin.ai_call_repository import AiCallRepository
+from app.models.ai.module_chat import ModuleChat
 from app.models.ai.profiles import ChatModelProfile
 
 log = structlog.get_logger(__name__)
@@ -239,31 +239,24 @@ def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChe
 
 
 def chat_model_from(
-    settings: Settings,
+    chat: ModuleChat,
+    key_header: str,
     calls: AiCallRepository,
     slots: AiSlots,
     request_rate: AiRequestRate,
     fallback_slots: AiSlots,
     fallback_request_rate: AiRequestRate,
 ) -> ChatModel:
-    """The chat model the settings name, with its fallback, its call records and its limiters."""
-    model_names = [settings.chat_model] + (
-        [settings.chat_fallback_model] if settings.chat_fallback_model else []
-    )
-    thinking_on = {
-        name
-        for name, on in (
-            (settings.chat_model, settings.chat_model_thinking),
-            (settings.chat_fallback_model, settings.chat_fallback_model_thinking),
-        )
-        if on
-    }
+    """A module's chat model, with its fallback if it has one, its call records and its limiters."""
+    model_names = [chat.model] + ([chat.fallback_model] if chat.fallback_model else [])
+    thinking = ((chat.model, chat.model_thinking), (chat.fallback_model, chat.fallback_model_thinking))
+    thinking_on = {name for name, on in thinking if on}
     return ChatModel(
         [(name, find_model_profile(CHAT_MODEL_PROFILES, name)) for name in model_names],
-        settings.chat_base_url,
-        settings.chat_api_key.get_secret_value(),
+        chat.base_url,
+        chat.api_key.get_secret_value(),
         calls,
-        settings.ai_key_header,
+        key_header,
         slots,
         frozenset(thinking_on),
         request_rate,

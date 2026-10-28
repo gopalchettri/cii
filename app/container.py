@@ -7,10 +7,11 @@ from collections.abc import Iterable
 from app.ai.chat import ChatModel, chat_model_from
 from app.ai.common import apply_proxy_settings
 from app.ai.embeddings import EmbeddingModel, embedding_model_from
+from app.ai.module_chat import module_chat
 from app.ai.rerank import RerankModel, rerank_model_from
 from app.ai.slots import AiRequestRate, AiSlots
 from app.core.config import get_settings
-from app.core.constants import ROUTED_QUEUES, AiLimits
+from app.core.constants import ROUTED_QUEUES, AiLimits, ChatModule
 from app.core.database import get_mongodb, get_redis_client, get_stored_procedure_client
 from app.core.readiness import count_online_workers, log_mongodb_topology, log_redis_eviction_policy
 from app.core.singletons import singleton
@@ -87,22 +88,35 @@ def apply_proxy_once() -> None:
 
 @singleton
 def get_ai_slots() -> AiSlots:
-    """Every AI call is recorded, at cap 0 too: a gateway 429 limits the calls then in flight."""
+    """The search calls' slots (embedding, reranker). Every AI call is recorded, at cap 0 too: a gateway 429
+    limits the calls then in flight."""
     return AiSlots(get_redis_client(), get_settings().max_concurrent_ai_calls, _ai_slot_wait_seconds)
 
 
 @singleton
-def get_ai_fallback_slots() -> AiSlots:
-    cap = get_settings().max_concurrent_fallback_calls
-    redis = get_redis_client() if cap else None
-    return AiSlots(redis, cap, _ai_slot_wait_seconds, AiLimits.FALLBACK_SLOTS_KEY)
+def get_module_ai_slots() -> dict[ChatModule, tuple[AiSlots, AiSlots]]:
+    """Each module's own slots for its chat calls, (main, fallback): its 429s and its calls at once never slow
+    another module or the search calls. A fallback cap of 0 needs no Redis."""
+    redis, settings, wait = get_redis_client(), get_settings(), _ai_slot_wait_seconds
+    pools = {}
+    for module in ChatModule:
+        chat, fallback_key = module_chat(settings, module), f"{AiLimits.FALLBACK_SLOTS_KEY}:{module}"
+        fallback_cap = chat.max_concurrent_fallback_calls
+        pools[module] = (
+            AiSlots(redis, chat.max_concurrent_ai_calls, wait, f"{AiLimits.SLOTS_KEY}:{module}"),
+            AiSlots(redis if fallback_cap else None, fallback_cap, wait, fallback_key),
+        )
+    return pools
 
 
-def ai_request_rate_for(model: str, per_minute: int, tokens_per_minute: int = 0) -> AiRequestRate:
-    """`model`'s own request-rate limiter, with this process's waits; each gateway builds its model's once."""
+def ai_request_rate_for(
+    model: str, per_minute: int, tokens_per_minute: int = 0, scope: str = ""
+) -> AiRequestRate:
+    """`model`'s own request-rate limiter in `scope` (a module's), with this process's waits; each gateway
+    builds its model's once."""
     redis = get_redis_client() if per_minute or tokens_per_minute else None
     return AiRequestRate(
-        redis, model, per_minute, _ai_slot_wait_seconds, _waits_out_rate_limits, tokens_per_minute
+        redis, model, per_minute, _ai_slot_wait_seconds, _waits_out_rate_limits, tokens_per_minute, scope
     )
 
 
@@ -121,20 +135,36 @@ def get_embedding_repository() -> EmbeddingRepository:
     return EmbeddingRepository()
 
 
-@singleton
-def get_chat_model() -> ChatModel:
+def _chat_model_of(module: ChatModule) -> ChatModel:
+    """`module`'s chat model: its own settings (CII_<MODULE>_CHAT_...), slots and request turns."""
     apply_proxy_once()
     settings = get_settings()
+    chat, (slots, fallback_slots) = module_chat(settings, module), get_module_ai_slots()[module]
     return chat_model_from(
-        settings,
+        chat,
+        settings.ai_key_header,
         get_ai_call_repository(),
-        get_ai_slots(),
-        ai_request_rate_for(
-            settings.chat_model, settings.chat_requests_per_minute, settings.chat_tokens_per_minute
-        ),
-        get_ai_fallback_slots(),
-        ai_request_rate_for(settings.chat_fallback_model, settings.chat_fallback_requests_per_minute),
+        slots,
+        ai_request_rate_for(chat.model, chat.requests_per_minute, chat.tokens_per_minute, module),
+        fallback_slots,
+        ai_request_rate_for(chat.fallback_model, chat.fallback_requests_per_minute, scope=module),
     )
+
+
+@singleton
+def get_scenario_chat_model() -> ChatModel:
+    """Threat finding and scenario writing."""
+    return _chat_model_of(ChatModule.SCENARIO)
+
+
+@singleton
+def get_remediation_chat_model() -> ChatModel:
+    return _chat_model_of(ChatModule.REMEDIATION)
+
+
+@singleton
+def get_service_mapper_chat_model() -> ChatModel:
+    return _chat_model_of(ChatModule.SERVICE_MAPPER)
 
 
 @singleton
@@ -337,7 +367,7 @@ def get_service_mapper_job() -> ServiceMapperJob:
         get_mapping_repository(),
         get_service_catalog_provider(),
         get_service_candidate_search(),
-        get_chat_model(),
+        get_service_mapper_chat_model(),
     )
 
 
@@ -432,7 +462,9 @@ def get_job_monitor_service() -> JobMonitorService:
 
 @singleton
 def get_plan_job() -> PlanJob:
-    finder = ThreatFinder(get_chat_model(), get_library_search(), get_rerank_model(), get_embedding_model())
+    finder = ThreatFinder(
+        get_scenario_chat_model(), get_library_search(), get_rerank_model(), get_embedding_model()
+    )
     return PlanJob(finder, get_intelligence_switch())
 
 
@@ -441,7 +473,7 @@ def get_scenario_write_job() -> ScenarioWriteJob:
     return ScenarioWriteJob(
         sessions=get_threat_scenario_session_repository(),
         scenarios=get_threat_scenario_repository(),
-        chat=get_chat_model(),
+        chat=get_scenario_chat_model(),
         threat_library=get_library_cache().get_threat_library,
         switch=get_intelligence_switch(),
         evidence_finder=get_evidence_finder,  # the provider: with intelligence off nothing is built
@@ -471,7 +503,7 @@ def get_remediation_plan_job() -> RemediationPlanJob:
         get_audit_repository(),
         get_library_search(),
         ControlMapper(get_rerank_model()),
-        get_chat_model(),
+        get_remediation_chat_model(),
     )
 
 
@@ -515,9 +547,7 @@ def set_up_api() -> None:
     create_all_indexes()
     log_mongodb_topology()
     log_redis_eviction_policy()
-    get_chat_model()
-    get_embedding_model()
-    get_rerank_model()
+    build_ai_gateways()
 
 
 def set_up_worker(job_collections: Iterable[str]) -> None:
@@ -529,6 +559,13 @@ def set_up_worker(job_collections: Iterable[str]) -> None:
     _waits_out_rate_limits = True
     create_all_indexes(job_collections)
     log_redis_eviction_policy()
-    get_chat_model()
+    build_ai_gateways()
+
+
+def build_ai_gateways() -> None:
+    """Every AI gateway, each module's chat model included: one whose model has no profile stops start-up."""
+    get_scenario_chat_model()
+    get_remediation_chat_model()
+    get_service_mapper_chat_model()
     get_embedding_model()
     get_rerank_model()

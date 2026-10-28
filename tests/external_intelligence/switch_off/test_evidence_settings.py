@@ -15,7 +15,7 @@ from app.ai.profiles import (
     find_model_profile,
 )
 from app.core.config import Settings, get_settings
-from app.core.constants import Env, EvidenceSettingMessage
+from app.core.constants import ChatModule, Env, EvidenceSettingMessage
 
 REPO = Path(__file__).resolve().parents[3]
 KEY = "a" * 40
@@ -133,7 +133,8 @@ def test_every_model_the_uat_file_names_has_a_profile() -> None:
     lines = _env_lines(".env.uat")
     for key, profiles in (
         ("CII_CHAT_MODEL", CHAT_MODEL_PROFILES),
-        ("CII_CHAT_FALLBACK_MODEL", CHAT_MODEL_PROFILES),
+        *((f"CII_{module.upper()}_CHAT_FALLBACK_MODEL", CHAT_MODEL_PROFILES) for module in ChatModule),
+        *((f"CII_{module.upper()}_CHAT_MODEL", CHAT_MODEL_PROFILES) for module in ChatModule),
         ("CII_EMBEDDING_MODEL", EMBEDDING_MODEL_PROFILES),
         ("CII_RERANK_MODEL", RERANK_MODEL_PROFILES),
     ):

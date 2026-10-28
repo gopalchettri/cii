@@ -191,11 +191,11 @@ class AiSlots:
 
 
 class AiRequestRate:
-    """One model's requests, each retry included, spaced on its own Redis key: 60 / `per_minute` s apart, or a
-    large request's tokens x 60 / `tokens_per_minute` s; a 429 pauses it (pause). Both 0 = no limit: no Redis
-    call at all. `waits_out_rate_limits`: true in a worker, false in the API (wait_after_rate_limit)."""
+    """One model's requests in a `scope` (a module's own, or none), retries included, on their own Redis key:
+    60 / `per_minute` s apart, or a large request's tokens x 60 / `tokens_per_minute` s; a 429 pauses it
+    (pause). Both 0 = no limit, no Redis call. `waits_out_rate_limits`: true in a worker, false in the API."""
 
-    def __init__(  # noqa: PLR0913 — one model's two limits and how its process waits
+    def __init__(  # noqa: PLR0913 — one model's two limits, its scope and how its process waits
         self,
         redis: Redis | None,
         model: str,
@@ -203,10 +203,10 @@ class AiRequestRate:
         wait_seconds: float,
         waits_out_rate_limits: bool = True,
         tokens_per_minute: int = 0,
+        scope: str = "",
     ) -> None:
-        self._redis = redis
-        self._model = model
-        self._key = AiLimits.REQUEST_RATE_KEY.format(model=model)
+        self._redis, self._model = redis, model
+        self._key = AiLimits.REQUEST_RATE_KEY.format(model=f"{scope}:{model}" if scope else model)
         self._per_minute = per_minute
         self._tokens_per_minute = tokens_per_minute
         limited = bool(per_minute or tokens_per_minute)

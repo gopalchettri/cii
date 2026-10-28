@@ -428,27 +428,38 @@ tests:
         alertname: AiErrorRateHigh
         exp_alerts: []
 
+  # Each pool on its own: the scenario module's 16 slots are all in use; search has 2 of 16 in use.
   - interval: 1m
     input_series:
-      - series: tsg_ai_slots_in_use{instance="worker-1"}
+      - series: tsg_ai_slots_in_use{instance="worker-1", pool="scenario"}
         values: 16x15
-      - series: tsg_ai_slots_cap{instance="worker-1"}
+      - series: tsg_ai_slots_cap{instance="worker-1", pool="scenario"}
+        values: 16x15
+      - series: tsg_ai_slots_in_use{instance="worker-1", pool="search"}
+        values: 2x15
+      - series: tsg_ai_slots_cap{instance="worker-1", pool="search"}
         values: 16x15
     alert_rule_test:
       - eval_time: 12m
         alertname: AiSlotsSaturated
         exp_alerts:
-          - exp_labels: { severity: warning }
+          - exp_labels: { severity: warning, pool: scenario }
             exp_annotations:
-              summary: "Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one."
-              description: "Jobs slow down. At CII_MAX_CONCURRENT_AI_CALLS 0 the AI gateway keeps answering 429 and TSG holds back by itself: ask the gateway admin for a higher limit on TSG's key. Above 0 with no recent 429 it is the fixed ceiling: raise it if the gateway can take more."
+              summary: "Every AI slot of the scenario calls has been in use for 10 minutes; they wait for a free one."
+              description: "Jobs slow down. At the pool's limit 0 the AI gateway keeps answering 429 and TSG holds back by itself: ask the gateway admin for a higher limit on that key. Above 0 with no recent 429 it is the fixed ceiling (search: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; a module: its own CII_<MODULE>_MAX_CONCURRENT_AI_CALLS, blank = the shared one): raise it if the gateway can take more."
 
+  # 16 search calls with no limit (0) and 3 of the remediation module's 16: no pool is full. Compared across
+  # pools (16 in use >= a limit of 16) it would fire.
   - interval: 1m
     input_series:
-      - series: tsg_ai_slots_in_use{instance="worker-1"}
+      - series: tsg_ai_slots_in_use{instance="worker-1", pool="search"}
+        values: 16x15
+      - series: tsg_ai_slots_cap{instance="worker-1", pool="search"}
         values: 0x15
-      - series: tsg_ai_slots_cap{instance="worker-1"}
-        values: 0x15
+      - series: tsg_ai_slots_in_use{instance="worker-1", pool="remediation"}
+        values: 3x15
+      - series: tsg_ai_slots_cap{instance="worker-1", pool="remediation"}
+        values: 16x15
     alert_rule_test:
       - eval_time: 12m
         alertname: AiSlotsSaturated
@@ -484,7 +495,7 @@ tests:
           - exp_labels: { severity: warning, model: litellm_proxy/kimi-k2.5 }
             exp_annotations:
               summary: "litellm_proxy/kimi-k2.5 requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
-              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; kimi's tokens: CII_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise its setting; the dashboard's 429 panel shows refusals."
+              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens: CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise its setting; the dashboard's 429 panel shows refusals."
 
   - interval: 1m
     input_series:

@@ -1089,8 +1089,9 @@ volumes.
 ### Why these sizes: the AI sets the speed, not the pods
 
 All AI models sit behind one gateway key. The main chat model, kimi-k2.5, takes 192 requests a minute; TSG sends it
-at most 180 (`CII_CHAT_REQUESTS_PER_MINUTE`), which leaves room as long as nothing else uses kimi-k2.5 on this key
-(still to be confirmed).
+at most 180, split between the three modules that use it (threat scenarios 140, remediation 25, service mapper 15:
+`CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE`), which leaves room as long as nothing else uses kimi-k2.5 on this key
+(still to be confirmed). A module given a key of its own can take its key's whole limit.
 
 Example: a kimi call takes about 5 seconds, so 180 a minute is about 15 calls running at once for all of TSG (every
 pod together).
@@ -1113,13 +1114,14 @@ small.
 
 | Setting | UAT value | Meaning |
 |---|---|---|
-| `CII_CHAT_REQUESTS_PER_MINUTE` | 180 | kimi-k2.5 requests a minute, all pods together (its own limit is 192) |
-| `CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for glm-5.3, the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
-| `CII_MAX_CONCURRENT_FALLBACK_CALLS` | 16 | at most 16 calls to glm-5.3 at once (it takes 55-99 s a call) |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on AI calls at once: TSG runs at full speed and backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling for all pods together |
+| `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | 140, 25, 15 | each module's kimi-k2.5 requests a minute, all pods together; 180 in all (kimi's own limit is 192). A module line left out is `CII_CHAT_REQUESTS_PER_MINUTE` (180) |
+| `CII_<MODULE>_CHAT_FALLBACK_MODEL` | glm-5.3 | each module's own fallback model; left out = none |
+| `CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS` | 12, 2, 2 | at most 16 calls to glm-5.3 at once in all (it takes 55-99 s a call) |
+| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
+| `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on AI calls at once: TSG runs at full speed and backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling for all pods together, per pool (the search calls', each module's) |
 
-**How TSG backs off after a 429.** When the gateway answers 429 ("too many"), TSG sets one limit for all pods and all
-4 models: half the calls in flight at that moment. Each answered call raises it a little, and a few minutes after the
+**How TSG backs off after a 429.** When the gateway answers 429 ("too many"), TSG sets one limit for all pods on that
+pool (the search calls', or the module's chat calls'): half the calls in flight at that moment. Each answered call raises it a little, and a few minutes after the
 last 429 it disappears: TSG is back to no limit. The Grafana gauge **AI capacity in use** shows the calls in flight
 out of that limit (`tsg_ai_slots_cap` is the limit, 0 = none; `tsg_ai_slots_in_use` counts the calls in flight, also
 at no limit): **No limit set** is the normal state.

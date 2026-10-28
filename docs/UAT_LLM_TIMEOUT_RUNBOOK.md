@@ -297,8 +297,8 @@ Then do step 4 again. Once the cause is fixed, do 5.2 again (leave out its first
      as busy; the "AI no answer" tile does not count them. A pod that stopped in the middle of a call stops counting
      within a minute, so restarting pods does not help: wait, or ask the gateway admin for a higher limit on TSG's
      key.
-   - **`"limiter": "tsg:ai_fallback_slots"`:** the fallback model's 16 slots (`CII_MAX_CONCURRENT_FALLBACK_CALLS`)
-     stayed full, because the first model kept failing or timing out and every call went to the fallback. This is
+   - **`"limiter": "tsg:ai_fallback_slots:<module>"`:** that module's fallback slots
+     (`CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS`) stayed full, because the first model kept failing or timing out and every call went to the fallback. This is
      the timeout problem: go back to step 3.
 
 ---

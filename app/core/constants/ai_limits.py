@@ -11,6 +11,14 @@ class AiOutageSource(StrEnum):
     LIMITER = "limiter"  # TSG's own limiter: no request turn or AI slot free within the wait
 
 
+class ChatModule(StrEnum):
+    """A module with its own chat settings (CII_<MODULE>_CHAT_MODEL ...) and its own AI slots and turns."""
+
+    SCENARIO = "scenario"  # threat finding and scenario writing
+    REMEDIATION = "remediation"
+    SERVICE_MAPPER = "service_mapper"
+
+
 class AiLimits:
     """The same for every model; per-model values live in app/ai/profiles.py."""
 
@@ -35,6 +43,7 @@ class AiLimits:
     SLOTS_LIMIT_KEY: Final = "tsg:ai_slots:limit"  # the limit a gateway 429 set on it (a Redis hash)
     FALLBACK_SLOTS_KEY: Final = "tsg:ai_fallback_slots"  # the same for the fallback model's calls alone
     REQUEST_RATE_KEY: Final = "tsg:ai_next_request:{model}"  # when that model's next request may be sent
+    SEARCH_POOL: Final = "search"  # tsg_ai_slots_*{pool}: the search calls' slots; each module's: its name
     API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
     # ponytail: a day stands for "no clock of its own": a worker waits for an AI slot or request turn until
     # its job's lease ends (a cancel, or the reaper taking a stalled job over), long before this.

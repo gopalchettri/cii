@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import litellm
 import structlog
 
+from app.ai.module_chat import module_chat
 from app.ai.retry_waits import busy_retry_wait
 from app.ai.slots import AiRequestRate, AiSlots, sleep_unless_lease_lost
 from app.core import metrics
@@ -24,6 +25,7 @@ from app.core.constants import (
     AiOutage,
     AiOutageSource,
     AiOutcome,
+    ChatModule,
     ErrorCode,
     ErrorMessage,
     LogEvent,
@@ -133,12 +135,10 @@ def apply_proxy_settings(settings: Settings) -> None:
 
 def _gateways(settings: Settings) -> set[tuple[str, str]]:
     """(LITELLM_MODEL_PREFIX or "", host) of every AI model's base URL: which hosts the AI calls go to."""
-    models = (
-        (settings.chat_model, settings.chat_base_url),
-        (settings.chat_fallback_model, settings.chat_base_url),
-        (settings.embedding_model, settings.embedding_base_url),
-        (settings.rerank_model, settings.rerank_base_url),
-    )
+    models = [(settings.embedding_model, settings.embedding_base_url)]
+    models += [(settings.rerank_model, settings.rerank_base_url)]
+    for chat in (module_chat(settings, module) for module in ChatModule):  # each module's main and fallback
+        models += [(chat.model, chat.base_url), (chat.fallback_model, chat.base_url)]
     return {
         (LITELLM_MODEL_PREFIX if model.startswith(LITELLM_MODEL_PREFIX) else "", host)
         for model, url in models

@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.chat_settings import ChatModelSettings
 from app.core.constants import (
     COUNTRY_REGIONS,
     PLACE_WORDS,
@@ -117,7 +118,7 @@ def _word_range(setting: str, text: str) -> tuple[int, int]:
     return least, most
 
 
-class Settings(AiOutputSettings):
+class Settings(ChatModelSettings, AiOutputSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )
@@ -137,14 +138,7 @@ class Settings(AiOutputSettings):
     redis_celery_broker_url: str
     redis_ca_file: str = ""  # the CA that signed a rediss:// server's certificate; empty = the system's CAs
 
-    chat_base_url: str
-    chat_api_key: SecretStr
-    chat_model: str
-    chat_fallback_model: str = ""
-    # CII_CHAT_MODEL_THINKING / CII_CHAT_FALLBACK_MODEL_THINKING: false (default) = that model's thinking off
-    # (LiteLLM gateway models: app/ai/chat.py); true = the model's own default.
-    chat_model_thinking: bool = False
-    chat_fallback_model_thinking: bool = False
+    # The chat models, shared and each module's own: ChatModelSettings (app/core/chat_settings.py).
 
     embedding_base_url: str
     embedding_api_key: SecretStr
@@ -170,15 +164,9 @@ class Settings(AiOutputSettings):
     # key, so this bounds what anyone can make a pod read. One limit for all (owner, 2026-10-09): no endpoint
     # takes file uploads; one that does gets its own limit by its address, never by the Content-Type.
     max_request_mb: int = Field(default=2, gt=0)
-    # Most AI calls at once, all pods; a call waits for a free slot (AiSlots). 0 = only a 429's limit; v1 16.
-    max_concurrent_ai_calls: int = Field(default=16, ge=0)
-    max_concurrent_fallback_calls: int = Field(default=0, ge=0)  # the same for the fallback model's calls
-    # Each model's own AI requests a minute, all pods, retries included (AiRequestRate); 0 = no limit.
-    chat_requests_per_minute: int = Field(default=0, ge=0)
-    chat_fallback_requests_per_minute: int = Field(default=0, ge=0)
+    # Each search model's own AI requests a minute, all pods, retries included (AiRequestRate); 0 = no limit.
     embedding_requests_per_minute: int = Field(default=0, ge=0)
     rerank_requests_per_minute: int = Field(default=0, ge=0)
-    chat_tokens_per_minute: int = Field(default=0, ge=0)  # the chat model's, all pods; big requests wait more
 
     # How many scenarios a run writes
     # 0 = every valid path found; N = the N most relevant, the rest kept in the plan as target_reached.

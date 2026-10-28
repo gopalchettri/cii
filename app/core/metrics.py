@@ -74,11 +74,12 @@ WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbea
 #: MongoDB's clock minus this process's clock (app/core/clock.py): ClockSkew fires when a pod is far off.
 CLOCK_OFFSET = Gauge("tsg_clock_offset_seconds", "MongoDB's clock minus this process's clock")
 #: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress, current_limit): every pod
-#: reports the same numbers.
-AI_SLOTS_IN_USE = Gauge("tsg_ai_slots_in_use", "AI calls in progress across all pods")
+#: reports the same numbers. One pool each: the search calls', and each module's chat calls (ChatModule).
+AI_SLOTS_IN_USE = Gauge("tsg_ai_slots_in_use", "AI calls in progress across all pods", ["pool"])
 AI_SLOTS_CAP = Gauge(
     "tsg_ai_slots_cap",
-    "The limit on AI calls at once: CII_MAX_CONCURRENT_AI_CALLS or a 429's, the lower (0 = none)",
+    "A pool's limit on AI calls at once: its MAX_CONCURRENT_AI_CALLS or a 429's, the lower (0 = none)",
+    ["pool"],
 )
 AUDIT_FAILURES = Counter("tsg_audit_failures_total", "Audit records that could not be written")
 LIBRARY_CHECK_FAILURES = Counter(

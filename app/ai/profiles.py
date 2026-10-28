@@ -33,7 +33,7 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         reasoning_effort="none",
         context_tokens=262_144,
     ),
-    # UAT's fallback model (CII_CHAT_FALLBACK_MODEL); 1 million tokens of input (owner, 2026-10-23).
+    # UAT's fallback model (CII_<MODULE>_CHAT_FALLBACK_MODEL); 1 million tokens of input (owner, 2026-10-23).
     # It answers in 55-99 s: 180 s keeps its longest answers from timing out (a timed-out gate batch fails
     # the job).
     "litellm_proxy/glm-5.3": ChatModelProfile(
