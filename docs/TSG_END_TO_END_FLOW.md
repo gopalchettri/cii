@@ -4071,22 +4071,23 @@ stateDiagram-v2
   tools, and waits for `/ready`. `.\run.ps1 stop` stops them
   cleanly.
 - **OpenShift:** plain YAML applied with `oc apply -f` (D25). `deploy/deploy_threatgen.yaml` runs the API
-  (2 replicas), one worker per queue and beat in project `ai-threatgen`; `deploy/deploy_remediation.yaml` adds a
-  twin of every worker in project `ai-remediation`. The workers (D29; threads, CPU and memory limits):
-  `worker-threats` 2, 1 CPU, 1536Mi; `worker-scenarios` 2, 1 CPU, 2Gi (the only one holding the evidence
-  index); `worker-controls` 1, 250m, 1Gi; `worker-remediation` 2, 500m, 1Gi; `worker-service-mapper` 2, 500m,
-  1Gi; `worker-maintenance` 3, 150m, 1536Mi; `worker-reaper` 2, 100m, 384Mi; the API 750m, 1Gi each, beat
-  200m, 512Mi. The image runs numpy's maths
-  libraries on one thread (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, `Dockerfile`). `deploy/deploy_common.yaml` runs the monitoring and
-  Flower in project `ai-common`, which TSG shares with the chatbot (D24), and the monitoring proxy (nginx, 50m and
-  64Mi, requests = limits) in `ai-threatgen`: Grafana and Flower are on the API's host at `/grafana` and `/flower`,
-  without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus,
-  Alertmanager and Loki have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
-  (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
-  (Secrets `tsg-secrets` and `tsg-monitoring`, copied from
-  `deploy/secrets.example.yaml`, never committed); network rules are
-  `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
-  settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each project's rollouts awaited by their `part-of` label.
+  (2 replicas), one worker per queue and beat in project `ai-threatgen`, the app's only project (D52), except the
+  reaper's worker: `deploy/deploy_common.yaml` runs `worker-reaper` in `ai-common`. The workers (D29; threads,
+  CPU and memory limits): `worker-threats` 2, 1 CPU, 1536Mi; `worker-scenarios` 2, 1 CPU, 2Gi (the only one
+  holding the evidence index); `worker-controls` 1, 250m, 1Gi; `worker-remediation` 2, 500m, 1Gi;
+  `worker-service-mapper` 2, 500m, 1Gi; `worker-maintenance` 3, 250m, 1536Mi; `worker-reaper` 2, 150m, 768Mi;
+  the API 750m, 1Gi each, beat 200m, 512Mi. The image runs numpy's maths libraries on one thread
+  (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, `Dockerfile`). `deploy/deploy_common.yaml`
+  also runs the monitoring and Flower in `ai-common`, which TSG shares with the chatbot (D24), and the monitoring
+  proxy (nginx, 50m and 64Mi, requests = limits) in `ai-threatgen`: Grafana and Flower are on the API's host at
+  `/grafana` and `/flower`, without login, so anyone who can reach the API can read every log line and metric
+  through Grafana. Prometheus, Alertmanager and Loki have no public address (`oc port-forward`). Settings are
+  `deploy/configmap.yaml` (ConfigMap `tsg-config` in both projects, and the monitoring's config files) and
+  `deploy/secrets.yaml` (Secrets `tsg-secrets` and `tsg-monitoring`, copied from `deploy/secrets.example.yaml`,
+  never committed); network rules are `deploy/networkpolicy_threatgen.yaml`, and for the reaper's worker
+  `tsg-app-ingress` and `tsg-app-egress` in `deploy/deploy_common.yaml`. Apply order: secrets and settings,
+  network rules, the reaper's worker (`oc apply -f deploy\deploy_common.yaml -l part-of=tsg`), `ai-threatgen`,
+  the rest of `ai-common`, each project's rollouts awaited by their `part-of` label.
   `deploy/DEPLOYMENT_GUIDE.md` has every step and check.
 
 ---

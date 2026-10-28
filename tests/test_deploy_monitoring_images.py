@@ -92,7 +92,8 @@ def test_the_next_release_also_removes_tsg_s_older_monitoring_before_it_applies_
     part_4 = guide[guide.index("## Part 4.") : guide.index("## Part 5.")]
     listed = part_4.index(f"oc -n {MONITORING_NAMESPACE} get deployment -l {OLD_MONITORING_LABEL}")
     deleted = part_4.index(OLD_MONITORING_DELETE)
-    applied = part_4.index("oc apply -f deploy\\deploy_common.yaml")
+    # the whole file's apply; the reaper worker's own (-l part-of=tsg) runs first, before deploy_threatgen
+    applied = part_4.index("oc apply -f deploy\\deploy_common.yaml\n")
     assert listed < deleted < applied
     every_release = part_4.index("**Then do** (every release)")  # a rollback brings the previous Routes back
     assert every_release < part_4.index(OLD_COMMON_ROUTES) < applied

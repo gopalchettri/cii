@@ -1,5 +1,5 @@
 # TSG v2 image. The API, every worker, beat and Flower run from this one image; the command in
-# deploy/deploy_threatgen.yaml, deploy_remediation.yaml and deploy_common.yaml picks the role.
+# deploy/deploy_threatgen.yaml and deploy_common.yaml picks the role.
 # Built, checked and pushed by deploy\build-image.bat.
 #
 # UBI 9: the cluster pulls only Red Hat images and our own. Python 3.12 comes from the UBI repos, ODBC

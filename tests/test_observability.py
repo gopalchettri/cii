@@ -91,7 +91,7 @@ EXPORTER_METRICS = {
     "loki_discarded_samples_total",  # Loki itself
 }
 PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
-WATCHED_APP_PROJECTS = ("ai-threatgen", "ai-remediation")  # TSG's own projects: every pod there is TSG's
+WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's own project: every pod there is TSG's
 
 
 def _monitoring_script():
@@ -227,15 +227,17 @@ def test_queue_backlog_watches_every_routed_queue_but_maintenance() -> None:
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
     """In ai-common, shared with the chatbot (D24); only the Role that lets it read the app's pods is in
-    each app project, and the monitoring proxy with its Routes in ai-threatgen (whose host they use)."""
+    the app's project, ai-threatgen, with the monitoring proxy and its Routes (whose host they use)."""
     objects = _uat_objects()
     assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
     elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
         (o["kind"], "ai-common") for o in objects
     }
     assert elsewhere == {
-        (kind, project) for kind in ("Role", "RoleBinding") for project in ("ai-threatgen", "ai-remediation")
-    } | {(kind, "ai-threatgen") for kind in ("Deployment", "Service", "Route")}
+        (kind, project)
+        for kind in ("Role", "RoleBinding", "Deployment", "Service", "Route")
+        for project in WATCHED_APP_PROJECTS
+    }
     for deployment in _template_objects("Deployment"):
         pod = deployment["spec"]["template"]["spec"]
         assert pod["imagePullSecrets"] == [{"name": "quay-pull"}]
@@ -498,7 +500,8 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
         for line in path.read_text(encoding="utf-8").splitlines()
         if "-n ai-common rollout restart deployment" in line
     ]
-    assert restarts and all(line.endswith(" -l part-of=tsg-monitoring") for line in restarts)
+    allowed = (" -l part-of=tsg-monitoring", " deployment/worker-reaper")  # by label, or TSG's reaper by name
+    assert restarts and all(line.endswith(allowed) for line in restarts)
 
 
 def _promtool() -> str | None:

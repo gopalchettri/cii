@@ -1,4 +1,5 @@
-"""The reaper and the controls sweep have a queue and a worker of their own: no long job takes a thread."""
+"""The reaper's worker on the laptop, the guide's roll-out of worker-reaper before the API, and the app file's
+header, which names every worker and adds up its limits (the pod itself: tests/test_reaper_pod.py)."""
 
 import re
 from itertools import takewhile
@@ -6,20 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from app.core.constants import TASK_ROUTES, TaskName
+from app.core.constants import TaskName
 from app.worker.celery_app import queue_of
 from tests.test_deploy import APP_FILES, COMMON_FILE, MONITORING_NAMESPACE, _objects, _pod_limits
 from tests.test_deploy_monitoring_images import GUIDE
 
 REPO = Path(__file__).resolve().parents[1]
-
-
-def test_the_reaper_and_the_sweep_share_their_queue_with_no_long_job() -> None:
-    """A library build or an intelligence refresh holds a thread for up to an hour: on the reaper's queue,
-    with every thread busy, REAP passes waited past their expiry and were dropped."""
-    reaper_queue = queue_of(TaskName.REAP)
-    sharing = {task for task, route in TASK_ROUTES.items() if route["queue"] == reaper_queue}
-    assert sharing == {TaskName.REAP, TaskName.RETRY_CONTROLS}
+APP_PROJECT = "ai-threatgen"
 
 
 def test_the_laptop_serves_the_reapers_queue_with_a_worker_of_its_own() -> None:
@@ -49,38 +43,40 @@ def _header(path: Path) -> str:
     return " ".join(line.lstrip("#").strip() for line in lines)
 
 
-def test_the_every_release_roll_out_counts_one_line_per_deployment_it_waits_for() -> None:
-    """Part 4 step 7 waits for ai-remediation's, then ai-threatgen's part-of=tsg Deployments, then ai-common's
-    monitoring and the proxy: the counts it tells the operator to expect are those."""
+def test_the_every_release_roll_out_starts_the_reaper_first_and_counts_each_deployment() -> None:
+    """Part 4 step 7 rolls out worker-reaper (ai-common) before deploy_threatgen.yaml, so a reaper worker
+    serves tsg_reaper before the new API and beat send to it; then ai-threatgen's part-of=tsg Deployments,
+    then ai-common's monitoring and the proxy: the counts it tells the operator to expect are those."""
     guide = GUIDE.read_text(encoding="utf-8")
     part_4 = guide[guide.index("## Part 4.") : guide.index("## Part 5.")]
-    [stated] = re.findall(r"line per Deployment: (\d+), then (\d+),\s+then (\d+)", part_4)
-    monitoring = _deployments(COMMON_FILE, MONITORING_NAMESPACE, "tsg-monitoring")
-    apps = [len(_deployments(APP_FILES[name], name, "tsg")) for name in ("ai-remediation", "ai-threatgen")]
-    assert [int(count) for count in stated] == [*apps, len(monitoring) + 1]  # + the proxy's own rollout
+    reaper_ready = part_4.index(f"oc -n {MONITORING_NAMESPACE} rollout status deployment/worker-reaper")
+    assert part_4.index("oc apply -f deploy\\deploy_common.yaml -l part-of=tsg") < reaper_ready
+    assert reaper_ready < part_4.index("oc apply -f deploy\\deploy_threatgen.yaml")
+    [stated] = re.findall(r"line per Deployment: ((?:\d+,?\s+then\s+)+\d+)", part_4)
+    reaper = len(_deployments(COMMON_FILE, MONITORING_NAMESPACE, "tsg"))
+    app = len(_deployments(APP_FILES[APP_PROJECT], APP_PROJECT, "tsg"))
+    monitoring = len(_deployments(COMMON_FILE, MONITORING_NAMESPACE, "tsg-monitoring")) + 1  # + the proxy
+    assert [int(n) for n in re.findall(r"\d+", stated)] in ([app, monitoring], [reaper, app, monitoring])
 
 
-def test_each_app_file_s_header_names_the_queue_of_every_worker_it_runs() -> None:
+def test_the_app_file_s_header_names_the_queue_of_every_worker_it_runs() -> None:
     """The header's queue list is the file's worker Deployments, and `all N roll at once` counts them all."""
-    for project, path in APP_FILES.items():
-        header, deployments = _header(path), _deployments(path, project)
-        [queues] = re.findall(r"\((threats, [^)]+)\)", header)
-        workers = {d["metadata"]["name"] for d in deployments if d["metadata"]["name"].startswith("worker-")}
-        assert {f"worker-{queue.replace(' ', '-')}" for queue in queues.split(", ")} == workers, path.name
-        assert [int(n) for n in re.findall(r"all (\d+) roll at once", header)] in ([], [len(deployments)])
+    path = APP_FILES[APP_PROJECT]
+    header, deployments = _header(path), _deployments(path, APP_PROJECT)
+    [queues] = re.findall(r"\((threats, [^)]+)\)", header)
+    workers = {d["metadata"]["name"] for d in deployments if d["metadata"]["name"].startswith("worker-")}
+    assert {f"worker-{queue.replace(' ', '-')}" for queue in queues.split(", ")} == workers
+    assert [int(n) for n in re.findall(r"all (\d+) roll at once", header)] in ([], [len(deployments)])
 
 
-def test_each_app_file_s_header_adds_up_its_own_limits() -> None:
-    """ai-remediation's header: its pods' limits. ai-threatgen's: its pods', with the monitoring proxy, then
-    with the API's update pod too."""
-    for project, path in APP_FILES.items():
-        deployments = _deployments(path, project)
-        expected = [_limits(deployments)]
-        if project == "ai-threatgen":
-            cpu, gib = _limits([*deployments, *_deployments(COMMON_FILE, project)])
-            api_cpu, api_gib = _pod_limits(next(d for d in deployments if d["metadata"]["name"] == "api"))
-            expected += [(cpu, gib), (cpu + api_cpu, gib + api_gib)]
-        [sentence] = re.findall(r"These pods use (.+?\.) [A-Z]", _header(path))
-        stated = re.findall(r"([\d.]+) CPU(?:,| and) ([\d.]+) Gi", sentence)
-        for (cpu, gib), total in zip(stated, expected, strict=True):
-            assert (float(cpu), float(gib)) == pytest.approx(total, abs=0.006), path.name
+def test_the_app_file_s_header_adds_up_its_own_limits() -> None:
+    """ai-threatgen's header: its pods' limits, with the monitoring proxy, then with the API's update pod."""
+    path = APP_FILES[APP_PROJECT]
+    deployments = _deployments(path, APP_PROJECT)
+    cpu, gib = _limits([*deployments, *_deployments(COMMON_FILE, APP_PROJECT)])
+    api_cpu, api_gib = _pod_limits(next(d for d in deployments if d["metadata"]["name"] == "api"))
+    expected = [_limits(deployments), (cpu, gib), (cpu + api_cpu, gib + api_gib)]
+    [sentence] = re.findall(r"These pods use (.+?\.) [A-Z]", _header(path))
+    stated = re.findall(r"([\d.]+) CPU(?:,| and) ([\d.]+) Gi", sentence)
+    for (cpu_stated, gib_stated), total in zip(stated, expected, strict=True):
+        assert (float(cpu_stated), float(gib_stated)) == pytest.approx(total, abs=0.006)

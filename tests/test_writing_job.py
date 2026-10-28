@@ -3,6 +3,7 @@ themselves to the end of the set a person asked for; on the test MongoDB, with a
 
 import json
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -222,6 +223,39 @@ def test_fourteen_paths_are_written_in_three_batches_by_themselves(
     assert len(set(titles)) == 14 and sum(title.endswith(")") for title in titles) == 13
     assert all(path["served"] for path in run["plan"]["paths"])
     assert {scenario["controls"]["status"] for scenario in stored} == {Status.QUEUED}
+
+
+def test_each_threat_is_split_while_the_evidence_is_searched(
+    chat: FakeChatModel, sent: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before: a threat's split (an AI call of 1-10 s, live 2026-10-27) began only after the batch's evidence
+    search (about 16 s on the GPU), so every story waited for both, one after the other. The splits now run
+    beside the search, each threat's once."""
+    container.get_threat_scenario_repository().create_indexes()
+    record_id = _queued_run(["Threat 1", "Threat 2"])
+    split_during_search: list[int] = []
+
+    class Evidence:
+        """The evidence search: it ends only once both splits have asked, or after 2 s."""
+
+        def __init__(self, _run: Any, threats: dict[str, dict[str, Any]], _progress: Any) -> None:
+            self._threats = threats
+
+        def attach(self, _path_ids: Any) -> None:
+            deadline = time.monotonic() + 2
+            while len(chat.asked(AiTask.THREAT_ACTIONS)) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            split_during_search.append(len(chat.asked(AiTask.THREAT_ACTIONS)))
+            for threat in self._threats.values():
+                threat["intel_search"] = {"snapshot_id": "s1", "failure": None}
+
+    job = container.get_scenario_write_job()
+    monkeypatch.setattr(job, "_switch", SimpleNamespace(is_on=lambda sure=False: True))
+    monkeypatch.setattr(job, "_evidence_at_write", Evidence)
+    assert _deliver_until_done(record_id) == 1
+    assert split_during_search == [2]
+    assert len(chat.asked(AiTask.THREAT_ACTIONS)) == 2  # each threat's once: the writes took the splits made
+    assert len(_scenarios_of(record_id)) == 2
 
 
 def test_the_run_writes_only_its_first_set_and_the_rest_wait_for_a_next_set(

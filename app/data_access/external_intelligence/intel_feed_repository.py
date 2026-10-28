@@ -9,7 +9,7 @@ from uuid import uuid4
 from pymongo import UpdateOne
 from pymongo.collection import Collection as MongoCollection
 
-from app.core.constants import Collection, IntelSource, IntelUrl
+from app.core.constants import Collection, IntelSource
 from app.data_access.base import MongoRepository
 from app.models.external_intelligence.source_health import (
     SourceHealth,
@@ -19,15 +19,6 @@ from app.models.external_intelligence.source_health import (
 
 Record = dict[str, Any]
 ALL_SOURCES = [source.value for source in IntelSource]
-#: Where each source's terms are published: kept beside the registry for whoever audits an approval.
-_TERMS: dict[IntelSource, str] = {
-    IntelSource.CISA_KEV: IntelUrl.TERMS_KEV,
-    IntelSource.FIRST_EPSS: IntelUrl.TERMS_EPSS,
-    IntelSource.ATTACK_ENTERPRISE: IntelUrl.TERMS_ATTACK,
-    IntelSource.ATTACK_ICS: IntelUrl.TERMS_ATTACK,
-    IntelSource.CISA_ICS: IntelUrl.TERMS_CISA,
-    IntelSource.NIST_NVD: IntelUrl.TERMS_NVD,
-}
 _RELEASED = {"claimed_at": None, "claim_token": None}
 
 
@@ -63,7 +54,6 @@ class IntelFeedRepository(MongoRepository):
                     {
                         "$setOnInsert": {
                             **SourceHealth(source).as_doc(),
-                            "terms_url": _TERMS[source],
                             "more_pending": False,
                             "approved": True,
                         }
@@ -108,5 +98,4 @@ class IntelFeedRepository(MongoRepository):
         """Sets `approved` on a source of tsg_external_feed_status with a blank health and no claim (a refresh
         in flight loses it); `create=False` changes only an existing source document."""
         changes = {"approved": approved, **_blank_health(source), **_RELEASED}
-        setting = {"$set": changes, "$setOnInsert": {"terms_url": _TERMS[source]}}
-        self.collection.update_one({"_id": source}, setting, upsert=create)
+        self.collection.update_one({"_id": source}, {"$set": changes}, upsert=create)

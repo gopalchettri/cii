@@ -79,7 +79,7 @@ $Programs = [ordered]@{
                     '-Q', 'tsg_maintenance', '-n', $MaintenanceName, '--loglevel=INFO')
     reaper      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
                     '-Q', 'tsg_reaper', '-n', $ReaperName, '--loglevel=INFO')
-    beat       = @('-m', 'celery', '-A', 'app.worker', 'beat', '--loglevel=INFO')
+    beat        = @('-m', 'celery', '-A', 'app.worker', 'beat', '--loglevel=INFO')
 }
 # Settings a program's window gets on top of .env: each worker serves its metrics on its own port (9101 is the
 # VS Code debug worker's).

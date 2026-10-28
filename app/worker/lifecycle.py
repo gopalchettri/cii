@@ -3,6 +3,7 @@ how it shuts down. Each function decorated with a signal is a Celery signal rece
 
 import re
 import sys
+import threading
 import time
 from typing import Any
 
@@ -11,6 +12,7 @@ from celery import Task, signals
 from celery.concurrency import get_implementation
 from prometheus_client import start_http_server
 
+from app.ai import RerankModel
 from app.core import metrics
 from app.core.constants import ErrorMessage, LogEvent, TaskName, Worker, module_of
 from app.core.database import get_mongodb, get_stored_procedure_client
@@ -54,6 +56,7 @@ def prepare_worker(sender: Any, **_: object) -> None:
     _prepare_stores_and_models()
     log_mongodb_topology()
     warm_up_external_intelligence(sender)  # before Celery starts the consumer and sends worker_ready
+    preload_local_reranker(sender)
 
 
 def _start_failed(message: str) -> SystemExit:
@@ -122,6 +125,27 @@ def warm_up_external_intelligence(sender: Any) -> None:
     switch = container.get_intelligence_switch()
     warm_up_intelligence(switch, container.get_evidence_index_keeper)
     start_following_active_snapshot(settings, switch, container.get_evidence_index_keeper)
+
+
+def preload_local_reranker(sender: Any) -> threading.Thread | None:
+    """On a worker that writes scenarios or maps controls, load the reranker from a daemon thread, so the
+    first set after a start does not wait for the laptop's cold load; the worker consumes meanwhile."""
+    reranking = (queue_of(TaskName.WRITE_SCENARIOS), queue_of(TaskName.MAP_CONTROLS))
+    if not any(queue in sender.app.amqp.queues.consume_from for queue in reranking):
+        return None
+    from app import container
+
+    rerank = container.get_rerank_model()
+    thread = threading.Thread(target=_preload, args=(rerank,), name="rerank-preload", daemon=True)
+    thread.start()
+    return thread
+
+
+def _preload(rerank: RerankModel) -> None:
+    try:
+        rerank.preload()
+    except Exception:  # noqa: BLE001 — never stops the worker: the first rerank loads it instead
+        log.warning(LogEvent.WORKER_RERANKER_PRELOAD_FAILED, exc_info=True)
 
 
 @signals.task_prerun.connect

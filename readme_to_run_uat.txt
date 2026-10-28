@@ -10,8 +10,8 @@ cd "C:\GopalChettri\Projects\desc-ai-modules\cii"
 # v1 must be STOPPED first (v1 and v2 share the Redis keys "tsg:*" on the same databases).
 # The OpenShift v2 pods must be scaled to 0 first too: they share the Redis queues and would take this laptop's jobs:
 #   oc -n ai-threatgen scale deployment -l part-of=tsg --replicas=0
-#   oc -n ai-remediation scale deployment -l part-of=tsg --replicas=0
-#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, steps 11 and 12)
+#   oc -n ai-common scale deployment/worker-reaper --replicas=0
+#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, step 12)
 # The DBA must already have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
 
 # The env MUST be named .venv (dot-prefixed).
@@ -117,14 +117,13 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #         reach the AI gateway. llmapi.govai.ae must be on the pods' NO_PROXY so the calls go to it directly.
 #    1. See what runs (changes nothing):
 #         oc -n ai-threatgen get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
-#         oc -n ai-remediation get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
 #    FULL STEPS, with every check and the undo: docs\UAT_LLM_TIMEOUT_RUNBOOK.md. In short:
-#    2. Test from inside EACH app pod (the API and every worker, both projects; changes nothing). Copy it exactly:
+#    2. Test from inside EACH app pod (the API and every worker, in ai-threatgen; changes nothing). Copy it exactly:
 #       no double quotes inside the single quotes (Windows PowerShell 5.1 breaks them):
 #         oc -n <project> exec deploy/<name> -- sh -c 'echo NO_PROXY=$NO_PROXY no_proxy=$no_proxy; curl -s -m 30 -o /dev/null -w default:%{http_code} https://llmapi.govai.ae/health/liveliness; echo ,exit=$?; curl -s -m 30 --noproxy llmapi.govai.ae -o /dev/null -w direct:%{http_code} https://llmapi.govai.ae/health/liveliness; echo ,exit=$?'
 #       "default:000" and "direct:200" = this problem.
 #    3. Unblock now: record the settings (oc -n <project> set env deploy --all --list), then on EVERY app
-#       deployment of BOTH projects (API, every worker, beat; not flower, not the monitoring), one at a time:
+#       deployment in ai-threatgen (API, every worker, beat; not flower, not the monitoring), one at a time:
 #         oc -n <project> set env deploy/<name> NO_PROXY=localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae no_proxy=localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae
 #         oc -n <project> rollout status deploy/<name> --timeout=15m
 #    4. Check: step 2 again on every changed deployment (both lines list llmapi.govai.ae, "default:200,exit=0");
@@ -132,7 +131,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #    5. For good: deploy from this repository, step by step: deploy\DEPLOYMENT_GUIDE.md (plain YAML applied with
 #       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first): its Part 2, step 9.
 #       Never delete the old v1 deployments before v2 is accepted: they are the way back (the guide's "Roll back").
-#    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line (both projects):
+#    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line:
 #         oc -n <project> logs deploy/worker-scenarios | findstr ai.gateway_route
 
 # 10. Create an API key (admin key = CII_ADMIN_API_KEY from .env). It is shown ONCE - copy it.

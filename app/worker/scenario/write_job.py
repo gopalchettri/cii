@@ -1,6 +1,7 @@
 """The scenario write job: one batch of a run's paths written at once, each saved as soon as it is done, then
 the set's next batch handed over, the set ended, or the regenerate ended."""
 
+import contextlib
 import contextvars
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -124,10 +125,14 @@ class BatchWriter:
         to_write = self._saver.to_write(self._batch, self._replaces, self._regenerate)
         to_write = self._without_repeats(to_write)
         outages: dict[str, BaseException] = {}
+        paths = self._progress.paths
+        splits = ThreadPoolExecutor(Generation.WRITER_BATCH, thread_name_prefix="split")
+        for key in to_write:  # beside the evidence search, not after it; a write waits on its threat's lock
+            splits.submit(contextvars.copy_context().run, self._split_ahead, paths[key])
+        splits.shutdown(wait=False)  # ponytail: never joined; the writes take the splits as they finish
         if self._evidence is not None:
             self._evidence.attach(to_write)  # one evidence search for the paths about to be written
             to_write = [key for key in to_write if not self._held_back(key, outages)]
-        paths = self._progress.paths
         path_jobs = {key: partial(self._paths.write, paths[key]) for key in to_write}
         outages |= write_at_once(path_jobs, self._save)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
@@ -141,6 +146,11 @@ class BatchWriter:
             self._progress.finish_regenerate(len(self._served_paths()), len(self._batch))
         else:
             self._progress.continue_or_finish()
+
+    def _split_ahead(self, path: dict[str, Any]) -> None:
+        """A path's split, started early; a refused path (no AI call) or a fault is its write's to tell."""
+        with contextlib.suppress(Exception):
+            self._paths.split_ahead(path)
 
     def _save(self, path_id: str, outcome: PathOutcome, started_at: datetime) -> None:
         """Save one path's outcome; a scenario that now serves it has its controls mapped while the batch's

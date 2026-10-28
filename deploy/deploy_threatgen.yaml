@@ -1,20 +1,26 @@
 # deploy_threatgen.yaml - TSG in project ai-threatgen (UAT is production): the API (2 copies), one worker per
-# queue (threats, scenarios, controls, remediation, service mapper, maintenance, reaper), beat (the timer), the
-# API's Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget.
+# queue (threats, scenarios, controls, remediation, service mapper, maintenance), beat (the timer), the API's
+# Service, Route (https://threatgen-api.apps.dda-desc-az1-01.desccii.local) and its disruption budget.
+# The app runs here, except the reaper worker (queue tsg_reaper), which runs in ai-common with the monitoring
+# and Flower (deploy_common.yaml): this quota has no room for it. Apply that worker FIRST (DEPLOYMENT_GUIDE.md).
 # Network rules: networkpolicy_threatgen.yaml. Settings: configmap.yaml, secrets.yaml.
-# Apply AFTER deploy_remediation.yaml is rolled out (new workers before a new API), and wait until it is rolled out:
+# The new API is ready only once every queue has a live worker, so the reaper worker goes first, then this file:
+#   oc apply -f deploy/deploy_common.yaml -l part-of=tsg
+#   oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 #   oc apply -f deploy/deploy_threatgen.yaml
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
-# New release: replace the image tag (24-Oct-2026) everywhere in deploy_*.yaml with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits). These pods use 5.2 CPU and 10.88 Gi, with the monitoring proxy
-# (deploy_common.yaml) 5.25 CPU and 10.94 Gi; an API update adds one API pod (6 CPU, 11.94 Gi).
-# A worker update stops the old pod first (maxSurge 0): its twin in ai-remediation serves meanwhile.
+# New release: in every deploy_*.yaml, replace the image tag (24-Oct-2026) with the one build-image.bat printed.
+# Quota here: 6 CPU, 12 Gi memory (limits), 60 Gi storage. These pods use 5.2 CPU and 10.5 Gi, with the monitoring
+# proxy (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an API update adds one API pod (6 CPU, 11.56 Gi). No volumes.
+# One worker per queue: the quota has no room for a second. A worker update stops the old pod first (maxSurge 0):
+# its queue's jobs wait and nothing is lost, and the API stays ready meanwhile (its readinessProbe allows
+# 6 minutes, longer than a worker's slowest start).
 # A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
 # update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
 # once the old pod is gone: rollout status only takes longer.
 # A worker is ready once its heartbeat has written /tmp/tsg-worker-alive (startupProbe).
-# Each worker prefers a node its twin in ai-remediation is not on, and the two API pods different nodes, so one node
-# failure stops neither a queue nor the API (preferred only: a pod still starts when no other node fits).
+# The two API pods prefer different nodes, so one node failure never stops the API (preferred only: a pod still
+# starts when no other node fits). A worker on a failed node starts again on another; its jobs wait meanwhile.
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- the API
@@ -70,7 +76,7 @@ spec:                                            # what to run
             initialDelaySeconds: 10              # first check after 10 s
             periodSeconds: 10                    # then every 10 s
             timeoutSeconds: 7                    # each check may take 7 s
-            failureThreshold: 12                 # 12 failures in a row (2 minutes) = not ready: a short store or worker gap leaves the API serving
+            failureThreshold: 36                 # 36 failures in a row (6 minutes) = not ready: a store gap, or a queue's one worker restarting, leaves the API serving
           livenessProbe:                         # "alive" = the process answers; failing restarts the container
             httpGet: { path: /health, port: 8000 }   # no store calls, so a store outage never restarts a healthy pod
             initialDelaySeconds: 30              # first check after 30 s
@@ -89,7 +95,8 @@ spec:                                            # what to run
             seccompProfile: { type: RuntimeDefault }   # the default system-call filter
 
 # ---------------------------------------------------------------- workers: one Deployment per queue
-# A stopping worker hands its unfinished jobs back to the queue (no attempt used); a crashed one's go back via the reaper.
+# A stopping worker hands its unfinished jobs back to the queue (no attempt used); a crashed one's go back via
+# the reaper (worker-reaper, in ai-common).
 ---
 apiVersion: apps/v1                              # Deployment API version
 kind: Deployment                                 # keeps one threat-finding worker running
@@ -98,7 +105,7 @@ metadata:                                        # the object's name and place
   namespace: ai-threatgen                        # project
   labels: { app: worker-threats, part-of: tsg }  # labels on the Deployment itself
 spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
+  replicas: 1                                    # one copy: the quota has no room for a second
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
@@ -117,14 +124,6 @@ spec:                                            # what to run
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-threats } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -168,7 +167,7 @@ metadata:                                        # the object's name and place
   namespace: ai-threatgen                        # project
   labels: { app: worker-scenarios, part-of: tsg }   # labels on the Deployment itself
 spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
+  replicas: 1                                    # one copy: the quota has no room for a second
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
@@ -187,14 +186,6 @@ spec:                                            # what to run
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-scenarios } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -238,7 +229,7 @@ metadata:                                        # the object's name and place
   namespace: ai-threatgen                        # project
   labels: { app: worker-controls, part-of: tsg }   # labels on the Deployment itself
 spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
+  replicas: 1                                    # one copy: the quota has no room for a second
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
@@ -257,14 +248,6 @@ spec:                                            # what to run
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-controls } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -308,7 +291,7 @@ metadata:                                        # the object's name and place
   namespace: ai-threatgen                        # project
   labels: { app: worker-remediation, part-of: tsg }   # labels on the Deployment itself
 spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
+  replicas: 1                                    # one copy: the quota has no room for a second
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
@@ -327,14 +310,6 @@ spec:                                            # what to run
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-remediation } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -378,7 +353,7 @@ metadata:                                        # the object's name and place
   namespace: ai-threatgen                        # project
   labels: { app: worker-service-mapper, part-of: tsg }   # labels on the Deployment itself
 spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
+  replicas: 1                                    # one copy: the quota has no room for a second
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
@@ -397,14 +372,6 @@ spec:                                            # what to run
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-service-mapper } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -441,6 +408,7 @@ spec:                                            # what to run
             seccompProfile: { type: RuntimeDefault }   # the default system-call filter
 
 # The maintenance worker: library rebuilds and the intelligence refresh (jobs that can run for an hour).
+# The reaper has its own worker in ai-common (deploy_common.yaml).
 ---
 apiVersion: apps/v1                              # Deployment API version
 kind: Deployment                                 # keeps one maintenance worker running
@@ -449,7 +417,7 @@ metadata:                                        # the object's name and place
   namespace: ai-threatgen                        # project
   labels: { app: worker-maintenance, part-of: tsg }   # labels on the Deployment itself
 spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
+  replicas: 1                                    # one copy: the quota has no room for a second
   strategy:                                      # how an update replaces the pod
     type: RollingUpdate                          # replace the pod
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
@@ -468,14 +436,6 @@ spec:                                            # what to run
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-maintenance } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
@@ -504,79 +464,7 @@ spec:                                            # what to run
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
             requests: { cpu: 100m, memory: 768Mi }   # reserved for the pod
-            limits: { cpu: 150m, memory: 1536Mi }  # the most it may use (its jobs mostly wait on stores and the AI)
-          securityContext:                       # locked down
-            allowPrivilegeEscalation: false      # cannot gain more rights
-            runAsNonRoot: true                   # never runs as root
-            capabilities: { drop: [ALL] }        # no special Linux rights
-            seccompProfile: { type: RuntimeDefault }   # the default system-call filter
-
-# The reaper worker: the reaper (puts lost jobs back) and the controls sweep, alone on their queue, so a
-# long maintenance job never holds the thread a reaper pass needs.
----
-apiVersion: apps/v1                              # Deployment API version
-kind: Deployment                                 # keeps one reaper worker running
-metadata:                                        # the object's name and place
-  name: worker-reaper                            # Deployment name
-  namespace: ai-threatgen                        # project
-  labels: { app: worker-reaper, part-of: tsg }   # labels on the Deployment itself
-spec:                                            # what to run
-  replicas: 1                                    # one here; its twin runs in ai-remediation
-  strategy:                                      # how an update replaces the pod
-    type: RollingUpdate                          # replace the pod
-    rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }   # stop the old pod first: no extra pod in the quota
-  selector:                                      # which pods belong to this Deployment
-    matchLabels: { app: worker-reaper }          # pods labelled app=worker-reaper
-  template:                                      # the pod to run
-    metadata:                                    # pod labels and notes
-      labels: { app: worker-reaper, component: worker, part-of: tsg }   # component becomes Prometheus' job name
-      annotations:                               # notes read by Prometheus
-        prometheus.io/scrape: "true"             # Prometheus collects this pod's metrics
-        prometheus.io/port: "9100"               # on this port
-        prometheus.io/path: /metrics             # at this path
-    spec:                                        # pod settings
-      enableServiceLinks: false                  # no <SERVICE>_PORT variables from the project's Services (Flower read FLOWER_PORT as its port)
-      automountServiceAccountToken: false        # the app never calls the OpenShift API
-      hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
-      imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
-      affinity:                                  # where the scheduler places the pod
-        podAntiAffinity:                         # away from some other pods
-          preferredDuringSchedulingIgnoredDuringExecution:   # a wish, not a must: the pod still starts when no other node fits
-            - weight: 100                        # the strongest wish
-              podAffinityTerm:                   # the pods to keep away from
-                labelSelector: { matchLabels: { app: worker-reaper } }   # this worker's twin (and any extra copy)
-                namespaces: [ai-threatgen, ai-remediation]   # in both projects: the twin runs in the other one
-                topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves the queue served (D29)
-      containers:                                # the programs in the pod
-        - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
-          imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_reaper]   # 2 threads on the tsg_reaper queue: a reaper pass never waits behind the sweep
-          envFrom:                               # every setting, as environment variables
-            - configMapRef: { name: tsg-config }   # plain settings
-            - secretRef: { name: tsg-secrets }     # secrets
-          env:                                   # the corporate proxy
-            - { name: HTTP_PROXY, value: "http://10.61.192.2:8080" }    # outside http calls go through the proxy
-            - { name: HTTPS_PROXY, value: "http://10.61.192.2:8080" }   # outside https calls go through the proxy
-            - { name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # never via the proxy (AI gateway included)
-            - { name: no_proxy, value: "localhost,127.0.0.1,.svc,.cluster.local,llmapi.govai.ae" }   # the same list in lower case
-          ports: [{ name: metrics, containerPort: 9100 }]   # the worker's metrics port
-          startupProbe:                          # "started" = its heartbeat wrote the alive file; until then the pod is not ready
-            exec: { command: [sh, -c, 'test -f /tmp/tsg-worker-alive'] }   # the file the worker's heartbeat touches
-            initialDelaySeconds: 20              # first check after 20 s
-            periodSeconds: 15                    # then every 15 s until it answers
-            timeoutSeconds: 30                   # each check may take 30 s
-            failureThreshold: 20                 # no answer within about 5 minutes = restart
-          livenessProbe:                         # "alive" = its heartbeat touched the file in the last 3 minutes; no Redis, so an outage restarts no worker
-            exec: { command: [sh, -c, 'test $(( $(date +%s) - $(stat -c %Y /tmp/tsg-worker-alive) )) -lt 180'] }   # the file's age in seconds; no file fails too
-            initialDelaySeconds: 120             # first check after 2 minutes
-            periodSeconds: 60                    # then every minute
-            timeoutSeconds: 30                   # each check may take 30 s
-            failureThreshold: 3                  # 3 failures in a row = restart
-          resources:                             # CPU and memory
-            requests: { cpu: 50m, memory: 320Mi }  # reserved for the pod
-            limits: { cpu: 100m, memory: 384Mi }   # the most it may use (a pass is a few store reads and writes)
+            limits: { cpu: 250m, memory: 1536Mi }  # the most it may use (its jobs mostly wait on stores and the AI)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root

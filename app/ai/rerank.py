@@ -67,6 +67,14 @@ class RerankModel:
         metrics.AI_SECONDS.labels(AiTask.RERANK, self._model).observe(seconds)
         return scores
 
+    def preload(self) -> None:
+        """Load the local model now, in a turn so no rerank loads it a second time (a cold load takes about 50
+        s); the proxy's model needs none."""
+        if self._base_url:
+            return
+        with self._turns.turn():
+            self._loaded_local_model()
+
     def _score_with_provider(self, query: str, documents: list[str]) -> tuple[list[float], float]:
         # call_with_retries is the only retry; a short answer is asked again too.
         with self._slots.hold_slot(AiTask.RERANK):
