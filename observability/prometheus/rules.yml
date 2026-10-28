@@ -122,7 +122,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: The monitoring cannot read Redis, so the number of waiting jobs is unknown.
-          description: Check redis-exporter's Redis login (tsg-redis-exporter in secrets.yaml on UAT, CII_REDIS_CELERY_BROKER_URL on the laptop) and that Redis is up.
+          description: Check redis-exporter's broker address (CII_REDIS_CELERY_BROKER_URL) and that Redis is up.
 
       - alert: NoWorker
         expr: max by (queue) (tsg_workers_online) == 0

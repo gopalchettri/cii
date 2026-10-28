@@ -4083,7 +4083,7 @@ stateDiagram-v2
   without login, so anyone who can reach the API can read every log line and metric through Grafana. Prometheus,
   Alertmanager and Loki have no public address (`oc port-forward`). Settings are `deploy/configmap.yaml`
   (ConfigMap `tsg-config` in all three projects, and the monitoring's config files) and `deploy/secrets.yaml`
-  (Secret `tsg-secrets`, one Redis login per part, `tsg-redis-<part>`, and `tsg-monitoring`, copied from
+  (Secrets `tsg-secrets` and `tsg-monitoring`, copied from
   `deploy/secrets.example.yaml`, never committed); network rules are
   `deploy/networkpolicy_threatgen.yaml` and `deploy/networkpolicy_remediation.yaml`. Apply order: secrets and
   settings, network rules, `ai-remediation`, `ai-threatgen` (the API last), `ai-common`, each project's rollouts awaited by their `part-of` label.

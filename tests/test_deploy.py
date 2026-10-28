@@ -59,6 +59,8 @@ SECRET_NAMES = {
     "CII_DB_DSN",
     "CII_PROXY_URL",  # an address can carry a password
     "CII_MONGO_URL",
+    "CII_REDIS_URL",
+    "CII_REDIS_CELERY_BROKER_URL",
     "CII_CHAT_API_KEY",
     "CII_EMBEDDING_API_KEY",
     "CII_RERANK_API_KEY",
@@ -67,10 +69,7 @@ SECRET_NAMES = {
 }
 #: Connection strings carry their password: they are secrets, with the keys.
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
-#: The settings in tsg-secrets that name a store the pods must reach; Redis is in each component's own login.
-STORES = ("CII_MONGO_URL", "CII_DB_DSN")
-#: Each component's Redis login, Secret tsg-redis-<component> (redis-exporter's holds REDIS_ADDR alone).
-REDIS_LOGIN_KEYS = {"CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL"}
+STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
 DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
 #: Each AI model and the base URL its calls go to.
 GATEWAYS = (
@@ -168,15 +167,6 @@ def _settings() -> dict[str, str]:
 
 def _secrets() -> dict[str, str]:
     return _shared(SECRETS_FILE, "tsg-secrets")["ai-threatgen"]
-
-
-def _redis_logins(namespace: str) -> dict[str, dict[str, str]]:
-    """Each component's Redis login in a project (Secret tsg-redis-<component>): {its name: its values}."""
-    return {
-        o["metadata"]["name"]: o["stringData"]
-        for o in _objects(SECRETS_FILE, kind="Secret")
-        if o["metadata"]["namespace"] == namespace and o["metadata"]["name"].startswith("tsg-redis-")
-    }
 
 
 def _env_name(field: str) -> str:
@@ -371,10 +361,7 @@ def test_every_object_is_in_its_file_s_project() -> None:
     for path, shared in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
         assert sorted(_shared(path, shared)) == sorted(WATCHED), path.name  # every project with TSG pods
         others = {
-            o["metadata"]["namespace"]
-            for o in _objects(path)
-            if o["metadata"]["name"] not in {shared, PROXY}
-            and not o["metadata"]["name"].startswith("tsg-redis-")
+            o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] not in {shared, PROXY}
         }
         assert others == {MONITORING_NAMESPACE}, path.name  # the monitoring's files and Grafana's password
 
@@ -396,7 +383,6 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
         assert container["envFrom"] == [
             {"configMapRef": {"name": "tsg-config"}},
             {"secretRef": {"name": "tsg-secrets"}},
-            {"secretRef": {"name": f"tsg-redis-{name.split('-')[0]}"}},  # its component's own Redis login
         ]
         # Only the proxy is written inline: every setting (CII_AI_BYPASS_PROXY too) comes from tsg-config.
         assert {e["name"] for e in container["env"]} == {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "no_proxy"}
@@ -567,12 +553,10 @@ def test_each_project_may_reach_every_store_the_proxy_and_the_ai_gateway() -> No
     for namespace, app_file in APP_FILES.items():
         allowed = _reachable(NETWORK_FILES[namespace])
         assert ("10.61.192.2", "8080") in allowed, namespace  # the proxy the intel feeds go through
-        logins = [url for login in _redis_logins(namespace).values() for url in login.values()]
-        assert logins, namespace
-        for url in [*(secrets[key] for key in STORES), *logins]:
-            assert _addresses(url), urlsplit(url).scheme
-            for address in _addresses(url):
-                assert address in allowed, (namespace, address)
+        for key in STORES:
+            assert _addresses(secrets[key]), key
+            for address in _addresses(secrets[key]):
+                assert address in allowed, (namespace, key, address)
         for deployment in _objects(app_file, kind="Deployment"):
             name = deployment["metadata"]["name"]
             env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
@@ -623,10 +607,10 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
 
 
 def test_the_pods_settings_load_and_a_wildcard_origin_stops_them(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pod builds its settings from tsg-config, tsg-secrets and its Redis login alone: a missing required
-    setting, a short admin key or a "*" CORS origin would stop every pod at start-up, so it must fail here."""
+    """A pod builds its settings from tsg-config and tsg-secrets alone: a missing required setting, a short
+    admin key or a "*" CORS origin would stop every pod at start-up, so it must fail here first."""
     monkeypatch.setenv("TSG_TEST_SENTINEL", "kept")
-    environment = _settings() | _secrets() | _redis_logins("ai-threatgen")["tsg-redis-api"]
+    environment = _settings() | _secrets()
     assert _load_settings(environment).ai_bypass_proxy is True
     assert environment["CII_CORS_ORIGINS"] != "*"
     with pytest.raises(ValidationError):
@@ -642,14 +626,11 @@ def test_the_secret_template_holds_every_secret_and_placeholders_only() -> None:
     secret_fields = CONNECTIONS | {
         field for field, info in Settings.model_fields.items() if info.annotation is SecretStr
     }
-    assert {_env_name(field) for field in secret_fields} <= SECRET_NAMES | REDIS_LOGIN_KEYS
-    logins = [
-        url for namespace in WATCHED for login in _redis_logins(namespace).values() for url in login.values()
-    ]
-    assert all("CHANGE_ME" in value for value in [*secrets.values(), *logins] if value)
+    assert {_env_name(field) for field in secret_fields} <= SECRET_NAMES
+    assert all("CHANGE_ME" in value for value in secrets.values() if value)
     # Every store login names its user: a Redis URL without one logs in as Redis' "default" user.
-    assert all(urlsplit(url).username for url in [*(secrets[key] for key in STORES), *logins])
-    assert not set(_settings()) & (SECRET_NAMES | REDIS_LOGIN_KEYS)
+    assert all(urlsplit(secrets[key]).username for key in STORES)
+    assert not set(_settings()) & SECRET_NAMES
     git = shutil.which("git") or "git"
     ignored = subprocess.run(  # noqa: S603
         [git, "check-ignore", "-q", str(SECRETS_COPY.relative_to(REPO).as_posix())],

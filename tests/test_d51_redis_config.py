@@ -1,6 +1,6 @@
 """Redis set-up: its eviction policy is named at start-up, every Redis client and the Celery broker verify a
-rediss:// server, each component logs in to Redis as its own user, Celery never puts a job back by itself,
-and one test run at a time owns the test Redis databases."""
+rediss:// server, every component logs in with the one shared Redis login, Celery never puts a job back by
+itself, and one test run at a time owns the test Redis databases."""
 
 import asyncio
 import os
@@ -25,8 +25,7 @@ from tests.test_deploy import SECRETS_FILE, _all_deployments, _objects, _reads, 
 
 CA_FILE = "/etc/tsg/redis-ca/ca.crt"
 TLS_URL = "rediss://tsg-test:secret@redis.example:6380/1"
-#: Each pod component that talks to Redis, by its pod's component label; its login is Secret tsg-redis-<it>
-#: (redis-exporter's: tsg-redis-exporter).
+#: Each pod component that talks to Redis, by its pod's component label; all read tsg-secrets' one login.
 REDIS_COMPONENTS = {"api", "worker", "beat", "flower", "redis-exporter"}
 
 
@@ -162,29 +161,25 @@ def test_a_plain_redis_url_gets_no_tls_options(monkeypatch: pytest.MonkeyPatch) 
     client.close()
 
 
-def test_each_component_logs_in_to_redis_as_its_own_user_over_tls() -> None:
-    """API, workers, beat, Flower and redis-exporter each read their own Redis login (Secret
-    tsg-redis-<component>), never one shared by all: one leaked or rotated password touches one component,
-    and Redis' ACL log and CLIENT LIST name who did what. tsg-secrets carries no Redis login."""
-    logins = {
-        (secret["metadata"]["namespace"], secret["metadata"]["name"]): secret["stringData"]
-        for secret in _objects(SECRETS_FILE, kind="Secret")
+def test_every_component_logs_in_to_redis_with_the_one_shared_login_over_tls() -> None:
+    """Owner 2026-10-28: TSG has one Redis password, so the API, workers, beat, Flower and redis-exporter all
+    read the one Redis login in tsg-secrets, a rediss:// (verified TLS) URL. None has a Secret of its own."""
+    secrets = _secrets()
+    urls = [urlsplit(secrets[key]) for key in ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL")]
+    assert {url.scheme for url in urls} == {"rediss"}
+    assert len({(url.username, url.password) for url in urls}) == 1  # one login in both lines
+    assert {secret["metadata"]["name"] for secret in _objects(SECRETS_FILE, kind="Secret")} == {
+        "tsg-secrets",
+        "tsg-monitoring",
     }
-    users: dict[str, set[str | None]] = {}
+    readers = set()
     for deployment in _all_deployments():
         component = deployment["spec"]["template"]["metadata"]["labels"].get("component")
-        login = f"tsg-redis-{str(component).removeprefix('redis-')}"
-        read = {
-            name for kind, name, _ in _reads(deployment) if kind == "Secret" and name.startswith("tsg-redis")
-        }
-        assert read == ({login} if component in REDIS_COMPONENTS else set()), deployment["metadata"]["name"]
-        for url in logins.get((deployment["metadata"]["namespace"], login), {}).values():
-            assert urlsplit(url).scheme == "rediss", (login, "verified TLS")
-            users.setdefault(component, set()).add(urlsplit(url).username)
-    assert set(users) == REDIS_COMPONENTS
-    assert all(len(names) == 1 and None not in names for names in users.values())  # one named user each
-    assert len(set.union(*users.values())) == len(REDIS_COMPONENTS)  # never shared
-    assert not {"CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL"} & set(_secrets())
+        if component in REDIS_COMPONENTS:
+            read = {name for kind, name, _ in _reads(deployment) if kind == "Secret"}
+            assert "tsg-secrets" in read, deployment["metadata"]["name"]
+            readers.add(component)
+    assert readers == REDIS_COMPONENTS
 
 
 def test_celery_never_puts_a_job_back_first_in_line_by_itself() -> None:
