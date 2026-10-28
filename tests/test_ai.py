@@ -1412,13 +1412,19 @@ def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
 def test_each_module_s_chat_model_has_its_own_model_key_thinking_and_limits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Owner 2026-10-28: CII_<MODULE>_CHAT_... A module's set line wins, a blank one is the shared CII_CHAT_
-    one; its fallback is its own alone (blank = none, so no fallback limits). Each module's slots and request
-    turns are its own Redis keys, so its 429s and limits never touch another module's."""
+    """Owner 2026-10-28: each module's CII_<MODULE>_CHAT_... lines alone, the same or a different model per
+    module; no fallback model = no fallback limits. Each module's slots and request turns are its own Redis
+    keys, two modules on one model included, so its 429s and limits never touch another module's."""
     _with_module_settings(monkeypatch)
 
+    getters = {
+        ChatModule.SCENARIO: container.get_scenario_chat_model,
+        ChatModule.REMEDIATION: container.get_remediation_chat_model,
+        ChatModule.SERVICE_MAPPER: container.get_service_mapper_chat_model,
+    }
+
     def shown(module: ChatModule) -> tuple[object, ...]:
-        chat = container._chat_model_of(module)
+        chat = getters[module]._build()
         turns = {
             model: (r._per_minute, r._tokens_per_minute, r._key) for model, r in chat._request_rates.items()
         }
@@ -1447,35 +1453,56 @@ def test_each_module_s_chat_model_has_its_own_model_key_thinking_and_limits(
         {GLM: (21, 22, turn("remediation", GLM))},
         slots("remediation", 3, 0),
     )
-    assert shown(ChatModule.SERVICE_MAPPER) == (  # every line blank: the shared ones; no fallback of its own
+    assert shown(ChatModule.SERVICE_MAPPER) == (  # threat scenarios' model and key, its own limits and keys
         [KIMI],
         ("http://shared.invalid", "shared-key", []),
-        {KIMI: (11, 15, turn("service_mapper", KIMI))},
-        slots("service_mapper", 7, 0),
+        {KIMI: (31, 0, turn("service_mapper", KIMI))},
+        slots("service_mapper", 6, 0),
     )
+
+
+def test_each_job_asks_its_own_module_s_chat_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Threat finding and scenario writing ask the scenario module's model, a remediation plan remediation's,
+    the service mapper its own: a job wired to another module's would spend that module's model and limits."""
+    for module in ChatModule:
+        monkeypatch.setattr(container, f"get_{module}_chat_model", lambda module=module: f"{module} chat")
+    jobs = {
+        "scenario": container.get_plan_job._build()._threat_finder._chat,
+        "scenario writing": container.get_scenario_write_job._build()._chat,
+        "remediation": container.get_remediation_plan_job._build()._chat,
+        "service_mapper": container.get_service_mapper_job._build()._chat,
+    }
+    assert jobs == {
+        "scenario": "scenario chat",
+        "scenario writing": "scenario chat",
+        "remediation": "remediation chat",
+        "service_mapper": "service_mapper chat",
+    }
 
 
 KIMI, GLM = "litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"
 
 
 def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shared chat lines; the scenario module's own fallback; remediation's own everything; the service
-    mapper's lines all blank but a fallback limit, which counts for nothing without a fallback model."""
+    """Threat scenarios and the service mapper on the same model, URL and key, each with its own limits;
+    remediation on another model, URL and key. The service mapper's fallback limit counts for nothing: it has
+    no fallback model."""
     settings = container.get_settings().model_copy(
         update={
-            "chat_base_url": "http://shared.invalid",
-            "chat_api_key": SecretStr("shared-key"),
-            "chat_model": KIMI,
-            "chat_model_thinking": False,
-            "chat_requests_per_minute": 11,
-            "chat_tokens_per_minute": 15,
-            "max_concurrent_ai_calls": 7,
             "embedding_model": "litellm_proxy/qwen3-embedding-8b",
             "rerank_model": "litellm_proxy/qwen3-reranker-8b",
             "rerank_base_url": "http://ai.invalid",
             "embedding_requests_per_minute": 13,
             "rerank_requests_per_minute": 14,
+            "scenario_chat_base_url": "http://shared.invalid",
+            "scenario_chat_api_key": SecretStr("shared-key"),
+            "scenario_chat_model": KIMI,
+            "scenario_chat_model_thinking": False,
+            "scenario_chat_requests_per_minute": 11,
+            "scenario_chat_tokens_per_minute": 15,
+            "scenario_max_concurrent_ai_calls": 7,
             "scenario_chat_fallback_model": GLM,
+            "scenario_chat_fallback_model_thinking": False,
             "scenario_chat_fallback_requests_per_minute": 12,
             "scenario_max_concurrent_fallback_calls": 2,
             "remediation_chat_base_url": "http://own.invalid",
@@ -1485,6 +1512,15 @@ def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
             "remediation_chat_requests_per_minute": 21,
             "remediation_chat_tokens_per_minute": 22,
             "remediation_max_concurrent_ai_calls": 3,
+            "remediation_chat_fallback_model": "",
+            "service_mapper_chat_base_url": "http://shared.invalid",
+            "service_mapper_chat_api_key": SecretStr("shared-key"),
+            "service_mapper_chat_model": KIMI,
+            "service_mapper_chat_model_thinking": False,
+            "service_mapper_chat_requests_per_minute": 31,
+            "service_mapper_chat_tokens_per_minute": 0,
+            "service_mapper_max_concurrent_ai_calls": 6,
+            "service_mapper_chat_fallback_model": "",
             "service_mapper_max_concurrent_fallback_calls": 5,
         }
     )

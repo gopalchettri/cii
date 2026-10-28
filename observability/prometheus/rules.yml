@@ -234,7 +234,8 @@ groups:
             }}answered with a server error{{ end }} {{ $value | printf "%.0f" }} times in 10 minutes.
           description: >-
             Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md).
-            Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team.
+            Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and
+            the network. Server error: ask the gateway's team.
 
       # Every worker reports the same numbers, read from Redis at each scrape (app/ai/slots.py): the AI calls in
       # flight per pool (search, each module), and its limit in force (its MAX_CONCURRENT_AI_CALLS or a 429's; 0 = none,
@@ -249,7 +250,7 @@ groups:
             Jobs slow down. At the pool's limit 0 the AI gateway keeps answering 429 and TSG holds back by itself:
             ask the gateway admin for a higher limit on that key. Above 0 with no recent 429 it is the fixed
             ceiling (search: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; a module: its own
-            CII_<MODULE>_MAX_CONCURRENT_AI_CALLS, blank = the shared one): raise it if the gateway can take more.
+            CII_<MODULE>_MAX_CONCURRENT_AI_CALLS): raise it if the gateway can take more.
 
       # Every AI request waits its turn under its model's own requests-a-minute setting (app/ai/slots.py
       # AiRequestRate), so by model: a long wait means more work is sent to that model than it allows.

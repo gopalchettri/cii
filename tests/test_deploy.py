@@ -64,7 +64,6 @@ SECRET_NAMES = {
     "CII_MONGO_URL",
     "CII_REDIS_URL",
     "CII_REDIS_CELERY_BROKER_URL",
-    "CII_CHAT_API_KEY",
     *(f"CII_{module.upper()}_CHAT_API_KEY" for module in ChatModule),
     "CII_EMBEDDING_API_KEY",
     "CII_RERANK_API_KEY",
@@ -75,9 +74,8 @@ SECRET_NAMES = {
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
 STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
 DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
-#: Each AI model and the base URL its calls go to; a module's blank URL is CII_CHAT_BASE_URL.
+#: Each AI model and the base URL its calls go to: each module's main and fallback chat model on its own.
 GATEWAYS = (
-    ("CII_CHAT_MODEL", "CII_CHAT_BASE_URL"),
     *(
         (f"CII_{module.upper()}_CHAT_{model}", f"CII_{module.upper()}_CHAT_BASE_URL")
         for module in ChatModule
@@ -116,6 +114,7 @@ REFERENCES = {
 }
 BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
 CHAT_MODEL_REQUESTS_PER_MINUTE = 192  # kimi-k2.5's own limit on UAT's gateway key (owner, 2026-10-24)
+KIMI = "litellm_proxy/kimi-k2.5"
 #: Every worker's startup and liveness probe: the heartbeat's file exists, then is fresh. No Redis.
 FILE_AGE = f"$(( $(date +%s) - $(stat -c %Y {Worker.LIVENESS_FILE}) ))"
 WORKER_PROBES = {
@@ -598,9 +597,7 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
     settings = _settings()
     assert settings["CII_AI_BYPASS_PROXY"] == "true"
     gateways = {
-        settings.get(url) or settings["CII_CHAT_BASE_URL"]
-        for model, url in GATEWAYS
-        if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)
+        settings[url] for model, url in GATEWAYS if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)
     }
     assert gateways
     for address in gateways:
@@ -725,16 +722,14 @@ def test_the_image_gets_only_what_it_runs() -> None:
 def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
     """Each AI worker's own threads x AI calls per job x replicas, summed over a project, near
     CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and times out the job), far fewer leaves the cap
-    unused. With no cap (0), each module's requests-a-minute limit paces its chat calls: each is set, and on
-    the one key they share they add up to within what kimi-k2.5 takes."""
+    unused. With no cap (0), each module's requests-a-minute limit paces its chat calls: each module on
+    kimi-k2.5 has one, and on the one key they share they add up to within what kimi-k2.5 takes."""
     settings = _settings()
     cap = int(settings["CII_MAX_CONCURRENT_AI_CALLS"])
     if cap == 0:
-        shared = settings["CII_CHAT_REQUESTS_PER_MINUTE"]
-        limits = [
-            int(settings.get(f"CII_{m.upper()}_CHAT_REQUESTS_PER_MINUTE") or shared) for m in ChatModule
-        ]
-        assert all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
+        on_kimi = [m.upper() for m in ChatModule if settings[f"CII_{m.upper()}_CHAT_MODEL"] == KIMI]
+        limits = [int(settings.get(f"CII_{m}_CHAT_REQUESTS_PER_MINUTE", "0")) for m in on_kimi]
+        assert limits and all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
         return
     calls_per_job = {
         Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,

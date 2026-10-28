@@ -341,7 +341,7 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     assert run["counts"]["planned"] == 2 and sent == [(TaskName.WRITE_SCENARIOS, record_id, 1)]
     # What made the plan, so a later reviewer can tell why this plan and not another.
     assert set(plan["made_with"]) == {"chat_models", "embedding_model", "rerank_model", "library"}
-    assert plan["made_with"]["chat_models"][0] == get_settings().chat_model
+    assert plan["made_with"]["chat_models"][0] == get_settings().scenario_chat_model
     # Its trace, saved in the same write: each stage's counts add up.
     counts = run["plan_trace"]["counts"]
     assert (counts["threats"], counts["paths"], counts["selected"], counts["first_set"]) == (2, 2, 2, 1)

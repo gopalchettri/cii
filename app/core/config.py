@@ -138,7 +138,7 @@ class Settings(ChatModelSettings, AiOutputSettings):
     redis_celery_broker_url: str
     redis_ca_file: str = ""  # the CA that signed a rediss:// server's certificate; empty = the system's CAs
 
-    # The chat models, shared and each module's own: ChatModelSettings (app/core/chat_settings.py).
+    # Each module's chat model: ChatModelSettings (app/core/chat_settings.py).
 
     embedding_base_url: str
     embedding_api_key: SecretStr
@@ -164,6 +164,9 @@ class Settings(ChatModelSettings, AiOutputSettings):
     # key, so this bounds what anyone can make a pod read. One limit for all (owner, 2026-10-09): no endpoint
     # takes file uploads; one that does gets its own limit by its address, never by the Content-Type.
     max_request_mb: int = Field(default=2, gt=0)
+    # Most search calls (embedding, reranker) at once, all pods; a call waits for a free slot (AiSlots).
+    # 0 = only a 429's limit; v1 16. Each module's chat calls have their own (ChatModelSettings).
+    max_concurrent_ai_calls: int = Field(default=16, ge=0)
     # Each search model's own AI requests a minute, all pods, retries included (AiRequestRate); 0 = no limit.
     embedding_requests_per_minute: int = Field(default=0, ge=0)
     rerank_requests_per_minute: int = Field(default=0, ge=0)

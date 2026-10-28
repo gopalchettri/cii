@@ -446,7 +446,7 @@ tests:
           - exp_labels: { severity: warning, pool: scenario }
             exp_annotations:
               summary: "Every AI slot of the scenario calls has been in use for 10 minutes; they wait for a free one."
-              description: "Jobs slow down. At the pool's limit 0 the AI gateway keeps answering 429 and TSG holds back by itself: ask the gateway admin for a higher limit on that key. Above 0 with no recent 429 it is the fixed ceiling (search: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; a module: its own CII_<MODULE>_MAX_CONCURRENT_AI_CALLS, blank = the shared one): raise it if the gateway can take more."
+              description: "Jobs slow down. At the pool's limit 0 the AI gateway keeps answering 429 and TSG holds back by itself: ask the gateway admin for a higher limit on that key. Above 0 with no recent 429 it is the fixed ceiling (search: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; a module: its own CII_<MODULE>_MAX_CONCURRENT_AI_CALLS): raise it if the gateway can take more."
 
   # 16 search calls with no limit (0) and 3 of the remediation module's 16: no pool is full. Compared across
   # pools (16 in use >= a limit of 16) it would fire.
@@ -674,7 +674,7 @@ tests:
           - exp_labels: { severity: warning, reason: ai_timed_out }
             exp_annotations:
               summary: "The AI service timed out 20 times in 10 minutes."
-              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md). Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team."
+              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md). Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and the network. Server error: ask the gateway's team."
 
   # TSG's own limiter refusing (no AI slot or request turn free within the wait) is not the gateway not answering.
   - interval: 1m

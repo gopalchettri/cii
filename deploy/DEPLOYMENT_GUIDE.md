@@ -52,8 +52,9 @@ Have all of these ready:
 - [ ] For `secrets.yaml` (step 7):
   - the SQL Server, MongoDB and Redis user names and passwords (ask the owner). Redis: one login for all of TSG,
     with TLS on ("The Redis owner's part" below);
-  - the AI gateway key (ask the AI gateway admin; the same key goes in `CII_CHAT_API_KEY`, `CII_EMBEDDING_API_KEY`
-    and `CII_RERANK_API_KEY`);
+  - the AI gateway key (ask the AI gateway admin; the same key goes in each module's own
+    `CII_SCENARIO_CHAT_API_KEY`, `CII_REMEDIATION_CHAT_API_KEY`, `CII_SERVICE_MAPPER_CHAT_API_KEY`, and in
+    `CII_EMBEDDING_API_KEY` and `CII_RERANK_API_KEY`, unless a module gets a key of its own);
   - the NVD key (free at https://nvd.nist.gov/developers/request-an-api-key), or none;
   - an admin key (32 or more characters) and a Grafana password (16 or more characters): you make them up in step 7.
 - [ ] The platform UI's https address, e.g. `https://<ui host>` (ask the platform UI team; step 8).
@@ -828,6 +829,12 @@ turned TLS on (Part 1, "The Redis owner's part"), change `redis://` to `rediss:/
 `tsg-monitoring` block of your `secrets.yaml` as in Part 2, step 7 (`""` for the sender you do not use).
 Alertmanager does not start without both.
 
+**The release that gives each module its own chat model** prints `CII_SCENARIO_CHAT_API_KEY`,
+`CII_REMEDIATION_CHAT_API_KEY` and `CII_SERVICE_MAPPER_CHAT_API_KEY`. Add all three to `tsg-secrets` with the AI
+gateway key (the value `CII_CHAT_API_KEY` held), then delete the `CII_CHAT_API_KEY` line: no pod reads it any more.
+The pods of the earlier image still read the `CII_CHAT_` settings, which this release's `configmap.yaml` no longer
+has, so one of them restarting before step 7 would not start: go on to step 7 right after this step.
+
 Then apply both, and restart the monitoring so it loads its new config files: Prometheus its alert rules,
 Grafana its dashboard, Alertmanager its senders (the app pods load the new settings in step 7):
 
@@ -1088,10 +1095,10 @@ volumes.
 
 ### Why these sizes: the AI sets the speed, not the pods
 
-All AI models sit behind one gateway key. The main chat model, kimi-k2.5, takes 192 requests a minute; TSG sends it
-at most 180, split between the three modules that use it (threat scenarios 140, remediation 25, service mapper 15:
-`CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE`), which leaves room as long as nothing else uses kimi-k2.5 on this key
-(still to be confirmed). A module given a key of its own can take its key's whole limit.
+All AI models sit behind one gateway key. Each module names its own chat model (`CII_<MODULE>_CHAT_MODEL`): threat
+scenarios use kimi-k2.5, remediation and the service mapper glm-5.3. kimi-k2.5 takes 192 requests a minute; threat
+scenarios send it at most 180 (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`), which leaves room as long as nothing else uses
+kimi-k2.5 on this key (still to be confirmed). Modules put on one model and key split its limit.
 
 Example: a kimi call takes about 5 seconds, so 180 a minute is about 15 calls running at once for all of TSG (every
 pod together).
@@ -1114,11 +1121,12 @@ small.
 
 | Setting | UAT value | Meaning |
 |---|---|---|
-| `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | 140, 25, 15 | each module's kimi-k2.5 requests a minute, all pods together; 180 in all (kimi's own limit is 192). A module line left out is `CII_CHAT_REQUESTS_PER_MINUTE` (180) |
-| `CII_<MODULE>_CHAT_FALLBACK_MODEL` | glm-5.3 | each module's own fallback model; left out = none |
-| `CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS` | 12, 2, 2 | at most 16 calls to glm-5.3 at once in all (it takes 55-99 s a call) |
+| `CII_SCENARIO_CHAT_MODEL`, `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | kimi-k2.5, glm-5.3, glm-5.3 | each module's own chat model (with its own `..._CHAT_BASE_URL`, and its key in `secrets.yaml`) |
+| `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 192); remediation's and the service mapper's: 0 = no limit until the gateway admin gives glm-5.3's |
+| `CII_SCENARIO_CHAT_FALLBACK_MODEL` | glm-5.3 | threat scenarios' backup model; remediation and the service mapper have none |
+| `CII_SCENARIO_MAX_CONCURRENT_FALLBACK_CALLS`, `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 10, 4, 2 | at most 16 calls to glm-5.3 at once in all (it takes 55-99 s a call) |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on AI calls at once: TSG runs at full speed and backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling for all pods together, per pool (the search calls', each module's) |
+| `CII_MAX_CONCURRENT_AI_CALLS`, `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (and threat scenarios' calls) at once: TSG runs at full speed and backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling for all pods together |
 
 **How TSG backs off after a 429.** When the gateway answers 429 ("too many"), TSG sets one limit for all pods on that
 pool (the search calls', or the module's chat calls'): half the calls in flight at that moment. Each answered call raises it a little, and a few minutes after the
@@ -1126,8 +1134,8 @@ last 429 it disappears: TSG is back to no limit. The Grafana gauge **AI capacity
 out of that limit (`tsg_ai_slots_cap` is the limit, 0 = none; `tsg_ai_slots_in_use` counts the calls in flight, also
 at no limit): **No limit set** is the normal state.
 
-If kimi keeps refusing (HTTP 429) or timing out, a pod sends its calls to glm-5.3 first for 2 minutes (to kimi when
-all 16 glm-5.3 places are busy), then tries kimi again.
+If kimi keeps refusing (HTTP 429) or timing out, a pod sends threat scenarios' calls to glm-5.3 first for 2 minutes
+(to kimi when all 10 of their glm-5.3 places are busy), then tries kimi again.
 
 ### Updates and node failures
 

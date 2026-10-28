@@ -2508,7 +2508,7 @@ asked for, left out):
    - Every request, each retry included, first waits its turn under its model's own limit:
      its module's `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE`, or the fallback's
      `CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE` (`AiRequestRate`, section 15).
-   - `_call_first_available_model` tries the module's model (`CII_<MODULE>_CHAT_MODEL`, blank = `CII_CHAT_MODEL`),
+   - `_call_first_available_model` tries the module's model (`CII_<MODULE>_CHAT_MODEL`),
      then its own fallback (`CII_<MODULE>_CHAT_FALLBACK_MODEL`, blank = none) only when the first is busy or down,
      within `CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS`. A model that timed out, or stayed rate-limited,
      is asked last for the next 120 s in that process (`AiLimits.MODEL_COOL_DOWN_SECONDS`). Each model uses its own profile.
@@ -3970,18 +3970,19 @@ stateDiagram-v2
   dev: a local rerank model). In UAT one gateway key serves chat, embedding and rerank
   for every pod, and each model has its own requests-a-minute limit on it (kimi-k2.5: 192).
   - **Per module (owner, 2026-10-28):** threat scenarios (finding and writing), remediation plans and the service
-    mapper each have their own chat model, key, thinking and limits: `CII_SCENARIO_...`, `CII_REMEDIATION_...` and
-    `CII_SERVICE_MAPPER_...`, each a shared `CII_CHAT_` / `CII_MAX_CONCURRENT_AI_CALLS` line with the module after
-    `CII_` (`.env.example` lists all 11). A blank line is the shared one; a blank fallback model means none, and
-    its other fallback lines are ignored. Each module's chat calls have their own slots and request turns (below),
-    so one module's 429 never pauses or cuts another's, nor the search calls'. On one shared key the modules split
-    its limits (UAT: 140, 25 and 15 requests a minute).
+    mapper each have their own chat model, key, thinking and limits, the same or a different model per module:
+    `CII_SCENARIO_...`, `CII_REMEDIATION_...` and `CII_SERVICE_MAPPER_...`, 11 lines each, read on their own
+    (`.env.example` explains each; URL, key and model are required). A blank fallback model means none, and its
+    other fallback lines are ignored. Each module's chat calls have their own slots and request turns (below), so
+    one module's 429 never pauses or cuts another's, nor the search calls'. Modules on one model and key split its
+    limits. UAT: threat scenarios on kimi-k2.5 (180 requests a minute, glm-5.3 backup), remediation and the
+    service mapper on glm-5.3.
   - **Request rate:** every request, each retry included, first waits its turn at its model's own limiter:
     N a minute spaces that model's requests 60 / N s apart across all pods (`AiRequestRate`, one Redis key per
     module and model, `tsg:ai_next_request:{module}:{model}`, a search model's `tsg:ai_next_request:{model}`, timed
     by the Redis server's clock), so one queue never delays another's. Each module's
-    `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE` (UAT: 140, 25 and 15, together a margin under kimi-k2.5's 192 on the
-    one key) and `CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
+    `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE` (UAT: threat scenarios' 180, a margin under kimi-k2.5's 192; 0 for
+    the modules on glm-5.3 until the gateway admin gives its limit) and `CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE`, `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
     `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0 until the gateway admin gives each model's limit). The API waits at
     most 30 s for its turn, else an outage (`ai_busy`); a worker waits until its lease ends (a cancel, or the
     reaper taking over a stalled job). `tsg_ai_request_rate_wait_seconds{model}` records every request's wait,
@@ -4197,11 +4198,9 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `EVIDENCE_KEPT_PER_THREAT` | 3 (1-10) | intelligence records kept per threat; the writer sees them all and cites one (section 7.3) |
 | `THREAT_CONTEXT_COUNTRY` | United Arab Emirates | the country an evidence story reads |
 | `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5); a treatment-plan version that failed for an outage is written again in place and uses no version |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | AI calls at once, all pods, per pool: the search calls', and each module's chat calls' where its own line is blank |
-| `CII_CHAT_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 180) | requests a minute to a module's main chat model where its own line is blank, all pods, retries included (section 15) |
+| `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | the search calls (embedding, reranker) at once, all pods |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the embedding model and the reranker, each its own |
-| `CII_CHAT_MODEL`, `CII_CHAT_MODEL_THINKING` | -, false | the shared chat model and its thinking (LiteLLM gateway models: false = off) |
-| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | blank = the shared line | each module's own chat model, URL, key, thinking and limits, 11 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT: requests a minute 140, 25 and 15; fallback glm-5.3, at most 12, 2 and 2 calls at once |
+| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16) | each module's own chat model, URL, key, thinking and limits, 11 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT: threat scenarios on kimi-k2.5, 180 requests a minute, glm-5.3 backup (10 at once); remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
 | `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |
 
 ---

@@ -131,8 +131,9 @@ def test_no_limit_makes_no_redis_call() -> None:
 def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CII_CHAT_REQUESTS_PER_MINUTE=20: every pod's requests go 3 s apart, by Redis's clock. A turn further
-    off than the caller waits reserves nothing and is Unavailable (busy); a lost lease ends the wait."""
+    """A module's CHAT_REQUESTS_PER_MINUTE=20: every pod's requests go 3 s apart, by Redis's clock. A turn
+    further off than the caller waits reserves nothing and is Unavailable (busy); a lost lease ends the
+    wait."""
     lease_checking_sleep = slots.sleep_unless_lease_lost
     slept: list[float] = []
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
@@ -155,8 +156,8 @@ def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
 
 
 def test_a_tokens_a_minute_limit_spaces_requests_by_their_size(monkeypatch: pytest.MonkeyPatch) -> None:
-    """UAT's 429s say limit_type "tokens": CII_CHAT_TOKENS_PER_MINUTE=60000 spaces a 600-token request 0.6 s
-    from the next, a 6000-token one 6 s more; the requests-a-minute spacing applies when it is longer; a
+    """UAT's 429s say limit_type "tokens": a module's CHAT_TOKENS_PER_MINUTE=60000 spaces a 600-token request
+    0.6 s from the next, a 6000-token one 6 s more; the requests-a-minute spacing applies when it is longer; a
     request of no stated size, or no tokens limit, is not spaced by tokens."""
     slept: list[float] = []
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)

@@ -132,7 +132,6 @@ def test_the_uat_file_passes_the_start_up_rule_on_and_switched_off(monkeypatch: 
 def test_every_model_the_uat_file_names_has_a_profile() -> None:
     lines = _env_lines(".env.uat")
     for key, profiles in (
-        ("CII_CHAT_MODEL", CHAT_MODEL_PROFILES),
         *((f"CII_{module.upper()}_CHAT_FALLBACK_MODEL", CHAT_MODEL_PROFILES) for module in ChatModule),
         *((f"CII_{module.upper()}_CHAT_MODEL", CHAT_MODEL_PROFILES) for module in ChatModule),
         ("CII_EMBEDDING_MODEL", EMBEDDING_MODEL_PROFILES),

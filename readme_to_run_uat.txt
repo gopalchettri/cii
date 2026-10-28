@@ -46,7 +46,8 @@ Copy-Item .env.uat .env -Force
 #      CII_CORS_ORIGINS=*   is REFUSED when CII_ENV=uat -> put the real origin(s), comma-separated,
 #                           e.g. https://threatgen-api.apps.dda-desc-az1-01.desccii.local  (empty = none)
 #      CII_ENV              must be uat (not dev)
-#      CII_CHAT_REQUESTS_PER_MINUTE  must be 180 (kimi-k2.5 takes 192 a minute)
+#      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE  must be 180 (kimi-k2.5 takes 192 a minute; only threat
+#                           scenarios use kimi-k2.5, remediation and the service mapper use glm-5.3)
 #      CII_ADMIN_API_KEY    must be at least 32 characters (outside dev)
 #    Change .env BEFORE starting any worker/beat/API; after any later change, restart all of them.
 #      EVIDENCE_SIMILARITY_THRESHOLD must be set while EXTERNAL_INTELLIGENCE_ENABLED=true (it is: 50)

@@ -5718,7 +5718,7 @@
       "id": 64,
       "type": "timeseries",
       "title": "AI gateway refusals (429) per minute",
-      "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (CII_CHAT_REQUESTS_PER_MINUTE and its siblings) is below that model's limit.",
+      "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE, the search models' CII_EMBEDDING_ and CII_RERANK_REQUESTS_PER_MINUTE) is below that model's limit.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

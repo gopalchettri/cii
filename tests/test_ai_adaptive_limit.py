@@ -551,10 +551,9 @@ def test_a_429_in_one_module_never_slows_another_module_or_the_search_calls(
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_TOTAL_WAIT_SECONDS", 5)
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
     kimi = "litellm_proxy/kimi-k2.5"
-    update = {"chat_model": kimi, "chat_requests_per_minute": 600, "chat_tokens_per_minute": 0}
-    update |= {
-        f"{module}_{name}": "" for module in ChatModule for name in ("chat_model", "chat_fallback_model")
-    }
+    lines = {"chat_model": kimi, "chat_requests_per_minute": 600, "chat_tokens_per_minute": 0}
+    lines |= {"chat_fallback_model": "", "max_concurrent_ai_calls": 0}
+    update = {f"{module}_{name}": value for module in ChatModule for name, value in lines.items()}
     settings = container.get_settings().model_copy(update=update)
     monkeypatch.setattr(container, "get_settings", lambda: settings)
     monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
