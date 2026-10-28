@@ -79,8 +79,8 @@ def test_ratings_are_exact_decimals_stored_as_text() -> None:
 
 
 def test_the_window_is_a_calendar_pair_in_order() -> None:
-    """A date-time keeps the date as written (an offset never moves it a day); both or neither, end on or
-    after start; the identification time is an instant, kept in UTC."""
+    """A date-time keeps the date as written (an offset never moves it a day); a start alone, or a start and
+    an end on or after it, never an end alone; the identification time is an instant, kept in UTC."""
     window = _register(
         mitigation_start_date="2026-10-01T02:00:00+05:30", mitigation_end_date="2026-12-31T15:38:19.853"
     )
@@ -89,8 +89,10 @@ def test_the_window_is_a_calendar_pair_in_order() -> None:
         date(2026, 12, 31),
     )
     assert window.register()["mitigation_start_date"] == "2026-10-01"
+    open_ended = _register(mitigation_start_date="2026-10-01").register()
+    assert (open_ended["mitigation_start_date"], open_ended["mitigation_end_date"]) == ("2026-10-01", None)
     wrongs = [
-        ({"mitigation_start_date": "2026-10-01"}, RemediationMessage.WINDOW_PAIR),
+        ({"mitigation_end_date": "2026-10-01"}, RemediationMessage.WINDOW_END_NEEDS_START),
         (
             {"mitigation_start_date": "2026-10-02", "mitigation_end_date": "2026-10-01"},
             RemediationMessage.WINDOW_ORDER,

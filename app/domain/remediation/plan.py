@@ -376,11 +376,12 @@ def _scenario(content: dict[str, Any]) -> dict[str, Any]:
 
 
 def _assessment(register: dict[str, Any]) -> dict[str, Any]:
-    """The stored register's ratings as numbers, its level, division and mitigation window."""
+    """The stored register's ratings as numbers, its level, division and mitigation window (a start alone: no
+    end and no day count)."""
     start, end = register.get("mitigation_start_date"), register.get("mitigation_end_date")
     window = None
-    if start and end:
-        days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1  # inclusive
+    if start:
+        days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1 if end else None  # inclusive
         window = {"timeline_start_date": start, "timeline_end_date": end, "total_days": days}
     return {
         **{rating: _number(register.get(rating)) for rating in _RATINGS},
@@ -413,9 +414,11 @@ def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
     """(system, user): the approved rules, and the snapshot as data without the echo, warnings or ids."""
     shown = {key: value for key, value in snapshot.items() if key not in _NOT_SHOWN}
     # The register's window, when it gave one, as the days the AI plans to fit (owner, 2026-10-21); its dates
-    # stay code's, which schedules them and warns past the window. No window: the AI estimates freely.
+    # stay code's, which schedules them and warns past the window. No window, or a start alone: the AI
+    # estimates freely.
     risk = {key: value for key, value in shown["risk_assessment"].items() if key != "assessment_window"}
-    if window := shown["risk_assessment"].get("assessment_window"):
+    window = shown["risk_assessment"].get("assessment_window") or {}
+    if window.get("total_days"):
         risk["assessment_window"] = {"total_days": window["total_days"]}
     shown["risk_assessment"] = risk
     # The prompt knows "exact" and "nearest": a control the person named for a hand-written scenario is exact.

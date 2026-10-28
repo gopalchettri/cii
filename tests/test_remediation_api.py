@@ -210,6 +210,23 @@ def test_a_plan_is_requested_written_and_its_status_read(
     assert get_mongodb()[Collection.AUDIT].find_one(completed)["after"] == {"version": 1, "warnings": 1}
 
 
+def test_a_start_date_alone_is_accepted_and_dates_the_plan(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """A mitigation start with no end: 202, the plan dated from the start with its planned end and no window
+    warning; an end with no start is still a 422 on the request."""
+    remediation_id = _done_plan(client, api_key, world, mitigation_start_date="2026-11-01")
+    shown = _result(client, api_key, remediation_id).json()
+    plan, days = shown["plan"], shown["plan"]["mitigation_timeline_days"]
+    assert (plan["actions"][0]["start_date"], shown["warnings"]) == ("2026-11-01", [])
+    planned_end = (datetime(2026, 11, 1) + timedelta(days=days - 1)).date().isoformat()
+    assert plan["mitigation_end_date_planned"] == planned_end
+    register = shown["register_data"]
+    assert (register["mitigation_start_date"], register["mitigation_end_date"]) == ("2026-11-01", None)
+    end_alone = _request(client, api_key, generated(_scenario(), mitigation_end_date="2026-11-30"))
+    assert end_alone.status_code == 422 and RemediationMessage.WINDOW_END_NEEDS_START in end_alone.text
+
+
 def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str, Any]) -> None:
     accepted, pending = _scenario(), _scenario(decision=Decision.PENDING)
     assert _request(client, api_key, generated("nope")).status_code == 404

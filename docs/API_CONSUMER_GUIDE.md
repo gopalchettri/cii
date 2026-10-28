@@ -653,8 +653,8 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key` (used when
 | `risk_owner` | string ≤ 200 | no | |
 | `impacted_business_division` | string ≤ 200 | no | |
 | `existing_controls_all_subsystems_justification` | string ≤ 1000 | no | |
-| `mitigation_start_date` | date | no, but both or neither | `YYYY-MM-DD` (a date-time's date part is used) |
-| `mitigation_end_date` | date | no, but both or neither | on or after start |
+| `mitigation_start_date` | date | no | `YYYY-MM-DD` (a date-time's date part is used); the plan's actions are dated from it |
+| `mitigation_end_date` | date | no; needs a start | on or after start; without it the plan is dated with no deadline (no late warning) |
 
 A string in `existing_controls` is a name, and also a code if it looks like one (`CID-0446`). An empty string `""` in an optional field means "not given".
 

@@ -352,10 +352,10 @@ class PlanRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_the_window(self) -> "PlanRequest":
-        """The mitigation window's two dates come together, in order."""
+        """The mitigation window: a start alone, or a start and an end on or after it; never an end alone."""
         start, end = self.mitigation_start_date, self.mitigation_end_date
-        if (start is None) != (end is None):
-            raise ValueError(RemediationMessage.WINDOW_PAIR)
+        if start is None and end is not None:
+            raise ValueError(RemediationMessage.WINDOW_END_NEEDS_START)
         if start is not None and end is not None and end < start:
             raise ValueError(RemediationMessage.WINDOW_ORDER)
         return self

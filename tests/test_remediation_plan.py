@@ -1342,3 +1342,16 @@ def test_without_a_window_the_ai_estimates_freely() -> None:
     assert plan["mitigation_end_date_planned"] is None and warnings == [
         PlanWarning.NO_WINDOW.format(total=20)
     ]
+
+
+def test_a_start_alone_dates_the_plan_and_the_ai_estimates_freely() -> None:
+    """A start and no end: the AI is given no day count, and the plan is dated from the start with no
+    deadline, so no window warning."""
+    snapshot = _snapshot(mitigation_end_date=None)
+    window = snapshot["risk_assessment"]["assessment_window"]
+    assert window == {"timeline_start_date": "2026-10-15", "timeline_end_date": None, "total_days": None}
+    _, user = plan_prompt(snapshot)
+    assert "assessment_window" not in json.loads(user.removeprefix(_CONTEXT_OPENING))["risk_assessment"]
+    plan, warnings, _ = _written(_answer("CII-CID-5", "CII-CID-6"), snapshot=snapshot)
+    assert (plan["mitigation_end_date_planned"], warnings) == ("2026-11-03", [])
+    assert plan["remediation_action_plan"][0]["start_date"] == "2026-10-15"

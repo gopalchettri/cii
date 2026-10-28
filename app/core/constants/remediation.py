@@ -124,7 +124,7 @@ class RemediationProgress(StrEnum):
 
 
 class RemediationMessage(StrEnum):
-    WINDOW_PAIR = "mitigation_start_date and mitigation_end_date must be sent together."
+    WINDOW_END_NEEDS_START = "mitigation_end_date needs mitigation_start_date."
     WINDOW_ORDER = "mitigation_end_date must be on or after mitigation_start_date."
     MANUAL_NEEDS_SCENARIO = "is_manual=true requires manual_scenario."
     MANUAL_SENDS_NO_IDS = "is_manual=true must not send session_id or scenario_id: TSG creates them."

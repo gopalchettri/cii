@@ -1746,9 +1746,9 @@ $(function () {
     if (ident && isNaN(d)) errs.push("Risk identification date is not a valid date.");
     else if (ident) body.risk_identification_date = d.toISOString();
     var start = val("pdStart"), end = val("pdEnd");
-    if (!start !== !end) errs.push("Set both mitigation dates, or neither.");
-    else if (start && end < start) errs.push("The mitigation end is before its start.");
-    else if (start) { body.mitigation_start_date = start; body.mitigation_end_date = end; }
+    if (end && !start) errs.push("Set the mitigation start with its end.");
+    else if (end && end < start) errs.push("The mitigation end is before its start.");
+    else if (start) { body.mitigation_start_date = start; if (end) body.mitigation_end_date = end; }
     if (errs.length) { $("#pdFormMsg").html('<div class="callout err"><b>Check the form</b>' + plList(errs) + "</div>"); $("#mBody").scrollTop(0); return; }
     $("#pdFormMsg").empty();
     withBusy($b, api("POST", "/v1/remediation", body, { quiet: true }))
@@ -1813,7 +1813,7 @@ $(function () {
         ["Session", '<span class="mono">' + esc(p.session_id) + "</span>", true],
         ["Decision", p.decision + (p.accepted_version ? " (accepted v" + p.accepted_version + ")" : "")],
         ["Risk owner", (p.register_data || {}).risk_owner], ["Risk identified", fmtTime((p.register_data || {}).risk_identification_date)],
-        ["Window", (p.register_data || {}).mitigation_start_date ? p.register_data.mitigation_start_date + " → " + p.register_data.mitigation_end_date : null]
+        ["Window", (p.register_data || {}).mitigation_start_date ? p.register_data.mitigation_start_date + " → " + (p.register_data.mitigation_end_date || "no end date") : null]
       ]) + "</div>";
     var btns = [];
     if (!RUNNING(p.latest_status)) btns.push({ text: "Regenerate", click: function () { plRegenerate(ctx); } });
