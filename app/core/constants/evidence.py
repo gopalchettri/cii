@@ -167,7 +167,8 @@ class VersionWords(StrEnum):
 #: Who used a technique, as EvidenceFact.USED_BY and CAMPAIGN_USED say it; a campaign ATT&CK names only by
 #: its id (C0027) is no name.
 REAL_WORLD_USER: Final = (
-    r"(?P<name>.+?), [^,]+, has used this technique\.|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
+    r"(?P<name>.+?), (?P<what>[^,]+), has used this technique\."
+    r"|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
 )
 SEVERITY_BANDS: Final = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
 
@@ -209,14 +210,23 @@ class Precedent:
     """The sentence code cites in an evidence story when the writer's own passage cannot be: from the cited
     entry's own facts; and why the passage was not cited."""
 
-    USED_BY: Final = 'In real-world attacks, {names} {verb} used the technique "{technique}"'
+    USED_BY: Final = 'This attack could use the "{technique}" technique, which {names} {verb} used'
     # nearest evidence: only related, and said so
-    USED_RELATED: Final = 'In real-world attacks, {names} {verb} used the related technique "{technique}"'
+    USED_RELATED: Final = 'This attack is related to the "{technique}" technique, which {names} {verb} used'
     RELATED_RECORD: Final = "A related record: {fact}"
     NOT_WRITTEN: Final = "none was written"
     TOO_LONG: Final = "over its {most}-word limit"
     NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code or an internal label"
     NOT_CONFIRMED: Final = "the reviewer did not confirm it against its source"
+    STOCK_WORDS: Final = 'it says "{words}"'
+    MANY_SENTENCES: Final = "it is more than one sentence"
+    NO_TITLE: Final = 'it does not give the title "{title}" in double quotes'
+    OPENS_ON_EVIDENCE: Final = "it opens with the evidence, not with this attacker's action"
+    # the re-ask problem quoted to the writer
+    REASK: Final = (
+        "evidence_statement cannot be cited: {reason}. Write it again as ONE sentence that opens with this "
+        "attacker's action as scenario_statement tells it and ties that action to the cited entry"
+    )
 
 
 class EvidenceBlock:

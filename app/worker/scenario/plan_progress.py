@@ -1,6 +1,7 @@
 """A run's plan paths as the write job settles them, each change in one fenced write with the run's counts and
 plan note, then the set's next batch handed over, or the set or the regenerate ended."""
 
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -47,6 +48,7 @@ class PlanProgress:
         self._lease, self._run_id = lease, run["_id"]
         self._sessions, self._scenarios = sessions, scenarios
         self._plan, self._last_action = run["plan"], run.get("last_action") or {}
+        self._planning_s = (run.get("timings") or {}).get("threats_s", 0.0)  # a start's plan job; else none
         self.paths = {path["path_id"]: path for path in self._plan["paths"]}
         # The set being written; none on a run whose job carries no set (it writes its batch, then stops).
         self._set = set(run["job"].get("set") or ())
@@ -143,11 +145,10 @@ class PlanProgress:
         if rescued:
             self.record({path_id: {"served": sid, "abandoned": False} for path_id, sid in rescued.items()})
         partial = plan_counts(in_set)["abandoned"] > 0
-        # This action's own writing time: from the plan's freeze, or from a later set's start.
+        # This action's own times: from the plan's freeze, or from a later set's start.
         started = max(self._plan["frozen_at"], self._last_action.get("started_at") or self._plan["frozen_at"])
-        seconds = (utc_now() - started).total_seconds()
         outcome = RunActionOutcome.PARTIAL if partial else RunActionOutcome.COMPLETE
-        changes: dict[str, Any] = {"last_action.outcome": outcome, "timings.scenarios_s": round(seconds, 1)}
+        changes: dict[str, Any] = {"last_action.outcome": outcome, **self._action_times(started)}
         if self._last_action.get("kind") == RunActionKind.NEXT_SET:  # requested and epoch stay as queued
             summary = set_summary(in_set, list(self.paths.values()), outcome)
             changes |= {f"last_next_set.{key}": value for key, value in summary.items()}
@@ -163,7 +164,18 @@ class PlanProgress:
                 "last_action.outcome": outcome,
                 "last_regen.outcome": outcome,  # requested and epoch stay as queued
                 "last_regen.replaced": replaced,
-                "timings.scenarios_s": round((utc_now() - started).total_seconds(), 1),
+                **self._action_times(started),
             }
             | ended_job_fields(Status.DONE)
         )
+
+    def _action_times(self, started: datetime) -> dict[str, float]:
+        """This action's threats time, from `started` (its click, or a start's plan freeze after its plan
+        job's own time) until its writing began (noted by BatchWriter on the run's last_action, after the
+        set's evidence search), and its writing time from then to now."""
+        now = utc_now()
+        writing_from = self._last_action.get("writing_started_at") or started
+        return {
+            "timings.threats_s": round(self._planning_s + (writing_from - started).total_seconds(), 1),
+            "timings.scenarios_s": round((now - writing_from).total_seconds(), 1),
+        }

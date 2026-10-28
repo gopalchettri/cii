@@ -320,8 +320,18 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert [n for n in named for prompt in prompts if n in prompt.casefold()] == []
     assert "Using access the threat only obtains (a stolen credential, secret or session)" in reviewer
     assert "including using access the threat only obtains" in reviewer
-    assert "Add no sentence linking them to this asset or event" in writer and "End with at" not in writer
-    assert "It is false for any sentence linking the evidence" in reviewer and "plus at most" not in reviewer
+    # Owner 2026-10-28: the evidence passage closes the story with one link to its action, no stock opener.
+    assert "In real-world attacks" not in writer and 'Never write "real-world"' in writer
+    assert "End with at" not in writer and "ONE complete sentence" in writer
+    assert "Open the sentence with this attacker's action itself, in this story's own words" in writer
+    assert 'never with "The attacker" or "This"' in writer  # owner 2026-10-28: 11 of 26 opened alike
+    assert "The story may describe the attacker's steps in the cited entry's terms" in writer
+    assert "Do not reshape the specified threat" not in writer  # owner 2026-10-28: it may fit the evidence
+    assert (
+        "plus exactly one link, at the passage's start, from an action `scenario_statement` tells" in reviewer
+    )
+    assert "false for a passage that does not open with such an action" in reviewer
+    assert "a named user presented as this scenario's attacker" in reviewer
     assert 'List an essential missing detail in assumptions as: "assumes <specific condition>".' in writer
     assert "the primary impact comes from an added step that is not part of the threat" in reviewer
     assert "every action its name states is its own" in gate

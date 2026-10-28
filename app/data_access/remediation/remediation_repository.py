@@ -194,11 +194,17 @@ class RemediationRepository(MongoRepository):
         return bool(decided.modified_count)
 
     def update_remediation_plan_version(
-        self, lease: JobLease, fields: dict[str, Any], done: bool = False
+        self,
+        lease: JobLease,
+        fields: dict[str, Any],
+        done: bool = False,
+        timings: dict[str, float] | None = None,
     ) -> None:
-        """Sets `fields` on the leased version of tsg_remediations, fenced by the job lease; `done` also ends
-        its job done in the same write."""
+        """Sets `fields` on the leased version of tsg_remediations, fenced by the job lease, with `timings`
+        (an activity's seconds, kept in the job, which every new action replaces); `done` also ends its job
+        done in the same write."""
         changes = {f"versions.$[v].{field}": value for field, value in fields.items()}
+        changes |= {f"job.timings.{key}": round(seconds, 1) for key, seconds in (timings or {}).items()}
         if done:
             changes |= ended_job_fields(Status.DONE)
         lease.update_job(changes, [{"v.version": lease.epoch}])

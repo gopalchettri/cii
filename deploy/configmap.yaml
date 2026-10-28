@@ -66,7 +66,7 @@ items:                                           # one tsg-config per project th
       NEAREST_CONTROLS: "3"                      # controls kept when none is close enough
       THREAT_SCENARIO_WORD_LIMIT: "150-200"      # words asked for per scenario statement (min-max)
       RISK_STATEMENT_WORD_LIMIT: "100-150"       # words asked for per risk statement (min-max)
-      EVIDENCE_STATEMENT_WORD_LIMIT: "30-80"     # words asked for per evidence passage (min-max)
+      EVIDENCE_STATEMENT_WORD_LIMIT: "20-60"     # words asked for per evidence passage (min-max)
       THREAT_SIMILARITY_THRESHOLD: "60"          # how close an AI-proposed threat must be to count as a library threat
       EXTERNAL_INTELLIGENCE_ENABLED: "true"      # use the outside intelligence feeds (CISA, NVD ...) as evidence
       EVIDENCE_SIMILARITY_THRESHOLD: "50"        # reranker score evidence must reach (required while the feeds are on)

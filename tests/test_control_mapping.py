@@ -570,6 +570,34 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     assert _deliver(record_id, "task-2") == 0
 
 
+def test_the_controls_time_counts_the_latest_actions_scenarios_only(
+    mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner 2026-10-28: the status shows the latest action's times only. A next set was clicked after the
+    first scenario was queued: that scenario's late mapping (300 ms) is the earlier action's, never added."""
+    record_id = mapping_run["record_id"]
+    now = datetime.now(UTC)
+    scenarios = get_mongodb()[Collection.SCENARIOS]
+    scenarios.update_one(
+        {"_id": f"{record_id}-1"}, {"$set": {"controls.queued_at": now - timedelta(hours=1)}}
+    )
+    get_mongodb()[Collection.SESSIONS].update_one(
+        {"_id": record_id},
+        {"$set": {"last_action": {"kind": "next_set", "started_at": now - timedelta(minutes=1)}}},
+    )
+    mapping = controls_job.RunControls._map_one
+    monkeypatch.setattr(
+        controls_job.RunControls,
+        "_map_one",
+        lambda self, scenario: (
+            time.sleep(0.3 if scenario["_id"].endswith("-1") else 0.02),
+            mapping(self, scenario),
+        )[1],
+    )
+    assert _deliver(record_id, "task-1") == 2
+    assert 0.02 <= _run_record(record_id)["timings"]["controls_s"] < 0.3  # the next set's scenario alone
+
+
 def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps_the_nearest(
     mapping_run: dict[str, Any],
 ) -> None:

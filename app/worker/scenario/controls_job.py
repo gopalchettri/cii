@@ -3,7 +3,7 @@ lease, and a beat sweep requeues stalled ones. Controls belong to scenarios: the
 
 import contextlib
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -106,10 +106,13 @@ class ControlsJob:
 
 
 def recount_and_publish(
-    sessions: ThreatScenarioSessionRepository, session_id: str, controls_seconds: float = 0.0
+    sessions: ThreatScenarioSessionRepository,
+    session_id: str,
+    controls_seconds: float = 0.0,
+    card_queued_at: datetime | None = None,
 ) -> dict[str, int]:
     """Recount a run's counts and tell its watchers: the one path every controls change takes."""
-    counts = sessions.update_scenario_session_counts(session_id, controls_seconds)
+    counts = sessions.update_scenario_session_counts(session_id, controls_seconds, card_queued_at)
     publish_session_status(session_id)
     return counts
 
@@ -174,7 +177,8 @@ class RunControls:
             try:
                 return self._map_one(scenario)
             finally:
-                recount_and_publish(self._sessions, self._record_id, time.perf_counter() - started)
+                seconds, queued_at = time.perf_counter() - started, scenario["controls"].get("queued_at")
+                recount_and_publish(self._sessions, self._record_id, seconds, queued_at)
                 if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
                     self._taken_over = True
 

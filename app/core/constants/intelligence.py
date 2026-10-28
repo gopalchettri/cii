@@ -124,14 +124,15 @@ class IntelUrl:
     ICS_CHANGES: Final = ICS_CSAF + "changes.csv"  # "<year>/<file>.json","<change time>", newest first
 
 
+# make it configurable from UI and db
 #: Hours between fetches of a source (ATT&CK is a large file that changes with a release).
 REFRESH_AFTER_HOURS: Final[dict[IntelSource, int]] = {
-    IntelSource.CISA_KEV: 24,
-    IntelSource.FIRST_EPSS: 24,
-    IntelSource.ATTACK_ENTERPRISE: 168,
-    IntelSource.ATTACK_ICS: 168,
-    IntelSource.CISA_ICS: 24,
-    IntelSource.NIST_NVD: 24,
+    IntelSource.CISA_KEV: 168,  # 7 days, weekly
+    IntelSource.FIRST_EPSS: 168,  # 7 days, weekly
+    IntelSource.ATTACK_ENTERPRISE: 168,  # 7 days, weekly
+    IntelSource.ATTACK_ICS: 168,  # 7 days, weekly
+    IntelSource.CISA_ICS: 168,  # 7 days, weekly
+    IntelSource.NIST_NVD: 168,  # 7 days, weekly
 }
 
 

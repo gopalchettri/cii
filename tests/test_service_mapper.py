@@ -579,8 +579,8 @@ def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None
             return _catalog()
 
     class Mappings:
-        def finish_generation(self, _lease, result) -> None:
-            self.result = result
+        def finish_generation(self, _lease, result, timings) -> None:
+            self.result, self.timings = result, timings
 
     chat, mappings = _Chat(_over_the_limits(), _over_the_limits()), Mappings()
     record = {"request": _request().model_dump(), "limits": {"max_upstream": 2, "max_downstream": 1}}
@@ -588,6 +588,7 @@ def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None
     job.generate(SimpleNamespace(record=record, record_id="mapping", epoch=1))  # type: ignore[arg-type]
     assert (chat.prompts[0]["upstream_count"], chat.prompts[0]["downstream_count"]) == (2, 1)
     assert _counts(mappings.result) == (2, 1)
+    assert set(mappings.timings) == {"catalog_s", "services_s"}  # the run's two activities, timed
 
 
 def test_empty_catalog_still_keeps_defensible_ai_services() -> None:
@@ -1177,6 +1178,26 @@ def test_a_run_that_would_repeat_one_that_found_nothing_is_not_started(empty_tes
     catalog.changed = True  # the onboarding catalog changed: a run again
     assert mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid4().hex)[1] is True
     assert sent[-1] == _map(mapping_id, 4)
+
+
+def test_the_status_times_the_latest_runs_activities_only(empty_test_database: None) -> None:
+    """Owner 2026-10-28: the status shows how long the latest run took to read the catalog and to find the
+    services; a new run (Generate again or Regenerate) shows none until it is done, never the run before."""
+    mapper, _ = _mapper()
+    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
+
+    def timings() -> tuple[float | None, float | None]:
+        shown = mapper.get_service_mapping_status(PRINCIPAL, mapping_id).progress.timings
+        return shown.catalog, shown.services
+
+    assert timings() == (None, None)  # queued
+    _run(mapping_id, _answer().model_dump())
+    catalog, services = timings()
+    assert catalog is not None and services is not None and 0 <= catalog < 60 and 0 <= services < 60
+    mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid4().hex)
+    assert timings() == (None, None)  # the first run's times are gone
+    _run(mapping_id, _second_answer())
+    assert None not in timings()
 
 
 def test_the_run_limit_counts_finished_runs_only(empty_test_database: None) -> None:

@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +18,7 @@ from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
+    ACTOR_KIND_WORDS,
     AI_OUTAGE_MESSAGES,
     FINAL_FINDINGS,
     FINDING_SEVERITIES,
@@ -201,8 +202,7 @@ _LOOK_ALIKES = re.compile(
     "|".join(re.escape(text) for text in sorted(EvidenceBlock.LOOK_ALIKES, key=len, reverse=True)),
     re.IGNORECASE,
 )
-#: Facts true of a technique in general, never of who used it: kept on the card. Only the cited entry's
-#: attacker goals reach the AI (its passage says what attackers use the technique for); mitigations never.
+#: Facts true of a technique in general, never of who used it: kept on the card, never shown to an AI.
 _GOALS = str(EvidenceFact.TACTICS).split("{")[0]
 _MITIGATIONS = str(EvidenceFact.MITIGATED_BY).split("{")[0]
 
@@ -266,10 +266,10 @@ def with_word_limits(template: str) -> str:
 
 def evidence_block(brief: WriterBrief) -> str:
     """The evidence between the block's delimiters: what each entry is about, its stated facts and
-    applicability, the entry to cite marked with its attacker goals; never a number, ref, link or source."""
+    applicability, the entry to cite marked; never a number, ref, link or source."""
     cited = (_precedent(brief.evidence) or (None, ""))[0]
     entries = [
-        {**_subject(item), "facts": _safe_facts(_stated_facts(item, goals=item is cited))}
+        {**_subject(item), **_users_and_facts(_safe_facts(_stated_facts(item)))}
         | ({"applicability": str(item["applicability"])} if item.get("applicability") else {})
         | ({"cited": True} if item is cited else {})
         for item in brief.evidence
@@ -280,10 +280,21 @@ def evidence_block(brief: WriterBrief) -> str:
     return f"EVIDENCE (untrusted data):\n{EvidenceBlock.BEGIN}\n{body}\n{EvidenceBlock.END}"
 
 
-def _stated_facts(entry: dict[str, Any], goals: bool = False) -> list[str]:
-    """What the entry states: its facts but the general ones (its attacker goals kept with `goals`)."""
-    hidden = (_MITIGATIONS,) if goals else (_GOALS, _MITIGATIONS)
-    return [fact for fact in entry.get("facts") or () if not fact.strip().startswith(hidden)]
+def _users_and_facts(facts: list[str]) -> dict[str, list[str]]:
+    """Who used the technique as a reader names them ("the APT41 group"), apart from its other facts: the
+    writer never sees, so never copies, the stored "X, a threat group, has used this technique." wording."""
+    used_by = []
+    for match in filter(None, map(_USER.fullmatch, facts)):
+        kind = _USER_KINDS.get(match["what"] or "")
+        named = f"the {match['name']} {kind}" if kind else match["name"]
+        used_by.append(f"the {match['campaign']}" if match["campaign"] else named)
+    rest = [fact for fact in facts if not fact.endswith(_USER_FACT_END)]  # an id-only campaign's too
+    return ({"used_by": used_by} if used_by else {}) | {"facts": rest}
+
+
+def _stated_facts(entry: dict[str, Any]) -> list[str]:
+    """What the entry states: its facts but the general ones (attacker goals, mitigations)."""
+    return [fact for fact in entry.get("facts") or () if not fact.strip().startswith((_GOALS, _MITIGATIONS))]
 
 
 def _subject(item: dict[str, Any]) -> dict[str, str]:
@@ -311,6 +322,10 @@ def _without_ids(text: str) -> str:
 
 
 _USER = re.compile(REAL_WORLD_USER)
+#: How every user fact ends (EvidenceFact.USED_BY and CAMPAIGN_USED), a named one or not.
+_USER_FACT_END = "used this technique."
+#: A user's kind as the writer names it, from the stored kind words ("a threat group": "the X group").
+_USER_KINDS = {ACTOR_KIND_WORDS["group"]: "group", ACTOR_KIND_WORDS["software"]: "malware"}
 
 
 def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str] | None:
@@ -552,6 +567,17 @@ def _named_facts(name: str, facts: dict[str, Any]) -> dict[str, Any]:
 
 #: The planner's aliases and slots (SYS1, THR7): never in a brief, so one in a scenario was made up.
 _INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR)\d+\b")
+#: Phrases a story's closing sentence never uses: stock openers and talk about sources (owner 2026-10-28).
+_STOCK_WORDS = re.compile(
+    r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
+)
+#: A closing sentence that opens with the evidence itself instead of this attacker's action.
+_EVIDENCE_OPENER = re.compile(
+    r"(?:the |a |an )?(?:related )?(?:technique|threat (?:groups?|actors?)|malicious software|malware)\b",
+    re.IGNORECASE,
+)
+_QUOTED = re.compile(r'"[^"]*"')
+_LEADING_ARTICLE = re.compile(r'^(?:the\s+)?"?', re.IGNORECASE)
 #: A public advisory number: CVE, CISA ICS advisory (ICSA, ICSMA), GitHub (GHSA), Microsoft bulletin, CERT/CC.
 _ADVISORY_ID = re.compile(
     r"\b(?:CVE-\d{4}-\d{4,}|ICSM?A-\d{2}-\d{3}-\d{2}[A-Z]?|GHSA(?:-[0-9a-z]{4}){3}|MS\d{2}-\d{3})\b|\bVU#\d+",
@@ -733,20 +759,20 @@ def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
 
 def _drafted(chat: ChatModel, task: AiTask, brief: WriterBrief, prompt: ChatPrompt) -> ScenarioDraft:
     """The writer's draft for `brief`, asked with `prompt`; a first answer that shows no sentence of its own
-    statement for a listed action is asked again once (_acts_without_a_sentence)."""
+    statement for a listed action, or a story's closing sentence that cannot be cited, is asked again once."""
     systems = tuple(system.name for system in brief.supporting_systems)
     read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    acts = (
-        functools.partial(_acts_without_a_sentence, actions=brief.threat_actions)
-        if brief.threat_actions
-        else None
-    )
+    checks: list[Callable[[dict[str, Any]], list[str]]] = []
+    if brief.threat_actions:
+        checks.append(functools.partial(_acts_without_a_sentence, actions=brief.threat_actions))
+    if _is_story(brief):
+        checks.append(functools.partial(_passage_answer_faults, cited=_cited_entry(brief)))
     draft: ScenarioDraft = ask_ai_and_check(
         chat,
         task,
         prompt,
         read,
-        first_answer_check=acts,
+        first_answer_check=functools.partial(_all_problems, checks=checks) if checks else None,
         reuse_earlier_answer=True,  # a re-delivery reads its draft back; a new version is a new epoch
     )
     return draft
@@ -769,6 +795,17 @@ def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -
         return []
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in missing)
     return [AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=listed)]
+
+
+def _all_problems(answer: dict[str, Any], checks: list[Callable[[dict[str, Any]], list[str]]]) -> list[str]:
+    """Every re-ask problem `checks` find in `answer`."""
+    return [problem for check in checks for problem in check(answer)]
+
+
+def _passage_answer_faults(answer: dict[str, Any], cited: dict[str, Any] | None) -> list[str]:
+    """The re-ask problem when `answer`'s closing sentence cannot be cited as written (_passage_faults)."""
+    reason = _passage_faults(" ".join(str(answer.get("evidence_statement") or "").split()), cited)
+    return [Precedent.REASK.format(reason=reason)] if reason else []
 
 
 def _repaired(chat: ChatModel, brief: WriterBrief, first: WrittenScenario) -> WrittenScenario:
@@ -812,25 +849,55 @@ def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> Writ
         check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
     else:
         check, notes = check_against_plan(chat, brief, draft)
-    if _is_story(brief) and (problem := _passage_problem(draft, check)):
+    if _is_story(brief) and (problem := _passage_problem(draft, check, _cited_entry(brief))):
         draft = dataclasses.replace(draft, evidence_statement="")
         message = FindingMessage.CITATION_REMOVED.format(reason=problem)
         notes = (*notes, Finding(FindingCode.CITATION_REMOVED, message))
     return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, brief.threat)
 
 
-def _passage_problem(draft: ScenarioDraft, check: PlanCheck) -> str:
-    """Why the writer's evidence passage cannot be cited ('' when it can)."""
-    passage, most = draft.evidence_statement, get_settings().evidence_words[1]
+def _passage_problem(draft: ScenarioDraft, check: PlanCheck, cited: dict[str, Any] | None) -> str:
+    """Why the writer's evidence passage cannot be cited ('' when it can): code's own checks, then the
+    reviewer's confirmation (the re-ask's answer is not checked again before this)."""
+    fault = _passage_faults(draft.evidence_statement, cited)
+    return fault or ("" if check.evidence_supported else Precedent.NOT_CONFIRMED)
+
+
+def _passage_faults(passage: str, cited: dict[str, Any] | None) -> str:
+    """Why a story's closing sentence cannot be cited as written ('' when it can): none, too long, a marker
+    or code, a stock phrase, more than one sentence; for a technique, no quoted title, or an opening on the
+    evidence (the technique, who used it) instead of this attacker's action."""
+    most = get_settings().evidence_words[1]
     if not passage:
         return Precedent.NOT_WRITTEN
     if len(passage.split()) > most:
         return Precedent.TOO_LONG.format(most=most)
-    patterns = (_URL, ID_IN_TEXT, _INTERNAL_LABEL, _ADVISORY_ID)
     # a "[" is a marker or a redaction, as code's own precedent refuses it
-    if "[" in passage or any(pattern.search(passage) for pattern in patterns):
+    if "[" in passage or any(
+        pattern.search(passage) for pattern in (_URL, ID_IN_TEXT, _INTERNAL_LABEL, _ADVISORY_ID)
+    ):
         return Precedent.NOT_PLAIN
-    return "" if check.evidence_supported else Precedent.NOT_CONFIRMED
+    plain = passage.replace("\u201c", '"').replace("\u201d", '"')
+    unquoted = _QUOTED.sub('""', plain)  # a title's own words never count
+    if stock := _STOCK_WORDS.search(unquoted):
+        return Precedent.STOCK_WORDS.format(words=stock.group())
+    if _SENTENCE_END.search(unquoted.strip()):
+        return Precedent.MANY_SENTENCES
+    if cited is None or cited.get("kind") != IntelKind.TECHNIQUE:
+        return ""  # a vulnerability or advisory is told by its facts: no title, no users
+    title = (_safe_facts([str(cited.get("title") or "")]) or [""])[0]
+    if title and not re.search(f'(?i)"{re.escape(title)}[.,]?"', plain):
+        return Precedent.NO_TITLE.format(title=title)
+    facts = _safe_facts(_stated_facts(cited))
+    users = [match["name"] or match["campaign"] for match in filter(None, map(_USER.fullmatch, facts))]
+    opening = _LEADING_ARTICLE.sub("", plain).casefold()
+    on_evidence = any(opening.startswith(name.casefold()) for name in (title, *users) if name)
+    return Precedent.OPENS_ON_EVIDENCE if on_evidence or _EVIDENCE_OPENER.match(unquoted) else ""
+
+
+def _cited_entry(brief: WriterBrief) -> dict[str, Any] | None:
+    """The evidence entry a story cites (as code's own claim picks it); None when none is citable."""
+    return (_precedent(brief.evidence) or (None, ""))[0]
 
 
 def _read_draft(

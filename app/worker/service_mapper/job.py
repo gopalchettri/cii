@@ -1,5 +1,7 @@
 """Generate one Service Mapper run under the existing fenced MongoDB job lease."""
 
+import time
+
 from app.ai.chat import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.constants import ErrorCode, MapperMessage
 from app.core.exceptions import JobFailed
@@ -30,7 +32,9 @@ class ServiceMapperJob:
         request = CreateMappingRequest.model_validate(record["request"])
         limits = record["limits"]
         held = (record.get("result") or {}).get("dependencies") or []
+        started = time.perf_counter()
         catalog = self._catalog.snapshot()
+        catalog_read = time.perf_counter()
         try:
             found = generate_result(
                 self._chat,
@@ -45,4 +49,5 @@ class ServiceMapperJob:
             raise JobFailed(ErrorCode.INTERNAL_ERROR, MapperMessage.AI_ANSWER_INVALID) from exc
         except TruncatedAiAnswer as exc:
             raise JobFailed(ErrorCode.INTERNAL_ERROR, MapperMessage.AI_ANSWER_TOO_LONG) from exc
-        self._mappings.finish_generation(lease, found)
+        seconds = {"catalog_s": catalog_read - started, "services_s": time.perf_counter() - catalog_read}
+        self._mappings.finish_generation(lease, found, seconds)

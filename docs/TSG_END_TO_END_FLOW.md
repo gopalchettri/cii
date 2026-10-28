@@ -270,7 +270,7 @@ message naming the failed sources, while the other sources' data stands.
 2. **Due** (`SourceRefresher._is_due` → `is_refresh_due`, `app/domain/external_intelligence/refresh_rules.py`).
    A source is due when it **never succeeded**, when its last run ended with **`more_pending`** (the ICS file cap
    or the NVD request budget cut it short), or when `REFRESH_AFTER_HOURS` have passed since its last success:
-   24 h for KEV, EPSS, ICS advisories and NVD; 168 h for both ATT&CK catalogues. A source named in a refresh call
+   168 h (weekly) for every source: KEV, EPSS, ICS advisories, NVD and both ATT&CK catalogues. A source named in a refresh call
    runs whether due or not.
 3. **Claim** (`claim_intel_feed_refresh`): one worker per source. A claim older than
    `IntelLimits.CLAIM_STALE_SECONDS` = 3600 s belongs to a dead worker and is taken over. The stored checkpoint is
@@ -492,7 +492,7 @@ All times are UTC on 2026-10-19, read from the stored records.
 | 08:18:34.166 | Writer answer for our scenario (6.0 s, 3274 tokens in, 536 out) | `tsg_ai_calls` |
 | 08:18:35.326 | Reviewer answer for our scenario (1.1 s) | `tsg_ai_calls` |
 | 08:18:35.362 | Scenario `4909e75f…` saved | `generation.finished_at` |
-| 08:18:36.195 | Set finished; session `done`, no longer active | `finished_at`; `timings.scenarios_s` 130.7 |
+| 08:18:36.195 | Set finished; session `done`, no longer active | `finished_at`; `timings.scenarios_s` 130.7 (from the freeze; predates D53, which times it from when writing began) |
 | 08:19:40.744 | Controls of scenario `4909e75f…` mapped | `controls.mapped_at` |
 | 08:19:57.525 | Last controls of the set mapped | `controls.mapped_at`; `timings.controls_s` 111.0 |
 
@@ -955,7 +955,7 @@ creation, by `_new_run_record`, next to the stored values (read on 2026-10-19).
 
 `created_at` and `last_action.started_at` both read 08:14:51.643, which is the `now` the code used for every
 time at creation, `job.due_at` included. The jobs later added `plan`, `plan_trace`, `timings`, `counts_at` and
-`finished_at`.
+`finished_at` (today also `last_action.writing_started_at`, when the action's writing began; this run predates D53).
 
 **The `run.started` audit row.** The actor's `client_id` is the session's own `client_id`: both come from the
 same `Principal`.
@@ -1611,8 +1611,9 @@ checks are §8; saving one scenario is §9.
       `next_paths_to_write` over the set's paths. With paths left, `hand_over` queues the same task with the same
       epoch, the new `job.batch` and `attempts` 0, and sends it. With none left, the set ends:
       `last_action.outcome` `complete` (or `partial` when a path of the set was given up and no spare replaced it),
-      `timings.scenarios_s`, status `done`. `last_next_set` (`set_summary`) is written only when the action was a
-      next set.
+      `timings.scenarios_s` from when writing began (`last_action.writing_started_at`, stamped once per action by
+      `_start_writing` after the batch's evidence search) and `timings.threats_s` up to then (a start: its plan
+      job's time plus the freeze to then; a next set or regenerate: from its click), status `done`. `last_next_set` (`set_summary`) is written only when the action was a next set.
 
 **In the example.** The first set held 6 paths (`job.set`, ranks 1-6). The same job ran in two deliveries:
 
@@ -1630,7 +1631,7 @@ checks are §8; saving one scenario is §9.
   every path kept `attempts` 0 and `abandoned` false. All 6 were served in their first try.
 - `tsg_map_controls` was sent after each batch; our scenario's controls were mapped at 08:19:40.
 - The set's end: `last_action` `{kind: "start", outcome: "complete"}`, `timings.scenarios_s` 130.7 (from the plan's
-  freeze at 08:16:25). `last_next_set` stayed null, because this was the first set, not a next set.
+  freeze at 08:16:25; this run predates D53, under which the 91 s to its first write, 08:17:56, count as threats). `last_next_set` stayed null, because this was the first set, not a next set.
 - `session.counts` after the set: `planned` 51, `written` 6, `remaining` 45, `failed` 0, `abandoned` 0, `pending` 6.
   The plan note reads *"51 attack paths selected; 6 written, 45 still to write, set by set."*
 
@@ -1692,14 +1693,16 @@ The run we follow: the threat "OT protocol command abuse" on the Traffic Control
     Electric Power Attack campaign → citable)*
 13. **Show it to the writer AI as untrusted data, in plain sentences only.** The writer never sees an id, a link or
     a source name, and is told never to follow instructions found in it. *(3 facts shown and the entry marked
-    cited; the "It can be reduced by" fact hidden; mode "source-documented")*
-14. **The writer adds a short real-world passage built only from that record.** *(48 words; the code default range
-    is 30-80 words, the upper number a hard limit; it opens "In real-world attacks, Industroyer, a piece of
+    cited; the "It can be reduced by" fact hidden; mode "source-documented"; this run predates D54, which hides
+    the attacker-goals fact too)*
+14. **The writer closes the story with a short passage that ties the attacker's action to that record and
+    otherwise says only what the record says.** *(48 words; the code default range is 30-80 words, the upper
+    number a hard limit; this run predates D54: it opens "In real-world attacks, Industroyer, a piece of
     malicious software, has used the technique "Command Message"…")*
-15. **A second AI confirms the passage says only what the record says; code checks it is plain and short, then adds
-    it with [1].** *(reviewer answer `"evidence_supported": true`; no marker, link or id in it; the statement ends
-    "…could tamper with traffic signal operations [1]." This run predates D38: today that closing link sentence
-    makes the reviewer answer false, and code's own sentence is cited; see 8.6.)*
+15. **A second AI confirms the passage says only what the record says, plus that one link; code checks it is plain
+    and short, then adds it with [1].** *(reviewer answer `"evidence_supported": true`; no marker, link or id in
+    it; the statement ends "…could tamper with traffic signal operations [1]." This run predates D38 and D54:
+    today that closing link sentence makes the reviewer answer false, and code's own sentence is cited; see 8.6.)*
 16. **Store the cited record with its link and the whole search, and pass its defences to the controls step.**
     *(one stored entry, `n: 1`, link https://attack.mitre.org/techniques/T1691/001; every candidate and decision in
     `intel_search`; controls query line "Mitigations (MITRE ATT&CK): Out-of-Band Communications Channel; Network
@@ -2013,13 +2016,14 @@ Every kept entry is nearest, so the mode is `nearest` and the block told the wri
 
 The writer prompt asks for "the related technique" in nearest mode, but this passage said *"…has used the
 technique "Exploitation for Credential Access"…"*. Code does not check that word, and the reviewer answered
-`evidence_supported: true`, so the passage was cited.
+`evidence_supported: true`, so the passage was cited (this run predates D54: today nearest evidence not called
+related makes `evidence_supported` false, and the block no longer shows the goals fact).
 
 ### 7.8 How the evidence is used to write the scenario
 
 > **In plain words:** The kept records go into the writer's instructions, but only one is quoted. The story itself
-> never names an attacker group or a past event; the real-world passage comes at the end, built only from the
-> quoted record, checked by a second AI and by code, and marked [1]. The record's listed defences then help pick
+> never names an attacker group or a past event; a closing passage ties the attacker's action to the quoted
+> record and otherwise says only what it says, checked by a second AI and by code, and marked [1]. The record's listed defences then help pick
 > the controls.
 
 **a. Kept entries go into the brief.** `build_brief` (`app/domain/scenario/write.py`) sets `brief.evidence` to all
@@ -2031,24 +2035,26 @@ first kept entry whose claim exists, holds no "[" and is one sentence.
 - A **technique** needs facts naming who used it (`_USER`): `"X, <what>, has used this technique."` or
   `"The Y used this technique."`, where a campaign known only by an id ("C0027 …") does not count. At most 2
   names, and the title must survive `_safe_facts`. Claim (`Precedent.USED_BY`):
-  `In real-world attacks, {names} {verb} used the technique "{title}"` (verb "has" for one name, "have" for two),
-  or "…the related technique…" when nearest (`USED_RELATED`).
+  `This attack could use the "{title}" technique, which {names} {verb} used` (verb "has" for one name, "have" for
+  two), or `This attack is related to the "{title}" technique, …` when nearest (`USED_RELATED`).
 - **Other kinds** (KEV vulnerability, advisory): the first stated fact (goals and "reduced by" facts skipped), its
   "." removed; "A related record: {fact}" when nearest (`RELATED_RECORD`).
 - **Nothing citable**: `WriterStyle.ORIGINAL`, no evidence in the brief, `evidence_mode` `inferred`, the search
   still stored.
 
 *Example:* T1691.001 is citable because its facts name a user (Industroyer). Code's own claim for it reads:
-*In real-world attacks, Industroyer and the 2015 Ukraine Electric Power Attack campaign have used the technique
-"Command Message"*. (The campaign-id rule in the same run: rank 4's facts include "The C0027 campaign used this
+*This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric Power
+Attack campaign have used*. (The campaign-id rule in the same run: rank 4's facts include "The C0027 campaign used this
 technique.", so code's claim for rank 4 names only "the Anthropic AI-orchestrated Campaign".)
 
 **c. The untrusted evidence block.** `writer_prompt` → `evidence_block` adds, after the BRIEF:
 `EVIDENCE (untrusted data):`, then `<<<UNTRUSTED_EVIDENCE_BEGIN>>>`, a JSON body, then
 `<<<UNTRUSTED_EVIDENCE_END>>>`. The body holds `evidence_mode` and one item per kept entry: `technique` (or `about`
-for another kind) with its title, `facts`, `applicability` when set, and `"cited": true` on the cited entry.
-- `_stated_facts` always hides "It can be reduced by: …", and hides "It is used for these attacker goals: …" except
-  on the cited entry.
+for another kind) with its title, `used_by` (who used a technique as a reader names them: "the APT41 group", "the
+NKAbuse malware", "the Triton campaign"; D54), `facts` (never a "… used this technique." fact), `applicability`
+when set, and `"cited": true` on the cited entry.
+- `_stated_facts` hides "It can be reduced by: …" and "It is used for these attacker goals: …" on every entry
+  (both stay stored on the card).
 - `_safe_facts` redacts each fact, removes ids and links, strips anything that looks like the block's delimiters,
   sanitises it again (at most 320 characters) and drops an unsafe one.
 - The block holds **no `ref`, score, `url` or source**.
@@ -2065,7 +2071,8 @@ EVIDENCE (untrusted data):
 <<<UNTRUSTED_EVIDENCE_END>>>
 ```
 
-The goals fact is shown because this is the cited entry. The fourth fact, "It can be reduced by: …", is hidden.
+The goals fact was shown because this is the cited entry (this run predates D54; today it is hidden). The fourth
+fact, "It can be reduced by: …", is hidden.
 
 **d. The narrative names no group or past event.** Names from the evidence may appear only in
 `evidence_statement`; code's exact checks block markers, unknown labels and uncited advisory ids (§8.4). *Example:*
@@ -2074,13 +2081,16 @@ Industroyer nor the 2015 attack.
 
 **e. The reviewer reads the same block.** `plan_check_prompt` sends the PLAN, the same evidence block and the
 draft. The reviewer answers `evidence_supported`: true only when the passage states nothing but the cited entry's
-facts; a sentence linking them to this scenario or asset makes it false. *Example*, the reviewer's whole answer
-(this run predates that rule, D38; see 8.6):
+facts, plus exactly one link, at its start, from an action the story tells to that entry; a passage that does
+not open with such an action, or any other link to this scenario or asset, makes it false. *Example*, the reviewer's whole answer (this run predates that rule, D38 and D54; see 8.6):
 `{"rules": {"1": "holds", … "8": "holds"}, "same_threat": true, "same_impact": true, "evidence_supported": true}`.
 
-**f. Code decides and cites.** `_passage_problem` refuses the writer's passage when it is empty, over the
-`EVIDENCE_STATEMENT_WORD_LIMIT` maximum, holds "[", a link, an id, an internal label or an advisory id, or the
-reviewer did not confirm it. A refused passage is dropped with a `citation_removed` warning (never a blocker), and
+**f. Code decides and cites.** `_passage_faults` refuses the writer's passage when it is empty, over the
+`EVIDENCE_STATEMENT_WORD_LIMIT` maximum, holds "[", a link, an id, an internal label or an advisory id, says a
+stock phrase ("real-world", "this attack", "documented", "cited" …), is more than one sentence, or (a technique)
+lacks the quoted title or opens with the technique or its users. It runs first as the writer's first-answer
+check, so a faulty passage is asked again once with why (D54); `_passage_problem` then runs it again with the
+reviewer's verdict. A refused passage is dropped with a `citation_removed` warning (never a blocker), and
 code's claim from step b is used instead. `_cited` builds **statement = narrative + " " + passage (its final "."
 removed) + " [1]."**. *Example*, the end of the stored statement (the passage has 48 words):
 
@@ -2386,8 +2396,14 @@ Where each key came from:
      (rule 2). An assumption the BRIEF's `why_it_applies` states goes in `assumptions` too. No prompt
      mentions "not recorded in the platform", and the writer's inputs are cleaned of it (section 8.1), so
      the AI never writes it; the API adds it to each shown assumption (section 12.2).
-   - The passage states only the cited entry's facts: no sentence linking them to this asset or event, and
-     never a claim that the evidence shows this asset was attacked or is exploitable (rule 10).
+   - The passage is ONE sentence in the writer's own words that closes the story: it opens with this
+     attacker's action as the story tells it and ties it to the cited entry, any kind (a technique, a
+     vulnerability, an advisory); for a technique the title in quotes ("related" when nearest or when the
+     title names a different act) and who used it from `used_by`; no "real-world", "this attack", "this
+     scenario", "documented", "reported" or "cited"; beyond that one link only the entry's facts, never a named
+     user as this scenario's attacker, never a claim that the asset was attacked, is vulnerable or is
+     exploitable. The story may describe the attacker's steps in the cited entry's terms, staying the
+     specified threat (rule 10, D54).
    - The risk opening per category, in everyday words (D46): Spoofing "People could no longer be sure that
      ...", Tampering "People could no longer trust ...", Repudiation "No one could reliably tell who ...", Information
      Disclosure "Sensitive information in ... could be exposed to ...", Denial of Service "<the asset or its
@@ -2448,6 +2464,8 @@ asked for, left out):
 - Model `openai/Kimi-K2.6`: 3,274 tokens in, 536 tokens out, 6.0 seconds, logged at 08:18:34.166 UTC.
 - The risk opens with "Loss of trust in", the Tampering opening of that run; today's is "People could no longer
   trust ..." (D46).
+- The block shows the goals fact and the passage opens "In real-world attacks,": this run predates D54 (section
+  8.6).
 - The scenario statement is 145 words and the risk statement 75 words. Both are under the default lower
   targets (150 and 100 words). That is allowed: the lower number is only a target, and code counts neither.
 - The run has 6 `write_scenario` calls for its 6 scenarios, so no answer needed a re-ask.
@@ -2588,8 +2606,9 @@ near copy.
    action missing or only named breaks rule 1 (a note, not a blocker: a blocked draft is not rewritten, so
    blocking would drop the scenario). The per-action field exists because an omission has no words to
    quote: in the experiments the reviewer caught 0 of 3 incomplete drafts with rule 1's quoted verdict alone,
-   and 3 of 3 with `threat_actions` (D40). Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's facts; any
-   sentence linking the evidence to this scenario or asset makes it false.
+   and 3 of 3 with `threat_actions` (D40). Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's facts, plus
+   exactly one link, at its start, from an action the story tells to that entry; no such opening, any other link, an equated different act,
+   nearest not called related, an unstated consequence or a named user as the attacker makes it false.
 5. **The answer contract** (`PlanCheckAnswer`):
    ```text
    {"rules": {"1": "holds" | "broken: \"<exact words>\" - <reason>", ... "8": ...},
@@ -2639,29 +2658,38 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 
 ### 8.6 The evidence passage (`_passage_problem`, `_cited`)
 
-> **In plain words:** The writer's real-world sentence is added to the scenario only if it is present, short
+> **In plain words:** The writer's closing evidence passage is added to the scenario only if it is present, short
 > enough, plain (no links, codes or marks) and confirmed by the editor AI. If any of that fails, code writes its
 > own short sentence from the same public source instead, and shows a warning. Either way the scenario ends with
 > one citation, [1], that points to the public source.
 
 **How**
-1. In an evidence story only, `_reviewed` asks `_passage_problem(draft, check)`. The checks run in this order;
-   the first that fails gives the reason (`Precedent`, `app/core/constants/evidence.py`):
+1. In an evidence story only, `_reviewed` asks `_passage_problem(draft, check, cited)`, which runs
+   `_passage_faults` (also the writer's first-answer check, so a faulty passage was already asked again once with
+   why, D54) and then the reviewer's verdict. The checks run in this order; the first that fails gives the reason
+   (`Precedent`, `app/core/constants/evidence.py`):
    1. the passage is empty: "none was written";
    2. it has more words than the maximum of `EVIDENCE_STATEMENT_WORD_LIMIT` (default 80): "over its 80-word
       limit";
    3. it holds a "[" (a marker or a redaction), a link, a public id (CVE, ICSA, GHSA, MS, CAPEC, an ATT&CK
       code, VU#), an internal label or an advisory id: "it holds a marker, a redaction, a link, a code or an
       internal label";
-   4. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
+   4. it says a stock phrase ("real-world", "this attack", "this scenario", "documented", "reportedly",
+      "cited"; quoted titles aside): 'it says "{words}"';
+   5. it is more than one sentence: "it is more than one sentence";
+   6. for a technique only: the title is not in double quotes (straight or curly), or the passage opens with the
+      title, a user, "the technique", "threat groups" or "malware": 'it does not give the title …' / "it opens
+      with the evidence, not with this attacker's action";
+   7. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
       reviewer did not confirm it against its source".
 2. A problem blanks the passage and adds a `citation_removed` **warning**, never a blocker: "The writer's
    evidence passage was not cited ({reason}): the platform cites its own precedent sentence from the same source
    instead."
 3. When the card is built (`written_record`, section 9), `_cited(brief, draft)` finds the cited entry again
    with `_precedent(brief.evidence)`: the first entry whose claim (`_claim`) is one plain sentence. The claim is
-   code's own sentence: `Precedent.USED_BY` *In real-world attacks, {names} {verb} used the technique
-   "{technique}"*, `USED_RELATED` (*... the related technique ...*) for a nearest entry, or `RELATED_RECORD`
+   code's own sentence: `Precedent.USED_BY` *This attack could use the "{technique}" technique, which {names}
+   {verb} used*, `USED_RELATED` (*This attack is related to the "{technique}" technique, ...*) for a nearest
+   entry, or `RELATED_RECORD`
    (*A related record: {fact}*) for a record that is not a technique.
 4. `supports` is the writer's passage with its final "." removed, else the claim. The statement becomes
    **narrative + " " + supports + " [1]."**
@@ -2680,13 +2708,14 @@ The writer's passage was cited:
 4. The reviewer answered `evidence_supported: true`.
 
 So there was no `citation_removed` warning. Had the passage failed, code's own sentence for this entry would have
-been *In real-world attacks, Industroyer and the 2015 Ukraine Electric Power Attack campaign have used the
-technique "Command Message"*. (We computed this by running `_claim` on the stored entry; the run did not use
+been *This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric
+Power Attack campaign have used*. (We computed this by running `_claim` on the stored entry; the run did not use
 it.)
 
-This run predates D38 (2026-10-27). Its last sentence, "Similar protocol command abuse could tamper with
-traffic signal operations", links the evidence to this asset. Today the writer writes no such sentence, and a
-reviewer that finds one answers `evidence_supported: false`, so code's own sentence above would be cited.
+This run predates D38 (2026-10-27) and D54 (2026-10-28). Its passage opens "In real-world attacks," and its last
+sentence, "Similar protocol command abuse could tamper with traffic signal operations", links the evidence to this
+asset. Today the writer starts from the attacker's action and makes its one link to the entry, and a reviewer that
+finds any other link answers `evidence_supported: false`, so code's own sentence above would be cited.
 
 The saved statement ends:
 
@@ -2696,7 +2725,8 @@ The saved statement ends:
 > industrial systems. Similar protocol command abuse could tamper with traffic signal operations [1].
 
 The stored `content.evidence` entry (trimmed). The writer saw only the first three facts: the "It can be reduced
-by" fact (mitigations) is never shown to an AI, and the attacker goals are shown only for the cited entry.
+by" fact (mitigations) is never shown to an AI, and the attacker goals were shown because this is the cited entry
+(this run predates D54; today they are never shown either).
 
 ```json
 {
@@ -3021,8 +3051,11 @@ flowchart TB
    2. `_map_one` runs `ControlMapper.map_controls` (10.2 and 10.3) under `keep_lease_alive`.
       `_ScenarioLease.renew` renews both the scenario's lease and the session's delivery lease.
       `background_reranks()` lets a waiting foreground rerank go first on a local reranker.
-   3. After each scenario, `update_scenario_session_counts(controls_seconds=…)` adds the time to
-      `timings.controls_s`, and `publish_session_status` sends a live update.
+   3. After each scenario, `update_scenario_session_counts(controls_seconds=…, card_queued_at=…)` adds the time
+      to `timings.controls_s` only when the scenario's `controls.queued_at` is at or after the latest action's
+      start (`max(plan.frozen_at, last_action.started_at)`), so an earlier set's late scenario adds nothing; a
+      treatment plan's own mapping of a generated scenario never adds to it. `publish_session_status` sends a
+      live update.
    4. Fewer claimed than asked for: `_release` ends the lease, and sends a new message if a scenario is waiting.
 4. After 6 scenarios, `update_controls_delivery(hand_over=True)` leaves the lease with no holder for 600 s
    (`Controls.RESEND_QUEUED_AFTER_SECONDS`) and sends a new `tsg_map_controls`. The session's next turn
@@ -3066,7 +3099,8 @@ Two deliveries mapped the six scenarios of the first set, oldest first (from eac
   `5f78c881…`, found nothing waiting and released the lease (the session now has no `controls_delivery`).
 - Our scenario waited 47 s in the queue and took 18.7 s to map, on its first attempt (`attempts` 1).
 - The six claim-to-mapped times add up to 110.98 s (computed from the timestamps above). The session's
-  `timings.controls_s`, which code times itself, is 110.99.
+  `timings.controls_s`, which code times itself, is 110.99 (all six were queued by this start, so D53 would count
+  them all too).
 
 ### 10.2 The query text (`control_query`)
 
@@ -3353,7 +3387,7 @@ so all four actions pass the gate.
 | Route | Service method (`ThreatScenarioService`) | What it returns |
 |---|---|---|
 | `GET /v1/sessions/{id}` | `get_threat_scenario_session` | the status board: counts, `last_action`, `last_next_set`, `last_regen`, `epoch` |
-| `GET /v1/sessions/{id}/results` | `list_threat_scenarios_of_session` | the written scenarios with evidence, controls and findings, paged (`offset`, `limit`); `include_replaced=true` adds superseded versions |
+| `GET /v1/sessions/{id}/results` | `list_threat_scenarios_of_session` | the written scenarios with evidence, controls and findings, paged (`offset`, `limit`); superseded versions nested by default (`include_replaced=false` leaves them out) |
 | `GET /v1/sessions/{id}/scenarios/{sid}` | `get_threat_scenario` | one scenario in full |
 | `GET /v1/entities/{eid}/scenarios` | `list_threat_scenarios_of_entity` | the entity's current scenarios from every session, newest first; `decision` filters |
 | `GET /v1/sessions/{id}/plan-trace` | `get_plan_trace` | how the plan was made |
@@ -3529,7 +3563,7 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
       - `job`: a new `tsg_write_scenarios` job (`new_job`) at **epoch + 1**, with `batch`;
       - `last_action {kind: regenerate, outcome: running, started_at}`;
       - `last_regen {outcome: running, requested: <batch size>, replaced: null, epoch}`;
-      - and it clears `finished_at`, `timings.scenarios_s`, `timings.controls_s` and `cancelled`.
+      - and it clears `finished_at`, all of `timings` and `cancelled`.
 
       Clashes: 409 `run_being_deleted`, and 409 `generation_in_progress` (the session moved on since it was
       read). Another session of the asset never clashes (D43).
@@ -3572,7 +3606,8 @@ POST /v1/sessions/13bd93f254ce4d2788f18c56f1c011ab/accept
     - `last_action.outcome` and `last_regen.outcome`: `complete` when every target was written that way, else
       `partial`;
     - `last_regen.replaced`: how many were, both kinds counted;
-    - `timings.scenarios_s`: timed from the click.
+    - `timings.threats_s`: from the click to when writing began (`last_action.writing_started_at`);
+      `timings.scenarios_s`: from then to the end.
 
 **In the example:** session `c21b4a67…` (another run on the same asset, older code), path
 `de182bb196b6c950`. Its threat is library threat 277, "Unauthorized controller logic change" (type
@@ -3632,9 +3667,10 @@ The matching audit rows, in order:
    - `last_next_set {outcome: running, requested, delivered: null, reason: null, remaining: null, epoch}`;
    - the audit row is `run.next_set` with `after {epoch, batch, set}`;
    - the answer is 202 with `status` `generating`.
-5. No path left → `_resume_controls`. If a cancel stopped controls, they are queued again and
-   `tsg_map_controls` is sent: 202 with `status` `mapping_controls`, and the audit row `run.next_set` with
-   `after {controls_resumed}`. Otherwise a 409 from `why_no_path_left` (`nothing_left_to_write`):
+5. No path left → `_resume_controls(…, restart_times=True)`. If a cancel stopped controls, they are queued
+   again, `timings` becomes `{threats_s: 0, scenarios_s: 0}` and `last_action.started_at` the resume time (so
+   controls count the resumed scenarios), and `tsg_map_controls` is sent: 202 with `status` `mapping_controls`,
+   and the audit row `run.next_set` with `after {controls_resumed}`. Otherwise a 409 from `why_no_path_left` (`nothing_left_to_write`):
 
    | Reason | When |
    |---|---|
@@ -3815,7 +3851,10 @@ the run's cancel stands, else queued for the run), and recounts and publishes th
 5. **Later:** `GET .../treatment-plan` (and `/status`), `POST .../review` (accept or reject a version),
    `.../regenerate` (up to `REGENERATIONS_MAX_VERSION_COUNT`, default 10; a version that failed for an outage
    is written again in place and uses no version; one that meets its run's delete takes back the version it
-   added), `.../cancel`; live updates on `.../treatment-plan/events`. While no version is decided and the
+   added), `.../cancel`; live updates on `.../treatment-plan/events`. The status, its live updates, the review
+   answer and the result carry `progress.timings` `{controls, plan}`: the latest version's seconds for step 2
+   and for steps 3-4, null until each is done (`job.timings.controls_s` / `plan_s`; every new version writes a
+   new `job`). While no version is decided and the
    scenario is no longer accepted, `progress.overall` reads `read_only` (review and regenerate answer 409
    `scenario_not_accepted`).
    A hand-written request sent again with the same `Idempotency-Key` and body after an outage failure writes its
@@ -3840,10 +3879,11 @@ the run's cancel stands, else queued for the run), and recounts and publishes th
 - **Audit and AI logs:** `tsg_audit` is append-only and kept 365 days; it has no read route. The AI call log
   `tsg_ai_calls` is kept 14 days.
 - **Service mapper** (`docs/service_mapper/SERVICE_MAPPER.md`): one AI call per generation, on queue
-  `tsg_servicemapper`. A generation that failed for an outage is tried again by a regenerate, or by the same
-  `Idempotency-Key` while that key's generation is still the latest. With no key, a create or regenerate sent
-  again in the same 60 s window is 409 `duplicate_request`. Archived generations
-  (`tsg_service_mapping_history`) are kept: nothing deletes them.
+  `tsg_servicemapper`. Its status and `mapping.updated` carry `progress.timings` `{catalog, services}`, the
+  latest run's seconds, null until it is done (`job.timings.catalog_s` / `services_s`). A generation that
+  failed for an outage is tried again by a regenerate; the same `Idempotency-Key` answers 200 with the run it
+  started. With no key, a create or regenerate sent again in the same 60 s window is 409 `duplicate_request`.
+  There is no history collection: the mapping holds every run's services.
 
 ---
 

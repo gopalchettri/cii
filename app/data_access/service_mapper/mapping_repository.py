@@ -69,10 +69,14 @@ class MappingRepository(MongoRepository):
         )
         return bool(started.modified_count)
 
-    def finish_generation(self, lease: JobLease, found: dict[str, Any]) -> None:
+    def finish_generation(
+        self, lease: JobLease, found: dict[str, Any], timings: dict[str, float] | None = None
+    ) -> None:
         """Add the run's new dependencies after those the mapping holds, never rewriting those (a reviewer may
-        have decided some while it ran), and how many it found."""
+        have decided some while it ran), how many it found and its `timings` (seconds per activity, kept in
+        the job, which every new run replaces)."""
         done = {**ended_job_fields(Status.DONE), "last_run_found": len(found["dependencies"])}
+        done |= {f"job.timings.{key}": round(seconds, 1) for key, seconds in (timings or {}).items()}
         counted = {"$inc": {"generations_done": 1}}
         if lease.record.get("result") is None:  # an older record whose only generation failed: no list yet
             lease.update_job({**done, "result": found}, operators=counted)

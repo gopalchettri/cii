@@ -2340,6 +2340,10 @@
      },
      "relationships": {
       "$ref": "#/components/schemas/RelationshipCounts"
+     },
+     "timings": {
+      "$ref": "#/components/schemas/MappingTimings",
+      "default": {}
      }
     },
     "required": [
@@ -2466,6 +2470,35 @@
      "max_downstream"
     ],
     "title": "MappingSummary",
+    "type": "object"
+   },
+   "MappingTimings": {
+    "description": "The latest run's seconds per activity, once it is done.",
+    "properties": {
+     "catalog": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Catalog"
+     },
+     "services": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Services"
+     }
+    },
+    "title": "MappingTimings",
     "type": "object"
    },
    "MappingView": {
@@ -3647,6 +3680,35 @@
      "is_manual"
     ],
     "title": "PlanStarted",
+    "type": "object"
+   },
+   "PlanTimings": {
+    "description": "The latest version's seconds per activity, once each is done: its controls, then its plan.",
+    "properties": {
+     "controls": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Controls"
+     },
+     "plan": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Plan"
+     }
+    },
+    "title": "PlanTimings",
     "type": "object"
    },
    "PlanTraceView": {
@@ -5661,7 +5723,7 @@
     "type": "string"
    },
    "StageTimings": {
-    "description": "Seconds per stage, once it is complete (scenarios and controls: the last set's or regenerate's).",
+    "description": "The latest action's seconds per activity, once each is complete: identifying the threats, writing\nthe scenarios, identifying their controls.",
     "properties": {
      "controls": {
       "anyOf": [
@@ -6317,6 +6379,10 @@
      },
      "review": {
       "$ref": "#/components/schemas/Decision"
+     },
+     "timings": {
+      "$ref": "#/components/schemas/PlanTimings",
+      "default": {}
      }
     },
     "required": [
@@ -9294,7 +9360,7 @@
   },
   "/v1/sessions/{session_id}/regenerate/scenarios": {
    "post": {
-    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again in the background (202); follow it with\n`GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`). A card\nthat failed because the AI did not answer is written again in its place.",
+    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again in the background (202); follow it with\n`GET /v1/sessions/{session_id}`. The earlier version stays readable in the results, under the new one. A\ncard that failed because the AI did not answer is written again in its place.",
     "operationId": "regenerate_scenarios_v1_sessions__session_id__regenerate_scenarios_post",
     "parameters": [
      {
@@ -9416,7 +9482,7 @@
   },
   "/v1/sessions/{session_id}/results": {
    "get": {
-    "description": "The written scenarios: threat, actors, systems, evidence and controls. `include_replaced=true` adds\nthe versions a regenerate replaced. Paged with `offset` and `limit`.",
+    "description": "The written scenarios: threat, actors, systems, evidence and controls, each with the versions a\nregenerate replaced (`include_replaced=false` leaves them out). Paged with `offset` and `limit`.",
     "operationId": "list_run_scenarios_v1_sessions__session_id__results_get",
     "parameters": [
      {
@@ -9434,7 +9500,7 @@
       "name": "include_replaced",
       "required": false,
       "schema": {
-       "default": false,
+       "default": true,
        "title": "Include Replaced",
        "type": "boolean"
       }

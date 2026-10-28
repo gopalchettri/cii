@@ -153,6 +153,7 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "source",
         "controls.attempts",
         "controls.request_id",
+        "controls.queued_at",  # its controls time counts only for the latest action's cards
         "content.category",
         "content.title",
         "content.statement",

@@ -8,6 +8,7 @@ from app.models.service_mapper.contract import (
     MappingProgress,
     MappingStatus,
     MappingSummary,
+    MappingTimings,
     MappingView,
     RelationshipCounts,
     SelectedService,
@@ -72,12 +73,18 @@ def mapping_status(record: dict, max_generations: int) -> MappingStatus:
         user_id=record.get("created_by"),
         status=status,
         **_runs(record, max_generations),
-        progress=MappingProgress(overall=_overall(status), relationships=counts),
+        progress=MappingProgress(overall=_overall(status), relationships=counts, timings=_timings(job)),
         retrying=retry_notice_of(status, job.get("retry")),
         error=job.get("error") if status == Status.FAILED else None,
         created_at=record["created_at"],
         updated_at=record["updated_at"],
     )
+
+
+def _timings(job: dict) -> MappingTimings:
+    """The latest run's times, kept in its job (every new run starts a new one)."""
+    seconds = job.get("timings") or {}
+    return MappingTimings(catalog=seconds.get("catalog_s"), services=seconds.get("services_s"))
 
 
 def _overall(status: str) -> MappingOverall:

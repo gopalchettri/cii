@@ -124,7 +124,7 @@ Use the supplied applicability flags unchanged. Do not select additional systems
 
 5. ATTACKER TYPE
 Use the supplied attacker type or a faithful plain-language equivalent. Never present a named group, malware family or campaign as attacking this asset.
-Names taken from public evidence may appear only in evidence_statement, when its cited facts supply them. Do not introduce another attacker or an objective the threat's name does not state.
+Names taken from public evidence may appear only in evidence_statement, when its cited entry supplies them. Do not introduce another attacker or an objective the threat's name does not state.
 
 6. SCENARIO STATEMENT: <scenario words> WORDS, NEVER MORE
 Write one continuous narrative without headings or numbered beats:
@@ -153,15 +153,17 @@ Describe possible attacker behavior for risk analysis, never as executable instr
 Use "could" or "may". Never state that this event happened, is happening or is certain. Do not call the asset vulnerable or exploitable unless BRIEF establishes it. Unknown evidence applicability must remain conditional and cannot establish a vulnerability.
 
 10. EVIDENCE
-Use EVIDENCE only to ground the specified threat action and write evidence_statement, the real-world passage the integrating application is expected to append and cite.
+Use EVIDENCE to ground the specified threat action and write evidence_statement: ONE complete sentence, in your own words, that closes the story. The application appends it directly after scenario_statement and cites it, so it must read on from the story's last sentence without repeating it. The cited entry may be a technique, a vulnerability or an advisory; it must be related to this scenario.
 - Use ONLY the EVIDENCE entry marked "cited": true. Do not select another entry or combine entries. If evidence is supplied without one unambiguous cited entry, do not invent a selection or evidence claim; return evidence_statement as "".
 - With no EVIDENCE, return evidence_statement as "".
-- For a cited entry with technique: open "In real-world attacks,"; include its exact supplied title in double quotes after "the technique", or "the related technique" when evidence_mode is "nearest". Describe only its recorded purpose/behavior. Name who used it only if its facts supply that identity; do not invent an actor to complete the sentence.
-- For a cited entry with about instead: state only its facts in plain language. Do not call it a technique or name a user of it unless the facts do so.
-- The passage states only the cited entry's facts. Add no sentence linking them to this asset or event, and never claim the evidence shows this asset was attacked or is exploitable.
+- Open the sentence with this attacker's action itself, in this story's own words (its verb, such as the act the story tells), never with "The attacker" or "This", and without repeating the story's last sentence; then tie that action to the cited entry.
+- For a cited entry with technique: give its exact supplied title in double quotes, called "the related technique" when evidence_mode is "nearest" or when the title names a different act from this attacker's action. Name who used it only from its used_by, exactly as written there; do not invent an actor to complete the sentence.
+- For a cited entry with about instead (a vulnerability or advisory): tie this attacker's action to its facts in plain language. Do not call it a technique or name a user of it unless the facts do so.
+- Beyond that one link, the sentence states only the cited entry's facts. Add no consequence or behavior the entry does not state, never present a named user as this scenario's attacker, and never claim the evidence shows this asset was attacked, is vulnerable or is exploitable.
+- Never write "real-world", "this attack", "this scenario", "documented", "reported" or "cited".
 - Add no unsupported name, date, victim, place, incident, number, source name or claim. Include no [n] marker, code, advisory identifier or URL.
 - Outside evidence_statement, include no real-world precedent, named public group, malware/campaign name, technique label, attack-pattern code, advisory identifier, source name, URL or evidence marker.
-- Unknown asset conditions are assumptions, not evidence claims. Do not reshape the specified threat to match a cited or related technique.
+- Unknown asset conditions are assumptions, not evidence claims. The story may describe the attacker's steps in the cited entry's terms, so the story and its closing sentence fit together, but it stays the specified threat and its primary impact.
 - When evidence_mode is "nearest", use the entry as related context only, not direct proof of the specified threat action or its applicability to the asset.
 
 11. CATEGORY SHAPES
@@ -202,7 +204,7 @@ Verify before returning:
 - No invented access, capability or business process; a link between "yes" systems that BRIEF does not record is an assumption.
 - Essential missing details listed as assumptions and kept conditional; no safeguard is assumed missing to enlarge the impact.
 - Scenario, risk, title and system reasons describe the same event and category.
-- Evidence comes only from the unambiguous cited entry, appears only in evidence_statement and contains no markers or prohibited identifiers.
+- Evidence comes only from the unambiguous cited entry and appears only in evidence_statement: one sentence that opens with this attacker's action, reads on from scenario_statement, ties that action to the entry in your own words and contains no markers or prohibited identifiers.
 - Hypothetical language, concise sentences, no padding and no operational attack instructions.
 - Clear, balanced language: short sentences, active voice, precise technical terms kept and the less common ones explained.
 - All statement word upper bounds respected. Do not add repetition to meet lower targets.
@@ -275,7 +277,7 @@ INDEPENDENT VERDICTS
 - `same_threat` is false ONLY if the main harmful action in `scenario_statement`, or the cause in `risk_statement`, is a different threat from PLAN's specified threat. The main harmful action is the one that causes the primary impact; when an added step that is not part of the specified threat causes it (including using access the threat only obtains to do something its name does not state), the threat is different. Otherwise a variant, initial access, extra system, or invented detail alone does not make it false.
 - `same_impact` is false ONLY if `risk_statement` describes a different primary impact/adverse event from `scenario_statement`. Recovery, affected people, cost, duration, or invented detail alone does not make it false.
 - Other rule violations do not automatically make either verdict false.
-- `evidence_supported` is true ONLY if `evidence_statement` states nothing but what the EVIDENCE entry marked "cited": true states (for a `technique`: who used it, as named and described there, its title and its attacker goals; for an `about` entry: what its facts say). It is false for any sentence linking the evidence to this scenario or asset, any other name, date, victim, place, incident or number, a technique or user an `about` entry does not state, a claim that this asset was attacked, a missing passage, or when no EVIDENCE is given.
+- `evidence_supported` is true ONLY if `evidence_statement` states nothing but what the EVIDENCE entry marked "cited": true states (for a `technique`: its title and who used it, as named there; for an `about` entry: what its facts say), plus exactly one link, at the passage's start, from an action `scenario_statement` tells to that technique or to those facts. It is false for a passage that does not open with such an action, for a link to anything else in this scenario or asset, a link that equates the action with a technique whose title names a different act, nearest evidence not called related, a consequence or behavior the entry does not state, a named user presented as this scenario's attacker, any other name, date, victim, place, incident or number, a technique or user an `about` entry does not state, a claim that this asset was attacked, is vulnerable or is exploitable, a missing passage, or when no EVIDENCE is given.
 
 EXAMPLES
 - Rule 1 violation: "Before carrying out the stated attack, the attacker also alters the stored records so they can no longer be trusted." An added step, not the threat's own action, causes the impact.

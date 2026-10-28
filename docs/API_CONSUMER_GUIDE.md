@@ -190,7 +190,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | `session_status` | string | `active`, `completed`, `failed`, `cancelled` |
 | `progress.threats` / `.scenarios` / `.controls` | string | `PENDING`, `RUNNING`, `COMPLETE`, `ERROR`, `CANCELLED` |
 | `progress.overall` | string | what to do now: `pending`, `in_progress` (wait), `awaiting_review`, `awaiting_next_set`, `complete`, `error`, `cancelled` |
-| `progress.timings.threats` / `.scenarios` / `.controls` | number or null | seconds, once the stage is complete |
+| `progress.timings.threats` / `.scenarios` / `.controls` | number or null | the latest action's seconds per activity, once the stage is complete: `threats` finding and preparing the threats until writing began (a start: planning, then its first set's evidence search; a next set or regenerate: from the click, its set picked and its evidence searched), `scenarios` from then to the last scenario saved, `controls` the latest action's scenarios' mapping seconds added up. A next set or regenerate clears all three |
 | `progress.error_message` | object | `{}` when fine, else `{stage: why}` |
 | `progress.error_reason` | string or null | AI outage that failed the run: `ai_down`, `ai_unreachable`, `ai_busy`, `ai_timed_out` |
 | `progress.retrying` | object or null | waiting after an outage: `stage`, `reason`, `message`, `attempt`, `max_attempts`, `retry_at` (see the notes in 3.2) |
@@ -315,7 +315,7 @@ Headers: identity headers.
 | Param | In | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `session_id` | path | string ≤ 64 | | |
-| `include_replaced` | query | bool | `false` | add older versions under each scenario's `replaced_scenarios` |
+| `include_replaced` | query | bool | `true` | older versions under each scenario's `replaced_scenarios`; `false` leaves them out |
 | `offset` | query | int ≥ 0 | 0 | |
 | `limit` | query | int 1..500 | 50 | |
 
@@ -369,7 +369,7 @@ Headers: identity headers.
 | `library` | object or null | hand-written only: `threat{name,status}`, `threat_type{name,status}`, `message` |
 | `controls_unavailable` / `controls_mapped` / `controls_mapping_exhausted` | bool | `controls_mapping_exhausted`: background mapping failed. The sweep tries it again after 30 minutes while it has tries left, never after 5. Not a blocker: a plan request (4.1) or a plan regenerate (4.5) maps it again at once |
 | `controls_mapping_exhaustion_reason` | string or null | |
-| `replaced_scenarios` | ScenarioView[] | only with `include_replaced=true`, newest first |
+| `replaced_scenarios` | ScenarioView[] | older versions, newest first; `[]` with `include_replaced=false` |
 | `scope` | object or null | `scope_key`, `scope_type` (`ASSET`/`SYSTEM`/`COMBINATION`), `supporting_system_ids`, `evidence` (always `[]`, kept for the response shape) |
 | `actor` | string or null | acting attacker's name |
 | `threat_source` / `threat_type_source` | string or null | `LIBRARY`, `AI_PROPOSED` |
@@ -576,7 +576,7 @@ Headers: identity headers, `Content-Type`.
 Notes:
 - When: `session_status` not `active`. While the job runs the run is `active` again: accept, next-set and another regenerate → `409 generation_in_progress`.
 - Done when `session_status` leaves `active` and `progress.last_regen.outcome` is no longer `running` (`complete`, `partial`, `failed`, `cancelled`). `RunBoard` has no `epoch` field.
-- The old version stays readable via `include_replaced=true`. If the new version breaks a rule, the old one stays current and gets `regenerate_error`.
+- The old version stays readable in `results` under the new one's `replaced_scenarios`. If the new version breaks a rule, the old one stays current and gets `regenerate_error`.
 - Regenerating an accepted scenario: the old version stays accepted (its plan untouched) and stays in `results`; the new one is `pending` with `replaces_accepted_version` set. Accepting it needs `replace_accepted: true` (3.5).
 - Pending and rejected scenarios can be regenerated too.
 - A failure card from an AI outage can always be regenerated, also after its path was given up after 5 tries: the path is written again in place. No new version is made and no spare path is pulled, so the run may end one scenario over its target. If the AI fails again on the last try, the card stays failed with its reason, `progress.last_regen` ends `partial`, and the run is not failed. If the path now repeats another scenario of the session, it is given up with no AI call and the card's `failure` becomes `{code: near_duplicate, message}` with no reason, so it is not regenerated again.
@@ -814,6 +814,7 @@ Headers: identity headers.
 | `progress.review` | string | = `decision` |
 | `progress.overall` | string | the first that applies: `failed`, `cancelled`, `generating`, `read_only`, `awaiting_review`, `accepted`, `rejected` |
 | `progress.retrying` | object or null | waiting after an outage, or after the job queue refused the send (3.2): `stage` (null), `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
+| `progress.timings.controls` / `.plan` | number or null | the latest version's seconds per activity, once each is done: `controls` reading the scenario, finding (mapping if needed) its controls and library alternatives; `plan` the AI writing the plan plus its checks and schedule |
 | `error` | object or null | `{code, message, reason?}` of the latest version; `code` `job_abandoned` has `reason` `abandoned`, `never_started` or `waited_too_long` (it waited an hour for its scenario's controls) |
 | `updated_at` | datetime | |
 
@@ -827,7 +828,10 @@ Headers: identity headers.
   "latest_status": "done",
   "accepted_version": null,
   "decision": "pending",
-  "progress": { "generation": "done", "review": "pending", "overall": "awaiting_review", "retrying": null },
+  "progress": {
+    "generation": "done", "review": "pending", "overall": "awaiting_review", "retrying": null,
+    "timings": { "controls": 6.4, "plan": 41.8 }
+  },
   "error": null,
   "updated_at": "2026-10-23T09:41:17.204000Z"
 }
@@ -888,7 +892,8 @@ Headers: identity headers.
   "scenario_id": "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3",
   "session_id": "938cc176aede40daa154f7c572cd2494",
   "latest_version": 1, "latest_status": "done", "accepted_version": null, "decision": "pending",
-  "progress": { "generation": "done", "review": "pending", "overall": "awaiting_review", "retrying": null },
+  "progress": { "generation": "done", "review": "pending", "overall": "awaiting_review", "retrying": null,
+                "timings": { "controls": 6.4, "plan": 41.8 } },
   "error": null,
   "updated_at": "2026-10-23T09:41:17.204000Z",
   "shown_version": 1,
@@ -1135,6 +1140,7 @@ Headers: identity headers.
 | `max_generations` | int | the most runs a mapping may have, the first included (`SERVICE_MAPPER_MAX_GENERATIONS`; `0` = no limit) |
 | `progress.overall` | string | what to do now: `generating` (queued or running: wait; services found earlier can be decided meanwhile), `done` (decide the services, 5.5), `failed` (`error` says why), `cancelled` |
 | `progress.relationships.total` / `.accepted` / `.rejected` / `.pending` | int | the mapping's services and their decisions; a run going on adds to them when it ends |
+| `progress.timings.catalog` / `.services` | number or null | the latest run's seconds per activity, null until it is done: `catalog` reading the onboarding catalog; `services` finding the upstream and downstream services (ranking candidates, the AI answer, matching to the catalog) |
 | `retrying` | object or null | waiting after an AI or store outage: `stage` (null), `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
 | `error` | object or null | when `failed`: `{code, message, reason}` |
 | `created_at` / `updated_at` | datetime | |
@@ -1150,7 +1156,8 @@ Headers: identity headers.
   "max_generations": 5,
   "progress": {
     "overall": "done",
-    "relationships": { "total": 14, "accepted": 0, "rejected": 0, "pending": 14 }
+    "relationships": { "total": 14, "accepted": 0, "rejected": 0, "pending": 14 },
+    "timings": { "catalog": 0.3, "services": 27.9 }
   },
   "retrying": null,
   "error": null,

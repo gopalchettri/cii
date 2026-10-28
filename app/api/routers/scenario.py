@@ -95,12 +95,12 @@ def get_run_status(run: CallersRun, scenarios: Scenarios) -> RunBoard:
 def list_run_scenarios(
     run: CallersRun,
     scenarios: Scenarios,
-    include_replaced: bool = False,
+    include_replaced: bool = True,
     offset: Offset = 0,
     limit: Limit = Limits.PAGE_SIZE_DEFAULT,
 ) -> RunResults:
-    """The written scenarios: threat, actors, systems, evidence and controls. `include_replaced=true` adds
-    the versions a regenerate replaced. Paged with `offset` and `limit`."""
+    """The written scenarios: threat, actors, systems, evidence and controls, each with the versions a
+    regenerate replaced (`include_replaced=false` leaves them out). Paged with `offset` and `limit`."""
     return scenarios.list_threat_scenarios_of_session(run, include_replaced, offset, limit)
 
 
@@ -185,8 +185,8 @@ def regenerate_scenarios(
     body: ScenarioIdsRequest, run: CallersRun, principal: Caller, scenarios: Scenarios
 ) -> RunActionStarted:
     """Send `{"scenario_ids": ["..."]}`: each is written again in the background (202); follow it with
-    `GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`). A card
-    that failed because the AI did not answer is written again in its place."""
+    `GET /v1/sessions/{session_id}`. The earlier version stays readable in the results, under the new one. A
+    card that failed because the AI did not answer is written again in its place."""
     return scenarios.regenerate_threat_scenarios(principal, run, body)
 
 

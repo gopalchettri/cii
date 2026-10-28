@@ -134,6 +134,7 @@ class BatchWriter:
             self._evidence.attach(to_write)  # one evidence search for the paths about to be written
             to_write = [key for key in to_write if not self._held_back(key, outages)]
         path_jobs = {key: partial(self._paths.write, paths[key]) for key in to_write}
+        self._start_writing()  # the action's threats time (its set picked, its evidence searched) ends here
         outages |= write_at_once(path_jobs, self._save)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
         # delivery that died or failed after saving must not leave its controls to the sweep. The controls
@@ -146,6 +147,12 @@ class BatchWriter:
             self._progress.finish_regenerate(len(self._served_paths()), len(self._batch))
         else:
             self._progress.continue_or_finish()
+
+    def _start_writing(self) -> None:
+        """Note on the run's last_action when this action's writing began: the first batch's moment ($min)."""
+        now = utc_now()
+        self._lease.update_job({}, operators={"$min": {"last_action.writing_started_at": now}})
+        (self._run.get("last_action") or {}).setdefault("writing_started_at", now)  # PlanProgress reads it
 
     def _split_ahead(self, path: dict[str, Any]) -> None:
         """A path's split, started early; a refused path (no AI call) or a fault is its write's to tell."""

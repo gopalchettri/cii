@@ -69,7 +69,7 @@ class ScenarioDraft:
     assumptions: tuple[str, ...]
     entry_point: str  # one of the brief's entry_point_options; "" = the asset itself
     system_reasons: tuple[tuple[str, str], ...] = ()  # (system name, its one-sentence reason), brief order
-    evidence_statement: str = ""  # a story's real-world passage from its cited entry ("" when none)
+    evidence_statement: str = ""  # a story's closing passage tied to its cited entry ("" when none)
 
 
 @dataclass(frozen=True)

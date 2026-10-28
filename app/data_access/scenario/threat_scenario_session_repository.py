@@ -84,16 +84,15 @@ _SESSION_FIELD_LISTS = {
         "job.set": 1,
         "last_action.started_at": 1,
         "last_action.kind": 1,
+        "last_action.writing_started_at": 1,
+        "timings.threats_s": 1,
         **{f"plan.{part}": 1 for part in ("threats", "paths", "frozen_at")},
     },
 }
-#: What a new next set or regenerate clears: the last set's times and a cancel's mark.
-_CLEARED_BY_A_NEW_ACTION = {
-    "finished_at": "",
-    "timings.scenarios_s": "",
-    "timings.controls_s": "",
-    "cancelled": "",
-}
+#: What a new next set or regenerate clears: the last action's times and a cancel's mark.
+_CLEARED_BY_A_NEW_ACTION = {"finished_at": "", "timings": "", "cancelled": ""}
+#: When the session's latest action began: the plan's freeze (a start) or a later click.
+_LATEST_ACTION_BEGAN = {"$max": ["$plan.frozen_at", "$last_action.started_at"]}
 
 
 def running_action(kind: RunActionKind, started_at: datetime) -> dict[str, Any]:
@@ -226,19 +225,21 @@ class ThreatScenarioSessionRepository(MongoRepository):
         raise LeaseLost(lease.record_id)
 
     def update_scenario_session_counts(
-        self, session_id: str, controls_seconds: float = 0.0
+        self, session_id: str, controls_seconds: float = 0.0, card_queued_at: datetime | None = None
     ) -> dict[str, int]:
         """The scenario session's counts now, saved on tsg_sessions unless a later count was saved first
-        (counts_at newer wins); `controls_seconds` is added to the controls time in the same write."""
+        (counts_at newer wins); `controls_seconds` is added to the controls time when the card was queued
+        (`card_queued_at`) by the session's latest action, so no earlier action's time is counted."""
         counted_at = utc_now()  # taken before the aggregate: a later one always counts as newer
         counts = self._scenarios.count_scenarios_of_session(session_id)
         older = {"$or": [{"counts_at": {"$lt": counted_at}}, {"counts_at": None}]}
         changes: dict[str, Any] = {f"counts.{key}": value for key, value in counts.items()}
         changes |= {"counts_at": counted_at, "updated_at": counted_at}
-        added = {"$inc": {"timings.controls_s": round(controls_seconds, 2)}} if controls_seconds > 0 else {}
-        saved = self.collection.update_one({"_id": session_id, **older}, {"$set": changes, **added})
-        if added and not saved.matched_count:  # a newer count was saved first: the time is still added
-            self.collection.update_one({"_id": session_id}, added)
+        self.collection.update_one({"_id": session_id, **older}, {"$set": changes})
+        if controls_seconds > 0:
+            latest = {"$expr": {"$gte": [card_queued_at, _LATEST_ACTION_BEGAN]}} if card_queued_at else {}
+            added = {"$inc": {"timings.controls_s": round(controls_seconds, 2)}}
+            self.collection.update_one({"_id": session_id, **latest}, added)
         return counts
 
     def is_being_deleted(self, session_id: str) -> bool:

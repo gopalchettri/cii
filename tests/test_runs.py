@@ -306,14 +306,14 @@ def _scenario(session_id: str, path_id: str, version: int, **fields: Any) -> str
 
 
 def test_results_show_current_versions_and_keep_a_decided_older_one(client: TestClient, api_key: str) -> None:
-    """T-SCN-10: an older version is hidden once replaced, unless it was decided (G-B); include_replaced shows
-    all; paging returns the total."""
+    """T-SCN-10: an older version is hidden once replaced, unless it was decided (G-B); it is nested under its
+    newer one by default (owner 2026-10-28), never with include_replaced=false; paging returns the total."""
     session_id = _start(client, api_key).json()["session_id"]
     newer = _scenario(session_id, "p1", 2)
     _scenario(session_id, "p1", 1, superseded_by=newer)  # replaced, pending: hidden
     accepted_old = _scenario(session_id, "p2", 1, superseded_by="v2", decision=Decision.ACCEPTED)
     url, headers = f"/v1/sessions/{session_id}/results", _identity(api_key)
-    shown = client.get(url, headers=headers).json()
+    shown = client.get(url, params={"include_replaced": False}, headers=headers).json()
     assert {item["scenario_id"] for item in shown["scenarios"]} == {newer, accepted_old} and shown[
         "total"
     ] == 2
@@ -322,14 +322,14 @@ def test_results_show_current_versions_and_keep_a_decided_older_one(client: Test
     assert {key: shown[key] for key in status if key not in ("session_status", "updated_at")} == {
         key: status[key] for key in status if key not in ("session_status", "updated_at")
     }
-    # G267 (v1's shape): include_replaced nests a path's older versions, newest first and flat, in each listed
-    # version; they are never extra items.
-    nested = client.get(url, params={"include_replaced": True}, headers=headers).json()
+    # G267 (v1's shape): a path's older versions are nested, newest first and flat, in each listed version;
+    # they are never extra items. The default (owner 2026-10-28).
+    nested = client.get(url, headers=headers).json()
     assert nested["total"] == 2
     listed = {item["scenario_id"]: item for item in nested["scenarios"]}
     assert [old["scenario_number"] for old in listed[newer]["replaced_scenarios"]] == [1]
     assert listed[newer]["replaced_scenarios"][0]["replaced_scenarios"] == []
-    assert all(item["replaced_scenarios"] == [] for item in shown["scenarios"])  # without it: none
+    assert all(item["replaced_scenarios"] == [] for item in shown["scenarios"])  # with false: none
     page = client.get(url, params={"limit": 1, "offset": 1}, headers=headers).json()
     assert len(page["scenarios"]) == 1 and page["total"] == 2
 

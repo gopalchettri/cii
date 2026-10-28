@@ -93,9 +93,17 @@ class RelationshipCounts(BaseModel):
     pending: int
 
 
+class MappingTimings(BaseModel):
+    """The latest run's seconds per activity, once it is done."""
+
+    catalog: float | None = None  # reading the onboarding catalog
+    services: float | None = None  # finding the upstream and downstream services: ranking, the AI, matching
+
+
 class MappingProgress(BaseModel):
     overall: MappingOverall
     relationships: RelationshipCounts
+    timings: MappingTimings = MappingTimings()
 
 
 class MappingStatus(BaseModel):

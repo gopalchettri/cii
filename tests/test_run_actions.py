@@ -136,7 +136,8 @@ def test_next_set_resumes_an_interrupted_run_and_the_job_writes_the_rest(
     write job then ends it complete; one audit record."""
     record_id = _interrupted_run()
     three_days_ago = datetime.now(UTC) - timedelta(days=3)  # the reviewer came back days after the plan
-    _sessions().update_one({"_id": record_id}, {"$set": {"plan.frozen_at": three_days_ago}})
+    stale = {"threats_s": 93.7, "scenarios_s": 130.7, "controls_s": 111.0}  # the run's first times
+    _sessions().update_one({"_id": record_id}, {"$set": {"plan.frozen_at": three_days_ago, "timings": stale}})
     answer = client.post(f"/v1/sessions/{record_id}/scenarios/next-set", headers=_identity(api_key))
     # G268: v1's 202 shape (RegenerateResponse): the run, its owner (none recorded here), what started.
     started = {"session_id": record_id, "user_id": None, "status": ActionStatus.GENERATING, "epoch": 2}
@@ -146,6 +147,9 @@ def test_next_set_resumes_an_interrupted_run_and_the_job_writes_the_rest(
     assert (run["status"], run["job"]["error"]) == (Status.QUEUED, None)
     assert [item["path_id"] for item in run["job"]["batch"]] == ["p7", "p8"]
     assert run["last_action"]["kind"] == RunActionKind.NEXT_SET
+    assert "timings" not in run  # owner 2026-10-28: no time of an earlier action is ever shown again
+    clicked = run["last_action"]["started_at"] - timedelta(seconds=30)  # the job waited 30 s to be picked up
+    _sessions().update_one({"_id": record_id}, {"$set": {"last_action.started_at": clicked}})
     # Shown from the moment it is asked, so the status never shows the set before (review 2026-10-12).
     assert run["last_next_set"] == {
         "outcome": RunActionOutcome.RUNNING, "requested": 2, "delivered": None, "reason": None,
@@ -155,8 +159,10 @@ def test_next_set_resumes_an_interrupted_run_and_the_job_writes_the_rest(
     run = _sessions().find_one({"_id": record_id})
     assert (run["status"], run["last_action"]["outcome"]) == (Status.DONE, RunActionOutcome.COMPLETE)
     assert run["counts"]["written"] == 8
-    # Review 2026-10-11: the next set's own writing time, never the three days since the plan.
-    assert run["timings"]["scenarios_s"] < 60
+    # Review 2026-10-11: the next set's own writing time, never the three days since the plan; owner
+    # 2026-10-28: its threats time too (the click until writing began), never the first run's.
+    assert run["timings"]["scenarios_s"] < 10 and 30 <= run["timings"]["threats_s"] < 40
+    assert run["last_action"]["writing_started_at"] >= run["last_action"]["started_at"]
     # What the status shows of it (owner 2026-10-12): the set asked for and what it delivered.
     # G268, v1's shape: nothing is left after it, so its reason is the 409 the next click gets.
     assert run["last_next_set"] == {
@@ -166,6 +172,7 @@ def test_next_set_resumes_an_interrupted_run_and_the_job_writes_the_rest(
     progress = client.get(f"/v1/sessions/{record_id}", headers=_identity(api_key)).json()["progress"]
     assert progress["last_next_set"] == run["last_next_set"] and progress["last_regen"] is None
     assert progress["timings"]["scenarios"] == run["timings"]["scenarios_s"]
+    assert progress["timings"]["threats"] == run["timings"]["threats_s"] != stale["threats_s"]
     audit = {"target.id": record_id, "action": AuditAction.RUN_NEXT_SET}
     assert get_mongodb()[Collection.AUDIT].count_documents(audit) == 1
 
@@ -224,8 +231,16 @@ def test_each_next_set_writes_its_size_in_waves_then_stops_until_asked_again(
     asks for the last 4, and one more finds nothing left."""
     monkeypatch.setattr(get_settings(), "next_set_size", 8)
     record_id = _queued_run([f"Threat {number}" for number in range(1, 15)], first_set=2)
-    _sessions().update_one({"_id": record_id}, {"$set": {"step": Step.SCENARIOS}})
+    frozen = datetime.now(UTC) - timedelta(seconds=30)  # the write job waited 30 s after the plan was frozen
+    started = {"kind": RunActionKind.START, "outcome": RunActionOutcome.RUNNING, "started_at": frozen}
+    planned = {"step": Step.SCENARIOS, "plan.frozen_at": frozen, "timings": {"threats_s": 12.3}}
+    planned["last_action"] = started  # as every run has from its start
+    _sessions().update_one({"_id": record_id}, {"$set": planned})
     assert _deliver(record_id, 1) == 1
+    # Owner 2026-10-28: a start's threats time is its plan job's (12.3 s) and then its set's preparation until
+    # writing began (the 30 s wait here), so no part of the start goes untimed; its writing time follows.
+    timings = _sessions().find_one({"_id": record_id})["timings"]
+    assert 42.3 <= timings["threats_s"] < 50 and timings["scenarios_s"] < 10
     url = f"/v1/sessions/{record_id}/scenarios/next-set"
     assert client.post(url, headers=_identity(api_key)).status_code == 202
     run = _sessions().find_one({"_id": record_id})
@@ -354,6 +369,7 @@ def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
         "epoch": 2,
     }
     assert run["timings"]["scenarios_s"] < 60 and "last_next_set" not in run
+    assert 0 <= run["timings"]["threats_s"] < 60  # owner 2026-10-28: the regenerate's own threats time
     again = _regenerate(client, api_key, record_id, [first])
     assert again.json()["errors"] == [{"scenario_id": first, "reason": TargetProblem.VERSION_NOT_CURRENT}]
 
@@ -771,7 +787,7 @@ def test_a_regenerate_resumes_the_controls_only_after_a_cancel(
     controls). Before, every regenerate spent an update and a read resuming nothing."""
     resumed: list[str] = []
     work_control = SimpleNamespace(
-        resume_scenario_controls=lambda session_id, cancelled_at: resumed.append(session_id) or 0
+        resume_scenario_controls=lambda session_id, *_: resumed.append(session_id) or 0
     )
     actions = threat_scenario_service(
         sessions=SimpleNamespace(update_scenario_session_job=lambda *args: None),

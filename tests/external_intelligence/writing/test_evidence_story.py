@@ -21,6 +21,7 @@ from app.core.constants import (
     IntelKind,
     IntelSource,
     PlanCheckStatus,
+    Precedent,
     PromptVersion,
     Route,
     ScenarioStatus,
@@ -94,8 +95,9 @@ _KEV = Evidence(
     ),
     Applicability.UNKNOWN,
 )
-_GROUPS_CLAIM = 'In real-world attacks, APT41 and FIN8 have used the technique "Valid Accounts"'
-_CAMPAIGN_CLAIM = 'In real-world attacks, the Triton campaign has used the technique "Module Firmware"'
+# Owner 2026-10-28: code's own sentence reads on from the story, never "In real-world attacks, ...".
+_GROUPS_CLAIM = 'This attack could use the "Valid Accounts" technique, which APT41 and FIN8 have used'
+_CAMPAIGN_CLAIM = 'This attack could use the "Module Firmware" technique, which the Triton campaign has used'
 _DRAFT = ScenarioDraft(
     "Loss of control integrity",
     STORY_PLAIN,
@@ -179,7 +181,7 @@ def test_a_story_with_no_markers_and_no_ids_passes_and_a_stale_citation_key_is_i
     brief = _story_brief(TECHNIQUE)
     assert _codes(_DRAFT, brief) == [] == _codes(_DRAFT, _story_brief(TECHNIQUE, style=WriterStyle.ORIGINAL))
     stale = draft_answer(_DRAFT) | {"evidence_links": [{"n": 1, "claim": "x"}]}
-    chat = _chat_answering([stale], [_CONSISTENT | {"unsupported_citations": [1]}])
+    chat = _chat_answering([stale, stale], [_CONSISTENT | {"unsupported_citations": [1]}])  # asked again once
     written = write_scenario(chat, brief)
     assert written.draft.statement == STORY_PLAIN and not is_blocked(written)
     assert [finding.code for finding in written.findings] == [FindingCode.CITATION_REMOVED]  # none written
@@ -188,14 +190,14 @@ def test_a_story_with_no_markers_and_no_ids_passes_and_a_stale_citation_key_is_i
 @pytest.mark.parametrize("ident", ["CVE-2024-0001", "ICSA-24-001-01"])
 def test_an_advisory_id_in_the_prose_is_blocked_with_no_reviewer_call(ident: str) -> None:
     leaky = _with_statement(f"{STORY_PLAIN} ({ident}).")
-    chat = _chat_answering([draft_answer(leaky)], [])
+    chat = _chat_answering([draft_answer(leaky)] * 2, [])  # no closing sentence: asked again once
     written = write_scenario(chat, _story_brief(TECHNIQUE))
     codes = [finding.code for finding in written.findings]
     assert codes == [FindingCode.UNCITED_ADVISORY_ID, FindingCode.CITATION_REMOVED]  # no review, no passage
     assert (
         is_blocked(written)
         and not is_final(written)
-        and [task for task, _ in chat.calls] == [AiTask.WRITE_SCENARIO]
+        and [task for task, _ in chat.calls] == [AiTask.WRITE_SCENARIO] * 2
     )
 
 
@@ -314,7 +316,7 @@ def test_no_citable_source_is_written_without_evidence_never_failed(evidence: li
 @pytest.mark.parametrize(
     ("item", "claim"),
     [
-        (_GROUPS, 'In real-world attacks, APT41 and FIN8 have used the related technique "Valid Accounts"'),
+        (_GROUPS, 'This attack is related to the "Valid Accounts" technique, which APT41 and FIN8 have used'),
         (
             _KEV,
             "A related record: CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks "
@@ -345,19 +347,24 @@ def test_one_citable_source_lets_the_story_be_written() -> None:
     assert evidence_problem({"intel_search": {"snapshot_id": "s"}, "evidence": [TECHNIQUE.as_doc()]}) is None
 
 
+# Owner 2026-10-28: the writer's passage closes the story, tying this attacker's action to the cited entry.
 _PASSAGE = (
-    'In real-world attacks, APT41, a threat group, and FIN8, a threat group, have used the technique "Valid '
-    'Accounts".'
+    'Signing in with that maintenance login is the "Valid Accounts" technique that the APT41 and FIN8 '
+    "groups have used."
 )
 _CONFIRMED = _CONSISTENT | {"evidence_supported": True}
+#: A closing sentence that opens with the evidence instead of this attacker's action (owner 2026-10-28).
+_STANDALONE = 'The "Valid Accounts" technique has been used by the APT41 and FIN8 groups.'
 
 
 def _story_record(
-    passage: str, review: list[Any], items: tuple[Evidence, ...] = (_GROUPS,)
+    passage: str, review: list[Any], items: tuple[Evidence, ...] = (_GROUPS,), again: str | None = None
 ) -> tuple[WrittenScenario, dict[str, Any], Any]:
-    """The story written with `passage` and reviewed by `review`, the card it is saved as, and the chat."""
+    """The story written with `passage` (`again` on the re-ask code asks for when it refuses the passage;
+    the same passage by default) and reviewed by `review`, the card it is saved as, and the chat."""
     brief = _story_brief(*items)
-    chat = _chat_answering([draft_answer(_DRAFT) | {"evidence_statement": passage}], review)
+    answers = [draft_answer(_DRAFT) | {"evidence_statement": text} for text in (passage, again or passage)]
+    chat = _chat_answering(answers, review)
     written = write_scenario(chat, brief)
     threat = _plan_threat(evidence=[item.as_doc() for item in items], intel_search={"query": "q"})
     run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
@@ -376,38 +383,114 @@ def test_a_passage_the_reviewer_confirms_ends_the_story_cited() -> None:
     assert [item.supports for item in build_scenario_view(record).evidence] == [supports]
     assert narrative_of(content) == STORY_PLAIN
     review = [prompt for task, prompt in chat.calls if task == AiTask.PLAN_CHECK]
-    assert len(review) == 1 and "APT41, a threat group, and FIN8" in str(review[0])
+    assert len(review) == 1 and "the APT41 and FIN8 groups" in str(review[0])
 
 
 @pytest.mark.parametrize(
-    ("passage", "review", "reason"),
+    ("passage", "review", "reason", "writes"),
     [
-        ("", [_CONFIRMED], "none was written"),
-        (" ".join(["word"] * 81), [_CONFIRMED], "over its 80-word limit"),
-        (f"{_PASSAGE} [2]", [_CONFIRMED], "a marker, a redaction, a link"),
-        (f"{_PASSAGE} Contact [REDACTED].", [_CONFIRMED], "a marker, a redaction, a link"),
-        (f"{_PASSAGE} See https://example.test/a", [_CONFIRMED], "a marker, a redaction, a link"),
-        (_PASSAGE.replace('"Valid Accounts"', "T1078"), [_CONFIRMED], "a marker, a redaction, a link"),
-        (_PASSAGE, [_CONSISTENT | {"evidence_supported": False}], "did not confirm"),
-        (_PASSAGE, [_CONSISTENT], "did not confirm"),
-        (_PASSAGE, [{"rules": "?"}, {"rules": "?"}], "did not confirm"),
+        ("", [_CONFIRMED], "none was written", 2),
+        (" ".join(["word"] * 81), [_CONFIRMED], "over its 80-word limit", 2),
+        (f"{_PASSAGE} [2]", [_CONFIRMED], "a marker, a redaction, a link", 2),
+        (f"{_PASSAGE} Contact [REDACTED].", [_CONFIRMED], "a marker, a redaction, a link", 2),
+        (f"{_PASSAGE} See https://example.test/a", [_CONFIRMED], "a marker, a redaction, a link", 2),
+        (_PASSAGE.replace('"Valid Accounts"', "T1078"), [_CONFIRMED], "a marker, a redaction, a link", 2),
+        (_PASSAGE.replace("have used.", "have used in real-world attacks."), [_CONFIRMED], "real-world", 2),
+        (
+            _PASSAGE.replace("have used.", "have used. It is common."),
+            [_CONFIRMED],
+            "more than one sentence",
+            2,
+        ),
+        (_PASSAGE.replace('"Valid Accounts" technique', "account technique"), [_CONFIRMED], "the title", 2),
+        (_STANDALONE, [_CONFIRMED], "opens with the evidence", 2),
+        (_PASSAGE, [_CONSISTENT | {"evidence_supported": False}], "did not confirm", 1),
+        (_PASSAGE, [_CONSISTENT], "did not confirm", 1),
+        (_PASSAGE, [{"rules": "?"}, {"rules": "?"}], "did not confirm", 1),
     ],
-    ids=["none", "too_long", "marker", "redaction", "url", "code", "refuted", "no_verdict", "no_review"],
+    ids=[
+        "none",
+        "too_long",
+        "marker",
+        "redaction",
+        "url",
+        "code",
+        "stock_words",
+        "two_sentences",
+        "no_title",
+        "opens_on_evidence",
+        "refuted",
+        "no_verdict",
+        "no_review",
+    ],
 )
 def test_a_passage_that_cannot_be_cited_gives_way_to_codes_precedent(
-    monkeypatch: pytest.MonkeyPatch, passage: str, review: list[Any], reason: str
+    monkeypatch: pytest.MonkeyPatch, passage: str, review: list[Any], reason: str, writes: int
 ) -> None:
-    """The citation is never lost and never blocks: the entry's own precedent is cited instead, with one
-    warning naming why."""
+    """The citation is never lost and never blocks: a passage code refuses is asked again once with why
+    (owner 2026-10-28), then the entry's own precedent is cited instead, with one warning naming why; a
+    passage the reviewer refuses is not asked again."""
     settings = Settings(EVIDENCE_STATEMENT_WORD_LIMIT="30-80")  # type: ignore[call-arg]
     monkeypatch.setattr(write, "get_settings", lambda: settings)
-    written, record, _ = _story_record(passage, review)
+    written, record, chat = _story_record(passage, review)
+    assert [task for task, _ in chat.calls].count(AiTask.WRITE_SCENARIO) == writes
     content = record["content"]
     assert record["status"] == ScenarioStatus.DONE and not is_blocked(written)
     assert content["statement"] == f"{STORY_PLAIN} {_GROUPS_CLAIM} [1]."
     assert content["evidence"][0]["supports"] == _GROUPS_CLAIM
     (removed,) = [finding for finding in written.findings if finding.code == FindingCode.CITATION_REMOVED]
     assert reason in removed.message and finding_severity(removed) == FindingSeverity.WARNING
+
+
+def test_a_closing_sentence_code_refuses_is_asked_again_once_and_the_new_one_is_cited() -> None:
+    """Owner 2026-10-28: one sentence that opens with this attacker's action, never a stand-alone fact; the
+    writer is told why and asked once more, so the story keeps its own ending rather than code's sentence."""
+    written, record, chat = _story_record(_STANDALONE, [_CONFIRMED], again=_PASSAGE)
+    assert [task for task, _ in chat.calls].count(AiTask.WRITE_SCENARIO) == 2
+    told = write._passage_answer_faults({"evidence_statement": _STANDALONE}, _GROUPS.as_doc())
+    assert told == [Precedent.REASK.format(reason=Precedent.OPENS_ON_EVIDENCE)]
+    assert record["content"]["statement"] == f"{STORY_PLAIN} {_PASSAGE.removesuffix('.')} [1]."
+    assert written.findings == ()
+
+
+@pytest.mark.parametrize(
+    ("passage", "item", "fault"),
+    [
+        (
+            "Signing in this way is the \u201cValid Accounts\u201d technique that the APT41 group has used.",
+            _GROUPS,
+            "",
+        ),
+        (
+            'Erasing evidence from the reported source follows the "Valid Accounts." technique.',
+            _GROUPS,
+            "",
+        ),
+        ("Exploiting that WinCC weakness could let the attacker in, as CISA lists it exploited.", _KEV, ""),
+        ('APT41 and FIN8 have used the "Valid Accounts" technique to sign in this way.', _GROUPS, "evidence"),
+        ('Threat groups such as APT41 have used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('Signing in this way is the "Valid Accounts" technique, as documented.', _GROUPS, '"documented"'),
+    ],
+    ids=["curly_quotes", "story_words", "about_entry", "opens_on_users", "opens_on_groups", "documented"],
+)
+def test_the_closing_sentence_checks_keep_story_words_and_any_cited_kind(
+    passage: str, item: Evidence, fault: str
+) -> None:
+    """Any cited kind may close a story (owner 2026-10-28): a vulnerability is told by its facts, with no
+    title; a title in curly quotes counts; "evidence", "source" and "reported" are story words."""
+    found = write._passage_faults(passage, item.as_doc())
+    assert (fault in found and bool(found)) if fault else found == ""
+
+
+def test_the_writer_sees_who_used_a_technique_as_plain_names_never_the_stored_wording() -> None:
+    """Owner 2026-10-28: the writer copied "APT41, a threat group, has used this technique"; it now reads
+    who used it as a reader names them, and no user fact (an id-only campaign's included)."""
+    groups = dataclasses.replace(
+        _GROUPS, facts=(*_GROUPS.facts, *_ID_ONLY_CAMPAIGN.facts, "It is used widely.")
+    )
+    (entry,) = _block_of(writer_prompt(_story_brief(groups))[1])["evidence"]
+    assert entry["used_by"] == ["the APT41 group", "the FIN8 group"]
+    assert entry["facts"] == ["It is used widely."]
 
 
 def test_an_instruction_echoed_in_the_passage_blocks() -> None:
@@ -427,7 +510,8 @@ def test_the_original_style_drops_any_passage_the_writer_returns() -> None:
     assert len(review) == 1 and "APT41" not in str(review[0])
 
 
-def test_only_the_cited_entry_is_marked_and_shows_its_attacker_goals_never_a_mitigation() -> None:
+def test_only_the_cited_entry_is_marked_and_no_entry_shows_an_attacker_goal_or_a_mitigation() -> None:
+    """Owner 2026-10-28: passages listed the cited entry's attacker goals; no AI sees them now."""
     goals = "It is used for these attacker goals: credential access."
     mitigation = "It can be reduced by: User Training."
     uncited = dataclasses.replace(_NO_FACTS, facts=(goals, mitigation))
@@ -436,7 +520,7 @@ def test_only_the_cited_entry_is_marked_and_shows_its_attacker_goals_never_a_mit
     for prompt in (writer_prompt(brief)[1], plan_check_prompt(brief, _DRAFT)[1]):
         first, second = _block_of(prompt)["evidence"]
         assert "cited" not in first and first["facts"] == []
-        assert second["cited"] is True and goals in second["facts"] and mitigation not in second["facts"]
+        assert second["cited"] is True and goals not in second["facts"] and mitigation not in second["facts"]
 
 
 def test_a_cited_record_that_is_no_technique_is_marked_about_and_told_by_its_facts_only() -> None:
@@ -445,7 +529,9 @@ def test_a_cited_record_that_is_no_technique_is_marked_about_and_told_by_its_fac
     block = _block_of(writer_prompt(_story_brief(_KEV))[1])
     (cited,) = block["evidence"]
     assert cited["cited"] is True and "about" in cited and "technique" not in cited
-    about_rule = "For a cited entry with about instead: state only its facts in plain language."
+    about_rule = (
+        "For a cited entry with about instead (a vulnerability or advisory): tie this attacker's action"
+    )
     assert about_rule in WRITER_SYSTEM_PROMPT
     assert "for an `about` entry: what its facts say" in PLAN_CHECK_SYSTEM_PROMPT
 

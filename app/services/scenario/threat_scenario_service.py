@@ -471,7 +471,7 @@ class ThreatScenarioService:
         if asked:
             epoch = self._queue_write_job(principal, run, RunActionKind.NEXT_SET, batch, asked)
             return _started(run, ActionStatus.GENERATING, epoch)
-        resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run))
+        resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run), restart_times=True)
         if resumed is None:
             raise run_being_deleted(run.session_id)
         if not resumed:
@@ -524,10 +524,12 @@ class ThreatScenarioService:
         self._audit.create_audit_record(action, caller_actor(principal), target, after=after)
         return epoch
 
-    def _resume_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
+    def _resume_controls(
+        self, session_id: str, cancelled_at: datetime | None, restart_times: bool = False
+    ) -> int | None:
         """Queues again and sends the controls a cancel stopped, unless a cancel other than the one stamped
         `cancelled_at` (the one the caller saw) landed since; None when the run is being deleted."""
-        resumed = self._work_control.resume_scenario_controls(session_id, cancelled_at)
+        resumed = self._work_control.resume_scenario_controls(session_id, cancelled_at, restart_times)
         if resumed:
             self._send_job(TaskName.MAP_CONTROLS, session_id, 0)  # the epoch is never checked for controls
         return resumed

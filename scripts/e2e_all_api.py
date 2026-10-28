@@ -154,7 +154,9 @@ def plans(api: Api, args: argparse.Namespace, run: str, scenario: str) -> None:
 def service_mapper(api: Api, args: argparse.Namespace) -> None:
     api.call("GET", "/v1/entities/{listed_entity_id}/services", listed_entity_id=args.entity)
     body = {
-        "service_name": args.mapper_service_name,
+        # A mapping of its own each run, so its run and regenerate always start (a mapping whose last run
+        # found nothing new starts no run again); the tag in brackets keeps the catalog name match.
+        "service_name": f"{args.mapper_service_name} (E2E {uuid.uuid4().hex[:6]})",
         "service_description": args.mapper_service_description,
         "sector": args.mapper_sector,
         "subsector": args.mapper_subsector,
@@ -176,7 +178,8 @@ def service_mapper(api: Api, args: argparse.Namespace) -> None:
     reasons = [failure["reason"] for failure in decided.get("failed", [])]
     if reasons != ([] if ids else ["dependency_not_found"]):
         FAILED.append(f"service mapper: relationship decisions not saved: {reasons}")
-    api.call("POST", MAPPING + "/regenerate", (202,), idempotent=True, mapping_id=mapping)
+    # A run that found nothing new is not run again: 200 with the mapping as it is.
+    api.call("POST", MAPPING + "/regenerate", (202,) if ids else (200,), idempotent=True, mapping_id=mapping)
     wait(api, MAPPING, job_settled, 20, mapping_id=mapping)
 
 

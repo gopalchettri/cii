@@ -486,7 +486,8 @@ def test_a_finished_runs_stopped_controls_resume_with_a_next_set(
     """Nothing left to write: a next set resumes only its stopped controls, sent at once (review: they could
     never be resumed but by rewriting scenarios)."""
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": "s1", "attempts": 1, "abandoned": False}
-    run_id = _run(entity, Status.DONE, plan={"paths": [path]})
+    stale = {"threats_s": 93.7, "scenarios_s": 130.7, "controls_s": 111.0}  # the run's first times
+    run_id = _run(entity, Status.DONE, plan={"paths": [path]}, timings=stale)
     stopped = _scenario(run_id, Status.QUEUED)
     outage = {"code": "unavailable", "message": "The AI service is down.", "reason": AiOutage.DOWN}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": stopped}, {"$set": {"controls.error": outage}})
@@ -502,6 +503,10 @@ def test_a_finished_runs_stopped_controls_resume_with_a_next_set(
     assert get_mongodb()[Collection.SCENARIOS].find_one({"_id": stopped})["controls"].get("error") is None
     board = client.get(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).json()
     assert board["progress"]["controls"] == "RUNNING" and board["progress"]["error_message"] == {}
+    # Owner 2026-10-28: the resume is the latest action; it found and wrote nothing, so no earlier time stays.
+    run = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
+    assert run["timings"] == {"threats_s": 0.0, "scenarios_s": 0.0}
+    assert board["progress"]["timings"] == {"threats": 0.0, "scenarios": 0.0, "controls": None}
 
 
 def test_a_deleted_runs_plan_watchers_are_told(

@@ -39,7 +39,9 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    are told apart by sector and subsector), drops what is left of the above, keeps each service in one direction,
    drops every service the mapping already holds (either direction, or another name form of one the AI named),
    caps each list at its count, and adds the new services after those the mapping holds: a run never rewrites
-   or removes one. Each service has one `dependency_id` in its mapping.
+   or removes one. Each service has one `dependency_id` in its mapping. The status (`GET .../status`, SSE
+   `mapping.updated`) shows `progress.timings` `{catalog, services}`: the latest run's seconds for step 2 and for
+   steps 3-5, null until it is done (`job.timings.catalog_s` / `services_s`; the next run starts a new `job`).
 6. A reviewer accepts or rejects each relationship (`POST .../dependencies/decision`), and may change a decision,
    at any time once the mapping has services, even while a later run goes on. Generate again for the same
    service, or `POST .../regenerate` (the details the mapping holds), runs it again: every service and decision
