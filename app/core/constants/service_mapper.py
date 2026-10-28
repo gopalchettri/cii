@@ -62,4 +62,3 @@ class MapperLimits:
     CATALOG_RECORD_CHARS: Final = 240
     REASK_NAMES_SHOWN: Final = 8  # catalog services named in one re-ask problem
     SCHEMA_ERRORS_SHOWN: Final = 10  # answer-format errors sent back in a re-ask
-    HISTORY_KEEP_DAYS: Final = 90  # an archived generation is deleted this long after it was archived

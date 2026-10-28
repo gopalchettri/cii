@@ -3843,7 +3843,7 @@ the run's cancel stands, else queued for the run), and recounts and publishes th
   `tsg_servicemapper`. A generation that failed for an outage is tried again by a regenerate, or by the same
   `Idempotency-Key` while that key's generation is still the latest. With no key, a create or regenerate sent
   again in the same 60 s window is 409 `duplicate_request`. Archived generations
-  (`tsg_service_mapping_history`) are deleted 90 days after `archived_at`.
+  (`tsg_service_mapping_history`) are kept: nothing deletes them.
 
 ---
 

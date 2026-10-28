@@ -290,8 +290,11 @@ def test_start_up_drops_the_retired_failed_controls_index() -> None:
     assert "controls.status_1_controls.last_attempt_at_1" not in scenarios.collection.index_information()
 
 
-def test_archived_mapping_generations_expire_after_90_days() -> None:
+def test_archived_mapping_generations_are_kept_and_an_old_expiry_index_is_dropped() -> None:
+    """Owner 2026-10-28: replaced Service Mapper answers are never deleted. A database that already built
+    the 90-day expiry index loses it at start-up, so MongoDB deletes nothing from the history."""
     history = MappingHistoryRepository()
+    history.collection.create_index("archived_at", expireAfterSeconds=int(timedelta(days=90).total_seconds()))
     history.create_indexes()
-    expiry = history.collection.index_information()["archived_at_1"]["expireAfterSeconds"]
-    assert expiry == timedelta(days=90).total_seconds()
+    indexes = history.collection.index_information()
+    assert [name for name, index in indexes.items() if "expireAfterSeconds" in index] == []

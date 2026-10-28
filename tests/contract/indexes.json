@@ -657,15 +657,6 @@
      ]
     ]
    },
-   "archived_at_1": {
-    "expireAfterSeconds": 7776000,
-    "key": [
-     [
-      "archived_at",
-      1
-     ]
-    ]
-   },
    "mapping_id_1_generation_-1": {
     "key": [
      [

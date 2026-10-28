@@ -6,9 +6,12 @@ from typing import Any
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import Collection, MapperLimits, Status
-from app.data_access.base import MongoRepository
+from app.core.constants import Collection, Status
+from app.data_access.base import MongoRepository, drop_retired_index
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
+
+#: Dropped at start-up: the expiry index on archived generations; they are kept (owner, 2026-10-28).
+RETIRED_HISTORY_EXPIRY_INDEX = "archived_at_1"
 
 
 class MappingRepository(MongoRepository):
@@ -112,9 +115,13 @@ class MappingHistoryRepository(MongoRepository):
         super().__init__(
             collection,
             indexes=({"keys": [("mapping_id", 1), ("generation", -1)]},),
-            ttl=[("archived_at", MapperLimits.HISTORY_KEEP_DAYS * 86_400)],
             required=("_id", "mapping_id", "generation", "tenant_id", "entity_id"),
         )
+
+    def create_indexes(self) -> None:
+        """The validator and every index, after dropping the retired expiry index."""
+        drop_retired_index(self.collection, RETIRED_HISTORY_EXPIRY_INDEX)
+        super().create_indexes()
 
     def archive(self, mapping: dict[str, Any]) -> None:
         """Save the frozen generation kept in the header until this write succeeds."""

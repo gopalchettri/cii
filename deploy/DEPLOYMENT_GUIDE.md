@@ -892,9 +892,7 @@ reaper worker serves `tsg_reaper` before the new API and beat send to it.
 
 What else changes by itself in this step (nothing to run):
 - **Database indexes.** The API and every worker build MongoDB's indexes when they start, and drop the ones
-  TSG no longer uses. Once the expiry index on `tsg_service_mapping_history` exists, MongoDB deletes the
-  archived Service Mapper generations older than 90 days within about a minute. If any of them must be kept,
-  ask the DBA to back up that collection before this step.
+  TSG no longer uses.
 - **Alloy's volume.** `deploy_common.yaml` creates the claim `alloy-data` (1 Gi), where Alloy keeps how far it
   has read each pod's log. Its first start on the new volume reads the pods' current logs once more; after
   that, a restart carries on where it stopped.
