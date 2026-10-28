@@ -50,12 +50,12 @@ class EvidenceLimits:
     RANGES_SAID: Final = 2  # affected version ranges and fixed versions put in one sentence
     VERSION_MAX_CHARS: Final = 40  # a version longer than this, or with odd characters, is not said
     SEARCHES_AT_ONCE: Final = 8  # reranker calls in flight for one batch
+    RERANKS_KEPT: Final = 2_000  # scored searches kept per process, the oldest dropped first
 
 
 class RerankGateLimits:
-    RERANKS_AT_ONCE: Final = 4  # reranker calls in flight in the whole process (the remote reranker)
+    RERANKS_AT_ONCE: Final = 6  # reranker calls in flight in the whole process (the remote reranker)
     LOCAL_RERANKS_AT_ONCE: Final = 1  # the local CPU model predicts one at a time
-    GATE_WAIT_SECONDS: Final = 60.0  # remote only: a proxy that is down must not hold the scenarios up
     CHECK_EVERY_SECONDS: Final = 2.0  # a waiter checks its job's lease (and deadline) this often
 
 
@@ -203,10 +203,6 @@ class EvidenceMode(StrEnum):
     SOURCE_DOCUMENTED = "source-documented"
     NEAREST = "nearest"  # none met the threshold: the closest records, only related
     INFERRED = "inferred"
-
-
-class StoryLimits:
-    PROMPT_VERSION: Final = "scenario writer-evidence-1"  # stored as content.prompt_version of a story
 
 
 class Precedent:

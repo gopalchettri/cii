@@ -42,7 +42,7 @@ from tests.test_writing_job import (  # noqa: F401 - fixture used by name
 
 LIBRARY = ThreatLibrary(THREATS, ACTORS)  # the planner's threats and attackers, all live
 RESULTS_KEYS = [
-    "session_id", "entity_id", "asset_id", "asset_name", "user_id", "progress", "scenarios", "total",
+    "session_id", "entity_id", "asset_id", "asset_name", "user_id", "progress", "error", "scenarios", "total",
 ]  # fmt: skip
 
 
@@ -64,7 +64,7 @@ def jobs_faked(
     get_mongodb()[Collection.SESSIONS].delete_many({"entity_id": 86, "asset_id": 103})
     get_mongodb()[Collection.SCENARIOS].delete_many({"entity_id": 86, "asset_id": 103})
     sent: list[tuple[Any, ...]] = []
-    record = lambda *args: sent.append(args)  # noqa: E731 - every job message, in order
+    record = lambda *args, **_priority: sent.append(args)  # noqa: E731 - every job message, in order
     for module in (jobs, write_job, controls_job):
         monkeypatch.setattr(module, "send_job", record)
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, lambda _session_id: None)
@@ -128,7 +128,7 @@ def test_a_run_is_started_planned_written_mapped_read_and_reviewed(
     assert scenario_tasks.map_controls.apply(args=message, task_id="controls-1").successful()
 
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": session_id})
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,

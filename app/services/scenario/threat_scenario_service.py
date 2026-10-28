@@ -82,6 +82,7 @@ from app.domain.scenario.review import (
     versions_to_replace,
 )
 from app.domain.shared.audit import audit_target, caller_actor
+from app.domain.shared.idempotency import duplicate_request
 from app.models.admin.api_clients import Principal
 from app.models.library.library import ThreatLibrary, ThreatProposal
 from app.models.scenario.asset_context import FrozenContext
@@ -149,26 +150,20 @@ class ThreatScenarioService:
     # Starting a run.
 
     def create_threat_scenario_session(
-        self, principal: Principal, request: StartRunRequest, idempotency_key: str | None
+        self, principal: Principal, request: StartRunRequest, idempotency_key: str, *, derived: bool = False
     ) -> tuple[RunBoard, bool]:
-        """Starts a run: (its status board, True when created now, False for a replay of an
-        Idempotency-Key)."""
-        if idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
+        """Starts a run: (its status board, True when created now, False for a replay of the caller's
+        Idempotency-Key); 409 duplicate_request for a repeat of a `derived` one."""
+        if replayed := self._replay(principal, request, idempotency_key, derived):
             return build_board(replayed), False
         self._refuse_without_intel_data()  # never a run that can only fail its evidence searches
         asset_context = self._assets.get_asset_context(principal.entity_id, request)
         context = freeze_context(request, asset_context)
         record = _new_run_record(principal, request, idempotency_key, context)
         clash = self._sessions.create_scenario_session(record)
-        # A parallel start with the same key won, whichever unique rule refused this insert: its replay.
-        if clash and idempotency_key and (replayed := self._replay(principal, request, idempotency_key)):
+        # A parallel start with the same key won: its replay.
+        if clash and (replayed := self._replay(principal, request, idempotency_key, derived)):
             return build_board(replayed), False
-        if clash is RunClash.ACTIVE_RUN:
-            active_id = self._active_session_id(principal.entity_id, request.asset_id)
-            message = SessionMessage.ACTIVE_SESSION_EXISTS.format(asset_id=request.asset_id)
-            raise Conflict(
-                message, reason=ConflictReason.ACTIVE_SESSION_EXISTS, details={"active_session_id": active_id}
-            )
         if clash is RunClash.IDEMPOTENCY_KEY:  # the run that took the key was deleted since
             message = SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
             raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
@@ -181,19 +176,18 @@ class ThreatScenarioService:
             return
         check_intel_has_data(self._intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {})
 
-    def _replay(self, principal: Principal, request: StartRunRequest, key: str) -> SessionStatus | None:
+    def _replay(
+        self, principal: Principal, request: StartRunRequest, key: str, derived: bool
+    ) -> SessionStatus | None:
         """The run that took this key, when it is the same request; 409 when the key named another request or
-        a hand-written run."""
+        a hand-written run, or was `derived` (a repeat the caller sent no key for)."""
         earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
         check_same_start_request(earlier, request)
+        if derived:
+            raise duplicate_request(earlier["created_at"], session_id=earlier["_id"])
         return session_status_from_record(earlier)
-
-    def _active_session_id(self, entity_id: int, asset_id: int) -> str | None:
-        """The id of the asset's active scenario session in tsg_sessions, if any."""
-        found = self._sessions.get(fields=["_id"], entity_id=entity_id, asset_id=asset_id, active=True)
-        return None if found is None else found["_id"]
 
     def _announce_start(self, principal: Principal, record: dict[str, Any], context: FrozenContext) -> None:
         """Sends the new run's job (a failed send is re-sent by the reaper), counts and audits it."""
@@ -249,6 +243,7 @@ class ThreatScenarioService:
         return RunResults(
             **header,
             progress=board.progress,
+            error=board.error,
             scenarios=page.scenarios,
             total=page.total,
         )
@@ -342,6 +337,8 @@ class ThreatScenarioService:
     ) -> AcceptResult:
         """Accepts the chosen scenarios, or every acceptable one ("all")."""
         check_review_open(run)
+        if request.scenario_ids is None:  # v1's mode "none": decides nothing, writes nothing
+            return AcceptResult(accepted=[], replaced=[], skipped=[], controls_pending=[])
         replaced: list[str] = []
         if request.scenario_ids == "all":
             targets, skipped = self._everything_acceptable(run.session_id)
@@ -490,7 +487,8 @@ class ThreatScenarioService:
     def regenerate_threat_scenarios(
         self, principal: Principal, run: SessionStatus, request: ScenarioIdsRequest
     ) -> RunActionStarted:
-        """Queues a new version of each chosen scenario; 409 scenarios_not_regenerable names each bad id."""
+        """Queues a new version of each chosen scenario, or an AI outage's failure card written again in its
+        place; 409 scenarios_not_regenerable names each bad id."""
         check_review_open(run)
         targets = self._list_review_targets(run.session_id, request.scenario_ids)
         batch = regenerate_batch(request.scenario_ids, targets)
@@ -509,12 +507,6 @@ class ThreatScenarioService:
         epoch."""
         self._refuse_without_intel_data()  # never a write job that can only fail its evidence searches
         clash = self._sessions.update_scenario_session_job(run, kind, batch, asked)
-        if clash is RunClash.ACTIVE_RUN:
-            active_id = self._active_session_id(run.entity_id, run.asset_id)
-            message = ReviewMessage.ASSET_BUSY.format(asset_id=run.asset_id)
-            raise Conflict(
-                message, reason=ConflictReason.ASSET_BUSY, details={"active_session_id": active_id}
-            )
         if clash is RunClash.DELETING:
             raise run_being_deleted(run.session_id)
         if clash is RunClash.CHANGED:
@@ -602,7 +594,7 @@ class ThreatScenarioService:
 
 
 def _new_run_record(
-    principal: Principal, request: StartRunRequest, idempotency_key: str | None, context: FrozenContext
+    principal: Principal, request: StartRunRequest, idempotency_key: str, context: FrozenContext
 ) -> dict[str, Any]:
     """A queued run with its threat-finding job."""
     now = utc_now()
@@ -619,16 +611,14 @@ def _new_run_record(
         "context": context.to_record(),
         "status": Status.QUEUED,
         "step": Step.THREATS,
-        "active": True,
         "plan_note": None,
         "last_action": running_action(RunActionKind.START, now),
         "counts": dict.fromkeys(_RUN_COUNTS, 0),
         "job": new_job(TaskName.FIND_THREATS, 1, now),
         "created_at": now,
         "updated_at": now,
+        "idempotency_key": idempotency_key,
     }
-    if idempotency_key:
-        record["idempotency_key"] = idempotency_key
     return record
 
 

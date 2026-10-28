@@ -14,7 +14,6 @@ from app.core.constants import (
     ControlMatch,
     Decision,
     ErrorCode,
-    Header,
     LibraryRowKind,
     LibraryStatus,
     PlanMessage,
@@ -42,11 +41,8 @@ MANUAL_PATH = "manual"
 Errors = list[dict[str, str]]
 
 
-def check_manual_request(principal: Principal, body: PlanRequest, key: str | None) -> ManualScenario:
-    """The hand-written scenario asked for: 422 without an Idempotency-Key, 403 for another entity's."""
-    if not key:
-        message = RemediationMessage.IDEMPOTENCY_KEY_REQUIRED
-        raise Invalid(message, errors=[{"field": f"header.{Header.IDEMPOTENCY_KEY}", "message": message}])
+def check_manual_request(principal: Principal, body: PlanRequest) -> ManualScenario:
+    """The hand-written scenario asked for: 403 for another entity's."""
     manual = body.manual_scenario
     assert manual is not None  # PlanRequest: is_manual=true
     if manual.entity_id != principal.entity_id:
@@ -90,7 +86,7 @@ def manual_run_record(
     context: FrozenContext,
     now: datetime,
 ) -> dict[str, Any]:
-    """The manual run, born done and inactive so it never holds the asset's one active run."""
+    """The manual run, born done."""
     return {
         "_id": run_id,
         "kind": RunKind.MANUAL,
@@ -104,7 +100,6 @@ def manual_run_record(
         "context": context.to_record(),
         "status": Status.DONE,
         "step": Step.SCENARIOS,
-        "active": False,
         "plan_note": None,
         "last_action": None,
         "counts": {},  # counted from its scenario once saved (scenarios.update_scenario_session_counts)
@@ -159,7 +154,6 @@ def _content(scenario: ManualScenario, threat: dict[str, Any], context: FrozenCo
         "title": None,
         "statement": scenario.threat_scenario,
         "risk_statement": scenario.risk_statement,
-        "why_applies": None,
         "assumptions": [],
         "category": threat["category"],
         "category_id": threat["category_id"],

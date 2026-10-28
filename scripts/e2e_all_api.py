@@ -109,24 +109,34 @@ def promote_and_reject(api: Api, run: str, written: list[dict[str, Any]]) -> Non
     api.call("POST", "/v1/tsg/library/decisions", (200,) if ours else (200, 422), admin=True, body=body)
 
 
+def plan_request_example(args: argparse.Namespace, kind: int) -> dict[str, Any]:
+    """A published plan request (0 generated, 1 hand-written) on this run's asset: the systems it names (no
+    real asset has them) become --systems in the order the risk lists them, cycled when fewer are given."""
+    body = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[kind]))
+    named = body["supporting_systems_applicable_to_risk"]
+    on_asset = {system: args.systems[i % len(args.systems)] for i, system in enumerate(named)}
+    for field in (
+        "supporting_systems_applicable_to_risk",
+        "supporting_systems_applicable_to_existing_controls",
+    ):
+        body[field] = [on_asset[system] for system in body[field]]
+    return body
+
+
 def manual_plan_request(args: argparse.Namespace) -> dict[str, Any]:
-    """The published hand-written example on this run's asset: the systems it names (no real asset has them)
-    become the first --systems, in the scenario and in every existing control alike."""
-    manual = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[1]))
+    """The published hand-written example on this run's asset, its scenario on the first --systems."""
+    manual = plan_request_example(args, 1)
     scenario = manual["manual_scenario"]
     on_asset = dict(zip(scenario["supporting_system_id"], args.systems, strict=False))
     scenario |= {"asset_id": args.asset, "entity_id": args.entity}
     scenario["supporting_system_id"] = list(on_asset.values())
     del scenario["mapped_controls"]  # the example's control code is not in every library
-    for control in manual["existing_controls"]:
-        if isinstance(control, dict) and (named := control.get("supporting_system_ids")):
-            control["supporting_system_ids"] = [on_asset[system] for system in named]
     return manual
 
 
 def plans(api: Api, args: argparse.Namespace, run: str, scenario: str) -> None:
     """A generated plan reviewed, regenerated and cancelled; a manual one requested; both registers read."""
-    generated = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[0]))
+    generated = plan_request_example(args, 0)
     ids = {"session_id": run, "scenario_id": scenario}
     api.call("POST", "/v1/remediation", (202,), idempotent=True, body=generated | ids)
     plan_settled = lambda body: body.get("progress", {}).get("overall") != "generating"  # noqa: E731

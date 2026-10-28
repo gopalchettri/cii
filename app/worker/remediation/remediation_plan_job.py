@@ -14,6 +14,7 @@ from app.core.constants import (
     LibrarySource,
     LibraryStatus,
     LogEvent,
+    PromptVersion,
     Remediation,
     RemediationMessage,
     ResolveOutcome,
@@ -94,7 +95,7 @@ class RemediationPlanJob:
             "status": Status.DONE,
             "plan": plan,
             "warnings": warnings,
-            "prompt_version": Remediation.PROMPT_VERSION,
+            "prompt_version": PromptVersion.REMEDIATION,
             "completed_at": utc_now(),
         }
         self._remediations.update_remediation_plan_version(lease, written, done=True)
@@ -118,9 +119,7 @@ class RemediationPlanJob:
             changes: dict[str, Any] = {"content.actors": actors}
             if pending.get("proposal"):
                 actor_ids = tuple(actor["id"] for actor in actors)
-                changes |= _propose_manual_threat(
-                    self._threats, self._audit, scenario["_id"], scenario["content"], actor_ids, pending["by"]
-                )
+                changes |= _propose_while_held(self._threats, self._audit, lease, scenario, actor_ids)
             scenario = self._scenarios.update_manual_scenario_findings(
                 scenario["_id"], changes, PLANNED_SCENARIO_FIELDS
             )
@@ -128,14 +127,15 @@ class RemediationPlanJob:
                 raise LeaseLost(lease.record_id)
         controls = library.library.control_library
         by_id = {row.control_id: row for row in controls}
-        items = self._mapped_items(lease, scenario, context, library, by_id)
+        mapped = self._mapped_controls(lease, scenario, context, library, by_id)
+        items = mapped["items"]
         register = lease.record["register"]
         systems, affected = risk_scope(scenario, context, register)
         categories = context.system_categories()
         library_mapped, warnings = assess_controls(items, register, controls, systems, affected, categories)
         identified = [item["control_id"] for item in items]
         found = self._mapper.find_alternatives(
-            scenario, context, library, identified, Remediation.ALTERNATIVES
+            scenario, context, library, identified, Remediation.ALTERNATIVES, mapped
         )
         alternatives = assess_alternatives(found, register, controls, systems, affected, categories)
         snapshot = build_snapshot(
@@ -144,32 +144,31 @@ class RemediationPlanJob:
         self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot})
         return snapshot
 
-    def _mapped_items(
+    def _mapped_controls(
         self,
         lease: JobLease,
         scenario: dict[str, Any],
         context: FrozenContext,
         library: LibrarySnapshot,
         by_id: dict[int, LibraryControl],
-    ) -> list[dict[str, Any]]:
-        """The scenario's mapped control items: as stored, mapped here, or mapped by another job."""
+    ) -> dict[str, Any]:
+        """The scenario's controls record (its items, query and shortlist): as stored, mapped here, or mapped
+        by another job."""
         if active_mapped_controls(scenario, by_id):
-            return scenario["controls"]["items"]
-        scenario_id, task_id = scenario["_id"], f"{lease.task_id}:plan"
+            return scenario["controls"]
+        scenario_id, task_id = scenario["_id"], f"{lease.task_id}{Remediation.CONTROLS_CLAIM_SUFFIX}"
         remap = (scenario.get("controls") or {}).get("status") == Status.DONE  # mapped, but nothing active
         claimed = self._scenarios.claim_scenario_controls_by_id(scenario_id, task_id, remap)
         if claimed is not None:
             return self._map(claimed, task_id, context, library)
-        mapped = self._scenarios.get(
-            ["controls.status", "controls.items"], _id=scenario_id, controls_mapped=True
-        )
+        mapped = self._scenarios.get(["controls"], _id=scenario_id, controls_mapped=True)
         if mapped is None or not active_mapped_controls(mapped, by_id):  # given back: no attempt used
             raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED)
-        return mapped["controls"]["items"]
+        return mapped["controls"]
 
     def _map(
         self, claimed: dict[str, Any], task_id: str, context: FrozenContext, library: LibrarySnapshot
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Maps and saves the claimed scenario's controls under its lease; gives them back on a failure."""
         scenario_id, attempts, started = claimed["_id"], claimed["controls"]["attempts"], time.perf_counter()
         try:
@@ -183,13 +182,8 @@ class RemediationPlanJob:
             self._settle(claimed)
             raise JobFailed(exc.code, exc.message) from exc
         except Exception as exc:  # an outage (retried), a lost lease, a fault: the controls are freed at once
-            # A generated scenario's queued again, a hand-written one's failed; a stopped job keeps no error.
-            outcome = Status.FAILED if claimed.get("source") == RunKind.MANUAL else Status.QUEUED
-            freed_error: dict[str, str] | None = None
-            if isinstance(exc, TEMPORARY_ERRORS):
-                freed_error = outage_error(exc)
-            elif not isinstance(exc, LeaseLost):
-                freed_error = job_error_of(exc)
+            run_cancelled = self._sessions.is_cancelled(claimed["session_id"])
+            outcome, freed_error = _freed_controls(claimed, exc, run_cancelled)
             self._scenarios.update_scenario_controls(
                 scenario_id, task_id, attempts, outcome, error=freed_error
             )
@@ -204,7 +198,7 @@ class RemediationPlanJob:
             raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED)
         self._settle(claimed, time.perf_counter() - started)
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=True)
-        return record["items"]
+        return record
 
     def _settle(self, claimed: dict[str, Any], seconds: float = 0.0) -> None:
         """Updates the run's counts and tells its watchers after a scenario's controls changed state."""
@@ -226,6 +220,39 @@ class _ControlsLease:
         return self._scenarios.update_scenario_controls(
             self.record_id, self._task_id, self._attempts, Status.RUNNING
         )
+
+
+def _freed_controls(
+    claimed: dict[str, Any], exc: Exception, run_cancelled: bool
+) -> tuple[Status, dict[str, str] | None]:
+    """(outcome, error) of a controls claim given back after `exc`. Cancelled with no error when stopped on
+    purpose: a generated scenario's while its run's cancel stands, a hand-written one's (only its plan maps
+    them) when the job was stopped (a lost lease). Else a stopped job's queued again with no error; after an
+    outage or a fault, saying why: a hand-written one's failed, a generated one's queued."""
+    manual = claimed.get("source") == RunKind.MANUAL
+    if (run_cancelled and not manual) or (manual and isinstance(exc, LeaseLost)):
+        return Status.CANCELLED, None
+    if isinstance(exc, LeaseLost):
+        return Status.QUEUED, None
+    error = outage_error(exc) if isinstance(exc, TEMPORARY_ERRORS) else job_error_of(exc)
+    return (Status.FAILED if manual else Status.QUEUED), error
+
+
+def _propose_while_held(
+    threats: ThreatRepository,
+    audit: AuditRepository,
+    lease: JobLease,
+    scenario: dict[str, Any],
+    actor_ids: tuple[int, ...],
+) -> dict[str, Any]:
+    """The hand-written scenario's new wording proposed (_propose_manual_threat) only while the job still
+    holds its lease: a plan cancelled and its run deleted meanwhile proposes nothing."""
+    # ponytail: a cancel and delete landing between this renewal and the proposal still propose; closing that
+    # needs one transaction across MongoDB and SQL Server.
+    if not lease.renew_job():
+        raise LeaseLost(lease.record_id)
+    content, by = scenario["content"], scenario["pending"]["by"]
+    return _propose_manual_threat(threats, audit, scenario["_id"], content, actor_ids, by)
 
 
 def _propose_manual_threat(

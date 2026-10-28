@@ -21,19 +21,14 @@ _GENERIC_WORDS = frozenset(
 def answer_problems(
     request: CreateMappingRequest, answer: GeneratedAnswer, catalog: CatalogSnapshot
 ) -> list[str]:
-    """What reconcile would drop or leave without a sector, for the AI's one corrective re-ask."""
+    """What reconcile would drop or leave without a sector, for the AI's one corrective re-ask; a service in
+    both lists is not asked about: reconcile keeps it where the AI ranked it higher."""
     (upstream, upstream_dropped), (downstream, downstream_dropped) = resolve_both(request, answer, catalog)
-    in_both = {item.identity for item in upstream} & {item.identity for item in downstream}
     new_items = [item for item in (*upstream, *downstream) if item.ai_suggested]
     record = _selected_record(request, catalog)
     return [
         *(f"upstream_services: {problem}" for problem in upstream_dropped),
         *(f"downstream_services: {problem}" for problem in downstream_dropped),
-        *(
-            f'"{item.service_name}" is in both lists: keep it only in its strongest direction'
-            for item in upstream
-            if item.identity in in_both
-        ),
         *(
             f'"{item.service_name}" needs a sector from catalog'
             for item in new_items

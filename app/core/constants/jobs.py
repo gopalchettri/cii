@@ -7,7 +7,9 @@ from typing import Final
 class Queue(StrEnum):
     THREATS = "tsg_threats"
     SCENARIOS = "tsg_scenarios"
-    MAINTENANCE = "tsg_maintenance"
+    CONTROLS = "tsg_controls"
+    MAINTENANCE = "tsg_maintenance"  # long admin jobs: library builds, intelligence refreshes
+    REAPER = "tsg_reaper"  # the reaper and the controls sweep alone: no long job takes their threads
     REMEDIATION = "tsg_remediation"
     SERVICEMAPPER = "tsg_servicemapper"
 
@@ -24,39 +26,19 @@ class TaskName(StrEnum):
     REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # sources due, then a snapshot
 
 
-#: The queue each task's messages go to (the Celery app's task_routes).
-TASK_ROUTES: Final[dict[str, dict[str, str]]] = {
+TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Celery app's task_routes)
     TaskName.MAP_SERVICES: {"queue": Queue.SERVICEMAPPER},
     TaskName.FIND_THREATS: {"queue": Queue.THREATS},
     TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
-    TaskName.MAP_CONTROLS: {"queue": Queue.SCENARIOS},
-    TaskName.WRITE_PLAN: {"queue": Queue.SCENARIOS},
-    TaskName.REAP: {"queue": Queue.MAINTENANCE},
-    TaskName.RETRY_CONTROLS: {"queue": Queue.MAINTENANCE},
+    TaskName.MAP_CONTROLS: {"queue": Queue.CONTROLS},
+    TaskName.WRITE_PLAN: {"queue": Queue.REMEDIATION},
+    TaskName.REAP: {"queue": Queue.REAPER},
+    TaskName.RETRY_CONTROLS: {"queue": Queue.REAPER},
     TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
     TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
 }
 #: The queues some task is routed to: /ready needs a live worker on each (an unrouted queue needs none).
 ROUTED_QUEUES: Final[tuple[str, ...]] = tuple(sorted({route["queue"] for route in TASK_ROUTES.values()}))
-
-
-class AdminJobKind(StrEnum):
-    """What an admin job does (tsg_admin_jobs.kind); one of each kind at a time."""
-
-    EMBEDDINGS_BUILD = "embeddings_build"  # the library's vectors made now, not at the next build
-    INTEL_REFRESH = "intel_refresh"  # external intelligence sources read now, not at the next check
-
-
-class AdminJobs:
-    STALE_AFTER_SECONDS: Final = 3_600  # a job unfinished this long is abandoned: the next request takes over
-    KEEP_DAYS: Final = 90  # tsg_admin_jobs retention (TTL on created_at)
-
-
-class AdminJobMessage(StrEnum):
-    IN_PROGRESS = "An embeddings build is already queued or running: details.job_id names it."
-    NOT_FOUND = "Admin job '{job_id}' does not exist."
-    NOT_SENT = "The job queue is unreachable: the build was not started. Try again shortly."
-    ABANDONED = "Still unfinished after {seconds} s (its worker stopped): marked failed; a new one can start."
 
 
 class Event(StrEnum):
@@ -86,12 +68,17 @@ class Realtime:
 
 
 class Worker:
-    THREADS: Final = 4  # tasks at once per AI worker pod: x calls per job x replicas stays near the AI cap
+    THREADS: Final = 4  # tasks at once when a worker's command names none: each Deployment's -c sets its own
     BROKER_KEY_PREFIX: Final = "tsg:"  # every Celery key in Redis: v1 must not share the Redis database
-    BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS: never redelivered
+    BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS; a claim drops a copy
     HEARTBEAT_SECONDS: Final = 20  # each worker pod tells /ready "alive" this often
     ONLINE_WITHIN_SECONDS: Final = 60  # /ready counts a worker only if its last beat is this recent
     HEARTBEAT_KEY: Final = "tsg:workers:{queue}"  # sorted set: member = worker hostname, score = last beat
+    LIVENESS_FILE: Final = "/tmp/tsg-worker-alive"  # noqa: S108 — touched each beat; probes read it, not Redis
+    LIVENESS_MAX_AGE_SECONDS: Final = 180  # the probe fails when the file is older: hung or dead
+    NEXT_STAGE_PRIORITY: Final = 0  # next stages, retries, the reaper's re-sends: Redis serves 0 first
+    NEW_WORK_PRIORITY: Final = 3  # every other send; its list is <queue>\x06\x163, which old pods read too
+    HAND_BACK_AFTER_SECONDS: Final = 90  # a stopping worker queues its unfinished jobs again (pods get 120 s)
 
 
 class Lease:
@@ -101,9 +88,13 @@ class Lease:
     MAX_ATTEMPTS: Final = 5  # then the record is failed with job.error
     REQUEUE_QUEUED_AFTER_SECONDS: Final = 120
     RESEND_ANYWAY_AFTER_SECONDS: Final = 900  # a job queued this long is sent again even behind a backlog
-    MAX_JOB_SECONDS: Final = 3_600  # a job running this long stops renewing, so a hung job is taken over
+    MAX_JOB_SECONDS: Final = 3_600  # the run time job metrics are sized for; a longer job keeps its lease
+    STALL_SECONDS: Final = 900  # a job with no AI call or wait check this long is hung: it stops renewing
+    HUNG_AFTER_SECONDS: Final = 600  # its thread still running this long after its lease is lost: pod restart
+    MAX_WAIT_SECONDS: Final = 3_600  # a job waiting this long for another job is failed
     RETRY_DELAYS_SECONDS: Final = (15, 30, 60, 120)  # wait before retrying after an outage, by attempt
     CLOCK_SKEW_SECONDS: Final = 5  # a claim accepts a job due this much later than the pod's clock
+    RESEND_EARLY_WITHIN_SECONDS: Final = RETRY_DELAYS_SECONDS[-1] + CLOCK_SKEW_SECONDS  # retry early: re-sent
 
 
 class JobKind(StrEnum):
@@ -113,6 +104,7 @@ class JobKind(StrEnum):
     SCENARIOS = "scenarios"  # writing a run's scenarios (a set, or a regenerate)
     CONTROLS = "controls"  # matching controls to a run's written scenarios
     REMEDIATION = "remediation"  # writing one version of a remediation plan
+    SERVICE_MAPPING = "service_mapping"  # generating one version of a service mapping
 
 
 class JobControl:
@@ -130,10 +122,14 @@ class JobControlMessage(StrEnum):
         "Session '{session_id}' still has work queued or running (a job, controls or a remediation plan): "
         "cancel it first, then delete."
     )
+    CANCEL_PLANS_FIRST = (
+        "Session '{session_id}' still has remediation plans being written ({remediation_ids}): cancel each "
+        "(POST .../scenarios/{{scenario_id}}/treatment-plan/cancel, details.plans_to_cancel), then delete."
+    )
 
 
 class Generation:
-    WRITER_BATCH: Final = 4  # paths one write job writes at once: a concurrency bound, not a scenario limit
+    WRITER_BATCH: Final = 6  # paths one write job writes at once (a set in one round): not a scenario limit
     MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 
@@ -148,7 +144,6 @@ class SessionMessage(StrEnum):
     SECTOR_NOT_PARENT = (
         "Sector {sector_id} is not the parent of sub-sector {subsector_id}; its sector is {parent_id}."
     )
-    ACTIVE_SESSION_EXISTS = "Asset {asset_id} already has an active run."
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another request."
     ENTITY_MISMATCH = "The entity in the path is not the caller's entity."
     ENTITY_MISMATCH_BODY = "manual_scenario.entity_id is not the caller's entity (X-Entity-Id)."
@@ -173,10 +168,6 @@ class ValidationStatus(StrEnum):
 
     OK = "ok"
     WARNING = "warning"
-
-
-class ScenarioDisplay:
-    WHY_APPLIES_JOIN: Final = "\n\nWhy this threat applies: "  # between the statement and why_applies
 
 
 class RunKind(StrEnum):
@@ -215,11 +206,11 @@ class RunOverall(StrEnum):
 
     PENDING = "pending"  # nothing started yet
     IN_PROGRESS = "in_progress"  # wait: work is going on
-    AWAITING_REVIEW = "awaiting_review"  # scenarios wait for an accept or a reject
+    AWAITING_REVIEW = "awaiting_review"  # scenarios wait for a decision, AI outage cards for a regenerate
     AWAITING_NEXT_SET = "awaiting_next_set"  # all written ones decided; paths remain: ask for the next set
     COMPLETE = "complete"  # everything written and decided
-    ERROR = "error"  # the run failed: progress.error_message says why
-    CANCELLED = "cancelled"  # its owner stopped it: what was done stays readable
+    ERROR = "error"  # the run failed (once no control is still matched): progress.error_message says why
+    CANCELLED = "cancelled"  # its owner stopped it (or a done run's controls): what was done stays readable
 
 
 class SessionState(StrEnum):
@@ -236,7 +227,7 @@ class BoardMessage(StrEnum):
 
     ABANDONED = "{abandoned} attack path(s) could not be written."
     CONTROLS_FAILED = (
-        "Controls could not be matched for {failed} scenario(s) yet; they are tried again later."
+        "Controls could not be matched for {failed} scenario(s); request or regenerate a plan to try again."
     )
     CONTROLS_FAILED_MANUAL = (
         "Controls could not be matched for the hand-written scenario; regenerate its plan "
@@ -249,8 +240,8 @@ class BoardMessage(StrEnum):
 class ConflictReason(StrEnum):
     """The `reason` of a 409 (and of a few 403/404/422 answers); the API never changes one."""
 
-    ACTIVE_SESSION_EXISTS = "active_session_exists"
     IDEMPOTENCY_KEY_CONFLICT = "idempotency_key_conflict"
+    DUPLICATE_REQUEST = "duplicate_request"  # a repeat of a derived Idempotency-Key (none was sent)
     GENERATION_IN_PROGRESS = "generation_in_progress"
     RUN_FAILED = "run_failed"
     RUN_CANCELLED = "run_cancelled"  # cancelled before its plan: nothing to decide or resume
@@ -261,7 +252,6 @@ class ConflictReason(StrEnum):
     NOTHING_LEFT = "nothing_left"
     TARGET_REACHED = "target_reached"
     SCENARIOS_ABANDONED = "scenarios_abandoned"
-    ASSET_BUSY = "asset_busy"
     SCENARIO_NOT_ACCEPTED = "scenario_not_accepted"
     NOTHING_TO_PROMOTE = "nothing_to_promote"
     TYPE_MISMATCH = "type_mismatch"  # a 422: the threat the library holds is of another type
@@ -284,7 +274,6 @@ class ConflictReason(StrEnum):
 class RunClash(StrEnum):
     """Why a run could not be inserted or queued again (tsg_sessions)."""
 
-    ACTIVE_RUN = "active_run"  # one active run per asset
     IDEMPOTENCY_KEY = "idempotency_key"  # one run per Idempotency-Key per entity
     CHANGED = "changed"  # the run moved on since it was read: its job was not replaced
     DELETING = "deleting"  # its owner is deleting it: nothing more starts on it

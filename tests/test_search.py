@@ -111,6 +111,7 @@ def test_threats_are_searched_within_their_category_and_controls_and_actors_in_f
     assert search.snapshot() is search.snapshot()  # built once per library version
     # Each corpus is embedded on its own, with the rows it comes from; then the four search queries.
     assert embeddings.calls == ["threat", "control", "threat_actor", "threat_type"] + ["query"] * 4
+    assert embeddings.query_corpora == ["threat", "control", "threat_actor", "threat_type"]  # each its own
     assert embeddings.sources["control"][0] == {"table": "Control_Library", "id": 1, "label": "C-1"}
 
 

@@ -147,14 +147,12 @@ def test_reconciliation_deduplicates_and_drops_the_selected_service_and_vague_na
     assert len({item["dependency_id"] for item in result["dependencies"]}) == 3
 
 
-def test_every_dropped_item_is_named_with_why_for_the_re_ask() -> None:
+def test_only_items_reconcile_cannot_settle_are_named_with_why_for_the_re_ask() -> None:
+    """A repeat, the selected service and a service in both lists reconcile settles without the AI."""
     problems = answer_problems(_request(), _answer(), _catalog())
     assert problems == [
-        'upstream_services: "Water Treatment Service" is listed twice',
         'upstream_services: "Electricity" is too vague: name the specific service in at least two words '
         "(a new name is fine when no catalog service provides it)",
-        'upstream_services: "Power Generation System" is the selected service itself',
-        '"Water Treatment Service" is in both lists: keep it only in its strongest direction',
         '"Grid Balancing Service" needs a sector from catalog',
     ]
 
@@ -253,9 +251,13 @@ class _Chat:
         self.answers = list(answers)
         self.prompts: list[dict[str, Any]] = []
         self.problems: list[str] = []
+        self.reuse_earlier_answer = False
 
-    def ask_for_checked_json(self, _task, _system, prompt, check, first_answer_check):
+    def ask_for_checked_json(
+        self, _task, _system, prompt, check, first_answer_check, reuse_earlier_answer=False
+    ):
         self.prompts.append(json.loads(prompt))
+        self.reuse_earlier_answer = reuse_earlier_answer
         first = self.answers.pop(0)
         assert check(first) == []
         self.problems = first_answer_check(first)
@@ -280,6 +282,14 @@ def test_a_short_answer_with_nothing_dropped_makes_one_ai_call() -> None:
     assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (1, 0)
 
 
+def test_a_retry_of_the_same_generation_reuses_its_earlier_ai_answer() -> None:
+    """The job's epoch is the generation: a delivery retried after an outage takes the answer it already got,
+    so a busy gateway is not asked again; a regenerate is the next epoch and asks afresh."""
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
+    assert chat.reuse_earlier_answer is True
+
+
 def test_a_first_answer_with_dropped_items_is_asked_again_with_why() -> None:
     fixed = _answer().model_dump()
     fixed["upstream_services"] = fixed["upstream_services"][:1] + fixed["upstream_services"][2:3]
@@ -287,7 +297,7 @@ def test_a_first_answer_with_dropped_items_is_asked_again_with_why() -> None:
     fixed["downstream_services"][0]["sector"] = "Energy"
     chat = _Chat(_answer().model_dump(), fixed)
     result = generate_result(chat, _Search(), _request(), _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
-    assert len(chat.problems) == 5
+    assert len(chat.problems) == 2
     assert answer_problems(_request(), GeneratedAnswer.model_validate(fixed), _catalog()) == []
     assert (result["summary"]["upstream_count"], result["summary"]["downstream_count"]) == (2, 1)
 
@@ -353,9 +363,7 @@ def test_a_new_service_named_in_two_forms_is_kept_once_in_a_list_and_across_list
     result = reconcile("mapping", 1, _request(), answer, _catalog(), 5, 5)
     assert [item["service_name"] for item in result["dependencies"]] == ["Payment Settlement Service (PSS)"]
     assert set(result["dependencies"][0]["relations"]) == {"upstream"}  # the tie goes upstream
-    assert 'upstream_services: "Payment Settlement Service" is listed twice' in answer_problems(
-        _request(), answer, _catalog()
-    )
+    assert answer_problems(_request(), answer, _catalog()) == []  # reconcile settles it: no re-ask
 
 
 def test_a_catalog_too_large_for_the_prompt_keeps_the_most_similar_services() -> None:
@@ -431,7 +439,7 @@ def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
     class Chat:
         max_prompt_chars = 200_000
 
-        def ask_for_checked_json(self, *_args):
+        def ask_for_checked_json(self, *_args, **_options):
             raise TruncatedAiAnswer("cut off at the length limit")
 
     class Catalog:
@@ -582,10 +590,13 @@ def test_semantic_retrieval_can_find_a_cross_sector_service_without_matching_wor
         def embed_library_texts(self, _corpus, _texts, _sources):
             return np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
-        def embed_search_queries(self, _queries):
+        def embed_search_queries(self, _queries, corpus):
+            searched.append(corpus)
             return np.array([[0.0, 1.0]], dtype=np.float32)
 
+    searched: list[str] = []
     found = ServiceCandidateSearch(Embeddings()).candidates(_catalog(), ["unrelated vocabulary"])
+    assert searched == ["service"]
     assert found[0].service_name == "Water Treatment Service"
     assert found[0].primary_sector.sector_name == "Water"
 
@@ -594,7 +605,7 @@ def test_the_candidate_search_fuses_every_question_and_breaks_a_tie_by_service_i
     """Each question's ranking adds 1 / (RRF_K + rank) (fuse_by_rank); a tie goes to the lower service id."""
 
     class Embeddings:
-        def embed_search_queries(self, queries):
+        def embed_search_queries(self, queries, _corpus):
             return np.zeros((len(queries), 2), dtype=np.float32)
 
     class Index:

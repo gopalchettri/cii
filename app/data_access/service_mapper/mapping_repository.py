@@ -7,8 +7,11 @@ from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
 from app.core.constants import Collection, Status
-from app.data_access.base import MongoRepository
+from app.data_access.base import MongoRepository, drop_retired_index
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
+
+#: Dropped at start-up: the expiry index on archived generations; they are kept (owner, 2026-10-28).
+RETIRED_HISTORY_EXPIRY_INDEX = "archived_at_1"
 
 
 class MappingRepository(MongoRepository):
@@ -17,6 +20,8 @@ class MappingRepository(MongoRepository):
             collection,
             indexes=(
                 {"keys": [("tenant_id", 1), ("entity_id", 1), ("created_at", -1)]},
+                # the entity's mappings being generated, oldest first: GET /v1/jobs
+                {"keys": [("tenant_id", 1), ("entity_id", 1), ("status", 1), ("created_at", 1)]},
                 {
                     "keys": [("tenant_id", 1), ("entity_id", 1), ("create_key", 1)],
                     "unique": True,
@@ -41,7 +46,6 @@ class MappingRepository(MongoRepository):
         changes: dict[str, Any] = {
             "generation": seen_generation + 1,
             "status": Status.QUEUED,
-            "active": True,
             "job": next_job,
             "result": None,
             "updated_at": now,
@@ -113,6 +117,11 @@ class MappingHistoryRepository(MongoRepository):
             indexes=({"keys": [("mapping_id", 1), ("generation", -1)]},),
             required=("_id", "mapping_id", "generation", "tenant_id", "entity_id"),
         )
+
+    def create_indexes(self) -> None:
+        """The validator and every index, after dropping the retired expiry index."""
+        drop_retired_index(self.collection, RETIRED_HISTORY_EXPIRY_INDEX)
+        super().create_indexes()
 
     def archive(self, mapping: dict[str, Any]) -> None:
         """Save the frozen generation kept in the header until this write succeeds."""

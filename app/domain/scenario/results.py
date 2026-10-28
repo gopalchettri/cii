@@ -8,10 +8,12 @@ from app.core.constants import (
     CONTROLS_EXHAUSTED,
     ROUTE_WORDS,
     SCOPE_ASSET_KEY,
+    AbandonReason,
     AiOutage,
     BoardMessage,
     ControlMatch,
     ControlMatchStatus,
+    Controls,
     Decision,
     FindingSeverity,
     GroundingStatus,
@@ -24,7 +26,6 @@ from app.core.constants import (
     RunActionOutcome,
     RunKind,
     RunOverall,
-    ScenarioDisplay,
     ScenarioStatus,
     ScopeType,
     SessionState,
@@ -33,10 +34,11 @@ from app.core.constants import (
     Step,
     ThreatSource,
     ValidationStatus,
+    Writing,
 )
 from app.domain.scenario.plan import attacker_unsupported
 from app.models.external_intelligence.evidence_view import cited_evidence
-from app.models.jobs.views import retry_notice_of
+from app.models.jobs.views import controls_retry_notice_of, retry_notice_of
 from app.models.scenario.controls import control_view
 from app.models.scenario.views import (
     ActorView,
@@ -44,6 +46,7 @@ from app.models.scenario.views import (
     LibraryView,
     Progress,
     RunBoard,
+    RunError,
     ScenarioCount,
     ScenarioText,
     ScenarioView,
@@ -89,7 +92,8 @@ def build_board(run: SessionStatus) -> RunBoard:
         ),
         error_message=_stage_errors(run, controls),
         error_reason=_failed_reason(run),
-        retrying=retry_notice_of(run.status, run.retry, run.step),
+        retrying=retry_notice_of(run.status, run.retry, run.step)
+        or controls_retry_notice_of(run.counts, run.controls_retry),
         last_next_set=_action_summary(run, RunActionKind.NEXT_SET, run.last_next_set),
         last_regen=_action_summary(run, RunActionKind.REGENERATE, run.last_regen),
         scenario_count=_scenario_count(run, threats),
@@ -103,6 +107,7 @@ def build_board(run: SessionStatus) -> RunBoard:
         session_status=_SESSION_STATE[run.status],
         progress=progress,
         updated_at=run.updated_at,
+        error=_run_error(run),
     )
 
 
@@ -121,6 +126,17 @@ def _failed_reason(run: SessionStatus) -> AiOutage | None:
     return AiOutage(reason) if reason and reason in AiOutage else None
 
 
+def _run_error(run: SessionStatus) -> RunError | None:
+    """The failed run's job error: code, message, and its AI outage or give-up reason; None unless the run
+    failed."""
+    if run.status != Status.FAILED or not run.error:
+        return None
+    error, stored = run.error, run.error.get("reason")
+    given_up = AbandonReason(stored) if stored and stored in AbandonReason else None
+    reason = _failed_reason(run) or given_up
+    return RunError(code=error.get("code", ""), message=error.get("message", ""), reason=reason)
+
+
 def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:
     """RUNNING while controls are waiting or scenarios are being written; ERROR when a mapping failed."""
     counts = run.counts
@@ -136,10 +152,11 @@ def _controls_stage(run: SessionStatus, scenarios: StageState) -> StageState:
 
 
 def _overall_state(run: SessionStatus, threats: StageState, controls: StageState) -> RunOverall:
-    """What the reviewer does now: wait, review what is written, ask for the next set, or nothing."""
+    """What the reviewer does now: wait, review what is written, ask for the next set, or nothing; a terminal
+    value (error, complete, cancelled) only once no control is still being matched."""
     session = _SESSION_STATE[run.status]
     if session == SessionState.FAILED:
-        return RunOverall.ERROR
+        return RunOverall.IN_PROGRESS if controls == StageState.RUNNING else RunOverall.ERROR
     if session == SessionState.CANCELLED:
         return RunOverall.CANCELLED
     if threats == StageState.PENDING:
@@ -150,7 +167,12 @@ def _overall_state(run: SessionStatus, threats: StageState, controls: StageState
         return RunOverall.AWAITING_REVIEW
     if run.counts.get("remaining", 0):
         return RunOverall.AWAITING_NEXT_SET
-    return RunOverall.IN_PROGRESS if controls == StageState.RUNNING else RunOverall.COMPLETE
+    if run.counts.get("outage_cards", 0):  # a regenerate can still write them
+        return RunOverall.AWAITING_REVIEW
+    if controls == StageState.RUNNING:
+        return RunOverall.IN_PROGRESS
+    # From the count, not the stage: a cancel leaves controls failed for good as they are, reading ERROR.
+    return RunOverall.CANCELLED if run.counts.get("controls_cancelled", 0) else RunOverall.COMPLETE
 
 
 def _action_summary(
@@ -214,7 +236,7 @@ def _scenario_count(run: SessionStatus, threats: StageState) -> ScenarioCount:
         total=total,
         served=served,
         remaining=remaining,
-        complete=remaining == 0,
+        complete=remaining == 0 and not counts.get("outage_cards", 0),
         pending_review=counts.get("pending", 0),
         accepted=counts.get("accepted", 0),
         rejected=counts.get("rejected", 0),
@@ -269,8 +291,6 @@ def build_scenario_view(
 def _scenario_text(content: dict[str, Any]) -> ScenarioText:
     """What the scenario says, v1's route words included."""
     threat, route = content.get("threat") or {}, content.get("route") or {}
-    statement, why = content.get("statement"), content.get("why_applies")
-    shown = f"{statement}{ScenarioDisplay.WHY_APPLIES_JOIN}{why}" if statement and why else statement
     status = route.get("status")
     return ScenarioText(
         threat_category=content.get("category"),
@@ -279,12 +299,19 @@ def _scenario_text(content: dict[str, Any]) -> ScenarioText:
         threat_name=threat.get("name"),
         supporting_systems_involved=_systems_involved(content),
         scenario_title=content.get("title"),
-        scenario_statement=shown,
+        scenario_statement=content.get("statement"),
         risk_statement=content.get("risk_statement"),
-        assumptions=content.get("assumptions") or [],
+        assumptions=[_with_platform_note(text) for text in content.get("assumptions") or [] if text.strip()],
         route_status=ROUTE_WORDS.get(str(status), str(status).upper()) if status else None,
         also_applies=content.get("also_applies") or [],
     )
+
+
+def _with_platform_note(assumption: str) -> str:
+    """The assumption with code's platform note once; one already carrying it is shown as stored."""
+    if Writing.PLATFORM_NOTE.removeprefix(" - ").casefold() in assumption.casefold():
+        return assumption
+    return assumption.rstrip(". ") + Writing.PLATFORM_NOTE
 
 
 def _systems_involved(content: dict[str, Any]) -> list[SystemInvolved]:
@@ -403,7 +430,7 @@ def _v1_fields(record: dict[str, Any], validation_status: ValidationStatus, note
         **_generation_fields(record),
         "scenario_number": record["version"],
         "library": None if generated else _library_view(threat),
-        **_controls_flags(controls.get("status")),
+        **_controls_flags(controls),
         "scope": _scope_view(content) if generated else None,
         "actor": _acting_attacker_name(content, failed),
         "threat_source": _threat_source(threat, "library_id") if generated else None,
@@ -446,9 +473,12 @@ def _controls_error(controls: dict[str, Any]) -> dict[str, Any] | None:
     return controls.get("error") if controls.get("status") in (Status.QUEUED, Status.FAILED) else None
 
 
-def _controls_flags(status: str | None) -> dict[str, Any]:
-    """v1's four controls flags for v2's one controls status."""
-    exhausted = status == Status.FAILED
+def _controls_flags(controls: dict[str, Any]) -> dict[str, Any]:
+    """v1's four controls flags for v2's controls: exhausted once failed with no attempt left."""
+    status, attempts = controls.get("status"), controls.get("attempts")
+    # As the sweep reads it (FAILED_WITH_ATTEMPTS_LEFT): a failure with attempts left is tried again.
+    attempts_left = isinstance(attempts, int) and attempts < Controls.MAX_ATTEMPTS
+    exhausted = status == Status.FAILED and not attempts_left
     return {
         "controls_unavailable": False,
         "controls_mapped": status == Status.DONE,
@@ -461,12 +491,11 @@ def _scope_view(content: dict[str, Any]) -> ScopeView:
     """The asset, one system or a combination the scenario goes through."""
     ids = sorted(system["id"] for system in content.get("systems") or [])
     kind = ScopeType.ASSET if not ids else ScopeType.SYSTEM if len(ids) == 1 else ScopeType.COMBINATION
-    why = content.get("why_applies")
     return ScopeView(
         scope_key="+".join([SCOPE_ASSET_KEY, *map(str, ids)]),
         scope_type=kind,
         supporting_system_ids=ids,
-        evidence=[why] if why else [],
+        evidence=[],
     )
 
 

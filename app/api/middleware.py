@@ -33,9 +33,9 @@ _BYTES_PER_MB = 1024 * 1024
 
 
 class RequestContextMiddleware:
-    """Every HTTP request gets a request id (log lines, response header), a body-size cap, one access line
-    and its metrics — a crash included: Starlette answers a crash outside all middleware, so the outcome is
-    recorded here in `finally` with status 500.
+    """Every HTTP request gets a request id (log lines, response header), its idempotency key echoed when it
+    has one, a body-size cap, one access line and its metrics — a crash included: Starlette answers a crash
+    outside all middleware, so the outcome is recorded here in `finally` with status 500.
 
     Pure ASGI on purpose: Starlette's @app.middleware("http") wrapper adds a task and a stream per request."""
 
@@ -65,7 +65,10 @@ class RequestContextMiddleware:
             if message["type"] == "http.response.start":
                 status = message["status"]
                 response_started = time.perf_counter()
-                MutableHeaders(scope=message)[Header.REQUEST_ID] = request_id
+                headers = MutableHeaders(scope=message)
+                headers[Header.REQUEST_ID] = request_id
+                if idempotency_key := scope["state"].get("idempotency_key"):  # a replay and a refusal too
+                    headers[Header.IDEMPOTENCY_KEY] = idempotency_key
             await send(message)
 
         started = time.perf_counter()
@@ -117,6 +120,8 @@ def _record_request(scope: Scope, status: int, started: float, response_started:
         status=status,
         duration_ms=round(seconds * 1000, 1),
         client_id=state.get("client_id"),  # the calling system; None without a valid key
+        # The same on a repeat, so it leads to the first request. Not "..._key": logs mask such fields.
+        idempotency=state.get("idempotency_key"),
         **state.get("problem", {}),
     )
 

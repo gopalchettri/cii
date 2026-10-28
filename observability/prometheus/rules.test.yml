@@ -67,23 +67,62 @@ tests:
               summary: "tsg_find_threats jobs failed for good in the last 15 minutes."
               description: "Open the TSG dashboard, table \"Failed jobs\", for why; click the run id for its whole story."
 
-  # A failed reaper pass or index build runs again on its timer: not a failed run.
+  # A failed timer job (reaper pass, control-mapping sweep, scheduled intel refresh) runs again on its timer:
+  # not a failed run. A failed index build alerts: an admin may have asked for it.
   - interval: 1m
     input_series:
       - series: tsg_jobs_total{task="tsg_reap",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+      - series: tsg_jobs_total{task="tsg_retry_controls",outcome="failure"}
+        values: 0 0 1 1 1 1 1
+      - series: tsg_jobs_total{task="tsg_refresh_external_intelligence",outcome="failure"}
         values: 0 0 1 1 1 1 1
       - series: tsg_jobs_total{task="tsg_build_library_indexes",outcome="failure"}
         values: 0 0 1 1 1 1 1
     alert_rule_test:
       - eval_time: 5m
         alertname: JobsFailing
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_build_library_indexes }
+            exp_annotations:
+              summary: "tsg_build_library_indexes jobs failed for good in the last 15 minutes."
+              description: "Open the TSG dashboard, table \"Failed jobs\", for why; click the run id for its whole story."
 
-  # The reaper's last pass as Unix time (promtool's clock starts at 0), from the one worker that runs it:
-  # a pass every minute for 10 minutes, then none.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+      - series: tsg_jobs_total{task="tsg_write_scenarios",outcome="retry"}
+        values: 0 0 10 10 10 10 10 10 10 10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: JobsRetrying
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_write_scenarios }
+            exp_annotations:
+              summary: "tsg_write_scenarios jobs were sent back to retry 5 times or more in 15 minutes."
+              description: "Something keeps failing for them. Open the TSG dashboard, \"Why the AI did not answer\" and the stores' tiles."
+
+  - interval: 1m
+    input_series:
+      - series: tsg_job_queue_wait_seconds_bucket{task="tsg_find_threats",le="300"}
+        values: 0x20
+      - series: tsg_job_queue_wait_seconds_bucket{task="tsg_find_threats",le="600"}
+        values: 0+10x20
+      - series: tsg_job_queue_wait_seconds_bucket{task="tsg_find_threats",le="+Inf"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: JobQueueWaitHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_find_threats }
+            exp_annotations:
+              summary: "tsg_find_threats jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
+              description: "The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy."
+
+  # The reaper's last start as Unix time (promtool's clock starts at 0), from the one worker that runs it:
+  # a start every minute for 10 minutes, then none.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
         values: 0+60x10 600x30
     alert_rule_test:
       - eval_time: 9m
@@ -97,46 +136,48 @@ tests:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
               description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
-  # A start after the stack was down from 6 to 19 minutes: its first pass comes a second after the start, before
-  # Prometheus' first scrape. Quiet from that first scrape on. Before, the alert read a rise in tsg_jobs_total,
-  # which a first scrape cannot show, and every start showed it (and the beat tile DOWN) for a minute.
+  # A start after the stack was down from 6 to 20 minutes: the new worker exports nothing until its first pass
+  # starts, a minute later. Quiet from then on. Before, the alert read a rise in tsg_jobs_total, which a first
+  # scrape cannot show, and every start showed it (and the beat tile DOWN) for a minute.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
-        values: 0+60x5 _x14 1201+60x10
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
+        values: 0+60x5 _x15 1260+60x9
     promql_expr_test:
-      - expr: time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
-        eval_time: 20m
-        exp_samples: []
-      - expr: time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+      - expr: time() - max(tsg_reaper_last_start_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
         eval_time: 21m
+        exp_samples: []
+      - expr: time() - max(tsg_reaper_last_start_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
+        eval_time: 22m
         exp_samples: []
     alert_rule_test:
       - eval_time: 30m
         alertname: ReaperNotRunning
         exp_alerts: []
 
-  # A start whose scheduler never sends the reaper: on time from the worker's start (at 5 minutes), then due.
+  # The reaper's worker restarted at 10 minutes (a deploy): the old pod's series ends, and the new pod reports
+  # its first start 2 minutes later. Quiet throughout, with no made-up start: before, every start reported one,
+  # and a pod restarting every few minutes hid a dead beat for ever.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
-        values: _x5 300x30
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance-old"}
+        values: 0+60x10 stale
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance-new"}
+        values: _x12 720+60x10
+    promql_expr_test:
+      - expr: time() - max(tsg_reaper_last_start_timestamp_seconds) > 600 or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
+        eval_time: 11m
+        exp_samples: []
     alert_rule_test:
-      - eval_time: 12m
+      - eval_time: 20m
         alertname: ReaperNotRunning
         exp_alerts: []
-      - eval_time: 25m
-        alertname: ReaperNotRunning
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
-              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
-  # The worker that runs the reaper gone at 5 minutes: nothing reports a pass any more.
+  # The worker that runs the reaper gone at 5 minutes, or restarted and never sent the reaper: nothing reports
+  # a start any more.
   - interval: 1m
     input_series:
-      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
         values: 0+60x5
     alert_rule_test:
       - eval_time: 12m
@@ -149,6 +190,80 @@ tests:
             exp_annotations:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
               description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+
+  # Beat sends the reaper every minute, but from 5 minutes on no pass finishes (MongoDB down): the reaper is
+  # failing, not beat.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
+        values: 0+60x30
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 0+60x5 300x25
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ReaperFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperFailing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "The reaper starts but no pass has finished for 15 minutes; stuck jobs are not repaired."
+              description: "Its passes fail or hang. Check MongoDB first (the stores' tiles); the \"Errors and exceptions\" table shows why tsg_reap failed. If nothing fails, restart the worker that runs the reaper."
+
+  # Every pass finishes: no reaper alert.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_start_timestamp_seconds{instance="maintenance"}
+        values: 0+60x30
+      - series: tsg_reaper_last_pass_timestamp_seconds{instance="maintenance"}
+        values: 1+60x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ReaperFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ReaperNotRunning
+        exp_alerts: []
+
+  # A reaper message that reached its worker after its expiry (beat's clock behind) is dropped unrun.
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_total{task="tsg_reap",module="maintenance",outcome="expired"}
+        values: 0x5 1+1x20
+      - series: tsg_jobs_total{task="tsg_retry_controls",module="threat_scenarios",outcome="expired"}
+        values: 0x25
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ScheduledJobsExpiring
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ScheduledJobsExpiring
+        exp_alerts:
+          - exp_labels: { severity: warning, task: tsg_reap }
+            exp_annotations:
+              summary: "tsg_reap timer jobs were dropped unrun: they reached a worker after their expiry."
+              description: "Check that the worker taking them is not stuck or too busy, then the clock of beat's node against the workers': oc debug node/<node> -- chroot /host chronyc tracking."
+
+  # One job stopped as hung at 5 minutes: named for the hour after.
+  - interval: 1m
+    input_series:
+      - series: tsg_jobs_hung_total{instance="worker-threats"}
+        values: 0x5 1x30
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: JobHung
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: JobHung
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "A job made no progress for 15 minutes and was stopped as hung in the last hour."
+              description: "Grafana Explore, Loki: {app=\"tsg\"} |= \"job.stalled\" names it (record_id, task). The reaper runs it again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts its pod."
 
   # The UAT case (2026-10-24): one worker 76 s behind MongoDB, another 0.2 s. Quiet for the first 5 minutes,
   # then only the far one is named; a pod off by under 5 s never is.
@@ -173,14 +288,32 @@ tests:
   - interval: 1m
     input_series:
       - series: redis_key_size{db="db0",key="tsg:tsg_threats"}
+        values: 30x20
+      - series: redis_key_size{db="db0",key="tsg:tsg_threats\x06\x163"}
+        values: 30x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: QueueBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, queue: tsg_threats }
+            exp_annotations:
+              summary: "tsg_threats has held more than 50 waiting jobs for 15 minutes."
+              description: "The workers cannot keep up. Check that its worker is WORKING; add a worker if it is."
+
+  # A queue the expression does not name (tsg_controls) is covered; tsg_maintenance is left out.
+  - interval: 1m
+    input_series:
+      - series: redis_key_size{db="db0",key="tsg:tsg_controls\x06\x163"}
+        values: 60x20
+      - series: redis_key_size{db="db0",key="tsg:tsg_maintenance\x06\x163"}
         values: 60x20
     alert_rule_test:
       - eval_time: 16m
         alertname: QueueBacklog
         exp_alerts:
-          - exp_labels: { severity: warning, key: "tsg:tsg_threats" }
+          - exp_labels: { severity: warning, queue: tsg_controls }
             exp_annotations:
-              summary: "tsg:tsg_threats has held more than 50 waiting jobs for 15 minutes."
+              summary: "tsg_controls has held more than 50 waiting jobs for 15 minutes."
               description: "The workers cannot keep up. Check that its worker is WORKING; add a worker if it is."
 
   - interval: 1m
@@ -198,19 +331,19 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: tsg_dependency_up{name="mongo"}
+      - series: tsg_dependency_up{job="api",name="mongo"}
         values: 0x5
-      - series: tsg_dependency_up{name="sql"}
+      - series: tsg_dependency_up{job="api",name="sql"}
         values: 0x5
-      - series: tsg_dependency_up{name="redis"}
+      - series: tsg_dependency_up{job="api",name="redis"}
         values: 0x5
     alert_rule_test:
       - eval_time: 4m
         alertname: MongoDown
         exp_alerts:
-          - exp_labels: { severity: critical }
+          - exp_labels: { severity: critical, job: api }
             exp_annotations:
-              summary: "MongoDB does not answer the API."
+              summary: "MongoDB does not answer the api."
               description: "Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL."
       - eval_time: 4m
         alertname: SqlDown
@@ -222,10 +355,52 @@ tests:
       - eval_time: 4m
         alertname: RedisDown
         exp_alerts:
-          - exp_labels: { severity: critical }
+          - exp_labels: { severity: critical, job: api }
             exp_annotations:
-              summary: "Redis does not answer the API."
+              summary: "Redis does not answer the api."
               description: "Jobs cannot be queued and live updates stop. Check the Redis server."
+
+  # Each worker reports its own stores on every heartbeat: one that cannot reach them is named while the API can.
+  - interval: 1m
+    input_series:
+      - series: tsg_dependency_up{job="api",instance="api-1",name="mongo"}
+        values: 1x5
+      - series: tsg_dependency_up{job="worker",instance="worker-1",name="mongo"}
+        values: 0x5
+      - series: tsg_dependency_up{job="worker",instance="worker-2",name="mongo"}
+        values: 1x5
+      - series: tsg_dependency_up{job="api",instance="api-1",name="redis"}
+        values: 1x5
+      - series: tsg_dependency_up{job="worker",instance="worker-1",name="redis"}
+        values: 0x5
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MongoDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: worker }
+            exp_annotations:
+              summary: "MongoDB does not answer the worker."
+              description: "Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL."
+      - eval_time: 4m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: worker }
+            exp_annotations:
+              summary: "Redis does not answer the worker."
+              description: "Jobs cannot be queued and live updates stop. Check the Redis server."
+
+  - interval: 1m
+    input_series:
+      - series: redis_evicted_keys_total{instance="redis-exporter:9121"}
+        values: 0 0 5 5 5 5
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RedisEvictingKeys
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Redis is full and dropped keys in the last 10 minutes; waiting jobs can be lost."
+              description: "The reaper re-sends lost jobs, late. Ask the Redis owner for more memory (or the noeviction policy) and check what fills it."
 
   - interval: 1m
     input_series:
@@ -244,6 +419,17 @@ tests:
 
   - interval: 1m
     input_series:
+      - series: tsg_ai_calls_total{task="relevance_gate",model="m",outcome="truncated"}
+        values: 0+5x30
+      - series: tsg_ai_calls_total{task="relevance_gate",model="m",outcome="ok"}
+        values: 0+5x30
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: AiErrorRateHigh
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
       - series: tsg_ai_slots_in_use{instance="worker-1"}
         values: 16x15
       - series: tsg_ai_slots_cap{instance="worker-1"}
@@ -255,7 +441,7 @@ tests:
           - exp_labels: { severity: warning }
             exp_annotations:
               summary: "Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one."
-              description: "Jobs slow down. Raise CII_MAX_CONCURRENT_AI_CALLS if the AI gateway can take more."
+              description: "Jobs slow down. At CII_MAX_CONCURRENT_AI_CALLS 0 the AI gateway keeps answering 429 and TSG holds back by itself: ask the gateway admin for a higher limit on TSG's key. Above 0 with no recent 429 it is the fixed ceiling: raise it if the gateway can take more."
 
   - interval: 1m
     input_series:
@@ -267,6 +453,38 @@ tests:
       - eval_time: 12m
         alertname: AiSlotsSaturated
         exp_alerts: []  # cap 0 = no limit: never saturated
+
+  # Each minute 10 kimi requests: 9 waited 40-60 s for their turn, 1 none: kimi's 95th percentile is far
+  # above 30 s. 200 embedding requests waited none: summed over both models, the 95th percentile would be 0.
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="0.0",model="litellm_proxy/kimi-k2.5"}
+        values: 0+1x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="30.0",model="litellm_proxy/kimi-k2.5"}
+        values: 0+1x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="60.0",model="litellm_proxy/kimi-k2.5"}
+        values: 0+10x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="+Inf",model="litellm_proxy/kimi-k2.5"}
+        values: 0+10x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="0.0",model="litellm_proxy/qwen3-embedding-8b"}
+        values: 0+200x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="30.0",model="litellm_proxy/qwen3-embedding-8b"}
+        values: 0+200x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="60.0",model="litellm_proxy/qwen3-embedding-8b"}
+        values: 0+200x20
+      - series: tsg_ai_request_rate_wait_seconds_bucket{le="+Inf",model="litellm_proxy/qwen3-embedding-8b"}
+        values: 0+200x20
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AiRequestRateWaitHigh
+        exp_alerts: []  # pending: not yet 10 minutes
+      - eval_time: 16m
+        alertname: AiRequestRateWaitHigh
+        exp_alerts:  # kimi alone: the embedding model waited none
+          - exp_labels: { severity: warning, model: litellm_proxy/kimi-k2.5 }
+            exp_annotations:
+              summary: "litellm_proxy/kimi-k2.5 requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
+              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a minute, then raise its setting; the dashboard's 429 panel shows refusals."
 
   - interval: 1m
     input_series:
@@ -431,12 +649,12 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: tsg_ai_outages_total{task="relevance_gate",reason="ai_timed_out"}
+      - series: tsg_ai_outages_total{task="relevance_gate",reason="ai_timed_out",source="gateway"}
         values: 0+1x20
-      - series: tsg_ai_outages_total{task="write_scenario",reason="ai_timed_out"}
+      - series: tsg_ai_outages_total{task="write_scenario",reason="ai_timed_out",source="gateway"}
         values: 0+1x20
       # One lost connection is a blip: below the threshold.
-      - series: tsg_ai_outages_total{task="embed",reason="ai_unreachable"}
+      - series: tsg_ai_outages_total{task="embed",reason="ai_unreachable",source="gateway"}
         values: 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
     alert_rule_test:
       - eval_time: 16m
@@ -446,3 +664,70 @@ tests:
             exp_annotations:
               summary: "The AI service timed out 20 times in 10 minutes."
               description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md). Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team."
+
+  # TSG's own limiter refusing (no AI slot or request turn free within the wait) is not the gateway not answering.
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_outages_total{task="write_scenario",reason="ai_busy",source="limiter"}
+        values: 0+1x20
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: AiNotAnswering
+        exp_alerts: []
+
+  # Alloy gave up on a batch after its retries: quiet while its counter stays at 0 from its start, then fires.
+  - interval: 1m
+    input_series:
+      - series: loki_write_dropped_entries_total{job="alloy",host="loki:3100",reason="ingester_error"}
+        values: 0x5 40x20
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LogLinesLost
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LogLinesLost
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them."
+              description: "Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate). UAT: oc -n ai-common logs deployment/alloy, then deployment/loki."
+
+  # Loki makes its counter at its first refused line, already above 0, which increase() cannot see: a counter
+  # new in the last 15 minutes counts, and stops counting 15 minutes later.
+  - interval: 1m
+    input_series:
+      - series: loki_discarded_samples_total{job="loki",reason="too_far_behind",tenant="fake"}
+        values: _x5 120x30
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LogLinesLost
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them."
+              description: "Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate). UAT: oc -n ai-common logs deployment/alloy, then deployment/loki."
+      - eval_time: 30m
+        alertname: LogLinesLost
+        exp_alerts: []
+
+  # Two maintenance workers share the reaper's queue and each keeps the counts of its own last pass. The panel
+  # "Jobs now, by kind and status" reads only the one whose pass is newest: the other's 3 running jobs ended.
+  - interval: 1m
+    input_series:
+      - series: tsg_reaper_last_pass_timestamp_seconds{job="worker",instance="ai-threatgen/maintenance-a"}
+        values: 0+60x10
+      - series: tsg_jobs_current{job="worker",instance="ai-threatgen/maintenance-a",kind="tsg_find_threats",status="running"}
+        values: 0x10
+      - series: tsg_jobs_current{job="worker",instance="ai-threatgen/maintenance-a",kind="tsg_find_threats",status="queued"}
+        values: 2x10
+      - series: tsg_reaper_last_pass_timestamp_seconds{job="worker",instance="ai-remediation/maintenance-b"}
+        values: 0+60x2 120x8
+      - series: tsg_jobs_current{job="worker",instance="ai-remediation/maintenance-b",kind="tsg_find_threats",status="running"}
+        values: 3x10
+    promql_expr_test:
+      - expr: max by (kind, status) (tsg_jobs_current and on (instance) topk(1, tsg_reaper_last_pass_timestamp_seconds)) > 0
+        eval_time: 10m
+        exp_samples:
+          - labels: '{kind="tsg_find_threats", status="queued"}'
+            value: 2
+    alert_rule_test: []

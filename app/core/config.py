@@ -1,12 +1,11 @@
 """Environment settings: connections, AI endpoints/models, secrets, and the operational limits the owner tunes
-per environment (request size, AI calls at once; 2026-10-09). Business values: core/constants/.
-
-Every field here has a line in .env, .env.uat and .env.example (tests/test_config.py checks the names)."""
+per environment (request size, AI calls at once; 2026-10-09). Business values: core/constants/. Every field
+here has a line in .env, .env.uat and .env.example (tests/test_config.py checks the names)."""
 
 import re
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import AfterValidator, Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.constants import (
@@ -19,6 +18,7 @@ from app.core.constants import (
     Limits,
     PropertyMessage,
 )
+from app.core.proxy_url import ProxyUrl
 from app.core.singletons import singleton
 
 _WORD_RANGE = re.compile(r"\s*(\d+)\s*-\s*(\d+)\s*")
@@ -113,34 +113,15 @@ def _word_range(setting: str, text: str) -> tuple[int, int]:
     return least, most
 
 
-def _refuse_a_proxy_url_without_scheme(value: SecretStr) -> SecretStr:
-    """A proxy address without http:// or https:// is read as a host name: every outside call would fail later
-    with no word of why, so start-up stops with the reason instead (every environment)."""
-    proxy = value.get_secret_value()
-    if proxy and not proxy.startswith(("http://", "https://")):
-        raise ValueError(ErrorMessage.PROXY_URL_WITHOUT_SCHEME)
-    return value
-
-
-#: CII_PROXY_URL, the company proxy of the outside calls. Not true/false:
-#: an http(s):// address = every outside call goes through it (the intel feeds; the AI calls too when
-#: CII_AI_BYPASS_PROXY is false); blank = the machine's or pod's HTTP(S)_PROXY, else Windows' own setting
-#: Named _URL, never _PROXY: Python reads any *_PROXY variable as a proxy. Secret: it can carry
-#: a password.
-ProxyUrl = Annotated[SecretStr, AfterValidator(_refuse_a_proxy_url_without_scheme)]
-
-
 class Settings(AiOutputSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )
 
-    # Safe by default: a deployment that forgets CII_ENV gets production's checks (the laptop's .env says
-    # dev).
+    # Safe by default: a deployment that forgets CII_ENV gets production's checks (the laptop's .env: dev).
     env: Env = Env.PROD
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"  # a typo stops start-up, not logging
-    # also write the JSON log lines to <log_dir>/api.log and worker-<name>.log, where the
-    # local Loki reads them (pods log to stdout only and leave this empty).
+    # Also the JSON log lines in <log_dir>/api.log and worker-<name>.log for the local Loki; pods: empty.
     log_dir: str = ""
     # Comma-separated browser origins; empty = none (the API is called server to server).
     cors_origins: str = ""
@@ -150,6 +131,7 @@ class Settings(AiOutputSettings):
     mongo_db: str = "cii_tsg"
     redis_url: str
     redis_celery_broker_url: str
+    redis_ca_file: str = ""  # the CA that signed a rediss:// server's certificate; empty = the system's CAs
 
     chat_base_url: str
     chat_api_key: SecretStr
@@ -184,9 +166,15 @@ class Settings(AiOutputSettings):
     # key, so this bounds what anyone can make a pod read. One limit for all (owner, 2026-10-09): no endpoint
     # takes file uploads; one that does gets its own limit by its address, never by the Content-Type.
     max_request_mb: int = Field(default=2, gt=0)
-    # Most AI calls at once across all pods; 0 = no limit. v1 runs 16 (TSG_MAX_CONCURRENT_LLM_CALLS).
-    # Enforced by the AI slot limiter (app/ai/slots.py): a call waits for a free slot.
+    # Most AI calls at once across all pods; 0 = no fixed limit, only the one a gateway 429 sets (AiSlots).
+    # v1 runs 16 (TSG_MAX_CONCURRENT_LLM_CALLS). Enforced by app/ai/slots.py: a call waits for a free slot.
     max_concurrent_ai_calls: int = Field(default=16, ge=0)
+    max_concurrent_fallback_calls: int = Field(default=0, ge=0)  # the same for the fallback model's calls
+    # Each model's own AI requests a minute, all pods, retries included (AiRequestRate); 0 = no limit.
+    chat_requests_per_minute: int = Field(default=0, ge=0)
+    chat_fallback_requests_per_minute: int = Field(default=0, ge=0)
+    embedding_requests_per_minute: int = Field(default=0, ge=0)
+    rerank_requests_per_minute: int = Field(default=0, ge=0)
 
     # How many scenarios a run writes
     # 0 = every valid path found; N = the N most relevant, the rest kept in the plan as target_reached.

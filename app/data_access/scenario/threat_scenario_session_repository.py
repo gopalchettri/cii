@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from pymongo.collection import Collection as MongoCollection
-from pymongo.errors import DuplicateKeyError
 
 from app.core.clock import utc_now
 from app.core.constants import (
@@ -22,7 +21,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import DuplicateRecord, LeaseLost, NotFound
-from app.data_access.base import MongoRepository, Record
+from app.data_access.base import MongoRepository, Record, drop_retired_index
 from app.data_access.jobs.job_repository import JobLease, new_job
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.models.scenario.views import SessionStatus
@@ -30,17 +29,12 @@ from app.models.scenario.views import SessionStatus
 #: Set on a scenario session by the first step of its delete, in the update that checks no job of it is at
 #: work: from then on nothing new starts on it, so the delete's check for work is final.
 DELETING_MARK = "deleting_at"
-#: The unique indexes a clash is told apart by (MongoDB's default names, kept as built in UAT); any other
-#: clash is the idempotency key's.
-ACTIVE_SESSION_INDEX = "entity_id_1_asset_id_1"
+#: MongoDB's name for the _id index: a manual start's retry clashes on it, never the key.
 _ID_INDEX = "_id_"
+#: Dropped at start-up: the old one-active-run-per-asset index; runs of one asset are isolated.
+RETIRED_ACTIVE_RUN_INDEX = "entity_id_1_asset_id_1"
 
 _SESSION_INDEXES = (
-    {
-        "keys": [("entity_id", 1), ("asset_id", 1)],
-        "unique": True,
-        "partialFilterExpression": {"active": True},
-    },
     {
         "keys": [("entity_id", 1), ("idempotency_key", 1)],
         "unique": True,
@@ -73,6 +67,7 @@ SESSION_STATUS_FIELDS: dict[str, int] = {
     "last_regen": 1,
     "cancelled": 1,
     "job.epoch": 1,
+    "controls_delivery.retry": 1,
 }
 _SESSION_FIELD_LISTS = {
     "status": SESSION_STATUS_FIELDS,
@@ -80,7 +75,7 @@ _SESSION_FIELD_LISTS = {
     "attack_paths": {"plan.paths": 1},
     "plan_trace": {"plan_trace": 1, "plan.paths": 1},
     "plan_threat": {"plan.threats.$": 1},
-    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1},
+    "replay": {**SESSION_STATUS_FIELDS, "kind": 1, "request_hash": 1, "created_at": 1},
     "writing": {
         "entity_id": 1,
         "asset_id": 1,
@@ -128,14 +123,17 @@ class ThreatScenarioSessionRepository(MongoRepository):
         )
         self._scenarios = scenarios
 
+    def create_indexes(self) -> None:
+        """The validator and every index, after dropping the retired one-active-run-per-asset index."""
+        drop_retired_index(self.collection, RETIRED_ACTIVE_RUN_INDEX)
+        super().create_indexes()
+
     def create_scenario_session(self, record: dict[str, Any]) -> RunClash | None:
-        """Insert a new scenario session into tsg_sessions; None, or the unique rule that refused it."""
+        """Insert a new scenario session into tsg_sessions; None, or IDEMPOTENCY_KEY when the key is taken."""
         try:
             self.create(record)
-        except DuplicateRecord as clash:
-            return (
-                RunClash.ACTIVE_RUN if clash.index_name == ACTIVE_SESSION_INDEX else RunClash.IDEMPOTENCY_KEY
-            )
+        except DuplicateRecord:
+            return RunClash.IDEMPOTENCY_KEY
         return None
 
     def get_scenario_session_context(self, session_id: str) -> dict[str, Any]:
@@ -168,7 +166,7 @@ class ThreatScenarioSessionRepository(MongoRepository):
     ) -> RunClash | None:
         """Queue a new write job (epoch + 1) on a tsg_sessions record only while it is as read: finished in
         step scenarios at the same epoch, with the same cancel stamp, and not being deleted. None when queued;
-        CHANGED or DELETING when it moved on; ACTIVE_RUN when another session of the asset is active."""
+        CHANGED or DELETING when it moved on."""
         still_as_read = {
             "_id": session.session_id,
             "entity_id": session.entity_id,
@@ -181,18 +179,14 @@ class ThreatScenarioSessionRepository(MongoRepository):
         epoch, now = session.epoch + 1, utc_now()
         queued = {
             "status": Status.QUEUED,
-            "active": True,
             "job": new_job(TaskName.WRITE_SCENARIOS, epoch, now, batch=batch, set=asked),
             "last_action": running_action(kind, now),
             **_running_summary(kind, batch, asked, epoch),
             "updated_at": now,
         }
-        try:
-            matched = self.collection.update_one(
-                still_as_read, {"$set": queued, "$unset": _CLEARED_BY_A_NEW_ACTION}
-            ).matched_count
-        except DuplicateKeyError:
-            return RunClash.ACTIVE_RUN
+        matched = self.collection.update_one(
+            still_as_read, {"$set": queued, "$unset": _CLEARED_BY_A_NEW_ACTION}
+        ).matched_count
         if matched:
             return None
         return RunClash.DELETING if self.is_being_deleted(session.session_id) else RunClash.CHANGED
@@ -252,10 +246,19 @@ class ThreatScenarioSessionRepository(MongoRepository):
         found = self.collection.find_one({"_id": session_id}, {DELETING_MARK: 1})
         return found is None or DELETING_MARK in found
 
+    def is_cancelled(self, session_id: str) -> bool:
+        """Whether the owner's cancel stands on the scenario session: its job stopped, or its controls (the
+        `cancelled` stamp, cleared by a resume or a new action)."""
+        # ponytail: read before a plan's claim is handed back; a run cancel landing between this read and
+        # that write leaves the card queued (a second run cancel stops it). Keeping the cancel on the card
+        # closes it.
+        stands = {"_id": session_id, "$or": [{"status": Status.CANCELLED}, {"cancelled": {"$ne": None}}]}
+        return self.collection.find_one(stands, {"_id": 1}) is not None
+
     def claim_controls_delivery(self, session_id: str, task_id: str) -> Record | None:
         """tsg_sessions: the session's delivery lease for `task_id` when free, expired, handed over or
-        already its own, never for a cancelled session; its frozen context, or None while another delivery
-        holds it."""
+        already its own, never for a cancelled session; its frozen context and job.request_id, or None while
+        another delivery holds it."""
         now = utc_now()
         free = [
             {"controls_delivery.until": {"$lt": now}},
@@ -265,9 +268,9 @@ class ThreatScenarioSessionRepository(MongoRepository):
         found = self.collection.find_one_and_update(
             {"_id": session_id, "status": {"$ne": Status.CANCELLED}, "$or": free},
             {"$set": {"controls_delivery": held}},
-            projection={"context": 1},
+            projection={"context": 1, "job.request_id": 1},
         )
-        return None if found is None else found.get("context", {})
+        return found
 
     def update_controls_delivery(self, session_id: str, task_id: str, hand_over: bool = False) -> bool:
         """tsg_sessions: the delivery lease extended; `hand_over`, its next turn queued: no holder, and the
@@ -280,9 +283,14 @@ class ThreatScenarioSessionRepository(MongoRepository):
         until = utc_now() + timedelta(seconds=Controls.LEASE_SECONDS)
         return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.until": until}})
 
-    def release_controls_delivery(self, session_id: str, task_id: str) -> None:
-        """tsg_sessions: the delivery lease ended."""
-        self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
+    def release_controls_delivery(self, session_id: str, task_id: str) -> bool:
+        """tsg_sessions: the delivery lease ended; False when `task_id` no longer held it."""
+        return self._update_if_held(session_id, task_id, {"$unset": {"controls_delivery": ""}})
+
+    def note_controls_retry(self, session_id: str, task_id: str, notice: Record) -> bool:
+        """tsg_sessions: the delivery's outage notice, kept until the lease is next claimed, handed over or
+        ended; False while another delivery holds the session."""
+        return self._update_if_held(session_id, task_id, {"$set": {"controls_delivery.retry": notice}})
 
     def list_scenario_sessions_with_live_delivery(self, session_ids: Iterable[str]) -> set[str]:
         """tsg_sessions: of `session_ids`, the ones a delivery maps now or whose next turn is on its way."""

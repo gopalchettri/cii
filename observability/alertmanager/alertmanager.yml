@@ -1,14 +1,34 @@
 # Alertmanager, UAT and laptop. Runs with --web.external-url=<host>/alertmanager/.
-# D-05: no alert channel yet. Firing alerts show in Grafana (home dashboard and Alerting) and at /alertmanager.
-# When the owner names a channel, add it to `receivers` (email_configs, webhook_configs …) and point the
-# route at it.
+# Alerts are sent by email (D-05). Two senders are set up; the `receiver:` line under `route:` picks the one used:
+#   company-smtp  the company's mail relay
+#   gmail         smtp.gmail.com:587 (STARTTLS), signed in with a Google app password
+# Every CHANGE_ME_ value is a placeholder: put in the relay, the sender and the recipients here and in the copy in
+# deploy/configmap.yaml. Passwords never go here: each is a file from Secret tsg-monitoring (deploy/secrets.yaml),
+# mounted at /etc/alertmanager-secrets (deploy/deploy_common.yaml). The laptop has no such folder, so its
+# Alertmanager cannot sign in and sends nothing. Firing alerts also show in Grafana (home dashboard and Alerting)
+# and at /alertmanager.
 
 route:
-  receiver: none
+  receiver: company-smtp # where alerts go: company-smtp or gmail
   group_by: [alertname]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
 
 receivers:
-  - name: none
+  - name: company-smtp
+    email_configs:
+      - smarthost: CHANGE_ME_RELAY_HOST:587 # the relay's host:port; it must offer STARTTLS (require_tls)
+        from: CHANGE_ME_SENDER@company.example
+        to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+        auth_username: CHANGE_ME_RELAY_USER
+        auth_password_file: /etc/alertmanager-secrets/smtp-relay-password # SMTP_RELAY_PASSWORD
+        send_resolved: true # also say when an alert has cleared
+  - name: gmail
+    email_configs:
+      - smarthost: smtp.gmail.com:587 # STARTTLS (require_tls)
+        from: CHANGE_ME_SENDER@gmail.com
+        to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+        auth_username: CHANGE_ME_SENDER@gmail.com # the same Gmail address
+        auth_password_file: /etc/alertmanager-secrets/gmail-app-password # GMAIL_APP_PASSWORD
+        send_resolved: true # also say when an alert has cleared

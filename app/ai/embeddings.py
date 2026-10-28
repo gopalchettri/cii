@@ -2,12 +2,11 @@
 what it is (app/data_access/admin/): library texts in tsg_embeddings, search queries in
 tsg_query_vectors."""
 
-import contextvars
 import hashlib
-import time
-from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
+from collections.abc import Callable
 from datetime import timedelta
+from functools import partial
 from typing import Any
 
 import litellm
@@ -21,12 +20,13 @@ from app.ai.common import (
     call_with_retries,
     count_and_convert_ai_errors,
 )
+from app.ai.embedding_batches import embed_batches_in_parallel
 from app.ai.profiles import EMBEDDING_MODEL_PROFILES, find_model_profile
-from app.ai.slots import UNLIMITED_AI_SLOTS, AiSlots, max_slot_hold_seconds
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
 from app.core import metrics
 from app.core.clock import utc_now
 from app.core.config import Settings
-from app.core.constants import AiOutcome, AiTask, Cache, EmbeddingCorpus, ErrorMessage, LogEvent
+from app.core.constants import QUERY_TASKS, AiOutcome, AiTask, Cache, EmbeddingCorpus, ErrorMessage, LogEvent
 from app.data_access.admin.embedding_repository import EmbeddingRepository
 from app.data_access.base import Record as Doc
 from app.data_access.base import VectorRepository
@@ -58,6 +58,7 @@ class EmbeddingModel:
         queries: VectorRepository,
         key_header: str = "",
         slots: AiSlots = UNLIMITED_AI_SLOTS,
+        request_rate: AiRequestRate = UNLIMITED_AI_REQUEST_RATE,
     ):
         self._model = model
         self._profile = profile
@@ -65,15 +66,26 @@ class EmbeddingModel:
         # other weights of the same size (EmbeddingModelProfile.revision), so an old vector is never compared
         # with a new one.
         self._space = model if profile.revision == 1 else f"{model}@r{profile.revision}"
-        self._provider = _EmbeddingProvider(model, profile, base_url, api_key, key_header, slots)
+        self._provider = _EmbeddingProvider(
+            model, profile, base_url, api_key, key_header, slots, request_rate
+        )
         self._library = library
         self._queries = queries
 
-    def embed_search_queries(self, texts: list[str]) -> np.ndarray:
-        """One L2-normalised float32 row per search query. Kept Cache.QUERY_VECTOR_DAYS; only the text's hash
-        is stored, never the text."""
+    def embed_search_queries(self, texts: list[str], corpus: EmbeddingCorpus) -> np.ndarray:
+        """One L2-normalised float32 row per query searched against `corpus`, sent after the model's
+        instruction for that search (QUERY_TASKS). Kept Cache.QUERY_VECTOR_DAYS; only the hash of the text
+        sent is stored, never the text."""
+        task = QUERY_TASKS[corpus]
+        return self._embed_kept_briefly([self._profile.query_as_sent(text, task) for text in texts])
+
+    def embed_texts_to_compare(self, texts: list[str]) -> np.ndarray:
+        """One row per text compared with texts of its own kind, never searched against a corpus: sent plain,
+        as library texts are. Kept as queries are."""
+        return self._embed_kept_briefly(self._cut_to_model_limit(texts))
+
+    def _embed_kept_briefly(self, texts: list[str]) -> np.ndarray:
         expires_at = utc_now() + timedelta(days=Cache.QUERY_VECTOR_DAYS)
-        texts = self._cut_to_model_limit(texts)
         keys = [f"{self._space}|{_text_sha256(text)}" for text in texts]
         matrix, _ = self._load_stored_or_embed(
             texts, keys, self._queries, lambda _key, _text: {"expires_at": expires_at}
@@ -111,7 +123,8 @@ class EmbeddingModel:
         self, texts: list[str], keys: list[str], store: VectorRepository, describe: Callable[[str, str], Doc]
     ) -> tuple[np.ndarray, dict[str, Doc]]:
         """The rows for `texts` and what was stored before. A text not stored yet (or stored at another size)
-        is embedded once and stored with `describe(key, text)` plus the fields every vector has."""
+        is embedded once and stored (_embed_and_store). The batches go out in a random order: processes that
+        embed the same texts at once start on different batches."""
         found = store.list(("vector", "dimensions", "sources", "retired_at"), ids=keys)
         stored = {doc["_id"]: doc for doc in found}
         dimensions = self._profile.dimensions
@@ -124,31 +137,53 @@ class EmbeddingModel:
         missing = [text for text, key in key_of.items() if key not in vectors]
         size = self._profile.batch_size
         batches = [missing[start : start + size] for start in range(0, len(missing), size)]
-        for batch, embedded in _embed_batches_in_parallel(
-            batches, self._provider.embed_batch, self._profile.concurrency
-        ):
-            made = {
-                "model": self._model,
-                "revision": self._profile.revision,
-                "dimensions": dimensions,
-                "created_at": utc_now(),
-            }
-            documents = [
-                describe(key_of[text], text)
-                | made
-                | {"_id": key_of[text], "text_hash": _text_sha256(text), "vector": vector}
-                for text, vector in zip(batch, embedded, strict=True)
-            ]
-            vectors.update((document["_id"], document["vector"]) for document in documents)
-            store.save_vectors(documents)  # each batch as soon as it arrives, even if a later one fails
+        random.shuffle(batches)
+        embed = partial(self._embed_and_store, store, describe, key_of)
+        for _, embedded in embed_batches_in_parallel(batches, embed, self._profile.concurrency):
+            vectors.update(embedded)
         if not keys:  # np.vstack refuses an empty list; an empty corpus is a valid (empty) answer
             return np.empty((0, dimensions), dtype=np.float32), stored
         matrix = np.vstack([np.frombuffer(vectors[key], dtype=np.float32) for key in keys])
         return matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12, None), stored
 
+    def _embed_and_store(
+        self,
+        store: VectorRepository,
+        describe: Callable[[str, str], Doc],
+        key_of: dict[str, str],
+        batch: list[str],
+    ) -> dict[str, bytes]:
+        """The batch's vectors by key: embedded, then stored with `describe(key, text)` plus the fields every
+        vector has, as soon as they arrive (even if a later batch fails). Read instead, with no request, when
+        another process stored the whole batch since it was first read (every pod embeds a changed library at
+        once); a failed re-read only costs the request it would save."""
+        keys = [key_of[text] for text in batch]
+        dimensions = self._profile.dimensions
+        try:
+            found = {doc["_id"]: doc for doc in store.list(("vector", "dimensions"), ids=keys)}
+        except Exception:  # noqa: BLE001 - ponytail: the batch is embedded, as without the re-read
+            found = {}
+        if all(
+            key in found and _check_stored_vector_has_right_size(key, found[key], dimensions) for key in keys
+        ):
+            return {key: found[key]["vector"] for key in keys}
+        embedded = self._provider.embed_batch(batch)
+        made = {
+            "model": self._model,
+            "revision": self._profile.revision,
+            "dimensions": dimensions,
+            "created_at": utc_now(),
+        }
+        documents = [
+            describe(key, text) | made | {"_id": key, "text_hash": _text_sha256(text), "vector": vector}
+            for key, text, vector in zip(keys, batch, embedded, strict=True)
+        ]
+        store.save_vectors(documents)
+        return {document["_id"]: document["vector"] for document in documents}
+
 
 class _EmbeddingProvider:
-    """One embedding request per batch: retried (call_with_retries, the only retry: litellm's own are off),
+    """One embedding request per batch: retried, a short answer too (call_with_retries: litellm's are off),
     checked (one vector per text, each the profile's size) and counted in the AI metrics."""
 
     def __init__(  # noqa: PLR0913 — the provider's address, key and limiter: each one is needed
@@ -159,6 +194,7 @@ class _EmbeddingProvider:
         api_key: str,
         key_header: str,
         slots: AiSlots,
+        request_rate: AiRequestRate,
     ) -> None:
         self._model = model
         self._profile = profile
@@ -166,17 +202,22 @@ class _EmbeddingProvider:
         self._api_key = api_key
         self._key_header = build_api_key_header(key_header, api_key)
         self._slots = slots
+        self._request_rate = request_rate
 
     def embed_batch(self, batch: list[str]) -> list[bytes]:
-        started = time.perf_counter()
         with (
-            self._slots.hold_slot(max_slot_hold_seconds(self._profile.timeout_seconds)),
+            self._slots.hold_slot(AiTask.EMBED),
             count_and_convert_ai_errors(AiTask.EMBED, self._model),
         ):
-            # A short answer is asked again too.
-            vectors = call_with_retries(lambda: self._read_checked_vectors(self._call_provider(batch), batch))
+            vectors, seconds = call_with_retries(
+                lambda: self._read_checked_vectors(self._call_provider(batch), batch),
+                self._request_rate,
+                self._slots,
+                model=self._model,
+                task=AiTask.EMBED,
+            )
         metrics.AI_CALLS.labels(AiTask.EMBED, self._model, AiOutcome.OK).inc()
-        metrics.AI_SECONDS.labels(AiTask.EMBED, self._model).observe(time.perf_counter() - started)
+        metrics.AI_SECONDS.labels(AiTask.EMBED, self._model).observe(seconds)
         return vectors
 
     def _call_provider(self, batch: list[str]) -> Any:
@@ -226,46 +267,19 @@ def _check_stored_vector_has_right_size(key: str, doc: Doc, dimensions: int) -> 
     if doc.get("dimensions") == dimensions and len(doc["vector"]) == 4 * dimensions:
         return True
     log.warning(
-        LogEvent.EMBEDDING_STORED_SIZE_WRONG, key=key, stored=doc.get("dimensions"), expected=dimensions
+        LogEvent.EMBEDDING_STORED_SIZE_WRONG, vector_id=key, stored=doc.get("dimensions"), expected=dimensions
     )
     return False
 
 
-def _embed_batches_in_parallel(
-    batches: list[list[str]], request: Callable[[list[str]], list[bytes]], concurrency: int
-) -> Iterator[tuple[list[str], list[bytes]]]:
-    """(batch, its vectors) as each answer arrives, with up to `concurrency` requests in flight: the library
-    index build sends ~100 batches. After a failure no new batch is sent, but every answer already paid for is
-    still handed back (and so stored) before the failure is raised."""
-    if concurrency <= 1 or len(batches) <= 1:
-        for batch in batches:
-            yield batch, request(batch)
-        return
-    pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="embed")
-    try:
-        # Each request in a copy of the caller's context: its log fields (the run) and its job's lease signal
-        # reach the pool's threads too.
-        sent = {pool.submit(contextvars.copy_context().run, request, batch): batch for batch in batches}
-        failure: BaseException | None = None
-        for answer in as_completed(sent):
-            if answer.cancelled():
-                continue
-            if answer.exception() is None:
-                yield sent[answer], answer.result()
-            elif failure is None:
-                failure = answer.exception()
-                for waiting in sent:
-                    waiting.cancel()  # only batches not yet sent; those in flight still arrive
-        if failure is not None:
-            raise failure
-    finally:
-        pool.shutdown(wait=True, cancel_futures=True)
-
-
 def embedding_model_from(
-    settings: Settings, library: EmbeddingRepository, queries: VectorRepository, slots: AiSlots
+    settings: Settings,
+    library: EmbeddingRepository,
+    queries: VectorRepository,
+    slots: AiSlots,
+    request_rate: AiRequestRate,
 ) -> EmbeddingModel:
-    """The embedding model the settings name, with its vector stores and its limiter."""
+    """The embedding model the settings name, with its vector stores and its limiters."""
     return EmbeddingModel(
         settings.embedding_model,
         find_model_profile(EMBEDDING_MODEL_PROFILES, settings.embedding_model),
@@ -275,4 +289,5 @@ def embedding_model_from(
         queries,
         settings.ai_key_header,
         slots,
+        request_rate,
     )

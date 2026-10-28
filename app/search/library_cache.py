@@ -14,6 +14,7 @@ import structlog
 from app.core import metrics
 from app.core.constants import Cache, Dependency, LogEvent
 from app.core.exceptions import Unavailable
+from app.core.lease_signal import start_thread_without_lease
 from app.data_access.library.control_repository import ControlRepository
 from app.data_access.library.threat_repository import ThreatRepository
 from app.models.library.library import LibraryStamp, LoadedLibraries, ThreatLibrary
@@ -114,7 +115,7 @@ class LibraryCache:
             if self._checker_started:  # one checker per process (workers run threads, never forks)
                 return
             self._checker_started = True
-        threading.Thread(target=self._check_library_every_minute, name="library-check", daemon=True).start()
+        start_thread_without_lease("library-check", self._check_library_every_minute)
 
     def _check_library_every_minute(self) -> None:
         while True:

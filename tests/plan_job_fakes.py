@@ -145,6 +145,7 @@ class FakeMapper:
         self.alternatives: list[
             tuple[Any, float]
         ] = []  # what find_alternatives offers (library controls, scores)
+        self.mapped: dict[str, Any] | None = None  # the controls record find_alternatives was given
 
     def map_controls(self, scenario: dict[str, Any], context: Any, snapshot: Any) -> ControlMapping:
         self.asked.append(scenario["_id"])
@@ -158,8 +159,15 @@ class FakeMapper:
         return ControlMapping(items=(control,), query="the scenario and its risk")
 
     def find_alternatives(
-        self, scenario: dict[str, Any], context: Any, snapshot: Any, identified: Any, count: int
+        self,
+        scenario: dict[str, Any],
+        context: Any,
+        snapshot: Any,
+        identified: Any,
+        count: int,
+        mapped: dict[str, Any] | None = None,
     ) -> list[tuple[Any, float]]:
+        self.mapped = mapped
         return self.alternatives[:count]
 
 

@@ -1,12 +1,17 @@
 """The control mapping jobs: one delivery at a time maps a run's written scenarios, each under its own
 lease, and a beat sweep requeues stalled ones. Controls belong to scenarios: the epoch is not checked."""
 
+import contextlib
 import time
+from datetime import timedelta
 from typing import Any
 
 import structlog
 
 from app.ai import RerankModel, background_reranks
+from app.ai.common import outage_reason
+from app.core.clock import utc_now
+from app.core.config import get_settings
 from app.core.constants import (
     Controls,
     ErrorCode,
@@ -15,17 +20,24 @@ from app.core.constants import (
     Status,
     TaskName,
 )
-from app.core.exceptions import TEMPORARY_ERRORS, ControlsNotMapped, JobFailed, LeaseLost
+from app.core.exceptions import (
+    MONGO_UNAVAILABLE_ERRORS,
+    TEMPORARY_ERRORS,
+    ControlsNotMapped,
+    JobFailed,
+    LeaseLost,
+)
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.shared.parallel import run_in_parallel
 from app.models.scenario.asset_context import FrozenContext
 from app.realtime.publisher import publish_session_status
 from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
 from app.worker.celery_app import send_job
-from app.worker.jobs import keep_lease_alive, outage_error
+from app.worker.jobs import describe_outage, keep_lease_alive, outage_error
 
 log = structlog.get_logger(__name__)
 
@@ -49,19 +61,57 @@ class ControlsJob:
         """Take the run's delivery lease and map its waiting scenarios; how many were mapped (0 while another
         delivery holds the run)."""
         # Taken before anything is loaded, so a message that finds the run being mapped costs one update.
-        context = self._sessions.claim_controls_delivery(record_id, task_id)
-        if context is None:
+        claimed = self._sessions.claim_controls_delivery(record_id, task_id)
+        if claimed is None:
             return 0
-        snapshot = self._search.snapshot()
+        if request_id := (claimed.get("job") or {}).get("request_id"):
+            structlog.contextvars.bind_contextvars(request_id=request_id)  # a sweep's re-send carries none
+        context, snapshot = claimed.get("context", {}), self._search.snapshot()
         return RunControls(
             record_id, task_id, context, self._sessions, self._scenarios, snapshot, self._mapper
         ).map_all()
 
+    def note_controls_outage(
+        self, record_id: str, task_id: str, exc: Exception, attempt: int, retry_in_seconds: int
+    ) -> None:
+        """Show a delivery's outage on its run's status until the next delivery claims the run: why, which
+        try of the message, when the next comes. Nothing while another delivery holds the run or MongoDB is
+        down."""
+        notice = {
+            "reason": outage_reason(exc),
+            "message": describe_outage(exc),
+            "attempt": attempt,
+            "max_attempts": Controls.MAX_MESSAGE_RETRIES + 1,
+            "retry_at": utc_now() + timedelta(seconds=retry_in_seconds),
+        }
+        with contextlib.suppress(*MONGO_UNAVAILABLE_ERRORS):
+            if self._sessions.note_controls_retry(record_id, task_id, notice):
+                publish_session_status(record_id)
+
     def retry_stalled_controls(self) -> None:
-        """Requeue stalled mappings, then send one message per run they belong to that no delivery serves
-        (read after the requeue, so a run released in between still gets its message)."""
-        for record_id in self._work_control.sweep_stalled_controls():
+        """Sweep stalled mappings, recount and publish every run the sweep changed, then send one message per
+        run they belong to that no delivery serves (read after the requeue, so a run released in between
+        still gets its message)."""
+        swept: dict[str, dict[str, int]] = {}
+
+        def recount(session_id: str) -> None:
+            counts = recount_and_publish(self._sessions, session_id)
+            swept[session_id] = {key: value for key, value in counts.items() if key.startswith("controls_")}
+
+        record_ids = self._work_control.sweep_stalled_controls(recount)
+        if swept:
+            log.info(LogEvent.CONTROLS_SWEPT, runs=swept, messages=len(record_ids))
+        for record_id in record_ids:
             send_job(TaskName.MAP_CONTROLS, record_id, 0)  # the epoch is never checked for controls
+
+
+def recount_and_publish(
+    sessions: ThreatScenarioSessionRepository, session_id: str, controls_seconds: float = 0.0
+) -> dict[str, int]:
+    """Recount a run's counts and tell its watchers: the one path every controls change takes."""
+    counts = sessions.update_scenario_session_counts(session_id, controls_seconds)
+    publish_session_status(session_id)
+    return counts
 
 
 class RunControls:
@@ -82,27 +132,51 @@ class RunControls:
         self._context = FrozenContext.from_record(context)
         self._sessions, self._scenarios = sessions, scenarios
         self._snapshot, self._mapper = snapshot, mapper
+        self._taken_over = False  # another delivery took the run over mid-turn
 
     def map_all(self) -> int:
-        """Map up to Controls.PER_DELIVERY scenarios, updating the run's counts and watchers after each; a
-        delivery that used its whole turn hands the run over and queues its next turn behind other work."""
+        """Map up to Controls.PER_DELIVERY scenarios, all at once on a remote reranker (the local CPU model
+        predicts one at a time: one by one), updating the run's counts and watchers after each; a delivery
+        that used its whole turn hands the run over and queues its next turn behind other work. A failure is
+        raised once the scenarios beside it are saved."""
+        at_once = Controls.PER_DELIVERY if get_settings().rerank_base_url else 1
         mapped = 0
-        for _ in range(Controls.PER_DELIVERY):
-            scenario = self._scenarios.claim_scenario_controls(self._record_id, self._task_id)
-            if scenario is None:  # none waits: the run's mapping is done until its next written batch
+        for _ in range(Controls.PER_DELIVERY // at_once):
+            # Claimed before any is mapped: a scenario an outage gives back is never claimed again this turn.
+            scenarios = self._claim_up_to(at_once)
+            mapped += sum(run_in_parallel(self._map_and_count, scenarios, at_once, "controls"))
+            if self._taken_over:  # the run's lease ran out mid-turn and another delivery took the run over
+                return mapped
+            if len(scenarios) < at_once:  # none waits: the run's mapping is done until its next written batch
                 self._release()
                 return mapped
-            started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
-            mapped += self._map_one(scenario)
-            self._sessions.update_scenario_session_counts(
-                self._record_id, controls_seconds=time.perf_counter() - started
-            )
-            publish_session_status(self._record_id)
-            if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
-                return mapped  # the run's lease ran out mid-turn and another delivery took the run over
         self._sessions.update_controls_delivery(self._record_id, self._task_id, hand_over=True)
         send_job(TaskName.MAP_CONTROLS, self._record_id, 0)  # the epoch is never checked for controls
         return mapped
+
+    def _claim_up_to(self, count: int) -> list[dict[str, Any]]:
+        """Up to `count` of the run's waiting scenarios, oldest first, claimed for this delivery."""
+        claimed: list[dict[str, Any]] = []
+        while len(claimed) < count:
+            scenario = self._scenarios.claim_scenario_controls(self._record_id, self._task_id)
+            if scenario is None:
+                break
+            claimed.append(scenario)
+        return claimed
+
+    def _map_and_count(self, scenario: dict[str, Any]) -> int:
+        """Map one claimed scenario under the request that wrote it (the run's job may be a later one's),
+        then, mapped or failed, update the run's counts, watchers and lease: 1 when saved."""
+        writer = scenario["controls"].get("request_id")  # None on a card written before it was stored
+        started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
+        # A context manager, not a bind: one scenario runs in the caller's context (run_in_parallel).
+        with structlog.contextvars.bound_contextvars(**({"request_id": writer} if writer else {})):
+            try:
+                return self._map_one(scenario)
+            finally:
+                recount_and_publish(self._sessions, self._record_id, time.perf_counter() - started)
+                if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
+                    self._taken_over = True
 
     def _release(self) -> None:
         """Give up the run's lease; a scenario written meanwhile, whose message found the run held, gets a
@@ -121,7 +195,7 @@ class RunControls:
                 self._sessions, self._scenarios, self._record_id, (scenario_id, attempts), self._task_id
             )
             # Background work: on a local CPU reranker any waiting foreground rerank goes first.
-            with keep_lease_alive(lease), background_reranks():
+            with keep_lease_alive(lease, lease.give_back), background_reranks():
                 mapping = self._mapper.map_controls(scenario, self._context, self._snapshot)
         except ControlsNotMapped as exc:
             self._fail(scenario_id, attempts, exc.code, exc.message)
@@ -182,3 +256,15 @@ class _ScenarioLease:
         return self._scenarios.update_scenario_controls(
             self.record_id, self._task_id, self._attempts, Status.RUNNING
         )
+
+    def give_back(self) -> bool:
+        """For a stopping worker: the scenario queued again with its attempt returned, then the run's delivery
+        lease freed and its next delivery sent (once per run); False once the scenario was taken over."""
+        if not self._scenarios.update_scenario_controls(
+            self.record_id, self._task_id, self._attempts, Status.QUEUED, attempt_returned=True
+        ):
+            return False
+        log.info(LogEvent.JOB_HANDED_BACK, record_id=self.record_id, attempt=self._attempts)
+        if self._sessions.release_controls_delivery(self._session_id, self._task_id):
+            send_job(TaskName.MAP_CONTROLS, self._session_id, 0)  # the epoch is never checked for controls
+        return True

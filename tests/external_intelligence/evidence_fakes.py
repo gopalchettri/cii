@@ -155,10 +155,10 @@ class TextEmbeddings(FakeEmbeddings):
         self.library_texts = list(texts)
         return super().embed_library_texts(corpus, texts, sources)
 
-    def embed_search_queries(self, texts: list[str]) -> np.ndarray:
+    def embed_search_queries(self, texts: list[str], corpus: str) -> np.ndarray:
         with self.lock:
             self.query_texts += texts
-        return super().embed_search_queries(texts)
+        return super().embed_search_queries(texts, corpus)
 
 
 class FlaggingSanitiser:

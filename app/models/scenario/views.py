@@ -2,11 +2,22 @@
 and review bodies (data shapes only; domain/scenario/results.py builds them)."""
 
 from datetime import datetime
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from app.core.constants import (
+    AbandonReason,
     ActionStatus,
     AiOutage,
     ControlMatchStatus,
@@ -96,6 +107,7 @@ class SessionStatus(BaseModel):
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
     epoch: int = 0  # its job's epoch: a next set or regenerate queues only while it is unchanged
+    controls_retry: dict[str, Any] | None = None  # the outage its controls delivery waits out, as `retry`
 
 
 def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
@@ -125,6 +137,7 @@ def session_status_from_record(record: dict[str, Any]) -> SessionStatus:
         last_regen=record.get("last_regen"),
         cancelled=record.get("cancelled"),
         epoch=job.get("epoch") or 0,
+        controls_retry=(record.get("controls_delivery") or {}).get("retry"),
     )
 
 
@@ -146,13 +159,73 @@ ScenarioIds = Annotated[
 ]
 
 
+_EXAMPLE_IDS: list[JsonValue] = ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"]
+
+
+def _refused(value: Any, field: str, message: str = "") -> ValidationError:
+    """A 422 on one accept body field: `message`, or pydantic's own "Field required" without one."""
+    error = PydanticCustomError("accept_body", message) if message else "missing"
+    return ValidationError.from_exception_data(
+        "AcceptRequest", [InitErrorDetails(type=error, loc=(field,), input=value)]
+    )
+
+
+#: Swagger's named examples for accept, TSG v1's `mode` body first (the format the platform sends).
+ACCEPT_REQUEST_EXAMPLES: dict[str, dict[str, Any]] = {
+    "v1_subset": {"summary": "Accept some (v1)", "value": {"mode": "subset", "scenario_ids": _EXAMPLE_IDS}},
+    "v1_all": {"summary": "Accept all (v1)", "value": {"mode": "all"}},
+    "v1_replace": {
+        "summary": "Accept a newer version in place of the accepted one (v1)",
+        "value": {"mode": "subset", "scenario_ids": _EXAMPLE_IDS, "replace_accepted": True},
+    },
+    "v1_none": {"summary": "Accept nothing (v1)", "value": {"mode": "none"}},
+    "v2_subset": {"summary": "Accept some (v2, also accepted)", "value": {"scenario_ids": _EXAMPLE_IDS}},
+    "v2_all": {"summary": "Accept all (v2, also accepted)", "value": {"scenario_ids": "all"}},
+}
+
+
 class AcceptRequest(BaseModel):
-    """Body of accept. An unknown field is refused (422): a misspelt `replace_acepted` must not pass."""
+    """Body of accept: TSG v1's `mode` body, or the v2 body (`scenario_ids` alone); an unknown field: 422."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [example["value"] for example in ACCEPT_REQUEST_EXAMPLES.values()]},
+    )
 
-    scenario_ids: ScenarioIds | Literal["all"]
+    mode: Literal["all", "subset", "none"] | None = Field(
+        default=None,
+        description="all: accept every scenario; subset: accept the scenario_ids; none: accept nothing. "
+        "Leave it out to send the v2 body (scenario_ids alone).",
+    )
+    scenario_ids: ScenarioIds | Literal["all"] | None = Field(
+        default=None,
+        description="With mode subset: the ids to accept; left out with mode all or none. "
+        'Without mode (the v2 body): required, a list or "all".',
+    )
     replace_accepted: bool = False
+
+    @model_validator(mode="after")
+    def read_the_v1_mode(self) -> Self:
+        """v1's rules when `mode` is sent, then the v2 body: all → scenario_ids "all", none → no ids."""
+        if self.mode is None:
+            if "mode" in self.model_fields_set:
+                raise _refused(None, "mode", ReviewMessage.MODE_VALUES)
+            if self.scenario_ids is None:
+                raise _refused(None, "scenario_ids")
+            return self
+        if self.mode == "subset":
+            if not isinstance(self.scenario_ids, list):
+                raise _refused(self.scenario_ids, "scenario_ids", ReviewMessage.SUBSET_NEEDS_IDS)
+            return self
+        if self.scenario_ids is not None:
+            only_with_subset = ReviewMessage.ONLY_WITH_SUBSET.format(field="scenario_ids")
+            raise _refused(self.scenario_ids, "scenario_ids", only_with_subset)
+        if self.replace_accepted:
+            only_with_subset = ReviewMessage.ONLY_WITH_SUBSET.format(field="replace_accepted")
+            raise _refused(True, "replace_accepted", only_with_subset)
+        if self.mode == "all":
+            self.scenario_ids = "all"
+        return self
 
 
 class ScenarioIdsRequest(BaseModel):
@@ -237,6 +310,17 @@ class Progress(BaseModel):
     scenario_count: ScenarioCount
 
 
+class RunError(BaseModel):
+    """Why a run failed: its job's error code and message, and the AI outage that failed it, or why its job
+    was given up (job_abandoned)."""
+
+    code: str
+    message: str
+    # ai_down, ai_unreachable, ai_busy, ai_timed_out; job_abandoned: abandoned, never_started,
+    # waited_too_long; else None.
+    reason: AiOutage | AbandonReason | None = None
+
+
 class RunBoard(BaseModel):
     session_id: str
     entity_id: int
@@ -246,6 +330,7 @@ class RunBoard(BaseModel):
     session_status: SessionState
     progress: Progress
     updated_at: datetime
+    error: RunError | None = None  # only once the run has failed
 
 
 # A scenario in TSG v1's results format.
@@ -270,7 +355,7 @@ class ScenarioText(BaseModel):
     threat_name: str | None
     supporting_systems_involved: list[SystemInvolved]
     scenario_title: str | None
-    scenario_statement: str | None  # the statement, then "Why this threat applies: ..."
+    scenario_statement: str | None  # the writer's statement alone
     risk_statement: str | None
     assumptions: list[str]
     # STANDALONE: no link between systems claimed; ASSUMED: it relies on a link the platform does not record.
@@ -309,7 +394,7 @@ class ScopeView(BaseModel):
     scope_key: str  # "A", or "A+<system id>+..." for the systems the scenario goes through
     scope_type: ScopeType
     supporting_system_ids: list[int]
-    evidence: list[str]  # the writer's own why_applies; [] when none
+    evidence: list[str]  # always []: kept so the response keeps its shape; why_applies is never shown
 
 
 class LibraryEntry(BaseModel):
@@ -469,5 +554,6 @@ class RunResults(BaseModel):
     asset_name: str | None
     user_id: str | None
     progress: Progress
+    error: RunError | None = None  # as the run's status shows it: only once the run has failed
     scenarios: list[ScenarioView]
     total: int  # every match, for paging (offset + limit)

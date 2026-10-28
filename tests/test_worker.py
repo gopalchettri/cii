@@ -13,15 +13,18 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import litellm
 import pytest
+import structlog
 from celery import states
-from celery.exceptions import Ignore
+from celery.exceptions import Ignore, Retry
 from prometheus_client import REGISTRY
 from pymongo.errors import AutoReconnect
 from redis.exceptions import ReadOnlyError
 from structlog.testing import capture_logs
 
-from app import container
+from app import ai, container
+from app.ai.profiles import CHAT_MODEL_PROFILES
 from app.core import metrics, readiness
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
@@ -38,10 +41,12 @@ from app.core.constants import (
     StoredProcedure,
     TaskName,
     Worker,
+    module_of,
 )
 from app.core.database import get_mongodb, get_redis_client
-from app.core.exceptions import JobFailed, LeaseLost, Unavailable
+from app.core.exceptions import JobFailed, LeaseLost, Unavailable, WaitingForAnotherJob
 from app.core.lease_signal import raise_if_lease_lost
+from app.data_access.admin.ai_call_repository import AiCallRepository
 from app.data_access.jobs.job_repository import JobLease, JobRepository, ended_job_fields
 from app.data_access.library.sql_operation_repository import SqlOperationRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
@@ -50,7 +55,8 @@ from app.domain.scenario.results import build_board
 from app.domain.shared.parallel import raise_most_retryable
 from app.models.scenario.views import session_status_from_record
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
-from app.worker.celery_app import BrokerUnavailable, count_waiting_messages
+from app.worker.celery_app import BrokerUnavailable, count_waiting_messages, send_job
+from app.worker.scenario.tasks import find_threats
 
 
 class RetryRequested(Exception):
@@ -78,7 +84,7 @@ def _task(task_id: str = "task-1", name: str = TaskName.FIND_THREATS) -> Any:
     return SimpleNamespace(
         name=name,
         request=SimpleNamespace(id=task_id),
-        retry=lambda countdown, exc: RetryRequested(countdown),
+        retry=lambda countdown, exc, **_options: RetryRequested(countdown),
     )
 
 
@@ -96,8 +102,9 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     sends: list[tuple] = []
-    monkeypatch.setattr(jobs, "send_job", lambda *args: sends.append(args))
-    monkeypatch.setattr(reaper, "send_job", lambda *args: sends.append(args))
+    # Each send is accepted by the broker (send_job's True): a refused one counts no re-send.
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args) or True)
+    monkeypatch.setattr(reaper, "send_job", lambda *args, **_priority: sends.append(args) or True)
     return sends
 
 
@@ -163,6 +170,36 @@ def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> N
     assert (stored["status"], stored["plan"]) == (Status.DONE, "fresh work")
 
 
+def test_a_delivery_that_takes_over_a_job_reuses_the_ai_answers_the_job_already_got(
+    monkeypatch: pytest.MonkeyPatch, published: list[str]
+) -> None:
+    """The reaper's re-send is a new message with a new task id: the claim binds the job (record, epoch,
+    stage), so the delivery that takes over after a lost lease reads back the gate answer the first one got;
+    a new epoch of the record asks again."""
+    model = "litellm_proxy/kimi-k2.5"
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    chat = ai.ChatModel([(model, CHAT_MODEL_PROFILES[model])], "http://ai.invalid", "key", records)
+    calls: list[int] = []
+    reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))], usage=None)
+    monkeypatch.setattr(litellm, "completion", lambda **_: calls.append(1) or reply)
+    record_id = _insert_job()
+
+    def ask_the_gate(_lease: JobLease) -> None:
+        chat.ask_for_checked_json(AiTask.RELEVANCE_GATE, "s", "gate", lambda _: [], reuse_earlier_answer=True)
+
+    def deliver(task_id: str, epoch: int = 1) -> None:
+        with structlog.contextvars.bound_contextvars(task_id=task_id):  # as start_job_clock binds it
+            jobs.run_leased_job(_task(task_id), Collection.SESSIONS, record_id, epoch, ask_the_gate)
+
+    deliver("first")
+    _records().update_one({"_id": record_id}, {"$set": {"job.lease_until": datetime.now(UTC) - timedelta(1)}})
+    deliver("resent")
+    assert len(calls) == 1
+    _records().update_one({"_id": record_id}, {"$set": {"status": Status.QUEUED, "job.epoch": 2}})
+    deliver("next-run", epoch=2)
+    assert len(calls) == 2
+
+
 def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(published: list[str]) -> None:
     record_id = _insert_job()
 
@@ -177,11 +214,11 @@ def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(publishe
     assert published == [record_id, record_id]  # running, then queued again
 
 
-def test_an_ai_outage_leaves_a_retry_notice_until_the_stage_hands_over(
+def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(
     published: list[str], sent: list[tuple]
 ) -> None:
-    """The status tells the UI why a stage waits and which try comes when (owner 2026-10-20); the attempt
-    that moves the job on clears it."""
+    """The status tells the UI why a stage waits and which try comes when; the claim of that try clears it,
+    so a running retry never shows the old outage."""
     record_id = _insert_job()
 
     def busy(_lease: JobLease) -> None:
@@ -204,14 +241,49 @@ def test_an_ai_outage_leaves_a_retry_notice_until_the_stage_hands_over(
     _records().update_one(
         {"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}}
     )  # its back-off ended
-    jobs.run_leased_job(
-        _task("task-2"),
-        Collection.SESSIONS,
-        record_id,
-        1,
-        lambda lease: jobs.hand_over(lease, TaskName.WRITE_SCENARIOS),
-    )
+    shown_while_retrying: list[Any] = []
+
+    def retry_runs(lease: JobLease) -> None:
+        status = session_status_from_record(sessions.get("status", _id=record_id))
+        shown_while_retrying.append(build_board(status).progress.retrying)
+        jobs.hand_over(lease, TaskName.WRITE_SCENARIOS)
+
+    jobs.run_leased_job(_task("task-2"), Collection.SESSIONS, record_id, 1, retry_runs)
+    assert shown_while_retrying == [None]
     assert _records().find_one({"_id": record_id})["job"]["retry"] is None
+
+
+def test_a_job_waiting_for_another_job_looks_again_soon_and_counts_as_waiting(published: list[str]) -> None:
+    """A plan waiting for its scenario's controls polled every 120 s, so it started up to 2 minutes late. Then
+    each 15 s look was an outage retry: counted as `retry`, warned as job.retry_scheduled, its notice claiming
+    a store outage, so a 2-minute wait read as 8 outage retries and 8 near-zero job times."""
+    record_id = _insert_job(retry={"reason": AiOutage.BUSY, "attempt": 1})  # an earlier outage's notice
+    resent: list[dict[str, Any]] = []
+    task = SimpleNamespace(
+        name=TaskName.FIND_THREATS, request=SimpleNamespace(id="waits"), retry=lambda **o: resent.append(o)
+    )
+
+    def controls_being_mapped(_lease: JobLease) -> None:
+        raise WaitingForAnotherJob("controls being mapped")
+
+    with capture_logs() as logs, pytest.raises(jobs.JobWaiting) as waiting:
+        jobs.run_leased_job(task, Collection.SESSIONS, record_id, 1, controls_being_mapped)
+    [options] = resent
+    assert (options["countdown"], options["throw"]) == (Lease.RETRY_DELAYS_SECONDS[0], False)
+    job = _records().find_one({"_id": record_id})["job"]
+    assert (job["attempts"], job["retry"]) == (0, None)  # no attempt used, no outage claimed
+    levels = {line["event"]: line["log_level"] for line in logs}
+    assert levels[LogEvent.JOB_WAITING] == "info" and LogEvent.JOB_RETRY_SCHEDULED not in levels
+    waits, retries = ({"task": TaskName.FIND_THREATS, "outcome": outcome} for outcome in ("waiting", "retry"))
+    durations = {"task": TaskName.FIND_THREATS}
+    before = (_job_samples("tsg_jobs_total", waits), _job_samples("tsg_jobs_total", retries))
+    runs_before = _job_samples("tsg_job_seconds_count", durations)
+    # As Celery ends the delivery: IGNORED, its result the JobWaiting raised.
+    lifecycle.start_job_clock("waits", task)
+    lifecycle.record_job_outcome("waits", task, state=states.IGNORED, retval=waiting.value)
+    assert _job_samples("tsg_jobs_total", waits) == before[0] + 1
+    assert _job_samples("tsg_jobs_total", retries) == before[1]
+    assert _job_samples("tsg_job_seconds_count", durations) == runs_before  # a look is no job's run time
 
 
 def test_a_job_meeting_a_young_pending_sql_operation_is_retried_not_failed(published: list[str]) -> None:
@@ -295,7 +367,9 @@ def test_an_unexpected_error_fails_the_job_and_a_success_finishes_it(published: 
     assert _records().find_one({"_id": good})["status"] == Status.DONE
 
 
-def test_the_reaper_requeues_abandons_and_resends_each_once(published: list[str], sent: list[tuple]) -> None:
+def test_the_reaper_requeues_abandons_and_resends_each_once(
+    published: list[str], sent: list[tuple], monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The reaper scans every job record: earlier tests' records older than Lease.REQUEUE_QUEUED_AFTER_SECONDS
     # would be re-sent too, so this test starts with only its own, in every collection the reaper reads.
     # (Before 2026-10-11 it cleared only the runs: plan jobs a remediation test dated 09:00 UTC that day made
@@ -314,6 +388,10 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(published: list[str]
     worn_out = _insert_job(Status.RUNNING, attempts=Lease.MAX_ATTEMPTS, lease_until=long_ago, task_id="gone")
     never_sent = _insert_job(Status.QUEUED, due_at=long_ago, retry=notice)
     failures_before = _job_failures()
+    priorities: list[int] = []
+    monkeypatch.setattr(
+        reaper, "send_job", lambda *args, priority: (sent.append(args), priorities.append(priority))
+    )
     reaper.reap_jobs()
     reaper.reap_jobs()  # a second pass right after must not send anything again
     requeued = _records().find_one({"_id": expired})
@@ -322,8 +400,9 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(published: list[str]
     assert _records().find_one({"_id": never_sent})["job"]["retry"]["reason"] == AiOutage.BUSY
     abandoned = _records().find_one({"_id": worn_out})
     assert abandoned["job"]["error"]["code"] == ErrorCode.JOB_ABANDONED
-    assert abandoned["active"] is False and abandoned["finished_at"] is not None  # the asset is free again
+    assert "active" not in abandoned and abandoned["finished_at"] is not None
     assert sorted(record_id for _, record_id, _ in sent) == sorted([expired, never_sent])
+    assert priorities == [Worker.NEXT_STAGE_PRIORITY] * 2  # both ahead of new work: they waited already
     # The abandoned run counts as a job failure (JobsFailing): its dead worker never recorded an outcome.
     assert _job_failures() == failures_before + 1
 
@@ -460,37 +539,25 @@ def test_every_job_outcome_series_starts_at_zero_when_the_worker_starts(
     lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
     for task in TaskName:
         for outcome in metrics.JOB_OUTCOMES:
-            assert REGISTRY.get_sample_value("tsg_jobs_total", {"task": task, "outcome": outcome}) is not None
+            labels = {"task": task, "module": module_of(task), "outcome": outcome}
+            assert REGISTRY.get_sample_value("tsg_jobs_total", labels) is not None
 
 
 def _last_reaper_pass() -> float:
     return metrics.REAPER_LAST_PASS.collect()[0].samples[0].value
 
 
-def test_no_process_but_the_reaper_s_worker_exports_its_last_pass() -> None:
+def test_no_process_but_the_reaper_s_worker_exports_its_reaper_times() -> None:
     """Before: every process that loads the metrics exported 0 (the API, every worker, Flower), so right
-    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending)."""
+    after a start the newest pass read 0 until Prometheus reached the maintenance worker (alert pending).
+    Both gauges: the last start (ReaperNotRunning) and the last finished pass (ReaperFailing)."""
     code = (
         "import app.main, app.worker.lifecycle; from prometheus_client import generate_latest; "
-        "print(b'tsg_reaper_last_pass' in generate_latest())"
+        "print(b'tsg_reaper_last_' in generate_latest())"
     )
     run = [sys.executable, "-c", code]
     result = subprocess.run(run, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
     assert result.stdout.strip().splitlines()[-1:] == ["False"], result.stdout + result.stderr
-
-
-def test_only_the_worker_that_runs_the_reaper_starts_on_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Before: ReaperNotRunning read a rise in tsg_jobs_total, and the first pass after a start comes before
-    Prometheus' first scrape, so every start showed it (and the beat tile DOWN) for a minute. The worker that
-    runs the reaper is on time from its own start; no other worker stands in for it."""
-    metrics.REAPER_LAST_PASS.set(0)
-    monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    lifecycle.prepare_worker(_worker_starting("threads", Queue.THREATS, Queue.SCENARIOS))
-    assert _last_reaper_pass() == 0
-    monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    before = time.time()
-    lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
-    assert before <= _last_reaper_pass() <= time.time()
 
 
 def test_each_reaper_pass_records_when_it_ended_and_a_failed_one_does_not(
@@ -527,8 +594,7 @@ def test_celery_keeps_the_log_level_cii_log_level_chose() -> None:
 
 
 def _job_failures() -> float:
-    labels = {"task": TaskName.FIND_THREATS, "outcome": "failure"}
-    return REGISTRY.get_sample_value("tsg_jobs_total", labels) or 0.0
+    return _job_samples("tsg_jobs_total", {"task": TaskName.FIND_THREATS, "outcome": "failure"})
 
 
 def test_a_job_the_reaper_failed_cannot_be_finished_by_its_old_owner(
@@ -580,21 +646,98 @@ def test_a_delivery_that_cannot_claim_its_job_logs_why() -> None:
         return jobs_.why_not_claimed(record_id, epoch, task)
 
     assert why("no-such-record") == {"reason": "missing"}
-    queued = _insert_job(due_at=datetime.now(UTC) + timedelta(seconds=76))
+    queued = _insert_job(due_at=datetime.now(UTC) + timedelta(seconds=376))
     assert why(queued, epoch=2) == {"reason": "other_epoch", "job_epoch": 1}
     assert why(queued, task=TaskName.WRITE_SCENARIOS) == {
         "reason": "other_task",
         "job_task": TaskName.FIND_THREATS,
     }
     not_due = why(queued)
-    assert not_due["reason"] == "not_due" and 70 < not_due["due_in_seconds"] <= 76
+    assert not_due["reason"] == "not_due" and 370 < not_due["due_in_seconds"] <= 376
     running = _insert_job(Status.RUNNING, worker="celery@worker-threats", lease_until=datetime.now(UTC))
-    assert why(running) == {"reason": "leased", "worker": "celery@worker-threats"}
+    assert why(running) == {"reason": "leased", "job_worker": "celery@worker-threats"}
     assert why(_insert_job(Status.FAILED)) == {"reason": "status_failed"}
     with capture_logs() as logs, pytest.raises(Ignore):
         jobs.run_leased_job(_task("early"), Collection.SESSIONS, queued, 1, lambda _lease: None)
     [line] = [line for line in logs if line["event"] == LogEvent.JOB_NOT_CLAIMED]
-    assert line["reason"] == "not_due" and line["due_in_seconds"] > 70
+    assert line["reason"] == "not_due" and line["due_in_seconds"] > 370 and line["sent_again"] is False
+
+
+def test_a_delivery_that_comes_before_its_job_is_due_is_sent_again_for_then() -> None:
+    """Celery runs a retry's countdown on the receiving pod's clock, not MongoDB's, so a retry could come
+    early: it was dropped and the job waited minutes for the reaper. Sent again, it uses no attempt. An early
+    first send is a duplicate (a reaper re-send): only dropped, so it never follows the job's retries."""
+    resent: list[dict[str, Any]] = []
+    soon = _insert_job(due_at=datetime.now(UTC) + timedelta(seconds=40))
+    for retries in (0, 1):
+        request = SimpleNamespace(id="early", retries=retries)
+        task = SimpleNamespace(
+            name=TaskName.FIND_THREATS, request=request, retry=lambda **options: resent.append(options)
+        )
+        with pytest.raises(Ignore):
+            jobs.run_leased_job(task, Collection.SESSIONS, soon, 1, lambda _lease: None)
+        assert len(resent) == retries
+    [options] = resent
+    assert options["throw"] is False and 40 <= options["countdown"] <= 41
+    assert options["priority"] == Worker.NEXT_STAGE_PRIORITY
+    job = _records().find_one({"_id": soon})["job"]
+    assert (job["attempts"], job.get("task_id")) == (0, None)
+
+
+def test_a_run_s_next_stage_is_taken_before_new_work_already_waiting() -> None:
+    """A stage handed over goes ahead of runs that have not started, so a started run finishes first."""
+    with celery_app.connection_for_write() as connection:
+        channel = connection.default_channel
+        channel.queue_purge(Queue.SCENARIOS)
+        new_run, started_run = _insert_job(), _insert_job()
+        try:
+            send_job(TaskName.WRITE_SCENARIOS, new_run, 1)
+            jobs.hand_over(_claim(started_run, "threats-1"), TaskName.WRITE_SCENARIOS)
+            taken = [channel.basic_get(Queue.SCENARIOS, no_ack=True).decode()[0][0] for _ in range(2)]
+        finally:
+            channel.queue_purge(Queue.SCENARIOS)
+    assert taken == [started_run, new_run]
+
+
+def test_a_retried_job_is_taken_before_new_work_already_waiting(published: list[str]) -> None:
+    """Celery's retry copies its message's priority, so a retry waited behind the whole backlog."""
+
+    def outage(_lease: JobLease) -> None:
+        raise Unavailable(ErrorMessage.AI_UNREACHABLE)
+
+    delivery = {"exchange": Queue.THREATS, "routing_key": Queue.THREATS, "priority": Worker.NEW_WORK_PRIORITY}
+    with celery_app.connection_for_write() as connection:
+        channel = connection.default_channel
+        channel.queue_purge(Queue.THREATS)
+        new_run, retried_run = _insert_job(), _insert_job()
+        try:
+            send_job(TaskName.FIND_THREATS, new_run, 1)
+            find_threats.push_request(
+                id="first-try", args=[retried_run, 1], delivery_info=delivery, called_directly=False
+            )
+            try:
+                with pytest.raises(Retry):
+                    jobs.run_leased_job(find_threats, Collection.SESSIONS, retried_run, 1, outage)
+            finally:
+                find_threats.pop_request()
+            taken = [channel.basic_get(Queue.THREATS, no_ack=True).decode()[0][0] for _ in range(2)]
+        finally:
+            channel.queue_purge(Queue.THREATS)
+    assert taken == [retried_run, new_run]
+
+
+def test_a_claimed_job_records_how_long_it_waited_after_it_was_due(published: list[str]) -> None:
+    def waits() -> float:
+        return _job_samples("tsg_job_queue_wait_seconds_count", {"task": TaskName.FIND_THREATS})
+
+    def over_a_minute() -> float:
+        labels = {"task": TaskName.FIND_THREATS, "le": "60.0"}
+        return waits() - _job_samples("tsg_job_queue_wait_seconds_bucket", labels)
+
+    before, slow_before = waits(), over_a_minute()
+    late = _insert_job(due_at=datetime.now(UTC) - timedelta(seconds=90))
+    jobs.run_leased_job(_task(), Collection.SESSIONS, late, 1, lambda _lease: None)
+    assert (waits(), over_a_minute()) == (before + 1, slow_before + 1)
 
 
 #: Routed ahead of their build step (BLUEPRINT §15, Steps 11-14): no module defines them yet, and nothing
@@ -611,7 +754,7 @@ def test_every_task_is_registered_and_routed() -> None:
 
 
 def _job_samples(name: str, labels: dict[str, str]) -> float:
-    return REGISTRY.get_sample_value(name, labels) or 0.0
+    return REGISTRY.get_sample_value(name, {"module": module_of(labels["task"]), **labels}) or 0.0
 
 
 def test_a_delivery_that_finds_its_job_taken_is_ignored_not_counted(published: list[str]) -> None:
@@ -659,12 +802,13 @@ def test_a_job_waiting_behind_others_is_not_sent_again(
 
 
 def test_the_waiting_message_count_reads_the_broker_queue() -> None:
-    """The real kombu path, key prefix included, against the test broker database."""
+    """The real kombu path, key prefix and each priority's list included, against the test broker database."""
     queue = f"tsg_test_{uuid.uuid4().hex[:8]}"
     assert count_waiting_messages(queue) == 0
-    celery_app.send_task(TaskName.REAP, queue=queue)
+    celery_app.send_task(TaskName.REAP, queue=queue, priority=Worker.NEXT_STAGE_PRIORITY)
+    celery_app.send_task(TaskName.REAP, queue=queue, priority=Worker.NEW_WORK_PRIORITY)
     try:
-        assert count_waiting_messages(queue) == 1
+        assert count_waiting_messages(queue) == 2
     finally:
         with celery_app.connection_for_write() as connection:
             connection.default_channel.queue_purge(queue)
@@ -766,7 +910,7 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     record = _records().find_one({"_id": stuck})
     assert sent == [] and record["status"] == Status.FAILED
     assert record["job"]["error"]["code"] == ErrorCode.JOB_ABANDONED and published == [stuck]
-    assert record["active"] is False and record["finished_at"] is not None
+    assert "active" not in record and record["finished_at"] is not None
     assert _job_samples("tsg_jobs_total", failures) == before + 1
     # A claim starts the count again: a job that once reached a worker is not given up for old re-sends.
     retried = _insert_job(resends=3)
@@ -774,11 +918,11 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     assert _records().find_one({"_id": retried})["job"]["resends"] == 0
 
 
-def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_job_that_stops_checking_its_lease_stops_renewing_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hung job (a deadlock, an endless loop) stops renewing, so the reaper takes it over, and makes no more
     AI calls meanwhile."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
-    monkeypatch.setattr(jobs.Lease, "MAX_JOB_SECONDS", 0.1)
+    monkeypatch.setattr(jobs.Lease, "STALL_SECONDS", 0.1)
     renewals: list[int] = []
     lease = SimpleNamespace(record_id="hung", renew=lambda: renewals.append(1) or True)
     with jobs.keep_lease_alive(lease):  # type: ignore[arg-type]
@@ -791,14 +935,13 @@ def test_a_job_running_past_its_time_limit_stops_renewing_its_lease(monkeypatch:
     assert 0 < renewed < 10
 
 
-def test_a_finished_job_frees_its_asset_and_says_when_it_ended(published: list[str]) -> None:
-    """Every end of a job sets active false and finished_at: otherwise the unique "one active run per asset"
-    index would block the asset for good after its first run."""
+def test_a_finished_job_says_when_it_ended_and_writes_no_active_field(published: list[str]) -> None:
+    """Every end of a job sets finished_at and writes no `active` field (nothing reads it, D44)."""
     record_id = _insert_job()
     finish = lambda lease: lease.update_job(ended_job_fields(Status.DONE))  # noqa: E731
     jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, finish)
     record = _records().find_one({"_id": record_id})
-    assert record["status"] == Status.DONE and record["active"] is False and record["finished_at"] is not None
+    assert record["status"] == Status.DONE and "active" not in record and record["finished_at"] is not None
 
 
 @pytest.mark.parametrize(
@@ -839,7 +982,7 @@ def test_a_job_failed_by_its_own_rule_keeps_its_code_and_is_not_retried(publishe
     with pytest.raises(JobFailed):
         jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, refuse)
     record = _records().find_one({"_id": record_id})
-    assert record["status"] == Status.FAILED and record["active"] is False and record["finished_at"]
+    assert record["status"] == Status.FAILED and "active" not in record and record["finished_at"]
     assert record["job"]["error"] == {
         "code": ErrorCode.PLAN_REFUSED,
         "message": "SYS2 has too little room in the landscape.",
@@ -889,7 +1032,7 @@ def test_a_lost_lease_is_raised_before_any_outage() -> None:
         raise_most_retryable([Unavailable("busy"), LeaseLost("run")])
 
 
-@pytest.mark.parametrize("ending", ["lease lost", "unusable answer", "outage", "unexpected error"])
+@pytest.mark.parametrize("ending", ["lease lost", "unusable answer", "outage", "waiting", "unexpected error"])
 def test_a_job_its_owner_cancelled_ends_quietly(published: list[str], ending: str) -> None:
     """G214 cross-check: a job cancelled while it ran counted as a success (its lost lease returned), or, when
     an answer came back unusable or an outage struck, as a failure (feeding the failure alert) or a retry. It
@@ -903,6 +1046,7 @@ def test_a_job_its_owner_cancelled_ends_quietly(published: list[str], ending: st
         raise {
             "unusable answer": JobFailed(ErrorCode.GENERATION_FAILED, "unusable"),
             "outage": Unavailable(ErrorMessage.AI_UNREACHABLE),
+            "waiting": WaitingForAnotherJob("controls being mapped"),
             "unexpected error": KeyError("x"),
         }[ending]
 

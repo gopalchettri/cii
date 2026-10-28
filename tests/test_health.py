@@ -50,11 +50,14 @@ def test_ready_checks_every_store_and_every_queue_has_a_worker(
     assert all(count >= 1 for count in body["workers"].values())
 
 
-def test_ready_is_503_when_a_queue_has_no_worker(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ready_stays_200_and_reports_a_queue_with_no_worker(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D50: one queue without a worker no longer takes every route out of service; NoWorker alerts on it."""
     online = dict.fromkeys(worker.ROUTED_QUEUES, 1) | {worker.ROUTED_QUEUES[0]: 0}
     monkeypatch.setattr(readiness, "count_online_workers", lambda _queues: online)
     response = client.get("/ready")
-    assert response.status_code == 503
+    assert response.status_code == 200
     assert response.json()["workers"] == online
 
 
@@ -258,7 +261,7 @@ def test_an_unreadable_worker_count_is_logged_once(
     monkeypatch.setattr(readiness, "count_online_workers", wrong_type)
     monkeypatch.setattr(readiness, "log", CountingLog())
     for _ in range(5):
-        assert client.get("/ready").status_code == 503
+        assert client.get("/ready").status_code == 200  # D50: workers are reported, never gate readiness
     assert warnings.count(LogEvent.WORKERS_UNKNOWN) == 1
 
 
@@ -300,14 +303,10 @@ def test_a_status_has_one_title_whoever_raises_it(client: TestClient) -> None:
 
 def test_a_refusal_carries_its_reason_fields_and_details(client: TestClient) -> None:
     """RFC 9457 problem body: `reason` says which rule refused, `errors` which fields, `details` what the
-    caller can act on (e.g. the id of the run already active on the asset)."""
+    caller can act on (e.g. the id of the admin job already running)."""
 
     def busy() -> None:
-        raise Conflict(
-            "Asset 103 already has an active run.",
-            reason="active_session_exists",
-            details={"active_session_id": "abc"},
-        )
+        raise Conflict("A job of this kind is running.", reason="job_in_progress", details={"job_id": "abc"})
 
     def invalid() -> None:
         raise Invalid(
@@ -318,9 +317,7 @@ def test_a_refusal_carries_its_reason_fields_and_details(client: TestClient) -> 
     client.app.add_api_route("/test-only/busy", busy)  # type: ignore[attr-defined]
     client.app.add_api_route("/test-only/invalid", invalid)  # type: ignore[attr-defined]
     conflict, refused = client.get("/test-only/busy").json(), client.get("/test-only/invalid").json()
-    assert conflict["reason"] == "active_session_exists" and conflict["details"] == {
-        "active_session_id": "abc"
-    }
+    assert conflict["reason"] == "job_in_progress" and conflict["details"] == {"job_id": "abc"}
     assert refused["errors"] == [{"field": "body.sector_id", "message": "Not the sub-sector's parent."}]
     assert "details" not in refused and "errors" not in conflict  # only what applies
 

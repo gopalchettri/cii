@@ -91,6 +91,10 @@ class IntelRefreshMessage(StrEnum):
     NOT_SENT = "The job queue is unreachable: the refresh was not started. Try again shortly."
     SOURCE_NOT_APPROVED = "The source '{source}' is not approved; approve it before refreshing it."
     SWITCH_OFF = "External intelligence is off: nothing was refreshed."
+    SOURCES_FAILED = (
+        "These feeds could not be imported and keep their last good data: {sources}. "
+        "GET /v1/tsg/intel/health says why."
+    )
 
 
 class IntelWorkEvent(StrEnum):
@@ -118,11 +122,6 @@ class IntelUrl:
     NVD_API: Final = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     ICS_CSAF: Final = "https://raw.githubusercontent.com/cisagov/CSAF/develop/csaf_files/OT/white/"
     ICS_CHANGES: Final = ICS_CSAF + "changes.csv"  # "<year>/<file>.json","<change time>", newest first
-    TERMS_NVD: Final = "https://nvd.nist.gov/developers/terms-of-use"
-    TERMS_CISA: Final = "https://www.cisa.gov/news-events/cybersecurity-advisories"
-    TERMS_KEV: Final = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
-    TERMS_EPSS: Final = "https://www.first.org/epss/"
-    TERMS_ATTACK: Final = "https://attack.mitre.org/resources/legal-and-branding/terms-of-use/"
 
 
 #: Hours between fetches of a source (ATT&CK is a large file that changes with a release).
@@ -146,6 +145,7 @@ class IntelLimits:
     STALE_AFTER_HOURS: Final = 48  # a source not refreshed this long marks its snapshot stale (still used)
     CLAIM_STALE_SECONDS: Final = 3_600  # a refresh claim this old belongs to a dead worker: taken over
     SWITCH_CACHE_SECONDS: Final = 60  # how long a process remembers the on/off switch
+    INDEX_AT_START_SECONDS: Final = 120  # a scenarios worker's longest wait for its index before it consumes
     MAX_REJECTED_PER_RUN: Final = 100  # quarantined rows kept per run, so one bad file cannot flood storage
     ICS_FIRST_RUN_MONTHS: Final = 24  # a first CISA ICS run reads only advisories changed this recently
     ICS_MAX_PER_RUN: Final = 400  # advisory files downloaded per run; the next run continues from there

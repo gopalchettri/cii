@@ -1,5 +1,6 @@
-"""A worker's intelligence steps at start, only with external intelligence on: build the evidence index in the
-background, and follow the active snapshot from a daemon thread. Neither blocks nor fails the start."""
+"""A worker's intelligence steps at start, only with external intelligence on: build the evidence index before
+the worker consumes (a bounded wait), and follow the active snapshot from a daemon thread. Neither fails the
+start."""
 
 import threading
 from collections.abc import Callable
@@ -9,6 +10,7 @@ import structlog
 from app.core.config import Settings
 from app.core.constants import IntelLimits, IntelWorkEvent
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
+from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
 from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
 
 log = structlog.get_logger(__name__)
@@ -18,15 +20,16 @@ KeeperProvider = Callable[[], EvidenceIndexKeeper]
 
 
 def warm_up_intelligence(switch: IntelligenceSwitch, keeper: KeeperProvider) -> None:
-    """Start building the evidence index in the background while the switch is on, so the first batch need
-    not wait for it; never raises."""
+    """Build the evidence index while the switch is on, waiting at most IntelLimits.INDEX_AT_START_SECONDS, so
+    the worker takes no batch before it can search; never raises."""
     try:
         if not switch.is_on():
             log.info(IntelWorkEvent.WARM_UP_SKIPPED)
             return
-        keeper().rebuild_index()  # a background future: not waited for
-    except Exception:  # a worker starts whatever the intelligence is doing
-        log.warning(IntelWorkEvent.WARM_UP_FAILED, exc_info=True)
+        keeper().rebuild_index().result(timeout=IntelLimits.INDEX_AT_START_SECONDS)
+    except Exception as exc:  # failed or late: the worker starts, a batch waits as for an outage
+        if not (isinstance(exc, EvidenceIndexRefused) and exc.no_data):  # no data yet: the keeper said so
+            log.warning(IntelWorkEvent.WARM_UP_FAILED, exc_info=True)
 
 
 def start_following_active_snapshot(

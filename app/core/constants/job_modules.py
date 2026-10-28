@@ -1,10 +1,30 @@
-"""Which product module each job works for (job.started/job.finished lines, GET /v1/admin/jobs), and what
-the job monitor answers."""
+"""Admin job kinds and limits, which product module each job works for (job.started/job.finished lines,
+GET /v1/admin/jobs), and what the job monitor answers."""
 
 from enum import StrEnum
 from typing import Final
 
-from app.core.constants.jobs import AdminJobKind, TaskName
+from app.core.constants.common import Collection
+from app.core.constants.jobs import TaskName
+
+
+class AdminJobKind(StrEnum):
+    """What an admin job does (tsg_admin_jobs.kind); one of each kind at a time."""
+
+    EMBEDDINGS_BUILD = "embeddings_build"  # the library's vectors made now, not at the next build
+    INTEL_REFRESH = "intel_refresh"  # external intelligence sources read now, not at the next check
+
+
+class AdminJobs:
+    STALE_AFTER_SECONDS: Final = 3_600  # a job not started this long is abandoned: a new request takes over
+    KEEP_DAYS: Final = 90  # tsg_admin_jobs retention (TTL on created_at)
+
+
+class AdminJobMessage(StrEnum):
+    IN_PROGRESS = "An embeddings build is already queued or running: details.job_id names it."
+    NOT_FOUND = "Admin job '{job_id}' does not exist."
+    NOT_SENT = "The job queue is unreachable: the build was not started. Try again shortly."
+    ABANDONED = "Its worker stopped (or it never started in {seconds} s): marked failed; a new one can start."
 
 
 class Module(StrEnum):
@@ -39,6 +59,24 @@ JOB_MODULES: Final[dict[str, Module]] = {
 ADMIN_JOB_TASKS: Final[dict[str, str]] = {
     AdminJobKind.EMBEDDINGS_BUILD: TaskName.BUILD_LIBRARY_INDEXES,
     AdminJobKind.INTEL_REFRESH: TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+}
+
+
+class AbandonReason(StrEnum):
+    """Why a job was given up (a job_abandoned error's reason); the job.failed lines carry the same words."""
+
+    WORKER_STOPPED = "abandoned"  # its worker stopped renewing its lease on every attempt
+    NEVER_STARTED = "never_started"  # sent again and again, or left queued, and no worker ever took it
+    WAITED_TOO_LONG = "waited_too_long"  # it waited Lease.MAX_WAIT_SECONDS for another job to finish
+
+
+#: The collection whose record carries each task's leased job: a refused send is noted there. A controls send
+#: has no job record of its own (its scenarios carry it), so it is not listed.
+JOB_RECORD_COLLECTIONS: Final[dict[str, Collection]] = {
+    TaskName.FIND_THREATS: Collection.SESSIONS,
+    TaskName.WRITE_SCENARIOS: Collection.SESSIONS,
+    TaskName.WRITE_PLAN: Collection.REMEDIATIONS,
+    TaskName.MAP_SERVICES: Collection.SERVICE_MAPPINGS,
 }
 
 

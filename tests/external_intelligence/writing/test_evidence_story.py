@@ -21,10 +21,10 @@ from app.core.constants import (
     IntelKind,
     IntelSource,
     PlanCheckStatus,
+    PromptVersion,
     Route,
     ScenarioStatus,
     StoryFindingCode,
-    StoryLimits,
     WriterStyle,
 )
 from app.core.exceptions import Unavailable
@@ -33,7 +33,6 @@ from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
     NO_EVIDENCE,
     PLAN_CHECK_SYSTEM_PROMPT,
-    WRITER_PROMPT_VERSION,
     WRITER_SYSTEM_PROMPT,
     build_brief,
     check_exact_rules,
@@ -55,7 +54,6 @@ from app.models.external_intelligence.evidence import Evidence
 from app.models.scenario.write import PlanCheck, ScenarioDraft, WrittenScenario
 from tests.external_intelligence.conftest import STORY_MARKED, STORY_PLAIN
 from tests.external_intelligence.fakes import TECHNIQUE
-from tests.fakes import WHY_APPLIES
 from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _CONSISTENT, _LIVE, _chat_answering, _plan_threat
 
@@ -104,16 +102,13 @@ _DRAFT = ScenarioDraft(
     "Loss of trusted control at Grid Control Centre could interrupt electricity transmission.",
     (),
     "SCADA server",
-    why_applies=WHY_APPLIES,
 )
 
 
-def _story_brief(
-    *items: Evidence, style: WriterStyle = WriterStyle.EVIDENCE_STORY, other: tuple[str, ...] = ()
-) -> Any:
+def _story_brief(*items: Evidence, style: WriterStyle = WriterStyle.EVIDENCE_STORY) -> Any:
     threat = _plan_threat(evidence=[item.as_doc() for item in items], intel_search={"query": "q"})
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
-    return build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, other, style)
+    return build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, style=style)
 
 
 def _codes(draft: ScenarioDraft, brief: Any) -> list[str]:
@@ -128,17 +123,12 @@ def _block_of(prompt: str) -> dict[str, Any]:
     return json.loads(prompt.split(EvidenceBlock.BEGIN + "\n", 1)[1].rsplit("\n" + EvidenceBlock.END, 1)[0])
 
 
-def test_the_original_style_never_reads_the_evidence_and_no_writer_reads_a_versions_citations() -> None:
-    """Off, nothing is read, searched or shown; a regenerate in either style differs from the path's
-    versions without their cited sentences."""
+def test_the_original_style_never_reads_the_evidence() -> None:
+    """Off, nothing is read, searched or shown."""
     brief = _story_brief(TECHNIQUE, style=WriterStyle.ORIGINAL)
     system, user = writer_prompt(brief)
     assert brief.evidence == () and system == with_word_limits(WRITER_SYSTEM_PROMPT) + NO_EVIDENCE
     assert "EVIDENCE (untrusted data)" not in user and "Sandworm" not in user
-    for style in WriterStyle:
-        _, user = writer_prompt(_story_brief(TECHNIQUE, style=style, other=(STORY_MARKED,)))
-        head = user.partition("\nEVIDENCE (untrusted data):\n")[0]
-        assert "Sandworm" not in head and "[1]" not in head and "A cybercriminal could begin" in head
 
 
 def test_the_evidence_reaches_the_model_only_as_plain_facts_inside_the_block() -> None:
@@ -217,10 +207,9 @@ def test_an_advisory_id_in_the_prose_is_blocked_with_no_reviewer_call(ident: str
         {"risk": "Loss of trusted control could interrupt transmission [1]."},
         {"title": "Loss of control integrity [1]"},
         {"assumptions": ("Assumes the firmware is unsigned [1].",)},
-        {"why_applies": f"{WHY_APPLIES} [1]"},
         {"system_reasons": (("SCADA server", "It holds the firmware [1]."),)},
     ],
-    ids=["statement", "risk", "title", "assumptions", "why_applies", "system_reasons"],
+    ids=["statement", "risk", "title", "assumptions", "system_reasons"],
 )
 def test_any_marker_the_writer_writes_blocks_in_both_styles(
     where: dict[str, Any], style: WriterStyle
@@ -280,7 +269,7 @@ def test_the_story_ends_with_one_precedent_built_from_its_entrys_own_facts(
     assert content["evidence"] == [cited.as_doc() | {"n": 1, "supports": claim}]
     assert [item.supports for item in build_scenario_view(record).evidence] == [claim]
     assert (
-        content["prompt_version"] == StoryLimits.PROMPT_VERSION
+        content["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
         and content["evidence_mode"] == "source-documented"
     )
     assert content["applicability"] == {str(a): 1 for a in [cited.applicability] if a}
@@ -318,7 +307,7 @@ def test_no_citable_source_is_written_without_evidence_never_failed(evidence: li
     content = record["content"]
     assert record["status"] == ScenarioStatus.DONE and content["statement"] == STORY_PLAIN
     assert (content["evidence_mode"], content["evidence"]) == (EvidenceMode.INFERRED, [])
-    assert content["prompt_version"] == WRITER_PROMPT_VERSION
+    assert content["prompt_version"] == PromptVersion.SCENARIO_WRITER
     assert content["intel_search"] == {"snapshot_id": "s"}
 
 
@@ -358,7 +347,7 @@ def test_one_citable_source_lets_the_story_be_written() -> None:
 
 _PASSAGE = (
     'In real-world attacks, APT41, a threat group, and FIN8, a threat group, have used the technique "Valid '
-    'Accounts". Attackers use it to keep access, which could let this attacker pass as a trusted operator.'
+    'Accounts".'
 )
 _CONFIRMED = _CONSISTENT | {"evidence_supported": True}
 
@@ -387,7 +376,7 @@ def test_a_passage_the_reviewer_confirms_ends_the_story_cited() -> None:
     assert [item.supports for item in build_scenario_view(record).evidence] == [supports]
     assert narrative_of(content) == STORY_PLAIN
     review = [prompt for task, prompt in chat.calls if task == AiTask.PLAN_CHECK]
-    assert len(review) == 1 and "pass as a trusted operator" in str(review[0])
+    assert len(review) == 1 and "APT41, a threat group, and FIN8" in str(review[0])
 
 
 @pytest.mark.parametrize(
@@ -462,8 +451,8 @@ def test_a_cited_record_that_is_no_technique_is_marked_about_and_told_by_its_fac
 
 
 def test_the_narrative_is_the_statement_without_its_cited_passage() -> None:
-    """A regenerate's writer and the word count read the narrative: a passage of two sentences, code's
-    precedent and a statement citing nothing."""
+    """The word count reads the narrative: a passage of two sentences, code's precedent and a statement
+    citing nothing."""
     passage = 'In real-world attacks, APT41 has used the technique "Valid Accounts". It could let one pass'
     told = {"statement": f"{STORY_PLAIN} {passage} [1].", "evidence": [{"n": 1, "supports": passage}]}
     claimed = {"statement": f"{STORY_PLAIN} {_GROUPS_CLAIM} [1].", "evidence": [{"supports": _GROUPS_CLAIM}]}

@@ -6,11 +6,19 @@ lists. Its live updates are in scenario.py. Each route makes one service call.""
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
-from fastapi import Header as HeaderParam
 
-from app.api.dependencies import Caller, CallersPlan, CallersRun, Limit, Offset, ScenarioId, SessionId
+from app.api.dependencies import (
+    Caller,
+    CallersPlan,
+    CallersRun,
+    IdempotencyKey,
+    Limit,
+    Offset,
+    ScenarioId,
+    SessionId,
+)
 from app.container import get_job_service, get_remediation_plan_service
-from app.core.constants import ApiTag, Decision, Header, Limits, Remediation, Status
+from app.core.constants import ApiTag, Decision, Limits, Remediation, Status
 from app.models.jobs.views import PlanCancelled
 from app.models.remediation.plan import (
     PlanRequested,
@@ -39,26 +47,31 @@ def request_plan(
     principal: Caller,
     plans: Plans,
     response: Response,
-    idempotency_key: Annotated[
-        str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
-    ] = None,
+    idempotency_key: IdempotencyKey,
 ) -> PlanStarted:
     """Start writing a remediation plan for one scenario: v1's one request for both kinds.
 
     - **is_manual=false**: send `session_id` and `scenario_id` of an ACCEPTED scenario of that run.
-    - **is_manual=true**: send `manual_scenario` (a scenario a person wrote) and an `Idempotency-Key` header.
-      TSG saves the scenario, accepts it and plans it. The same key and body again: 200, `replayed: true`.
+    - **is_manual=true**: send `manual_scenario` (a scenario a person wrote). TSG saves the scenario, accepts
+      it and plans it. With an `Idempotency-Key` header, the same key and body again: 200, `replayed: true`;
+      if that plan failed for an outage (`error.code` `unavailable`), its version is written again: 202.
+      Without one, the same body again within a minute is 409 `duplicate_request`.
 
-    Every other field is the register's data; all are optional. Answers 202 at once with `remediation_id`,
-    `session_id` and `scenario_id`: keep the last two, because every later call on the plan takes them in its
-    address. No AI is called here: the plan job matches the scenario's controls (and a hand-written one's
-    attacker) if they are missing, then writes the plan; poll `GET .../treatment-plan/status` until
-    `latest_status` is `done`.
+    Every other field is the register's data; all are optional. `supporting_systems_applicable_to_risk` names
+    the asset's systems the risk applies to (none: the asset itself), and
+    `supporting_systems_applicable_to_existing_controls` those the existing controls are on (none: no
+    system). Answers 202 at once with `remediation_id`, `session_id` and `scenario_id`: keep the last two,
+    because every later call on the plan takes them in its address. No AI is called here: the plan job
+    matches the scenario's controls (and a hand-written one's attacker) if they are missing, then writes the
+    plan; poll `GET .../treatment-plan/status` until `latest_status` is `done`.
 
     Errors: 404 scenario unknown or not in that run; 403 another entity's; 409 `scenario_not_accepted`,
-    `plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `control_library_empty`; 422 a
-    field, or the two kinds mixed."""
-    planned, created = plans.create_remediation_plan(principal, body, idempotency_key)
+    `plan_already_exists` (regenerate it instead), `idempotency_key_conflict`, `duplicate_request`,
+    `control_library_empty`, `run_being_deleted`; 422 a field, the two kinds mixed, or a listed system that is
+    not a supporting system of the scenario's asset."""
+    planned, created = plans.create_remediation_plan(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200
     return planned
@@ -68,7 +81,8 @@ def request_plan(
 def plan_status(plan: CallersPlan) -> RemediationStatus:
     """The cheap poll: `latest_status` queued → running → done (or failed / cancelled), the review `decision`
     (pending, accepted, rejected) and `progress.overall`, which says what to do next (generating,
-    awaiting_review, accepted, rejected, failed, cancelled). 404 when the scenario has no plan."""
+    awaiting_review, accepted, rejected, failed, cancelled; read_only when no version is decided and the
+    scenario is no longer accepted, so it cannot be reviewed). 404 when the scenario has no plan."""
     return plan
 
 
@@ -106,7 +120,9 @@ def regenerate_plan(
     """Send `{}`: the next version (2, 3, ...) is written from the same register data and the scenario's
     current controls; the earlier versions stay. Follow it with `.../status`, then accept the one you want:
     `.../review {"decision": "accepted", "version": 2}`. Allowed once the latest version is done, failed or
-    cancelled; 409 `generation_in_progress` before that."""
+    cancelled; 409 `generation_in_progress` before that. A latest version that failed for an outage
+    (`error.code` `unavailable`) is written again instead: the same version number, so it uses no version and
+    the version limit (409 `version_limit_reached`) does not stop it."""
     return plans.regenerate_remediation_plan(principal, plan.remediation_id)
 
 

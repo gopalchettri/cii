@@ -21,15 +21,15 @@ from app.core.constants import (
     EvidenceSearchFailure,
     Generation,
     IntelSource,
+    PromptVersion,
     ScenarioStatus,
     Status,
-    StoryLimits,
     TaskName,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import LeaseLost, Unavailable
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import WRITER_PROMPT_VERSION, scenario_id
+from app.domain.scenario.write import scenario_id
 from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import SNAPSHOT, TECHNIQUE, FakeFinder
@@ -68,7 +68,7 @@ def test_a_batch_searches_once_and_only_for_the_threats_it_writes(intel: Intel) 
     for scenario in stored:
         content = scenario["content"]
         assert content["evidence_mode"] == EvidenceMode.SOURCE_DOCUMENTED
-        assert content["prompt_version"] == StoryLimits.PROMPT_VERSION
+        assert content["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
         assert content["evidence"][0]["n"] == 1 and content["intel_search"]["query"]
 
 
@@ -199,7 +199,6 @@ def _start_regenerate(record_id: str, first: str) -> None:
         {
             "$set": {
                 "status": Status.QUEUED,
-                "active": True,
                 "job.task": TaskName.WRITE_SCENARIOS,
                 "job.epoch": 2,
                 "job.attempts": 0,
@@ -219,7 +218,7 @@ def test_a_regenerate_searches_again(intel: Intel) -> None:
     assert len(intel.finder.calls) == 2
     new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
     assert new["content"]["evidence"] != [] and new["content"]["intel_search"]["query"]
-    assert new["content"]["prompt_version"] == StoryLimits.PROMPT_VERSION
+    assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
 
 
 def _written_without_evidence(record_id: str) -> dict[str, Any]:
@@ -228,7 +227,8 @@ def _written_without_evidence(record_id: str) -> dict[str, Any]:
     scenarios = get_mongodb()[Collection.SCENARIOS]
     new = scenarios.find_one({"_id": scenario_id(record_id, "p1", 2)})
     assert scenarios.find_one({"_id": first})["superseded_by"] == new["_id"]
-    assert new["status"] == ScenarioStatus.DONE and new["content"]["prompt_version"] == WRITER_PROMPT_VERSION
+    assert new["status"] == ScenarioStatus.DONE
+    assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER
     assert (new["content"]["evidence_mode"], new["content"]["evidence"]) == (EvidenceMode.INFERRED, [])
     return new
 
@@ -258,7 +258,7 @@ def test_a_regenerate_is_written_in_the_style_of_its_own_delivery(intel: Intel) 
     intel.switch.enabled = True
     _start_regenerate(record_id, first)
     new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
-    assert new["content"]["prompt_version"] == StoryLimits.PROMPT_VERSION
+    assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
     assert new["content"]["evidence_mode"] == EvidenceMode.SOURCE_DOCUMENTED and len(intel.finder.calls) == 1
 
 
@@ -270,7 +270,7 @@ def test_a_regenerate_while_off_writes_a_story_again_as_the_original_writer(inte
     intel.switch.enabled = False
     _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
     new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
-    assert new["content"]["prompt_version"] == WRITER_PROMPT_VERSION
+    assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER
     assert "evidence_mode" not in new["content"]
 
 

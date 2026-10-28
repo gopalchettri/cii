@@ -18,7 +18,7 @@ SET IDENTITY_INSERT dbo.[option] ON;
 INSERT dbo.[option] (id, code) VALUES
     (1, N'priority'), (2, N'acc-channel'), (3, N'hosting-location'), (4, N'network-connectivity'), (5, N'dr-drill'),
     (6, N'managed-by'), (7, N'technology-used'), (8, N'database-platforms'), (9, N'targeted-users'),
-    (10, N'saas-platforms'), (11, N'pub-c-platforms');
+    (10, N'saas-platforms'), (11, N'pub-c-platforms'), (12, N'dependency-type');
 SET IDENTITY_INSERT dbo.[option] OFF;
 SET IDENTITY_INSERT dbo.option_value ON;
 -- The platform saves an option's value (1, 2, 3 ... per dropdown, never its id); priority alone is saved by id,
@@ -27,12 +27,14 @@ INSERT dbo.option_value (id, option_id, name, value) VALUES
     (1, 1, N'High', 5), (14, 1, N'Low', 5), (2, 2, N'Internal network', 1), (3, 3, N'On-premises', 1),
     (4, 4, N'Dedicated fibre', 1), (5, 5, N'Yearly', 1), (6, 6, N'In-house', 1), (7, 7, N'SCADA', 1),
     (8, 7, N'Historian', 2), (9, 7, N'Windows', 3), (10, 8, N'Microsoft SQL Server', 1),
-    (11, 9, N'Control room operators', 1), (12, 10, N'None', 1), (13, 11, N'Azure', 1);
+    (11, 9, N'Control room operators', 1), (12, 10, N'None', 1), (13, 11, N'Azure', 1),
+    (15, 12, N'Upstream', 1), (16, 12, N'Downstream', 2);
 SET IDENTITY_INSERT dbo.option_value OFF;
 
 SET IDENTITY_INSERT dbo.onboarding_sectors ON;
 INSERT dbo.onboarding_sectors (id, name, parent_id, is_deleted) VALUES
-    (10, N'Energy', NULL, 0), (11, N'Electricity', 10, 0), (12, N'Retired sub-sector', 10, 1);
+    (10, N'Energy', NULL, 0), (11, N'Electricity', 10, 0), (12, N'Retired sub-sector', 10, 1),
+    (13, N'Retired sector', NULL, 1), (14, N'Orphan sub-sector', 13, 0);
 SET IDENTITY_INSERT dbo.onboarding_sectors OFF;
 SET IDENTITY_INSERT dbo.onboarding_services ON;
 INSERT dbo.onboarding_services (id, name, is_deleted) VALUES
@@ -41,9 +43,13 @@ SET IDENTITY_INSERT dbo.onboarding_services OFF;
 UPDATE dbo.onboarding_services SET sector_id = 11, description = N'Transmits electricity.' WHERE id = 1;
 UPDATE dbo.onboarding_services SET sector_id = 10 WHERE id = 2;
 INSERT dbo.onboarding_sector_services (sector_id, service_id) VALUES
-    (11, 1), (10, 2), (12, 1), (11, 3);
+    (11, 1), (10, 2), (12, 1), (11, 3), (14, 2);
 UPDATE dbo.[group] SET name = N'Test Entity' WHERE id = 86;
-INSERT dbo.onboarding_service_entity (sector_id, service_id, group_id) VALUES (11, 1, 86);
+INSERT dbo.onboarding_service_entity (sector_id, service_id, group_id) VALUES (11, 1, 86), (14, 2, 86);
+-- Service 1 needs service 2 (upstream) and serves entity 86 (downstream); its link to the retired service 3
+-- is never shown.
+INSERT dbo.onboarding_dependencies (source_type, source_id, target_type, target_id, dependency_type_id) VALUES
+    (N'Service', 1, N'Service', 2, 15), (N'Service', 1, N'Service', 3, 15), (N'Service', 1, N'Entity', 86, 16);
 
 SET IDENTITY_INSERT dbo.ctm_scan_entity ON;
 INSERT dbo.ctm_scan_entity (id, type, name, ctm_category_id, description, operating_system, location, criticality,

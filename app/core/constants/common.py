@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.prompts import PROMPTS
+
 
 class Env(StrEnum):
     DEV = "dev"
@@ -88,6 +90,7 @@ class AiOutcome(StrEnum):
     OK = "ok"
     UNAVAILABLE = "unavailable"  # the provider busy or unreachable, after the retries
     UNREADABLE = "unreadable"  # an answer that cannot be used
+    TRUNCATED = "truncated"  # an answer cut off at its length limit
     ERROR = "error"  # anything else: a refused key, a bad request, a local model that would not load
 
 
@@ -103,8 +106,7 @@ class AiOutage(StrEnum):
 #: A failure card's message when an AI outage cost its path on the job's last try: the outage, then the tries.
 AI_PATH_OUTAGE_MESSAGE: Final = "{outage} This attack path got no answer in {tries} tries."
 
-#: HTTP statuses that tell the outage when the provider error's class does not: a request, gateway or origin
-#: timeout (408, 504, 524, 598, 599); an overloaded provider (503, and 529, Anthropic's "overloaded").
+#: HTTP statuses telling the outage when the error's class does not: a timeout, or an overloaded provider.
 AI_TIMED_OUT_STATUSES: Final = frozenset({408, 504, 524, 598, 599})
 AI_BUSY_STATUSES: Final = frozenset({503, 529})
 
@@ -123,52 +125,54 @@ class AiTask(StrEnum):
 
     RELEVANCE_GATE = "relevance_gate"
     GAP_FILL = "gap_fill"
+    THREAT_ACTIONS = "threat_actions"  # the actions a threat's name states, for the writer and reviewer
     WRITE_SCENARIO = "write_scenario"
+    REPAIR_SCENARIO = "repair_scenario"  # a draft written again for actions not carried out
     PLAN_CHECK = "plan_check"  # does the written scenario carry out its plan
     REMEDIATION_PLAN = "remediation_plan"
     EMBED = "embed"
     RERANK = "rerank"
 
 
-#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a retry differs.
+class PromptVersion:
+    """One number for every AI prompt's label: the version in app/prompts.toml."""
+
+    NUMBER: Final[int] = PROMPTS["version"]
+    PLANNER: Final = f"planner-{NUMBER}"  # plan.prompt_version ([scenario.gate], [scenario.gap_fill])
+    SCENARIO_WRITER: Final = f"scenario writer-{NUMBER}"  # content.prompt_version (writer, reviewer)
+    SCENARIO_WRITER_EVIDENCE: Final = f"scenario writer-evidence-{NUMBER}"  # a story's content.prompt_version
+    REMEDIATION: Final = f"remediation-{NUMBER}"  # every remediation plan version
+
+
+#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a new action
+#: (a new epoch) gets a new answer, while a re-delivery of the same job reads its accepted answer back.
 CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
+    AiTask.THREAT_ACTIONS: 0.0,
     AiTask.PLAN_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
+    AiTask.REPAIR_SCENARIO: None,
 }
 
+#: Most answer tokens per chat task: twice the most an ok call used (dev, thinking off), at least 2048,
+#: rounded up to 1024; an answer cut off at it is asked once more at the model's limit. Not listed, or a model
+#: thinking: the model's limit. remediation_plan: ~140 tokens a control (2601 at dev's most, 10; up to 50).
+CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
+    AiTask.RELEVANCE_GATE: 8192,  # most used: 3642 by a batch of 20 threats, 1877 by one of 10
+    AiTask.SERVICE_MAPPER: 4096,  # 1997, at 10 upstream and 10 downstream (SERVICE_MAPPER_*_TOTAL_COUNT)
+    AiTask.WRITE_SCENARIO: 3072,  # 1158
+    AiTask.REPAIR_SCENARIO: 3072,  # the writer's answer again
+    AiTask.PLAN_CHECK: 2048,  # 478
+    AiTask.THREAT_ACTIONS: 2048,  # the least: a few short phrases
+}
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
 #: Thinking off in the gateway models' chat templates (UAT probe, 2026-10-23): Kimi reads "thinking", GLM
 #: "enable_thinking"; each template ignores the other. Its own reasoning_effort did not stop GLM thinking.
 THINKING_OFF_TEMPLATE_KWARGS: Final = {"thinking": False, "enable_thinking": False}
-
-
-class AiLimits:
-    """The same for every model; per-model values live in app/ai/profiles.py."""
-
-    RETRIES: Final = 3  # a busy or unreachable provider is retried this many times, with back-off
-    RETRY_FIRST_WAIT_SECONDS: Final = 0.5  # then doubling
-    CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
-    # Prompt characters counted per token: real prompts measured 4.3-6.1 on Kimi-K2.6 (dev, 2026-10-23); 3
-    # leaves room for another tokenizer (glm) and non-English text.
-    PROMPT_CHARS_PER_TOKEN: Final = 3
-    SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod
-    API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
-    WORKER_SLOT_WAIT_SECONDS: Final = 300
-    SLOT_GRACE_SECONDS: Final = 30  # a slot outlives its call's longest run by this much
-    SLOT_FIRST_PAUSE_SECONDS: Final = 0.05  # polls for a free slot start this often, doubling ...
-    SLOT_MAX_PAUSE_SECONDS: Final = 1.0  # ... up to this
-    LOCAL_RERANK_TURN_DOCUMENTS: Final = 6  # documents one turn at the local CPU reranker scores
-    REASK_MAX_PROBLEMS: Final = 20  # the one corrective re-ask lists at most this many problems ...
-    REASK_PROBLEM_CHARS: Final = 200  # ... each cut to this
-    REASK_MESSAGE: Final = (
-        "Your previous reply was rejected:\n{problems}\n"
-        "Return the corrected JSON object only, in exactly the requested format."
-    )
 
 
 class EmbeddingCorpus(StrEnum):
@@ -209,14 +213,23 @@ class LogEvent(StrEnum):
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
     DEPENDENCY_UNAVAILABLE = "dependency.unavailable"
     MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
+    REDIS_EVICTION_POLICY = "redis.eviction_policy"  # at start: maxmemory-policy, error unless noeviction
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
     AI_CALL_UNAVAILABLE = "ai.call_unavailable"
+    AI_ANSWER_REUSED = "ai.answer_reused"  # this job got this exact conversation's answer before: no call
+    AI_ANSWER_LOOKUP_FAILED = "ai.answer_lookup_failed"  # the AI is asked instead
+    AI_FIRST_ANSWER_KEPT = "ai.first_answer_kept"  # a re-ask failed: the usable first answer, faults and all
     AI_GATEWAY_ROUTE = "ai.gateway_route"
+    AI_REQUEST_RATE_BUSY = "ai.request_rate_busy"
     AI_SLOTS_BUSY = "ai.slots_busy"
     AI_SLOT_FREE_FAILED = "ai.slot_free_failed"
+    # Redis failed: at cap 0 AI calls go ahead uncounted and unlimited, and requests unspaced; at any cap a
+    # 429 or an answer could not change the limit
+    AI_SLOTS_UNTRACKED = "ai.slots_untracked"
+    AI_LIMIT_CUT = "ai.limit_cut"  # a gateway 429 set the limit on AI calls in flight
     LIBRARY_RELOADED = "library.reloaded"
     LIBRARY_RETIRED_CONTROLS_MISSING = "library.retired_controls_missing"  # an old tsg_GetControlLibrary
     LIBRARY_THREAT_ASSET_TYPE_MISSING = "library.threat_asset_type_missing"  # an old tsg_GetThreatLibrary
@@ -230,6 +243,8 @@ class LogEvent(StrEnum):
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
+    WRITER_THREAT_ACTIONS_NOT_SPLIT = "writer.threat_actions_not_split"  # the writer and reviewer split it
+    WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"
@@ -242,22 +257,28 @@ class LogEvent(StrEnum):
     EMBEDDING_STORED_SIZE_WRONG = "embedding.stored_size_wrong"
     JOB_STARTED = "job.started"  # every task: its id, record/job id, worker and the API request that sent it
     JOB_FINISHED = "job.finished"  # the same with its outcome and seconds
+    WORKER_START_FAILED = "worker.start_failed"  # a worker that cannot start says why before it exits
+    CONTROLS_SWEPT = "controls.swept"  # the controls sweep's requeued and abandoned mappings, by run
     JOB_NOT_CLAIMED = "job.not_claimed"  # with its reason: missing, other_epoch, other_task, not_due, ...
     CLOCK_OFF = "clock.off"  # this pod's clock differs from MongoDB's by more than Clock.WARN_OVER_SECONDS
     JOB_LEASE_LOST = "job.lease_lost"
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted
     JOB_LEASE_RENEW_FAILED = "job.lease_renew_failed"
     JOB_RETRY_SCHEDULED = "job.retry_scheduled"
+    JOB_WAITING = "job.waiting"  # given back to look again: another job holds what it needs (not an outage)
     JOB_FAILED = "job.failed"
     JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
     JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback
-    JOB_TOO_LONG = "job.too_long"
+    JOB_STALLED = "job.stalled"  # no lease check for Lease.STALL_SECONDS: it stopped renewing its lease
+    JOB_HANDED_BACK = "job.handed_back"  # a stopping worker queued its running job again, no attempt used
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
+    WORKER_RERANKER_PRELOAD_FAILED = "worker.reranker_preload_failed"  # the first rerank loads it instead
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"
+    WORKER_JOB_HUNG = "worker.job_hung"  # a job thread ignored its lost lease: the liveness probe restarts it
     WORKER_NONE_ONLINE = "worker.none_online"
     WORKERS_UNKNOWN = "worker.count_unknown"
     EVENT_PUBLISH_FAILED = "event.publish_failed"

@@ -1,6 +1,7 @@
 """The scenario write job: one batch of a run's paths written at once, each saved as soon as it is done, then
 the set's next batch handed over, the set ended, or the regenerate ended."""
 
+import contextlib
 import contextvars
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,14 +15,16 @@ from app.ai import ChatModel
 from app.ai.common import outage_reason
 from app.core.clock import utc_now
 from app.core.constants import (
-    AI_OUTAGE_MESSAGES,
     AI_PATH_OUTAGE_MESSAGE,
     ErrorCode,
     ErrorMessage,
     FindingCode,
+    FindingMessage,
     Generation,
     Lease,
     LogEvent,
+    RunActionKind,
+    ScenarioStatus,
     TaskName,
     WriterStyle,
 )
@@ -33,7 +36,7 @@ from app.data_access.jobs.job_repository import JobLease
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
-from app.domain.scenario.write import evidence_problem, held_repeat_of
+from app.domain.scenario.write import evidence_problem, held_repeat_of, scenario_id
 from app.domain.shared.parallel import raise_most_retryable
 from app.models.library.library import ThreatLibrary
 from app.models.scenario.write import PathFailure
@@ -112,20 +115,26 @@ class BatchWriter:
         items = [item for item in run["job"].get("batch") or [] if item["path_id"] in self._progress.paths]
         self._batch = [item["path_id"] for item in items]
         self._replaces = {item["path_id"]: item["replaces"] for item in items if item.get("replaces")}
+        kind = (run.get("last_action") or {}).get("kind")
+        self._regenerate = bool(self._replaces) or kind == RunActionKind.REGENERATE  # or failure cards only
         self._evidence_waits: set[str] = set()  # paths held back by an evidence search outage
 
     def write(self) -> None:
-        """Write the batch's open paths, queue control mapping, settle any outage, then move the run on."""
-        to_write = self._saver.to_write(self._batch, self._replaces)
-        if not self._replaces:
-            to_write = self._without_repeats(to_write)
+        """Write the batch's open paths (control mapping queued as each scenario is saved), queue it again for
+        the whole batch, settle any outage, then move the run on."""
+        to_write = self._saver.to_write(self._batch, self._replaces, self._regenerate)
+        to_write = self._without_repeats(to_write)
         outages: dict[str, BaseException] = {}
+        paths = self._progress.paths
+        splits = ThreadPoolExecutor(Generation.WRITER_BATCH, thread_name_prefix="split")
+        for key in to_write:  # beside the evidence search, not after it; a write waits on its threat's lock
+            splits.submit(contextvars.copy_context().run, self._split_ahead, paths[key])
+        splits.shutdown(wait=False)  # ponytail: never joined; the writes take the splits as they finish
         if self._evidence is not None:
             self._evidence.attach(to_write)  # one evidence search for the paths about to be written
-            to_write = {key: others for key, others in to_write.items() if not self._held_back(key, outages)}
-        paths = self._progress.paths
-        path_jobs = {key: partial(self._paths.write, paths[key], others) for key, others in to_write.items()}
-        outages |= write_at_once(path_jobs, self._saver.save)
+            to_write = [key for key in to_write if not self._held_back(key, outages)]
+        path_jobs = {key: partial(self._paths.write, paths[key]) for key in to_write}
+        outages |= write_at_once(path_jobs, self._save)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
         # delivery that died or failed after saving must not leave its controls to the sweep. The controls
         # job claims each scenario once.
@@ -133,26 +142,40 @@ class BatchWriter:
             send_job(TaskName.MAP_CONTROLS, self._run["_id"], self._lease.epoch)
         if outages:
             self._settle_outages(outages)
-        if self._replaces:
-            self._progress.finish_regenerate(len(self._served_paths()), len(self._replaces))
+        if self._regenerate:
+            self._progress.finish_regenerate(len(self._served_paths()), len(self._batch))
         else:
             self._progress.continue_or_finish()
 
+    def _split_ahead(self, path: dict[str, Any]) -> None:
+        """A path's split, started early; a refused path (no AI call) or a fault is its write's to tell."""
+        with contextlib.suppress(Exception):
+            self._paths.split_ahead(path)
+
+    def _save(self, path_id: str, outcome: PathOutcome, started_at: datetime) -> None:
+        """Save one path's outcome; a scenario that now serves it has its controls mapped while the batch's
+        other paths are still being written (a message that finds the run being mapped costs one update)."""
+        self._saver.save(path_id, outcome, started_at)
+        if path_id in self._served_paths():
+            send_job(TaskName.MAP_CONTROLS, self._run["_id"], self._lease.epoch)
+
     def _served_paths(self) -> list[str]:
-        """The batch's paths served by a scenario written for it (a regenerate's: a new version)."""
+        """The batch's paths served by a scenario written for it (a regenerate's: a new version, or an
+        outage card's path written at last)."""
         paths = self._progress.paths
         return [key for key in self._batch if paths[key]["served"] not in (None, self._replaces.get(key))]
 
-    def _without_repeats(self, to_write: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
-        """Give up, with no AI call and no card, each path repeating a scenario the run's other paths hold
-        now (the asset's other sessions never block one: D15); a spare may take its place. The paths left to
-        write."""
-        if not to_write:
+    def _without_repeats(self, to_write: list[str]) -> list[str]:
+        """Give up, with no AI call and no new card, each path to write for the first time repeating a
+        scenario the run's other paths hold now (the asset's other sessions never block one: D15); a spare may
+        take its place (never in a regenerate). The paths left to write."""
+        first_writes = [path_id for path_id in to_write if path_id not in self._replaces]
+        if not first_writes:
             return to_write
         threats, repeat = self._paths.threats, FindingCode.NEAR_DUPLICATE
         own = self._scenarios.list_scenarios_for_duplicate_check(self._run["_id"])
-        left = dict(to_write)
-        for path_id in to_write:
+        left = list(to_write)
+        for path_id in first_writes:
             path = self._progress.paths[path_id]
             steps = path.get("steps") or []
             held_id = held_repeat_of(path, threats.get(steps[0], {}) if steps else {}, own)
@@ -164,8 +187,17 @@ class BatchWriter:
                     "repeats": held_id,
                 }
                 self._progress.abandon(path_id, state, repeat, threats)
-                del left[path_id]
+                self._card_says_it_repeats(path_id, held_id)
+                left.remove(path_id)
         return left
+
+    def _card_says_it_repeats(self, path_id: str, held_id: str) -> None:
+        """An outage's failure card on a path given up as a repeat says so instead: it is not regenerated."""
+        message = FindingMessage.NEAR_DUPLICATE.format(scenario_id=held_id)
+        failure = {"code": FindingCode.NEAR_DUPLICATE, "message": message}  # no outage reason any more
+        card_id = scenario_id(self._run["_id"], path_id, 1)
+        changes = {"failure": failure, "updated_at": utc_now()}
+        self._scenarios.update(changes, _id=card_id, status=ScenarioStatus.FAILED)
 
     def _held_back(self, path_id: str, outages: dict[str, BaseException]) -> bool:
         """Hold a story back while its threat's evidence search could not be made: it waits as an outage."""
@@ -183,18 +215,18 @@ class BatchWriter:
         paths_own_outage = (
             self._lease.attempts >= Lease.MAX_ATTEMPTS
             and all(isinstance(error, Unavailable) for error in errors)
-            and (bool(self._replaces) or bool(self._served_paths()))
+            and (self._regenerate or bool(self._served_paths()))
         )
         if not paths_own_outage:
             raise_most_retryable(errors)
-        log.warning(LogEvent.WRITER_OUTAGE_SETTLED, paths=list(outages), attempts=self._lease.attempts)
+        log.warning(LogEvent.WRITER_OUTAGE_SETTLED, paths=list(outages))  # the bound `attempt` is this try
         tries = self._lease.attempts
         for path_id, error in outages.items():  # an evidence outage keeps its own message
             outage = outage_reason(error)
             if path_id in self._evidence_waits:
                 message = str(error)
-            elif outage is not None:  # which AI outage it was, not only that the AI did not answer
-                message = AI_PATH_OUTAGE_MESSAGE.format(outage=AI_OUTAGE_MESSAGES[outage], tries=tries)
+            elif outage is not None:  # which AI outage it was, in its own words
+                message = AI_PATH_OUTAGE_MESSAGE.format(outage=str(error), tries=tries)
             else:
                 message = ErrorMessage.PATH_AI_UNAVAILABLE.format(tries=tries)
             self._saver.save(path_id, PathFailure(ErrorCode.UNAVAILABLE, message, reason=outage))

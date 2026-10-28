@@ -4,6 +4,7 @@ and the cancel of an intelligence import or an embeddings build."""
 
 from collections.abc import Callable, Iterable
 from datetime import datetime
+from functools import partial
 from typing import Any
 
 import structlog
@@ -60,7 +61,8 @@ class JobMonitorService:
             message = JobMonitorMessage.NOT_ADMIN_JOB.format(job_id=job_id, module=job.module)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         if not self._admin_jobs.cancel_admin_job(job_id, utc_now(), actor):
-            message = JobMonitorMessage.ALREADY_ENDED.format(job_id=job_id, status=job.status)
+            ended = self.get_job(job_id).status  # it may have ended since it was read
+            message = JobMonitorMessage.ALREADY_ENDED.format(job_id=job_id, status=ended)
             raise Conflict(message, reason=ConflictReason.NOTHING_TO_CANCEL)
         self._audit.create_audit_record(
             AuditAction.ADMIN_JOB_CANCELLED,
@@ -72,8 +74,15 @@ class JobMonitorService:
         return self.get_job(job_id)
 
     def list_jobs(  # noqa: PLR0913 — the list's filters: each one is needed
-        self, since: datetime, statuses: list[str], kind: str | None, limit: int, module: str | None = None
+        self,
+        since: datetime,
+        statuses: list[str],
+        kind: str | None,
+        limit: int,
+        module: str | None = None,
+        request_id: str | None = None,
     ) -> JobMonitor:
+        """The jobs active since `since`, newest first, narrowed by the filters, and each queue's state."""
         jobs = [
             _leased_job(collection, record)
             for collection, repository in self._leased.items()
@@ -85,22 +94,30 @@ class JobMonitorService:
         ]
         if module:
             jobs = [job for job in jobs if job.module == module]
+        if request_id:  # ponytail: filtered after each collection's newest `limit`: an older job is missed
+            jobs = [job for job in jobs if job.request_id == request_id]
         jobs.sort(key=lambda job: job.started_at or job.created_at or since, reverse=True)
         return JobMonitor(jobs=jobs[:limit], queues=self._queue_states())
 
     def _queue_states(self) -> dict[str, QueueState]:
-        workers = self._count_workers(self._queues)
+        """Each queue's waiting messages and workers online; a count Redis cannot give reads None."""
+        workers = _unknown_on_error(partial(self._count_workers, self._queues), count="workers_online")
         return {
-            queue: QueueState(waiting=self._waiting(queue), workers_online=workers.get(queue, 0))
+            queue: QueueState(
+                waiting=_unknown_on_error(partial(self._count_waiting, queue), queue=queue),
+                workers_online=None if workers is None else workers.get(queue, 0),
+            )
             for queue in self._queues
         }
 
-    def _waiting(self, queue: str) -> int | None:
-        try:
-            return self._count_waiting(queue)
-        except Exception:  # noqa: BLE001 — the broker unreachable: the list still answers, the count is unknown
-            log.warning(LogEvent.JOB_QUEUE_SIZE_UNKNOWN, queue=queue, exc_info=True)
-            return None
+
+def _unknown_on_error[T](read: Callable[[], T], **where: str) -> T | None:
+    """`read()`, or None when Redis cannot be read: the list still answers, the count is unknown."""
+    try:
+        return read()
+    except Exception:  # noqa: BLE001 — the broker unreachable: the list still answers, the count is unknown
+        log.warning(LogEvent.JOB_QUEUE_SIZE_UNKNOWN, **where, exc_info=True)
+        return None
 
 
 def _leased_job(collection: str, record: dict[str, Any]) -> MonitoredJob:
@@ -121,6 +138,9 @@ def _leased_job(collection: str, record: dict[str, Any]) -> MonitoredJob:
         error=job.get("error"),
         task_id=job.get("task_id"),
         worker=job.get("worker"),
+        request_id=job.get("request_id"),
+        lease_until=job.get("lease_until"),
+        resends=job.get("resends"),
     )
 
 
@@ -137,4 +157,6 @@ def _admin_job(record: dict[str, Any]) -> MonitoredJob:
         error=record.get("error"),
         task_id=record.get("task_id"),
         worker=record.get("worker"),
+        request_id=record.get("request_id"),
+        lease_until=record.get("lease_until"),  # its heartbeat while running
     )

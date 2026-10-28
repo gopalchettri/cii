@@ -3,6 +3,7 @@ themselves to the end of the set a person asked for; on the test MongoDB, with a
 
 import json
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -87,9 +88,8 @@ def _queued_run(
         {
             "_id": record_id,
             "entity_id": 86,
-            "asset_id": int(record_id[:6], 16),  # its own asset: one active run per asset is enforced
+            "asset_id": int(record_id[:6], 16),
             "status": Status.QUEUED,
-            "active": True,
             "context": CONTEXT.to_record(),
             "plan": {
                 "threats": threats,
@@ -161,7 +161,7 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     sends: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(jobs, "send_job", lambda *args: sends.append(args))
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args))
     monkeypatch.setattr(write_job, "send_job", lambda *args: sends.append(args))  # the controls messages
     return sends
 
@@ -192,23 +192,23 @@ def _scenarios_of(record_id: str) -> list[dict[str, Any]]:
     return list(get_mongodb()[Collection.SCENARIOS].find({"session_id": record_id}).sort("path_id", 1))
 
 
-def test_fourteen_paths_are_written_in_four_batches_by_themselves(
+def test_fourteen_paths_are_written_in_three_batches_by_themselves(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
-    """T-WRT-20 (S25-S26): 4 + 4 + 4 + 2, each batch handed on in a fenced write; one title per scenario; the
-    run ends complete, its counts from the scenarios."""
+    """T-WRT-20 (S25-S26): 6 + 6 + 2, each batch handed on in a fenced write; one title per scenario; the run
+    ends complete, its counts from the scenarios."""
     container.get_threat_scenario_repository().create_indexes()
     record_id = _queued_run([f"Threat {number}" for number in range(1, 15)])
     written_before = _settled("written")
-    assert _deliver_until_done(record_id) == 4
-    # Each batch hands the next to itself (3), and each sends one controls message ("card first, controls
-    # later", S34): reviewers see the scenarios while their controls are mapped.
-    assert [task for task, _, _ in sent].count(TaskName.WRITE_SCENARIOS) == 3
-    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 4
+    assert _deliver_until_done(record_id) == 3
+    # Each batch hands the next to itself (2); each scenario sends a controls message as it is saved and each
+    # batch one more ("card first, controls later", S34): reviewers see the scenarios while they are mapped.
+    assert [task for task, _, _ in sent].count(TaskName.WRITE_SCENARIOS) == 2
+    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 14 + 3
     assert _settled("written") == written_before + 14  # S27: tsg_scenarios_total{outcome}
     assert PUBLISHED.count(record_id) == 14  # T-WRT-19: a live update after every save
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,
@@ -225,6 +225,39 @@ def test_fourteen_paths_are_written_in_four_batches_by_themselves(
     assert {scenario["controls"]["status"] for scenario in stored} == {Status.QUEUED}
 
 
+def test_each_threat_is_split_while_the_evidence_is_searched(
+    chat: FakeChatModel, sent: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before: a threat's split (an AI call of 1-10 s, live 2026-10-27) began only after the batch's evidence
+    search (about 16 s on the GPU), so every story waited for both, one after the other. The splits now run
+    beside the search, each threat's once."""
+    container.get_threat_scenario_repository().create_indexes()
+    record_id = _queued_run(["Threat 1", "Threat 2"])
+    split_during_search: list[int] = []
+
+    class Evidence:
+        """The evidence search: it ends only once both splits have asked, or after 2 s."""
+
+        def __init__(self, _run: Any, threats: dict[str, dict[str, Any]], _progress: Any) -> None:
+            self._threats = threats
+
+        def attach(self, _path_ids: Any) -> None:
+            deadline = time.monotonic() + 2
+            while len(chat.asked(AiTask.THREAT_ACTIONS)) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            split_during_search.append(len(chat.asked(AiTask.THREAT_ACTIONS)))
+            for threat in self._threats.values():
+                threat["intel_search"] = {"snapshot_id": "s1", "failure": None}
+
+    job = container.get_scenario_write_job()
+    monkeypatch.setattr(job, "_switch", SimpleNamespace(is_on=lambda sure=False: True))
+    monkeypatch.setattr(job, "_evidence_at_write", Evidence)
+    assert _deliver_until_done(record_id) == 1
+    assert split_during_search == [2]
+    assert len(chat.asked(AiTask.THREAT_ACTIONS)) == 2  # each threat's once: the writes took the splits made
+    assert len(_scenarios_of(record_id)) == 2
+
+
 def test_the_run_writes_only_its_first_set_and_the_rest_wait_for_a_next_set(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
@@ -234,7 +267,7 @@ def test_the_run_writes_only_its_first_set_and_the_rest_wait_for_a_next_set(
     assert _deliver_until_done(record_id) == 1
     assert [task for task, _, _ in sent].count(TaskName.WRITE_SCENARIOS) == 0
     run = _sessions().find_one({"_id": record_id})
-    assert (run["status"], run["active"], run["last_action"]["outcome"]) == (
+    assert (run["status"], "active" in run, run["last_action"]["outcome"]) == (
         Status.DONE,
         False,
         RunActionOutcome.COMPLETE,
@@ -252,7 +285,7 @@ def test_a_job_with_no_set_writes_its_batch_and_stops(
     _sessions().update_one({"_id": record_id}, {"$unset": {"job.set": ""}})
     assert _deliver_until_done(record_id) == 1
     run = _sessions().find_one({"_id": record_id})
-    assert (run["status"], run["counts"]["written"], run["counts"]["remaining"]) == (Status.DONE, 4, 4)
+    assert (run["status"], run["counts"]["written"], run["counts"]["remaining"]) == (Status.DONE, 6, 2)
 
 
 def test_a_set_ends_complete_though_an_earlier_set_abandoned_a_path(
@@ -364,7 +397,8 @@ def test_a_retry_after_a_crash_still_sends_the_written_scenarios_controls_messag
     record_id = _queued_run(["Threat 1", "Threat 2"])
 
     def dies(*_: Any) -> None:
-        raise RuntimeError("the worker died")
+        if len(_scenarios_of(record_id)) == 2:  # every path saved: it dies before the next message
+            raise RuntimeError("the worker died")
 
     monkeypatch.setattr(write_job, "send_job", dies)
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
@@ -409,7 +443,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
     """Review fix 4: on the job's last try, with another path of the batch written, the outage is that path's
-    own: a failure card and an attempt, and the path is given up; the run no longer fails."""
+    own: a failure card and an attempt, and the path is left to the next set; the run no longer fails."""
 
     def threat_two_times_out(user_prompt: str) -> dict[str, Any]:
         if '"Threat 2"' in user_prompt:
@@ -421,7 +455,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     _write_batch(_on_last_try(record_id))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert stored[1]["failure"]["code"] == ErrorCode.UNAVAILABLE and run["plan"]["paths"][1]["attempts"] == 1
-    assert run["plan"]["paths"][1]["abandoned"] and run["status"] == Status.DONE
+    assert not run["plan"]["paths"][1]["abandoned"] and run["status"] == Status.DONE
 
 
 def test_a_path_the_ai_timed_out_on_gets_a_card_that_names_the_outage(
@@ -481,7 +515,7 @@ def test_a_last_try_that_fails_still_sends_the_saved_scenarios_controls_message(
     with pytest.raises(JobFailed):
         _write_batch(_on_last_try(record_id))
     assert len(_scenarios_of(record_id)) == 1
-    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 1
+    assert [task for task, _, _ in sent].count(TaskName.MAP_CONTROLS) == 2  # as it was saved, after the batch
 
 
 def test_a_written_path_another_delivery_gave_up_on_ends_served(
@@ -493,7 +527,7 @@ def test_a_written_path_another_delivery_gave_up_on_ends_served(
     _deliver_until_done(record_id)
     scenario_id = _scenarios_of(record_id)[0]["_id"]
     gave_up = {"plan.paths.0.served": None, "plan.paths.0.abandoned": True, "plan.paths.0.attempts": 5}
-    again = {"status": Status.QUEUED, "active": True, "job.batch": [], "job.attempts": 0}
+    again = {"status": Status.QUEUED, "job.batch": [], "job.attempts": 0}
     _sessions().update_one({"_id": record_id}, {"$set": gave_up | again})
     assert _deliver_until_done(record_id) == 1
     run = _sessions().find_one({"_id": record_id})

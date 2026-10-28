@@ -8,11 +8,13 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
+from structlog.testing import capture_logs
 
 from app.core.config import get_settings
-from app.core.constants import ErrorCode, ErrorMessage, Limits, StoredProcedure, Timeouts
+from app.core.constants import ErrorCode, ErrorMessage, Limits, LogEvent, StoredProcedure, Timeouts
 from app.core.database import StoredProcedureClient, get_stored_procedure_client
 from app.core.exceptions import Unavailable
+from app.core.logging import redact_error_text
 
 
 def test_every_sql_call_has_a_query_timeout() -> None:
@@ -81,6 +83,23 @@ def test_unreachable_store_answers_503_with_retry_after(
     assert response.headers["Retry-After"] == str(Limits.RETRY_AFTER_SECONDS)
     assert response.json()["code"] == ErrorCode.UNAVAILABLE
     assert response.json()["detail"] == expected_message
+
+
+def test_an_app_errors_driver_cause_is_logged_as_error_type_and_redacted_message(client: TestClient) -> None:
+    """The driver's error text goes in `message`, which the log redacts, and its class in `error_type`."""
+    path = "/test-only/raise/unavailable-with-cause"
+    driver_error = ServerSelectionTimeoutError("mongodb://tsg:pw-fake@mongo-0.mongo.svc.cluster.local:27017")
+
+    def raise_unavailable() -> None:
+        raise Unavailable(ErrorMessage.MONGO_UNREACHABLE) from driver_error
+
+    client.app.add_api_route(path, raise_unavailable)  # type: ignore[attr-defined]
+    with capture_logs() as logs:
+        assert client.get(path).status_code == 503
+    [line] = [line for line in logs if line["event"] == LogEvent.HTTP_APP_ERROR]
+    assert line["error_type"] == "ServerSelectionTimeoutError" and line["message"] == str(driver_error)
+    shown = redact_error_text(None, "warning", dict(line))["message"]
+    assert "pw-fake" not in shown and "svc.cluster.local" not in shown
 
 
 def test_a_login_sql_server_refuses_is_unavailable_not_a_500() -> None:

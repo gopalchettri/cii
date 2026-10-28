@@ -145,6 +145,7 @@ def test_all_searches_of_a_batch_are_embedded_in_one_call_and_an_unanswerable_on
     ]
     answers = index.find_candidates(searches, 3, ALL_SOURCES)
     assert embeddings.calls.count("query") == 1 and embeddings.query_texts == [QUERY, "Threat: phishing"]
+    assert embeddings.query_corpora == ["external_intelligence"]
     assert _ids(answers[0]) == ["T1"] and answers[2] == []
 
 

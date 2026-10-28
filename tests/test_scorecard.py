@@ -9,7 +9,7 @@ import pytest
 
 from app.core import config
 from app.core.config import Settings
-from app.core.constants import StoryLimits
+from app.core.constants import PromptVersion
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))  # it imports debug_tools from its own folder
@@ -45,7 +45,7 @@ def test_the_threat_and_risk_are_the_reviewers_verdicts() -> None:
 
 
 def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None:
-    story = {"prompt_version": StoryLimits.PROMPT_VERSION, "risk_statement": "Pumps stop."}
+    story = {"prompt_version": PromptVersion.SCENARIO_WRITER_EVIDENCE, "risk_statement": "Pumps stop."}
     entry = {"n": 1, "url": "https://example.test/a", "ref": "A"}
     assert scorecard.evidence({"content": story | {"statement": "Abuse [1].", "evidence": [entry]}}) == ""
     assert scorecard.evidence({"content": story | {"statement": "Abuse.", "evidence": [entry]}}) == (
@@ -54,7 +54,11 @@ def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None
     assert scorecard.evidence({"content": story | {"statement": "Abuse [2].", "evidence": [entry]}}) == (
         "markers [2] name no stored source"
     )
-    plain = {"prompt_version": "scenario writer-1", "statement": "Abuse.", "risk_statement": "Stop."}
+    plain = {
+        "prompt_version": PromptVersion.SCENARIO_WRITER,
+        "statement": "Abuse.",
+        "risk_statement": "Stop.",
+    }
     assert scorecard.evidence({"content": plain}) == ""
     assert (
         scorecard.evidence({"content": plain | {"statement": "Abuse [1]."}})
@@ -66,7 +70,7 @@ def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None
 def test_a_nearest_story_and_one_written_without_evidence_pass() -> None:
     """Owner 2026-10-19: the nearest evidence is cited like any other; none found, the card is written
     without (inferred) and passes with a note. An on-story with a mode but no citation still fails."""
-    story = {"prompt_version": StoryLimits.PROMPT_VERSION, "risk_statement": "Pumps stop."}
+    story = {"prompt_version": PromptVersion.SCENARIO_WRITER_EVIDENCE, "risk_statement": "Pumps stop."}
     entry = {"n": 1, "url": "https://example.test/a", "ref": "A", "nearest": True}
     cited = {"statement": "Abuse [1].", "evidence": [entry], "evidence_mode": "nearest"}
     nearest = {"content": story | cited}
@@ -74,7 +78,11 @@ def test_a_nearest_story_and_one_written_without_evidence_pass() -> None:
     for mode in ("nearest", "source-documented"):
         uncited = {"content": story | {"statement": "Abuse.", "evidence": [entry], "evidence_mode": mode}}
         assert scorecard.evidence(uncited) == "cites no evidence"
-    plain = {"prompt_version": "scenario writer-1", "statement": "Abuse.", "risk_statement": "Stop."}
+    plain = {
+        "prompt_version": PromptVersion.SCENARIO_WRITER,
+        "statement": "Abuse.",
+        "risk_statement": "Stop.",
+    }
     without = {"content": plain | {"evidence_mode": "inferred", "evidence": []}}
     assert scorecard.evidence(without) == "" and scorecard.evidence_note(without) == scorecard.WRITTEN_WITHOUT
     assert scorecard.WRITTEN_WITHOUT == "no evidence found: written without"

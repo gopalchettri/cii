@@ -47,24 +47,45 @@ os.environ["EXTERNAL_INTELLIGENCE_ENABLED"] = "false"
 
 from app.core.config import Settings  # noqa: E402  # reads .env only; builds no client
 
+
+def _database_number(url: str) -> int:
+    """The Redis database a URL names (none = 0)."""
+    return int(urlsplit(url).path.lstrip("/") or 0)
+
+
+def _test_redis_numbers(value: str, developers: set[int]) -> list[int]:
+    """The two spare Redis databases of CII_TEST_REDIS_DATABASES: never the developer's own (their .env's, and
+    0 and 1, the laptop stack's and v1's)."""
+    numbers = [int(number) for number in value.split(",")]
+    assert len(numbers) == len(set(numbers)) == 2, "CII_TEST_REDIS_DATABASES: two spare databases"
+    assert not ({0, 1} | developers) & set(numbers), "CII_TEST_REDIS_DATABASES: never the developer's own"
+    return numbers
+
+
 #: The same Redis server, other databases. The laptop's stack (and v1) use 0 and 1: there its worker would
 #: take the tests' job messages, and its /ready would count the tests' made-up workers as its own.
 #: Two checkouts testing at once each set CII_TEST_REDIS_DATABASES to their own pair of EMPTY spare databases:
 #: Redis databases are numbered, not named, so they cannot be per checkout by themselves (on this laptop 8-12
-#: hold other data). The claim below stops a second run on the same pair, or a run on a database holding other
-#: data, at once: never a silent wipe.
-_TEST_REDIS_NUMBERS = [int(n) for n in os.environ.get("CII_TEST_REDIS_DATABASES", "14,15").split(",")]
-assert len(set(_TEST_REDIS_NUMBERS)) == 2 and not {0, 1} & set(_TEST_REDIS_NUMBERS), "two spare databases"
-TEST_REDIS_DATABASES = dict(zip(("redis_url", "redis_celery_broker_url"), _TEST_REDIS_NUMBERS, strict=True))
-#: Who runs tests on the test Redis databases now (a crashed run's claim ends by itself), and the mark a test
-#: database keeps between runs, so a database holding anything else is never emptied.
-TEST_RUN_KEY, TEST_RUN_CLAIM_SECONDS, TEST_DATABASE_MARK = "tsg:tests:running", 900, "tsg:tests:database"
+#: hold other data). The claim below stops a second run on the same pair, or on a pair sharing one database,
+#: or a run on a database holding other data, at once: never a silent wipe.
 _laptop = Settings()  # type: ignore[call-arg]  # the values come from .env
+_TEST_REDIS_NUMBERS = _test_redis_numbers(
+    os.environ.get("CII_TEST_REDIS_DATABASES", "14,15"),
+    {_database_number(_laptop.redis_url), _database_number(_laptop.redis_celery_broker_url)},
+)
+TEST_REDIS_DATABASES = dict(zip(("redis_url", "redis_celery_broker_url"), _TEST_REDIS_NUMBERS, strict=True))
+#: Who runs tests on the test Redis databases now, claimed in both and renewed while the run lasts (a crashed
+#: run's claim ends by itself), and the mark a test database keeps between runs, so a database holding
+#: anything else is never emptied.
+TEST_RUN_KEY, TEST_RUN_CLAIM_SECONDS, TEST_DATABASE_MARK = "tsg:tests:running", 900, "tsg:tests:database"
+TEST_RUN = f"{CHECKOUT}:{os.getpid()}"
+TEST_RUN_RENEW_SECONDS = 60
 for _field, _number in TEST_REDIS_DATABASES.items():
     _url = urlsplit(getattr(_laptop, _field))._replace(path=f"/{_number}").geturl()
     os.environ[f"CII_{_field.upper()}"] = _url
 
 import math  # noqa: E402
+import time  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 
 import pytest  # noqa: E402
@@ -97,13 +118,12 @@ def empty_test_database() -> Iterator[None]:
     never only after the test that happened to make them."""
     database = get_mongodb()
     assert database.name == TEST_DATABASE  # never the developer's own data
-    run = f"{CHECKOUT}:{os.getpid()}"
-    _claim_test_redis_databases(run)  # empties them too: messages no worker took, made-up workers' heartbeats
+    _claim_test_redis_databases(TEST_RUN)  # empties them too: messages no worker took, made-up workers' beats
     database.client.drop_database(TEST_DATABASE)
     create_all_indexes(JOB_COLLECTIONS)
     yield
     database.client.drop_database(TEST_DATABASE)
-    _release_test_redis_databases(run)
+    _release_test_redis_databases(TEST_RUN)
 
 
 def _test_redis(field: str) -> Redis:
@@ -113,33 +133,53 @@ def _test_redis(field: str) -> Redis:
 
 
 def _claim_test_redis_databases(run: str) -> None:
-    """One run at a time on the test Redis databases: a second run (this checkout's or another's), or a run
-    pointed at databases holding other data, stops at once with what to do, never emptying them. Claimed,
-    emptied and marked in one transaction per database."""
+    """One run at a time on each test Redis database: a second run (this checkout's or another's, on the same
+    pair or on a pair sharing one database), or a run pointed at databases holding other data, stops at once
+    with what to do, never emptying them. Each database claimed, then emptied and marked in one go."""
     numbers = ",".join(map(str, TEST_REDIS_DATABASES.values()))
     with _test_redis("redis_url") as redis, _test_redis("redis_celery_broker_url") as broker:
-        if any(db.dbsize() and not db.exists(TEST_DATABASE_MARK) for db in (redis, broker)):
+        databases = (redis, broker)
+        if any(db.dbsize() and not db.exists(TEST_DATABASE_MARK) for db in databases):
             _stop(
                 f"The Redis databases {numbers} hold data that is not a TSG test run's (or a run without "
                 "this claim is using them). Set CII_TEST_REDIS_DATABASES to two empty spare databases."
             )
-        if not redis.set(TEST_RUN_KEY, run, nx=True, ex=TEST_RUN_CLAIM_SECONDS):
-            holder = (redis.get(TEST_RUN_KEY) or b"?").decode()
+        refused = [
+            db for db in databases if not db.set(TEST_RUN_KEY, run, nx=True, ex=TEST_RUN_CLAIM_SECONDS)
+        ]
+        if refused:
+            holders = ", ".join(sorted({(db.get(TEST_RUN_KEY) or b"?").decode() for db in refused}))
+            for db in databases:  # only the claims this run just made
+                if db.get(TEST_RUN_KEY) == run.encode():
+                    db.delete(TEST_RUN_KEY)
             _stop(
-                f"Another test run ({holder}) is using the test Redis databases {numbers}. Wait for it to "
+                f"Another test run ({holders}) is using the test Redis databases {numbers}. Wait for it to "
                 f"end (a crashed run's claim ends within {TEST_RUN_CLAIM_SECONDS // 60} minutes), or set "
                 "CII_TEST_REDIS_DATABASES to two empty spare databases."
             )
-        _empty_and_mark(broker)
-        _empty_and_mark(redis, (TEST_RUN_KEY, run))
+        for db in databases:
+            _empty_and_mark(db, (TEST_RUN_KEY, run))
+
+
+def _renew_test_redis_claim(run: str) -> None:
+    """Keeps this run's claim on both databases alive; a claim that ran out stops the run at once, since
+    another run may have emptied the databases since."""
+    with _test_redis("redis_url") as redis, _test_redis("redis_celery_broker_url") as broker:
+        for db in (redis, broker):
+            if db.get(TEST_RUN_KEY) != run.encode():
+                _stop(
+                    "This run's claim on the test Redis databases ran out (a pause longer than "
+                    f"{TEST_RUN_CLAIM_SECONDS // 60} minutes?); another run may have emptied them. Run again."
+                )
+            db.expire(TEST_RUN_KEY, TEST_RUN_CLAIM_SECONDS)
 
 
 def _release_test_redis_databases(run: str) -> None:
-    """Emptied at the end only while still ours: a run whose claim ran out never empties the next run's."""
+    """Each emptied at the end only while still ours: a run whose claim ran out never empties another's."""
     with _test_redis("redis_url") as redis, _test_redis("redis_celery_broker_url") as broker:
-        if redis.get(TEST_RUN_KEY) == run.encode():
-            _empty_and_mark(broker)
-            _empty_and_mark(redis)
+        for db in (redis, broker):
+            if db.get(TEST_RUN_KEY) == run.encode():
+                _empty_and_mark(db)
 
 
 def _empty_and_mark(db: Redis, claim: tuple[str, str] | None = None) -> None:
@@ -154,18 +194,35 @@ def _stop(message: str) -> None:
     pytest.exit(message, returncode=3)
 
 
+_claim_renewed_at = -math.inf
+
+
 @pytest.fixture(autouse=True)
-def loggers_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+def claim_on_test_redis_kept() -> None:
+    """Before a test, at most once a TEST_RUN_RENEW_SECONDS: this run's claim renewed, or the run stopped if
+    it ran out."""
+    # ponytail: renewed between tests only, so one test (or a debugger pause) longer than
+    # TEST_RUN_CLAIM_SECONDS still loses it; a renewing thread if that ever happens.
+    global _claim_renewed_at
+    if time.monotonic() - _claim_renewed_at >= TEST_RUN_RENEW_SECONDS:
+        _renew_test_redis_claim(TEST_RUN)
+        _claim_renewed_at = time.monotonic()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def loggers_never_cached() -> Iterator[None]:
     """The app caches each module's logger on first use (cache_logger_on_first_use, for speed): a logger first
     used inside a test's capture_logs kept writing to that capture, so a later test saw none of its lines
     (2026-10-12: test_library's warning after test_asset_types). In tests a logger is never cached, also once
     a test starts a worker or the app: configure_logging turned caching back on mid-test, and lifecycle's
-    logger stayed bound to that test's set-up (2026-10-23: test_job_monitor's job lines after test_worker)."""
+    logger stayed bound to that test's set-up (2026-10-23: test_job_monitor's job lines after test_worker).
+    For the whole run, so also while a session fixture starts the app (`client`) before any test begins."""
     configure = structlog.configure
     configure(cache_logger_on_first_use=False)
-    monkeypatch.setattr(
-        structlog, "configure", lambda **options: configure(**options | {"cache_logger_on_first_use": False})
-    )
+    never_cached = {"cache_logger_on_first_use": False}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(structlog, "configure", lambda **options: configure(**options | never_cached))
+        yield
 
 
 @pytest.fixture(autouse=True)

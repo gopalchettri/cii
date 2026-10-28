@@ -11,7 +11,17 @@ import structlog
 
 from app.core import metrics
 from app.core.clock import utc_now
-from app.core.constants import ADMIN_JOB_TASKS, ErrorCode, ErrorMessage, Lease, LogEvent, TaskName, module_of
+from app.core.constants import (
+    ADMIN_JOB_TASKS,
+    AbandonReason,
+    ErrorCode,
+    ErrorMessage,
+    Lease,
+    LogEvent,
+    TaskName,
+    Worker,
+    module_of,
+)
 from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, REDIS_UNAVAILABLE_ERRORS
 from app.data_access.admin.admin_job_repository import AdminJobRepository
@@ -26,6 +36,7 @@ log = structlog.get_logger(__name__)
 def reap_jobs() -> None:
     """Every minute: give back jobs whose worker stopped renewing the lease (or fail them after
     Lease.MAX_ATTEMPTS), and re-send jobs left queued (a send that never reached the broker)."""
+    metrics.record_reaper_time(metrics.REAPER_LAST_START)  # a pass that fails or hangs still started
     now = utc_now()
     stale_queued = now - timedelta(seconds=Lease.REQUEUE_QUEUED_AFTER_SECONDS)
     queue_is_empty = _queue_sizes_read_once()
@@ -42,20 +53,19 @@ def reap_jobs() -> None:
         _count_jobs_now(admin_jobs, now)
     except Exception:  # noqa: BLE001 — a count for Grafana never fails the reaper's repairs
         log.warning(LogEvent.JOB_REAP_FAILED, step="count_jobs_now", exc_info=True)
-    metrics.REAPER_LAST_PASS.set_to_current_time()  # a pass that ends in an error above never gets here
+    metrics.record_reaper_time(metrics.REAPER_LAST_PASS)  # a pass that ends in an error above never gets here
 
 
 def _announce_abandoned_admin_job(job: dict[str, Any]) -> None:
     """One job.failed line under the job's own task and module, not the reaper's (the dashboard groups failed
     jobs by task), counted as a failure: its worker died, so no task outcome was ever recorded."""
     task = ADMIN_JOB_TASKS.get(job.get("kind", ""), job.get("kind") or "unknown")
-    metrics.JOBS.labels(task, "failure").inc()
+    metrics.count_job(task, "failure")
     log.warning(
         LogEvent.JOB_FAILED,
         task=task,
         module=module_of(task),
         record_id=job["_id"],
-        reason="abandoned",
         **job["error"],
     )
 
@@ -127,25 +137,47 @@ def _settle_expired_job(
 ) -> None:
     job = record["job"]
     attempts = job.get("attempts", 0)
-    # The job's own task and module, not the reaper's: the dashboard groups failed jobs by them.
-    job_log = log.bind(task=job["task"], module=module_of(job["task"]), record_id=record["_id"])
+    job_log = _job_log(record)
     if attempts >= Lease.MAX_ATTEMPTS:
         error = {
             "code": ErrorCode.JOB_ABANDONED,
             "message": ErrorMessage.JOB_ABANDONED.format(attempts=attempts),
+            "reason": AbandonReason.WORKER_STOPPED,
         }
         if not jobs.requeue_or_fail_expired_job(record, now, error):
             return  # its worker renewed or finished in between
         # Counted as a job failure: the worker died mid-job, so no task outcome was ever recorded, and
         # JobsFailing would otherwise never hear of this run.
-        metrics.JOBS.labels(job["task"], "failure").inc()
-        job_log.warning(LogEvent.JOB_FAILED, reason="abandoned", attempts=attempts, **error)
+        metrics.count_job(job["task"], "failure")
+        job_log.warning(LogEvent.JOB_FAILED, attempt=attempts, **error)
     else:
         if not jobs.requeue_or_fail_expired_job(record, now):
             return  # its worker renewed or finished in between
-        job_log.info(LogEvent.JOB_REQUEUED, reason="lease_expired", attempts=attempts)
-        send_job(job["task"], record["_id"], job["epoch"])
+        job_log.warning(LogEvent.JOB_REQUEUED, reason="lease_expired", attempt=attempts)  # a worker died
+        _send_again(record)
     publish(record["_id"])
+
+
+def _send_again(record: dict[str, Any]) -> bool:
+    """Send the record's job again under its API request's id: the new delivery's first line names it."""
+    job = record["job"]
+    request = {"request_id": job["request_id"]} if job.get("request_id") else {}
+    with structlog.contextvars.bound_contextvars(**request):
+        return send_job(job["task"], record["_id"], job["epoch"], priority=Worker.NEXT_STAGE_PRIORITY)
+
+
+def _job_log(record: dict[str, Any]) -> Any:
+    """A logger with the job's own task, delivery, worker, epoch and request id, overriding the reaper's."""
+    job = record["job"]
+    return log.bind(
+        task=job["task"],
+        module=module_of(job["task"]),  # the dashboard groups failed jobs by task and module
+        record_id=record["_id"],
+        task_id=job.get("task_id"),
+        worker=job.get("worker"),
+        epoch=job.get("epoch"),
+        request_id=job.get("request_id"),
+    )
 
 
 def _resend_queued_job(
@@ -156,25 +188,28 @@ def _resend_queued_job(
     *,
     counted: bool,
 ) -> None:
-    """Send a queued job again (`counted`: one more send toward Lease.MAX_ATTEMPTS), or fail it once it was
-    sent that often and never started."""
+    """Send a queued job again (`counted`: a send the broker takes counts toward Lease.MAX_ATTEMPTS), or fail
+    it once it was sent that often and never started."""
     job = record["job"]
-    sends = job.get("resends", 0)
-    # The job's own task and module, not the reaper's: the dashboard groups failed jobs by them.
-    job_log = log.bind(task=job["task"], module=module_of(job["task"]), record_id=record["_id"])
-    if sends >= Lease.MAX_ATTEMPTS:
+    resends = job.get("resends", 0)
+    job_log = _job_log(record)
+    if resends >= Lease.MAX_ATTEMPTS:
         # Never claimed after so many sends (its task is not registered, or its message is always refused):
         # failed, counted and announced, instead of re-sent every 2 minutes for ever with no alert.
         error = {
             "code": ErrorCode.JOB_ABANDONED,
-            "message": ErrorMessage.JOB_NEVER_STARTED.format(sends=sends),
+            "message": ErrorMessage.JOB_NEVER_STARTED.format(sends=resends),
+            "reason": AbandonReason.NEVER_STARTED,
         }
         if jobs.resend_or_fail_unsent_job(record, now, counted=False, error=error):
-            metrics.JOBS.labels(job["task"], "failure").inc()
-            job_log.warning(LogEvent.JOB_FAILED, reason="never_started", sends=sends, **error)
+            metrics.count_job(job["task"], "failure")
+            job_log.warning(LogEvent.JOB_FAILED, resends=resends, **error)
             publish(record["_id"])
         return
     # Moving due_at forward first means one re-send per REQUEUE_QUEUED_AFTER_SECONDS, never one per minute.
-    if jobs.resend_or_fail_unsent_job(record, now, counted=counted):
-        job_log.info(LogEvent.JOB_REQUEUED, reason="never_picked_up", sends=sends + counted)
-        send_job(job["task"], record["_id"], job["epoch"])
+    if not jobs.resend_or_fail_unsent_job(record, now, counted=False):
+        return
+    job_log.info(LogEvent.JOB_REQUEUED, reason="never_picked_up", resends=resends)
+    # Counted only once the broker took it: a broker outage never fails a healthy job as never started.
+    if _send_again(record) and counted:
+        jobs.count_resend(record, now)

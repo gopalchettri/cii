@@ -12,21 +12,34 @@ from pymongo.collection import Collection as MongoCollection
 from app.core.clock import utc_now
 from app.core.constants import (
     Collection,
+    ErrorMessage,
     Lease,
     RunActionOutcome,
     Status,
     TaskName,
 )
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
+from app.core.logging import current_request_id
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
+#: What a claim reads of every job: its lease carries them, with the task's own fields.
+_CLAIM_FIELDS = (
+    "job.attempts",
+    "job.due_at",
+    "job.lease_until",
+    "job.request_id",
+    "job.waiting",
+    "job.waiting_since",
+)
 
 
 def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[str, Any]:
-    """A queued job, due now, never claimed; `fields` add the task's own inputs."""
+    """A queued job, due now, never claimed, with the id of the API request that made it (each stage logs
+    it); `fields` add the task's own inputs."""
     return {
         "task": task,
         "epoch": epoch,
+        "request_id": current_request_id(),
         "task_id": None,
         "attempts": 0,
         "due_at": now,
@@ -38,14 +51,24 @@ def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[st
 
 
 def ended_job_fields(status: Status, now: datetime | None = None) -> dict[str, Any]:
-    """A job's last fields on every path that ends one: `active` false frees the asset, the lease ends, and
-    no retry notice is left."""
+    """A job's last fields on every path that ends one: the lease ends and no retry notice is left."""
     return {
         "status": status,
-        "active": False,
         "finished_at": now or utc_now(),
         "job.lease_until": None,
         "job.retry": None,
+    }
+
+
+def retry_notice(reason: str | None, message: str, attempt: int | str, retry_at: datetime) -> dict[str, Any]:
+    """The job.retry notice a status shows until the next try is claimed (a RetryNotice but its stage): why
+    the job waits, which try failed (or an update pipeline's field path), when the next one comes."""
+    return {
+        "reason": reason,
+        "message": message,
+        "attempt": attempt,
+        "max_attempts": Lease.MAX_ATTEMPTS,
+        "retry_at": retry_at,
     }
 
 
@@ -96,8 +119,10 @@ class JobLease:
 
     def update_job(self, changes: dict[str, Any], array_filters: list[dict[str, Any]] | None = None) -> None:
         """Write `changes` to the job record while this delivery owns it, else raise LeaseLost;
-        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]."""
-        update = {"$set": {**changes, "updated_at": utc_now()}}
+        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]. A job claimed while
+        it waited for another job reads queued until this first write after its wait (job.waiting cleared)."""
+        waited = {"job.waiting": None} if (self.record.get("job") or {}).get("waiting") else {}
+        update = {"$set": {**waited, **changes, "updated_at": utc_now()}}
         if self._records.update_one(self.fence, update, array_filters=array_filters).matched_count != 1:
             raise LeaseLost(self.record_id)
 
@@ -120,10 +145,12 @@ class JobRepository:
         self._records = records
 
     def create_indexes(self) -> None:
-        """The reaper's two scans, each one index read, and GET /v1/admin/jobs's newest-first list."""
+        """The reaper's two scans and its failed-jobs count, each one index read, and GET /v1/admin/jobs's
+        newest-first list."""
         self._records.create_index([("status", 1), ("job.lease_until", 1)])
         self._records.create_index([("updated_at", -1)])
         self._records.create_index([("status", 1), ("job.due_at", 1)])
+        self._records.create_index([("status", 1), ("finished_at", 1)])
 
     def claim_job(
         self,
@@ -133,29 +160,35 @@ class JobRepository:
         task_id: str,
         fields: Iterable[str] = (),
         worker: str = "",
+        retries: int = 0,
     ) -> JobLease | None:
-        """Claim the job if it is due (queued) or abandoned (running, lease expired) for this task and epoch,
-        returning its lease with `fields` of the record; None for a duplicate, stale or early delivery."""
+        """Claim the job if it is due (queued), abandoned (running, lease expired) or this delivery's own lost
+        claim (`retries`: its Celery retry count) for this task and epoch, returning its lease with `fields`
+        and _CLAIM_FIELDS as they were before the claim (job.attempts counted; a running job's job.due_at is
+        when it was last held, see _as_claimed); None for a duplicate, stale or early delivery."""
         now = utc_now()
         claimed = self._records.find_one_and_update(
-            _claimable(record_id, epoch, task, now),
+            _claimable(record_id, epoch, task, now, task_id, retries),
             {
                 "$set": {
                     "status": Status.RUNNING,
                     "job.task_id": task_id,
+                    "job.task_retries": retries,  # its own retry may take back a claim whose answer was lost
                     "job.worker": worker,  # which worker runs it, since when: GET /v1/admin/jobs shows both
                     "job.started_at": now,
                     "job.lease_until": now + timedelta(seconds=Lease.SECONDS),
                     "job.resends": 0,  # it reached a worker: the reaper's re-send count starts again
+                    "job.retry": None,  # the next try runs: the last try's outage notice no longer applies
                     "updated_at": now,
                 },
                 "$inc": {"job.attempts": 1},
             },
-            projection=dict.fromkeys(("job.attempts", *fields), 1),
-            return_document=ReturnDocument.AFTER,
+            projection=dict.fromkeys((*_CLAIM_FIELDS, *fields), 1),
+            return_document=ReturnDocument.BEFORE,  # the old lease's end; the $set changes no field read
         )
         if claimed is None:
             return None
+        _as_claimed(claimed["job"], now)
         return JobLease(self._records, record_id, epoch, task_id, claimed["job"]["attempts"], claimed)
 
     def why_not_claimed(self, record_id: str, epoch: int, task: str) -> dict[str, Any]:
@@ -179,7 +212,7 @@ class JobRepository:
                 "due_in_seconds": round((job["due_at"] - utc_now()).total_seconds(), 1),
             }
         if status == Status.RUNNING:
-            return {"reason": "leased", "worker": job.get("worker")}
+            return {"reason": "leased", "job_worker": job.get("worker")}
         return {"reason": f"status_{status}"}
 
     def list_recent_jobs(
@@ -257,9 +290,16 @@ class JobRepository:
     ) -> bool:
         """Queue an expired job again, due now (or fail it with `error`), only while it is running with the
         lease the reaper read; False when its worker renewed or finished in between. A requeue drops any
-        retry notice: the job waits because its worker was lost, not for an outage."""
+        retry notice and the lost delivery's task id and worker: the job waits because its worker was lost,
+        not for an outage."""
         changes = (
-            {"status": Status.QUEUED, "job.due_at": now, "job.retry": None}
+            {
+                "status": Status.QUEUED,
+                "job.due_at": now,
+                "job.retry": None,
+                "job.task_id": None,
+                "job.worker": None,
+            }
             if error is None
             else failed_job_fields(self._records.name, error, now)
         )
@@ -277,7 +317,7 @@ class JobRepository:
         """Move a queued job's due_at to now, counting the re-send when `counted` (or fail it with `error`),
         only while it is queued with the due_at the reaper read."""
         update = (
-            {"$set": {"job.due_at": now}, "$inc": {"job.resends": int(counted)}}
+            {"$set": {"job.due_at": now, "updated_at": now}, "$inc": {"job.resends": int(counted)}}
             if error is None
             else {"$set": {**failed_job_fields(self._records.name, error, now), "updated_at": now}}
         )
@@ -288,9 +328,34 @@ class JobRepository:
         }
         return bool(self._records.update_one(unchanged_since_read, update).modified_count)
 
+    def note_unsent_job(self, record_id: str, task: str, epoch: int, retry_at: datetime) -> None:
+        """Show a queued job's refused send on its status (job.retry, cleared by its claim): the queue was
+        unreachable, and the next try comes with the reaper's re-send at `retry_at`."""
+        notice = retry_notice(None, ErrorMessage.REDIS_UNREACHABLE, "$job.attempts", retry_at)
+        unclaimed = {"_id": record_id, "status": Status.QUEUED, "job.task": task, "job.epoch": epoch}
+        self._records.update_one(unclaimed, [{"$set": {"job.retry": notice, "updated_at": utc_now()}}])
 
-def _claimable(record_id: str, epoch: int, task: str, now: datetime) -> dict[str, Any]:
-    """The job record a delivery may claim: this task and epoch, due (queued) or abandoned (lease expired)."""
+    def count_resend(self, record: dict[str, Any], resent_at: datetime) -> None:
+        """Count a re-send the broker took, while the job still waits with the due_at the re-send set."""
+        still_waiting = {"_id": record["_id"], "status": Status.QUEUED, "job.due_at": resent_at}
+        self._records.update_one(still_waiting, {"$inc": {"job.resends": 1}})
+
+
+def _as_claimed(job: dict[str, Any], now: datetime) -> None:
+    """The job's fields read before its claim, as the claim's lease sees them: its attempt counted (the
+    claim's $inc), and a running job's due_at when it was last held, its queue wait counted from then: a
+    takeover's when the old lease ran out, a take-back's its own last claim or renewal."""
+    job["attempts"] = job.get("attempts", 0) + 1
+    if old_lease_end := job.pop("lease_until", None):
+        last_held = old_lease_end - timedelta(seconds=Lease.SECONDS)
+        job["due_at"] = old_lease_end if old_lease_end < now else last_held
+
+
+def _claimable(
+    record_id: str, epoch: int, task: str, now: datetime, task_id: str, retries: int
+) -> dict[str, Any]:
+    """The job record a delivery may claim: this task and epoch, due (queued), or abandoned (lease expired)
+    or its own lost claim with attempts left."""
     return {
         "_id": record_id,
         "job.epoch": epoch,
@@ -299,6 +364,21 @@ def _claimable(record_id: str, epoch: int, task: str, now: datetime) -> dict[str
             # Due only, so a duplicate message never runs a job before its back-off ends; the skew allows for
             # another pod's clock.
             {"status": Status.QUEUED, "job.due_at": {"$lte": now + _CLOCK_SKEW}},
-            {"status": Status.RUNNING, "job.lease_until": {"$lt": now}},
+            # Attempts left too: a redelivery never takes a job past Lease.MAX_ATTEMPTS (the reaper fails it).
+            {
+                "status": Status.RUNNING,
+                "job.lease_until": {"$lt": now},
+                "job.attempts": {"$lt": Lease.MAX_ATTEMPTS},
+            },
+            # Its own claim whose answer was lost (MongoDB saved it, the reply failed): its retry, a higher
+            # Celery retry count under the same task id, takes it back at once. A redelivered copy of a live
+            # delivery has the same count, so it never steals the job; a new send has a new task id.
+            # ponytail: a take-back still uses an attempt; one lost on the last attempt waits for the reaper
+            {
+                "status": Status.RUNNING,
+                "job.task_id": task_id,
+                "job.task_retries": {"$lt": retries},
+                "job.attempts": {"$lt": Lease.MAX_ATTEMPTS},
+            },
         ],
     }

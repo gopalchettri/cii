@@ -8,14 +8,14 @@ from collections.abc import AsyncIterator, Callable
 from functools import partial
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
-from fastapi import Header as HeaderParam
+from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from app.api.dependencies import (
     Caller,
     CallersPlan,
     CallersRun,
+    IdempotencyKey,
     Limit,
     Offset,
     ScenarioId,
@@ -28,10 +28,10 @@ from app.core.constants import (
     ApiTag,
     Decision,
     Event,
-    Header,
     Limits,
 )
 from app.models.scenario.views import (
+    ACCEPT_REQUEST_EXAMPLES,
     AcceptRequest,
     AcceptResult,
     PlanTraceView,
@@ -68,18 +68,18 @@ def start_run(
     response: Response,
     principal: Caller,
     scenarios: Scenarios,
-    idempotency_key: Annotated[
-        str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
-    ] = None,
+    idempotency_key: IdempotencyKey,
 ) -> RunBoard:
     """Send `asset_id` and `supporting_system_id` (one id or a list; `service_id`, `sector_id`,
     `subsector_id` optional). 202 with the run's status; keep `session_id`. With an `Idempotency-Key`
-    header a retry is safe (the same key and body: 200, the same run). 409 `active_session_exists`: the
-    asset already has a run; 409 `intel_no_data`: external intelligence is on but nothing is imported
-    yet (group 4)."""
-    board, created = scenarios.create_threat_scenario_session(principal, body, idempotency_key)
+    header a retry is safe (the same key and body: 200, the same run); without one, the same request again
+    within a minute is 409 `duplicate_request`. 409 `intel_no_data`: external intelligence is on but
+    nothing is imported yet (group 4)."""
+    board, created = scenarios.create_threat_scenario_session(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
-        response.status_code = 200  # a replay of the same Idempotency-Key: the run it started
+        response.status_code = 200  # a replay of the caller's Idempotency-Key: the run it started
     return board
 
 
@@ -153,10 +153,15 @@ def get_plan_trace(run: CallersRun, scenarios: Scenarios) -> PlanTraceView:
     "/v1/sessions/{session_id}/accept", response_model=AcceptResult, summary="1. Accept scenarios"
 )
 def accept_scenarios(
-    body: AcceptRequest, run: CallersRun, principal: Caller, scenarios: Scenarios
+    body: Annotated[AcceptRequest, Body(openapi_examples=ACCEPT_REQUEST_EXAMPLES)],
+    run: CallersRun,
+    principal: Caller,
+    scenarios: Scenarios,
 ) -> AcceptResult:
-    """Send `{"scenario_ids": ["..."]}` or `{"scenario_ids": "all"}`. An accepted scenario can get a
-    remediation plan (group 7). `replace_accepted: true` lets a newer version replace an accepted one."""
+    """Send `{"mode": "subset", "scenario_ids": ["..."]}`, `{"mode": "all"}` or `{"mode": "none"}` (decides
+    nothing), as TSG v1 does; `replace_accepted: true` (optional, with subset) lets a newer version replace an
+    accepted one. The v2 body is also accepted: `{"scenario_ids": ["..."]}` or `{"scenario_ids": "all"}`. An
+    accepted scenario can get a remediation plan (group 7)."""
     return scenarios.accept_threat_scenarios(principal, run, body)
 
 
@@ -180,7 +185,8 @@ def regenerate_scenarios(
     body: ScenarioIdsRequest, run: CallersRun, principal: Caller, scenarios: Scenarios
 ) -> RunActionStarted:
     """Send `{"scenario_ids": ["..."]}`: each is written again in the background (202); follow it with
-    `GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`)."""
+    `GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`). A card
+    that failed because the AI did not answer is written again in its place."""
     return scenarios.regenerate_threat_scenarios(principal, run, body)
 
 

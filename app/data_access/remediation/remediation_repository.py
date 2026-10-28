@@ -1,5 +1,6 @@
 """tsg_remediations: one remediation plan per scenario (a unique index, race-free) with its versions, and the
-plan's guarded writes: a new version, a decision, and the plan job's version writes under its job lease."""
+plan's guarded writes: a new version, an outage-failed one queued again, a decision, and the plan job's
+version writes under its job lease."""
 
 from datetime import datetime
 from typing import Any
@@ -7,20 +8,21 @@ from typing import Any
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import Collection, Decision, Status
+from app.core.constants import Collection, Decision, ErrorCode, Status
 from app.data_access.base import MongoRepository
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
 from app.models.remediation.plan import RemediationStatus, RemediationSummary
 
+#: What a new version changes at the top of the record, put back as read when it is undone (not the decision).
+_VERSION_STARTED_FIELDS = ("job", "status", "finished_at", "cancelled")
 #: What a regenerate or a review reads first: never a snapshot or a plan.
 _CHANGE_FIELDS = {
     "entity_id": 1,
     "scenario_id": 1,
     "session_id": 1,
-    "status": 1,
-    "job.epoch": 1,
     "accepted_version": 1,
     "decision_seq": 1,
+    **dict.fromkeys(_VERSION_STARTED_FIELDS, 1),
     **{f"versions.{field}": 1 for field in ("version", "status", "decision")},
 }
 #: What a plan request and its plan job read of the scenario: owner, decision, content, controls, and what
@@ -45,6 +47,39 @@ _DECISION_WITH_A_NEW_VERSION = {
         Decision.PENDING,
         Decision.ACCEPTED,
     ]
+}
+#: Whether a version still waits for a decision: the latest one, or an older done one, left pending.
+_A_VERSION_WAITS = {
+    "$anyElementTrue": [
+        {
+            "$map": {
+                "input": "$versions",
+                "as": "v",
+                "in": {
+                    "$and": [
+                        {"$eq": ["$$v.decision", Decision.PENDING]},
+                        {
+                            "$or": [
+                                {"$eq": ["$$v.version", "$job.epoch"]},
+                                {"$eq": ["$$v.status", Status.DONE]},
+                            ]
+                        },
+                    ]
+                },
+            }
+        }
+    ]
+}
+#: The record's decision from its versions as they stand, the rule decision_change applies: accepted while one
+#: is accepted, pending while one waits, else rejected.
+_RECORD_DECISION = {
+    "$switch": {
+        "branches": [
+            {"case": {"$ne": [{"$ifNull": ["$accepted_version", None]}, None]}, "then": Decision.ACCEPTED},
+            {"case": _A_VERSION_WAITS, "then": Decision.PENDING},
+        ],
+        "default": Decision.REJECTED,
+    }
 }
 #: The decision stamp's fields, cleared on a version put back to pending.
 _STAMP_FIELDS = ("decided_by", "decided_by_client", "decided_at", "review_comment")
@@ -97,7 +132,6 @@ class RemediationRepository(MongoRepository):
                         },
                         "job": {"$literal": job},
                         "status": Status.QUEUED,
-                        "active": True,
                         "finished_at": "$$REMOVE",
                         "cancelled": "$$REMOVE",
                         "updated_at": now,
@@ -108,6 +142,31 @@ class RemediationRepository(MongoRepository):
             ],
         )
         return bool(appended.modified_count)
+
+    def retry_remediation_plan_version(
+        self, remediation_id: str, version: int, job: dict[str, Any], now: datetime
+    ) -> bool:
+        """Queues the latest `version` again in place with a fresh `job` on tsg_remediations, its snapshot
+        cleared; False unless it is still the latest and failed for an outage."""
+        retried = self.collection.update_one(
+            {
+                "_id": remediation_id,
+                "job.epoch": version,
+                "status": Status.FAILED,
+                "job.error.code": ErrorCode.UNAVAILABLE,
+            },
+            {
+                "$set": {
+                    "job": job,
+                    "status": Status.QUEUED,
+                    "updated_at": now,
+                    "versions.$[v].snapshot": None,
+                },
+                "$unset": {"finished_at": ""},
+            },
+            array_filters=[{"v.version": version}],
+        )
+        return retried.modified_count == 1
 
     def update_remediation_plan_decision(
         self, remediation_id: str, seen_decision_seq: int, change: dict[str, Any]
@@ -144,13 +203,40 @@ class RemediationRepository(MongoRepository):
             changes |= ended_job_fields(Status.DONE)
         lease.update_job(changes, [{"v.version": lease.epoch}])
 
-    def stop_remediation_plan_version(self, remediation_id: str, version: int) -> None:
-        """Ends `version`'s job cancelled on tsg_remediations while it still waits or runs (a regenerate that
-        lost the race with its run's delete)."""
+    def stop_remediation_plan_version(
+        self, remediation_id: str, version: int, outage: dict[str, Any]
+    ) -> None:
+        """Ends `version`, queued again in place, failed with its `outage` error again on tsg_remediations
+        while it still waits or runs (a retry that lost the race with its run's delete): still retryable."""
         now = utc_now()
+        ended = ended_job_fields(Status.FAILED, now) | {"job.error": outage, "updated_at": now}
         self.collection.update_one(
             {"_id": remediation_id, "job.epoch": version, "status": {"$in": [Status.QUEUED, Status.RUNNING]}},
-            {"$set": ended_job_fields(Status.CANCELLED, now) | {"updated_at": now}},
+            {"$set": ended},
+        )
+
+    def undo_remediation_plan_version(self, read: dict[str, Any], version: int) -> None:
+        """Removes `version`, appended after `read` (a "change" read) and never sent, from tsg_remediations:
+        the plan as read again (a regenerate that lost the race with its run's delete), with its decision from
+        the versions as they stand, so a decision written meanwhile is kept. decision_seq still moves on, so a
+        decision read in between reads again."""
+        restored = {
+            field: {"$literal": read[field]} if field in read else "$$REMOVE"
+            for field in _VERSION_STARTED_FIELDS
+        }
+        self.collection.update_one(
+            {"_id": read["_id"], "job.epoch": version, "status": Status.QUEUED},
+            [
+                {
+                    "$set": restored
+                    | {
+                        "versions": {"$slice": ["$versions", len(read["versions"])]},
+                        "decision_seq": {"$add": ["$decision_seq", 1]},
+                        "updated_at": utc_now(),
+                    }
+                },
+                {"$set": {"decision": _RECORD_DECISION}},
+            ],
         )
 
 

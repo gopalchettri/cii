@@ -12,17 +12,19 @@ from app.core.config import get_settings
 from app.core.constants import (
     AuditAction,
     Collection,
+    PromptVersion,
+    Queue,
     TaskName,
 )
 from app.core.database import get_mongodb
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.domain.scenario.plan import planned_threat_record
-from app.domain.scenario.write import WRITER_PROMPT_VERSION
 from app.worker import lifecycle
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence.refresh_task import refresh_external_intelligence
 from tests.external_intelligence.conftest import Intel
 from tests.planner_samples import planned
+from tests.test_worker import _worker_starting
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _deliver_until_done,
     _queued_run,
@@ -71,7 +73,7 @@ def test_a_whole_run_is_written_by_the_original_writer_and_stores_nothing_of_int
     assert len(stored) == 2
     for scenario in stored:
         content = scenario["content"]
-        assert content["prompt_version"] == WRITER_PROMPT_VERSION
+        assert content["prompt_version"] == PromptVersion.SCENARIO_WRITER
         assert not {"evidence", "evidence_mode", "applicability", "intel_search"} & set(content)
     for threat in _sessions().find_one({"_id": record_id})["plan"]["threats"]:
         assert "evidence" not in threat and "intel_search" not in threat
@@ -158,7 +160,7 @@ def test_no_refresh_is_scheduled_and_a_stray_one_does_nothing_while_off() -> Non
 
 def test_the_worker_warm_up_does_nothing_while_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(container, "get_evidence_index_keeper", Untouched)
-    lifecycle.warm_up_external_intelligence()
+    lifecycle.warm_up_external_intelligence(_worker_starting("threads", Queue.SCENARIOS))
     assert container.get_intelligence_switch().is_on() is False
 
 

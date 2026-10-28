@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.constants import (
+    AiOutage,
     ConflictReason,
     Decision,
     ReviewMessage,
@@ -185,15 +186,15 @@ def controls_pending(targets: Targets, accepted: list[str]) -> list[str]:
 def why_ids_cannot_be_regenerated(
     scenario_ids: list[str], targets: dict[str, dict[str, Any]]
 ) -> list[dict[str, str]]:
-    """Why each id cannot be regenerated: only the current written version of a path, one per path (a failure
-    card is retried by the write job itself, so two jobs never write one path)."""
+    """Why each id cannot be regenerated: only the current written version of a path, or an AI outage's
+    failure card (its path written again, even one given up), one per path."""
     versions_per_path = Counter(target["path_id"] for target in targets.values())
     errors = []
     for scenario_id in scenario_ids:
         target = targets.get(scenario_id)
         if target is None:
             reason: TargetProblem | None = TargetProblem.UNKNOWN
-        elif target["status"] != ScenarioStatus.DONE:
+        elif target["status"] != ScenarioStatus.DONE and not _is_outage_card(target):
             reason = TargetProblem.FAILURE_SCENARIO
         elif target.get("source") == RunKind.MANUAL:
             reason = TargetProblem.HAND_WRITTEN
@@ -209,13 +210,22 @@ def why_ids_cannot_be_regenerated(
 
 
 def regenerate_batch(scenario_ids: list[str], targets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """The write batch replacing each chosen scenario with a new version of its path; 409
-    scenarios_not_regenerable naming each bad id."""
+    """The write batch replacing each chosen scenario with a new version of its path, or writing an outage
+    card's path again in place (replaces None); 409 scenarios_not_regenerable naming each bad id."""
     errors = why_ids_cannot_be_regenerated(scenario_ids, targets)
     if errors:
         message = ReviewMessage.NOT_REGENERABLE
         raise Conflict(message, reason=ConflictReason.SCENARIOS_NOT_REGENERABLE, errors=errors)
-    return [{"path_id": targets[sid]["path_id"], "replaces": sid} for sid in scenario_ids]
+    return [
+        {"path_id": targets[sid]["path_id"], "replaces": None if _is_outage_card(targets[sid]) else sid}
+        for sid in scenario_ids
+    ]
+
+
+def _is_outage_card(target: dict[str, Any]) -> bool:
+    """A failure card an AI outage left."""
+    reason = (target.get("failure") or {}).get("reason")
+    return target["status"] == ScenarioStatus.FAILED and reason in AiOutage
 
 
 def controls_were_cancelled(run: SessionStatus) -> bool:

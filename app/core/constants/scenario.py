@@ -7,8 +7,10 @@ from typing import Final
 class Writing:
     MAX_PLAN_PROBLEMS: Final = 10  # the plan check's problems kept as notes ...
     PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
+    RETIRED_RULES: Final = frozenset({"4"})  # reviewer rules no longer asked: never a note (D49)
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
+    PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
     EVIDENCE_WORDS_SLOT: Final = "<evidence words>"  # the prompts' slot for EVIDENCE_STATEMENT_WORD_LIMIT
@@ -23,7 +25,7 @@ class ScenarioStatus(StrEnum):
 
 
 class ScenarioOutcome(StrEnum):
-    """tsg_scenarios_total{outcome}: what each save settled for its path."""
+    """tsg_scenarios_total{outcome}: what each attempt settled for its path, counted once."""
 
     WRITTEN = "written"
     BLOCKED = "blocked"
@@ -124,7 +126,7 @@ class TargetProblem(StrEnum):
     """Why one scenario id of a review call is refused (`errors[].reason`) or skipped (`skipped[].reason`)."""
 
     UNKNOWN = "unknown"  # not a served scenario of this run
-    FAILURE_SCENARIO = "failure_scenario"  # a failure card: the write job retries its path
+    FAILURE_SCENARIO = "failure_scenario"  # a failure card (on regenerate, only one naming no AI outage)
     ALREADY_REJECTED = "already_rejected"  # decisions are final; regenerate to get a new version
     ALREADY_ACCEPTED = "already_accepted"
     DUPLICATE_VERSION = "duplicate_version"  # two versions of one path, or another version already accepted
@@ -146,6 +148,9 @@ class PromotionOutcome(StrEnum):
 
 class ReviewMessage(StrEnum):
     IDS_REPEATED = "Each scenario may be sent only once."
+    SUBSET_NEEDS_IDS = "mode 'subset' needs scenario_ids: a list of scenario ids."
+    ONLY_WITH_SUBSET = "{field} is sent only with mode 'subset'."
+    MODE_VALUES = "mode is 'all', 'subset' or 'none': leave it out to send the v2 body."
     GENERATION_IN_PROGRESS = "Run '{session_id}' is still generating: try again once it is done."
     RUN_FAILED = "Run '{session_id}' failed before any scenario was written."
     RUN_CANCELLED = (
@@ -163,7 +168,6 @@ class ReviewMessage(StrEnum):
         "TOTAL_SCENARIO_COUNT."
     )
     SCENARIOS_ABANDONED = "Every attack path of run '{session_id}' left to write was given up."
-    ASSET_BUSY = "Asset {asset_id} has another active run: try again once it is done."
     SCENARIO_NOT_ACCEPTED = "Scenario '{scenario_id}' is not accepted: accept it before promoting its threat."
     NOTHING_TO_PROMOTE = "Scenario '{scenario_id}' is built on a library threat: there is nothing to promote."
 

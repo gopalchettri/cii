@@ -84,7 +84,7 @@ def test_every_job_its_queue_and_its_worker_in_one_call(client: TestClient, monk
 
 def test_the_api_request_id_travels_with_the_job_and_its_start_and_finish_are_logged(monkeypatch) -> None:
     sent: list[dict] = []
-    monkeypatch.setattr(celery_app, "send_task", lambda task, args, headers: sent.append(headers))
+    monkeypatch.setattr(celery_app, "send_task", lambda task, args, headers, priority: sent.append(headers))
     structlog.contextvars.bind_contextvars(request_id="req-42")
     try:
         send_job(TaskName.MAP_SERVICES, "mapping-1", 1)
@@ -119,7 +119,11 @@ def test_the_reaper_fails_an_admin_job_left_running_and_leaves_a_fresh_one(monke
     base = {"status": Status.RUNNING, "active": True}
     jobs.create(base | {"_id": stuck, "kind": AdminJobKind.INTEL_REFRESH, "created_at": long_ago})
     jobs.create(base | {"_id": fresh, "kind": "fresh_kind", "created_at": datetime.now(UTC)})
-    failures = {"task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE, "outcome": "failure"}
+    failures = {
+        "task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+        "module": "external_intelligence",
+        "outcome": "failure",
+    }
     before = REGISTRY.get_sample_value("tsg_jobs_total", failures) or 0.0
     try:
         with capture_logs() as logs:

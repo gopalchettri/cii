@@ -28,12 +28,13 @@ from app.core.constants import (
     ScenarioStatus,
     Status,
     TaskName,
+    Worker,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, LeaseLost, Unavailable
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.controls import ControlMapper
+from app.domain.scenario.controls import ControlMapper, is_about_ai
 from app.domain.scenario.library_rules import compatible_asset_types, place_asset_types
 from app.models.library.library import LibraryControl, ThreatLibrary
 from app.models.scenario.views import session_status_from_record
@@ -328,6 +329,23 @@ def _controls_of(scenario_id: str) -> dict[str, Any]:
     return get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})["controls"]
 
 
+def test_a_claimed_scenario_carries_the_evidence_facts_its_ai_check_reads() -> None:
+    """A cited campaign named "AI-orchestrated" never makes a card about AI: both claims load the facts."""
+    statement = "In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique."
+    facts = ["The Anthropic AI-orchestrated Campaign used this technique."]
+    content = {"title": "t", "statement": statement, "evidence": [{"facts": facts, "mitigations": []}]}
+    leases = container.get_threat_scenario_repository()
+    for claim in ("run", "id"):
+        session_id, scenario_id = _waiting_scenario()
+        get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"content": content}})
+        if claim == "run":
+            claimed = leases.claim_scenario_controls(session_id, "worker-a")
+        else:
+            claimed = leases.claim_scenario_controls_by_id(scenario_id, "worker-a")
+        assert claimed is not None and claimed["content"]["evidence"][0]["facts"] == facts
+        assert not is_about_ai(claimed["content"])
+
+
 def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish() -> None:
     """T-CTL-06 (S33): one conditional update per claim; every later write fenced on the claim's task id."""
     leases = container.get_threat_scenario_repository()
@@ -523,8 +541,8 @@ def _run_record(record_id: str) -> dict[str, Any]:
 def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """T-CTL-06 (S34): one at a time, each saved with what made it; counts and watchers after each; the run's
-    step reads `controls` only while controls wait; a repeated message maps nothing twice."""
+    """T-CTL-06 (S34): each saved with what made it; counts and watchers after each; the run's step reads
+    `controls` only while controls wait; a repeated message maps nothing twice."""
     record_id = mapping_run["record_id"]
     waiting = _run_record(record_id) | {"counts": {"controls_waiting": 2}}
     assert session_status_from_record(waiting).step == "controls"
@@ -539,7 +557,7 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     assert mapped["status"] == Status.DONE and [item["code"] for item in mapped["items"]] == ["C-OT", "C-ANY"]
     # G200: the threshold "exact" meant for this mapping is kept with it.
     assert set(mapped["made_with"]) == {
-        "rerank_model", "embedding_model", "library", "threshold",
+        "rerank_model", "embedding_model", "query_instruction", "library", "threshold",
         "candidates", "min_controls", "max_controls", "nearest_controls", "query_shortened", "mitigations",
         "ai_controls",
     }  # fmt: skip
@@ -651,6 +669,44 @@ def test_a_delivery_maps_its_turn_then_hands_the_run_to_its_next_message(
     assert "controls_delivery" not in _run_record(record_id)  # released: the next written batch takes it
 
 
+class _Together(_ScoresByText):
+    """Scores as _ScoresByText; each call waits up to `wait` seconds for a second call beside it and keeps
+    the most calls that ran at the same moment."""
+
+    def __init__(self, scores: dict[str, float], wait: float) -> None:
+        super().__init__(scores)
+        self.wait, self.running, self.most = wait, 0, 0
+        self.changed = threading.Condition()
+
+    def score_relevance(self, query: str, documents: list[str]) -> list[float]:
+        with self.changed:
+            self.running += 1
+            self.most = max(self.most, self.running)
+            self.changed.notify_all()
+            self.changed.wait_for(lambda: self.most >= 2, timeout=self.wait)
+        try:
+            return super().score_relevance(query, documents)
+        finally:
+            with self.changed:
+                self.running -= 1
+
+
+def test_a_delivery_maps_its_turn_side_by_side_on_a_remote_reranker_and_one_by_one_on_the_local_one(
+    mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn's scenarios are mapped at once, each under its own lease; the laptop's CPU model predicts one
+    at a time, so there they are mapped one by one."""
+    record_id = mapping_run["record_id"]
+    mapping_run["rerank"] = _Together({"Backup policy": 70.0}, wait=5)
+    assert _deliver(record_id, "task-1") == 2 and mapping_run["rerank"].most == 2
+    get_mongodb()[Collection.SCENARIOS].update_many(
+        {"session_id": record_id}, {"$set": {"controls.status": Status.QUEUED}}
+    )
+    monkeypatch.setattr(get_settings(), "rerank_base_url", "")
+    mapping_run["rerank"] = _Together({"Backup policy": 70.0}, wait=0.2)
+    assert _deliver(record_id, "task-2") == 2 and mapping_run["rerank"].most == 1
+
+
 def test_of_ten_messages_for_one_run_delivered_at_once_exactly_one_maps(mapping_run: dict[str, Any]) -> None:
     """G195: the run's delivery lease is taken in ONE conditional update. On 2026-10-11 ten messages
     redelivered in the same millisecond all passed a look-then-claim check and held every worker thread."""
@@ -731,10 +787,10 @@ def test_the_task_takes_the_run_then_maps_and_a_store_outage_at_the_take_retries
     assert scenario_tasks.map_controls.apply(args=(record_id, 0), task_id="task-1").successful()
     assert _controls_of(f"{record_id}-1")["status"] == Status.DONE
 
-    retried: list[Exception] = []
+    retried: list[tuple[type, int]] = []
 
-    def retry(*_: Any, exc: Exception, **__: Any) -> Exception:
-        retried.append(exc)
+    def retry(*_: Any, exc: Exception, priority: int, **__: Any) -> Exception:
+        retried.append((type(exc), priority))
         return RuntimeError("retry")  # what self.retry raises, once recorded
 
     def store_down(self: ThreatScenarioSessionRepository, session_id: str, task_id: str) -> dict[str, Any]:
@@ -743,15 +799,18 @@ def test_the_task_takes_the_run_then_maps_and_a_store_outage_at_the_take_retries
     monkeypatch.setattr(scenario_tasks.map_controls, "retry", retry)
     monkeypatch.setattr(ThreatScenarioSessionRepository, "claim_controls_delivery", store_down)
     scenario_tasks.map_controls.apply(args=(record_id, 0), task_id="task-2")
-    assert [type(error) for error in retried] == [Unavailable]
+    assert retried == [(Unavailable, Worker.NEXT_STAGE_PRIORITY)]  # ahead of new work in its queue
 
 
+@pytest.mark.parametrize(("rerank_base_url", "mapped"), [("", {1}), ("http://rerank.invalid", {1, 2})])
 def test_a_run_deleted_while_it_is_mapped_ends_its_delivery_quietly(
-    mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch, rerank_base_url: str, mapped: set[int]
 ) -> None:
     """Review 2026-10-11 (the owner removed old runs while the stack mapped them): the delivery's lease is
-    gone, so it stops after the scenario it was on; nothing is raised and nothing is sent."""
+    gone, so it stops after the scenario it was on (the local reranker) or the ones mapped beside it (a remote
+    one); nothing is raised and nothing is sent."""
     record_id, published = mapping_run["record_id"], mapping_run["published"]
+    monkeypatch.setattr(get_settings(), "rerank_base_url", rerank_base_url)
 
     def publish_then_delete(session_id: str) -> None:
         published.append(session_id)
@@ -759,7 +818,7 @@ def test_a_run_deleted_while_it_is_mapped_ends_its_delivery_quietly(
         get_mongodb()[Collection.SCENARIOS].delete_many({"session_id": record_id})
 
     monkeypatch.setattr(controls_job, "publish_session_status", publish_then_delete)
-    assert _deliver(record_id, "task-1") == 1 and mapping_run["sent"] == []
+    assert _deliver(record_id, "task-1") in mapped and mapping_run["sent"] == []
 
 
 def test_alternatives_are_the_next_best_fitting_controls_never_an_identified_one_or_its_twin() -> None:

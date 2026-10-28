@@ -21,13 +21,17 @@ from app.core.constants import (
     AiOutage,
     AiTask,
     AuditAction,
+    BoardMessage,
     Collection,
     ConflictReason,
+    Controls,
     Decision,
     ErrorCode,
     ErrorMessage,
     Header,
+    Lease,
     PlanWarning,
+    PromptVersion,
     Remediation,
     RemediationMessage,
     RunKind,
@@ -39,9 +43,12 @@ from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, DuplicateRecord, LeaseLost, Unavailable
 from app.core.lease_signal import raise_if_lease_lost
 from app.data_access.jobs.job_repository import new_job
-from app.data_access.scenario.threat_scenario_session_repository import DELETING_MARK
+from app.data_access.scenario.threat_scenario_session_repository import (
+    DELETING_MARK,
+    ThreatScenarioSessionRepository,
+)
 from app.domain.remediation.rules import check_regenerable, decision_change
-from app.models.remediation.requests import PlanRequest
+from app.models.remediation.requests import SYSTEM_LISTS, PlanRequest
 from app.models.scenario.asset_context import FrozenContext
 from app.worker import jobs
 from tests.plan_addresses import generated, plan_url
@@ -175,7 +182,7 @@ def test_a_plan_is_requested_written_and_its_status_read(
     world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
     deliver(remediation_id)
     version = _record(remediation_id)["versions"][0]
-    assert (version["status"], version["prompt_version"]) == (Status.DONE, Remediation.PROMPT_VERSION)
+    assert (version["status"], version["prompt_version"]) == (Status.DONE, PromptVersion.REMEDIATION)
     assert _mapped_codes(version) == ["CII-CID-1"]
     assert version["warnings"] == [PlanWarning.NO_WINDOW.format(total=20)]
     shown = _result(client, api_key, remediation_id).json()
@@ -203,6 +210,23 @@ def test_a_plan_is_requested_written_and_its_status_read(
     assert get_mongodb()[Collection.AUDIT].find_one(completed)["after"] == {"version": 1, "warnings": 1}
 
 
+def test_a_start_date_alone_is_accepted_and_dates_the_plan(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """A mitigation start with no end: 202, the plan dated from the start with its planned end and no window
+    warning; an end with no start is still a 422 on the request."""
+    remediation_id = _done_plan(client, api_key, world, mitigation_start_date="2026-11-01")
+    shown = _result(client, api_key, remediation_id).json()
+    plan, days = shown["plan"], shown["plan"]["mitigation_timeline_days"]
+    assert (plan["actions"][0]["start_date"], shown["warnings"]) == ("2026-11-01", [])
+    planned_end = (datetime(2026, 11, 1) + timedelta(days=days - 1)).date().isoformat()
+    assert plan["mitigation_end_date_planned"] == planned_end
+    register = shown["register_data"]
+    assert (register["mitigation_start_date"], register["mitigation_end_date"]) == ("2026-11-01", None)
+    end_alone = _request(client, api_key, generated(_scenario(), mitigation_end_date="2026-11-30"))
+    assert end_alone.status_code == 422 and RemediationMessage.WINDOW_END_NEEDS_START in end_alone.text
+
+
 def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str, Any]) -> None:
     accepted, pending = _scenario(), _scenario(decision=Decision.PENDING)
     assert _request(client, api_key, generated("nope")).status_code == 404
@@ -214,19 +238,10 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     assert (second.status_code, second.json()["reason"]) == (409, ConflictReason.PLAN_ALREADY_EXISTS)
     assert second.json()["details"] == {"remediation_id": first}
     assert _request(client, api_key, generated(accepted, risk_levl="High")).status_code == 422
-    manual = {
-        "is_manual": True,
-        "manual_scenario": {
-            "asset_id": 1,
-            "entity_id": ENTITY,
-            "supporting_system_ids": [1],
-            "threat_type_name": "Malware",
-            "threat_name": "Firmware tampering",
-            "threat_scenario": "A cybercriminal could tamper with firmware.",
-            "risk_statement": "Control could be lost.",
-        },
-    }
-    assert _request(client, api_key, manual).status_code == 422  # no Idempotency-Key
+    old_flag = _request(client, api_key, generated(accepted, all_supporting_systems_applicable=1))
+    assert [error["field"] for error in old_flag.json().get("errors", [])] == [
+        "body.all_supporting_systems_applicable"
+    ]
     run = generated(accepted)["session_id"]
     nowhere = client.get(
         f"/v1/sessions/{run}/scenarios/nope/treatment-plan/status", headers=_identity(api_key)
@@ -245,26 +260,31 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     assert world["sent"] == [(TaskName.WRITE_PLAN, first, 1)]  # nothing sent for the refused one
 
 
-def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_set_its_status(
+def _on(*system_ids: int) -> dict[str, Any]:
+    """Register fields: CII-CID-1 an existing control, the existing controls on `system_ids`."""
+    on = {"supporting_systems_applicable_to_existing_controls": list(system_ids)}
+    return {"existing_controls": ["CII-CID-1"]} | on
+
+
+def test_a_listed_system_the_run_lacks_is_a_422_and_the_systems_set_its_status(
     client: TestClient, api_key: str, world: dict[str, Any]
 ) -> None:
-    """A run stored before its asset's systems were kept: existing controls not on all systems name theirs,
-    each one of the run's (321, 322): 999 is refused before anything is saved; on the SCADA server alone,
-    the risk on both, it is partially implemented."""
-    by_system = {"existing_controls_all_supporting_system_applicable": 0}
+    """A run stored before its asset's systems were kept: both lists name the run's systems (321, 322): 999 in
+    either is refused by field and position as sent (a repeat counted) before anything is saved; the
+    existing controls on the SCADA server alone, the risk on both, CII-CID-1 is partially implemented."""
     scenario_id = _scenario()
-    wrong = [{"control_code": "CII-CID-1", "supporting_system_ids": [321, 999]}]
-    refused = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=wrong))
-    assert refused.status_code == 422, refused.text
-    assert refused.json()["errors"] == [
-        {
-            "field": "body.existing_controls[0].supporting_system_ids",
-            "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322"),
-        }
-    ]
+    risk_on = {"supporting_systems_applicable_to_risk": [321, 321, 999]}
+    for wrong, field in ((_on(321, 321, 999), "existing_controls[2]"), (risk_on | _on(321), "risk[2]")):
+        refused = _request(client, api_key, generated(scenario_id, **wrong))
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["errors"] == [
+            {
+                "field": f"body.supporting_systems_applicable_to_{field}",
+                "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322"),
+            }
+        ]
     assert not get_mongodb()[Collection.REMEDIATIONS].count_documents({"scenario_id": scenario_id})
-    on_scada = [{"control_code": "CII-CID-1", "supporting_system_ids": [321]}]
-    answer = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=on_scada))
+    answer = _request(client, api_key, generated(scenario_id, **_on(321)))
     assert answer.status_code == 202, answer.text
     extending = plan_answer("CII-CID-1")
     extending["controls_to_be_implemented"]["controls"][0]["description"] = (
@@ -283,12 +303,72 @@ def test_an_existing_control_on_a_system_the_run_lacks_is_a_422_and_the_systems_
     assert names == (["SCADA server"], ["Historian"])
 
 
+@pytest.mark.parametrize("none", [None, "", []], ids=["null", "blank", "empty"])
+def test_a_list_naming_no_system_is_accepted_and_sets_the_status(
+    client: TestClient, api_key: str, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch, none: Any
+) -> None:
+    """Both lists naming none: accepted without reading the run; the risk is on the asset itself, so
+    CII-CID-1, an existing control, is implemented on no system and the plan's actions name none. The risk on
+    both systems, the existing controls on none: CII-CID-1 is still needed on both."""
+    reads: list[str] = []
+    read_context = ThreatScenarioSessionRepository.get_scenario_session_context
+
+    def counted(sessions: ThreatScenarioSessionRepository, session_id: str) -> dict[str, Any]:
+        reads.append(session_id)
+        return read_context(sessions, session_id)
+
+    monkeypatch.setattr(ThreatScenarioSessionRepository, "get_scenario_session_context", counted)
+    nowhere = generated(_scenario(), existing_controls=["CII-CID-1"], **dict.fromkeys(SYSTEM_LISTS, none))
+    answer = _request(client, api_key, nowhere)
+    assert (answer.status_code, reads) == (202, []), answer.text
+    covered = {"control_coverage": "covered", "controls": []}
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer(controls_to_be_implemented=covered))
+    deliver(answer.json()["remediation_id"])
+    plan = _result(client, api_key, answer.json()["remediation_id"]).json()["plan"]
+    (assessed,) = plan["control_assessment"]
+    found = [assessed[key] for key in ("implementation_status", "protected_systems", "required_systems")]
+    assert found == ["implemented", [], []]
+    assert [action["supporting_systems"] for action in plan["actions"]] == [[], []]
+    on_none = {"supporting_systems_applicable_to_existing_controls": none}
+    answer = _request(client, api_key, generated(_scenario(), existing_controls=["CII-CID-1"], **on_none))
+    assert answer.status_code == 202, answer.text
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(answer.json()["remediation_id"])
+    (assessed,) = _result(client, api_key, answer.json()["remediation_id"]).json()["plan"][
+        "control_assessment"
+    ]
+    names = [[s["name"] for s in assessed[key]] for key in ("protected_systems", "required_systems")]
+    assert (assessed["implementation_status"], names) == (
+        "not_implemented",
+        [[], ["SCADA server", "Historian"]],
+    )
+
+
+def test_existing_controls_on_a_system_outside_the_risk_count_only_where_the_risk_is(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """The risk on the SCADA server, the existing controls on the Historian: accepted, and CII-CID-1 is not
+    implemented, still needed on the SCADA server alone."""
+    scenario_id = _scenario()
+    body = generated(scenario_id, supporting_systems_applicable_to_risk=[321], **_on(322))
+    answer = _request(client, api_key, body)
+    assert answer.status_code == 202, answer.text
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(answer.json()["remediation_id"])
+    (assessed,) = _result(client, api_key, answer.json()["remediation_id"]).json()["plan"][
+        "control_assessment"
+    ]
+    names = [[s["name"] for s in assessed[key]] for key in ("protected_systems", "required_systems")]
+    assert (assessed["implementation_status"], names) == ("not_implemented", [[], ["SCADA server"]])
+
+
 def test_an_existing_control_on_an_asset_system_the_run_was_not_started_on_counts(
     client: TestClient, api_key: str, world: dict[str, Any]
 ) -> None:
     """The asset has an OT engineering workstation (324) and an IT billing server (325) the run was not
-    started on: a control on 324 is the asset's, so accepted, and with the risk on every system it is partial,
-    still needed on the other OT systems but never on the IT server (an OT control); 999 is still refused."""
+    started on: existing controls on 324 are the asset's, so accepted, and with the risk on every system
+    CII-CID-1 is partial, still needed on the other OT systems but never on the IT server (an OT control);
+    999 is still refused."""
     systems = [
         {"id": s["id"], "name": s["name"], "category_code": s["category_code"]} for s in CONTEXT.systems
     ]
@@ -297,15 +377,14 @@ def test_an_existing_control_on_an_asset_system_the_run_was_not_started_on_count
         {"id": 325, "name": "Billing server", "category_code": "IT"},
     ]
     wide = dataclasses.replace(CONTEXT, asset_systems=[*systems, *others])
-    scenario_id, by_system = _scenario(_run(wide)), {"existing_controls_all_supporting_system_applicable": 0}
-    wrong = [{"control_code": "CII-CID-1", "supporting_system_ids": [324, 999]}]
-    refused = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=wrong))
+    scenario_id = _scenario(_run(wide))
+    risk_on_all = {"supporting_systems_applicable_to_risk": [321, 322, 324, 325]}
+    refused = _request(client, api_key, generated(scenario_id, **risk_on_all, **_on(324, 999)))
     assert refused.status_code == 422, refused.text
     assert [error["message"] for error in refused.json()["errors"]] == [
         RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=999, known="321, 322, 324, 325")
     ]
-    on_workstation = [{"control_code": "CII-CID-1", "supporting_system_ids": [324]}]
-    answer = _request(client, api_key, generated(scenario_id, **by_system, existing_controls=on_workstation))
+    answer = _request(client, api_key, generated(scenario_id, **risk_on_all, **_on(324)))
     assert answer.status_code == 202, answer.text
     extending = plan_answer("CII-CID-1")
     extending["controls_to_be_implemented"]["controls"][0]["description"] = "Extends signed firmware."
@@ -436,8 +515,13 @@ def test_a_plan_never_outlives_its_run(
             "status": Status.DONE,
             "items": [{"control_id": 77, "code": "CII-CID-77", "score": 90.0, "match": "exact"}],
         },
+        {
+            "status": Status.FAILED,
+            "attempts": Controls.MAX_ATTEMPTS,
+            "error": {"code": ErrorCode.UNAVAILABLE, "message": "Busy.", "reason": AiOutage.BUSY},
+        },
     ],
-    ids=["never_mapped", "every_one_retired"],
+    ids=["never_mapped", "every_one_retired", "failed_after_every_busy_try"],
 )
 def test_missing_controls_are_mapped_by_the_plan_job_never_the_request(
     client: TestClient, api_key: str, world: dict[str, Any], controls: dict[str, Any]
@@ -455,8 +539,15 @@ def test_missing_controls_are_mapped_by_the_plan_job_never_the_request(
     assert version["status"] == Status.DONE and _mapped_codes(version) == ["CII-CID-1"]
     saved = _scenario_controls(scenario_id)
     assert (saved["status"], [item["code"] for item in saved["items"]]) == (Status.DONE, ["CII-CID-1"])
+    assert world["mapper"].mapped["items"] == saved["items"]  # the alternatives see the record just mapped
     assert _request(client, api_key, generated(scenario_id)).status_code == 409
     assert world["mapper"].asked == [scenario_id]  # refused before any control was mapped
+
+
+def test_the_run_board_sends_failed_controls_to_a_plan_not_to_a_later_retry() -> None:
+    """Nothing maps controls again by itself after their last try; a plan request or a regenerate does."""
+    shown = BoardMessage.CONTROLS_FAILED.format(failed=2)
+    assert "tried again later" not in shown and "regenerate" in shown
 
 
 @pytest.mark.parametrize("blocked", ["held_by_another_job", "ai_outage"])
@@ -504,7 +595,7 @@ def test_a_plan_cancel_ends_the_job_and_a_run_cancel_retries_it(
     cancelled: str,
 ) -> None:
     """The mapping's next AI call sees either lease lost. A plan cancel ends the delivery as stopped by its
-    owner; a run cancel (the scenario's control lease lost) gives the plan job back for its normal retry."""
+    owner; a run cancel (the scenario's control lease lost) gives the plan job back to wait, not to retry."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
     scenario_id = _scenario(controls=UNMAPPED)
     remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
@@ -537,7 +628,7 @@ def test_a_plan_cancel_ends_the_job_and_a_run_cancel_retries_it(
         assert record["status"] == Status.CANCELLED
         assert _scenario_controls(scenario_id).get("error") is None  # stopped, never told as an outage
     else:
-        assert stopped_by == [scenario_id] and "job.retry_scheduled" in events
+        assert stopped_by == [scenario_id] and "job.waiting" in events and "job.retry_scheduled" not in events
         assert (record["status"], record["job"]["attempts"]) == (Status.QUEUED, 0)  # no attempt used
 
 
@@ -651,6 +742,110 @@ def test_every_review_and_regenerate_refusal_and_a_read_only_plan(
         refused = _post(client, api_key, remediation_id, action, body)
         assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.SCENARIO_NOT_ACCEPTED)
     assert _result(client, api_key, remediation_id).status_code == 200
+
+
+def _failed_for_outage(world: dict[str, Any], remediation_id: str, version: int = 1) -> None:
+    """The plan job's last try of `version` meets a busy AI: the plan fails for the outage."""
+    plans = get_mongodb()[Collection.REMEDIATIONS]
+    plans.update_one({"_id": remediation_id}, {"$set": {"job.attempts": Lease.MAX_ATTEMPTS - 1}})
+    busy = Unavailable("Every AI slot stayed busy.", reason=AiOutage.BUSY)
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, busy)
+    deliver(remediation_id, version)
+    record = _record(remediation_id)
+    error = record["job"]["error"]
+    assert (record["status"], error["code"], error["reason"]) == (
+        Status.FAILED,
+        ErrorCode.UNAVAILABLE,
+        AiOutage.BUSY,
+    )
+
+
+def test_a_regenerate_after_an_outage_writes_the_failed_version_again_in_place(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """Busy on the job's last try: regenerate queues version 1 again with a fresh job (no new version, no
+    failed history item), a second click is 409, and the next good answer leaves one done version."""
+    remediation_id = _request(client, api_key, generated(_scenario())).json()["remediation_id"]
+    _failed_for_outage(world, remediation_id)
+    assert _record(remediation_id)["versions"][0]["snapshot"] is not None  # built before the AI was asked
+    answer = _post(client, api_key, remediation_id, "regenerate", {})
+    assert answer.status_code == 202, answer.text
+    assert (answer.json()["version"], answer.json()["status"]) == (1, "queued")
+    assert world["sent"] == [(TaskName.WRITE_PLAN, remediation_id, 1)] * 2
+    record = _record(remediation_id)
+    job = record["job"]
+    assert (record["status"], "active" in record, job["attempts"], job["error"]) == (
+        Status.QUEUED,
+        False,
+        0,
+        None,
+    )
+    assert len(record["versions"]) == 1 and record["versions"][0]["snapshot"] is None
+    assert "finished_at" not in record
+    again = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (again.status_code, again.json()["reason"]) == (409, ConflictReason.GENERATION_IN_PROGRESS)
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(remediation_id)
+    versions = _record(remediation_id)["versions"]
+    assert [(v["version"], v["status"]) for v in versions] == [(1, Status.DONE)]
+    status = _status(client, api_key, remediation_id).json()
+    assert (status["latest_version"], status["latest_status"], status["error"]) == (1, "done", None)
+    assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 1
+
+
+def test_at_the_version_limit_an_outage_is_still_retried_and_another_failure_is_final(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """An outage retry uses no version, so the last version is retried (202); a generation failure there is
+    final as before (409 version_limit_reached)."""
+    last = get_settings().regenerations_max_version_count
+    remediation_id = _request(client, api_key, generated(_scenario())).json()["remediation_id"]
+    get_mongodb()[Collection.REMEDIATIONS].update_one(
+        {"_id": remediation_id}, {"$set": {"job.epoch": last, "versions.0.version": last}}
+    )  # every version used
+    _failed_for_outage(world, remediation_id, last)
+    retried = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (retried.status_code, retried.json()["version"]) == (202, last), retried.text
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, BROKEN, BROKEN)
+    deliver(remediation_id, last)
+    assert _record(remediation_id)["job"]["error"]["code"] == ErrorCode.GENERATION_FAILED
+    full = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (full.status_code, full.json()["reason"]) == (409, ConflictReason.VERSION_LIMIT_REACHED)
+
+
+def test_an_outage_retry_that_meets_its_runs_delete_is_put_back_failed_for_the_outage(
+    client: TestClient, api_key: str, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's delete marks it just after the in-place write: 409 run_being_deleted and nothing sent; the
+    last version is failed for the outage again (not cancelled), so once the delete stops it is retried."""
+    last = get_settings().regenerations_max_version_count
+    remediation_id = _request(client, api_key, generated(_scenario())).json()["remediation_id"]
+    get_mongodb()[Collection.REMEDIATIONS].update_one(
+        {"_id": remediation_id}, {"$set": {"job.epoch": last, "versions.0.version": last}}
+    )  # every version used
+    _failed_for_outage(world, remediation_id, last)
+    plans, runs = container.get_remediation_repository(), get_mongodb()[Collection.SESSIONS]
+    run, real_retry = _record(remediation_id)["session_id"], plans.retry_remediation_plan_version
+
+    def retried_then_the_delete_marks(*args: Any) -> bool:
+        retried = real_retry(*args)
+        runs.update_one({"_id": run}, {"$set": {DELETING_MARK: datetime.now(UTC)}})
+        return retried
+
+    with monkeypatch.context() as raced:
+        raced.setattr(plans, "retry_remediation_plan_version", retried_then_the_delete_marks)
+        refused = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.RUN_BEING_DELETED)
+    record = _record(remediation_id)
+    assert (record["status"], "active" in record, record["job"]["error"]["code"]) == (
+        Status.FAILED,
+        False,
+        ErrorCode.UNAVAILABLE,
+    )
+    assert world["sent"] == [(TaskName.WRITE_PLAN, remediation_id, 1)]
+    runs.update_one({"_id": run}, {"$unset": {DELETING_MARK: ""}})  # the delete found work left and stopped
+    retried = _post(client, api_key, remediation_id, "regenerate", {})
+    assert (retried.status_code, retried.json()["version"]) == (202, last), retried.text
 
 
 def test_one_accepted_version_at_a_time_and_the_records_decision(
@@ -822,7 +1017,6 @@ def _stored_plan() -> str:
         "decision": Decision.PENDING,
         "decision_seq": 0,
         "status": Status.QUEUED,
-        "active": True,
         "job": _job(1),
         "created_at": NOW,
         "updated_at": NOW,
@@ -853,13 +1047,52 @@ def test_a_version_is_appended_only_on_the_finished_latest_read() -> None:
     found = [(v["version"], v["status"]) for v in record["versions"]]
     assert found == [(1, Status.FAILED), (2, Status.QUEUED)] and record["versions"][0]["error"] == error
     assert record["versions"][1]["snapshot"]["scenario"]["statement"] == "$status costs $5"
-    assert (record["status"], record["active"], record["job"]["epoch"]) == (Status.QUEUED, True, 2)
+    assert (record["status"], "active" in record, record["job"]["epoch"]) == (Status.QUEUED, False, 2)
     assert "finished_at" not in record and record["job"]["error"] is None
     assert plans.create_remediation_plan_version(remediation_id, 1, _item(3), _job(3), NOW) is False
     assert (record["decision_seq"], record["decision"]) == (1, Decision.PENDING)
     change = decision_change(stale, 1, Decision.REJECTED, DECIDED_BY, None, NOW)
     assert change is not None
     assert plans.update_remediation_plan_decision(remediation_id, stale["decision_seq"], change) is False
+
+
+def test_only_a_latest_version_failed_for_an_outage_is_queued_again_in_place() -> None:
+    """Refused while queued, done, failed for another reason, or for a version that is not the latest; once
+    on an outage failure: a fresh job, queued and active, its snapshot cleared, no version added."""
+    plans, records = container.get_remediation_repository(), get_mongodb()[Collection.REMEDIATIONS]
+    remediation_id = _stored_plan()
+
+    def retry(version: int = 1) -> bool:
+        return plans.retry_remediation_plan_version(remediation_id, version, _job(version), NOW)
+
+    def settle(status: Status, error: dict[str, str] | None) -> None:
+        settled = {
+            "status": status,
+            "job.attempts": 5,
+            "job.error": error,
+            "finished_at": NOW,
+        }
+        records.update_one({"_id": remediation_id}, {"$set": settled})
+
+    assert retry() is False
+    settle(Status.DONE, None)
+    assert retry() is False
+    settle(Status.FAILED, {"code": "generation_failed", "message": "No usable plan."})
+    assert retry() is False
+    settle(Status.FAILED, {"code": ErrorCode.UNAVAILABLE, "message": "Busy.", "reason": AiOutage.BUSY})
+    assert retry(2) is False
+    assert retry() is True
+    record = _record(remediation_id)
+    job = record["job"]
+    assert (record["status"], "active" in record, job["attempts"], job["error"]) == (
+        Status.QUEUED,
+        False,
+        0,
+        None,
+    )
+    assert [v["version"] for v in record["versions"]] == [1] and record["versions"][0]["snapshot"] is None
+    assert "finished_at" not in record and record["decision_seq"] == 0
+    assert retry() is False
 
 
 # --- a record stored before the rebuild
@@ -928,7 +1161,7 @@ def test_a_plan_stored_before_the_rebuild_reads_and_its_pending_version_is_writt
         {"_id": remediation_id, "scenario_id": scenario_id, "session_id": run, "entity_id": ENTITY,
          "asset_id": 1179, "source": RunKind.GENERATED, "title": "Loss of control integrity",
          "register": register, "versions": versions, "accepted_version": None, "decision": Decision.PENDING,
-         "decision_seq": 1, "risk_level": "High", "status": Status.QUEUED, "active": True,
+         "decision_seq": 1, "risk_level": "High", "status": Status.QUEUED,
          "job": new_job(TaskName.WRITE_PLAN, 2, now), "created_at": now, "updated_at": now}
     )  # fmt: skip
     old = _result(client, api_key, remediation_id, include_history="true")
@@ -944,7 +1177,7 @@ def test_a_plan_stored_before_the_rebuild_reads_and_its_pending_version_is_writt
     deliver(remediation_id, 2)
     record = _record(remediation_id)
     written = record["versions"][1]
-    assert (record["status"], written["prompt_version"]) == (Status.DONE, Remediation.PROMPT_VERSION)
+    assert (record["status"], written["prompt_version"]) == (Status.DONE, PromptVersion.REMEDIATION)
     assert "pending" not in written["snapshot"] and _mapped_codes(written) == ["CII-CID-1"]
     assert record["versions"][0]["plan"] == OLD_PLAN
     newest = _result(client, api_key, remediation_id).json()

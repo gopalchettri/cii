@@ -1,6 +1,6 @@
 # TSG API consumer guide: threat scenarios, remediation and service mapper
 
-Covers 18 endpoints. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/api/routers/service_mapper.py`, `app/models/**`.
+Covers 18 endpoints, and two operations endpoints in section 7. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/api/routers/service_mapper.py`, `app/models/**`.
 
 ## 1. Basics
 
@@ -15,7 +15,7 @@ Covers 18 endpoints. Source of truth: `app/api/routers/scenario.py`, `app/api/ro
 | `X-Entity-Id` | yes | integer 1..2147483647; not an integer, 0, negative or larger → 422 |
 | `X-Tenant-Id` | yes | tenant id, 1-256 chars (blank = missing; longer → 422) |
 | `Content-Type` | POST with body | `application/json` |
-| `Idempotency-Key` | see below | up to 200 chars |
+| `Idempotency-Key` | see below | up to 200 chars. The key used is echoed on the response (see below). |
 | `X-Request-Id` | no | your trace id; kept if it matches `[A-Za-z0-9._-]{1,64}`, else replaced. Always echoed on the response. |
 
 Any of the four identity headers missing → `401`. Unknown or revoked key → `401`. A `401` carries `WWW-Authenticate: ApiKey realm="tsg", header="X-API-Key"`.
@@ -27,11 +27,38 @@ Every run, scenario, plan and mapping belongs to the entity in `X-Entity-Id`. Un
 | Endpoint | Behaviour |
 | --- | --- |
 | `POST /v1/sessions` | optional. Same key + same body → `200` with the same run. Same key, other body → `409 idempotency_key_conflict`. |
-| `POST /v1/remediation`, `is_manual=true` | **required** (else `422`). Same key + same body → `200`, `replayed: true`. Same key, other body → `409 idempotency_key_conflict`. |
+| `POST /v1/remediation`, `is_manual=true` | optional. Same key + same body → `200`, `replayed: true`. Same key, other body → `409 idempotency_key_conflict`. If that plan failed for an outage (`error.code` `unavailable`), the same key and body write its latest version again: `202`, `replayed: true`, `status: queued` (it can then also answer `409 run_being_deleted` or `control_library_empty`). |
 | `POST /v1/remediation`, `is_manual=false` | accepted but ignored. A repeat → `409 plan_already_exists`. |
-| `POST /v1/service-mapper` | optional. Same key + same body → `200` with the same `mapping_id`. Same key, other body → `409` (no `reason`). |
+| `POST /v1/service-mapper` | optional. Same key + same body → `200` with the same `mapping_id`; when that key's generation is still the mapping's latest and failed for an outage (`error.code` `unavailable`), `202` with a new try (the next `generation`). Same key, other body → `409` (no `reason`). |
+| `POST /v1/service-mapper/{mapping_id}/regenerate` | optional. Same key → `200` with the generation it started, or `202` with a new try when that generation failed for an outage and is still the latest. |
 
 Keys are one namespace per entity across `POST /v1/sessions` and manual `POST /v1/remediation`: a key used on one → `409 idempotency_key_conflict` on the other. `POST /v1/service-mapper` keys are a namespace of their own. Use a fresh key (e.g. a UUID) per new request.
+
+**No key sent.** The server makes one from who calls (tenant, entity, user and API client), the method, the path, the exact body and a fixed 60 s window. The same request again in the same window → `409 duplicate_request`: `detail` names the first record and how many seconds ago it started; `details` has its ids (`session_id`; `session_id` and `scenario_id` for a hand-written plan; `mapping_id`; `mapping_id` and `generation` for a regenerate) and `started_seconds_ago`. It is never replayed. The windows are fixed, so a repeat that crosses a window's edge starts new work. To send two identical requests on purpose, give each its own key.
+
+**The response header.** Each answer of these routes (`202`, a `200` replay, a `409`) carries `Idempotency-Key`: your key, or the one the server made (`derived-...`). CORS exposes it. A key you send always replays, the echoed one too: after a lost `202`, send the same body with the echoed key to get the first answer (`200`).
+
+Example: a double click with no key, then a retry with your own key.
+
+```
+POST /v1/sessions  (no key)                 → 202, Idempotency-Key: derived-5d1e…
+POST /v1/sessions  (no key, same body, 2 s) → 409 duplicate_request
+POST /v1/sessions  Idempotency-Key: k-42    → 202, Idempotency-Key: k-42
+POST /v1/sessions  Idempotency-Key: k-42    → 200, the same run
+```
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "The same request was sent 2 s ago and started session_id 938cc176aede40daa154f7c572cd2494. Wait 60 s, or send a new Idempotency-Key to start another.",
+  "code": "conflict",
+  "request_id": "7b2e4c9a1f3d4e6a8b0c2d4f6a8b0c2e",
+  "reason": "duplicate_request",
+  "details": { "session_id": "938cc176aede40daa154f7c572cd2494", "started_seconds_ago": 2 }
+}
+```
 
 ### Error body
 
@@ -47,18 +74,18 @@ Every error is `application/problem+json` (RFC 9457):
 | `request_id` | string | same as `X-Request-Id` header |
 | `reason` | string, optional | the rule that refused it (mostly on 409). Stable: branch on this. |
 | `errors` | array, optional | 422: `[{field, message}]`. Review 409s: `[{scenario_id, reason}]`. |
-| `details` | object, optional | facts you can act on, e.g. `active_session_id`, `remediation_id`, `system_ids` |
+| `details` | object, optional | facts you can act on, e.g. `remediation_id`, `system_ids`, `missing_facts` |
 
 ```json
 {
   "type": "about:blank",
   "title": "Conflict",
   "status": 409,
-  "detail": "Asset 1166 already has an active run.",
+  "detail": "Scenario '0c5dc06d-267d-5bb3-b9d3-1e027e1828e3' already has a plan (5f2b9c1e7a4d4e0b9c3a8d6f1e2b4c7a): regenerate it instead.",
   "code": "conflict",
   "request_id": "3f9a0c2e5b7d4a1e8c6f0b2d4e6a8c0e",
-  "reason": "active_session_exists",
-  "details": { "active_session_id": "938cc176aede40daa154f7c572cd2494" }
+  "reason": "plan_already_exists",
+  "details": { "remediation_id": "5f2b9c1e7a4d4e0b9c3a8d6f1e2b4c7a" }
 }
 ```
 
@@ -163,7 +190,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | `progress.timings.threats` / `.scenarios` / `.controls` | number or null | seconds, once the stage is complete |
 | `progress.error_message` | object | `{}` when fine, else `{stage: why}` |
 | `progress.error_reason` | string or null | AI outage that failed the run: `ai_down`, `ai_unreachable`, `ai_busy`, `ai_timed_out` |
-| `progress.retrying` | object or null | waiting after an outage: `stage`, `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
+| `progress.retrying` | object or null | waiting after an outage: `stage`, `reason`, `message`, `attempt`, `max_attempts`, `retry_at` (see the notes in 3.2) |
 | `progress.last_next_set` | object or null | `{outcome, requested, delivered}` |
 | `progress.last_regen` | object or null | `{outcome, requested, replaced}` |
 | `progress.scenario_count.total` | int or null | attack paths planned (null until threats found) |
@@ -171,9 +198,12 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | `progress.scenario_count.remaining` | int or null | paths still to write |
 | `progress.scenario_count.complete` | bool | nothing left to write |
 | `progress.scenario_count.pending_review` / `.accepted` / `.rejected` | int | review counts |
+| `error` | object or null | a failed run's `{code, message, reason}`; null otherwise. `reason`: the AI outage, or for `code` `job_abandoned` `abandoned` (its worker stopped on every attempt) or `never_started` (sent again and again, never taken); else null |
 | `updated_at` | datetime | |
 
 `outcome` values: `running`, `complete`, `partial`, `failed`, `cancelled`.
+
+A set can be `complete` with `delivered` below `requested`: a path an outage stopped keeps its `failed` card, and `progress.scenario_count.remaining` counts it, so the next set writes it again, up to 5 tries.
 
 ```json
 {
@@ -210,8 +240,8 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | 403 | `asset_not_owned` | use an asset of your entity |
 | 403 | `system_not_linked` | `details.system_ids` are not linked to the asset |
 | 404 | — | `service_id` / `sector_id` / `subsector_id` unknown |
-| 409 | `active_session_exists` | the asset already has a run: use `details.active_session_id` |
 | 409 | `idempotency_key_conflict` | key reused for another body, used by a manual plan request, or its run was deleted: use a new key |
+| 409 | `duplicate_request` | the same request with no key in the same 60 s window: `details.session_id` is the run it started. Use that run, or send a new key |
 | 409 | `intel_no_data` | external intelligence is on but empty; admin must import first |
 
 ### 3.2 `GET /v1/sessions/{session_id}`
@@ -235,7 +265,11 @@ Headers: identity headers.
 
 Note: scenarios are written first, controls after. A run whose scenarios are written reads `session_status: completed` with `progress.controls: RUNNING` while controls are mapped; `overall` is then already `awaiting_review` (or `awaiting_next_set`) when there is something to decide, else `in_progress`. You may accept and request plans then (see `controls_pending`, 3.5).
 
-`overall` meanings: `awaiting_review` = some written scenario is still pending; `awaiting_next_set` = all written ones decided and paths remain; `complete` = nothing left to write or decide.
+A failed run reads `overall: in_progress` while the controls of its written scenarios are still matched (`progress.controls` `RUNNING`), then `error`. `session_status` stays `failed`, and `error` and `progress.error_message` say why from the start.
+
+`overall` meanings: `awaiting_review` = some written scenario is still pending, or a path given up after its last AI outage can still be regenerated (its failure card, 3.6; `scenario_count.complete` stays `false` until then); `awaiting_next_set` = all written ones decided and paths remain; `complete` = nothing left to write or decide; `cancelled` = the run was cancelled, or a finished run's controls were cancelled (`session_status` stays `completed`). Pending reviews and paths left come first.
+
+`progress.retrying` is set while a stage waits for its next try: after an outage (`reason` the AI outage, null for a store outage), or after the job queue refused the send (`reason` null, `message` `The queue and live-update service is unreachable.`, `retry_at` when TSG sends it again). While controls wait and the run's own job has no notice, `stage` `controls` shows a controls outage: `attempt` and `max_attempts` (4) count that delivery's tries, and after the last one TSG sends it again about 10 minutes later.
 
 ### 3.3 `GET /v1/sessions/{session_id}/events` (SSE)
 
@@ -302,9 +336,9 @@ Headers: identity headers.
 | `scenario.threat_type` / `.threat_name` | string or null | |
 | `scenario.supporting_systems_involved[]` | object[] | `supporting_system_id`, `supporting_system`, `is_entry_point`, `justification`, `is_applicable` |
 | `scenario.scenario_title` | string or null | |
-| `scenario.scenario_statement` | string or null | statement + "Why this threat applies: ..." |
+| `scenario.scenario_statement` | string or null | the scenario statement only (no "Why this threat applies") |
 | `scenario.risk_statement` | string or null | |
-| `scenario.assumptions` | string[] | |
+| `scenario.assumptions` | string[] | each "assumes ... - not recorded in the platform"; [] when none |
 | `scenario.route_status` | string or null | `STANDALONE` or `ASSUMED` |
 | `scenario.also_applies` | string[] | other threats of the same kind on the same system |
 | `threat.threat_id` | string or null | `lib:<id>` or `ai:<name>` |
@@ -330,21 +364,21 @@ Headers: identity headers.
 | `gen_started_at` / `gen_finished_at` / `gen_seconds` | | |
 | `scenario_source` | string | `generated`, `manual` |
 | `library` | object or null | hand-written only: `threat{name,status}`, `threat_type{name,status}`, `message` |
-| `controls_unavailable` / `controls_mapped` / `controls_mapping_exhausted` | bool | `controls_mapping_exhausted`: background mapping gave up. Not a blocker: a plan request (4.1) maps them again |
+| `controls_unavailable` / `controls_mapped` / `controls_mapping_exhausted` | bool | `controls_mapping_exhausted`: background mapping failed. The sweep tries it again after 30 minutes while it has tries left, never after 5. Not a blocker: a plan request (4.1) or a plan regenerate (4.5) maps it again at once |
 | `controls_mapping_exhaustion_reason` | string or null | |
 | `replaced_scenarios` | ScenarioView[] | only with `include_replaced=true`, newest first |
-| `scope` | object or null | `scope_key`, `scope_type` (`ASSET`/`SYSTEM`/`COMBINATION`), `supporting_system_ids`, `evidence` |
+| `scope` | object or null | `scope_key`, `scope_type` (`ASSET`/`SYSTEM`/`COMBINATION`), `supporting_system_ids`, `evidence` (always `[]`, kept for the response shape) |
 | `actor` | string or null | acting attacker's name |
 | `threat_source` / `threat_type_source` | string or null | `LIBRARY`, `AI_PROPOSED` |
 | `review_flags` | string[] | `AI_PROPOSED_TYPE`, `AI_PROPOSED_THREAT`, `ASSUMED_ROUTE`, `VALIDATION_EXCEPTION`, `PLAN_CHECK`, `NEAREST_CONTROL`, `CONTROL_LIBRARY_GAP` |
 | `control_match_status` | string or null | `EXACT`, `NEAREST_ONLY`, `CONTROL_LIBRARY_GAP`, `PENDING` |
 | `session_id` | string | |
-| `status` | string | `done`, `failed` (failure card; its path is retried). Only `done` can be accepted or planned. |
-| `failure` | object or null | failure card reason |
+| `status` | string | `done`, `failed` (a failure card). After an outage (`failure.code` `unavailable`) the next set writes its path again, up to 5 tries. An AI outage's card (`failure.reason` set) can also be regenerated (3.6), even after 5 tries. Any other failed card's path is given up. Only `done` can be accepted or planned. |
+| `failure` | object or null | failure card reason: `{code, message}`, plus `reason` (`ai_busy`, `ai_down`, `ai_unreachable`, `ai_timed_out`) when the AI did not answer. `code` `near_duplicate`: an outage's card whose path was then given up because it repeats another scenario of the session; the message names that scenario |
 | `regenerate_error` | object or null | why the last regenerate kept this version |
 | `created_at` | datetime | |
 | `controls_status` | string or null | `queued`, `running`, `done`, `failed`, `cancelled` |
-| `controls_error` | object or null | `{code, message, ...}` |
+| `controls_error` | object or null | `{code, message, ...}`; `code` `job_abandoned` has `reason` `abandoned` (its worker stopped on every attempt) |
 | `replaced_by` | string or null | newer version id |
 | `evidence_mode` | string or null | |
 | `evidence[]` | object[] | `n`, `ref`, `kind`, `source`, `title`, `url`, `facts`, `applicability`, `published`, `modified`, `fetched_at`, `searched_at`, `role`, `supports`, `mitigations` |
@@ -415,16 +449,44 @@ Headers: identity headers, `Content-Type`.
 | --- | --- |
 | `session_id` | string ≤ 64 |
 
-**Body** (`AcceptRequest`)
+**Body** (`AcceptRequest`), the TSG v1 format:
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `scenario_ids` | string[] (1-50, unique, each ≤ 64) **or** the string `"all"` | yes | what to accept |
-| `replace_accepted` | bool | no (default `false`) | let a newer version replace an already accepted version of the same attack path |
+| `mode` | `all` / `subset` / `none` | yes (v1 body) | `all`: accept every scenario; `subset`: accept `scenario_ids`; `none`: accept nothing |
+| `scenario_ids` | string[] (1-50, unique, each ≤ 64) | with `subset` only | what to accept; left out with `all` and `none` |
+| `replace_accepted` | bool | no (default `false`) | with `subset`: let a newer version replace an already accepted version of the same attack path |
 
 ```json
-{ "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"], "replace_accepted": false }
+{ "mode": "subset", "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"] }
 ```
+```json
+{ "mode": "all" }
+```
+```json
+{ "mode": "subset", "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"], "replace_accepted": true }
+```
+```json
+{ "mode": "none" }
+```
+
+`{"mode": "none"}` decides nothing: `200` with four empty lists, and every scenario stays pending. With `mode`,
+`scenario_ids` is sent only with `subset` (a list, not `"all"`), and so is `replace_accepted: true`. Anything else →
+`422`. Swagger's example list shows each of these bodies.
+
+**The v2 body is also accepted** (no `mode`); the response is the same `AcceptResult`:
+
+| v2 body | Same as |
+| --- | --- |
+| `{"scenario_ids": [...]}` (+ `"replace_accepted": true`) | `{"mode": "subset", "scenario_ids": [...]}` (+ `"replace_accepted": true`) |
+| `{"scenario_ids": "all"}` | `{"mode": "all"}` |
+
+Notes for a TSG v1 client:
+- v1 ignored unknown fields; here an unknown field, an id over 64 characters and a repeated id are each a `422`.
+- The response is `AcceptResult` (below), not v1's `{session_id, user_id, status, accepted_count, replaced[{scenario_id, replaced_scenario_id}]}`: count `accepted`, and `replaced` lists the old ids only.
+- The error body is the one in 1 (Error body), not v1's `{error_code, message, details}`: read `reason` and `errors[]`.
+- Reasons changed: v1's `duplicate_identity` is now `duplicate_version`; an already rejected id was a `404`, now a `409 scenarios_not_decidable` with `already_rejected`. v1's `session_completed`, `session_cancelled`, `generation_abandoned` and `asset_busy` are gone; `run_failed`, `run_cancelled` and `nothing_to_accept` are new.
+- `{"mode": "none"}` writes nothing: no decision and no audit entry.
 
 **Response** `200`: `AcceptResult`
 
@@ -448,7 +510,7 @@ Headers: identity headers, `Content-Type`.
 
 | Status | Reason | Fix |
 | --- | --- | --- |
-| 422 | — | empty list, > 50 ids, repeated id, unknown field |
+| 422 | — | empty list, > 50 ids, repeated id, unknown field, a v1 `mode` rule broken |
 | 409 | `generation_in_progress` | a start, regenerate or next-set job is queued/running: wait until `session_status` is not `active` |
 | 409 | `run_failed` / `run_cancelled` | the run failed / was cancelled before any scenario; start a new run |
 | 404 / 403 | — | as 3.2 |
@@ -466,7 +528,7 @@ Notes:
 
 ### 3.6 `POST /v1/sessions/{session_id}/regenerate/scenarios`
 
-Rewrite chosen scenarios as new versions, in the background.
+Rewrite chosen scenarios as new versions, in the background. A failure card whose `failure.reason` is an AI outage (`ai_busy`, `ai_down`, `ai_unreachable`, `ai_timed_out`) is written again in its place: same `scenario_id`, version 1.
 
 Headers: identity headers, `Content-Type`.
 
@@ -478,7 +540,7 @@ Headers: identity headers, `Content-Type`.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `scenario_ids` | string[] (1-50, unique, each ≤ 64) | yes | current versions to rewrite; `"all"` is not allowed |
+| `scenario_ids` | string[] (1-50, unique, each ≤ 64) | yes | current versions to rewrite, or AI-outage failure cards; `"all"` is not allowed |
 
 ```json
 { "scenario_ids": ["0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"] }
@@ -504,8 +566,7 @@ Headers: identity headers, `Content-Type`.
 | 422 | — | empty, > 50, repeated id, `"all"`, unknown field |
 | 409 | `generation_in_progress` | wait for the current job |
 | 409 | `run_failed` / `run_cancelled` | start a new run |
-| 409 | `scenarios_not_regenerable` | `errors[]` `{scenario_id, reason}`: `unknown`, `failure_scenario` (retried automatically), `hand_written`, `version_not_current` (regenerate the newest), `duplicate_version` |
-| 409 | `asset_busy` | asset has another active run (`details.active_session_id`) |
+| 409 | `scenarios_not_regenerable` | `errors[]` `{scenario_id, reason}`: `unknown`, `failure_scenario` (a failure card that names no AI outage: it is not rewritten), `hand_written`, `version_not_current` (regenerate the newest), `duplicate_version` |
 | 409 | `run_being_deleted` | the run is being deleted |
 | 409 | `intel_no_data` | external intelligence empty |
 
@@ -515,6 +576,7 @@ Notes:
 - The old version stays readable via `include_replaced=true`. If the new version breaks a rule, the old one stays current and gets `regenerate_error`.
 - Regenerating an accepted scenario: the old version stays accepted (its plan untouched) and stays in `results`; the new one is `pending` with `replaces_accepted_version` set. Accepting it needs `replace_accepted: true` (3.5).
 - Pending and rejected scenarios can be regenerated too.
+- A failure card from an AI outage can always be regenerated, also after its path was given up after 5 tries: the path is written again in place. No new version is made and no spare path is pulled, so the run may end one scenario over its target. If the AI fails again on the last try, the card stays failed with its reason, `progress.last_regen` ends `partial`, and the run is not failed. If the path now repeats another scenario of the session, it is given up with no AI call and the card's `failure` becomes `{code: near_duplicate, message}` with no reason, so it is not regenerated again.
 
 ### 3.7 `POST /v1/sessions/{session_id}/scenarios/next-set`
 
@@ -543,7 +605,6 @@ Headers: identity headers.
 | 409 | `nothing_left` | every selected path is written |
 | 409 | `target_reached` | the rest were left out by `TOTAL_SCENARIO_COUNT` |
 | 409 | `scenarios_abandoned` | every remaining path was given up |
-| 409 | `asset_busy` | another active run on the asset |
 | 409 | `run_being_deleted` | |
 | 409 | `intel_no_data` | |
 
@@ -568,7 +629,7 @@ Not covered here: `POST /v1/sessions/{session_id}/scenarios/{scenario_id}/treatm
 
 Request a remediation plan for one scenario: generated (`is_manual=false`) or hand-written (`is_manual=true`). Returns `202` at once; the plan is written in the background.
 
-Headers: identity headers, `Content-Type`; `Idempotency-Key` required when `is_manual=true`.
+Headers: identity headers, `Content-Type`, optional `Idempotency-Key` (used when `is_manual=true`; section 1).
 
 **Body** (`PlanRequest`)
 
@@ -578,13 +639,12 @@ Headers: identity headers, `Content-Type`; `Idempotency-Key` required when `is_m
 | `session_id` | string ≤ 64 | only `is_manual=false` | run holding the scenario. Must be absent for `true`. |
 | `scenario_id` | string ≤ 64 | only `is_manual=false` | accepted scenario. Must be absent for `true`. |
 | `manual_scenario` | object | only `is_manual=true` | see below. Must be absent for `false`. |
-| `all_supporting_systems_applicable` | int `0`/`1` | yes | 1: risk on every system of the asset; 0: only the scenario's systems |
-| `existing_controls_all_supporting_system_applicable` | int `0`/`1` | yes | 1: existing controls are on every system; 0: each existing control lists its systems |
-| `existing_controls` | array (≤ 50) | no | each item a string or a control object (below) |
+| `supporting_systems_applicable_to_risk` | int[] | no | supporting systems of the scenario's asset the risk applies to. `null`, `""` or `[]` (or left out): the risk is on the asset itself, on no supporting system. A repeat is dropped. |
+| `supporting_systems_applicable_to_existing_controls` | int[] | no | supporting systems of the asset the existing controls are on, one list for all of them. `null`, `""` or `[]` (or left out): they are on no supporting system. Only the systems the risk applies to count; a repeat is dropped. |
+| `existing_controls` | array (≤ 50) | no | each item a string or a control object (below); it names the control only |
 | `existing_controls[].control_id` | int | one of id/code/name | library id |
 | `existing_controls[].control_code` | string ≤ 100 | one of id/code/name | e.g. `CID-0446` |
 | `existing_controls[].control_name` | string ≤ 500 | one of id/code/name | |
-| `existing_controls[].supporting_system_ids` | int[] | yes when the flag above is `0` | systems of the asset the control is on |
 | `likelihood_rating` | number ≥ 0 | no | ≤ 15 digits, ≤ 4 decimals |
 | `impact_rating` | number ≥ 0 | no | same |
 | `final_risk_rating` | number ≥ 0 | no | stored as sent |
@@ -592,10 +652,9 @@ Headers: identity headers, `Content-Type`; `Idempotency-Key` required when `is_m
 | `risk_identification_date` | datetime | no | naive = UTC |
 | `risk_owner` | string ≤ 200 | no | |
 | `impacted_business_division` | string ≤ 200 | no | |
-| `existing_controls_all_subsystems` | `"Yes"`/`"No"` | no | legacy, ignored |
 | `existing_controls_all_subsystems_justification` | string ≤ 1000 | no | |
-| `mitigation_start_date` | date | no, but both or neither | `YYYY-MM-DD` (a date-time's date part is used) |
-| `mitigation_end_date` | date | no, but both or neither | on or after start |
+| `mitigation_start_date` | date | no | `YYYY-MM-DD` (a date-time's date part is used); the plan's actions are dated from it |
+| `mitigation_end_date` | date | no; needs a start | on or after start; without it the plan is dated with no deadline (no late warning) |
 
 A string in `existing_controls` is a name, and also a code if it looks like one (`CID-0446`). An empty string `""` in an optional field means "not given".
 
@@ -623,11 +682,11 @@ Generated scenario:
   "is_manual": false,
   "session_id": "938cc176aede40daa154f7c572cd2494",
   "scenario_id": "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3",
-  "all_supporting_systems_applicable": 0,
-  "existing_controls_all_supporting_system_applicable": 0,
+  "supporting_systems_applicable_to_risk": [1448, 1449, 1450, 1451],
+  "supporting_systems_applicable_to_existing_controls": [1449, 1450],
   "existing_controls": [
-    { "control_code": "CID-0446", "supporting_system_ids": [1448] },
-    { "control_code": "CID-0995", "supporting_system_ids": [1448, 1451] }
+    { "control_code": "CID-0446", "control_name": "Risk Assessment" },
+    { "control_code": "CID-0995", "control_name": "Identity Threat Detection & Response" }
   ],
   "likelihood_rating": 4,
   "impact_rating": 5,
@@ -641,7 +700,9 @@ Generated scenario:
 }
 ```
 
-Hand-written scenario (with `Idempotency-Key`):
+Here the risk is on all four systems of asset 1166 and the existing controls are on 1449 and 1450. CID-0446 is an IT\OT control, so it counts on all four: `partially_implemented`, still needed on 1448 and 1451 (the plan in 4.3).
+
+Hand-written scenario (send an `Idempotency-Key` to retry it safely):
 
 ```json
 {
@@ -655,15 +716,17 @@ Hand-written scenario (with `Idempotency-Key`):
     "threat_name": "Ransomware with data theft extortion",
     "threat_scenario": "An affiliate phishes an operator, reaches the SCADA server and encrypts it after stealing historian data.",
     "risk_statement": "Signal control is lost for days and stolen data is used for extortion.",
-    "mapped_controls": [{ "control_code": "CID-0446" }]
+    "mapped_controls": [{ "control_code": "CID-0446", "control_name": "Risk Assessment" }]
   },
-  "all_supporting_systems_applicable": 1,
-  "existing_controls_all_supporting_system_applicable": 1,
-  "existing_controls": ["CID-0995"]
+  "supporting_systems_applicable_to_risk": [1448, 1451],
+  "supporting_systems_applicable_to_existing_controls": [1448, 1451],
+  "existing_controls": [
+    { "control_code": "CID-0995", "control_name": "Identity Threat Detection & Response" }
+  ]
 }
 ```
 
-**Response** `202` (`200` on manual replay): `PlanStarted`
+**Response** `202` (`200` on manual replay; `202` when that replay writes an outage-failed version again): `PlanStarted`
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -673,7 +736,7 @@ Hand-written scenario (with `Idempotency-Key`):
 | `version` | int | `1` |
 | `status` | string | `queued` (on replay: the current status) |
 | `is_manual` | bool | the scenario is hand-written |
-| `replayed` | bool | `true` when this key had already saved this scenario; then `version`/`status` are the plan's latest, not version 1 |
+| `replayed` | bool | `true` when this key had already saved this scenario; then `version`/`status` are the plan's latest, not version 1; when the plan had failed for an outage, the answer is `202` and the same version is queued again |
 
 ```json
 {
@@ -691,9 +754,8 @@ Hand-written scenario (with `Idempotency-Key`):
 
 | Status | Reason | Fix |
 | --- | --- | --- |
-| 422 | — | field errors: flag not integer 0/1, unknown field, kinds mixed, window dates unpaired or reversed, existing control with no id/code/name, missing `supporting_system_ids` when flag is 0 |
-| 422 | — | `is_manual=true` without `Idempotency-Key` (field `header.Idempotency-Key`) |
-| 422 | — | `existing_controls[n].supporting_system_ids` not systems of the asset |
+| 422 | — | field errors: an id in either supporting system list that is not a positive integer; `supporting_system_ids` inside an existing control (an unknown field); an old flag (see the notes); unknown field; kinds mixed; window dates unpaired or reversed; existing control with no id/code/name |
+| 422 | — | `supporting_systems_applicable_to_risk[n]` or `supporting_systems_applicable_to_existing_controls[n]` is not a supporting system of the scenario's asset (`n` is the place in the list as sent, repeats counted; the message lists the asset's systems) |
 | 422 | — / `type_mismatch` | manual: threat, type or category does not match the library |
 | 422 | — | manual: `mapped_controls` not found in the library |
 | 403 | — | scenario of another entity; `manual_scenario.entity_id` ≠ `X-Entity-Id` |
@@ -702,14 +764,31 @@ Hand-written scenario (with `Idempotency-Key`):
 | 409 | `scenario_not_accepted` | accept it first (3.5) |
 | 409 | `plan_already_exists` | one plan per scenario, even if its version 1 failed: regenerate it (4.5); id in `details.remediation_id` |
 | 409 | `idempotency_key_conflict` | key reused for another body |
+| 409 | `duplicate_request` | `is_manual=true`, the same request with no key in the same 60 s window: `details.session_id` and `details.scenario_id` name the plan it started |
 | 409 | `control_library_empty` | control library not loaded; admin issue |
 | 409 | `run_being_deleted` | |
 | 503 | `actor_library_empty` | manual: threat library has no actor; admin issue |
 
 Notes:
-- Flags are JSON integers: `1`/`0`. `true`, `"1"`, `1.0` → 422. (`is_manual` is a normal boolean.)
+- Both supporting system lists are optional, and are sent once for the whole request (never per control). An id that is sent must be a supporting system of the scenario's asset: for a generated scenario, the run's asset systems as frozen at its start; for a hand-written one, the asset's systems in SQL. An existing-controls system outside the risk list is accepted; only the overlap counts.
+- Every existing control is on the systems of `supporting_systems_applicable_to_existing_controls`. Over the affected systems of its own type (an IT control on the IT systems, an OT one on the OT systems): on all → `implemented`; on some → `partially_implemented` (still needed on the rest); on none, or not an existing control → `not_implemented`.
+- With a risk list, the existing-controls list empty → every control is `not_implemented`, needed on every affected system (with the risk list empty too, see the next bullet).
+- The risk list empty → the risk is on the asset itself: an existing control is `implemented`, any other is `not_implemented`, `protected_systems` and `required_systems` are `[]`, and the plan's actions name no supporting system.
+- `plan.applicable_to_all_subsystems` is `Yes` only when the risk list names every supporting system of the asset.
+- `is_manual` is a normal boolean.
+- The old flags are refused: `all_supporting_systems_applicable`, `existing_controls_all_supporting_system_applicable` and `existing_controls_all_subsystems`. Sending one, with any value (`0`, `1`, a list, `null`, `""`), is a 422 on that field (for example `body.all_supporting_systems_applicable`). The message names the list to send instead: `supporting_systems_applicable_to_risk` for the first, `supporting_systems_applicable_to_existing_controls` for the other two. When the body also has other mistakes, only the old flags are reported; the others show on the next try. A plan stored before the two lists still regenerates as before, from its stored flags.
 - `is_manual=true`: do not send `session_id` / `scenario_id` (422); TSG creates them and returns them.
-- `existing_controls_all_supporting_system_applicable: 0` → every `existing_controls` item needs `supporting_system_ids`, so use objects, not strings.
+
+**How TSG uses the two lists.** Example: the asset has four supporting systems, 1 historian, 2 workstation, 3 SCADA and 4 firewall, all of one type (so every control counts on all four). The table shows what TSG decides for an existing control (one listed in `existing_controls`); a control that is not an existing control is always `not_implemented`, needed on every system the risk applies to.
+
+| `..._to_risk` | `..._to_existing_controls` | What TSG decides for an existing control |
+| --- | --- | --- |
+| `[1, 2, 3, 4]` | `[2, 3]` | the risk is on all four; the control is on 2 and 3 → `partially_implemented`, `protected_systems` 2 and 3, still needed on 1 and 4 (`required_systems`) |
+| `[1, 2, 3, 4]` | `[1, 2, 3, 4]` | on every system the risk applies to → `implemented` |
+| `[1, 2, 3, 4]` | `[]` | on no system → `not_implemented`, needed on 1, 2, 3 and 4 |
+| `[1, 2]` | `[2, 3]` | only 2 counts (3 is outside the risk: accepted, ignored) → `partially_implemented`, still needed on 1 |
+| `[]` | any | the risk is on the asset itself → `implemented`, no systems listed; the actions name no system |
+| `[1, 5]` | `[2]` | 422 `body.supporting_systems_applicable_to_risk[1]`: 5 is not a supporting system of the asset |
 
 ### 4.2 `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/status`
 
@@ -730,9 +809,9 @@ Headers: identity headers.
 | `decision` | string | `pending`, `accepted`, `rejected` |
 | `progress.generation` | string | = `latest_status` |
 | `progress.review` | string | = `decision` |
-| `progress.overall` | string | `failed`, `cancelled`, `generating`, `awaiting_review`, `accepted`, `rejected` |
-| `progress.retrying` | object or null | waiting after an outage: `stage` (null), `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
-| `error` | object or null | `{code, message}` of the latest version |
+| `progress.overall` | string | the first that applies: `failed`, `cancelled`, `generating`, `read_only`, `awaiting_review`, `accepted`, `rejected` |
+| `progress.retrying` | object or null | waiting after an outage, or after the job queue refused the send (3.2): `stage` (null), `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
+| `error` | object or null | `{code, message, reason?}` of the latest version; `code` `job_abandoned` has `reason` `abandoned`, `never_started` or `waited_too_long` (it waited an hour for its scenario's controls) |
 | `updated_at` | datetime | |
 
 ```json
@@ -758,6 +837,10 @@ Headers: identity headers.
 | 404 | — | no plan requested for this scenario in this run |
 | 403 | — | another entity's plan |
 
+Notes:
+- `read_only`: no version is decided and the scenario is no longer accepted (for example another version of its path was accepted with `replace_accepted`), so review and regenerate answer `409 scenario_not_accepted`. Once the scenario is accepted again, it reads `awaiting_review` again. 4.3 and every `remediation.updated` event (4.6) carry the same value.
+- A plan whose job waits for its scenario's controls to be matched reads `latest_status: queued`, not `running`. After an hour of waiting it fails `job_abandoned` with `reason` `waited_too_long`.
+
 ### 4.3 `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan`
 
 Read the plan: the accepted version, else the newest finished one.
@@ -781,16 +864,16 @@ Headers: identity headers.
 | `plan.actions[]` | object[] | `action_id`, `action`, `owner`, `priority`, `dependencies`, `depends_on[]`, `duration_days`, `start_date`, `end_date` (null without window), `timeline`, `implements_controls[]`, `supporting_systems[{supporting_system_id, name}]`, `success_criteria` |
 | `plan.action_plan` | string | narrative |
 | `plan.mitigation_owner` | string | |
-| `plan.applicable_to_all_subsystems` | `Yes`/`No` or null | |
+| `plan.applicable_to_all_subsystems` | `Yes`/`No` or null | `Yes` only when `supporting_systems_applicable_to_risk` names every supporting system of the asset |
 | `plan.critical_path` | string[] | action ids |
 | `plan.mitigation_timeline` / `.mitigation_timeline_days` / `.mitigation_end_date_planned` | | |
 | `plan.risk_identification_date` / `.risk_owner` / `.impacted_business_division` | | from the request |
-| `plan.prompt_version` | string | |
+| `plan.prompt_version` | string | the prompt that wrote the version, e.g. `remediation-1` |
 | `plan.control_assessment[]` | object[] | `control_id`, `control_code`, `control_name`, `domain`, `match`, `implementation_status`, `recommended`, `protected_systems[]`, `required_systems[]`, `validation` (`retained`/`replaced`/`flagged_for_review`), `validation_reason`, `replaced_by`, `replaces[]` |
 | `plan.unresolved_gaps[]` | object[] | `kind` (`flagged_control`/`no_validated_control`/`uncovered_risk`), `control_code`, `detail` |
 | `warnings` | string[] | checks on the shown version; never a block |
 | `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[{name, role}]`, `controls[]` |
-| `register_data` | object | the register fields as sent in 4.1 (ratings as strings) |
+| `register_data` | object | the register fields as sent in 4.1 (ratings as strings; each system list with each id once, `[]` when not sent) |
 | `versions` | array or null | only with `include_history=true`: `version`, `status`, `decision`, `decided_by`, `decided_at`, `review_comment`, `requested_by`, `requested_at`, `completed_at`, `error`, `plan`, `warnings` |
 
 `implementation_status`: `implemented`, `partially_implemented`, `not_implemented`, `unverified`.
@@ -812,21 +895,24 @@ Headers: identity headers.
     "control_coverage": "gaps",
     "controls_to_be_implemented": [
       { "control_id": 446, "control_code": "CID-0446", "control_name": "Offline backups",
-        "control_type": "corrective", "domain": "Backup", "description": "Extend offline backups to the historian.",
+        "control_type": "corrective", "domain": "Backup",
+        "description": "Extend offline backups to the command centre and incident platforms.",
         "priority": "High", "implementation_status": "partially_implemented",
-        "required_systems": [ { "supporting_system_id": 1451, "name": "Historian" } ] }
+        "required_systems": [ { "supporting_system_id": 1448, "name": "Enterprise Command & Control Centre Platform" },
+                              { "supporting_system_id": 1451, "name": "Incident Detection & Response Platform" } ] }
     ],
     "actions": [
-      { "action_id": "A1", "action": "Extend offline backups to the historian", "owner": "OT Operations",
+      { "action_id": "A1", "action": "Extend offline backups to the command centre and incident platforms", "owner": "OT Operations",
         "priority": "High", "dependencies": "", "depends_on": [], "duration_days": 10,
         "start_date": "2026-11-01", "end_date": "2026-11-10", "timeline": "2026-11-01 → 2026-11-10 (10 days)",
         "implements_controls": ["CID-0446"],
-        "supporting_systems": [ { "supporting_system_id": 1451, "name": "Historian" } ],
+        "supporting_systems": [ { "supporting_system_id": 1448, "name": "Enterprise Command & Control Centre Platform" },
+                                { "supporting_system_id": 1451, "name": "Incident Detection & Response Platform" } ],
         "success_criteria": "Weekly restore test passes." }
     ],
     "action_plan": "...",
     "mitigation_owner": "Head of OT Operations",
-    "applicable_to_all_subsystems": "No",
+    "applicable_to_all_subsystems": "Yes",
     "critical_path": ["A1"],
     "mitigation_timeline": "2026-11-01 → 2026-11-10 (10 days, critical path A1)",
     "mitigation_timeline_days": 10,
@@ -834,7 +920,7 @@ Headers: identity headers.
     "risk_identification_date": "2026-10-20T09:30:00Z",
     "risk_owner": "Head of OT Operations",
     "impacted_business_division": "Traffic Operations",
-    "prompt_version": "remediation-4",
+    "prompt_version": "remediation-1",
     "control_assessment": [],
     "unresolved_gaps": []
   },
@@ -887,7 +973,7 @@ Notes: accepting a version makes it the plan; an earlier accepted version goes b
 
 ### 4.5 `POST /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/regenerate`
 
-Write a new version (2, 3, ...) from the same register data. Earlier versions stay.
+Write a new version (2, 3, ...) from the same register data. Earlier versions stay. If the latest version failed for an outage (`error.code` `unavailable`), regenerate writes that same version again instead: `version` is the latest number, no version is added, and `version_limit_reached` does not apply. Any other failure, or a cancel, gets a new version.
 
 Headers: identity headers, `Content-Type`.
 
@@ -902,7 +988,7 @@ Headers: identity headers, `Content-Type`.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `remediation_id` / `session_id` / `scenario_id` | string | |
-| `version` | int | new version number |
+| `version` | int | new version number (the same number when an outage-failed version is written again) |
 | `status` | string | `queued` |
 
 ```json
@@ -922,14 +1008,14 @@ Headers: identity headers, `Content-Type`.
 | 422 | — | body not `{}` |
 | 404 / 403 | — | as 4.2 |
 | 409 | `generation_in_progress` | latest version still queued/running: wait for `done`/`failed`/`cancelled` |
-| 409 | `version_limit_reached` | max versions (`REGENERATIONS_MAX_VERSION_COUNT`, default 10) reached: final, reviewing does not free a slot. Accept one of the existing versions |
+| 409 | `version_limit_reached` | max versions (`REGENERATIONS_MAX_VERSION_COUNT`, default 10) reached, never when the latest version failed for an outage (that one is written again in place): final, reviewing does not free a slot. Accept one of the existing versions |
 | 409 | `scenario_not_accepted` | scenario no longer accepted: plan is read-only |
 | 409 | `control_library_empty` | admin issue |
 | 409 | `run_being_deleted` | |
 
 Notes:
 - Regenerating an **accepted** plan keeps `decision: accepted`: `overall` goes `generating` → `accepted`, never `awaiting_review`. `GET .../treatment-plan` (4.3) keeps showing the accepted version until you accept the new one (review, 4.4: `{"decision": "accepted", "version": N}`). Detect the new version by `latest_version`/`latest_status` in 4.2, not by `overall`.
-- A failed or cancelled latest version is retried with regenerate, never with a new `POST /v1/remediation`.
+- A failed or cancelled latest version is retried with regenerate, never with a new `POST /v1/remediation`; an outage failure is retried in place as the same version.
 
 ### 4.6 `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events` (SSE)
 
@@ -958,7 +1044,9 @@ Headers: identity headers (same SSE auth as 3.3: headers only).
 
 Describe one service: TSG finds the services it depends on (**upstream**) and the services that depend on it (**downstream**), from the onboarding catalog and the AI. A reviewer then accepts or rejects each one. There is no review of the mapping as a whole: the review is complete when every service has a decision (`progress.relationships.pending` is `0`, 5.2).
 
-Not covered here: `GET /v1/service-mapper` (list an entity's mappings), `POST /v1/service-mapper/{mapping_id}/regenerate` (a new generation) and `GET /v1/entities/{listed_entity_id}/services` (the entity's catalog services).
+Not covered here: `GET /v1/service-mapper` (list an entity's mappings) and `GET /v1/entities/{listed_entity_id}/services` (the entity's catalog services).
+
+Regenerate, in short (`POST /v1/service-mapper/{mapping_id}/regenerate`, a new generation): `202` starts the next generation of a `done` or `failed` mapping; `409 generation_in_progress` while one is queued or running. The same `Idempotency-Key` answers `200` with the generation it started, or `202` with a new try when that generation failed for an outage and is still the latest. With no key, the same regenerate again in the same 60 s window answers `409 duplicate_request` (`details.mapping_id`, `details.generation`; section 1).
 
 Path param for every `/v1/service-mapper/{mapping_id}` route:
 
@@ -994,13 +1082,13 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 }
 ```
 
-**Response** `202` (`200` on replay): `MappingAccepted`
+**Response** `202` (`200` on replay; `202` when a replay starts a new try after an outage): `MappingAccepted`
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `mapping_id` | string | keep it |
-| `status` | string | always `queued` in this answer, also on a replay: read the real state from 5.2 |
-| `generation` | int | `1` |
+| `status` | string | `queued` for a new mapping (or a new try); on a replay the mapping's real status (`queued`, `running`, `done`, `failed`) |
+| `generation` | int | `1`; on a replay, the generation this key started (a new try after an outage counts one more) |
 
 ```json
 { "mapping_id": "41f4c1247cc2460e8e09e176a29a8ae9", "status": "queued", "generation": 1 }
@@ -1012,11 +1100,13 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | --- | --- | --- |
 | 422 | — | fix `errors[]`: a field missing, blank or too long; no entity names or more than 20; an entity name repeated; unknown field |
 | 409 | — | `Idempotency-Key` used before with another body (`This Idempotency-Key was already used for another mapping input.`): use a new key |
+| 409 | `duplicate_request` | the same request with no key in the same 60 s window: `details.mapping_id` is the mapping it started |
 
 Notes:
 - Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`). A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
 - `sector`, `subsector` and `entity_names` are free text for the AI: names, not ids, and not checked against the catalog. The mapping belongs to the entity in `X-Entity-Id`, whatever `entity_names` says.
 - How many services to find per direction is a server setting (default 10 upstream and 10 downstream); 5.3 shows it as `summary.max_upstream` / `summary.max_downstream`. Fewer come back when fewer are defensible.
+- A replay (same key, same body) after the mapping failed for an outage (`error.code` `unavailable`) starts a new try (`202`, `generation` one more), but only while this key's generation is still the latest: once another request started a later generation, the same key replays (`200`). After any other failure it replays (`200`) and the mapping stays `failed`. A create replay never answers `409 generation_in_progress`.
 
 ### 5.2 `GET /v1/service-mapper/{mapping_id}/status`
 
@@ -1065,10 +1155,10 @@ Headers: identity headers.
 | 403 | — | another entity's mapping |
 
 Notes:
-- A failed generation's `error`: `code: internal_error` with `The AI answer did not satisfy the Service Mapper output contract.` or `The AI answer was too long for the model; ...`; or `code: unavailable` with `reason` `ai_down`, `ai_unreachable`, `ai_busy` or `ai_timed_out` when the AI stayed unavailable through every retry.
-- A failed generation stays `failed`: it is not retried by itself and never turns `done`. Regenerate it (not covered here) or create a new mapping (5.1, with a new `Idempotency-Key`).
+- A failed generation's `error`: `code: internal_error` with `The AI answer did not satisfy the Service Mapper output contract.` or `The AI answer was too long for the model; ...`; or `code: unavailable` with `reason` `ai_down`, `ai_unreachable`, `ai_busy` or `ai_timed_out` when the AI stayed unavailable through every retry; or `code: job_abandoned` with `reason` `abandoned` (its worker stopped on every attempt) or `never_started` (never taken).
+- A failed generation stays `failed`: it is not retried by itself and never turns `done`. Regenerate it (see the start of section 5). After an outage (`error.code` `unavailable`) you can also send the same create request again with the same `Idempotency-Key`, while that key's generation is still the latest: that starts a new try.
 - `done` means the services are ready to decide, not that they are decided. The review is complete when `progress.relationships.pending` is `0`.
-- `retrying` is set only while the job is `queued` or `running`.
+- `retrying` is set only while the job is `queued` for its next try after an outage, or after the job queue refused the send (`reason` null, `The queue and live-update service is unreachable.`). It is null again once that try starts.
 - `cancelled` belongs to the shared status vocabulary; no call cancels a mapping today.
 
 ### 5.3 `GET /v1/service-mapper/{mapping_id}`
@@ -1245,7 +1335,7 @@ Headers: identity headers, `Content-Type`.
 | 422 | — | fix `errors[]`. Field `body`: nothing to decide (`Name at least one dependency_id in accept or reject.`), an id in both lists, more than 200 ids in all. Field `body.accept` / `body.reject`: one list over 200 items. Field `body.accept.N` / `body.reject.N`: an id over 64 chars. Unknown field. |
 | 404 | — | unknown mapping |
 | 403 | — | another entity's mapping |
-| 409 | — | `status` is not `done` (`The mapping has not finished generating.`): wait for `done` (5.2). A `failed` mapping never gets there: see 5.2. |
+| 409 | — | `status` is not `done` (`The mapping is not done: wait while it generates, or regenerate it if it failed.`): wait for `done` (5.2); a `failed` mapping never gets there: regenerate it. |
 | 409 | `generation_in_progress` | `A round is already running for this mapping.`: another change kept landing at the same moment (e.g. a new generation started). Read 5.3 again and retry with its ids. |
 
 Notes:
@@ -1328,7 +1418,7 @@ streamEvents(`/v1/sessions/${run.session_id}/events`, (event, body) => {
 }, ctrl.signal);
 ```
 
-Reconnect yourself after a drop (the server suggests 3000 ms). From a browser, the origin must be in `CII_CORS_ORIGINS`; CORS allows these headers and exposes `X-Request-Id`.
+Reconnect yourself after a drop (the server suggests 3000 ms). From a browser, the origin must be in `CII_CORS_ORIGINS`; CORS allows these headers and exposes `X-Request-Id` and `Idempotency-Key`.
 
 ### Service mapper: create, wait, decide
 
@@ -1358,3 +1448,50 @@ for (const f of decided.failed) console.warn(f.dependency_id, f.reason); // a 20
 const after = await tsg("GET", `${base}/status`);
 const reviewed = after.progress.relationships.pending === 0; // the review is complete
 ```
+
+## 7. Operations endpoints
+
+For operators and support, not for the UI. Source of truth: `app/api/routers/health.py`, `app/api/routers/admin.py`, `app/models/jobs/views.py`.
+
+### 7.1 `GET /ready`
+
+No key. `200` with `status: "ready"` when MongoDB answers, else `503` with `status: "not_ready"`. MongoDB is the only store every route needs, so it alone decides. Redis, SQL Server and each queue's live workers are reported in the body but never make it `503`: a Redis outage or a queue without a worker does not take the API out of service (a job sent then waits in its record and the reaper sends it again).
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | string | `ready` or `not_ready` |
+| `dependencies` | object | `{mongo, redis, sql: bool}`: each store up or down |
+| `workers` | object or null | live workers per queue; null when Redis could not be read |
+| `mongodb` | object or null | replica set, version, default write concern |
+
+`GET /health` (`200` while the process answers) is the liveness check.
+
+### 7.2 `GET /v1/admin/jobs`
+
+Header `X-Admin-Key`. Every job of every kind active in the last `hours`, newest first, and each queue's backlog.
+
+| Query | Type | Meaning |
+| --- | --- | --- |
+| `module` | string | `threat_scenarios`, `remediation`, `service_mapper`, `external_intelligence`, `library_embeddings`, `maintenance` |
+| `status` | string, repeatable | `queued`, `running`, `done`, `failed`, `cancelled` |
+| `kind` | string ≤ 64 | a task name (`tsg_map_services` ...) or an admin job kind |
+| `request_id` | string | only the jobs sent by this API call (the `request_id` of its error body or `X-Request-Id`) |
+| `hours` | int 1..2160 | default 24 |
+| `limit` | int 1..200 | default 100 |
+
+**Response** `200`: `{jobs: MonitoredJob[], queues: {<queue>: {waiting, workers_online}}}`. `waiting` is null when the broker could not be read; a Redis outage never makes this call `503`.
+
+| `MonitoredJob` field | Meaning |
+| --- | --- |
+| `id`, `module`, `kind`, `collection`, `entity_id` | what the job is and where its record lives |
+| `status` | `queued`, `running`, `done`, `failed`, `cancelled` |
+| `retrying` | waiting after an outage: `stage`, `reason`, `message`, `attempt`, `max_attempts`, `retry_at` |
+| `attempts` | tries used |
+| `created_at`, `started_at`, `finished_at` | when |
+| `error` | `{code, message, reason?}` of a failed job; `code` `job_abandoned` has `reason` `abandoned`, `never_started` or `waited_too_long` |
+| `task_id`, `worker` | the delivery running it (cleared when it is queued again) |
+| `request_id` | the API call that started it: search it in the logs to see every line of the job |
+| `lease_until` | a running job whose lease is in the past has a dead worker: the reaper queues it again. An admin job's is its heartbeat: once it is in the past, the reaper fails the job (`job_abandoned`) |
+| `resends` | times the reaper sent a queued job again (only sends the broker took) |
+
+`GET /v1/admin/jobs/{job_id}` returns one `MonitoredJob`.

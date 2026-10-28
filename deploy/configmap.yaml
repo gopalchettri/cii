@@ -1,13 +1,19 @@
 # configmap.yaml - every ConfigMap TSG needs on OpenShift (UAT is production).
-#   1. tsg-config: the app's plain (non-secret) settings, the same in ai-threatgen, ai-remediation and ai-common.
-#   2. The monitoring's config files (Prometheus, Alertmanager, Loki, Alloy, Grafana), all in ai-common.
+#   1. tsg-config: the app's plain (non-secret) settings, the same in ai-threatgen and ai-common.
+#   2. The monitoring's config files (Prometheus, Alertmanager, Loki, Alloy, Grafana), all in ai-common, and the
+#      monitoring proxy's (nginx: Grafana and Flower on the API's address), in ai-threatgen.
 # Passwords, keys and connection strings are NOT here: they are in secrets.yaml.
 # Apply:  oc apply -f deploy/configmap.yaml
 # A running pod never sees a changed setting: after a change, restart TSG's pods in each project (the -l leaves
-# every other Deployment alone: v1's in the app projects, the chatbot's in ai-common):
-#   oc -n ai-remediation rollout restart deployment -l part-of=tsg
+# every other Deployment alone: v1's in ai-threatgen, the chatbot's in ai-common):
 #   oc -n ai-threatgen rollout restart deployment -l part-of=tsg
+#   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 #   oc -n ai-common rollout restart deployment -l part-of=tsg-monitoring
+#   oc -n ai-common rollout status deployment -l part-of=tsg-monitoring --timeout=10m
+#   oc -n ai-common rollout restart deployment/worker-reaper
+#   oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
+#   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
+#   oc -n ai-threatgen rollout status deployment/monitoring-proxy --timeout=10m
 # Step by step: deploy/DEPLOYMENT_GUIDE.md
 
 # ---------------------------------------------------------------- 1. the app's settings (tsg-config)
@@ -18,12 +24,13 @@ items:                                           # one tsg-config per project th
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place
       name: tsg-config                           # the name every TSG pod reads its settings from (envFrom)
-      namespace: ai-threatgen                    # the API, one worker per queue and beat run here
+      namespace: ai-threatgen                    # the API, beat and every worker but the reaper's run here
       labels: { part-of: tsg }                   # marks it as TSG's
-    data: &settings                              # "&settings" names this block: the two projects below reuse it unchanged
+    data: &settings                              # "&settings" names this block: ai-common's copy below reuses it unchanged
       CII_ENV: "uat"                             # environment name; anything but "dev" gets production's safety checks
       CII_CORS_ORIGINS: "CHANGE_ME_UI_ORIGIN"    # CHANGE: the platform UI's https address(es), comma-separated; "*" stops start-up
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
+      CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
       CII_CHAT_BASE_URL: "https://llmapi.govai.ae"                 # the AI gateway the chat models are called on
       CII_CHAT_MODEL: "litellm_proxy/kimi-k2.5"                    # main chat model (threats, scenarios, plans)
       CII_CHAT_MODEL_THINKING: "false"                             # false = the model's "thinking" mode off (faster)
@@ -37,7 +44,12 @@ items:                                           # one tsg-config per project th
       CII_AI_BYPASS_PROXY: "true"                # must stay true: AI calls go to the gateway directly, not via the proxy
       CII_WORKER_METRICS_PORT: "9100"            # port each worker serves /metrics on for Prometheus
       CII_MAX_REQUEST_MB: "2"                    # largest request body the API accepts, in MB
-      CII_MAX_CONCURRENT_AI_CALLS: "16"          # most AI calls at once across all pods (0 = no limit)
+      CII_MAX_CONCURRENT_AI_CALLS: "0"           # 0 = no fixed limit (the owner's choice for UAT): TSG backs off by itself only after a gateway 429 (one limit for all pods, halved at a 429, raised again by each answer, gone a few minutes after the last 429); above 0 = a fixed ceiling on AI calls at once across all pods
+      CII_MAX_CONCURRENT_FALLBACK_CALLS: "16"    # most calls at once to the fallback model (glm-5.3) across all pods; ask the gateway admin how many it takes
+      CII_CHAT_REQUESTS_PER_MINUTE: "180"            # requests a minute to the main chat model (kimi-k2.5) across all pods: its own limit is 192; 180 leaves headroom, assuming nothing else uses kimi-k2.5 on this key
+      CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE: "0"     # the same for the fallback model (glm-5.3); 0 = no limit: set it when the gateway admin gives glm-5.3's limit
+      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # the same for the embedding model; 0 = no limit: set it when the gateway admin gives its limit
+      CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: set it when the gateway admin gives its limit
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)
       TOTAL_SCENARIO_COUNT: "15"                 # most scenarios a run produces
       INITIAL_SET_SIZE: "6"                      # scenarios written first, so a reviewer can start reading
@@ -65,14 +77,7 @@ items:                                           # one tsg-config per project th
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place
       name: tsg-config                           # the same name, read the same way
-      namespace: ai-remediation                  # the second copy of every worker runs here
-      labels: { part-of: tsg }                   # marks it as TSG's
-    data: *settings                              # "*settings" = exactly the settings written above
-  - apiVersion: v1                               # core API version
-    kind: ConfigMap                              # plain, non-secret settings
-    metadata:                                    # the object's name and place
-      name: tsg-config                           # the same name, read the same way
-      namespace: ai-common                       # Flower runs here (it loads the app's settings to start)
+      namespace: ai-common                       # worker-reaper and Flower run here (Flower loads the settings to start)
       labels: { part-of: tsg }                   # marks it as TSG's
     data: *settings                              # "*settings" = exactly the settings written above
 
@@ -92,8 +97,8 @@ data:                                            # one key per file
   prometheus.yml: |                              # which pods to scrape: a copy of observability/prometheus/prometheus.yml
     # Prometheus in UAT / production (OpenShift). The laptop uses prometheus.local.yml: same rules, same paths.
     #
-    # Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's two projects (ai-threatgen,
-    # ai-remediation) and in ai-common (the monitoring, Flower) that carries the annotations below is scraped, one
+    # Every TSG pod (pod label part-of: tsg or tsg-monitoring) in the app's project (ai-threatgen) and in
+    # ai-common (the monitoring, Flower, worker-reaper) that carries the annotations below is scraped, one
     # target per pod. ai-common is shared with a chatbot: its pods are left out, whatever they carry.
     #   prometheus.io/scrape: "true"
     #   prometheus.io/port:   "<a containerPort the pod declares>"   (api 8000, worker 9100, flower 5555 …)
@@ -118,8 +123,8 @@ data:                                            # one key per file
       - job_name: pods
         kubernetes_sd_configs:
           - role: pod
-            namespaces: # the app's two projects and the monitoring's; a namespaced Role in each allows nothing more
-              names: [ai-threatgen, ai-remediation, ai-common]
+            namespaces: # the app's project and the monitoring's; a namespaced Role in each allows nothing more
+              names: [ai-threatgen, ai-common]
         relabel_configs:
           # TSG's pods only: the chatbot's pods in ai-common must not join TSG's jobs and alerts.
           - source_labels: [__meta_kubernetes_pod_label_part_of]
@@ -150,10 +155,14 @@ data:                                            # one key per file
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+          # Alerts and the dashboard name a target by instance: <project>/<pod>, not the pod's IP:port.
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+            separator: /
+            target_label: instance
 
       # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
-      # over the labels of the kube-state-metrics pod itself. It reports every pod of the three projects: keep the
-      # app projects' pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
+      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep the
+      # app project's pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
       # (<deployment>-<replicaset hash>-<5 characters>). tests/test_observability.py checks the names.
       - job_name: kube-state-metrics
         honor_labels: true
@@ -161,7 +170,7 @@ data:                                            # one key per file
           - targets: ["kube-state-metrics:8080"]
         metric_relabel_configs:
           - source_labels: [namespace, pod]
-            regex: "(ai-threatgen|ai-remediation);.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower)-[a-z0-9]+-[a-z0-9]{5}"
+            regex: "ai-threatgen;.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
             action: keep
 
       - job_name: prometheus
@@ -173,7 +182,8 @@ data:                                            # one key per file
     # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
     # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
     # Grafana Alerting. Planned with its metric: IntelStale (M12).
-    # No alert channel yet (D-05): firing alerts show in Grafana (home dashboard, Alerting) and at /alertmanager.
+    # Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
+    # Alerting) and at /alertmanager.
 
     groups:
       - name: tsg-api
@@ -215,25 +225,47 @@ data:                                            # one key per file
         rules:
           # Every `failure` outcome of a run job is final: a retry is counted as `retry`, so a failure is either
           # "failed after Lease.MAX_ATTEMPTS outage retries" or an unexpected error. Both leave a user with a failed
-          # run. The timer jobs are left out: a failed reaper pass or index build simply runs again on its timer
-          # (ReaperNotRunning watches the reaper; library.indexes_build_failed lines show a failing build).
+          # run. The timer jobs are left out: a failed reaper pass, control-mapping sweep or scheduled intel refresh
+          # simply runs again on its timer (ReaperNotRunning and ReaperFailing watch the reaper). An index build
+          # counts: an admin may
+          # have asked for it.
           - alert: JobsFailing
-            expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_build_library_indexes"}[15m])) > 0
+            expr: sum by (task) (increase(tsg_jobs_total{outcome="failure",task!~"tsg_reap|tsg_retry_controls|tsg_refresh_external_intelligence"}[15m])) > 0
             for: 1m
             labels: { severity: warning }
             annotations:
               summary: "{{ $labels.task }} jobs failed for good in the last 15 minutes."
               description: Open the TSG dashboard, table "Failed jobs", for why; click the run id for its whole story.
 
+          # A retry is an outage the job waits out (the AI, MongoDB or Redis): many of them mean runs crawl, and
+          # each one ends in JobsFailing after Lease.MAX_ATTEMPTS.
+          - alert: JobsRetrying
+            expr: sum by (task) (increase(tsg_jobs_total{outcome="retry"}[15m])) >= 5
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.task }} jobs were sent back to retry 5 times or more in 15 minutes."
+              description: Something keeps failing for them. Open the TSG dashboard, "Why the AI did not answer" and the stores' tiles.
+
+          # Due jobs waiting for a free worker thread (tsg_job_queue_wait_seconds), by job type.
+          - alert: JobQueueWaitHigh
+            expr: histogram_quantile(0.95, sum by (le, task) (rate(tsg_job_queue_wait_seconds_bucket[15m]))) > 300
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.task }} jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
+              description: The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy.
+
           # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
           # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
-          # The age of the last pass, not a rise in tsg_jobs_total: the first pass after a start comes before
+          # The age of the last start, not a rise in tsg_jobs_total: the first pass after a start comes before
           # Prometheus' first scrape, so a rise was never seen and every start showed this for a minute. Only the
-          # worker that runs the reaper exports it; none for 10 minutes (that worker gone) is the same problem.
+          # worker that runs the reaper exports it, from its first pass on; none for 10 minutes (that worker gone,
+          # or restarted and never sent the reaper) is the same problem. Passes that start but fail: ReaperFailing.
           - alert: ReaperNotRunning
             expr: >-
-              time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
-              or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m])
+              time() - max(tsg_reaper_last_start_timestamp_seconds) > 600
+              or absent_over_time(tsg_reaper_last_start_timestamp_seconds[10m])
             for: 5m
             labels: { severity: critical }
             annotations:
@@ -251,13 +283,15 @@ data:                                            # one key per file
               summary: "{{ $labels.instance }}'s clock is more than 5 s off MongoDB's; the app corrects for it."
               description: "UAT: the cluster admin fixes time sync on its node: oc debug node/<node> -- chroot /host chronyc tracking."
 
-          # Queue lists in Redis are named <Worker.BROKER_KEY_PREFIX><queue>, i.e. tsg:tsg_threats.
+          # Each queue is two Redis lists: <Worker.BROKER_KEY_PREFIX><queue> (a run's next stages), i.e.
+          # tsg:tsg_threats, and the same name + "\x06\x163" (new work, Worker.NEW_WORK_PRIORITY); summed per queue.
+          # Every queue but tsg_maintenance, so a new queue is covered without an edit here.
           - alert: QueueBacklog
-            expr: max by (key) (redis_key_size{key=~"tsg:tsg_(threats|scenarios|servicemapper)"}) > 50
+            expr: sum by (queue) (label_replace(max by (key) (redis_key_size{key=~"tsg:tsg_.*", key!~"tsg:tsg_maintenance.*"}), "queue", "$1", "key", "tsg:([a-z_]+).*")) > 50
             for: 15m
             labels: { severity: warning }
             annotations:
-              summary: "{{ $labels.key }} has held more than 50 waiting jobs for 15 minutes."
+              summary: "{{ $labels.queue }} has held more than 50 waiting jobs for 15 minutes."
               description: The workers cannot keep up. Check that its worker is WORKING; add a worker if it is.
 
           # redis-exporter answers even when it cannot reach Redis; then queue lengths vanish and QueueBacklog
@@ -278,14 +312,60 @@ data:                                            # one key per file
               summary: No worker is taking {{ $labels.queue }} jobs; they wait until one starts.
               description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
 
+      # Jobs that never ran or never ended: the job outcomes alone cannot show them.
+      - name: tsg-jobs-unfinished
+        rules:
+          # Beat sends the reaper (ReaperNotRunning is quiet) but no pass ends: each fails (MongoDB down) or hangs.
+          # A pass that never finished is exported nowhere, so none for 10 minutes counts too.
+          - alert: ReaperFailing
+            expr: >-
+              (time() - max(tsg_reaper_last_pass_timestamp_seconds) > 600
+              or absent_over_time(tsg_reaper_last_pass_timestamp_seconds[10m]))
+              and time() - max(tsg_reaper_last_start_timestamp_seconds) <= 600
+            for: 5m
+            labels: { severity: critical }
+            annotations:
+              summary: The reaper starts but no pass has finished for 15 minutes; stuck jobs are not repaired.
+              description: >-
+                Its passes fail or hang. Check MongoDB first (the stores' tiles); the "Errors and exceptions" table
+                shows why tsg_reap failed. If nothing fails, restart the worker that runs the reaper.
+
+          # Beat's timer messages (reaper, control-mapping sweep, index build, intel check) carry an expiry, which
+          # Celery stamps on beat's clock and checks on the worker's: a beat clock behind, or a stuck worker, drops
+          # them unrun. Each drop is counted as outcome="expired" (app/worker/lifecycle.py).
+          - alert: ScheduledJobsExpiring
+            expr: sum by (task) (increase(tsg_jobs_total{outcome="expired"}[15m])) > 0
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.task }} timer jobs were dropped unrun: they reached a worker after their expiry."
+              description: >-
+                Check that the worker taking them is not stuck or too busy, then the clock of beat's node against
+                the workers': oc debug node/<node> -- chroot /host chronyc tracking.
+
+          # A job with no lease check (AI call or wait) for Lease.STALL_SECONDS stops renewing its lease
+          # (app/worker/lease_renewal.py): the reaper gives it to another worker; its thread may still hold a slot.
+          - alert: JobHung
+            expr: sum(increase(tsg_jobs_hung_total[1h])) > 0
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: A job made no progress for 15 minutes and was stopped as hung in the last hour.
+              description: >-
+                Grafana Explore, Loki: {app="tsg"} |= "job.stalled" names it (record_id, task). The reaper runs it
+                again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts
+                its pod.
+
       - name: tsg-dependencies
         rules:
+          # The API (each /ready and scrape) and every worker (each heartbeat) report the stores they reach: by
+          # job, so the alert names which one lost it. SQL Server: the API only.
           - alert: MongoDown
-            expr: min(tsg_dependency_up{name="mongo"}) == 0
+            expr: min by (job) (tsg_dependency_up{name="mongo"}) == 0
             for: 3m
             labels: { severity: critical }
             annotations:
-              summary: MongoDB does not answer the API.
+              summary: MongoDB does not answer the {{ $labels.job }}.
               description: Nothing can be read or saved. Check the MongoDB server and CII_MONGO_URL.
           - alert: SqlDown
             expr: min(tsg_dependency_up{name="sql"}) == 0
@@ -295,24 +375,36 @@ data:                                            # one key per file
               summary: SQL Server does not answer the API.
               description: Asset and library data cannot be read. Check the SQL Server and its connection settings.
           - alert: RedisDown
-            expr: min(tsg_dependency_up{name="redis"}) == 0
+            expr: min by (job) (tsg_dependency_up{name="redis"}) == 0
             for: 3m
             labels: { severity: critical }
             annotations:
-              summary: Redis does not answer the API.
+              summary: Redis does not answer the {{ $labels.job }}.
               description: Jobs cannot be queued and live updates stop. Check the Redis server.
 
+          # Redis at its maxmemory drops keys: a queue list or the AI limiters' state can vanish with them.
+          - alert: RedisEvictingKeys
+            expr: sum(increase(redis_evicted_keys_total[10m])) > 0
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: Redis is full and dropped keys in the last 10 minutes; waiting jobs can be lost.
+              description: >-
+                The reaper re-sends lost jobs, late. Ask the Redis owner for more memory (or the noeviction policy)
+                and check what fills it.
+
           - alert: AiErrorRateHigh
-            expr: sum(rate(tsg_ai_calls_total{outcome!="ok"}[10m])) / sum(rate(tsg_ai_calls_total[10m])) > 0.10
+            expr: sum(rate(tsg_ai_calls_total{outcome!~"ok|truncated"}[10m])) / sum(rate(tsg_ai_calls_total{outcome!="truncated"}[10m])) > 0.10
             for: 10m
             labels: { severity: warning }
             annotations:
               summary: More than 10 % of AI calls fail (no answer, or an answer that could not be used).
               description: Open the TSG dashboard, "Why the AI did not answer"; see docs/UAT_LLM_TIMEOUT_RUNBOOK.md.
 
-          # By reason, so the alert itself says which outage it is (each has its own cure).
+          # By reason, so the alert itself says which outage it is (each has its own cure). The gateway's refusals
+          # only: source="limiter" counts TSG's own limiter (no AI slot or request turn free within the wait).
           - alert: AiNotAnswering
-            expr: sum by (reason) (increase(tsg_ai_outages_total[10m])) >= 3
+            expr: sum by (reason) (increase(tsg_ai_outages_total{source="gateway"}[10m])) >= 3
             for: 5m
             labels: { severity: warning }
             annotations:
@@ -324,15 +416,33 @@ data:                                            # one key per file
                 Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md).
                 Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team.
 
-          # Every worker reports the same total, read from Redis at each scrape (app/ai/slots.py); a cap of 0
-          # means no limit, so no alert. Calls then wait for a slot, and jobs slow down or give back.
+          # Every worker reports the same numbers, read from Redis at each scrape (app/ai/slots.py): the AI calls in
+          # flight, and the limit in force (CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower; 0 = none,
+          # so no alert). Calls then wait for a slot, and jobs slow down or give back.
           - alert: AiSlotsSaturated
             expr: max(tsg_ai_slots_in_use) >= max(tsg_ai_slots_cap) and max(tsg_ai_slots_cap) > 0
             for: 10m
             labels: { severity: warning }
             annotations:
               summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
-              description: Jobs slow down. Raise CII_MAX_CONCURRENT_AI_CALLS if the AI gateway can take more.
+              description: >-
+                Jobs slow down. At CII_MAX_CONCURRENT_AI_CALLS 0 the AI gateway keeps answering 429 and TSG holds back
+                by itself: ask the gateway admin for a higher limit on TSG's key. Above 0 with no recent 429 it is the
+                fixed ceiling: raise it if the gateway can take more.
+
+          # Every AI request waits its turn under its model's own requests-a-minute setting (app/ai/slots.py
+          # AiRequestRate), so by model: a long wait means more work is sent to that model than it allows.
+          - alert: AiRequestRateWaitHigh
+            expr: histogram_quantile(0.95, sum by (le, model) (rate(tsg_ai_request_rate_wait_seconds_bucket[5m]))) > 30
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $labels.model }} requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
+              description: >-
+                More work is sent to {{ $labels.model }} than its requests-a-minute setting allows
+                (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE
+                or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a
+                minute, then raise its setting; the dashboard's 429 panel shows refusals.
 
       - name: tsg-audit
         rules:
@@ -353,6 +463,25 @@ data:                                            # one key per file
             annotations:
               summary: The library check keeps failing, so library edits in SQL Server are not picked up (the last loaded library is still served).
               description: Check SQL Server; the "Errors and exceptions" table shows each library.check_failed line.
+
+      - name: tsg-logs
+        rules:
+          # Alloy gives up on a batch after its retries; Loki refuses lines too old, too long or over its rate. Both
+          # are up, so TargetDown is quiet. Loki makes its counter at its first refusal, already above 0, which
+          # increase() cannot see: a counter new in the last 15 minutes counts too.
+          - alert: LogLinesLost
+            expr: >-
+              sum(increase(loki_write_dropped_entries_total[15m])) > 0
+              or sum(increase(loki_discarded_samples_total[15m])) > 0
+              or count(loki_write_dropped_entries_total > 0 unless loki_write_dropped_entries_total offset 15m)
+              or count(loki_discarded_samples_total > 0 unless loki_discarded_samples_total offset 15m)
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: Log lines were lost on the way to Loki in the last 15 minutes; the log panels miss them.
+              description: >-
+                Alloy's and Loki's own logs say why: Loki down, or refusing lines (too old, too long, over its rate).
+                UAT: oc -n ai-common logs deployment/alloy, then deployment/loki.
 
       - name: tsg-platform
         rules:
@@ -412,7 +541,7 @@ data:                                            # one key per file
               summary: "{{ $labels.pod }} ran out of memory and was restarted."
               description: Raise its memory limit in deploy/, or find what used the memory (the "What is slow" row).
 
-# Alertmanager: where alerts go (nowhere yet, D-05)
+# Alertmanager: where alerts go (by email; fill in its CHANGE_ME_ values here and in observability/alertmanager/alertmanager.yml)
 ---
 apiVersion: v1                                   # core API version
 kind: ConfigMap                                  # Alertmanager's config, mounted at /etc/alertmanager
@@ -423,19 +552,39 @@ metadata:                                        # the object's name and place
 data:                                            # one key per file
   alertmanager.yml: |                            # receivers and routing: a copy of observability/alertmanager/alertmanager.yml
     # Alertmanager, UAT and laptop. Runs with --web.external-url=<host>/alertmanager/.
-    # D-05: no alert channel yet. Firing alerts show in Grafana (home dashboard and Alerting) and at /alertmanager.
-    # When the owner names a channel, add it to `receivers` (email_configs, webhook_configs …) and point the
-    # route at it.
+    # Alerts are sent by email (D-05). Two senders are set up; the `receiver:` line under `route:` picks the one used:
+    #   company-smtp  the company's mail relay
+    #   gmail         smtp.gmail.com:587 (STARTTLS), signed in with a Google app password
+    # Every CHANGE_ME_ value is a placeholder: put in the relay, the sender and the recipients here and in the copy in
+    # deploy/configmap.yaml. Passwords never go here: each is a file from Secret tsg-monitoring (deploy/secrets.yaml),
+    # mounted at /etc/alertmanager-secrets (deploy/deploy_common.yaml). The laptop has no such folder, so its
+    # Alertmanager cannot sign in and sends nothing. Firing alerts also show in Grafana (home dashboard and Alerting)
+    # and at /alertmanager.
 
     route:
-      receiver: none
+      receiver: company-smtp # where alerts go: company-smtp or gmail
       group_by: [alertname]
       group_wait: 30s
       group_interval: 5m
       repeat_interval: 4h
 
     receivers:
-      - name: none
+      - name: company-smtp
+        email_configs:
+          - smarthost: CHANGE_ME_RELAY_HOST:587 # the relay's host:port; it must offer STARTTLS (require_tls)
+            from: CHANGE_ME_SENDER@company.example
+            to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+            auth_username: CHANGE_ME_RELAY_USER
+            auth_password_file: /etc/alertmanager-secrets/smtp-relay-password # SMTP_RELAY_PASSWORD
+            send_resolved: true # also say when an alert has cleared
+      - name: gmail
+        email_configs:
+          - smarthost: smtp.gmail.com:587 # STARTTLS (require_tls)
+            from: CHANGE_ME_SENDER@gmail.com
+            to: CHANGE_ME_RECIPIENTS@company.example # several: comma-separated
+            auth_username: CHANGE_ME_SENDER@gmail.com # the same Gmail address
+            auth_password_file: /etc/alertmanager-secrets/gmail-app-password # GMAIL_APP_PASSWORD
+            send_resolved: true # also say when an alert has cleared
 
 # Loki: log storage
 ---
@@ -449,7 +598,8 @@ data:                                            # one key per file
   loki.yaml: |                                   # storage and retention: a copy of observability/loki/loki.yaml
     # Loki, UAT and laptop: one process (all parts in one binary), files on local disk, logs kept 7 days (D-07).
     # Started with -config.expand-env=true: LOKI_DATA is the data folder (UAT: the /loki volume; laptop: set by
-    # scripts/monitoring.py). Its API is public under /loki/api/v1/… (owner, 2026-10-08) — read it through Grafana.
+    # scripts/monitoring.py). No public address in UAT (D31: oc port-forward); read it through Grafana, whose
+    # anonymous Viewer can query it (POST /grafana/api/ds/query).
     # ponytail: one pod; split into Loki's separate parts only when log volume, not queries, is the problem.
 
     auth_enabled: false
@@ -495,7 +645,7 @@ data:                                            # one key per file
       reject_old_samples: true
       reject_old_samples_max_age: 168h
       volume_enabled: true
-      # Its API is public (owner decision): nobody may delete logs through it. Retention still deletes old logs.
+      # Anyone who can query it (Grafana has no login) must not delete logs. Retention still deletes old logs.
       deletion_mode: disabled
 
     compactor:
@@ -514,9 +664,9 @@ metadata:                                        # the object's name and place
 data:                                            # one key per file
   config.alloy: |                                # which pods' logs to read: a copy of observability/alloy/uat.alloy
     // Alloy in UAT / production: ships the stdout of TSG's pods (pod label part-of: tsg or tsg-monitoring) in the
-    // app's two projects and in ai-common (the monitoring, Flower) to Loki, through the Kubernetes API (no host
-    // folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop uses local.alloy: same
-    // labels, read from log files instead.
+    // app's project (ai-threatgen) and in ai-common (the monitoring, Flower, worker-reaper) to Loki, through the
+    // Kubernetes API (no host folders). ai-common is shared with a chatbot: its pods' logs are left out. The laptop
+    // uses local.alloy: same labels, read from log files instead.
 
     logging {
       level  = "info"
@@ -526,7 +676,7 @@ data:                                            # one key per file
     discovery.kubernetes "pods" {
       role = "pod"
       namespaces {
-        names = ["ai-threatgen", "ai-remediation", "ai-common"] // a namespaced Role in each allows nothing more
+        names = ["ai-threatgen", "ai-common"] // a namespaced Role in each allows nothing more
       }
     }
 
@@ -641,6 +791,79 @@ data:                                            # one key per file
         updateIntervalSeconds: 30
         options:
           path: ${GRAFANA_DASHBOARDS}
+
+# The monitoring proxy: Grafana and Flower on the API's address (this one is in ai-threatgen)
+---
+apiVersion: v1                                   # core API version
+kind: ConfigMap                                  # nginx's config, mounted at /etc/nginx/tsg
+metadata:                                        # the object's name and place
+  name: monitoring-proxy                         # the name its Deployment mounts (deploy_common.yaml)
+  namespace: ai-threatgen                        # the proxy's project: only it may use the API's address
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+data:                                            # one key per file
+  nginx.conf: |                                  # where /grafana and /flower go: a copy of observability/nginx/nginx.conf
+    # The monitoring proxy in UAT (deploy/deploy_common.yaml, project ai-threatgen); the laptop needs no proxy.
+    # OpenShift gives a web address to one project only, so the Routes for /grafana and /flower on the API's address
+    # are in ai-threatgen and point here. nginx forwards them, path unchanged, to TSG's Grafana and Flower in ai-common.
+    # It runs as any user: everything it writes is under /tmp, and its errors go to the pod log.
+    # It looks each address up once, at start: after a Service in ai-common is created again, restart this pod.
+
+    worker_processes 1;
+    daemon off;
+    pid /tmp/nginx.pid;
+    error_log stderr warn;
+
+    events {
+        worker_connections 512;
+    }
+
+    http {
+        access_log off;
+        server_tokens off;
+        client_body_temp_path /tmp/client_body;
+        proxy_temp_path /tmp/proxy;
+        fastcgi_temp_path /tmp/fastcgi;
+        uwsgi_temp_path /tmp/uwsgi;
+        scgi_temp_path /tmp/scgi;
+        # Request bodies up to 64k (Grafana's queries) stay in memory and answers pass straight on, never through a
+        # temp file (each spill is a warn line in Loki); a connection a network rule blocks fails in 5 s with an error
+        # line, not silently at the router's 30 s timeout.
+        client_body_buffer_size 64k;
+        proxy_max_temp_file_size 0;
+        proxy_connect_timeout 5s;
+
+        # Grafana Live keeps a websocket open: pass the upgrade on, and close plain requests as usual.
+        map $http_upgrade $connection_upgrade {
+            default upgrade;
+            "" close;
+        }
+
+        server {
+            listen 8080;
+
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;  # Grafana refuses a change whose Origin is not its own address
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+
+            location = /healthz {
+                return 200 "ok\n";
+            }
+
+            # No path after the port: each program gets the path as it came (they serve under /grafana and /flower).
+            location /grafana {
+                proxy_pass http://grafana.ai-common.svc.cluster.local:3000;
+            }
+
+            location /flower {
+                proxy_pass http://flower.ai-common.svc.cluster.local:5555;
+            }
+
+            location / {
+                return 404;
+            }
+        }
+    }
 
 # Grafana: the TSG dashboard (about 6,000 lines of JSON; JSON allows no comments)
 ---
@@ -851,7 +1074,7 @@ data:                                            # one key per file
           "id": 4,
           "type": "stat",
           "title": "Parts of the system",
-          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios, map controls and plans; map services; maintenance = reaper, library search, threat intelligence). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper finished a pass in the last 5 minutes (a worker that has just started counts as on time). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
+          "description": "WORKING = fine. DOWN = broken: the matching line in 'What is wrong right now' says what to do. UNKNOWN = the API is down, so it cannot check. Workers: a live worker takes that queue's jobs (find threats; write scenarios; map controls; write remediation plans; map services; maintenance = library search, threat intelligence; reaper = the reaper and the controls retry sweep). Scheduler = Celery beat, which starts the reaper every minute: WORKING when the reaper started a pass in the last 5 minutes (one started before its worker restarted counts). AI service, from real calls in the last 10 minutes: WORKING, SOME ERRORS, NOT ANSWERING (over half failed), or IDLE (no calls). Log collection = Loki and Alloy; Alerting = Alertmanager.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -894,6 +1117,30 @@ data:                                            # one key per file
               "format": "time_series"
             },
             {
+              "refId": "N",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_controls\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: map controls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "M",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_remediation\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: write plans",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
               "refId": "D",
               "datasource": {
                 "type": "prometheus",
@@ -918,12 +1165,24 @@ data:                                            # one key per file
               "format": "time_series"
             },
             {
+              "refId": "O",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "clamp_max(max(tsg_workers_online{queue=\"tsg_reaper\"}), 1) or vector(-1)",
+              "legendFormat": "Worker: reaper",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            },
+            {
               "refId": "F",
               "datasource": {
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "(time() - max(tsg_reaper_last_pass_timestamp_seconds) < 300) * 0 + 1 or vector(0)",
+              "expr": "(time() - max(max_over_time(tsg_reaper_last_start_timestamp_seconds[10m])) < 300) * 0 + 1 or vector(0)",
               "legendFormat": "Scheduler (beat)",
               "instant": true,
               "range": false,
@@ -971,7 +1230,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!=\"ok\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
+              "expr": "(sum(increase(tsg_ai_calls_total[10m])) == 0) * 0 + 3 or (sum(increase(tsg_ai_calls_total{outcome!~\"ok|truncated\"}[10m])) / sum(increase(tsg_ai_calls_total[10m])) > 0.5) * 0 + 4 or (sum(increase(tsg_ai_calls_total{outcome!~\"ok|truncated\"}[10m])) > 0) * 0 + 2 or (sum(increase(tsg_ai_calls_total[10m])) > 0) * 0 + 1 or vector(-1)",
               "legendFormat": "AI service",
               "instant": true,
               "range": false,
@@ -1227,6 +1486,38 @@ data:                                            # one key per file
                           "ClockSkew": {
                             "text": "A pod's clock is off: its node needs time sync",
                             "index": 22
+                          },
+                          "AiRequestRateWaitHigh": {
+                            "text": "A model's AI requests wait long for their turn (its requests-a-minute limit)",
+                            "index": 23
+                          },
+                          "JobsRetrying": {
+                            "text": "Jobs keep retrying: something they need keeps failing",
+                            "index": 24
+                          },
+                          "JobQueueWaitHigh": {
+                            "text": "Jobs wait long for a worker",
+                            "index": 25
+                          },
+                          "RedisEvictingKeys": {
+                            "text": "Redis is full and drops keys: waiting jobs can be lost",
+                            "index": 26
+                          },
+                          "ReaperFailing": {
+                            "text": "The reaper starts but fails: stuck jobs are not repaired",
+                            "index": 27
+                          },
+                          "ScheduledJobsExpiring": {
+                            "text": "Timer jobs are dropped unrun: a clock is off or a worker is stuck",
+                            "index": 28
+                          },
+                          "JobHung": {
+                            "text": "A job hung and was stopped: it runs again on another worker",
+                            "index": 29
+                          },
+                          "LogLinesLost": {
+                            "text": "Log lines were lost on the way to Loki",
+                            "index": 30
                           }
                         }
                       }
@@ -1766,7 +2057,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|too_long)\"` [$__range])) or vector(0)",
+              "expr": "sum(count_over_time({app=\"tsg\"} |~ `\"event\": \"job\\.(requeued|lease_lost|stalled)\"` [$__range])) or vector(0)",
               "queryType": "instant"
             }
           ],
@@ -1823,7 +2114,7 @@ data:                                            # one key per file
           "id": 10,
           "type": "stat",
           "title": "AI no answer",
-          "description": "AI calls that got no answer after their retries (down, unreachable, busy, timed out). Click to see them.",
+          "description": "AI calls the AI gateway left without an answer after their retries (down, unreachable, busy, timed out); refusals by TSG's own limiter are not counted. Click to see them.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1835,7 +2126,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "round(sum(increase(tsg_ai_outages_total[$__range]))) or vector(0)",
+              "expr": "round(sum(increase(tsg_ai_outages_total{source=\"gateway\"}[$__range]))) or vector(0)",
               "legendFormat": "__auto",
               "instant": true,
               "range": false,
@@ -2048,7 +2339,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=~\"error|critical\"} | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error_type }}{{ .error_type }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -2181,8 +2472,8 @@ data:                                            # one key per file
                             "text": "A job could not renew its lease",
                             "index": 14
                           },
-                          "job.too_long": {
-                            "text": "A job ran too long and was stopped",
+                          "job.stalled": {
+                            "text": "A job made no progress for 15 minutes",
                             "index": 15
                           },
                           "job.send_failed": {
@@ -2392,6 +2683,14 @@ data:                                            # one key per file
                           "rerank": {
                             "text": "Rank search results",
                             "index": 16
+                          },
+                          "threat_actions": {
+                            "text": "Split a threat's actions",
+                            "index": 17
+                          },
+                          "repair_scenario": {
+                            "text": "Rewrite a scenario",
+                            "index": 18
                           }
                         }
                       }
@@ -2557,7 +2856,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error }}{{ .error }}{{ else if .reason }}{{ .reason }}{{ end }}`",
+              "expr": "{app=\"tsg\", level=\"warning\"} != `\"event\": \"http.request\"` | json | label_format details=`{{ if .exception }}{{ regexReplaceAll \"(?s)^.*\\n\" .exception \"\" }}{{ else if .detail }}{{ .detail }}{{ else if .message }}{{ .message }}{{ else if .error_type }}{{ .error_type }}{{ else if .reason }}{{ .reason }}{{ end }}`, task=`{{ if .ai_task }}{{ .ai_task }}{{ else if .task }}{{ .task }}{{ end }}`",
               "queryType": "range",
               "maxLines": 500
             }
@@ -2690,8 +2989,8 @@ data:                                            # one key per file
                             "text": "A job could not renew its lease",
                             "index": 14
                           },
-                          "job.too_long": {
-                            "text": "A job ran too long and was stopped",
+                          "job.stalled": {
+                            "text": "A job made no progress for 15 minutes",
                             "index": 15
                           },
                           "job.send_failed": {
@@ -2901,6 +3200,14 @@ data:                                            # one key per file
                           "rerank": {
                             "text": "Rank search results",
                             "index": 16
+                          },
+                          "threat_actions": {
+                            "text": "Split a threat's actions",
+                            "index": 17
+                          },
+                          "repair_scenario": {
+                            "text": "Rewrite a scenario",
+                            "index": 18
                           }
                         }
                       }
@@ -3788,7 +4095,7 @@ data:                                            # one key per file
           "id": 44,
           "type": "stat",
           "title": "Why the AI did not answer",
-          "description": "AI calls with no answer in the chosen time, by reason. Timed out or busy: the AI gateway is overloaded. Could not be reached: network, proxy or address. Server error: the gateway is broken.",
+          "description": "AI calls with no answer in the chosen time, by reason. Timed out or busy: the AI gateway is overloaded. Could not be reached: network, proxy or address. Server error: the gateway is broken. Busy also counts TSG's own limiter (source=limiter: no AI slot or request turn free within the wait), not the gateway; the \"AI no answer\" tile counts the gateway's only.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -3975,6 +4282,14 @@ data:                                            # one key per file
                           "rerank": {
                             "text": "Rank search results",
                             "index": 7
+                          },
+                          "threat_actions": {
+                            "text": "Split a threat's actions",
+                            "index": 8
+                          },
+                          "repair_scenario": {
+                            "text": "Rewrite a scenario",
+                            "index": 9
                           }
                         }
                       }
@@ -4483,7 +4798,7 @@ data:                                            # one key per file
           "id": 16,
           "type": "timeseries",
           "title": "Jobs waiting in each queue",
-          "description": "Jobs sent but not yet picked up by a worker. Growing for long = the workers cannot keep up (or are down).",
+          "description": "Jobs sent but not yet picked up by a worker, a run's next stages and new work together. Growing for long = the workers cannot keep up (or are down).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -4495,7 +4810,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max by (queue) (label_replace(redis_key_size{key=~\"tsg:tsg_.*\"}, \"queue\", \"$1\", \"key\", \"tsg:(.*)\"))",
+              "expr": "sum by (queue) (label_replace(max by (key) (redis_key_size{key=~\"tsg:tsg_.*\"}), \"queue\", \"$1\", \"key\", \"tsg:([a-z_]+).*\"))",
               "legendFormat": "{{queue}}"
             }
           ],
@@ -4536,7 +4851,7 @@ data:                                            # one key per file
           "id": 17,
           "type": "timeseries",
           "title": "Jobs finished, by result",
-          "description": "Jobs ended per 5 minutes (the every-minute reaper left out): done, tried again after an outage, failed.",
+          "description": "Jobs ended per 5 minutes (the every-minute reaper and the 15 s looks of a job waiting for another job left out): done, tried again after an outage, failed.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -4548,7 +4863,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\"}[5m]))",
+              "expr": "sum by (outcome) (increase(tsg_jobs_total{task!=\"tsg_reap\",outcome!=\"waiting\"}[5m]))",
               "legendFormat": "{{outcome}}"
             }
           ],
@@ -4952,7 +5267,7 @@ data:                                            # one key per file
           "id": 61,
           "type": "table",
           "title": "Jobs now, by kind and status",
-          "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute. For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
+          "description": "How many jobs of each kind are waiting, waiting to try again, or running right now, and how many failed in the last 24 hours. The reaper counts them once a minute; this shows the count of its newest pass (a worker that missed the latest passes keeps an older one). For the jobs themselves, with their errors and workers: GET /v1/admin/jobs.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -4964,7 +5279,7 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max by (kind, status) (tsg_jobs_current) > 0",
+              "expr": "max by (kind, status) (tsg_jobs_current and on (instance) topk(1, tsg_reaper_last_pass_timestamp_seconds)) > 0",
               "legendFormat": "__auto",
               "instant": true,
               "range": false,
@@ -5408,6 +5723,14 @@ data:                                            # one key per file
                           "rerank": {
                             "text": "Rank search results",
                             "index": 7
+                          },
+                          "threat_actions": {
+                            "text": "Split a threat's actions",
+                            "index": 8
+                          },
+                          "repair_scenario": {
+                            "text": "Rewrite a scenario",
+                            "index": 9
                           }
                         }
                       }
@@ -5657,7 +5980,7 @@ data:                                            # one key per file
           "id": 23,
           "type": "gauge",
           "title": "AI capacity in use",
-          "description": "AI calls running now out of CII_MAX_CONCURRENT_AI_CALLS. At 100 % new calls wait for a free slot.",
+          "description": "AI calls running now, out of the limit in force: CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower (0 = none). A 429 sets that limit to half the calls in flight at that moment; each answer raises it a little, and it is gone a few minutes after the last 429. At 100 % new calls wait for a free slot. No limit set: TSG runs at full speed.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -5770,7 +6093,7 @@ data:                                            # one key per file
           },
           "gridPos": {
             "h": 8,
-            "w": 9,
+            "w": 6,
             "x": 6,
             "y": 90
           }
@@ -5823,8 +6146,61 @@ data:                                            # one key per file
           },
           "gridPos": {
             "h": 8,
-            "w": 9,
-            "x": 15,
+            "w": 6,
+            "x": 12,
+            "y": 90
+          }
+        },
+        {
+          "id": 62,
+          "type": "timeseries",
+          "title": "Wait for a worker over time (95 %)",
+          "description": "How long 95 % of jobs waited after they were due until a worker took them, per job type. A climb = too few worker threads for the work sent.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, task) (rate(tsg_job_queue_wait_seconds_bucket[15m])))",
+              "legendFormat": "{{task}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
             "y": 90
           }
         },
@@ -6163,6 +6539,112 @@ data:                                            # one key per file
           }
         },
         {
+          "id": 63,
+          "type": "timeseries",
+          "title": "Wait for an AI request's turn (95 %), by model",
+          "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(tsg_ai_request_rate_wait_seconds_bucket[5m])))",
+              "legendFormat": "{{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "Nothing yet"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 107
+          }
+        },
+        {
+          "id": 64,
+          "type": "timeseries",
+          "title": "AI gateway refusals (429) per minute",
+          "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (CII_CHAT_REQUESTS_PER_MINUTE and its siblings) is below that model's limit.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model) (rate(tsg_ai_rate_limited_total[5m])) * 60",
+              "legendFormat": "{{model}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "noValue": "No refusals"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 107
+          }
+        },
+        {
           "id": 30,
           "type": "row",
           "title": "Follow one run or request",
@@ -6172,7 +6654,7 @@ data:                                            # one key per file
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 107
+            "y": 115
           },
           "panels": []
         },
@@ -6192,7 +6674,7 @@ data:                                            # one key per file
                 "type": "loki",
                 "uid": "loki"
               },
-              "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
+              "expr": "{app=\"tsg\"} |= \"$id\" | json | route !~ \"/metrics|/health|/ready\" | line_format `{{ if not .event }}{{ __line__ }}{{ end }}{{ .event }}{{ with .task }}  | job {{ . }}{{ end }}{{ with .attempt }} (attempt {{ . }}){{ end }}{{ with .ai_task }}  | AI {{ . }}{{ end }}{{ with .method }}  | {{ . }}{{ end }}{{ with .path }} {{ . }}{{ end }}{{ with .status }}  | status {{ . }}{{ end }}{{ with .outcome }}  | {{ . }}{{ end }}{{ with .code }}  | {{ . }}{{ end }}{{ with .reason }}  | {{ . }}{{ end }}{{ with .detail }}  | {{ . }}{{ end }}{{ with .message }}  | {{ . }}{{ end }}{{ with .duration_ms }}  | {{ . }} ms{{ end }}{{ with .seconds }}  | {{ . }} s{{ end }}`",
               "queryType": "range",
               "maxLines": 2000
             }
@@ -6214,7 +6696,7 @@ data:                                            # one key per file
             "h": 12,
             "w": 24,
             "x": 0,
-            "y": 108
+            "y": 116
           }
         },
         {
@@ -6253,7 +6735,7 @@ data:                                            # one key per file
             "h": 6,
             "w": 24,
             "x": 0,
-            "y": 120
+            "y": 128
           }
         },
         {
@@ -6266,7 +6748,7 @@ data:                                            # one key per file
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 126
+            "y": 134
           },
           "panels": [
             {
@@ -6319,7 +6801,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 0,
-                "y": 127
+                "y": 135
               }
             },
             {
@@ -6372,7 +6854,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 8,
-                "y": 127
+                "y": 135
               }
             },
             {
@@ -6425,7 +6907,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 16,
-                "y": 127
+                "y": 135
               }
             }
           ]
@@ -6440,7 +6922,7 @@ data:                                            # one key per file
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 127
+            "y": 135
           },
           "panels": [
             {
@@ -6493,7 +6975,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 0,
-                "y": 128
+                "y": 136
               }
             },
             {
@@ -6546,7 +7028,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 8,
-                "y": 128
+                "y": 136
               }
             },
             {
@@ -6599,7 +7081,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 8,
                 "x": 16,
-                "y": 128
+                "y": 136
               }
             },
             {
@@ -6652,7 +7134,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 12,
                 "x": 0,
-                "y": 136
+                "y": 144
               }
             },
             {
@@ -6705,7 +7187,7 @@ data:                                            # one key per file
                 "h": 8,
                 "w": 12,
                 "x": 12,
-                "y": 136
+                "y": 144
               }
             }
           ]

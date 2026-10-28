@@ -20,7 +20,7 @@ class ServiceCandidateSearch:
         if not catalog.services or not queries:
             return []
         index = self._for_catalog(catalog)
-        vectors = self._embeddings.embed_search_queries(queries)
+        vectors = self._embeddings.embed_search_queries(queries, EmbeddingCorpus.SERVICE)
         rankings = [
             [hit.position for hit in index.search(query, vector, MapperLimits.CANDIDATE_POOL)]
             for query, vector in zip(queries, vectors, strict=True)

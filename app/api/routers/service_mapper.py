@@ -5,13 +5,12 @@ from functools import partial
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response
-from fastapi import Header as HeaderParam
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from app.api.dependencies import Caller
+from app.api.dependencies import Caller, IdempotencyKey
 from app.api.status_stream import api_key_still_active, status_stream
 from app.container import get_admin_service, get_service_mapper_service
-from app.core.constants import ApiTag, Event, Header, Limits, Review
+from app.core.constants import ApiTag, Event, Limits, Review
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
     DependencyDecisionRequest,
@@ -31,9 +30,6 @@ router = APIRouter(tags=[ApiTag.SERVICE_MAPPER])
 Mapper = Annotated[ServiceMapperService, Depends(get_service_mapper_service)]
 Clients = Annotated[AdminService, Depends(get_admin_service)]
 MappingId = Annotated[str, Path(max_length=Review.MAX_ID_CHARS)]
-IdempotencyKey = Annotated[
-    str | None, HeaderParam(alias=Header.IDEMPOTENCY_KEY, max_length=Limits.MAX_IDEMPOTENCY_KEY_CHARS)
-]
 
 
 @router.post("/v1/service-mapper", status_code=202, response_model=MappingAccepted)
@@ -42,9 +38,14 @@ def create_mapping(
     response: Response,
     principal: Caller,
     mapper: Mapper,
-    idempotency_key: IdempotencyKey = None,
+    idempotency_key: IdempotencyKey,
 ) -> MappingAccepted:
-    accepted, created = mapper.create_service_mapping(principal, body, idempotency_key)
+    """202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a
+    new try when the key's generation is still the latest and failed for an outage (`error.code`
+    `unavailable`). Without a key, the same body again within a minute is 409 `duplicate_request`."""
+    accepted, created = mapper.create_service_mapping(
+        principal, body, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200
     return accepted
@@ -110,9 +111,15 @@ def regenerate_mapping(
     response: Response,
     principal: Caller,
     mapper: Mapper,
-    idempotency_key: IdempotencyKey = None,
+    idempotency_key: IdempotencyKey,
 ) -> MappingAccepted:
-    accepted, created = mapper.regenerate_service_mapping(principal, mapping_id, idempotency_key)
+    """202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one
+    runs). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when
+    that generation is still the latest and failed for an outage (`error.code` `unavailable`). Without a
+    key, a repeat within a minute is 409 `duplicate_request`."""
+    accepted, created = mapper.regenerate_service_mapping(
+        principal, mapping_id, idempotency_key.value, derived=idempotency_key.derived
+    )
     if not created:
         response.status_code = 200
     return accepted
@@ -129,5 +136,6 @@ def decide_dependencies(
     mapper: Mapper,
 ) -> DependencyDecisionsResult:
     """Send `{"accept": [dependency_id, ...], "reject": [...]}`; either list may be null or empty. The valid
-    ids are saved together; `failed` lists each id that was not, and why."""
+    ids are saved together; `failed` lists each id that was not, and why. 409 until the mapping is `done`:
+    regenerate a `failed` one."""
     return mapper.decide_dependencies(principal, mapping_id, body)

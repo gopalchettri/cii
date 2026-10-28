@@ -20,7 +20,7 @@ Jobs = Annotated[JobService, Depends(get_job_service)]
 
 @router.get("/v1/jobs", response_model=JobList, summary="My queued or running work")
 def list_jobs(principal: Caller, jobs: Jobs) -> JobList:
-    """My entity's runs and plans that are queued or running, oldest first."""
+    """My entity's runs, plans and service mappings that are queued or running, oldest first."""
     return jobs.list_jobs(principal)
 
 

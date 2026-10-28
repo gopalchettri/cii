@@ -20,7 +20,9 @@ alert says when one is not.
   (warning) fires when any pod is more than 5 s off for 5 minutes. The dashboard's problem list shows it as "A pod's
   clock is off: its node needs time sync".
 - **Explaining:** a dropped job's log line says why: `job.not_claimed` with `reason=not_due` (and `due_in_seconds`),
-  `missing` (this worker reads another database), `other_epoch`, `other_task`, `leased` or `status_<x>`.
+  `missing` (this worker reads another database), `other_epoch`, `other_task`, `leased` (`job_worker` holds it) or
+  `status_<x>`. A retry that came early (Celery counts its delay on its own pod's clock) and is due within 125 s is
+  not dropped: it is sent again for its due time, at the front of its queue, and the line says `sent_again=true`.
 
 ## When `ClockSkew` fires: fix the node (cluster admin)
 
@@ -28,7 +30,7 @@ alert says when one is not.
 
    ```
    oc -n ai-threatgen get pods -o wide
-   oc -n ai-remediation get pods -o wide
+   oc -n ai-common get pods -o wide -l part-of=tsg-monitoring
    ```
 
 2. Check the node's time sync (needs cluster-admin; changes nothing):
@@ -52,4 +54,4 @@ clock is from the shell's; within about ±2 s is fine.
 NS=ai-threatgen; for p in $(oc get pods -n $NS -o name); do here=$(date -u +%s); there=$(oc exec -n $NS ${p#pod/} -- date -u +%s 2>/dev/null); node=$(oc get $p -n $NS -o jsonpath='{.spec.nodeName}'); if [ -n "$there" ]; then echo "$p node=$node pod_minus_here=$((there-here))s"; else echo "$p node=$node (no date command)"; fi; done
 ```
 
-Run it again with `NS=ai-remediation`.
+TSG's app pods all run in `ai-threatgen`.

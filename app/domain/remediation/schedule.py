@@ -93,7 +93,8 @@ def _date_plan(
     anchor: date | None,
     window: dict[str, Any] | None,
 ) -> list[str]:
-    """Writes the plan's critical path, days, end date and timeline; warns past the calendar or the window."""
+    """Writes the plan's critical path, days, end date and timeline; warns past the calendar or the window's
+    end, when it has one."""
     chain = " → ".join(critical_path)
     plan["critical_path"] = critical_path
     plan["mitigation_timeline_days"] = total
@@ -114,6 +115,8 @@ def _date_plan(
         warnings.append(
             PlanWarning.PAST_CALENDAR.format(total=total, anchor=anchored, fit=_spell_days(fit), last=last)
         )
+    if not window.get("timeline_end_date"):  # a start alone: dated, but no deadline to finish by
+        return warnings
     deadline = date.fromisoformat(window["timeline_end_date"])
     if planned_end > deadline:
         late = _spell_days((planned_end - deadline).days)

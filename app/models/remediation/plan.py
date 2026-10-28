@@ -95,7 +95,8 @@ class PlanRequested(BaseModel):
 
 
 class PlanStarted(PlanRequested):
-    """202 of `POST /v1/remediation` (200 on a replay of a hand-written request), with v1's two flags."""
+    """202 of `POST /v1/remediation` (200 on a replay of a hand-written request; 202 when that replay writes
+    an outage-failed version again), with v1's two flags."""
 
     is_manual: bool  # the scenario's own kind (a person wrote it), not an echo of the request
     replayed: bool = False  # this Idempotency-Key had already saved this scenario: nothing new was saved
@@ -137,13 +138,14 @@ class RemediationStatus(BaseModel):
         "job.epoch": 1,
         "job.error": 1,
         "job.retry": 1,
+        "job.waiting": 1,
         "updated_at": 1,
     }
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> "RemediationStatus":
-        """The status of a stored record."""
-        status, decision = Status(record["status"]), Decision(record["decision"])
+    def from_record(cls, record: dict[str, Any], scenario_accepted: bool) -> "RemediationStatus":
+        """The status of a stored record whose scenario is (or is no longer) accepted."""
+        status, decision = shown_plan_status(record), Decision(record["decision"])
         job = record.get("job") or {}
         return cls(
             remediation_id=record["_id"],
@@ -157,7 +159,7 @@ class RemediationStatus(BaseModel):
             progress=Progress(
                 generation=status,
                 review=decision,
-                overall=_overall(status, decision),
+                overall=_overall(status, decision, scenario_accepted),
                 retrying=retry_notice_of(status, job.get("retry")),
             ),
             error=job.get("error"),
@@ -165,8 +167,9 @@ class RemediationStatus(BaseModel):
         )
 
 
-def _overall(status: Status, decision: Decision) -> RemediationProgress:
-    """First that applies: the latest version failed, is being written or awaits review; else the decision."""
+def _overall(status: Status, decision: Decision, scenario_accepted: bool) -> RemediationProgress:
+    """First that applies: the latest version failed, is being written or awaits a review it may still get;
+    else the decision."""
     if status == Status.FAILED:
         return RemediationProgress.FAILED
     if status == Status.CANCELLED:
@@ -174,14 +177,21 @@ def _overall(status: Status, decision: Decision) -> RemediationProgress:
     if status in (Status.QUEUED, Status.RUNNING):
         return RemediationProgress.GENERATING
     if decision == Decision.PENDING:
-        return RemediationProgress.AWAITING_REVIEW
+        return RemediationProgress.AWAITING_REVIEW if scenario_accepted else RemediationProgress.READ_ONLY
     return RemediationProgress.ACCEPTED if decision == Decision.ACCEPTED else RemediationProgress.REJECTED
+
+
+def shown_plan_status(record: dict[str, Any]) -> Status:
+    """The latest version's status as shown (every reader projects job.waiting): queued while its job waits
+    for another job, though each look briefly claims it (running)."""
+    status = Status(record["status"])
+    return Status.QUEUED if status == Status.RUNNING and (record.get("job") or {}).get("waiting") else status
 
 
 def version_status(record: dict[str, Any], item: dict[str, Any]) -> Status:
     """A version's status: the latest version's lives at the top of the record, an older one's on its item."""
     latest = item["version"] == record["job"]["epoch"]
-    return Status(record["status"] if latest else item["status"])
+    return shown_plan_status(record) if latest else Status(item["status"])
 
 
 def _renamed_status(value: Any) -> Any:
@@ -344,9 +354,13 @@ class RemediationResult(RemediationStatus):
 
     @classmethod
     def from_records(
-        cls, record: dict[str, Any], scenario: dict[str, Any] | None, include_history: bool
+        cls,
+        record: dict[str, Any],
+        scenario: dict[str, Any] | None,
+        scenario_accepted: bool,
+        include_history: bool,
     ) -> "RemediationResult":
-        """The result of a stored record and its scenario."""
+        """The result of a stored record and its scenario (still accepted or not)."""
         item = shown_item(record)
         shown = None if item is None else VersionView.from_item(item, record)
         versions = [VersionView.from_item(v, record) for v in record["versions"]] if include_history else None
@@ -365,7 +379,7 @@ class RemediationResult(RemediationStatus):
                 controls=(scenario.get("controls") or {}).get("items") or [],
             )
         return cls(
-            **RemediationStatus.from_record(record).model_dump(),
+            **RemediationStatus.from_record(record, scenario_accepted).model_dump(),
             shown_version=None if shown is None else shown.version,
             plan=None if shown is None else shown.plan,
             warnings=[] if shown is None else shown.warnings,
@@ -409,6 +423,7 @@ class RemediationSummary(BaseModel):
             "title",
             "risk_level",
             "job.epoch",
+            "job.waiting",
             "status",
             "accepted_version",
             "decision",
@@ -427,7 +442,7 @@ class RemediationSummary(BaseModel):
             | {
                 "remediation_id": record["_id"],
                 "latest_version": record["job"]["epoch"],
-                "latest_status": record["status"],
+                "latest_status": shown_plan_status(record),
             }
         )
 

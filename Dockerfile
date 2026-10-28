@@ -1,5 +1,5 @@
 # TSG v2 image. The API, every worker, beat and Flower run from this one image; the command in
-# deploy/deploy_threatgen.yaml, deploy_remediation.yaml and deploy_common.yaml picks the role.
+# deploy/deploy_threatgen.yaml and deploy_common.yaml picks the role.
 # Built, checked and pushed by deploy\build-image.bat.
 #
 # UBI 9: the cluster pulls only Red Hat images and our own. Python 3.12 comes from the UBI repos, ODBC
@@ -12,6 +12,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONPATH=/app
+# One BLAS thread per process: numpy started one per node core, so vector searches used 13-17x the CPU
+# of a 250m limit.
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
 
 # Python 3.12 as "python" and "pip", and Microsoft's ODBC Driver 17 (unixODBC from UBI AppStream).
 RUN dnf install -y python3.12 python3.12-pip \

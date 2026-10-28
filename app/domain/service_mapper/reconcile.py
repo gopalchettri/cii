@@ -4,15 +4,13 @@ from collections import defaultdict
 from dataclasses import asdict, replace
 from uuid import NAMESPACE_URL, uuid5
 
+from app.core.prompts import PROMPTS
 from app.domain.shared.names import is_same_name, name_match_key
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
 from app.models.service_mapper.generation import GeneratedAnswer, ProposedDependency, ResolvedDependency
 
-_TOO_VAGUE = (
-    "is too vague: name the specific service in at least two words "
-    "(a new name is fine when no catalog service provides it)"
-)
+_TOO_VAGUE: str = PROMPTS["service_mapper"]["generate"]["too_vague"]
 
 
 def reconcile(
@@ -124,7 +122,8 @@ def resolve_proposals(
     selected_name: str,
     selected_id: int | None,
 ) -> tuple[list[ResolvedDependency], list[str]]:
-    """The kept dependencies in the AI's order, and why each other proposal was dropped."""
+    """The kept dependencies in the AI's order, and why each proposal the AI must fix was dropped (the
+    selected service itself and a repeat go silently: nothing a user wants goes with them)."""
     by_name: dict[str, list[CatalogService]] = defaultdict(list)
     for service in catalog.services:
         by_name[name_match_key(service.service_name)].append(service)
@@ -147,13 +146,13 @@ def resolve_proposals(
             is_same_name(proposal.service_name, selected_name)
             or is_same_name(selected_name, proposal.service_name)
         ):
-            dropped.append(f"{name} is the selected service itself")
+            continue  # never a dependency of itself
         elif not matches and name_match_key(proposal.service_name) in labels:
             dropped.append(f"{name} is a sector or subsector name, not a service: name the service")
         elif (resolved := _resolve_one(proposal, matches[0] if matches else None, catalog, rank)) is None:
             dropped.append(f"{name} {_TOO_VAGUE}")
         elif resolved.identity in kept or any(_same_new_service(item, resolved) for item in kept.values()):
-            dropped.append(f"{name} is listed twice")
+            continue  # the first, stronger mention stays
         else:
             kept[resolved.identity] = resolved
     return list(kept.values()), dropped

@@ -71,6 +71,18 @@ def test_without_a_window_the_dates_are_null_and_one_warning_says_so() -> None:
     )
 
 
+def test_a_start_alone_dates_the_plan_with_no_deadline_and_no_warning() -> None:
+    """The register sent a start and no end: the same dates as with an end, and nothing to finish late by."""
+    plan = _owners_plan()
+    open_ended = {**WINDOW, "timeline_end_date": None, "total_days": None}
+    assert schedule_plan(plan, _snapshot(window=open_ended)) == []
+    assert plan["mitigation_end_date_planned"] == "2026-10-08"
+    assert plan["mitigation_timeline"] == "2026-10-01 → 2026-10-08 (8 days, critical path A1 → A3 → A4)"
+    assert _dates(plan)[0] == ("2026-10-01", "2026-10-02", "2026-10-01 → 2026-10-02 (2 days)")
+    long_plan = _plan(_act("A1", 200))  # 200 days would be past a 31 December end: no end, no warning
+    assert schedule_plan(long_plan, _snapshot(window=open_ended)) == []
+
+
 def test_durations_and_dependencies_are_repaired_with_one_warning_each() -> None:
     """Below 1 → 1 day, above the limit → capped; a forward, self or unknown reference is dropped with one
     warning per distinct reference."""

@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import litellm
 import structlog
 
+from app.ai.retry_waits import busy_retry_wait
+from app.ai.slots import AiRequestRate, AiSlots, sleep_unless_lease_lost
 from app.core import metrics
 from app.core.config import Settings
 from app.core.constants import (
@@ -19,14 +21,14 @@ from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AI_TIMED_OUT_STATUSES,
     LITELLM_MODEL_PREFIX,
-    AiLimits,
     AiOutage,
+    AiOutageSource,
     AiOutcome,
     ErrorCode,
     ErrorMessage,
     LogEvent,
 )
-from app.core.exceptions import AppError, JobFailed, LeaseLost, Unavailable
+from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS, AppError, JobFailed, LeaseLost, Unavailable
 
 log = structlog.get_logger(__name__)
 
@@ -198,44 +200,62 @@ def build_api_key_header(header: str, api_key: str, option: str = "extra_headers
     return {option: {header: api_key}} if header else {}
 
 
-def call_with_retries[Answer](call: Callable[[], Answer]) -> Answer:
-    """Run an AI call (and the check of its answer), retrying AiLimits.RETRIES times, 0.5 s, 1 s, 2 s apart,
-    when the provider is busy or unreachable or the answer came back short. The only retries: litellm's own
-    are switched off (app/ai/__init__.py), so one call is at most RETRIES + 1 requests.
-
-    A call that timed out is not asked again here (owner, 2026-10-10): the provider is overloaded, and asking
-    again would hold the worker another full timeout (90-120 s) each time and add to its load. The fallback
-    model answers instead, or the job's own back-off asks later."""
-    for attempt in range(AiLimits.RETRIES):
+def call_with_retries[Answer](
+    call: Callable[[], Answer], request_rate: AiRequestRate, slots: AiSlots, *, model: str, task: str
+) -> tuple[Answer, float]:
+    """(the answer, its seconds without the request-rate waits) of an AI call to `model` for `task` and the
+    check of its answer. Each request first waits its turn at `request_rate`, `model`'s own. Asked again when
+    the provider is busy or unreachable or the answer came back short: AiLimits.RETRIES times, 0.5 s, 1 s, 2 s
+    apart; a 429 (counted) as request_rate.wait_after_rate_limit says. Each 429 is told to `slots`, the limit
+    on calls in flight (an answer is told as its slot is freed). litellm's own retries are off
+    (app/ai/__init__.py). A call that timed out is not asked again: the fallback model answers, or the job's
+    own back-off asks later."""
+    started, attempt = time.perf_counter(), 0
+    rate_waits = rate_limited_waits = 0.0
+    while True:
+        rate_waits += request_rate.wait_for_turn(task)
         try:
-            return call()
+            answer, seconds = call(), time.perf_counter() - started - rate_waits
         except litellm.Timeout:
             raise
+        except litellm.RateLimitError as exc:
+            metrics.AI_RATE_LIMITED.labels(model).inc()
+            slots.note_rate_limited()  # the gateway is full: fewer calls at once, on every pod
+            retry_after = exc.response.headers.get("retry-after")
+            wait = request_rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
+            if wait is None:
+                raise
+            rate_limited_waits += wait
         except Exception as exc:
             unmapped = is_unmapped_outage(exc)  # a timed-out status is a timeout too: not asked again
             if unmapped and ai_outage_of(exc) is AiOutage.TIMED_OUT:
                 raise
-            if not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
+            wait = busy_retry_wait(attempt)
+            if wait is None or not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
                 raise
-            time.sleep(AiLimits.RETRY_FIRST_WAIT_SECONDS * 2**attempt)
-    return call()  # the last try: its outage reaches the caller
+        else:
+            return answer, seconds
+        sleep_unless_lease_lost(wait)
+        attempt += 1
 
 
 def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
     """A provider outage, counted and logged, as the Unavailable that tells the UI which outage it was."""
     metrics.AI_CALLS.labels(task, model, AiOutcome.UNAVAILABLE).inc()
     # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it is
-    # logged: the class, the HTTP status and the reason only, never the message (it may hold the gateway URL).
+    # logged with the gateway's Retry-After and limit type, never the message (it may hold the gateway URL).
     outage = ai_outage_of(error)
-    metrics.AI_OUTAGES.labels(task, outage).inc()
-    status = getattr(error, "status_code", None)
+    metrics.AI_OUTAGES.labels(task, outage, AiOutageSource.GATEWAY).inc()
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
     log.warning(
         LogEvent.AI_CALL_UNAVAILABLE,
-        task=task,
+        ai_task=task,
         model=model,
-        error=type(error).__name__,
-        status=status,
+        error_type=type(error).__name__,
+        status=getattr(error, "status_code", None),
         reason=outage,
+        retry_after=headers.get("retry-after"),
+        limit_type=headers.get("rate_limit_type"),  # LiteLLM's: requests, tokens or max_parallel_requests
     )
     return Unavailable(AI_OUTAGE_MESSAGES[outage], reason=outage)
 
@@ -253,7 +273,9 @@ def count_and_convert_ai_errors(
     except LeaseLost:
         raise  # its job was stopped (G214): not an AI failure, so never counted as one (G222)
     except Unavailable:
-        raise  # no provider answered: counted already, or no slot was free (app/ai/slots.py)
+        raise  # no provider answered: counted already, or no slot or request turn free (app/ai/slots.py)
+    except REDIS_UNAVAILABLE_ERRORS:
+        raise  # the limiters' Redis is down, not the AI: the job retries as for any store outage
     except AI_UNAVAILABLE_ERRORS as exc:
         raise _counted_outage(task, model, exc) from exc
     except litellm.APIError as exc:  # a status litellm maps to no class: an outage when a server's (5xx)
@@ -263,9 +285,9 @@ def count_and_convert_ai_errors(
         raise
     except AI_CONFIGURATION_ERRORS as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.ERROR).inc()
-        status = getattr(exc, "status_code", None)
-        log.error(LogEvent.AI_CALL_REFUSED, task=task, model=model, error=type(exc).__name__, status=status)
-        message = ErrorMessage.AI_MISCONFIGURED.format(model=model, error=type(exc).__name__, status=status)
+        status, error_type = getattr(exc, "status_code", None), type(exc).__name__
+        log.error(LogEvent.AI_CALL_REFUSED, ai_task=task, model=model, error_type=error_type, status=status)
+        message = ErrorMessage.AI_MISCONFIGURED.format(model=model, error=error_type, status=status)
         raise JobFailed(ErrorCode.AI_MISCONFIGURED, message) from exc
     except IncompleteAiAnswer as exc:
         metrics.AI_CALLS.labels(task, model, AiOutcome.UNREADABLE).inc()

@@ -5,17 +5,35 @@ from http import HTTPStatus
 from typing import Any, ClassVar
 
 from pymongo.errors import ConnectionFailure as MongoConnectionFailure
+from pymongo.errors import ExecutionTimeout as MongoExecutionTimeout
+from pymongo.errors import WriteConcernError as MongoWriteConcernError
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import OutOfMemoryError as RedisOutOfMemoryError
+from redis.exceptions import ReadOnlyError as RedisReadOnlyError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
 
-#: Driver errors meaning "the store is unreachable right now" (timeouts, lost connections, no primary).
-#: The API answers them with 503 + Retry-After; workers retry them with back-off.
-MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (MongoConnectionFailure,)
+#: Driver errors meaning "the store cannot serve us right now": unreachable (timeouts, lost connections, no
+#: primary), past its time limit, or a write the replicas did not confirm (WTimeoutError is a
+#: WriteConcernError; a bulk write raises it through app/data_access/base.py bulk_write). The API answers
+#: them with 503 + Retry-After; workers retry them with back-off.
+#: ponytail: a misconfigured write concern is retried as an outage too and fails as unavailable after
+#: Lease.MAX_ATTEMPTS (the start-up mongodb.topology line shows it).
+MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
+    MongoConnectionFailure,
+    MongoExecutionTimeout,
+    MongoWriteConcernError,
+)
 
 
-REDIS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (RedisConnectionError, RedisTimeoutError)
+#: Redis also refuses writes for a while on a failover (READONLY replica) or when its memory is full.
+REDIS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    RedisReadOnlyError,
+    RedisOutOfMemoryError,
+)
 
 
 class AppError(Exception):
@@ -35,8 +53,8 @@ class AppError(Exception):
         details: dict[str, Any] | None = None,
         retry_after: int | None = None,
     ) -> None:
-        """`reason`: which rule refused it (409, e.g. active_session_exists) · `errors`: the fields at fault
-        (422, `[{field, message}]`) · `details`: facts the caller can act on (the active session's id)."""
+        """`reason`: which rule refused it (409, e.g. generation_in_progress) · `errors`: the fields at fault
+        (422, `[{field, message}]`) · `details`: facts the caller can act on (e.g. the running job's id)."""
         self.detail = detail or HTTPStatus(self.status).phrase
         super().__init__(self.detail)
         self.reason = reason
@@ -66,7 +84,7 @@ class Conflict(AppError):
 
 
 class DuplicateRecord(Conflict):
-    """A unique index refused a write: `index_name` says which rule (e.g. one active run per asset)."""
+    """A unique index refused a write: `index_name` says which rule (e.g. one run per Idempotency-Key)."""
 
     def __init__(self, index_name: str) -> None:
         super().__init__(ErrorMessage.UNIQUE_RULE_BROKEN.format(index_name=index_name))
@@ -89,10 +107,6 @@ class Unavailable(AppError):
     default_retry_after = Limits.RETRY_AFTER_SECONDS
 
 
-class WaitingForAnotherJob(Unavailable):
-    """Another job holds what this job needs: given back to try again later, using none of its attempts."""
-
-
 class OutcomeUnknown(Unavailable):
     """A SQL Server call was sent but its answer was lost (a timeout, a broken link): it may have applied.
     Retried through its operation record (tsg_sql_operations), which replays the same parameters."""
@@ -111,6 +125,11 @@ TEMPORARY_ERRORS: tuple[type[Exception], ...] = (
 class LeaseLost(Exception):
     """This job no longer owns its record (its owner cancelled or deleted the run, or its lease ran out and
     another delivery took it over): stop without writing anything, and make no more AI calls."""
+
+
+class WaitingForAnotherJob(Exception):
+    """Another job holds what this job needs, a normal step and not an outage: the job is given back to look
+    again soon, using none of its attempts, and its delivery counts as waiting, never as a retry."""
 
 
 class JobFailed(Exception):

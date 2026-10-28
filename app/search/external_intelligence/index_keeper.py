@@ -13,6 +13,8 @@ from app.ai import EmbeddingModel, RerankModel
 from app.ai.common import outage_reason
 from app.core.clock import utc_now
 from app.core.constants import Dependency, IntelDocId, IntelLimits, IntelMessage, LogEvent
+from app.core.exceptions import TEMPORARY_ERRORS
+from app.core.lease_signal import start_thread_without_lease
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
 from app.data_access.external_intelligence.intel_snapshot_repository import IntelSnapshotRepository
@@ -29,7 +31,12 @@ from app.search.external_intelligence.evidence_index import (
 )
 
 log = structlog.get_logger(__name__)
-RETRY_FIRST_SECONDS, RETRY_LONGEST_SECONDS = 30.0, 900.0  # the pause after a failed build, doubled each time
+RETRY_FIRST_SECONDS, RETRY_LONGEST_SECONDS = 30.0, 900.0  # a failed build's first and longest pause
+
+
+def _first_build_outage(index: EvidenceIndex, exc: Exception) -> bool:
+    """An AI or store outage while the placeholder serves: every write waits, so the pause stays the first."""
+    return index.snapshot_id is None and isinstance(exc, TEMPORARY_ERRORS)
 
 
 class EvidenceIndexKeeper:
@@ -90,9 +97,9 @@ class EvidenceIndexKeeper:
             future: Future[EvidenceIndex] = Future()
             self._running = future
         try:
-            threading.Thread(target=self._run, args=(future,), name="evidence-index", daemon=True).start()
+            start_thread_without_lease("evidence-index", self._run, future)
         except RuntimeError as exc:  # no thread to be had: never leave a build "running" for ever
-            self._settle_failure()
+            self._settle_failure(exc)
             future.set_exception(exc)
         return future
 
@@ -101,9 +108,9 @@ class EvidenceIndexKeeper:
         try:
             index = self._build_until_settled()
         except Exception as exc:  # handed to whoever waits; the index in use keeps serving
-            self._settle_failure()
+            self._settle_failure(exc)
             self._log_failure(exc)
-            self._index = after_failed_build(self._index, outage_reason(exc))
+            self._index = after_failed_build(self._index, outage_reason(exc), str(exc))
             future.set_exception(exc)
         else:
             future.set_result(index)
@@ -126,13 +133,13 @@ class EvidenceIndexKeeper:
                 self._told_no_data = True
                 log.warning(LogEvent.EXTERNAL_INTELLIGENCE_NO_DATA, action=IntelMessage.NO_DATA_YET.value)
             return
-        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error=type(exc).__name__)
+        log.warning(LogEvent.EXTERNAL_INTELLIGENCE_SNAPSHOT_BUILD_FAILED, error_type=type(exc).__name__)
 
-    def _settle_failure(self) -> None:
-        """End a failed build: the build is wanted again after a pause that doubles per failure."""
+    def _settle_failure(self, exc: Exception) -> None:
+        """End a failed build: wanted again after a pause, doubled per failure except a first-build outage."""
         with self._lock:
             self._running, self._read_again, self._build_wanted = None, False, True
-            self._failures += 1
+            self._failures = 1 if _first_build_outage(self._index, exc) else self._failures + 1
             pause = min(RETRY_FIRST_SECONDS * 2 ** (self._failures - 1), RETRY_LONGEST_SECONDS)
             self._retry_at = self._clock() + pause
 
@@ -164,9 +171,7 @@ class EvidenceIndexKeeper:
                 return
             self._check_at = now + IntelLimits.SWITCH_CACHE_SECONDS
         try:
-            threading.Thread(
-                target=self._rebuild_if_pointer_is_newer, name="evidence-check", daemon=True
-            ).start()
+            start_thread_without_lease("evidence-check", self._rebuild_if_pointer_is_newer)
         except RuntimeError:
             log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO)
 

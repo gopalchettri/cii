@@ -10,6 +10,7 @@ class Remediation:
     MAX_CONTROL_REFS: Final = 50  # register controls, or a hand-written scenario's controls
     ALTERNATIVES: Final = 5  # library controls offered to replace an identified control that does not fit
     ALTERNATIVE_MATCH: Final = "alternative"  # an alternative's match, beside exact, nearest and given
+    CONTROLS_CLAIM_SUFFIX: Final = ":plan"  # ends a plan job's controls claim task id (its plan's mapping)
     MAX_ACTION_DAYS: Final = 3_650  # one action's duration; above it is capped with a warning
     STATEMENT_MAX_CHARS: Final = 4_000  # a hand-written scenario or risk statement
     NAME_MAX_CHARS: Final = 200  # risk owner, business division, a category name
@@ -23,7 +24,6 @@ class Remediation:
     RATING_DECIMALS: Final = 4  # ... 4 of them after the point
     STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code
     REASON_MAX_CHARS: Final = 300  # the AI's problems quoted in a failed version's error message
-    PROMPT_VERSION: Final = "remediation-4"  # stored on every plan version the prompt writes
     #: The code at the head of a control label ("CID-0477 · Social Engineering"): what the label names.
     LABEL_CODE_PATTERN: Final = r"[^\s·•|:—–]+"
     #: What only code may state in a plan's action_plan: the schedule (a time span, a date, the critical path,
@@ -117,13 +117,14 @@ class RemediationProgress(StrEnum):
     FAILED = "failed"  # the latest version failed
     CANCELLED = "cancelled"  # its owner stopped the latest version being written
     GENERATING = "generating"  # the latest version is queued or running
+    READ_ONLY = "read_only"  # no version decided, and its scenario is no longer accepted: nothing to review
     AWAITING_REVIEW = "awaiting_review"  # no version decided yet
     REJECTED = "rejected"
     ACCEPTED = "accepted"
 
 
 class RemediationMessage(StrEnum):
-    WINDOW_PAIR = "mitigation_start_date and mitigation_end_date must be sent together."
+    WINDOW_END_NEEDS_START = "mitigation_end_date needs mitigation_start_date."
     WINDOW_ORDER = "mitigation_end_date must be on or after mitigation_start_date."
     MANUAL_NEEDS_SCENARIO = "is_manual=true requires manual_scenario."
     MANUAL_SENDS_NO_IDS = "is_manual=true must not send session_id or scenario_id: TSG creates them."
@@ -138,15 +139,15 @@ class RemediationMessage(StrEnum):
     CONTROL_REF_EMPTY = (
         "A control entry must name the control: send control_id, control_code or control_name."
     )
-    SYSTEMS_REQUIRED = (
-        "existing_controls[{position}] ({control}) sends no supporting_system_ids: each existing control "
-        "lists the supporting systems it is on when existing_controls_all_supporting_system_applicable is 0."
-    )
     SYSTEM_NOT_OF_ASSET = (
         "{system_id} is not a supporting system of this scenario's asset (its systems when its run "
         "started: {known})."
     )
-    REGISTER_SYSTEMS_INVALID = "An existing control names a supporting system its asset does not have."
+    REGISTER_SYSTEMS_INVALID = "A supporting system list names a system the scenario's asset does not have."
+    SYSTEM_FLAG_REMOVED = (
+        "{flag} is no longer accepted: send {replacement}, the list of the asset's supporting system ids, "
+        "instead."
+    )
     NAME_WITHOUT_LETTERS = "A name must contain letters or digits."
     CONTROL_UNKNOWN = "No active library control matches {reference}."
     REFERENCES_INVALID = "Some control references cannot be resolved."
@@ -180,7 +181,6 @@ class RemediationMessage(StrEnum):
     CHANGED_CONCURRENTLY = (
         "Remediation plan '{remediation_id}' changed while this decision was made: read it again."
     )
-    IDEMPOTENCY_KEY_REQUIRED = "A hand-written scenario needs an Idempotency-Key header."
     THREAT_REFS_INVALID = "The threat, its type or its category does not match the library."
     UNKNOWN_ID = "No live or pending library row has id {id}."
     ID_NAME_DISAGREE = "Id {id} is the library's '{library_name}', not '{name}'."
@@ -204,8 +204,8 @@ class RemediationMessage(StrEnum):
         "implements_controls"
     )
     CODE_FACT_IN_ACTION_PLAN = (
-        "action_plan states '{claim}': restate no schedule (order, parallel work, days, dates, critical "
-        "path, window or deadline) and say nothing of the library — the application owns both"
+        "action_plan says only what the application states itself ('{claim}'): describe the actions and "
+        "how they reduce the risk, with no schedule and nothing about the library"
     )
     PARTIAL_NOT_EXTENDED = (
         "{code} is partially implemented: describe what to extend and where, never a new deployment"

@@ -7,7 +7,7 @@ import pytest
 
 from app import container
 from app.ai import rerank
-from app.ai.slots import UNLIMITED_AI_SLOTS
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS
 from app.core.config import Settings, get_settings
 from app.worker import lifecycle
 
@@ -20,14 +20,14 @@ def _local_setup(monkeypatch: pytest.MonkeyPatch, base_url: str, installed: bool
 def test_a_local_reranker_without_its_package_stops_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _local_setup(monkeypatch, "", installed=False)
     with pytest.raises(rerank.LocalRerankerMissing, match="sentence-transformers"):
-        rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS)
+        rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE)
 
 
 def test_the_worker_refuses_to_start_and_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _local_setup(monkeypatch, "", installed=False)
 
     def local_model() -> rerank.RerankModel:
-        return rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS)
+        return rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE)
 
     monkeypatch.setattr(container, "get_rerank_model", local_model)
     with pytest.raises(SystemExit, match="sentence-transformers"):
@@ -39,4 +39,6 @@ def test_a_reranker_service_or_an_installed_package_starts(
     monkeypatch: pytest.MonkeyPatch, base_url: str, installed: bool
 ) -> None:
     settings = _local_setup(monkeypatch, base_url, installed)
-    assert isinstance(rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS), rerank.RerankModel)
+    assert isinstance(
+        rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE), rerank.RerankModel
+    )

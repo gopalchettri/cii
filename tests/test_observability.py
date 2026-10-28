@@ -17,8 +17,8 @@ from prometheus_client import REGISTRY
 from prometheus_client.metrics import MetricWrapperBase
 
 import app.core.metrics  # noqa: F401 — registers every app metric
-from app.core.constants import Dependency, Queue, Worker
-from app.worker import ROUTED_QUEUES
+from app.core.constants import AiOutageSource, Dependency, Lease, Queue, TaskName, Worker
+from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
 OBS = REPO / "observability"
@@ -62,11 +62,24 @@ BUILT_ALERTS = {
     "ApiCrashing",
     # 2026-10-24: a pod's clock far from MongoDB's (UAT: 76 s, every run failed before the shared clock).
     "ClockSkew",
+    # A model's AI requests waiting long for their turn under its own requests-a-minute limit.
+    "AiRequestRateWaitHigh",
+    # 2026-10-28: Redis dropping keys, jobs retrying a lot, jobs waiting long for a worker.
+    "RedisEvictingKeys",
+    "JobsRetrying",
+    "JobQueueWaitHigh",
+    # Reaper passes that start but never finish; timer messages dropped unrun; a job stopped as hung.
+    "ReaperFailing",
+    "ScheduledJobsExpiring",
+    "JobHung",
+    # Log lines Alloy dropped or Loki refused while both were up.
+    "LogLinesLost",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
     "redis_key_size",
     "redis_up",
+    "redis_evicted_keys_total",
     "flower_task_runtime_seconds_bucket",
     "flower_events_total",
     "flower_worker_number_of_currently_executing_tasks",
@@ -74,9 +87,11 @@ EXPORTER_METRICS = {
     "kube_pod_container_status_last_terminated_reason",
     "kube_pod_container_status_waiting_reason",
     "kube_pod_status_phase",
+    "loki_write_dropped_entries_total",  # Alloy's loki.write
+    "loki_discarded_samples_total",  # Loki itself
 }
-PUBLIC_PATHS = {"/grafana", "/flower", "/prometheus", "/alertmanager", "/loki"}
-WATCHED_APP_PROJECTS = ("ai-threatgen", "ai-remediation")  # TSG's own projects: every pod there is TSG's
+PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
+WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's own project: every pod there is TSG's
 
 
 def _monitoring_script():
@@ -146,7 +161,7 @@ def test_every_metric_in_alerts_and_dashboard_exists() -> None:
         name
         for query in _prometheus_queries()
         # Quoted label values left out: task="tsg_reap" names a task, not a metric.
-        for name in re.findall(r"\b(?:tsg|redis|flower|kube)_[a-z_]+\b", re.sub(r'"[^"]*"', '""', query))
+        for name in re.findall(r"\b(?:tsg|redis|flower|kube|loki)_[a-z_]+\b", re.sub(r'"[^"]*"', '""', query))
     }
     assert used - known == set()
     named_stores = {
@@ -180,22 +195,48 @@ def test_queue_depth_reads_the_keys_celery_really_uses() -> None:
     commands = sys.modules["monitoring_commands"]
     assert set(commands.QUEUES) == set(ROUTED_QUEUES)
     assert commands.QUEUE_KEY_PREFIX == Worker.BROKER_KEY_PREFIX
+    with celery_app.connection_for_read() as connection:  # kombu's own name of each priority's list
+        channel = connection.default_channel
+        lists = {channel._q_for_pri(name, step) for name in ROUTED_QUEUES for step in channel.priority_steps}
+    suffixes = commands.QUEUE_PRIORITY_SUFFIXES
+    assert {queue + suffix for queue in commands.QUEUES for suffix in suffixes} == lists
     [exporter] = [d for d in _template_objects("Deployment") if d["metadata"]["name"] == "redis-exporter"]
     env = {e["name"]: e.get("value") for e in exporter["spec"]["template"]["spec"]["containers"][0]["env"]}
-    for queue in ROUTED_QUEUES:
-        assert f"={Worker.BROKER_KEY_PREFIX}{queue}" in env["REDIS_EXPORTER_CHECK_SINGLE_KEYS"]
+    exported = {key.split("=", 1)[1] for key in env["REDIS_EXPORTER_CHECK_SINGLE_KEYS"].split(",")}
+    assert exported == {Worker.BROKER_KEY_PREFIX + name for name in lists}
+
+
+def test_queue_backlog_watches_every_routed_queue_but_maintenance() -> None:
+    """A queue added to the routes is watched without editing the alert; both of its lists count."""
+    [rule] = [rule for rule in _rules() if rule["alert"] == "QueueBacklog"]
+    [selector] = re.findall(r"redis_key_size\{([^}]*)\}", rule["expr"])
+    matchers = re.findall(r'key\s*(=~|!~)\s*"([^"]*)"', selector)
+    _monitoring_script()
+    suffixes = sys.modules["monitoring_commands"].QUEUE_PRIORITY_SUFFIXES  # each queue's two kombu lists
+    watched = {
+        queue
+        for queue in ROUTED_QUEUES
+        if all(
+            bool(re.fullmatch(pattern, Worker.BROKER_KEY_PREFIX + queue + suffix)) == (operator == "=~")
+            for suffix in suffixes
+            for operator, pattern in matchers
+        )
+    }
+    assert matchers and watched == set(ROUTED_QUEUES) - {Queue.MAINTENANCE}
 
 
 def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
     """In ai-common, shared with the chatbot (D24); only the Role that lets it read the app's pods is in
-    each app project."""
+    the app's project, ai-threatgen, with the monitoring proxy and its Routes (whose host they use)."""
     objects = _uat_objects()
     assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
     elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
         (o["kind"], "ai-common") for o in objects
     }
     assert elsewhere == {
-        (kind, project) for kind in ("Role", "RoleBinding") for project in ("ai-threatgen", "ai-remediation")
+        (kind, project)
+        for kind in ("Role", "RoleBinding", "Deployment", "Service", "Route")
+        for project in WATCHED_APP_PROJECTS
     }
     for deployment in _template_objects("Deployment"):
         pod = deployment["spec"]["template"]["spec"]
@@ -300,18 +341,97 @@ def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() 
 def test_a_fresh_start_never_reads_as_the_reaper_not_running() -> None:
     """Before: ReaperNotRunning and the beat tile read a rise in tsg_jobs_total. The first pass after a start
     comes before Prometheus' first scrape, so for a minute after every start the alert was pending and the
-    tile DOWN. Both read the age of the last pass now, and rules.test.yml checks that exact expression right
+    tile DOWN. Both read the age of the last start now, and rules.test.yml checks that exact expression right
     after a start (promtool runs it)."""
     [rule] = [rule for rule in _rules() if rule["alert"] == "ReaperNotRunning"]
     [tiles] = [panel for panel in _panels() if panel["title"] == "Parts of the system"]
     [beat] = [target["expr"] for target in tiles["targets"] if target["legendFormat"] == "Scheduler (beat)"]
     for expr in (rule["expr"], beat):
-        assert "tsg_reaper_last_pass_timestamp_seconds" in expr and "increase(" not in expr, expr
+        assert "tsg_reaper_last_start_timestamp_seconds" in expr and "increase(" not in expr, expr
     cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
     after_a_start = [
         test for case in cases for test in case.get("promql_expr_test", []) if test["expr"] == rule["expr"]
     ]
     assert after_a_start and all(test["exp_samples"] == [] for test in after_a_start)
+
+
+def test_ai_not_answering_and_its_tile_count_the_gateway_s_refusals_only() -> None:
+    """AiNotAnswering and the "AI no answer" tile count source="gateway" only, not TSG's own limiter."""
+    gateway = f'tsg_ai_outages_total{{source="{AiOutageSource.GATEWAY}"}}'
+    [rule] = [rule for rule in _rules() if rule["alert"] == "AiNotAnswering"]
+    [tile] = [panel for panel in _panels() if panel["title"] == "AI no answer"]
+    for expr in (rule["expr"], *(target["expr"] for target in tile["targets"])):
+        assert re.findall(r"tsg_ai_outages_total\b[^\[]*", expr) == [gateway], expr
+    cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
+    series = [s["series"] for case in cases for s in case["input_series"]]
+    outages = [name for name in series if name.startswith("tsg_ai_outages_total")]
+    assert outages and all('source="' in name for name in outages)  # promtool sees the label filtered on
+    silent_for_the_limiter = [
+        check
+        for case in cases
+        if all(f'source="{AiOutageSource.LIMITER}"' in s["series"] for s in case["input_series"])
+        for check in case["alert_rule_test"]
+        if check["alertname"] == "AiNotAnswering" and check.get("exp_alerts") == []
+    ]
+    assert silent_for_the_limiter
+
+
+def test_every_alert_has_a_plain_name_on_the_dashboard() -> None:
+    """The "What is wrong right now" table names each alert in plain words, never by its code name."""
+    [table] = [panel for panel in _panels() if panel["title"] == "What is wrong right now"]
+    [alert_names] = [o for o in table["fieldConfig"]["overrides"] if o["matcher"]["options"] == "alertname"]
+    [mappings] = [p["value"] for p in alert_names["properties"] if p["id"] == "mappings"]
+    assert set(mappings[0]["options"]) == BUILT_ALERTS
+
+
+def test_jobs_failing_leaves_out_the_timer_jobs_but_not_index_builds() -> None:
+    """A failed reaper pass, control-mapping sweep or scheduled intel refresh runs again on its timer; an
+    index build may be an admin's request, so its failure alerts."""
+    [rule] = [rule for rule in _rules() if rule["alert"] == "JobsFailing"]
+    [left_out] = re.findall(r'task!~"([^"]+)"', rule["expr"])
+    timer_jobs = {TaskName.REAP, TaskName.RETRY_CONTROLS, TaskName.REFRESH_EXTERNAL_INTELLIGENCE}
+    assert set(left_out.split("|")) == timer_jobs
+
+
+def test_the_log_panels_and_runbook_read_the_ai_step_and_limiter_fields() -> None:
+    """AI log lines name their step `ai_task` (`task` is the job's) and their limiter `limiter`, not `key`."""
+    loki = {
+        p["title"]: t["expr"]
+        for p in _panels()
+        if p.get("datasource", {}).get("uid") == "loki"
+        for t in p["targets"]
+    }
+    tables = ("Errors and exceptions", "Warnings: things that went wrong and were handled")
+    for title in (*tables, "Everything about this id (newest at the top)"):
+        assert ".ai_task" in loki[title], title
+    assert not any(re.search(r"\.key\b", expr) for expr in loki.values())
+    runbook = (REPO / "docs" / "UAT_LLM_TIMEOUT_RUNBOOK.md").read_text(encoding="utf-8")
+    assert '"limiter": "tsg:ai_slots"' in runbook and '"key": "tsg:' not in runbook
+
+
+def test_following_a_run_shows_each_line_s_attempt_outcome_code_and_message() -> None:
+    """The trace panel and `debug_tools.py find` both show why a job ended and on which attempt."""
+    [trace] = [
+        t["expr"]
+        for p in _panels()
+        if p["title"].startswith("Everything about this id")
+        for t in p["targets"]
+    ]
+    fields = {"attempt": 2, "outcome": "retry", "code": "ai_unavailable", "message": "The AI did not answer"}
+    assert all(f"{{{{ with .{name} }}}}" in trace for name in fields)
+    sys.path.insert(0, str(REPO / "scripts"))
+    try:
+        debug_tools = importlib.import_module("debug_tools")
+    finally:
+        sys.path.remove(str(REPO / "scripts"))
+    short = debug_tools._short(json.dumps({"event": "job.finished", **fields}))
+    assert all(f"{name}={value}" in short for name, value in fields.items())
+
+
+def test_job_duration_and_queue_wait_buckets_reach_the_longest_job() -> None:
+    """A job may run Lease.MAX_JOB_SECONDS: a bucket below that hides every longer one in +Inf."""
+    for histogram in (app.core.metrics.JOB_SECONDS, app.core.metrics.JOB_QUEUE_WAIT):
+        assert Lease.MAX_JOB_SECONDS in histogram._upper_bounds, histogram
 
 
 def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
@@ -348,7 +468,8 @@ def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
 
 def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
     """ai-common is shared with a chatbot: Prometheus scrapes, Alloy reads and kube-state-metrics' series keep
-    only TSG's pods there, and a restart there selects TSG's Deployments only."""
+    only TSG's pods there, its Services send only to TSG's pods, and a restart there selects TSG's Deployments
+    only."""
     uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
     jobs = {job["job_name"]: job for job in uat["scrape_configs"]}
     tsg_only = jobs["pods"]["relabel_configs"][0]
@@ -367,6 +488,9 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
         name, labels = deployment["metadata"]["name"], deployment["spec"]["template"]["metadata"]["labels"]
         assert re.fullmatch(tsg_only["regex"], labels["part-of"]), name
         assert re.fullmatch(kept["regex"], f"ai-common;{name}-7d9f8b6c5d-x2x4z"), name  # <rs hash>-<5 chars>
+    for service in _template_objects("Service"):  # never a chatbot pod with the same app label
+        if service["metadata"]["namespace"] == "ai-common":
+            assert service["spec"]["selector"]["part-of"] == "tsg-monitoring", service["metadata"]["name"]
     chatbot_pods = ["chatbot-api-7d9f8b6c5d-x2x4z", "grafana-agent-7d9f8b6c5d-x2x4z"]
     assert not [pod for pod in chatbot_pods if re.fullmatch(kept["regex"], f"ai-common;{pod}")]
     assert all(re.fullmatch(kept["regex"], f"{app};{chatbot_pods[0]}") for app in WATCHED_APP_PROJECTS)
@@ -376,7 +500,8 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
         for line in path.read_text(encoding="utf-8").splitlines()
         if "-n ai-common rollout restart deployment" in line
     ]
-    assert restarts and all(line.endswith(" -l part-of=tsg-monitoring") for line in restarts)
+    allowed = (" -l part-of=tsg-monitoring", " deployment/worker-reaper")  # by label, or TSG's reaper by name
+    assert restarts and all(line.endswith(allowed) for line in restarts)
 
 
 def _promtool() -> str | None:
@@ -686,4 +811,4 @@ def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> Non
     )
     (worker,) = [job for job in local["scrape_configs"] if job["job_name"] == "worker"]
     targets = {target for config in worker["static_configs"] for target in config["targets"]}
-    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 2
+    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 3

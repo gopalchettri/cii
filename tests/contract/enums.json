@@ -1,4 +1,9 @@
 {
+ "AbandonReason": {
+  "NEVER_STARTED": "never_started",
+  "WAITED_TOO_LONG": "waited_too_long",
+  "WORKER_STOPPED": "abandoned"
+ },
  "ActionPriority": {
   "CRITICAL": "Critical",
   "HIGH": "High",
@@ -23,9 +28,14 @@
   "TIMED_OUT": "ai_timed_out",
   "UNREACHABLE": "ai_unreachable"
  },
+ "AiOutageSource": {
+  "GATEWAY": "gateway",
+  "LIMITER": "limiter"
+ },
  "AiOutcome": {
   "ERROR": "error",
   "OK": "ok",
+  "TRUNCATED": "truncated",
   "UNAVAILABLE": "unavailable",
   "UNREADABLE": "unreadable"
  },
@@ -35,16 +45,21 @@
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
   "REMEDIATION_PLAN": "remediation_plan",
+  "REPAIR_SCENARIO": "repair_scenario",
   "RERANK": "rerank",
   "SERVICE_MAPPER": "service_mapper",
+  "THREAT_ACTIONS": "threat_actions",
   "WRITE_SCENARIO": "write_scenario"
  },
  "AnswerProblem": {
+  "ACTION_SENTENCES_MISSING": "action_sentences must quote the statement's sentence for each of: {actions}",
   "ENTRY_POINT_NOT_OFFERED": "entry_point must be one of entry_point_options, copied exactly: {options}",
   "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
   "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
   "SYSTEM_REASONS_MISSING": "system_reasons must give one short sentence for each of: {names}",
-  "TEXT_REQUIRED": "must not be empty"
+  "TEXT_REQUIRED": "must not be empty",
+  "THREAT_ACTIONS_REQUIRED": "the reply must be {\"actions\": [...]}: a non-empty list of short verb phrases",
+  "THREAT_ACTION_VERDICTS_REQUIRED": "threat_actions must judge every item of PLAN.threat.threat_actions"
  },
  "ApiTag": {
   "API_KEYS": "2. Set-up: API keys",
@@ -141,11 +156,10 @@
   "SQL_OPERATIONS": "tsg_sql_operations"
  },
  "ConflictReason": {
-  "ACTIVE_SESSION_EXISTS": "active_session_exists",
-  "ASSET_BUSY": "asset_busy",
   "ASSET_NOT_OWNED": "asset_not_owned",
   "CANCEL_FIRST": "cancel_first",
   "CHANGED_CONCURRENTLY": "changed_concurrently",
+  "DUPLICATE_REQUEST": "duplicate_request",
   "DUPLICATE_VERSION": "duplicate_version",
   "GENERATION_IN_PROGRESS": "generation_in_progress",
   "IDEMPOTENCY_KEY_CONFLICT": "idempotency_key_conflict",
@@ -391,6 +405,7 @@
   "CONTROLS": "controls",
   "REMEDIATION": "remediation",
   "SCENARIOS": "scenarios",
+  "SERVICE_MAPPING": "service_mapping",
   "THREATS": "threats"
  },
  "LibraryBanner": {
@@ -509,7 +524,9 @@
   "INSERTED": "inserted"
  },
  "Queue": {
+  "CONTROLS": "tsg_controls",
   "MAINTENANCE": "tsg_maintenance",
+  "REAPER": "tsg_reaper",
   "REMEDIATION": "tsg_remediation",
   "SCENARIOS": "tsg_scenarios",
   "SERVICEMAPPER": "tsg_servicemapper",
@@ -521,6 +538,7 @@
   "CANCELLED": "cancelled",
   "FAILED": "failed",
   "GENERATING": "generating",
+  "READ_ONLY": "read_only",
   "REJECTED": "rejected"
  },
  "ResolveOutcome": {
@@ -555,7 +573,6 @@
   "RUNNING": "running"
  },
  "RunClash": {
-  "ACTIVE_RUN": "active_run",
   "CHANGED": "changed",
   "DELETING": "deleting",
   "IDEMPOTENCY_KEY": "idempotency_key"
@@ -630,9 +647,9 @@
   "GET_ASSET_CONTEXT": "tsg_GetAssetContext",
   "GET_CONTROL_LIBRARY": "tsg_GetControlLibrary",
   "GET_LIBRARY_STAMP": "tsg_GetLibraryStamp",
-  "GET_SECTORS_AND_SUBSECTORS": "Onboarding_GetSectorsAndSubsectorsList",
+  "GET_SECTORS_AND_SUBSECTORS": "tsg_Onboarding_GetSectorsAndSubsectorsList",
   "GET_SECTOR_SERVICE_MAPPINGS": "Onboarding_GetSectorServiceMappings",
-  "GET_SERVICES_WITH_SECTOR_DETAILS": "Onboarding_GetServicesWithSectorDetails",
+  "GET_SERVICES_WITH_SECTOR_DETAILS": "tsg_Onboarding_GetServicesWithSectorDetails",
   "GET_SERVICE_MAPPER_ASSOCIATIONS": "tsg_GetServiceMapperAssociations",
   "GET_THREAT_LIBRARY": "tsg_GetThreatLibrary",
   "IMPORT_THREAT_LIBRARY": "tsg_ImportThreatLibrary",

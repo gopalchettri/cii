@@ -1,9 +1,9 @@
 """The OpenShift delivery (M15, T-OPS-08; UAT is production), plain YAML applied with `oc apply -f` and every
-value written in it: deploy_threatgen.yaml (ai-threatgen), deploy_remediation.yaml (ai-remediation),
-deploy_common.yaml (the monitoring and Flower in ai-common), the two networkpolicy files, configmap.yaml
-and secrets.example.yaml (the template of the git-ignored secrets.yaml). The settings the pods load, each
-project's quota, the owner's two file rules (no kubernetes.io, a comment on every line) and what goes into
-the image.
+value written in it: deploy_threatgen.yaml (the app, in ai-threatgen), deploy_common.yaml (the monitoring
+and Flower in ai-common), networkpolicy_threatgen.yaml, configmap.yaml and secrets.example.yaml (the
+template of the git-ignored secrets.yaml). The settings the pods load, each project's quota, the owner's two
+file rules (no kubernetes.io but the node label that spreads the pods, a comment on every line), the
+spreading over nodes and what goes into the image.
 A broken file must fail here, not halfway through a rollout."""
 
 import math
@@ -19,19 +19,14 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import LITELLM_MODEL_PREFIX, Generation, Lease, Queue, ThreatFinding, Worker
+from app.core.constants import LITELLM_MODEL_PREFIX, Controls, Generation, Lease, Queue, ThreatFinding, Worker
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
 DEPLOY = REPO / "deploy"
-APP_FILES = {
-    "ai-threatgen": DEPLOY / "deploy_threatgen.yaml",
-    "ai-remediation": DEPLOY / "deploy_remediation.yaml",
-}
-NETWORK_FILES = {
-    "ai-threatgen": DEPLOY / "networkpolicy_threatgen.yaml",
-    "ai-remediation": DEPLOY / "networkpolicy_remediation.yaml",
-}
+#: The app's one project (owner, 2026-10-28: TSG runs only in ai-threatgen and ai-common).
+APP_FILES = {"ai-threatgen": DEPLOY / "deploy_threatgen.yaml"}
+NETWORK_FILES = {"ai-threatgen": DEPLOY / "networkpolicy_threatgen.yaml"}
 COMMON_FILE = DEPLOY / "deploy_common.yaml"
 CONFIG_FILE = DEPLOY / "configmap.yaml"
 SECRETS_FILE = DEPLOY / "secrets.example.yaml"
@@ -46,12 +41,12 @@ APP_IMAGE = re.compile(
     rf"{re.escape(MIRROR)}/tsg-api:\d{{2}}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{{4}}(-\w+)?"
 )
 API_HOST = "threatgen-api.apps.dda-desc-az1-01.desccii.local"
-MONITORING_HOST = "threatgen-grafana.apps.dda-desc-az1-01.desccii.local"
+#: The nginx in ai-threatgen that puts Grafana and Flower on the API's host (deploy_common.yaml).
+PROXY = "monitoring-proxy"
 #: Each project's quota in limits (CPU, memory Gi, storage Gi); in ai-common, TSG's share of it (the chatbot
 #: has the rest).
 QUOTAS = {
     "ai-threatgen": (6.0, 12.0, 60.0),
-    "ai-remediation": (6.0, 12.0, 60.0),
     MONITORING_NAMESPACE: (3.0, 6.0, 60.0),
 }
 SECRET_NAMES = {
@@ -68,9 +63,8 @@ SECRET_NAMES = {
 }
 #: Connection strings carry their password: they are secrets, with the keys.
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
-#: The settings that name a store the pods must reach.
 STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
-DEFAULT_PORTS = {"redis": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
+DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
 #: Each AI model and the base URL its calls go to.
 GATEWAYS = (
     ("CII_CHAT_MODEL", "CII_CHAT_BASE_URL"),
@@ -97,6 +91,7 @@ EMBEDDED_CONFIGS = {
     "datasources.yaml": "observability/grafana/provisioning/datasources/datasources.yaml",
     "dashboards.yaml": "observability/grafana/provisioning/dashboards/dashboards.yaml",
     "tsg.json": "observability/grafana/dashboards/tsg.json",
+    "nginx.conf": "observability/nginx/nginx.conf",  # the monitoring proxy's: UAT only
 }
 #: How a pod names a ConfigMap or Secret it reads (envFrom, env valueFrom).
 REFERENCES = {
@@ -106,6 +101,16 @@ REFERENCES = {
     "secretKeyRef": "Secret",
 }
 BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
+CHAT_MODEL_REQUESTS_PER_MINUTE = 192  # kimi-k2.5's own limit on UAT's gateway key (owner, 2026-10-24)
+#: Every worker's startup and liveness probe: the heartbeat's file exists, then is fresh. No Redis.
+FILE_AGE = f"$(( $(date +%s) - $(stat -c %Y {Worker.LIVENESS_FILE}) ))"
+WORKER_PROBES = {
+    "startupProbe": ["sh", "-c", f"test -f {Worker.LIVENESS_FILE}"],
+    "livenessProbe": ["sh", "-c", f"test {FILE_AGE} -lt {Worker.LIVENESS_MAX_AGE_SECONDS}"],
+}
+KUBERNETES_IO = "kubernetes.io"
+#: The owner's one exception to "no kubernetes.io" (2026-10-24): the node label as a spreading rule's key.
+NODE_TOPOLOGY = ("topologyKey", "kubernetes.io/hostname")
 
 
 def _objects(*paths: Path, kind: str = "") -> list[dict]:
@@ -266,6 +271,15 @@ def _uncommented_lines(path: Path) -> list[str]:
     return found
 
 
+def _scalars(node: object, key: object = None) -> list[tuple[object, object]]:
+    """Every scalar of a parsed YAML tree, each key too, with the key it sits under."""
+    if isinstance(node, dict):
+        return [found for name, value in node.items() for found in [(key, name), *_scalars(value, name)]]
+    if isinstance(node, list):
+        return [found for item in node for found in _scalars(item, key)]
+    return [(key, node)]
+
+
 def _reads(deployment: dict) -> set[tuple[str, str, str]]:
     """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes, and
     its volume claims; key "" = the whole object."""
@@ -283,15 +297,31 @@ def _reads(deployment: dict) -> set[tuple[str, str, str]]:
         if "configMap" in volume:
             keys = [item["key"] for item in volume["configMap"].get("items", [])] or [""]
             reads |= {("ConfigMap", volume["configMap"]["name"], key) for key in keys}
+        if "secret" in volume:
+            keys = [item["key"] for item in volume["secret"].get("items", [])] or [""]
+            reads |= {("Secret", volume["secret"]["secretName"], key) for key in keys}
         if "persistentVolumeClaim" in volume:
             reads.add(("PersistentVolumeClaim", volume["persistentVolumeClaim"]["claimName"], ""))
     return reads
 
 
 @pytest.mark.parametrize("path", YAML_FILES, ids=lambda path: path.name)
-def test_no_deploy_file_names_kubernetes_io(path: Path) -> None:
-    """The owner's rule: no kubernetes.io anywhere, not in a label, selector, Secret type or comment."""
-    assert "kubernetes.io" not in path.read_text(encoding="utf-8")
+def test_no_deploy_file_names_kubernetes_io_but_the_node_label_that_spreads_pods(path: Path) -> None:
+    """The owner's rule: no kubernetes.io anywhere, not in a label, selector, Secret type or comment, with one
+    exception (2026-10-24): kubernetes.io/hostname as a topologyKey value, alone on its line bar a comment."""
+    text = path.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if KUBERNETES_IO in line]
+    for line in lines:
+        assert line.split(" #")[0].strip() == ": ".join(NODE_TOPOLOGY), line
+        assert line.count(KUBERNETES_IO) == 1, line  # not in the line's comment
+    parsed = [
+        found
+        for document in yaml.safe_load_all(text)
+        for found in _scalars(document)
+        if KUBERNETES_IO in str(found[1])
+    ]
+    # Each such line is a real topologyKey, not text inside a string (an embedded file, say).
+    assert parsed == [NODE_TOPOLOGY] * len(lines)
 
 
 @pytest.mark.parametrize("path", YAML_FILES, ids=lambda path: path.name)
@@ -300,25 +330,40 @@ def test_every_line_of_a_deploy_file_says_what_it_does(path: Path) -> None:
     assert _uncommented_lines(path) == []
 
 
+def test_no_pod_takes_the_project_s_service_variables() -> None:
+    """A Service named flower puts FLOWER_PORT=tcp://<ip>:5555 into every pod of its project, and Flower reads
+    every FLOWER_* variable as its own option, so it took that address for its port and stopped at start-up.
+    No pod takes these variables: each finds a Service by its DNS name."""
+    for deployment in _all_deployments():
+        pod = deployment["spec"]["template"]["spec"]
+        assert pod.get("enableServiceLinks") is False, deployment["metadata"]["name"]
+
+
 def test_every_object_is_in_its_file_s_project() -> None:
     for namespace, path in [*APP_FILES.items(), *NETWORK_FILES.items()]:
         assert {o["metadata"]["namespace"] for o in _objects(path)} == {namespace}, path.name
-    for item in _objects(COMMON_FILE):  # all in ai-common, but the right to read an app project's pods
-        where = item["metadata"]["namespace"]
-        if item["metadata"]["name"] == "tsg-monitoring-read-pods":
+    # All in ai-common, but the right to read an app project's pods, and the monitoring proxy with its Routes
+    # (only ai-threatgen may use the API's host).
+    for item in _objects(COMMON_FILE):
+        where, name = item["metadata"]["namespace"], item["metadata"]["name"]
+        if name == "tsg-monitoring-read-pods":
             assert where in APP_FILES, item["kind"]
+        elif name == PROXY or item["kind"] == "Route":
+            assert where == "ai-threatgen", (item["kind"], name)
         else:
-            assert where == MONITORING_NAMESPACE, (item["kind"], item["metadata"]["name"])
+            assert where == MONITORING_NAMESPACE, (item["kind"], name)
     for path, shared in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
         assert sorted(_shared(path, shared)) == sorted(WATCHED), path.name  # every project with TSG pods
-        others = {o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] != shared}
+        others = {
+            o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] not in {shared, PROXY}
+        }
         assert others == {MONITORING_NAMESPACE}, path.name  # the monitoring's files and Grafana's password
 
 
 def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened_and_sized() -> None:
     flower = _deployment("flower")
     assert flower["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
-    images = {_container(flower)["image"]}  # Flower runs from the app image
+    images = {_container(flower)["image"], _container(_deployment("worker-reaper"))["image"]}  # app image too
     for deployment in _app_deployments():
         name, pod = deployment["metadata"]["name"], deployment["spec"]["template"]
         assert deployment["spec"]["selector"]["matchLabels"] == {"app": name}
@@ -344,20 +389,37 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
     assert APP_IMAGE.fullmatch(image), image
 
 
-def test_every_queue_has_a_worker_in_each_app_project() -> None:
-    """/ready needs a live worker on every routed queue: each project alone serves them all, so either one's
-    copy may stop to update (maxSurge 0) while /ready stays green."""
-    queues: dict[str, list[str]] = {}
-    for namespace, path in APP_FILES.items():
-        for deployment in _objects(path, kind="Deployment"):
-            command = _container(deployment)["command"]
-            if command[:4] == ["celery", "-A", "app.worker", "worker"]:
-                assert "--pool=threads" in command  # the worker refuses any other pool at start-up
-                # Ready only once it answers its own ping, so rollout status waits until the queue is served.
-                container = _container(deployment)
-                assert container["startupProbe"]["exec"] == container["livenessProbe"]["exec"], namespace
-                queues.setdefault(namespace, []).append(command[command.index("-Q") + 1])
-    assert sorted(queues["ai-threatgen"]) == sorted(queues["ai-remediation"]) == sorted(ROUTED_QUEUES)
+def test_every_queue_has_one_worker_and_the_api_stays_ready_while_it_restarts() -> None:
+    """/ready needs a live worker on every routed queue, and each queue has one worker (the quota has no
+    room for a second), which stops before its new pod starts (maxSurge 0). The API's readiness must outlast
+    that worker's slowest start, or every worker update would take the API out of its Route. The reaper's
+    worker runs in ai-common (deploy_common.yaml), the others in ai-threatgen."""
+    queues, slowest_start = [], 0
+    for deployment in _all_deployments():
+        container = _container(deployment)
+        command = container.get("command", [])
+        if command[:4] == ["celery", "-A", "app.worker", "worker"]:
+            assert "--pool=threads" in command  # the worker refuses any other pool at start-up
+            # Ready once its heartbeat wrote the alive file: rollout status waits until the queue is served.
+            start = container["startupProbe"]
+            start_seconds = start["initialDelaySeconds"] + start["failureThreshold"] * start["periodSeconds"]
+            slowest_start = max(slowest_start, start_seconds)
+            queues.append(command[command.index("-Q") + 1])
+    assert sorted(queues) == sorted(ROUTED_QUEUES)
+    ready = _container(_deployment("api"))["readinessProbe"]
+    assert ready["failureThreshold"] * ready["periodSeconds"] > slowest_start
+
+
+def test_worker_probes_read_the_heartbeat_file_never_redis() -> None:
+    """A probe that pings through Redis restarts every worker (and kills its jobs) during a 3-minute outage:
+    each worker's startup and liveness probe only reads the file its heartbeat touches."""
+    for deployment in _all_deployments():  # the reaper's worker in ai-common too
+        container, name = _container(deployment), deployment["metadata"]["name"]
+        if container.get("command", [])[:4] == ["celery", "-A", "app.worker", "worker"]:
+            for probe, expected in WORKER_PROBES.items():
+                probe_command = container[probe]["exec"]["command"]
+                assert probe_command == expected, (name, probe)
+                assert "celery" not in " ".join(probe_command), (name, probe)  # no broker call
 
 
 def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_budget() -> None:
@@ -375,12 +437,32 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
     assert budgets == {d["metadata"]["name"] for d in deployments if d["spec"]["replicas"] >= 2} == {"api"}
     for deployment in deployments:
         if deployment["spec"]["strategy"]["type"] == "RollingUpdate":
-            # The API starts its new copy first; a worker stops first, while its twin serves the queue.
+            # The API starts its new copy first; a worker stops first: the quota has no room for a second.
             api = deployment["metadata"]["name"] == "api"
             expected = {"maxUnavailable": 0, "maxSurge": 1} if api else {"maxUnavailable": 1, "maxSurge": 0}
             assert deployment["spec"]["strategy"]["rollingUpdate"] == expected, deployment["metadata"]
         else:
             assert deployment["metadata"]["name"] == "beat"
+
+
+def test_the_two_api_pods_prefer_different_nodes() -> None:
+    """Both API pods on one node both stop when it fails. Preferred, never required: a pod must still start
+    on a small or busy cluster and as the update's surge pod. No namespaces line (its own project), so a
+    CrossNamespacePodAffinity quota never refuses it. A single pod (each worker, beat) has nothing to keep
+    apart."""
+    for deployment in _app_deployments():
+        name = deployment["metadata"]["name"]
+        affinity = deployment["spec"]["template"]["spec"].get("affinity")
+        if deployment["spec"]["replicas"] == 1:
+            assert affinity is None, name
+            continue
+        term = {"labelSelector": {"matchLabels": {"app": name}}, "topologyKey": NODE_TOPOLOGY[1]}
+        assert affinity == {
+            "podAntiAffinity": {
+                "preferredDuringSchedulingIgnoredDuringExecution": [{"weight": 100, "podAffinityTerm": term}]
+            }
+        }, name
+    assert _deployment("api")["spec"]["replicas"] == 2
 
 
 def test_every_project_stays_within_its_quota_during_an_update() -> None:
@@ -405,9 +487,9 @@ def test_every_project_stays_within_its_quota_during_an_update() -> None:
         assert storage <= storage_quota, namespace
 
 
-def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_all_three_projects() -> None:
+def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_both_projects() -> None:
     """The alerts read job="api" and job="worker" (the pod label component); each scraped pod declares its
-    port; the monitoring in ai-common reads each app project's pods through a Role there."""
+    port; the monitoring in ai-common reads the app project's pods through a Role there."""
     rules = (REPO / "observability" / "prometheus" / "rules.yml").read_text(encoding="utf-8")
     assert {"api", "worker"} <= set(re.findall(r'job="(\w+)"', rules))
     scraped: dict[str, set[str]] = {}
@@ -442,26 +524,10 @@ def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_all_three_projec
     assert f"--namespaces={','.join(WATCHED)}" in _container(_deployment("kube-state-metrics"))["args"]
 
 
-def test_every_route_is_https_on_its_host_and_no_two_share_a_path() -> None:
-    routes = _objects(*APP_FILES.values(), COMMON_FILE, kind="Route")
-    places = [(r["metadata"]["namespace"], r["spec"]["host"], r["spec"]["path"]) for r in routes]
-    assert len(places) == len(set(places))
-    assert {place[:2] for place in places} == {
-        ("ai-threatgen", API_HOST),
-        (MONITORING_NAMESPACE, MONITORING_HOST),
-    }
-    assert ("ai-threatgen", API_HOST, "/") in places
-    assert all(
-        r["spec"]["tls"] == {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}
-        for r in routes
-    )
-
-
-def test_both_projects_reach_the_same_stores_and_the_monitoring_and_router_reach_the_app() -> None:
+def test_the_monitoring_and_router_reach_the_app_and_every_pod_looks_names_up() -> None:
     """Prometheus (ai-common) scrapes the API and the workers, the router sends the public https calls to the
     API, and every pod looks names up: a rule without these leaves the pods unreachable or blind."""
-    assert _reachable(NETWORK_FILES["ai-threatgen"]) == _reachable(NETWORK_FILES["ai-remediation"])
-    scraped = {"ai-threatgen": {8000, 9100}, "ai-remediation": {9100}}  # the API and the worker metrics
+    scraped = {"ai-threatgen": {8000, 9100}}  # the API and the worker metrics
     for namespace, path in NETWORK_FILES.items():
         assert _ports_open_to(path, MONITORING_PEER) >= scraped[namespace], namespace
         to_any_address = [
@@ -471,7 +537,8 @@ def test_both_projects_reach_the_same_stores_and_the_monitoring_and_router_reach
             if "to" not in rule
         ]
         assert any(ports >= DNS for ports in to_any_address), namespace
-    assert _ports_open_to(NETWORK_FILES["ai-threatgen"], ROUTER_PEER) == {8000}
+    # The API's port, and the monitoring proxy's (tests/test_deploy_monitoring_proxy.py checks it alone).
+    assert _ports_open_to(NETWORK_FILES["ai-threatgen"], ROUTER_PEER) == {8000, 8080}
 
 
 def test_each_project_may_reach_every_store_the_proxy_and_the_ai_gateway() -> None:
@@ -571,7 +638,7 @@ def test_the_secret_template_holds_every_secret_and_placeholders_only() -> None:
 
 
 def test_every_project_gets_the_same_settings_and_only_ones_the_app_reads() -> None:
-    """The three projects' pods share one queue and one database: their settings cannot differ. A key the app
+    """Both projects' pods share one queue and one database: their settings cannot differ. A key the app
     does not read (a typo, an old name) would be silently ignored."""
     for path, name in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
         copies = list(_shared(path, name).values())
@@ -616,9 +683,9 @@ def test_each_embedded_monitoring_config_is_its_observability_file_byte_for_byte
 
 def test_monitoring_images_come_from_the_mirror_with_a_pinned_version() -> None:
     """The cluster pulls only from the Quay mirror, and a moving tag (latest) would change a pod at its next
-    restart. Flower runs from the app image, checked with the app pods."""
+    restart. Flower and the reaper worker run from the app image, checked with the app pods."""
     for deployment in _objects(COMMON_FILE, kind="Deployment"):
-        if deployment["metadata"]["name"] != "flower":
+        if deployment["metadata"]["name"] not in {"flower", "worker-reaper"}:
             for container in _containers(deployment):
                 pinned = rf"{re.escape(MIRROR)}/[\w.-]+:v?\d+\.\d+\.\d+"
                 assert re.fullmatch(pinned, container["image"]), container["image"]
@@ -640,25 +707,31 @@ def test_the_image_gets_only_what_it_runs() -> None:
 
 
 def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
-    """Threads x AI calls per job x replicas near CII_MAX_CONCURRENT_AI_CALLS, in each project (either one
-    alone serves every queue while its twin restarts): more only waits on a slot (and times out the job), far
-    fewer leaves the cap unused."""
-    cap = int(_settings()["CII_MAX_CONCURRENT_AI_CALLS"])
+    """Each AI worker's own threads x AI calls per job x replicas, summed over a project, near
+    CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and times out the job), far fewer leaves the cap
+    unused. With no cap (0), the chat
+    model's requests-a-minute limit paces the calls: it is set, and within what kimi-k2.5 takes."""
+    settings = _settings()
+    cap = int(settings["CII_MAX_CONCURRENT_AI_CALLS"])
+    if cap == 0:
+        assert 0 < int(settings["CII_CHAT_REQUESTS_PER_MINUTE"]) <= CHAT_MODEL_REQUESTS_PER_MINUTE
+        return
     calls_per_job = {
         Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,
         Queue.SCENARIOS: Generation.WRITER_BATCH,
+        Queue.CONTROLS: Controls.PER_DELIVERY,
     }
     for namespace, path in APP_FILES.items():
-        checked = set()
+        asked, checked = 0, set()
         for deployment in _objects(path, kind="Deployment"):
             command = _container(deployment)["command"]
             queue = command[command.index("-Q") + 1] if "-Q" in command else None
             if queue in calls_per_job:
                 threads = int(command[command.index("-c") + 1])
-                asked = threads * calls_per_job[queue] * deployment["spec"]["replicas"]
-                assert threads == Worker.THREADS and cap / 2 < asked <= cap, (namespace, queue, asked, cap)
+                asked += threads * calls_per_job[queue] * deployment["spec"]["replicas"]
                 checked.add(queue)
         assert checked == set(calls_per_job), namespace
+        assert cap / 2 < asked <= cap, (namespace, asked, cap)
 
 
 def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:

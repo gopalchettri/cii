@@ -58,36 +58,61 @@ class PlanProgress:
             raise LeaseLost(self._run_id)
 
     def abandon(
-        self, path_id: str, state: dict[str, Any], reason: str, threats: dict[str, dict[str, Any]]
+        self,
+        path_id: str,
+        state: dict[str, Any],
+        reason: str,
+        threats: dict[str, dict[str, Any]],
+        card: ScenarioOutcome | None = None,
     ) -> str | None:
-        """Give a path up for good, logged and counted; when the set's budget allows and a reserve exists, the
-        reserve takes its place in the same fenced write. Return the reserve's id, or None."""
+        """Give a path up for good, logged and counted with its last `card`; when the set's budget allows and
+        a reserve exists, the reserve takes its place in the same fenced write. Return its id, or None."""
         log.warning(
-            LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, attempts=state["attempts"], reason=reason
+            LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, path_attempts=state["attempts"], reason=reason
         )
-        metrics.SCENARIOS.labels(ScenarioOutcome.ABANDONED).inc()
-        states = {path_id: state | {"abandoned_reason": reason}}
+        counted = (ScenarioOutcome.ABANDONED,) if card is None else (card, ScenarioOutcome.ABANDONED)
+        states = {path_id: state | {"abandoned_reason": reason, "settled_epoch": self._lease.epoch}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
         in_set = [path for key, path in self.paths.items() if key in self._set]
         reserve = best_reserve(self.paths.values(), threats, self._set) if budget_left(in_set) else None
         if reserve is None:
-            self.record(states)
+            self.record(states, counted=counted)
             return None
         replaced = {"selected": False, "unselected_reason": UnselectedReason.REPLACED_AFTER_FAILURE}
         states[path_id] |= replaced | {"replaced_by": reserve["path_id"]}
         states[reserve["path_id"]] = {"selected": True, "unselected_reason": None, "replaces": path_id}
         self._set.add(reserve["path_id"])
-        self.record(states, {"job.set": sorted(self._set)})
+        self.record(states, {"job.set": sorted(self._set)}, counted)
         return str(reserve["path_id"])
 
-    def record(self, states: dict[str, dict[str, Any]], also: dict[str, Any] | None = None) -> None:
+    def leave_for_next_set(self, path_id: str, state: dict[str, Any], card: ScenarioOutcome) -> None:
+        """Keep a path open but out of the set being written, so only a later set writes it; its `card`
+        counted."""
+        # ponytail: best_reserve may still pick it as this set's spare; flag it if spares must be fresh
+        self._set.discard(path_id)
+        settled = state | {"abandoned": False, "settled_epoch": self._lease.epoch}
+        self.record({path_id: settled}, {"job.set": sorted(self._set)}, (card,))
+
+    def settled_by_this_job(self, path_id: str) -> bool:
+        """True when a delivery of this job (its epoch) already settled the path: it is not written again."""
+        return bool(self.paths[path_id].get("settled_epoch") == self._lease.epoch)
+
+    def record(
+        self,
+        states: dict[str, dict[str, Any]],
+        also: dict[str, Any] | None = None,
+        counted: tuple[ScenarioOutcome, ...] = (),
+    ) -> None:
         """Save attack path states, the plan's figures, the scenario counts and the plan note in one fenced
-        write, then send a live update. `also`: more fields for the same write."""
+        write, then count `counted` in tsg_scenarios_total (only the delivery whose write is taken does) and
+        send a live update. `also`: more fields for the same write."""
         for attack_path_id, state in states.items():
             self.paths[attack_path_id].update(state)
         figures = plan_counts(self.paths.values())
         self._sessions.update_scenario_session_plan(self._lease, states, figures, also)
+        for outcome in counted:
+            metrics.SCENARIOS.labels(outcome).inc()
         publish_session_status(self._run_id)
 
     def continue_or_finish(self) -> None:
@@ -129,8 +154,8 @@ class PlanProgress:
         self._lease.update_job(changes | ended_job_fields(Status.DONE))
 
     def finish_regenerate(self, replaced: int, requested: int) -> None:
-        """End a regenerate: complete when every target got its new version, partial when any kept its old
-        one, timed from the click."""
+        """End a regenerate: complete when every target was written (a new version, or an outage card in
+        place), partial when any was not, timed from the click."""
         outcome = RunActionOutcome.COMPLETE if replaced == requested else RunActionOutcome.PARTIAL
         started = self._last_action.get("started_at") or utc_now()
         self._lease.update_job(

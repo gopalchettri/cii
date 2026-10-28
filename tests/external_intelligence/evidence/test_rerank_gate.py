@@ -53,7 +53,7 @@ def _batch(finder: EvidenceFinder, size: int = 12) -> None:
 
 def test_the_process_gate_is_one_small_constant_shared_by_every_caller() -> None:
     finder = container.get_evidence_finder()  # every caller shares the one finder, so its one gate
-    assert finder is container.get_evidence_finder() and RerankGateLimits.RERANKS_AT_ONCE <= 4
+    assert finder is container.get_evidence_finder() and RerankGateLimits.RERANKS_AT_ONCE <= 6
 
 
 @pytest.mark.parametrize("size", [1, 2, 3])
@@ -210,9 +210,9 @@ def test_a_cancelled_job_stops_waiting_for_the_gate_within_one_check() -> None:
     holder.join()
 
 
-def test_the_proxy_gate_fails_fast_and_the_laptop_gate_has_one_place_and_no_fixed_wait() -> None:
+def test_both_gates_wait_until_a_place_frees_or_the_lease_is_lost_and_the_proxy_gate_has_six() -> None:
     local, remote = rerank_gate_for(""), rerank_gate_for("http://proxy.invalid")
-    assert local._wait_seconds is None and remote._wait_seconds == RerankGateLimits.GATE_WAIT_SECONDS
+    assert local._wait_seconds is None and remote._wait_seconds is None
     for gate, places in ((local, 1), (remote, RerankGateLimits.RERANKS_AT_ONCE)):
         with ExitStack() as stack:
             for _ in range(places):

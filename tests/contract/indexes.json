@@ -52,10 +52,18 @@
      ]
     ]
    },
-   "task_id_1_prompt_hash_1": {
+   "record_id_1_epoch_1_job_task_1_prompt_hash_1": {
     "key": [
      [
-      "task_id",
+      "record_id",
+      1
+     ],
+     [
+      "epoch",
+      1
+     ],
+     [
+      "job_task",
       1
      ],
      [
@@ -403,6 +411,18 @@
     ],
     "unique": true
    },
+   "status_1_finished_at_1": {
+    "key": [
+     [
+      "status",
+      1
+     ],
+     [
+      "finished_at",
+      1
+     ]
+    ]
+   },
    "status_1_job.due_at_1": {
     "key": [
      [
@@ -460,10 +480,14 @@
      ]
     ]
    },
-   "controls.status_1_controls.last_attempt_at_1": {
+   "controls.status_1_controls.attempts_1_controls.last_attempt_at_1": {
     "key": [
      [
       "controls.status",
+      1
+     ],
+     [
+      "controls.attempts",
       1
      ],
      [
@@ -484,18 +508,14 @@
      ]
     ]
    },
-   "entity_id_1_asset_id_1_decision_1": {
+   "created_at_1_session_id_1": {
     "key": [
      [
-      "entity_id",
+      "created_at",
       1
      ],
      [
-      "asset_id",
-      1
-     ],
-     [
-      "decision",
+      "session_id",
       1
      ]
     ]
@@ -677,6 +697,18 @@
      ]
     ]
    },
+   "status_1_finished_at_1": {
+    "key": [
+     [
+      "status",
+      1
+     ],
+     [
+      "finished_at",
+      1
+     ]
+    ]
+   },
    "status_1_job.due_at_1": {
     "key": [
      [
@@ -739,6 +771,26 @@
      ]
     ]
    },
+   "tenant_id_1_entity_id_1_status_1_created_at_1": {
+    "key": [
+     [
+      "tenant_id",
+      1
+     ],
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "status",
+      1
+     ],
+     [
+      "created_at",
+      1
+     ]
+    ]
+   },
    "updated_at_-1": {
     "key": [
      [
@@ -793,22 +845,6 @@
      }
     }
    },
-   "entity_id_1_asset_id_1": {
-    "key": [
-     [
-      "entity_id",
-      1
-     ],
-     [
-      "asset_id",
-      1
-     ]
-    ],
-    "partialFilterExpression": {
-     "active": true
-    },
-    "unique": true
-   },
    "entity_id_1_idempotency_key_1": {
     "key": [
      [
@@ -839,6 +875,18 @@
      ],
      [
       "created_at",
+      1
+     ]
+    ]
+   },
+   "status_1_finished_at_1": {
+    "key": [
+     [
+      "status",
+      1
+     ],
+     [
+      "finished_at",
       1
      ]
     ]
