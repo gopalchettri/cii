@@ -76,7 +76,8 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #    - First time only: the DBA must have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
 
 # 7. Start everything - one command, from the cii folder
-.\run.ps1 -NoBrowser
+.\run.ps1 -NoBrowser -ApiHost 0.0.0.0
+#    -ApiHost 0.0.0.0 lets other machines (the UI) call the API; without it only this machine can.
 #    It opens 6 windows - TSG api, worker, service_mapper, maintenance, reaper, beat - starts the monitoring tools
 #    (Grafana, Flower, ...), waits up to 90 s and prints the /ready answer.
 #    It uses .venv\Scripts\python.exe itself: no need to activate .venv first.
@@ -87,10 +88,9 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #    "The <name> program has ended"         -> read the error in the window 'TSG <name>'.
 #    "Already running" / "Port ... is in use" -> .\stop.ps1 first.
 #
-#    The API listens on 127.0.0.1:8000: only this machine can call it. Must other machines call it? Close the
-#    'TSG api' window, then in this window (.venv activated):
-#      python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
-#    and Windows Firewall must allow port 8000 inbound (the server admin opens it).
+#    The 'TSG api' window must say  Uvicorn running on http://0.0.0.0:8000  (127.0.0.1 there = -ApiHost was left out).
+#    Other machines call  http://<this machine's name or IP>:8000 . Windows Firewall must allow TCP port 8000
+#    inbound: the server admin opens it once.
 
 # 8. Check
 .\run.ps1 status
@@ -99,6 +99,11 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #    In a browser on this machine:
 #      http://localhost:8000/health  -> {"status": "ok"}
 #      http://localhost:8000/docs    -> API documentation
+#    From ANOTHER PC (the one the UI runs on):
+#      Test-NetConnection <this machine's name or IP> -Port 8000      -> TcpTestSucceeded : True
+#      curl.exe http://<this machine's name or IP>:8000/health        -> {"status": "ok"}
+#    False / timeout: the firewall (step 7) or the network is closed. Fine here but the UI still fails: open the
+#    browser console (F12); a CORS error means its address is missing from CII_CORS_ORIGINS (step 4).
 
 # 9. Stop
 .\stop.ps1
