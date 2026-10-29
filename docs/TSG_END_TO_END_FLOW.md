@@ -2217,10 +2217,12 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 3. **One review call** covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
    (§8.5), read slot by slot with today's reviewer readers. **A slot that is final is saved at once.**
 4. **Round 2, only when needed:** one rewrite call (task `repair_scenario`) for the slots that were unreadable,
-   had a fault worth asking again, or need a repair, each with its own problems; then one review call for those
-   slots. A repair is kept only if it fixed the first draft (`_fixes`, §8.5 step 8). A slot still unusable keeps
+   had a fault worth asking again, or need a repair, each with its own problems, or whose closing sentence links
+   to its title in the same words as an earlier clean slot's (`_flag_repeated_links`, D60: told the links taken);
+   then one review call for those slots. A repair or relink is kept only if it fixed the first draft (`_fixes`,
+   §8.5 step 8), and a relink only if its sentence can still be cited; else the reviewed first draft stays. A slot still unusable keeps
    its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
-   round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's first draft; any other draft checked,
+   round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's or relink's first draft; any other draft checked,
    with `plan_check_not_made` naming the outage when it has no review); only a slot with no usable draft keeps
    the outage, so its path alone is retried, written afresh in a smaller set.
 5. **A whole answer unreadable twice** (no `scenarios` list): `Unavailable`, so the job is retried, with no card

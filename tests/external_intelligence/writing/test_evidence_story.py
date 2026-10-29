@@ -11,6 +11,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.constants import (
+    AiLimits,
     AiTask,
     Applicability,
     EvidenceBlock,
@@ -459,6 +460,23 @@ def test_a_closing_sentence_code_refuses_is_asked_again_once_and_the_new_one_is_
     assert written.findings == ()
 
 
+def test_the_reask_fits_one_reask_problem_whatever_its_reason() -> None:
+    """Review, 30 Oct: the re-ask ran to 263-324 characters, so the 200-character cut ended every rewrite's
+    note mid-sentence; whole with any reason, a long title's included (the slot's own line holds the rule)."""
+    title = "Multi-Factor Authentication Request Generation"
+    reasons = [
+        Precedent.NOT_WRITTEN,
+        Precedent.TOO_LONG.format(most=80),
+        Precedent.NOT_PLAIN,
+        Precedent.STOCK_WORDS.format(words="real-world"),
+        Precedent.MANY_SENTENCES,
+        Precedent.NO_TITLE.format(title=title),
+        Precedent.OPENS_ON_EVIDENCE,
+    ]
+    longest = max(len(Precedent.REASK.format(reason=reason)) for reason in reasons)
+    assert longest <= AiLimits.REASK_PROBLEM_CHARS
+
+
 @pytest.mark.parametrize(
     ("passage", "item", "fault"),
     [
@@ -475,9 +493,25 @@ def test_a_closing_sentence_code_refuses_is_asked_again_once_and_the_new_one_is_
         ("Exploiting that WinCC weakness could let the attacker in, as CISA lists it exploited.", _KEV, ""),
         ('APT41 and FIN8 have used the "Valid Accounts" technique to sign in this way.', _GROUPS, "evidence"),
         ('Threat groups such as APT41 have used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('Malware such as the FIN8 tools has used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        (
+            'Malware planted on the SCADA server through a shared drive is a form of "Valid Accounts", a '
+            "technique the APT41 group has used.",
+            _GROUPS,
+            "",
+        ),
         ('Signing in this way is the "Valid Accounts" technique, as documented.', _GROUPS, '"documented"'),
     ],
-    ids=["curly_quotes", "story_words", "about_entry", "opens_on_users", "opens_on_groups", "documented"],
+    ids=[
+        "curly_quotes",
+        "story_words",
+        "about_entry",
+        "opens_on_users",
+        "opens_on_groups",
+        "opens_on_malware",
+        "malware_step",  # review, 30 Oct: rule 10 invites a noun phrase, so "Malware planted on ..." opens
+        "documented",
+    ],
 )
 def test_the_closing_sentence_checks_keep_story_words_and_any_cited_kind(
     passage: str, item: Evidence, fault: str

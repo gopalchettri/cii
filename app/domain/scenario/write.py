@@ -222,7 +222,7 @@ def slot_label(place: int) -> str:
 
 def writer_system_prompt() -> str:
     """The writer's system prompt with the configured word limits, ending with how a set is answered."""
-    return with_word_limits(WRITER_SYSTEM_PROMPT) + _WRITER["set"]
+    return with_word_limits(WRITER_SYSTEM_PROMPT + _WRITER["set"])
 
 
 def writer_slot(label: str, brief: WriterBrief, note: str = "") -> str:
@@ -600,9 +600,12 @@ _INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR|SC)\d+\b")
 _STOCK_WORDS = re.compile(
     r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
 )
-#: A closing sentence that opens with the evidence itself instead of this attacker's action.
+#: A closing sentence that opens with the evidence itself instead of this attacker's action: the technique,
+#: threat groups, or malware named as evidence ("Malware such as ..."; "Malware planted on ..." is a step).
 _EVIDENCE_OPENER = re.compile(
-    r"(?:the |a |an )?(?:related )?(?:technique|threat (?:groups?|actors?)|malicious software|malware)\b",
+    r"(?:the |a |an )?(?:related )?(?:technique|threat (?:groups?|actors?))\b"
+    r"|(?:the )?(?:malicious software|malware)(?: famil(?:y|ies))?\s+(?:such as|called|named|like|known as"
+    r"|used by)\b",
     re.IGNORECASE,
 )
 _QUOTED = re.compile(r'"[^"]*"')
@@ -674,9 +677,10 @@ class _Slot:
     brief: WriterBrief
     draft: ScenarioDraft | None = None  # its usable draft; a repair's while it is written
     problems: tuple[str, ...] = ()  # why the second round writes it again
+    relink: str = ""  # a clean draft's link repeated from another slot: rewritten, its reviewed draft kept
     review: PlanCheckAnswer | None = None  # its usable review
     review_problems: tuple[str, ...] = ()  # why its review is asked again (unusable, or no action judged)
-    first: WrittenScenario | None = None  # its reviewed first draft while its repair is written
+    first: WrittenScenario | None = None  # its reviewed first draft while its repair or relink is written
 
 
 def write_set(
@@ -684,8 +688,9 @@ def write_set(
 ) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """Each slot's scenario (or failure card) as soon as it is final, in at most 4 AI calls: one write and one
     review, then one rewrite and one review for the slots that need them (unreadable, a re-ask fault, a
-    repeated link, a review to ask again or listed actions to repair); there is no third round. A whole write
-    answer still unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an outage raises Unavailable."""
+    review to ask again, or listed actions to repair or a repeated link, each with its reviewed draft kept);
+    there is no third round. A whole write answer still unusable raises UnreadableAiAnswer or
+    TruncatedAiAnswer; an outage raises Unavailable."""
     slots = [_Slot(label, brief) for label, brief in briefs]
     if not slots:
         return
@@ -832,27 +837,26 @@ def _draft_of(slot: _Slot) -> ScenarioDraft:
 
 def _first_round_end(slot: _Slot) -> WrittenScenario | None:
     """The slot's scenario when the first round settles it; None while the second round must write or
-    review it again (its repair's first draft is kept on the slot)."""
+    review it again (the reviewed first draft of a repair or a relink is kept on the slot)."""
     if slot.draft is None or slot.problems or slot.review_problems:
         return None
     written = _checked(slot)
     check = written.plan_check
-    if check.status is PlanCheckStatus.INCONSISTENT and check.actions_not_carried_out:
+    if slot.relink or (check.status is PlanCheckStatus.INCONSISTENT and check.actions_not_carried_out):
         slot.first = written
         return None
     return written
 
 
 def _note(slot: _Slot) -> str:
-    """What a slot's rewrite is told: the listed actions its review found not carried out, else its earlier
-    answer's problems."""
-    if slot.first is not None:
-        actions = slot.first.plan_check.actions_not_carried_out
-        return _REPAIR.replace("{actions}", ", ".join(json.dumps(act, ensure_ascii=False) for act in actions))
-    shown = (
-        problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in slot.problems[: AiLimits.REASK_MAX_PROBLEMS]
-    )
-    return _REWRITE.replace("{problems}", "; ".join(shown))
+    """What a slot's rewrite is told: the listed actions its review found not carried out and its repeated
+    link, else its earlier answer's problems."""
+    actions = slot.first.plan_check.actions_not_carried_out if slot.first else ()
+    listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in actions)
+    problems = (*slot.problems, slot.relink) if slot.relink else slot.problems
+    shown = (problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in problems[: AiLimits.REASK_MAX_PROBLEMS])
+    repair = _REPAIR.replace("{actions}", listed) if actions else ""
+    return repair + (_REWRITE.replace("{problems}", "; ".join(shown)) if problems else "")
 
 
 def _take_rewrite(slot: _Slot, item: dict[str, Any] | None) -> None:
@@ -875,12 +879,15 @@ def _second_round_end(slot: _Slot) -> WrittenScenario | PathFailure:
 
 
 def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
-    """The repair, marked rewritten, when it fixes the first draft (_fixes); else the first draft."""
+    """The repair, marked rewritten, when it fixes the first draft (_fixes) and, when only its link was asked
+    again, keeps the closing sentence the first draft had cited; else the first draft."""
     if slot.draft is None:
         log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", message="; ".join(slot.problems))
         return first
     repair = _checked(slot)
-    fixed = _fixes(repair, first)
+    link_only = not first.plan_check.actions_not_carried_out
+    lost = link_only and bool(first.draft.evidence_statement) and not repair.draft.evidence_statement
+    fixed = _fixes(repair, first) and not lost
     log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
     return dataclasses.replace(repair, rewritten=True) if fixed else first
 
@@ -1036,35 +1043,56 @@ def _passage_answer_faults(answer: dict[str, Any], cited: dict[str, Any] | None)
 #: Words that never tell two links apart; "related" is one (nearest evidence must say it).
 _LINK_FILLERS = frozenset({"the", "a", "an", "technique", "related"})
 #: A link ending in one of these is told by its last two words ("form of", "corresponds to").
-_LINK_JOINERS = frozenset({"of", "to", "with", "as", "by", "in", "on", "for", "from", "like"})
+_LINK_JOINERS = frozenset({"of", "to", "with", "as", "by", "in", "on", "for", "from", "like", "under"})
 
 
 def passage_link(passage: str) -> str:
     """The words a closing sentence links its step to its quoted title with ('' with no quoted title)."""
+    return _link_words(passage)[0]
+
+
+def _link_words(passage: str) -> tuple[str, str]:
+    """(passage_link's key, the writer's own words from its first word to the title); ('', '') with no
+    quoted title."""
     # ponytail: heuristic, the last word before the title (two after a joiner); widen if repeats slip past
     head, quote, _ = passage.replace("\u201c", '"').partition('"')
-    words = [word for word in re.findall(r"[\w'-]+", head.casefold()) if word not in _LINK_FILLERS]
-    if not (quote and words):
-        return ""
-    return " ".join(words[-2:]) if words[-1] in _LINK_JOINERS else words[-1]
+    words = re.findall(r"[\w'-]+", head)
+    kept = [place for place, word in enumerate(words) if word.casefold() not in _LINK_FILLERS]
+    if not (quote and kept):
+        return "", ""
+    span = kept[-2:] if words[kept[-1]].casefold() in _LINK_JOINERS else kept[-1:]
+    return " ".join(words[place].casefold() for place in span), " ".join(words[span[0] :])
 
 
 def _flag_repeated_links(slots: Sequence[_Slot]) -> None:
-    """A clean story slot linking like an earlier clean one is written again, told the links taken."""
+    """A clean story slot linking like an earlier clean one is written again, told the links taken; it is
+    reviewed first, so its draft stays should the rewrite do worse (_repair_or_first, _firsts_kept)."""
     # never a citation fault (_passage_faults): a repeat that survives its rewrite is still cited
     links = {
-        slot.label: passage_link(slot.draft.evidence_statement)
+        slot.label: _link_words(_draft_of(slot).evidence_statement)
         for slot in slots
-        if slot.draft is not None and not slot.problems and _is_story(slot.brief)
+        if not slot.problems and _is_story(slot.brief) and _reviewable(slot)
     }
-    taken: dict[str, str] = {}
-    for label, link in links.items():
+    taken: dict[str, str] = {}  # each link's first slot: it keeps its words
+    for label, (link, _) in links.items():
         if link:
-            taken.setdefault(link, label)  # the first slot keeps its words
-    used = ", ".join(f'"{link}"' for link in taken)
+            taken.setdefault(link, label)
+    used = [links[label][1] for label in taken.values()]
+    repeats = {label: words for label, (link, words) in links.items() if link and taken[link] != label}
     for slot in slots:
-        if (link := links.get(slot.label, "")) and taken[link] != slot.label:
-            slot.problems = (Precedent.REPEATED_LINK.format(words=link, used=used),)
+        if slot.label in repeats:
+            slot.relink = _repeated_link(repeats[slot.label], used)
+    if len(repeats) > 1:  # the prompt's variety rule is not holding (D60): fix the prompt, not the guard
+        log.warning(LogEvent.WRITER_LINKS_REPEATED, slots=len(repeats))
+
+
+def _repeated_link(words: str, used: Sequence[str]) -> str:
+    """A repeated link's problem, listing the taken links that fit a re-ask problem's size, each whole."""
+    room = AiLimits.REASK_PROBLEM_CHARS - len(Precedent.REPEATED_LINK.format(words=words, used=""))
+    listed = ", ".join(f'"{link}"' for link in used)
+    while listed and len(listed) > room:
+        listed = listed.rpartition(", ")[0]
+    return Precedent.REPEATED_LINK.format(words=words, used=listed)
 
 
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:

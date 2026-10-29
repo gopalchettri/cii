@@ -248,6 +248,7 @@ class LogEvent(StrEnum):
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
     WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
+    WRITER_LINKS_REPEATED = "writer.links_repeated"  # over one slot of a set linked like another (D60)
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"

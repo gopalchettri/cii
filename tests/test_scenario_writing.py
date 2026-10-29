@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from structlog.testing import capture_logs
 
 from app import container
+from app.core.config import get_settings
 from app.core.constants import (
     CHAT_TEMPERATURES,
     FINAL_FINDINGS,
@@ -43,6 +44,8 @@ from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRe
 from app.domain.scenario.plan import gap_fill_prompt, planned_threat_record, relevance_gate_prompt
 from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
+    _PASSAGE,
+    _PASSAGE_ABOUT,
     PLAN_CHECK_SET_PROMPT,
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
@@ -364,7 +367,9 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "End scenario_statement on this consequence." in writer
     assert 'No "no" system named in scenario_statement' in writer
     assert "links that step to the entry in words no other slot uses" in writer
-    assert "(with the system or asset it acts on, named as the story names them)" in reviewer
+    # review, 30 Oct: "with the system ..." inside "true ONLY if" read as a requirement, so a step on the
+    # asset or a system named a little differently would lose its sentence; the system may be named
+    assert "(it may name the system or asset it acts on, as the story names them)" in reviewer
     assert 'never with "The attacker" or "This"' in writer  # owner 2026-10-28: 11 of 26 opened alike
     assert "The story may describe the attacker's steps in the cited entry's terms" in writer
     assert "Do not reshape the specified threat" not in writer  # owner 2026-10-28: it may fit the evidence
@@ -382,8 +387,24 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
 
 def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None:
     """The customer's 25,000 tokens a minute: D60's wording grew each system prompt by under 1% (writer
-    21,434 and reviewer 8,675 characters before it)."""
-    assert len(writer_system_prompt()) <= 21_650 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 8_760
+    21,434 and reviewer 8,675 characters before it). Each story slot's evidence line is sent once per slot in
+    every write and rewrite, so it is bounded too (review, 30 Oct: it had grown from 194 to 310). The set
+    note's word-range sentence added 160 (owner, 30 Oct: longer is fine without a material token cost)."""
+    assert len(writer_system_prompt()) <= 21_850 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 8_760
+    assert len(_PASSAGE) <= 275 and len(_PASSAGE_ABOUT) <= 205
+
+
+def test_the_set_note_gives_every_slot_the_configured_word_ranges() -> None:
+    """Risk statements ran short in sets (11 of 13 under 80 words, 30 Oct): the set note, the prompt's last
+    words, repeats each statement's range from the settings."""
+    note = writer_system_prompt().rpartition("SET OF SCENARIOS")[2]
+    settings = get_settings()
+    for field, (least, most) in (
+        ("scenario_statement", settings.scenario_words),
+        ("risk_statement", settings.risk_words),
+        ("evidence_statement", settings.evidence_words),
+    ):
+        assert f"{field} {least} to {most}" in note
 
 
 def test_the_asset_and_its_affected_systems_form_one_whole() -> None:

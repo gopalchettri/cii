@@ -23,8 +23,10 @@ from app.core.exceptions import Unavailable
 from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import (
     PLAN_CHECK_SET_PROMPT,
+    _repeated_link,
     check_exact_rules,
     draft_answer,
+    is_blocked,
     passage_link,
     slot_label,
     write_set,
@@ -277,7 +279,10 @@ def test_each_story_slot_repeats_the_evidence_rule_with_its_own_cited_title() ->
     assert all("in words no other slot uses" in blocks[label] for label in ("SC1", "SC2"))
     system = writer_system_prompt()
     assert "made-up example" not in system and "matches the technique" not in system
-    assert "nor the words another slot's evidence_statement links its step to its entry with" in system
+    assert "nor any phrase of another slot's evidence_statement: how it links its step to its" in system
+    # laptop e2e, 30 Oct: 8 of 13 sentences paraphrased their system, 5 ended "a technique used by"
+    assert all("naming its system or asset as BRIEF does" in blocks[label] for label in ("SC1", "SC2"))
+    assert "name who used it (from used_by) where it reads best" in blocks["SC1"]
 
 
 @pytest.mark.parametrize(
@@ -289,9 +294,10 @@ def test_each_story_slot_repeats_the_evidence_rule_with_its_own_cited_title() ->
         ('Abusing the operations matches "Command Message", a technique the APT28 group used.', "matches"),
         ('The opening flood is a form of "Network Denial of Service", a technique X used.', "form of"),
         ("Signing in this way corresponds to the \u201cValid Accounts\u201d technique.", "corresponds to"),
+        ('Flooding the gateway falls under "Network Denial of Service".', "falls under"),
         ("Exploiting that WinCC weakness could let the attacker in, as CISA lists it exploited.", ""),
     ],
-    ids=["technique", "related", "related_matches", "bare", "joiner", "curly_quotes", "no_title"],
+    ids=["technique", "related", "related_matches", "bare", "joiner", "curly_quotes", "under", "no_title"],
 )
 def test_passage_link(passage: str, link: str) -> None:
     """The words a closing sentence links its step to its title with: the last word before the title (two
@@ -354,14 +360,14 @@ def test_a_story_slot_linking_like_an_earlier_slot_is_written_again() -> None:
         _story_set(), lambda block: _FORM_OF if "REJECTED:" in block else _MATCHES[_title_of(block)]
     )
     assert [task for task, _ in fake.calls] == _TWO_ROUNDS and calls_when_final == {"SC1": 2, "SC2": 4}
-    assert _labels(fake.asked(AiTask.PLAN_CHECK)[0]) == ["SC1"]
+    assert _labels(fake.asked(AiTask.PLAN_CHECK)[0]) == ["SC1", "SC2"]  # SC2's draft is kept if need be
     (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
     assert _labels(rewrite) == ["SC2"]
-    assert 'with "matches", like another slot' in rewrite.split("REJECTED:")[1]
+    assert 'with "matches the technique" like another slot' in rewrite.split("REJECTED:")[1]  # its own words
     first, second = outcomes["SC1"], outcomes["SC2"]
     assert isinstance(first, WrittenScenario) and isinstance(second, WrittenScenario)
     assert first.draft.evidence_statement == _MATCHES["Module Firmware"]
-    assert second.draft.evidence_statement == _FORM_OF
+    assert second.draft.evidence_statement == _FORM_OF and second.rewritten and second.findings == ()
 
 
 @pytest.mark.parametrize(
@@ -412,6 +418,62 @@ def test_a_rewrite_that_still_links_like_another_slot_is_cited_as_written() -> N
     record = written_record(run, path, threat, _story_set()[1][1], second)
     assert record["status"] == ScenarioStatus.DONE and record["findings"] == []
     assert record["content"]["statement"].endswith(f"{_MATCHES['Valid Accounts'].removesuffix('.')} [1].")
+
+
+def _busy() -> str:
+    raise Unavailable("The AI service is busy.")
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [lambda: _FORM_OF.replace("a technique the APT41 and FIN8 groups have used", "as documented"), _busy],
+    ids=["rewrite_not_citable", "outage"],
+)
+def test_a_relinked_slot_keeps_its_reviewed_cited_draft_when_its_rewrite_does_worse(
+    rewrite: Callable[[], str],
+) -> None:
+    """Review, 30 Oct: SC2 was clean but for its repeated link, yet a rewrite saying "documented", or an
+    outage in the second round, cost it its own sentence (code's cited instead). SC2 is now reviewed with
+    SC1 in the first round, so its reviewed, cited first draft stays."""
+    fake, outcomes, _ = _write_stories(
+        _story_set(), lambda block: rewrite() if "REJECTED:" in block else _MATCHES[_title_of(block)]
+    )
+    assert _labels(fake.asked(AiTask.PLAN_CHECK)[0]) == ["SC1", "SC2"]
+    second = outcomes["SC2"]
+    assert isinstance(second, WrittenScenario) and second.findings == () and not second.rewritten
+    assert second.plan_check.status is PlanCheckStatus.CONSISTENT
+    assert second.draft.evidence_statement == _MATCHES["Valid Accounts"]
+
+
+def test_a_blocked_slot_claims_no_link() -> None:
+    """Review, 30 Oct: a slot an exact finding blocks is final in the first round as a blocked card, so its
+    link never sends a clean slot linking like it to a rewrite."""
+
+    def write(block: str) -> dict[str, Any]:
+        answer = draft_answer(_CLEAN) | {"evidence_statement": _MATCHES[_title_of(block)]}
+        leaked = f"{answer['scenario_statement']} As in SC9, it spreads."
+        return answer | ({"scenario_statement": leaked} if _title_of(block) == "Module Firmware" else {})
+
+    fake = FakeChatModel()
+    fake.responders |= {
+        AiTask.WRITE_SCENARIO: write,
+        AiTask.PLAN_CHECK: lambda block: _review_of(block) | {"evidence_supported": True},
+    }
+    outcomes = dict(write_set(fake, _story_set()))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    first, second = outcomes["SC1"], outcomes["SC2"]
+    assert isinstance(first, WrittenScenario) and is_blocked(first)
+    assert isinstance(second, WrittenScenario) and second.findings == ()
+
+
+def test_a_repeated_links_note_lists_only_the_whole_taken_links_that_fit_a_reask_problem() -> None:
+    """Review, 30 Oct: with 6 or more links taken the list ran past a re-ask problem's 200 characters and
+    was cut mid-link; it now lists only the whole links that fit."""
+    used = [f"link words number {number}" for number in range(13)]
+    note = _repeated_link("matches the technique", used)
+    listed = note.split("(taken: ")[1].removesuffix(")").split(", ")
+    assert len(note) <= AiLimits.REASK_PROBLEM_CHARS and listed[0] == f'"{used[0]}"'
+    assert all(link.strip('"') in used for link in listed)
 
 
 def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(

@@ -224,15 +224,14 @@ class Precedent:
     MANY_SENTENCES: Final = "it is more than one sentence"
     NO_TITLE: Final = 'it does not give the title "{title}" in double quotes'
     OPENS_ON_EVIDENCE: Final = "it opens with the evidence, not with this attacker's action"
-    # the re-ask problem quoted to the writer
+    # the re-ask problem quoted to the writer, within a re-ask problem's 200 characters (the slot's own
+    # evidence line holds the whole rule)
     REASK: Final = (
-        "evidence_statement cannot be cited: {reason}. Write it again as ONE sentence that refers back to "
-        "the step of scenario_statement the cited entry is about, with the system or asset where it happens, "
-        "and links that step to the cited entry in words of its own"
+        "evidence_statement cannot be cited: {reason}. Write it again as this slot's evidence line says"
     )
     # a story linking its step to its title like an earlier slot of the set (never names a slot label)
     REPEATED_LINK: Final = (
-        'evidence_statement links its step to its title with "{words}", like another slot: link them in '
+        'evidence_statement links its step to its title with "{words}" like another slot: link them in '
         "words no slot uses (taken: {used})"
     )
 
