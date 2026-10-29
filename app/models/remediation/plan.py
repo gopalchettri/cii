@@ -73,7 +73,7 @@ class DraftValidation(BaseModel):
 class PlanDraft(BaseModel):
     """The plan AI's answer; a broken one is asked again once, then the version fails `generation_failed`."""
 
-    title: Given
+    title: str = ""  # a fallback only: code names the plan from its controls' domains (glm leaves it out)
     control_validation: list[DraftValidation]
     controls_to_be_implemented: Annotated[list[DraftControl], BeforeValidator(_the_controls)]
     remediation_action_plan: list[DraftAction]

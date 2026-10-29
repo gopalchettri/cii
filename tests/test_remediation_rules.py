@@ -244,7 +244,7 @@ def test_the_ai_contract_refuses_blank_text() -> None:
     assert [control.control_code for control in draft.controls_to_be_implemented] == ["CII-CID-202"]
     assert draft.remediation_action_plan[0].duration_days == 14
     broken = [
-        ANSWER | {"title": " "},
+        ANSWER | {"mitigation_owner": " "},
         ANSWER | {"remediation_action_plan": [ACTION | {"action": "\n\t"}]},
         ANSWER | {"controls_to_be_implemented": {"controls": [CONTROL | {"control_code": " "}]}},
         ANSWER | {"remediation_action_plan": [ACTION | {"priority": "Urgent"}]},
