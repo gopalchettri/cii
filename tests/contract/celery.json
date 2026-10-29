@@ -7,6 +7,7 @@
   "tsg_reap": "tsg_reaper",
   "tsg_refresh_external_intelligence": "tsg_maintenance",
   "tsg_retry_controls": "tsg_reaper",
+  "tsg_roll_up_ai_usage": "tsg_maintenance",
   "tsg_write_plan": "tsg_remediation",
   "tsg_write_scenarios": "tsg_scenarios"
  },
@@ -21,6 +22,10 @@
   ],
   "tsg_retry_controls": [
    "tsg_retry_controls",
+   300
+  ],
+  "tsg_roll_up_ai_usage": [
+   "tsg_roll_up_ai_usage",
    300
   ]
  }

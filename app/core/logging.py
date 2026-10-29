@@ -5,7 +5,9 @@ import logging
 import logging.handlers
 import os
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Iterator, MutableMapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Final
 
@@ -50,6 +52,35 @@ def current_request_id() -> str | None:
     record); None outside one."""
     request_id = structlog.contextvars.get_contextvars().get("request_id")
     return str(request_id) if request_id else None
+
+
+#: Who a job works for: saved on the job by the API call that queues it (job.origin), bound on the job's log
+#: lines and AI usage rows by the worker that claims it.
+JOB_ORIGIN_FIELDS: Final = ("api", "client_id", "entity_id")
+_JOB_ORIGIN: ContextVar[dict[str, Any] | None] = ContextVar("job_origin", default=None)
+
+
+@contextmanager
+def job_origin_scope(api: str, client_id: str, entity_id: int | str) -> Iterator[None]:
+    """Names the API call and caller every job queued inside it works for, until it ends; inside another
+    scope the outer one's name stays (a call one API call makes to another)."""
+    if _JOB_ORIGIN.get() is not None:
+        yield
+        return
+    token = _JOB_ORIGIN.set({"api": api, "client_id": client_id, "entity_id": entity_id})
+    try:
+        yield
+    finally:
+        _JOB_ORIGIN.reset(token)
+
+
+def current_job_origin() -> dict[str, Any]:
+    """The API call and caller this code runs for: set by the API call, or bound from the claimed job in a
+    worker; {} outside both."""
+    if (origin := _JOB_ORIGIN.get()) is not None:
+        return dict(origin)
+    bound = structlog.contextvars.get_contextvars()
+    return {name: bound[name] for name in JOB_ORIGIN_FIELDS if bound.get(name) is not None}
 
 
 #: Added to every line, ours and the libraries'.

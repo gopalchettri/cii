@@ -1,6 +1,6 @@
 """What a chat call sends and gets back: the conversation, its size, its request options, the answer's JSON
-object and the call's record (metrics, log line, tsg_ai_calls copy, read back by the job's next delivery). No
-AI call here: app/ai/chat.py makes them."""
+object and the call's record (metrics, log line, usage row, tsg_ai_call_texts copy, read back by the job's
+next delivery). No AI call here: app/ai/chat.py makes them."""
 
 import hashlib
 import json
@@ -8,7 +8,9 @@ from collections.abc import Callable
 from typing import Any
 
 import structlog
+from bson import ObjectId
 
+from app.ai.attempts import note_ai_usage
 from app.core import metrics
 from app.core.clock import utc_now
 from app.core.constants import (
@@ -18,6 +20,7 @@ from app.core.constants import (
     THINKING_OFF_TEMPLATE_KWARGS,
     AiOutcome,
     AiTask,
+    AiUsageOutcome,
     LogEvent,
 )
 from app.data_access.admin.ai_call_repository import AiCallRepository
@@ -145,10 +148,18 @@ def prompt_hash(messages: list[dict]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def update_call_metrics(
-    task: AiTask, model: str, outcome: AiOutcome, tokens_in: int, tokens_out: int, seconds: float
+def update_call_metrics(  # noqa: PLR0913 - one chat call, whole
+    task: AiTask,
+    model: str,
+    outcome: AiOutcome,
+    tokens_in: int,
+    tokens_out: int,
+    seconds: float,
+    **usage: Any,
 ) -> None:
-    """The metrics and the log line of one chat call."""
+    """The metrics, the usage row and the log line of one chat call that answered. `usage`: the row's
+    call_id (its text's _id), reason and reask."""
+    note_ai_usage(task, model, outcome, tokens_in=tokens_in, tokens_out=tokens_out, seconds=seconds, **usage)
     metrics.AI_CALLS.labels(task, model, outcome).inc()
     metrics.AI_TOKENS.labels(task, model, "in").inc(tokens_in)
     metrics.AI_TOKENS.labels(task, model, "out").inc(tokens_out)
@@ -173,10 +184,11 @@ def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is k
     seconds: float,
     outcome: AiOutcome,
 ) -> None:
-    """One outcome per call: counted and logged, then copied to tsg_ai_calls (the system prompt as its
-    hash), so every user prompt and answer of a run can be found."""
-    record = build_call_record(task, model, messages, response, seconds, outcome)
-    update_call_metrics(task, model, outcome, record["tokens_in"], record["tokens_out"], seconds)
+    """One outcome per call: counted, logged and its usage row noted, then copied to tsg_ai_call_texts (the
+    system prompt as its hash) under the usage row's _id, so every user prompt and answer can be found."""
+    record = {"_id": ObjectId(), **build_call_record(task, model, messages, response, seconds, outcome)}
+    tokens, reask = (record["tokens_in"], record["tokens_out"]), len(messages) > 2  # a correction turn added
+    update_call_metrics(task, model, outcome, *tokens, seconds, call_id=record["_id"], reask=reask or None)
     try:
         records.create(record)
     except Exception:  # noqa: BLE001 - ponytail: the audit copy must never fail the AI call; logged instead
@@ -191,17 +203,19 @@ def find_earlier_answer(
 ) -> tuple[dict[str, Any], str] | None:
     """(answer, reply) of this job's newest ok call with exactly these messages, from any of its deliveries,
     when `check` accepts that answer: a rejected one is asked again, as the job's retry after it means to.
-    None outside a leased job (the API), when there is none, or when tsg_ai_calls cannot be read (the AI is
-    asked then)."""
+    None outside a leased job (the API), when there is none, or when tsg_ai_call_texts cannot be read (the AI
+    is asked then). A reused answer is noted as a usage row with no AI call (outcome reused)."""
     job = _job_of(structlog.contextvars.get_contextvars())
     if None in job.values():
         return None
     try:
-        reply = records.find_ok_response(job, prompt_hash(messages))
+        found = records.find_ok_response(job, prompt_hash(messages))
     except Exception:  # noqa: BLE001 - ponytail: a failed lookup only costs the AI call it would save
         log.warning(LogEvent.AI_ANSWER_LOOKUP_FAILED, ai_task=task, exc_info=True)
         return None
-    if reply is None or (answer := parse_json_object(reply)) is None or check(answer):
+    reply, model = found or ("", "")
+    if found is None or (answer := parse_json_object(reply)) is None or check(answer):
         return None
     log.info(LogEvent.AI_ANSWER_REUSED, ai_task=task)
+    note_ai_usage(task, model, AiUsageOutcome.REUSED)
     return answer, reply

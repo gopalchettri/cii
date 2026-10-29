@@ -29,6 +29,8 @@ class LeaseSignal(threading.Event):
 
 
 _SIGNALS: ContextVar[tuple[tuple[str, LeaseSignal], ...]] = ContextVar("lease_lost_signal", default=())
+#: The name of the shared thread this code runs on (library or evidence indexes); None on a job's own threads.
+_SHARED_WORK: ContextVar[str | None] = ContextVar("shared_work", default=None)
 
 
 @contextmanager
@@ -50,8 +52,16 @@ def context_without_lease() -> Context:
 
 
 def start_thread_without_lease(name: str, work: Callable[..., object], *args: object) -> None:
-    """A daemon thread running `work` in a copy of the caller's context (its log fields) under no lease."""
-    threading.Thread(target=context_without_lease().run, args=(work, *args), name=name, daemon=True).start()
+    """A daemon thread running `work` in a copy of the caller's context (its log fields) under no lease, as
+    shared work: its AI calls are no request's (shared_work)."""
+    context = context_without_lease()
+    context.run(_SHARED_WORK.set, name)
+    threading.Thread(target=context.run, args=(work, *args), name=name, daemon=True).start()
+
+
+def shared_work() -> str | None:
+    """The shared thread this code runs on (start_thread_without_lease's name), or None."""
+    return _SHARED_WORK.get()
 
 
 def raise_if_lease_lost() -> None:

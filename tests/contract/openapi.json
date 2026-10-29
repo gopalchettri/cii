@@ -154,6 +154,80 @@
     "title": "ActionStatus",
     "type": "string"
    },
+   "ActivityUsage": {
+    "description": "One activity (a task in a part) on one model.",
+    "properties": {
+     "activity": {
+      "title": "Activity",
+      "type": "string"
+     },
+     "bucket": {
+      "title": "Bucket",
+      "type": "string"
+     },
+     "bucket_label": {
+      "title": "Bucket Label",
+      "type": "string"
+     },
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "failed_calls": {
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "reused_answers": {
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "task": {
+      "title": "Task",
+      "type": "string"
+     },
+     "tokens_in": {
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "bucket",
+     "bucket_label",
+     "task",
+     "activity",
+     "description",
+     "model",
+     "total_ai_calls",
+     "successful_calls",
+     "failed_calls",
+     "reused_answers",
+     "tokens_in",
+     "tokens_out",
+     "seconds"
+    ],
+    "title": "ActivityUsage",
+    "type": "object"
+   },
    "ActorView": {
     "properties": {
      "actor_id": {
@@ -344,6 +418,23 @@
      "ai_timed_out"
     ],
     "title": "AiOutage",
+    "type": "string"
+   },
+   "AiUsageGroup": {
+    "description": "What a totals report adds up by (?group_by=): a time step in the caller's time zone, or a row field.",
+    "enum": [
+     "hour",
+     "day",
+     "month",
+     "module",
+     "api",
+     "bucket",
+     "task",
+     "model",
+     "entity_id",
+     "client_id"
+    ],
+    "title": "AiUsageGroup",
     "type": "string"
    },
    "ApiClientList": {
@@ -2886,6 +2977,47 @@
     "title": "MonitoredJob",
     "type": "object"
    },
+   "PartCounts": {
+    "description": "One part of a module's work (threats, scenario, controls, remediation, service_mapper).",
+    "properties": {
+     "by_task": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "By Task",
+      "type": "object"
+     },
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "label",
+     "description"
+    ],
+    "title": "PartCounts",
+    "type": "object"
+   },
    "PendingThreat": {
     "properties": {
      "catalogue_id": {
@@ -4444,6 +4576,381 @@
     "title": "RemediationSummary",
     "type": "object"
    },
+   "RequestUsage": {
+    "description": "One API call's AI work: who asked, when, on which models, in which parts.",
+    "properties": {
+     "api": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api"
+     },
+     "api_description": {
+      "default": "",
+      "title": "Api Description",
+      "type": "string"
+     },
+     "api_label": {
+      "default": "",
+      "title": "Api Label",
+      "type": "string"
+     },
+     "asks": {
+      "default": 0,
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "title": "Buckets",
+      "type": "object"
+     },
+     "client_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Client Id"
+     },
+     "entity_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Entity Id"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "first_at": {
+      "format": "date-time",
+      "title": "First At",
+      "type": "string"
+     },
+     "last_at": {
+      "format": "date-time",
+      "title": "Last At",
+      "type": "string"
+     },
+     "models": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Models",
+      "type": "object"
+     },
+     "module": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Module"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "request_id": {
+      "title": "Request Id",
+      "type": "string"
+     },
+     "reused_answers": {
+      "default": 0,
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "title": "Seconds",
+      "type": "number"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "request_id",
+     "first_at",
+     "last_at"
+    ],
+    "title": "RequestUsage",
+    "type": "object"
+   },
+   "RequestUsageDetail": {
+    "properties": {
+     "activities": {
+      "items": {
+       "$ref": "#/components/schemas/ActivityUsage"
+      },
+      "title": "Activities",
+      "type": "array"
+     },
+     "api": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api"
+     },
+     "api_description": {
+      "default": "",
+      "title": "Api Description",
+      "type": "string"
+     },
+     "api_label": {
+      "default": "",
+      "title": "Api Label",
+      "type": "string"
+     },
+     "asks": {
+      "default": 0,
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "title": "Buckets",
+      "type": "object"
+     },
+     "client_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Client Id"
+     },
+     "entity_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Entity Id"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "first_at": {
+      "format": "date-time",
+      "title": "First At",
+      "type": "string"
+     },
+     "last_at": {
+      "format": "date-time",
+      "title": "Last At",
+      "type": "string"
+     },
+     "models": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Models",
+      "type": "object"
+     },
+     "module": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Module"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "request_id": {
+      "title": "Request Id",
+      "type": "string"
+     },
+     "reused_answers": {
+      "default": 0,
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "title": "Seconds",
+      "type": "number"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "request_id",
+     "first_at",
+     "last_at",
+     "activities"
+    ],
+    "title": "RequestUsageDetail",
+    "type": "object"
+   },
+   "RequestUsageList": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/RequestUsage"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SessionUsage"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "RequestUsageList",
+    "type": "object"
+   },
    "RetryNotice": {
     "description": "A stage waiting to try again after an outage; null once the next try starts or the stage ends.",
     "properties": {
@@ -5710,6 +6217,83 @@
     "title": "SessionState",
     "type": "string"
    },
+   "SessionUsage": {
+    "properties": {
+     "asks": {
+      "default": 0,
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "title": "Buckets",
+      "type": "object"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "models": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Models",
+      "type": "object"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "requests": {
+      "default": 0,
+      "title": "Requests",
+      "type": "integer"
+     },
+     "reused_answers": {
+      "default": 0,
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "title": "SessionUsage",
+    "type": "object"
+   },
    "StageState": {
     "description": "One stage of a run (threats, scenarios, controls) as the status shows it.",
     "enum": [
@@ -6120,6 +6704,138 @@
     "title": "ThreatSource",
     "type": "string"
    },
+   "TotalsRow": {
+    "description": "One group of a totals report: its key (the `group_by` fields) and its counts.",
+    "properties": {
+     "activity": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Activity"
+     },
+     "activity_description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Activity Description"
+     },
+     "api_description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api Description"
+     },
+     "api_label": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api Label"
+     },
+     "asks": {
+      "default": 0,
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "title": "Buckets",
+      "type": "object"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "key": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "string"
+        }
+       ]
+      },
+      "title": "Key",
+      "type": "object"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "requests": {
+      "default": 0,
+      "title": "Requests",
+      "type": "integer"
+     },
+     "reused_answers": {
+      "default": 0,
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "key"
+    ],
+    "title": "TotalsRow",
+    "type": "object"
+   },
    "UnresolvedGapView": {
     "description": "A gap the plan could not close with a checked library control, reported apart from its controls.",
     "properties": {
@@ -6147,6 +6863,351 @@
      "detail"
     ],
     "title": "UnresolvedGapView",
+    "type": "object"
+   },
+   "UsageCall": {
+    "description": "One AI attempt (or a reused answer), with what it was for and how it went.",
+    "properties": {
+     "activity": {
+      "title": "Activity",
+      "type": "string"
+     },
+     "api": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api"
+     },
+     "ask_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ask Id"
+     },
+     "attempt": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Attempt"
+     },
+     "bucket": {
+      "title": "Bucket",
+      "type": "string"
+     },
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "epoch": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Epoch"
+     },
+     "error_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error Type"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "module": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Module"
+     },
+     "outcome": {
+      "title": "Outcome",
+      "type": "string"
+     },
+     "reask": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reask"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "record_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Record Id"
+     },
+     "request_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Request Id"
+     },
+     "seconds": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Seconds"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "task": {
+      "title": "Task",
+      "type": "string"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "try_no": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Try No"
+     }
+    },
+    "required": [
+     "id",
+     "created_at",
+     "bucket",
+     "task",
+     "activity",
+     "description",
+     "outcome"
+    ],
+    "title": "UsageCall",
+    "type": "object"
+   },
+   "UsageCallList": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/UsageCall"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "UsageCallList",
+    "type": "object"
+   },
+   "UsageCounts": {
+    "description": "Every count of a set of usage rows. `total_ai_calls`: attempts sent to a model (a reused answer is\nnone); `failed_calls`: those that did not end ok; `asks`: questions put to the AI; `extra_attempts`:\nattempts beyond one per ask (retries, a fallback model, re-asks).",
+    "properties": {
+     "asks": {
+      "default": 0,
+      "title": "Asks",
+      "type": "integer"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "reused_answers": {
+      "default": 0,
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "title": "UsageCounts",
+    "type": "object"
+   },
+   "UsageTotals": {
+    "properties": {
+     "group_by": {
+      "items": {
+       "$ref": "#/components/schemas/AiUsageGroup"
+      },
+      "title": "Group By",
+      "type": "array"
+     },
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/TotalsRow"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "since": {
+      "format": "date-time",
+      "title": "Since",
+      "type": "string"
+     },
+     "total": {
+      "$ref": "#/components/schemas/UsageCounts"
+     },
+     "truncated": {
+      "default": false,
+      "title": "Truncated",
+      "type": "boolean"
+     },
+     "tz": {
+      "title": "Tz",
+      "type": "string"
+     },
+     "until": {
+      "format": "date-time",
+      "title": "Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "since",
+     "until",
+     "tz",
+     "group_by",
+     "total",
+     "items"
+    ],
+    "title": "UsageTotals",
     "type": "object"
    },
    "ValidationError": {
@@ -6811,6 +7872,538 @@
     "summary": "Cancel an intelligence import or embeddings build",
     "tags": [
      "8. My jobs"
+    ]
+   }
+  },
+  "/v1/ai-usage": {
+   "get": {
+    "description": "Counts per `group_by` (default module and API call; also hour, day, month, bucket, task, model,\nentity_id, client_id) over `since`..`until` (default the last 30 days, at most 366) in `tz`: AI calls,\nsuccessful, failed, API calls (`requests`), tokens, and each part (threats, scenario, controls,\nremediation, service_mapper). Kept per hour, up to 5 minutes behind; cached 60 s.",
+    "operationId": "read_ai_usage_totals_v1_ai_usage_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "module",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Module"
+      }
+     },
+     {
+      "in": "query",
+      "name": "api",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Api"
+      }
+     },
+     {
+      "in": "query",
+      "name": "entity_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[0-9]{1,18}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Entity Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "client_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Client Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "since",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Since"
+      }
+     },
+     {
+      "in": "query",
+      "name": "until",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Until"
+      }
+     },
+     {
+      "in": "query",
+      "name": "tz",
+      "required": false,
+      "schema": {
+       "default": "UTC",
+       "maxLength": 64,
+       "title": "Tz",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "group_by",
+      "required": false,
+      "schema": {
+       "default": [
+        "module",
+        "api"
+       ],
+       "items": {
+        "$ref": "#/components/schemas/AiUsageGroup"
+       },
+       "maxItems": 6,
+       "title": "Group By",
+       "type": "array"
+      }
+     },
+     {
+      "in": "query",
+      "name": "bucket",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Bucket"
+      }
+     },
+     {
+      "in": "query",
+      "name": "task",
+      "required": false,
+      "schema": {
+       "items": {
+        "type": "string"
+       },
+       "maxItems": 20,
+       "title": "Task",
+       "type": "array"
+      }
+     },
+     {
+      "in": "query",
+      "name": "model",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Model"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UsageTotals"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "1. AI calls added up (dashboards)",
+    "tags": [
+     "12. AI usage"
+    ]
+   }
+  },
+  "/v1/ai-usage/calls": {
+   "get": {
+    "description": "Each AI attempt (and each earlier answer reused), newest first: when, its activity and description,\nmodel, outcome and reason, try number within its ask, tokens and seconds. Needs `request_id` or\n`session_id`; `next` gives the next page.",
+    "operationId": "list_ai_usage_calls_v1_ai_usage_calls_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "request_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Request Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Session Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "after",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "After"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UsageCallList"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "4. Every AI call of a request or session",
+    "tags": [
+     "12. AI usage"
+    ]
+   }
+  },
+  "/v1/ai-usage/requests": {
+   "get": {
+    "description": "One entry per API call, newest first: its API (`api_label`, `api_description`), its AI calls per\npart and per model, successful and failed. With `session_id`: that session's calls, live, and its totals\n(`summary`); without, a range of at most 366 days (default the last day), up to 5 minutes behind. `next`\ngives the next page.",
+    "operationId": "list_ai_usage_requests_v1_ai_usage_requests_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "module",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Module"
+      }
+     },
+     {
+      "in": "query",
+      "name": "api",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Api"
+      }
+     },
+     {
+      "in": "query",
+      "name": "entity_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[0-9]{1,18}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Entity Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "client_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Client Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Session Id"
+      }
+     },
+     {
+      "in": "query",
+      "name": "since",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Since"
+      }
+     },
+     {
+      "in": "query",
+      "name": "until",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Until"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "after",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "After"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RequestUsageList"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "2. AI calls per request",
+    "tags": [
+     "12. AI usage"
+    ]
+   }
+  },
+  "/v1/ai-usage/requests/{request_id}": {
+   "get": {
+    "description": "The request's counts, then each activity: its part, name and one-line description, its model, and\nits AI calls, successful and failed. 404 when no AI call is recorded for the request.",
+    "operationId": "read_ai_usage_request_v1_ai_usage_requests__request_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "request_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Request Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RequestUsageDetail"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "3. One request's AI calls by activity",
+    "tags": [
+     "12. AI usage"
     ]
    }
   },
@@ -11812,6 +13405,10 @@
   {
    "description": "Generate upstream and downstream service dependencies from a described service (one mapping per service), review each relationship, and regenerate to add more. Requires the caller identity headers.",
    "name": "11. Service mapper"
+  },
+  {
+   "description": "How many AI calls each module, API call, session and request made, per part of the work (threats, scenario, controls, remediation, service mapper) and per model, successful and failed, with each activity's name and description. Counts only. No key.",
+   "name": "12. AI usage"
   }
  ]
 }

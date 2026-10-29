@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     JOB_RECORD_COLLECTIONS,
     TASK_ROUTES,
+    AiUsageLimits,
     Cache,
     Controls,
     IntelLimits,
@@ -46,6 +47,7 @@ TASK_MODULES = [
     "app.worker.jobs",
     "app.worker.reaper",
     "app.worker.admin.library_indexes",
+    "app.worker.admin.ai_usage_rollup",
     "app.worker.scenario.tasks",
     "app.worker.remediation.tasks",
     "app.worker.external_intelligence.refresh_task",
@@ -92,6 +94,12 @@ celery_app.conf.update(
             "task": TaskName.BUILD_LIBRARY_INDEXES,
             "schedule": Cache.LIBRARY_INDEXES_EVERY_SECONDS,
             "options": {"expires": Cache.LIBRARY_INDEXES_EVERY_SECONDS},
+        },
+        # A late one adds up the same hours: one that waited a whole interval is dropped for the next.
+        TaskName.ROLL_UP_AI_USAGE: {
+            "task": TaskName.ROLL_UP_AI_USAGE,
+            "schedule": AiUsageLimits.ROLLUP_EVERY_SECONDS,
+            "options": {"expires": AiUsageLimits.ROLLUP_EVERY_SECONDS},
         },
         # Only while the master switch is on: with it off no check is ever queued (as before the feature).
         **(

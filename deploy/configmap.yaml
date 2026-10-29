@@ -497,6 +497,32 @@ data:                                            # one key per file
                 CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise
                 its setting; the dashboard's 429 panel shows refusals.
 
+          # An AI usage row MongoDB did not take is logged whole (ai.usage_row_spilled) instead of stored (app/ai/
+          # attempts.py). Loki keeps lines 7 days: replayed within them, nothing is lost.
+          - alert: AiUsageNotRecorded
+            expr: sum(increase(tsg_ai_usage_spilled_total[15m])) > 0
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $value | printf \"%.0f\" }} AI usage rows could not be stored in the last 15 minutes."
+              description: >-
+                The AI calls went on; their usage rows were logged whole as ai.usage_row_spilled. Within 7 days, export
+                those lines from Loki and replay them in an app pod (ai_usage_tools; deploy/DEPLOYMENT_GUIDE.md, AI usage).
+
+          # The hourly add-up the AI usage totals read (tsg_roll_up_ai_usage, every 5 minutes on the maintenance
+          # worker); exported from its first add-up, never as a 0. Per-request reports never wait for it.
+          - alert: AiUsageRollupBehind
+            expr: >-
+              time() - max(tsg_ai_usage_rollup_last_success_timestamp_seconds) > 900
+              or absent_over_time(tsg_ai_usage_rollup_last_success_timestamp_seconds[20m])
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: The AI usage totals have not been added up for 15 minutes; dashboards show old totals.
+              description: >-
+                No rows are lost: the next add-up catches up. Check the beat pod and the maintenance worker, and its
+                ai.usage_rollup_done lines.
+
       - name: tsg-audit
         rules:
           - alert: AuditWriteFailing
@@ -1571,6 +1597,14 @@ data:                                            # one key per file
                           "LogLinesLost": {
                             "text": "Log lines were lost on the way to Loki",
                             "index": 30
+                          },
+                          "AiUsageNotRecorded": {
+                            "text": "AI usage rows could not be stored: replay them within 7 days",
+                            "index": 31
+                          },
+                          "AiUsageRollupBehind": {
+                            "text": "The AI usage totals are behind",
+                            "index": 32
                           }
                         }
                       }
@@ -7244,6 +7278,570 @@ data:                                            # one key per file
               }
             }
           ]
+        },
+        {
+          "id": 65,
+          "type": "row",
+          "title": "AI usage: how many AI calls, by module, API call and part (counts)",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 136
+          },
+          "description": "How many AI calls TSG made in the chosen time, by module, API call, part of the work and model, and how many failed: counts only. One request or session in full: GET /v1/ai-usage/requests (no key)."
+        },
+        {
+          "id": 66,
+          "type": "stat",
+          "title": "AI calls",
+          "description": "Attempts sent to an AI model (chat, embedding, rerank), retries included. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]))) or vector(0)",
+              "legendFormat": "AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 137
+          }
+        },
+        {
+          "id": 67,
+          "type": "stat",
+          "title": "Successful AI calls",
+          "description": "AI calls that ended ok. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]))) or vector(0)",
+              "legendFormat": "Successful AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "green"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 137
+          }
+        },
+        {
+          "id": 68,
+          "type": "stat",
+          "title": "Failed AI calls",
+          "description": "AI calls with no usable answer: busy, timed out, cut off, unusable, refused. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) or vector(0)",
+              "legendFormat": "Failed AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "red"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 137
+          }
+        },
+        {
+          "id": 69,
+          "type": "stat",
+          "title": "Earlier answers reused",
+          "description": "Answers a job's retry read back: no AI call made. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]))) or vector(0)",
+              "legendFormat": "Earlier answers reused",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "purple"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "purple",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 137
+          }
+        },
+        {
+          "id": 70,
+          "type": "table",
+          "title": "AI calls by module, API call and part",
+          "description": "Parts: threats (finding threats), scenario (writing scenarios), controls (picking controls), remediation (writing the plan), service_mapper (mapping services), shared (indexing no request asked for). Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, bucket) (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, bucket) (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "module": "Module",
+                  "api": "API call",
+                  "bucket": "Part",
+                  "Value #A": "AI calls",
+                  "Value #B": "Failed"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 141
+          }
+        },
+        {
+          "id": 71,
+          "type": "table",
+          "title": "Failed AI calls by module, API call and reason",
+          "description": "Why calls failed: ai_busy (429 or overloaded), ai_timed_out, ai_unreachable, ai_down (server error), no_choices; unreadable and truncated answers have no outage reason. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, outcome, reason) (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "module": "Module",
+                  "api": "API call",
+                  "outcome": "Outcome",
+                  "reason": "Reason",
+                  "Value": "Failed calls"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 141
+          }
+        },
+        {
+          "id": 72,
+          "type": "table",
+          "title": "AI calls by model and task",
+          "description": "Each model's calls per task (relevance_gate, gap_fill, threat_actions, write_scenario, repair_scenario, plan_check, remediation_plan, service_mapper, embed, rerank). Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model, task) (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model, task) (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "model": "Model",
+                  "task": "Task",
+                  "Value #A": "AI calls",
+                  "Value #B": "Failed"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 150
+          }
+        },
+        {
+          "id": 73,
+          "type": "table",
+          "title": "AI tokens by module and API call",
+          "description": "Tokens sent (in) and answered (out) by chat calls. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, direction) (round(increase(tsg_ai_usage_tokens_total[$__range]))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "module": "Module",
+                  "api": "API call",
+                  "direction": "Direction",
+                  "Value": "Tokens"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 150
+          }
         }
       ]
     }

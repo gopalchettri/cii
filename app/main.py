@@ -15,6 +15,7 @@ from app.api.middleware import AnswerUnexpectedErrors, RequestContextMiddleware
 from app.api.openapi_docs import API_DESCRIPTION, OPENAPI_TAGS
 from app.api.routers import scenario
 from app.api.routers.admin import router as admin_router
+from app.api.routers.ai_usage import router as ai_usage_router
 from app.api.routers.external_intelligence import router as external_intelligence_router
 from app.api.routers.health import router as health_router
 from app.api.routers.jobs import router as jobs_router
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(scenario.events_router)
     app.include_router(library_router)
     app.include_router(service_mapper_router)
+    app.include_router(ai_usage_router)
     return app
 
 

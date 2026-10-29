@@ -13,11 +13,11 @@ import litellm
 import numpy as np
 import structlog
 
+from app.ai.attempts import call_with_retries, note_ai_usage, one_ask
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
     build_api_key_header,
-    call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.embedding_batches import embed_batches_in_parallel
@@ -205,14 +205,16 @@ class _EmbeddingProvider:
         self._request_rate = request_rate
 
     def embed_batch(self, batch: list[str]) -> list[bytes]:
-        with count_and_convert_ai_errors(AiTask.EMBED, self._model):  # a slot per attempt: call_with_retries
-            vectors, seconds = call_with_retries(
-                lambda: self._read_checked_vectors(self._call_provider(batch), batch),
-                self._request_rate,
-                self._slots,
-                model=self._model,
-                task=AiTask.EMBED,
-            )
+        with one_ask():  # its failed attempts and its answer: one ask's usage rows, written as it ends
+            with count_and_convert_ai_errors(AiTask.EMBED, self._model):  # a slot per attempt
+                vectors, seconds = call_with_retries(
+                    lambda: self._read_checked_vectors(self._call_provider(batch), batch),
+                    self._request_rate,
+                    self._slots,
+                    model=self._model,
+                    task=AiTask.EMBED,
+                )
+            note_ai_usage(AiTask.EMBED, self._model, AiOutcome.OK, seconds=seconds)
         metrics.AI_CALLS.labels(AiTask.EMBED, self._model, AiOutcome.OK).inc()
         metrics.AI_SECONDS.labels(AiTask.EMBED, self._model).observe(seconds)
         return vectors

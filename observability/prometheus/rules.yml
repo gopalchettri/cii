@@ -267,6 +267,32 @@ groups:
             CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise
             its setting; the dashboard's 429 panel shows refusals.
 
+      # An AI usage row MongoDB did not take is logged whole (ai.usage_row_spilled) instead of stored (app/ai/
+      # attempts.py). Loki keeps lines 7 days: replayed within them, nothing is lost.
+      - alert: AiUsageNotRecorded
+        expr: sum(increase(tsg_ai_usage_spilled_total[15m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | printf \"%.0f\" }} AI usage rows could not be stored in the last 15 minutes."
+          description: >-
+            The AI calls went on; their usage rows were logged whole as ai.usage_row_spilled. Within 7 days, export
+            those lines from Loki and replay them in an app pod (ai_usage_tools; deploy/DEPLOYMENT_GUIDE.md, AI usage).
+
+      # The hourly add-up the AI usage totals read (tsg_roll_up_ai_usage, every 5 minutes on the maintenance
+      # worker); exported from its first add-up, never as a 0. Per-request reports never wait for it.
+      - alert: AiUsageRollupBehind
+        expr: >-
+          time() - max(tsg_ai_usage_rollup_last_success_timestamp_seconds) > 900
+          or absent_over_time(tsg_ai_usage_rollup_last_success_timestamp_seconds[20m])
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The AI usage totals have not been added up for 15 minutes; dashboards show old totals.
+          description: >-
+            No rows are lost: the next add-up catches up. Check the beat pod and the maintenance worker, and its
+            ai.usage_rollup_done lines.
+
   - name: tsg-audit
     rules:
       - alert: AuditWriteFailing

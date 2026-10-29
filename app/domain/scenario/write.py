@@ -59,7 +59,7 @@ from app.core.constants import (
     Writing,
 )
 from app.core.exceptions import PathNotWritable, Unavailable
-from app.core.logging import current_request_id
+from app.core.logging import current_job_origin, current_request_id
 from app.core.prompts import PROMPTS
 from app.core.redaction import redact
 from app.domain.external_intelligence.injection_patterns import ECHO_PATTERNS
@@ -1001,10 +1001,15 @@ def written_record(
         "rewritten": written.rewritten,
     }
     if status == ScenarioStatus.DONE:
-        # The writer's request id: a later delivery maps this card under it, whatever the run's job is now.
-        writer = current_request_id()
-        record["controls"] = {"status": Status.QUEUED, "attempts": 0, "queued_at": now, "request_id": writer}
+        record["controls"] = _queued_controls(now)
     return record
+
+
+def _queued_controls(now: datetime) -> dict[str, Any]:
+    """A done card's controls, queued with the writer's request id and API call: a later delivery maps them
+    under these, whatever the run's job is now."""
+    origin = {"request_id": current_request_id(), "origin": current_job_origin()}
+    return {"status": Status.QUEUED, "attempts": 0, "queued_at": now, **origin}
 
 
 def _prompt_version_of(style: WriterStyle) -> str:

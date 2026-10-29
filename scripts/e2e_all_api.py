@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ MAPPING = "/v1/service-mapper/{mapping_id}"
 REFRESH = "/v1/tsg/intel/refresh/{job_id}"
 SOURCE = "/v1/tsg/intel/sources/{source}"
 JOB = "/v1/admin/jobs/{job_id}"
+USAGE = "/v1/ai-usage"
 
 
 def setup(api: Api) -> str:
@@ -183,6 +185,44 @@ def service_mapper(api: Api, args: argparse.Namespace) -> None:
     wait(api, MAPPING, job_settled, 20, mapping_id=mapping)
 
 
+def ai_usage(api: Api, run: str, since: str) -> None:
+    """The run's AI calls per request (start, regenerate, next set, its plans), one request's activities and
+    every call, each agreeing with the others; then the hourly totals (no key on any of them)."""
+    listed = api.call("GET", USAGE + "/requests", params={"session_id": run}) or {}
+    by_api = {item["api"]: item for item in listed.get("items", [])}
+    for wanted in ("create_scenario", "create_plan"):
+        if not (by_api.get(wanted) or {}).get("total_ai_calls"):
+            FAILED.append(f"ai usage: no AI call counted for {wanted} in run {run}: {sorted(by_api)}")
+    start = by_api.get("create_scenario") or {}
+    if start and not all(start["buckets"][part]["total_ai_calls"] for part in ("threats", "scenario")):
+        FAILED.append(f"ai usage: a part of the run's start counted no call: {start['buckets']}")
+    summary = listed.get("summary") or {}
+    if summary.get("total_ai_calls") != sum(item["total_ai_calls"] for item in listed.get("items", [])):
+        FAILED.append(f"ai usage: the session's total is not its requests' sum: {summary}")
+    if not start:
+        return
+    detail = api.call("GET", USAGE + "/requests/{request_id}", request_id=start["request_id"]) or {}
+    unnamed = [
+        item for item in detail.get("activities", []) if not (item["activity"] and item["description"])
+    ]
+    if (
+        unnamed
+        or sum(item["total_ai_calls"] for item in detail.get("activities", [])) != start["total_ai_calls"]
+    ):
+        FAILED.append(f"ai usage: the start's activities do not add up or lack a name: {unnamed}")
+    calls = api.call("GET", USAGE + "/calls", params={"request_id": start["request_id"], "limit": 500}) or {}
+    attempts = [call for call in calls.get("items", []) if call["outcome"] != "reused"]
+    if len(attempts) != start["total_ai_calls"] or any("prompt" in call for call in calls.get("items", [])):
+        FAILED.append(f"ai usage: {len(attempts)} calls listed, {start['total_ai_calls']} counted")
+    totals_ready = lambda body: any(  # noqa: E731 - the hourly add-up runs every 5 minutes
+        item["key"].get("api") == "create_scenario" and item["total_ai_calls"] >= start["total_ai_calls"]
+        for item in body.get("items", [])
+    )
+    totals = wait(api, USAGE, totals_ready, 7, params={"since": since, "group_by": ["module", "api"]})
+    if not totals_ready(totals or {}):
+        FAILED.append("ai usage: the hourly totals never counted the run's start")
+
+
 def admin_jobs(api: Api, run: str) -> None:
     """Every job listed, the main run among them; the run read by its id; an embeddings build cancelled at
     once (409: it ended first)."""
@@ -265,6 +305,7 @@ def main() -> int:
     args = arguments()
     identity = {Header.USER_ID: args.user, Header.ENTITY_ID: str(args.entity), Header.TENANT_ID: args.tenant}
     api = Api(args.base, identity)
+    since = (datetime.now(UTC) - timedelta(hours=1)).isoformat()  # the hourly totals of this test and before
     try:
         print("Setup")
         client_id = setup(api)
@@ -274,6 +315,8 @@ def main() -> int:
         plans(api, args, run, accepted[0])
         print("Service mapper")
         service_mapper(api, args)
+        print("AI usage")
+        ai_usage(api, run, since)
         print("Admin jobs")
         admin_jobs(api, run)
         print("Cancel and delete")
