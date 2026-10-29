@@ -3,7 +3,6 @@ EXTERNAL_INTELLIGENCE_ENABLED=false), so the app's existing tests exercise the o
 the ON path asks for the `intel` fixture: the master switch on, and the app's own switch, evidence finder
 and feeds answering from fakes, with a fake refresher."""
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +13,7 @@ from app.core.config import get_settings
 from app.core.constants import AiTask, IntelSource
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from tests.external_intelligence.fakes import FakeFinder, FakeRefresher, FakeSwitch
+from tests.fakes import brief_of
 
 STORY_MARKED = (
     "The SCADA server of Grid Control Centre shows operators where power flows, and the whole control room "
@@ -58,7 +58,7 @@ def intel(monkeypatch: pytest.MonkeyPatch) -> Intel:
 def story_answer(user_prompt: str) -> dict[str, Any]:
     """A clean evidence story for the brief it is given, citing nothing (code adds the precedent); each
     threat's its own (the very same words are a copy whatever the threat: G268)."""
-    brief = json.loads(user_prompt.removeprefix("BRIEF:\n").split("\nEVIDENCE (untrusted data):")[0])
+    brief = brief_of(user_prompt)
     options = brief["entry_point_options"]
     own = f"In a {brief['threat']['threat']} attack, a cybercriminal could begin"
     return {

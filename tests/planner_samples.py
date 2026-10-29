@@ -86,28 +86,33 @@ CONTEXT = FrozenContext(
 )
 
 
+def verdict_for(candidate: dict[str, Any], systems: list[str] | None, **fields: Any) -> dict[str, Any]:
+    """The gate's verdict on one candidate: relevant on `systems` under every category it lists, each HIGH
+    (None: it does not apply); `fields` override any part."""
+    threat = {"slot": candidate["slot"], "threat": candidate["threat"]}
+    if systems is None:
+        return threat | {"relevant": False, "reason": "Nothing here allows it.", "needs": []} | fields
+    kinds = [
+        {"name": kind, "impact": "HIGH", "reason": f"{candidate['threat']} hits SYS1."}
+        for kind in candidate["categories"]
+    ]
+    applies = {"relevant": True, "categories": kinds, "systems": systems, "entry_points": systems}
+    return threat | applies | {"confidence": 80, "needs": []} | fields
+
+
 def judged(
     relevant: dict[str, list[str]], ways_in: dict[str, list[str]] | None = None
 ) -> Callable[[str], dict[str, Any]]:
-    """A gate that finds a candidate relevant when its threat is a key of `relevant`, on those systems, an
-    attacker getting in through its `ways_in` (all of them by default)."""
+    """A gate that finds a candidate relevant when its threat is a key of `relevant`, on those systems, under
+    every category it lists, an attacker getting in through its `ways_in` (all of them by default)."""
 
     def answer(user_prompt: str) -> dict[str, Any]:
         verdicts = []
         for candidate in items_in(user_prompt, "CANDIDATES"):
-            applies = candidate["threat"] in relevant
-            systems = relevant.get(candidate["threat"], [])
-            verdicts.append(
-                {
-                    "slot": candidate["slot"],
-                    "relevant": applies,
-                    "systems": systems,
-                    "entry_points": (ways_in or {}).get(candidate["threat"], systems),
-                    "reason": f"{candidate['threat']} hits SYS1." if applies else "Nothing here allows it.",
-                    "impact": "HIGH" if applies else None,
-                    "confidence": 80,
-                }
-            )
+            systems = relevant.get(candidate["threat"])
+            entry_points = (ways_in or {}).get(candidate["threat"])
+            fields = {} if entry_points is None or systems is None else {"entry_points": entry_points}
+            verdicts.append(verdict_for(candidate, systems, **fields))
         return {"verdicts": verdicts}
 
     return answer
@@ -120,14 +125,31 @@ def planner_chat(
     threat."""
     chat = FakeChatModel()
     gate = judged(relevant, ways_in)
-    chat.responders = {AiTask.RELEVANCE_GATE: gate, AiTask.GAP_FILL: lambda _: GAP_FILL_NONE}
+    chat.responders = {AiTask.RELEVANCE_GATE: gate, AiTask.GAP_FILL: gap_fill({})}
     return chat
 
 
+def gap_fill(proposals: dict[str, dict[str, Any]]) -> Callable[[str], dict[str, Any]]:
+    """The one gap-fill answer: `proposals` by category name, none applying in every other listed one."""
+
+    def answer(user_prompt: str) -> dict[str, Any]:
+        listed = [item["category"] for item in items_in(user_prompt, "EMPTY CATEGORIES")]
+        return {"proposals": [{"category": kind} | proposals.get(kind, GAP_FILL_NONE) for kind in listed]}
+
+    return answer
+
+
 def gap_fill_for_elevation(proposal: dict[str, Any]) -> Callable[[str], dict[str, Any]]:
-    return lambda user_prompt: (
-        proposal if "category: Elevation of Privilege" in user_prompt else GAP_FILL_NONE
-    )
+    return gap_fill({S.ELEVATION_OF_PRIVILEGE: proposal})
+
+
+def gap_filled(chat: FakeChatModel) -> list[str]:
+    """The categories each gap-fill ask listed, in order, every ask's together."""
+    return [
+        item["category"]
+        for user in chat.asked(AiTask.GAP_FILL)
+        for item in items_in(user, "EMPTY CATEGORIES")
+    ]
 
 
 def library_search(

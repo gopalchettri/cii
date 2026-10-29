@@ -818,6 +818,20 @@ def _record(mapping_id: str) -> dict:
     return get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping_id})
 
 
+def test_a_mapping_and_its_next_run_pass_the_rule_uat_stored_on_20_oct(empty_test_database: None) -> None:
+    """UAT 29 Oct: every POST /v1/service-mapper answered 500. The 20 Oct rule still requires generation
+    and UAT's database user may not change a rule (collMod), so each new record and each run started
+    again carries generation, the latest run."""
+    MappingRepository().create_indexes()
+    required = ["_id", "tenant_id", "entity_id", "status", "generation", "job"]
+    rule = {"$jsonSchema": {"bsonType": "object", "required": required}}
+    get_mongodb().command("collMod", Collection.SERVICE_MAPPINGS, validator=rule, validationLevel="moderate")
+    mapper, mapping_id, _ = _finished_mapping()  # refused (WriteError 121) without generation
+    assert _record(mapping_id)["generation"] == 1
+    mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid4().hex)
+    assert _record(mapping_id)["generation"] == _record(mapping_id)["job"]["epoch"] == 2
+
+
 def test_a_mapping_waiting_out_an_ai_outage_says_so_and_a_failed_one_names_the_outage(
     empty_test_database: None,
 ) -> None:

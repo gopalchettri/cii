@@ -172,9 +172,8 @@ class ThreatFinding:
     GAP_FILL_MAX_CHARS: Final = 3_500  # a gap-fill proposal's type + threat
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
-    CATEGORIES_AT_ONCE: Final = 6  # STRIDE categories judged in parallel
-    AI_BATCHES_AT_ONCE: Final = TUNING.threat_questions_at_once  # gate batches at once, all categories
-    THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats
+    AI_BATCHES_AT_ONCE: Final = TUNING.threat_questions_at_once  # gate batches at once
+    THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats, each whole
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id
@@ -214,6 +213,7 @@ class PlanMessage(StrEnum):
     )
     PLAN_NOTE = "{planned} attack paths selected; {written} written, {remaining} still to write, set by set."
     AI_COULD_NOT_ANSWER = "The AI could not answer. Start a new session later."
+    OTHER_KINDS = "It applies as {kinds} only."  # a category the gate left out of a threat that applies
 
 
 class AnswerProblem(StrEnum):

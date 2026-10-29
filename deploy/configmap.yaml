@@ -32,9 +32,9 @@ items:                                           # one tsg-config per project th
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
       CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
       # Each module's own chat model (.env.example explains every line; its key is in tsg-secrets). Its limits are
-      # its own: kimi-k2.5 (192 requests a minute on this key) serves threat scenarios alone; glm-5.3 serves
-      # remediation and the service mapper and is threat scenarios' backup: at most 16 glm-5.3 calls at once in all
-      # (10 + 4 + 2; it takes 55-99 s a call: ask the gateway admin how many it takes). A line left out = its default.
+      # its own: kimi-k2.5 (192 requests a minute on this key) serves threat scenarios alone, with no backup;
+      # glm-5.3 serves remediation and the service mapper: at most 6 glm-5.3 calls at once in all
+      # (4 + 2; it takes 55-99 s a call: ask the gateway admin how many it takes). A line left out = its default.
       CII_SCENARIO_CHAT_BASE_URL: "https://llmapi.govai.ae"           # threat finding and scenario writing: the AI gateway its chat calls go to
       CII_SCENARIO_CHAT_MODEL: "litellm_proxy/kimi-k2.5"              # its main chat model
       CII_SCENARIO_CHAT_MODEL_THINKING: "false"                       # false = the model's "thinking" mode off (faster)
@@ -42,9 +42,9 @@ items:                                           # one tsg-config per project th
       CII_SCENARIO_CHAT_MAX_OUTPUT_TOKENS: "12288"                    # kimi-k2.5: longest answer in tokens
       CII_SCENARIO_CHAT_TIMEOUT_SECONDS: "120"                        # kimi-k2.5: seconds to wait for one answer before giving up
       CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 192
-      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "0"                        # kimi-k2.5 tokens a minute (question + answer room), all pods: set it a little below the budget a 429 names (ai.call_unavailable limit); 0 = no limit
-      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "16"                      # its questions at the same time, all pods: 16 kept UAT fast until 24 Oct; it also backs off after a 429
-      CII_SCENARIO_CHAT_FALLBACK_MODEL: "litellm_proxy/glm-5.3"       # its backup when kimi-k2.5 keeps failing; "" = none
+      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "24000"                    # kimi-k2.5 tokens a minute (question + answer room), all pods: calls take turns instead of drawing 429s; a little below the budget a 429 names (ai.call_unavailable limit): 290000 at a 300k budget; 0 = no limit
+      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "4"                       # its questions at the same time, all pods: 2 workers x 2 threads x 1 call (16 with more threads at 300k); it also backs off after a 429
+      CII_SCENARIO_CHAT_FALLBACK_MODEL: ""                            # its backup when kimi-k2.5 keeps failing; "" = none (a whole set is beyond glm-5.3: an outage waits and the job retries)
       CII_SCENARIO_CHAT_FALLBACK_MODEL_THINKING: "false"              # the backup's thinking mode
       CII_SCENARIO_CHAT_FALLBACK_MAX_INPUT_TOKENS: "262144"           # the backup glm-5.3: longest question in tokens (the gateway's limit)
       CII_SCENARIO_CHAT_FALLBACK_MAX_OUTPUT_TOKENS: "12288"           # the backup glm-5.3: longest answer in tokens
@@ -71,20 +71,21 @@ items:                                           # one tsg-config per project th
       CII_SERVICE_MAPPER_CHAT_FALLBACK_MODEL: ""                      # "" = no backup: a job glm-5.3 cannot answer is tried again later
       # Answer room per task, in tokens: the AI service counts it against its budget while a question runs; an
       # answer that needs more is asked once more with the model's full room.
-      CII_ANSWER_TOKENS_RELEVANCE_GATE: "4096"                        # threat finding: is each threat relevant (about 180 a threat)
+      CII_ANSWER_TOKENS_RELEVANCE_GATE: "10240"                       # threat finding: is each threat relevant, as which kinds (one answer for up to 40 threats)
       CII_ANSWER_TOKENS_GAP_FILL: "1024"                              # threat finding: a threat for a STRIDE kind that found none
-      CII_ANSWER_TOKENS_THREAT_ACTIONS: "1024"                        # scenario writing: the actions a threat's name states
-      CII_ANSWER_TOKENS_WRITE_SCENARIO: "3072"                        # scenario writing: one scenario
-      CII_ANSWER_TOKENS_REPAIR_SCENARIO: "3072"                       # scenario writing: a scenario written again after a check
-      CII_ANSWER_TOKENS_PLAN_CHECK: "2048"                            # scenario writing: does the scenario carry out its plan
+      CII_ANSWER_TOKENS_THREAT_ACTIONS: "1024"                        # scenario writing: the actions a threat's name states (no longer asked: the threat check gives them)
+      CII_ANSWER_TOKENS_WRITE_SCENARIO: "6144"                        # scenario writing: one set of scenarios in one answer (about 550 a scenario)
+      CII_ANSWER_TOKENS_REPAIR_SCENARIO: "6144"                       # scenario writing: a set's scenarios written again after a check, in one answer
+      CII_ANSWER_TOKENS_PLAN_CHECK: "3072"                            # scenario writing: does each scenario of a set carry out its plan (one answer)
       CII_ANSWER_TOKENS_REMEDIATION_PLAN: "8192"                      # remediation: one treatment plan (about 140 a control)
       CII_ANSWER_TOKENS_SERVICE_MAPPER: "4096"                        # service mapper: one mapping
-      CII_THREAT_QUESTIONS_AT_ONCE: "8"                               # threat finding: questions sent at the same time, per run
-      CII_THREATS_PER_QUESTION: "10"                                  # threat finding: threats checked in one question
-      CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: scenarios written at the same time, per job
+      CII_THREAT_QUESTIONS_AT_ONCE: "1"                               # threat finding: questions sent at the same time, per run (3 at 300k a minute)
+      CII_THREATS_PER_QUESTION: "40"                                  # threat finding: most whole threats in one question, split evenly (12 at 300k a minute)
+      CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)
       CII_RERANKS_AT_ONCE: "6"                                        # search: reranker calls at the same time, per worker
-      CII_AI_BUSY_MAX_WAIT_SECONDS: "60"                              # after "too busy" (HTTP 429): longest wait before asking the same model again
-      CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the backup model
+      CII_AI_CALL_TOKENS_LIMIT: "20000"                               # most tokens one AI call may hold (question estimate + answer room); a bigger batch goes as halves
+      CII_AI_BUSY_MAX_WAIT_SECONDS: "20"                              # after "too busy" (HTTP 429): longest wait (+-20%) before asking the same model again; LiteLLM always asks 60 s, but unused answer room comes back within seconds
+      CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the backup model if one is set
       CII_AI_MODEL_COOL_DOWN_SECONDS: "120"                           # seconds a refused model is tried last (its backup goes first)
       CII_AI_BUSY_LIMIT_FLOOR: "4"                                    # after "too busy": the fewest questions still allowed at the same time
       CII_AI_BUSY_LIMIT_SECONDS: "180"                                # seconds that slow-down lasts after the last "too busy"; a whole number
@@ -9345,11 +9346,11 @@ data:                                            # one key per file
                             "index": 4
                           },
                           "scenario/write_scenario": {
-                            "text": "Write scenario",
+                            "text": "Write scenarios",
                             "index": 5
                           },
                           "scenario/repair_scenario": {
-                            "text": "Repair scenario",
+                            "text": "Rewrite scenarios",
                             "index": 6
                           },
                           "scenario/plan_check": {
@@ -9431,19 +9432,19 @@ data:                                            # one key per file
                             "index": 3
                           },
                           "scenario/threat_actions": {
-                            "text": "AI lists the attacker actions a threat's name describes",
+                            "text": "AI listed the attacker actions a threat's name describes (older runs only)",
                             "index": 4
                           },
                           "scenario/write_scenario": {
-                            "text": "AI writes one attack scenario for an attack path",
+                            "text": "AI writes a set of attack scenarios, one per attack path, in one call",
                             "index": 5
                           },
                           "scenario/repair_scenario": {
-                            "text": "AI rewrites a draft that missed planned actions",
+                            "text": "AI rewrites, in one call, the scenarios of a set that were unusable or missed planned actions",
                             "index": 6
                           },
                           "scenario/plan_check": {
-                            "text": "AI checks the written scenario carries out its plan",
+                            "text": "AI checks, in one call, that each scenario of a set carries out its plan",
                             "index": 7
                           },
                           "scenario/embed": {

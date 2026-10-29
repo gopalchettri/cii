@@ -58,8 +58,8 @@ def test_the_organisations_facts_are_a_background_line_never_the_assets() -> Non
 def test_the_relevance_and_gap_fill_rules_never_assume_a_technology_or_borrow_the_organisations() -> None:
     """Both prompts that decide what applies say a technology nobody recorded is never assumed and the
     organisation's facts are background; an unknown fact may only be a missing detail."""
-    gate = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
-    gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3, ())[1]
+    gate = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
+    gap = gap_fill_prompt("LANDSCAPE", [(StrideCategory.TAMPERING, 3, ())])[1]
     for prompt in (gate, gap):
         assert "it may never assume that a technology, component or device exists" in prompt
         assert "an engineering workstation, a jump server, a wireless or radio link" in prompt

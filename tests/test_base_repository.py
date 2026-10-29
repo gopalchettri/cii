@@ -1,13 +1,15 @@
 """MongoRepository on a scratch collection of the test database: each base read and write, a named
-condition, only_if, a duplicate key, update many, update_and_get in sort order and the bulk helper."""
+condition, only_if, a duplicate key, update many, update_and_get in sort order, the bulk helper and the
+validator at start-up (a fake server for a refused or unreadable rule)."""
 
 from collections.abc import Iterator
 
 import pytest
 from pymongo import InsertOne
 from pymongo.errors import OperationFailure, WriteError
+from structlog.testing import capture_logs
 
-from app.core.constants import Collection
+from app.core.constants import Collection, LogEvent
 from app.core.database import get_mongodb
 from app.core.exceptions import DuplicateRecord
 from app.data_access.base import SCHEMA_VERSION_FIELD, MongoRepository
@@ -169,10 +171,12 @@ def test_the_validator_refuses_a_record_missing_a_required_field() -> None:
     validated = MongoRepository(get_mongodb()[name], required=("_id", "title"))
     try:
         validated.create_indexes()  # a new collection: created with the validator
-        validated.create_indexes()  # an existing one: collMod, idempotent
+        validated.create_indexes()  # an existing one with the same rule: left alone
         assert validated.create({"_id": "ok", "title": "t"}) == "ok"
         with pytest.raises(WriteError):
             validated.create({"_id": "no-title"})
+        MongoRepository(get_mongodb()[name], required=("_id",)).create_indexes()  # a field dropped: collMod
+        assert validated.create({"_id": "no-title"}) == "no-title"
     finally:
         get_mongodb().drop_collection(name)
 
@@ -184,20 +188,74 @@ def test_the_start_up_validators_are_on_the_scenario_collections() -> None:
         assert (options["validationLevel"], options["validationAction"]) == ("moderate", "error")
 
 
-class _OldServer:
-    """A collection on a server that refuses collMod."""
+MAPPING_FIELDS = ("_id", "tenant_id", "entity_id", "status", "job")
 
-    name = "old"
 
-    def __init__(self) -> None:
-        self.database = self
+class _RefusingServer:
+    """A collection (its own database) with a stored validator, on a server that refuses collMod."""
 
-    def list_collection_names(self, **_: object) -> list[str]:
-        return [self.name]
+    name = "tsg_service_mappings"
 
-    def command(self, *_: object, **__: object) -> None:
-        raise OperationFailure("no such command: collMod")
+    def __init__(self, stored_required: tuple[str, ...] = (), *, unreadable: bool = False) -> None:
+        self.database, self.unreadable, self.commands = self, unreadable, []
+        self.options = _stored_rule(stored_required) if stored_required else {}
+
+    def list_collections(self, **_: object) -> list[dict]:
+        if self.unreadable:
+            raise OperationFailure("not authorized on cii_uat to execute command { listCollections: 1 }")
+        return [{"name": self.name, "options": self.options}]
+
+    def command(self, *args: object, **__: object) -> None:
+        self.commands.append(args)
+        raise OperationFailure("not authorized on cii_uat to execute command { collMod }", code=13)
+
+
+def _stored_rule(required: tuple[str, ...]) -> dict:
+    """A collection's options as MongoDB stores them for a validator requiring `required`."""
+    schema = {"bsonType": "object", "required": list(required)}
+    return {"validator": {"$jsonSchema": schema}, "validationLevel": "moderate", "validationAction": "error"}
+
+
+def _start_up(server: _RefusingServer, required: tuple[str, ...] = MAPPING_FIELDS) -> list[dict]:
+    """The log lines of create_indexes on `server` (it never raises)."""
+    with capture_logs() as logs:
+        MongoRepository(server, required=required).create_indexes()  # type: ignore[arg-type]
+    return logs
 
 
 def test_a_server_refusing_the_validator_never_stops_start_up() -> None:
-    MongoRepository(_OldServer(), required=("_id",)).create_indexes()  # type: ignore[arg-type]
+    logs = _start_up(_RefusingServer(), required=("_id",))
+    assert [(line["event"], line["log_level"]) for line in logs] == [
+        (LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, "warning")
+    ]
+
+
+def test_a_refused_validator_still_requiring_a_dropped_field_is_an_error_naming_the_fix() -> None:
+    """UAT, 2026-10-29: the 20 Oct rule still required `generation` and collMod was refused, so every
+    service-mapper insert failed (500) behind a start-up warning."""
+    server = _RefusingServer((*MAPPING_FIELDS[:4], "generation", "job"))
+    logs = _start_up(server)
+    assert len(server.commands) == 1
+    assert [(line["event"], line["log_level"]) for line in logs] == [
+        (LogEvent.MONGODB_VALIDATOR_STALE, "error")
+    ]
+    assert logs[0]["stale_fields"] == ["generation"]
+    command = logs[0]["command"]
+    assert command.startswith('db.runCommand({"collMod": "tsg_service_mappings"')
+    assert '"required": ["_id", "tenant_id", "entity_id", "status", "job"]' in command
+    assert "generation" not in command
+
+
+def test_a_stored_validator_that_matches_is_left_alone() -> None:
+    server = _RefusingServer(tuple(reversed(MAPPING_FIELDS)))  # the same fields in any order
+    assert _start_up(server) == []
+    assert server.commands == []
+
+
+def test_a_validator_that_cannot_be_read_is_a_warning_and_start_up_goes_on() -> None:
+    server = _RefusingServer(unreadable=True)
+    logs = _start_up(server)
+    assert [(line["event"], line["log_level"]) for line in logs] == [
+        (LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, "warning")
+    ]
+    assert server.commands == []

@@ -22,7 +22,7 @@ from app.core.constants import (
     UnselectedReason,
 )
 from app.core.database import get_mongodb
-from tests.fakes import FakeChatModel
+from tests.fakes import FakeChatModel, slot_blocks
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _answer_for,
     _deliver_until_done,
@@ -43,6 +43,11 @@ def _mismatched_for_threats_named(fake: FakeChatModel, prefix: str) -> None:
     fake.responders[AiTask.PLAN_CHECK] = lambda prompt: {
         "rules": {"1": "holds"}, "same_threat": f'"threat": "{prefix}' not in prompt, "same_impact": True,
     }  # fmt: skip
+
+
+def _slots_written(fake: FakeChatModel) -> int:
+    """The paths the writer was asked to write: every slot of every set it was sent."""
+    return sum(len(slot_blocks(prompt)) for prompt in fake.asked(AiTask.WRITE_SCENARIO))
 
 
 def _plan(record_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -67,7 +72,7 @@ def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: Fake
     assert (failed["abandoned_reason"], failed["replaced_by"]) == (FindingCode.SCENARIO_MISMATCH, "p3")
     assert reserve["selected"] and reserve["replaces"] == "p1" and reserve["served"]
     assert not paths["p4"]["selected"] and sum(path["selected"] for path in paths.values()) == 2
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 3  # p1, p2, p3
+    assert _slots_written(chat) == 3  # p1, p2, p3
     done = [s for s in _scenarios_of(record_id) if s["status"] == ScenarioStatus.DONE]
     assert sorted(s["path_id"] for s in done) == ["p2", "p3"]
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
@@ -80,7 +85,7 @@ def test_with_no_limit_and_every_path_in_the_set_a_rejected_path_is_not_replaced
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
     assert paths["p1"]["abandoned"] and paths["p1"].get("replaced_by") is None
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 3 and len(paths) == 3
+    assert _slots_written(chat) == 3 and len(paths) == 3
     assert [s["status"] for s in _scenarios_of(record_id)].count(ScenarioStatus.DONE) == 2
     assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
 
@@ -105,7 +110,7 @@ def test_a_duplicate_is_kept_hidden_given_up_and_replaced(chat: FakeChatModel) -
     finding = stored[copied]["findings"][-1]
     assert finding["code"] == FindingCode.NEAR_DUPLICATE and stored[first]["_id"] in finding["message"]
     assert paths[copied]["replaced_by"] == "p3" and stored["p3"]["status"] == ScenarioStatus.DONE
-    assert paths[copied]["attempts"] == 1 and len(chat.asked(AiTask.WRITE_SCENARIO)) == 3  # given up at once
+    assert paths[copied]["attempts"] == 1 and _slots_written(chat) == 3  # given up at once
 
 
 def test_a_second_run_of_the_asset_writes_again_what_the_first_run_holds(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
@@ -117,12 +122,12 @@ def test_a_second_run_of_the_asset_writes_again_what_the_first_run_holds(chat: F
     held = {scenario["path_id"]: scenario["_id"] for scenario in _scenarios_of(first)}
     accepted = {"$set": {"decision": Decision.ACCEPTED}}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": held["p1"]}, accepted)
-    written_by_first = len(chat.asked(AiTask.WRITE_SCENARIO))
+    written_by_first = _slots_written(chat)
     again = _queued_run(["Threat 1", "Threat 2"])
     _on_the_asset_of(again, first)
     _deliver_until_done(again)
     run, paths = _plan(again)
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) - written_by_first == 2
+    assert _slots_written(chat) - written_by_first == 2
     assert sorted(scenario["path_id"] for scenario in _scenarios_of(again)) == ["p1", "p2"]
     assert not any(path["abandoned"] for path in paths.values())
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE
@@ -136,7 +141,7 @@ def test_a_path_repeating_its_own_runs_scenario_is_given_up_before_the_ai_and_a_
     ends complete."""
     first = _queued_run(["Threat 1"])
     _deliver_until_done(first)
-    calls_before = len(chat.asked(AiTask.WRITE_SCENARIO))
+    calls_before = _slots_written(chat)
     again = _queued_run(["Threat 1", "Threat 2", "Threat 3"], first_set=2)
     held = _scenarios_of(first)[0] | {"_id": f"held-{again}", "session_id": again, "path_id": "p0"}
     get_mongodb()[Collection.SCENARIOS].insert_one(held | {"title_key": f"held-{again}"})
@@ -151,7 +156,7 @@ def test_a_path_repeating_its_own_runs_scenario_is_given_up_before_the_ai_and_a_
         FindingCode.NEAR_DUPLICATE, "p3", 0,
     )  # fmt: skip
     assert spare["replaces"] == "p1" and spare["served"] and paths["p2"]["served"]
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) - calls_before == 2  # p2 and p3 only
+    assert _slots_written(chat) - calls_before == 2  # p2 and p3 only
     assert sorted(s["path_id"] for s in _scenarios_of(again)) == ["p0", "p2", "p3"]  # no card for p1
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
 
@@ -191,7 +196,7 @@ def test_replacements_stop_when_the_sets_write_calls_are_spent(chat: FakeChatMod
     record_id = _queued_run(names, limit=1)
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == Generation.MAX_PATH_ATTEMPTS
+    assert _slots_written(chat) == Generation.MAX_PATH_ATTEMPTS
     tried = [path for path in paths.values() if path["attempts"]]
     assert len(tried) == Generation.MAX_PATH_ATTEMPTS and all(path["attempts"] == 1 for path in tried)
     [last] = [path for path in tried if path["selected"]]

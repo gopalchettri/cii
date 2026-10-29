@@ -15,6 +15,7 @@ from tests.planner_samples import (
     audit_of,
     finder,
     gap_fill_for_elevation,
+    gap_filled,
     judged,
     planned,
     planner_chat,
@@ -57,12 +58,12 @@ def test_an_ai_proposal_that_needs_something_not_recorded_is_refused_too() -> No
 
 
 def test_the_gate_asks_for_needs_and_never_takes_preparation_for_an_attack() -> None:
-    prompt = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
+    prompt = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
     assert '"needs": []' in prompt and 'A threat with anything in "needs" is not used' in prompt
     assert "preparation done elsewhere" in prompt and "is not a threat to this asset" in prompt
     assert 'removable media), list it in "needs"' in prompt  # one instruction for a missing component
     assert "removable media), it is not relevant" not in prompt
-    proposal_prompt = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3, ())[1]
+    proposal_prompt = gap_fill_prompt("LANDSCAPE", [(StrideCategory.TAMPERING, 3, ())])[1]
     assert "removable media), it is not relevant" in proposal_prompt and '"needs"' not in proposal_prompt
 
 
@@ -81,16 +82,12 @@ def test_each_threat_is_its_own_scenario_ranked_by_impact_and_confidence_with_no
     assert all(path["also_applies"] == [] for path in plan["paths"])
 
 
-def test_a_listed_need_under_one_category_refuses_the_threat_under_every_category() -> None:
-    """A need is a fact about the asset, whatever "relevant" says: refused under Tampering (judged not
-    relevant, with a need), the threat is refused under Denial of Service too, and each emptied category
-    still gets its one gap fill."""
-    relevant = {RANSOMWARE.name: ["SYS1"]}  # filed under Tampering and Denial of Service
-    needing = _gate_needing({}, {RANSOMWARE.name: ["backup server"]})
-    chat = planner_chat(relevant)
-    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
-        needing(user) if "category: Tampering" in user else judged(relevant)(user)
-    )
+def test_a_listed_need_refuses_the_threat_under_every_category() -> None:
+    """A need is a fact about the asset, whatever "relevant" says: one verdict per threat, so a threat
+    judged not relevant with a need is refused for it under Tampering and Denial of Service alike, and the
+    categories it empties still get the one gap fill."""
+    chat = planner_chat({})  # the ransomware is filed under Tampering and Denial of Service
+    chat.responders[AiTask.RELEVANCE_GATE] = _gate_needing({}, {RANSOMWARE.name: ["backup server"]})
     findings = finder(chat).find_threats(CONTEXT)
     assert RANSOMWARE.name not in [threat.name for threat in findings.threats]
     for category in (StrideCategory.TAMPERING, StrideCategory.DENIAL_OF_SERVICE):
@@ -100,4 +97,4 @@ def test_a_listed_need_under_one_category_refuses_the_threat_under_every_categor
             if r["library_id"] == RANSOMWARE.catalogue_id
         ]
         assert codes == [CandidateRejection.NEEDS_UNRECORDED], category
-        assert any(f"category: {category}" in user for user in chat.asked(AiTask.GAP_FILL)), category
+        assert category in gap_filled(chat), category

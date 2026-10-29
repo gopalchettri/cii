@@ -328,6 +328,7 @@ def _new_record(
         "generations_done": 0,
         "result": {"selected_service": None, "dependencies": []},
         "status": Status.QUEUED,
+        "generation": 1,  # the latest run; MappingRepository's rule requires it
         "limits": limits,
         "job": new_job(TaskName.MAP_SERVICES, 1, now, requested_at=now),
         "created_at": now,

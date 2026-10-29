@@ -23,6 +23,7 @@ from app.core.constants import (
     UnselectedReason,
 )
 from app.core.database import get_mongodb
+from app.domain.scenario import plan as plan_module
 from app.domain.scenario import plan_trace
 from app.domain.scenario.plan import build_plan
 from app.domain.scenario.plan_trace import build_plan_trace, plan_trace_view
@@ -44,6 +45,7 @@ from tests.planner_samples import (
     finder,
     gap_fill_for_elevation,
     planner_chat,
+    verdict_for,
 )
 from tests.test_attack_paths import (  # noqa: F401 - `sent` is a fixture used by name
     LANDSCAPE,
@@ -65,22 +67,20 @@ _LOST = (
 )
 
 
-def _gate(
-    answers: dict[str, dict[str, Any]], kind_needs: dict[tuple[str, str], list[str]] | None = None
-) -> Any:
+def _gate(answers: dict[str, dict[str, Any]], needs_by_threat: dict[str, list[str]] | None = None) -> Any:
     """A gate answering each candidate by its threat's name (`answers`: relevant ones, with their systems and
-    any attacker pick); `kind_needs`: what a threat needs under one kind ({(threat, kind): needs})."""
+    any attacker pick); `needs_by_threat`: what a threat needs that nothing records."""
 
     def answer(user_prompt: str) -> dict[str, Any]:
-        kind = user_prompt.split("STRIDE category: ", 1)[1].split(" (", 1)[0]
         verdicts = []
         for item in items_in(user_prompt, "CANDIDATES"):
+            needs = (needs_by_threat or {}).get(item["threat"], [])
             given = answers.get(item["threat"])
-            needs = (kind_needs or {}).get((item["threat"], kind), [])
-            verdict = {"slot": item["slot"], "relevant": given is not None, "systems": [], "confidence": 80}
-            verdict |= {"reason": "It applies." if given else "Nothing here allows it.", "needs": needs}
-            verdict |= {"impact": "HIGH"} | given if given else {}
-            verdicts.append({"entry_points": verdict["systems"]} | verdict)
+            if given is None:
+                verdicts.append(verdict_for(item, None, needs=needs))
+                continue
+            fields = {key: value for key, value in given.items() if key != "systems"}
+            verdicts.append(verdict_for(item, given.get("systems", []), **fields, needs=needs))
         return {"verdicts": verdicts}
 
     return answer
@@ -105,7 +105,7 @@ def test_the_counts_add_up_and_each_threat_left_out_says_where_and_why() -> None
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = _gate(
         {PHISHING.name: {"systems": ["SYS2"]}, FLOOD.name: {"systems": ["SYS1"]}},
-        {(LOG_WIPE.name, S.REPUDIATION): ["jump server"]},
+        {LOG_WIPE.name: ["jump server"]},
     )
     trace = _trace(chat, library)
     counts = trace["counts"]
@@ -126,39 +126,31 @@ def test_the_counts_add_up_and_each_threat_left_out_says_where_and_why() -> None
     assert trace["drops_total"] == len(trace["drops"]) == 5 and trace["landscape_cut"] is False
 
 
-def test_a_need_under_one_kind_is_traced_where_it_refuses_the_threat_under_another() -> None:
-    """Ransomware is accepted as Tampering but needs a backup appliance as Denial of Service: refused under
-    both, and the trace says which kind the need came from."""
+def test_a_need_is_traced_under_every_kind_it_refuses_the_threat_and_never_elsewhere() -> None:
+    """Ransomware applies but needs a backup appliance: one verdict for the threat, so it is refused for the
+    need under Tampering and Denial of Service alike, each traced at the gate; none is refused "elsewhere"."""
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = _gate(
-        {RANSOMWARE.name: {"systems": ["SYS1"]}},
-        {(RANSOMWARE.name, S.DENIAL_OF_SERVICE): ["backup appliance"]},
+        {RANSOMWARE.name: {"systems": ["SYS1"]}}, {RANSOMWARE.name: ["backup appliance"]}
     )
     trace = _trace(chat)
-    assert (
-        RANSOMWARE.name,
-        S.DENIAL_OF_SERVICE,
-        CandidateRejection.NEEDS_UNRECORDED,
-        "backup appliance",
-    ) in (_drops(trace, PlanStage.GATE))
-    assert _drops(trace, PlanStage.CHECKS) == [
-        (
-            RANSOMWARE.name,
-            S.TAMPERING,
-            PlanLoss.NEEDS_UNRECORDED_ELSEWHERE,
-            "Denial of Service: backup appliance",
-        )
+    needing = [drop for drop in _drops(trace, PlanStage.GATE) if drop[0] == RANSOMWARE.name]
+    assert needing == [
+        (RANSOMWARE.name, kind, CandidateRejection.NEEDS_UNRECORDED, "backup appliance")
+        for kind in (S.DENIAL_OF_SERVICE, S.TAMPERING)  # the trace's order: by threat, then kind
     ]
-    assert trace["counts"]["needs_unrecorded_elsewhere"] == 1 and trace["counts"]["paths"] == 0
+    assert _drops(trace, PlanStage.CHECKS) == []
+    assert trace["counts"]["needs_unrecorded_elsewhere"] == 0 and trace["counts"]["paths"] == 0
 
 
-def test_a_skipped_batch_and_a_threat_no_attacker_fits_are_traced() -> None:
-    """On the job's last attempt a broken Spoofing reply is skipped (its threat not judged); the gate finds
-    no listed attacker plausible for the flood, so it has no scenario."""
+def test_a_skipped_batch_and_a_threat_no_attacker_fits_are_traced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On the job's last attempt a broken reply for the phishing threat alone is skipped (it is not judged);
+    the gate finds no listed attacker plausible for the flood, so it has no scenario."""
+    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)
     chat = planner_chat({})
     gate = _gate({FLOOD.name: {"systems": ["SYS1"], "attacker": None, "attacker_reason": "None could."}})
     chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
-        {"verdicts": "?"} if "STRIDE category: Spoofing" in user else gate(user)
+        {"verdicts": "?"} if PHISHING.name in user else gate(user)
     )
     trace = _trace(chat, last_attempt=True)
     assert (PHISHING.name, S.SPOOFING, PlanLoss.NOT_JUDGED, "") in _drops(trace, PlanStage.GATE)

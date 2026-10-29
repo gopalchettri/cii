@@ -253,7 +253,7 @@ class PlanLoss(StrEnum):
     TYPE_FITS_NO_PLACE = "type_fits_no_place"
     NO_LINKED_ACTOR = "no_linked_actor"
     NOT_JUDGED = "not_judged"  # its gate batch was skipped
-    NEEDS_UNRECORDED_ELSEWHERE = "needs_unrecorded_elsewhere"  # a need found under another kind
+    NEEDS_UNRECORDED_ELSEWHERE = "needs_unrecorded_elsewhere"  # older plans only: a need under another kind
     MERGED = "merged"
     ALREADY_HELD = "already_held"
     LIBRARY_REPEAT = "library_repeat"  # a gap-fill proposal that is a library threat already judged

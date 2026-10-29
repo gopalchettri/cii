@@ -1,10 +1,9 @@
 """The scenario write job (Step 12, BUILD_PLAN S25-S26): batches of six, saved one by one, handed on by
 themselves to the end of the set a person asked for; on the test MongoDB, with a fake chat model."""
 
-import json
 import threading
-import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -39,7 +38,7 @@ from app.models.scenario.plan import PlannedActor
 from app.worker import jobs
 from app.worker.scenario import plan_progress, write_job
 from app.worker.scenario.write_job import ScenarioWriteJob
-from tests.fakes import FakeChatModel
+from tests.fakes import FakeChatModel, brief_of
 from tests.planner_samples import CONTEXT, planned
 
 _ACTORS = (PlannedActor(7, "Cybercriminal", ActorRole.ACTING),)
@@ -116,7 +115,7 @@ def _answer_for(user_prompt: str) -> dict[str, Any]:
     """A clean scenario for the brief it is given; every one gets the same title, so titles must be made
     unique, and its own statement (the very same words are a copy whatever the threat: G268). A threat named
     "Unreadable ..." always gets an answer missing its texts."""
-    brief = json.loads(user_prompt.removeprefix("BRIEF:\n"))
+    brief = brief_of(user_prompt)
     options = brief["entry_point_options"]
     answer = {
         "scenario_title": "Loss of control integrity",
@@ -127,6 +126,30 @@ def _answer_for(user_prompt: str) -> dict[str, Any]:
         "entry_point": options[0] if options else "",
     }
     return {"scenario_title": "x"} if brief["threat"]["threat"].startswith("Unreadable") else answer
+
+
+def unreadable_then(
+    threat: str,
+    outage: Exception,
+    times: int = 1_000,
+    written: Callable[[str], dict[str, Any]] = _answer_for,
+) -> Callable[[str], dict[str, Any]]:
+    """A writer (`written`) whose first answer for `threat` is unreadable and whose rewrite of it meets
+    `outage` (the first `times` rewrites): the set's other paths are final after its first round and saved,
+    so only that path keeps the outage, as one path did when each path had its own calls."""
+    left = {"outages": times}
+
+    def answer(user_prompt: str) -> dict[str, Any]:
+        if f'"{threat}"' not in user_prompt:
+            return written(user_prompt)
+        if "REJECTED:" not in user_prompt:
+            return {"scenario_title": "x"}
+        if left["outages"] > 0:
+            left["outages"] -= 1
+            raise outage
+        return written(user_prompt)
+
+    return answer
 
 
 def write_job_with(chat: FakeChatModel, library: Any) -> ScenarioWriteJob:
@@ -225,39 +248,6 @@ def test_fourteen_paths_are_written_in_three_batches_by_themselves(
     assert {scenario["controls"]["status"] for scenario in stored} == {Status.QUEUED}
 
 
-def test_each_threat_is_split_while_the_evidence_is_searched(
-    chat: FakeChatModel, sent: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Before: a threat's split (an AI call of 1-10 s, live 2026-10-27) began only after the batch's evidence
-    search (about 16 s on the GPU), so every story waited for both, one after the other. The splits now run
-    beside the search, each threat's once."""
-    container.get_threat_scenario_repository().create_indexes()
-    record_id = _queued_run(["Threat 1", "Threat 2"])
-    split_during_search: list[int] = []
-
-    class Evidence:
-        """The evidence search: it ends only once both splits have asked, or after 2 s."""
-
-        def __init__(self, _run: Any, threats: dict[str, dict[str, Any]], _progress: Any) -> None:
-            self._threats = threats
-
-        def attach(self, _path_ids: Any) -> None:
-            deadline = time.monotonic() + 2
-            while len(chat.asked(AiTask.THREAT_ACTIONS)) < 2 and time.monotonic() < deadline:
-                time.sleep(0.01)
-            split_during_search.append(len(chat.asked(AiTask.THREAT_ACTIONS)))
-            for threat in self._threats.values():
-                threat["intel_search"] = {"snapshot_id": "s1", "failure": None}
-
-    job = container.get_scenario_write_job()
-    monkeypatch.setattr(job, "_switch", SimpleNamespace(is_on=lambda sure=False: True))
-    monkeypatch.setattr(job, "_evidence_at_write", Evidence)
-    assert _deliver_until_done(record_id) == 1
-    assert split_during_search == [2]
-    assert len(chat.asked(AiTask.THREAT_ACTIONS)) == 2  # each threat's once: the writes took the splits made
-    assert len(_scenarios_of(record_id)) == 2
-
-
 def test_the_run_writes_only_its_first_set_and_the_rest_wait_for_a_next_set(
     chat: FakeChatModel, sent: list[tuple[Any, ...]]
 ) -> None:
@@ -333,7 +323,13 @@ def test_an_unreadable_path_is_abandoned_at_once_and_the_run_ends_partial(
     assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL and run["counts"]["abandoned"] == 1
     card = _scenarios_of(record_id)[1]
     assert (card["status"], card["failure"]["code"]) == (ScenarioStatus.FAILED, ErrorCode.GENERATION_FAILED)
-    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 1 + 2  # the good path, the unreadable one and its repair
+    # one write of the set, one rewrite of the unreadable slot alone, one review of the good one
+    assert [task for task, _ in chat.calls] == [
+        AiTask.WRITE_SCENARIO,
+        AiTask.PLAN_CHECK,
+        AiTask.REPAIR_SCENARIO,
+    ]
+    assert '"Good threat"' not in chat.asked(AiTask.REPAIR_SCENARIO)[0]
 
 
 def test_a_path_the_plan_cannot_support_is_abandoned_at_once(
@@ -371,14 +367,7 @@ def test_an_outage_saves_the_others_and_the_retry_skips_what_was_saved(
 ) -> None:
     """T-WRT-13 (S25): the job is given back; the written paths cost no AI call again."""
     record_id = _queued_run(["Threat 1", "Threat 2", "Threat 3"])
-    down = {"once": True}
-
-    def down_once(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt and down.pop("once", False):
-            raise Unavailable("AI down")
-        return _answer_for(user_prompt)
-
-    chat.responders[AiTask.WRITE_SCENARIO] = down_once
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 2", Unavailable("AI down"), times=1)
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable):
         _write_batch(lease)
@@ -445,12 +434,7 @@ def test_a_path_the_ai_keeps_failing_on_gets_a_card_and_the_run_goes_on(
     """Review fix 4: on the job's last try, with another path of the batch written, the outage is that path's
     own: a failure card and an attempt, and the path is left to the next set; the run no longer fails."""
 
-    def threat_two_times_out(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt:
-            raise Unavailable("timed out")
-        return _answer_for(user_prompt)
-
-    chat.responders[AiTask.WRITE_SCENARIO] = threat_two_times_out
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 2", Unavailable("timed out"))
     record_id = _queued_run(["Threat 1", "Threat 2"])
     _write_batch(_on_last_try(record_id))
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
@@ -463,25 +447,21 @@ def test_a_path_the_ai_timed_out_on_gets_a_card_that_names_the_outage(
 ) -> None:
     """Owner 2026-10-20: the card says the AI timed out (with its reason), not only that it did not answer; an
     outage that names none keeps the plain message."""
-
-    def two_and_three_fail(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt:
-            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
-        if '"Threat 3"' in user_prompt:
-            raise Unavailable("down")
-        return _answer_for(user_prompt)
-
-    chat.responders[AiTask.WRITE_SCENARIO] = two_and_three_fail
-    record_id = _queued_run(["Threat 1", "Threat 2", "Threat 3"])
+    timed_out = Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 2", timed_out)
+    record_id = _queued_run(["Threat 1", "Threat 2"])
     _write_batch(_on_last_try(record_id))
-    stored = _scenarios_of(record_id)
     outage = AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT]
-    assert stored[1]["failure"] == {
+    assert _scenarios_of(record_id)[1]["failure"] == {
         "code": ErrorCode.UNAVAILABLE,
         "message": AI_PATH_OUTAGE_MESSAGE.format(outage=outage, tries=Lease.MAX_ATTEMPTS),
         "reason": AiOutage.TIMED_OUT,
     }
-    assert "reason" not in stored[2]["failure"] and "did not answer" in stored[2]["failure"]["message"]
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 3", Unavailable("down"))
+    record_id = _queued_run(["Threat 1", "Threat 3"])
+    _write_batch(_on_last_try(record_id))
+    plain = _scenarios_of(record_id)[1]["failure"]
+    assert "reason" not in plain and "did not answer" in plain["message"]
 
 
 def test_with_no_path_written_an_outage_on_the_last_try_still_fails_the_job(
@@ -505,12 +485,8 @@ def test_a_last_try_that_fails_still_sends_the_saved_scenarios_controls_message(
     """Review: the failure was raised before the controls message, and no retry follows a last try, so the
     saved scenario's controls waited for the sweep."""
 
-    def threat_two_refused(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt:
-            raise JobFailed(ErrorCode.AI_MISCONFIGURED, "key revoked")
-        return _answer_for(user_prompt)
-
-    chat.responders[AiTask.WRITE_SCENARIO] = threat_two_refused
+    refused = JobFailed(ErrorCode.AI_MISCONFIGURED, "key revoked")
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 2", refused)
     record_id = _queued_run(["Threat 1", "Threat 2"])
     with pytest.raises(JobFailed):
         _write_batch(_on_last_try(record_id))

@@ -161,10 +161,11 @@ class _ScoresByText:
         return [self.scores.get(document.split(":")[0], 0.0) for document in documents]
 
 
-def _snapshot(*controls: LibraryControl) -> Any:
+def _snapshot(*controls: LibraryControl, embeddings: Any = None) -> Any:
     stamp = (("Control_Library", b""),)  # as the library cache stamps every loaded version
     library = SimpleNamespace(threat_library=ThreatLibrary((), ()), control_library=controls, stamp=stamp)
-    search = LibrarySearch(SimpleNamespace(get_loaded_libraries=lambda: library), FakeEmbeddings())  # type: ignore[arg-type]
+    loaded = SimpleNamespace(get_loaded_libraries=lambda: library)
+    search = LibrarySearch(loaded, embeddings or FakeEmbeddings())  # type: ignore[arg-type]
     return search.snapshot()
 
 
@@ -733,6 +734,73 @@ def test_a_delivery_maps_its_turn_side_by_side_on_a_remote_reranker_and_one_by_o
     monkeypatch.setattr(get_settings(), "rerank_base_url", "")
     mapping_run["rerank"] = _Together({"Backup policy": 70.0}, wait=0.2)
     assert _deliver(record_id, "task-2") == 2 and mapping_run["rerank"].most == 1
+
+
+class _KeptQueryVectors(FakeEmbeddings):
+    """FakeEmbeddings keeping each query's vector, as the embedding client stores it: `asked` holds every
+    query call's texts, `embedded` the new texts of each call that had any."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[list[str]] = []
+        self.embedded: list[list[str]] = []
+        self._kept: set[tuple[str, str]] = set()
+
+    def embed_search_queries(self, texts: list[str], corpus: str) -> Any:
+        self.asked.append(texts)
+        vectors = super().embed_search_queries(texts, corpus)
+        if new := [text for text in dict.fromkeys(texts) if (corpus, text) not in self._kept]:
+            self.embedded.append(new)
+            self._kept.update((corpus, text) for text in new)
+        return vectors
+
+
+def _two_queries_kept(mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> _KeptQueryVectors:
+    """The run's two scenarios told apart (two control queries), mapped side by side on a library whose
+    query vectors are kept."""
+    monkeypatch.setattr(get_settings(), "rerank_base_url", "http://rerank.invalid")
+    for number in (1, 2):
+        get_mongodb()[Collection.SCENARIOS].update_one(
+            {"_id": f"{mapping_run['record_id']}-{number}"},
+            {"$set": {"content.title": f"Backup lost {number}"}},
+        )
+    embeddings = _KeptQueryVectors()
+    snapshot = _snapshot(*_CONTROLS, embeddings=embeddings)
+    mapping_run["search"] = SimpleNamespace(snapshot=lambda: snapshot)
+    return embeddings
+
+
+def test_a_turns_control_queries_are_embedded_in_one_call_and_each_scenario_is_reranked_on_its_own(
+    mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D4: one embed call for the turn's scenarios, each search reading its stored vector; one rerank per
+    scenario on its own query; each maps as before."""
+    record_id, embeddings = mapping_run["record_id"], _two_queries_kept(mapping_run, monkeypatch)
+    assert _deliver(record_id, "task-1") == 2
+    reranked = sorted(query for query, _ in mapping_run["rerank"].asked)
+    assert len(set(reranked)) == 2  # one rerank per scenario, each on its own query
+    assert [sorted(texts) for texts in embeddings.embedded] == [reranked]  # one embed call for both
+    for number in (1, 2):
+        assert [item["code"] for item in _controls_of(f"{record_id}-{number}")["items"]] == ["C-OT", "C-ANY"]
+
+
+def test_an_outage_of_the_turns_embed_call_gives_every_scenario_back_with_no_second_call(
+    mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one embed call meets an outage: every scenario of the turn is queued again with it and raised,
+    none sends a call of its own."""
+    record_id, embeddings = mapping_run["record_id"], _two_queries_kept(mapping_run, monkeypatch)
+    embeddings.queries_down = True
+    with pytest.raises(Unavailable):
+        _deliver(record_id, "task-1")
+    assert len(embeddings.asked) == 1 and mapping_run["rerank"].asked == []
+    for number in (1, 2):
+        controls = _controls_of(f"{record_id}-{number}")
+        assert (controls["status"], controls["attempts"], controls["error"]["code"]) == (
+            Status.QUEUED,
+            1,
+            ErrorCode.UNAVAILABLE,
+        )
 
 
 def test_of_ten_messages_for_one_run_delivered_at_once_exactly_one_maps(mapping_run: dict[str, Any]) -> None:

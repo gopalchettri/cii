@@ -1,8 +1,8 @@
-"""Writing one path's scenario in a pool thread (PathWriter) and saving it, its failure card or its new
-version in the job's thread (PathSaver), a written scenario checked for a near copy right before its save."""
+"""Writing a set of paths' scenarios (PathWriter) and saving each, its failure card or its new version as
+soon as it is final (PathSaver), a written scenario checked for a near copy right before its save."""
 
 import dataclasses
-import threading
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -37,9 +37,8 @@ from app.domain.scenario.write import (
     live_library_of,
     path_style,
     scenario_id,
-    split_threat_actions,
     title_candidates,
-    write_scenario,
+    write_set,
     written_record,
 )
 from app.domain.shared.names import name_match_key, shorten_text
@@ -52,7 +51,7 @@ log = structlog.get_logger(__name__)
 
 #: What writing one path gave: its brief and scenario, or why there is none.
 PathOutcome = tuple[WriterBrief, WrittenScenario] | PathFailure
-#: What one path's work raises instead of returning a card: the job retries, fails or (lease lost) stops.
+#: What a set's AI work raises instead of giving cards: its paths left retry, fail or (lease lost) stop.
 _RAISED_FROM_A_PATH: tuple[type[Exception], ...] = (*TEMPORARY_ERRORS, JobFailed, LeaseLost)
 
 
@@ -68,43 +67,49 @@ class PathWriter:
         self._live = live_library_of(library)
         self._context = FrozenContext.from_record(run["context"])
         self.threats = {threat["key"]: threat for threat in run["plan"]["threats"]}
-        self._actions: dict[str, tuple[str, ...] | Unavailable] = {}  # each threat's split (or its outage)
-        self._split_locks: dict[str, threading.Lock] = {}  # one per threat
 
-    def write(self, path: dict[str, Any]) -> PathOutcome:
-        """In a pool thread: a path's brief (its style, its threat's actions) and scenario; outages raise."""
+    def write_set(
+        self, slots: Sequence[tuple[str, dict[str, Any]]], last_try: bool
+    ) -> Iterator[tuple[str, PathOutcome | Exception]]:
+        """Each path's outcome by its id as soon as it is final, the set ((slot label, path)) written in one
+        set of AI calls (write_set). The paths left when the AI cannot go on get the outage to retry; a whole
+        answer unusable twice is one too, but on the job's `last_try` each of them gets a failure card."""
+        briefs: dict[str, WriterBrief] = {}
+        path_ids = {label: path["path_id"] for label, path in slots}
+        for label, path in slots:
+            brief = self._brief(path)
+            if isinstance(brief, PathFailure):
+                yield path["path_id"], brief
+            else:
+                briefs[label] = brief
+        left = dict(briefs)
+        try:
+            for label, written in write_set(self._chat, list(briefs.items())):
+                brief = left.pop(label)
+                yield path_ids[label], written if isinstance(written, PathFailure) else (brief, written)
+        except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
+            reason = shorten_text(str(exc), Writing.PROBLEM_MAX_CHARS)
+            failure = PathFailure(ErrorCode.GENERATION_FAILED, reason) if last_try else Unavailable(reason)
+            yield from ((path_ids[label], failure) for label in left)
+        except _RAISED_FROM_A_PATH as exc:
+            yield from ((path_ids[label], exc) for label in left)
+        except Exception:  # a fault in one set must not cost the run its other sets
+            log.exception(LogEvent.WRITER_PATH_FAILED, paths=[path_ids[label] for label in left])
+            message = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
+            yield from ((path_ids[label], PathFailure(ErrorCode.INTERNAL_ERROR, message)) for label in left)
+
+    def _brief(self, path: dict[str, Any]) -> WriterBrief | PathFailure:
+        """A path's brief in its style, with its threat's actions; a path the plan cannot support fails for
+        good, with no AI call."""
         try:
             style = path_style(self.threats, path, self._style)
-            brief = build_brief(self.threats, path, self._context, self._budget, self._live, style=style)
-            brief = dataclasses.replace(brief, threat_actions=self._threat_actions(brief.threat))
-            return brief, write_scenario(self._chat, brief)
+            return build_brief(self.threats, path, self._context, self._budget, self._live, style=style)
         except PathNotWritable as exc:
             return PathFailure(exc.code, exc.message, final=True)
-        except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-            return PathFailure(ErrorCode.GENERATION_FAILED, shorten_text(str(exc), Writing.PROBLEM_MAX_CHARS))
-        except _RAISED_FROM_A_PATH:
-            raise
         except Exception:  # one path's fault must not cost the run its other paths
             log.exception(LogEvent.WRITER_PATH_FAILED, path_id=path["path_id"])
             unexpected = ErrorMessage.JOB_UNEXPECTED.format(record_id=self._run_id)
             return PathFailure(ErrorCode.INTERNAL_ERROR, unexpected)
-
-    def split_ahead(self, path: dict[str, Any]) -> None:
-        """Split a path's threat now, before its write takes it; a refused path raises, with no AI call."""
-        self._threat_actions(build_brief(self.threats, path, self._context, self._budget, self._live).threat)
-
-    def _threat_actions(self, threat: str) -> tuple[str, ...]:
-        """`threat`'s actions, split once per delivery; an outage is kept and raised to each of its paths."""
-        with self._split_locks.setdefault(threat, threading.Lock()):  # dict.setdefault is atomic
-            if threat not in self._actions:
-                try:
-                    self._actions[threat] = split_threat_actions(self._chat, threat)
-                except Unavailable as exc:
-                    self._actions[threat] = exc
-            found = self._actions[threat]
-        if isinstance(found, Unavailable):
-            raise found
-        return found
 
 
 def save_with_unique_title(

@@ -115,6 +115,10 @@ class LibrarySnapshot:
         )
         return self._search(EmbeddingCorpus.CONTROL, controls, queries, top_k, [mask] * len(queries))
 
+    def embed_control_queries(self, queries: Sequence[str]) -> None:
+        """Embed control queries in one call ahead of their searches, which then read the stored vectors."""
+        self._embeddings.embed_search_queries(list(queries), EmbeddingCorpus.CONTROL)
+
     def find_actors(
         self, queries: Sequence[str], top_k: int, allowed_ids: Sequence[Collection[int] | None] | None = None
     ) -> list[list[tuple[LibraryActor, float]]]:

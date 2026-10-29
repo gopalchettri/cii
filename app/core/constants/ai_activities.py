@@ -60,19 +60,19 @@ ACTIVITY_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
     ),
     (AiBucket.SCENARIO, AiTask.THREAT_ACTIONS): (
         "Threat action split",
-        "AI lists the attacker actions a threat's name describes",
+        "AI listed the attacker actions a threat's name describes (older runs only)",
     ),
     (AiBucket.SCENARIO, AiTask.WRITE_SCENARIO): (
-        "Write scenario",
-        "AI writes one attack scenario for an attack path",
+        "Write scenarios",
+        "AI writes a set of attack scenarios, one per attack path, in one call",
     ),
     (AiBucket.SCENARIO, AiTask.REPAIR_SCENARIO): (
-        "Repair scenario",
-        "AI rewrites a draft that missed planned actions",
+        "Rewrite scenarios",
+        "AI rewrites, in one call, the scenarios of a set that were unusable or missed planned actions",
     ),
     (AiBucket.SCENARIO, AiTask.PLAN_CHECK): (
         "Plan check",
-        "AI checks the written scenario carries out its plan",
+        "AI checks, in one call, that each scenario of a set carries out its plan",
     ),
     (AiBucket.SCENARIO, AiTask.EMBED): (
         "Evidence search",

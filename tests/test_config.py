@@ -120,25 +120,30 @@ def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
 def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Changed in the ConfigMap, then a rollout restart: no new image. A fresh process, as a restarted pod."""
+    """Changed in the ConfigMap, then a rollout restart: no new image. A fresh process, as a restarted pod.
+    Every value differs from its default, so a setting the code ignores fails here."""
     changed = {
-        "CII_THREAT_QUESTIONS_AT_ONCE": "3",
+        "CII_THREAT_QUESTIONS_AT_ONCE": "2",
         "CII_THREATS_PER_QUESTION": "5",
         "CII_SCENARIOS_WRITTEN_AT_ONCE": "2",
         "CII_RERANKS_AT_ONCE": "2",
         "CII_ANSWER_TOKENS_RELEVANCE_GATE": "2048",
-        "CII_AI_BUSY_MAX_WAIT_SECONDS": "20",
+        "CII_AI_BUSY_MAX_WAIT_SECONDS": "25",
         "CII_AI_BUSY_TOTAL_WAIT_SECONDS": "30",
         "CII_AI_MODEL_COOL_DOWN_SECONDS": "45",
         "CII_AI_BUSY_LIMIT_FLOOR": "2",
         "CII_AI_BUSY_LIMIT_SECONDS": "90",
+        "CII_AI_CALL_TOKENS_LIMIT": "15000",
     }
+    defaults = {f"CII_{field.upper()}": info.default for field, info in AiTuningSettings.model_fields.items()}
+    assert all(int(value) != defaults[key] for key, value in changed.items())
     probe = (
         "import json; from app.core.constants import AiLimits as L, AiTask, CHAT_MAX_OUTPUT_TOKENS as C, "
         "Generation as G, RerankGateLimits as R, ThreatFinding as T; from app.domain.scenario import plan; "
         "print(json.dumps([T.AI_BATCHES_AT_ONCE, plan.GATE_BATCH_SIZE, G.WRITER_BATCH, R.RERANKS_AT_ONCE, "
         "C[AiTask.RELEVANCE_GATE], L.RATE_LIMITED_MAX_WAIT_SECONDS, L.RATE_LIMITED_TOTAL_WAIT_SECONDS, "
-        "L.MODEL_COOL_DOWN_SECONDS, L.ADAPTIVE_LIMIT_FLOOR, L.ADAPTIVE_LIMIT_TTL_SECONDS]))"
+        "L.MODEL_COOL_DOWN_SECONDS, L.ADAPTIVE_LIMIT_FLOOR, L.ADAPTIVE_LIMIT_TTL_SECONDS, "
+        "L.CALL_TOKENS_LIMIT]))"
     )
     restarted = subprocess.run(  # noqa: S603 - our own probe
         [sys.executable, "-c", probe], cwd=REPO, env=os.environ | changed, capture_output=True, text=True

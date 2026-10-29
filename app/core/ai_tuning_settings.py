@@ -17,21 +17,24 @@ class AiTuningSettings(BaseSettings):
 
     # Answer room, in tokens: the AI service counts it against its budget while the question runs. An answer
     # cut off at its room is asked once more with the model's full room (app/ai/chat.py).
-    answer_tokens_relevance_gate: int = Field(default=4096, ge=256, le=32768)  # largest 3642: ~180 a threat
+    answer_tokens_relevance_gate: int = Field(default=10240, ge=256, le=32768)  # 40 whole threats: ~7.3k
     answer_tokens_gap_fill: int = Field(default=1024, ge=256, le=32768)  # 97
     answer_tokens_threat_actions: int = Field(default=1024, ge=256, le=32768)  # 29
-    answer_tokens_write_scenario: int = Field(default=3072, ge=256, le=32768)  # 1681
-    answer_tokens_repair_scenario: int = Field(default=3072, ge=256, le=32768)  # 577
-    answer_tokens_plan_check: int = Field(default=2048, ge=256, le=32768)  # 1028
+    # A set's calls answer every slot at once: about 550 a scenario (largest 1681), about 130 a review.
+    answer_tokens_write_scenario: int = Field(default=6144, ge=256, le=32768)
+    answer_tokens_repair_scenario: int = Field(default=6144, ge=256, le=32768)
+    answer_tokens_plan_check: int = Field(default=3072, ge=256, le=32768)
     answer_tokens_remediation_plan: int = Field(default=8192, ge=256, le=32768)  # ~140 a control: ~50 fit
     answer_tokens_service_mapper: int = Field(default=4096, ge=256, le=32768)  # 1997
     # How much TSG asks at once.
-    threat_questions_at_once: int = Field(default=8, ge=1, le=64)  # per threat-finding run
-    threats_per_question: int = Field(default=10, ge=1, le=50)  # threats one relevance question judges
-    scenarios_written_at_once: int = Field(default=6, ge=1, le=64)  # per scenario-writing job
+    threat_questions_at_once: int = Field(default=1, ge=1, le=64)  # per threat-finding run
+    threats_per_question: int = Field(default=40, ge=1, le=50)  # whole threats one relevance question judges
+    scenarios_written_at_once: int = Field(default=6, ge=1, le=64)  # most scenarios in one write call
     reranks_at_once: int = Field(default=6, ge=1, le=64)  # remote reranker calls per worker
+    # The most tokens (prompt estimate + answer room) one AI call may hold; a bigger batch is sent as halves.
+    ai_call_tokens_limit: int = Field(default=20000, ge=1000)
     # "Too busy" (HTTP 429).
-    ai_busy_max_wait_seconds: int = Field(default=60, ge=1, le=600)  # longest one wait, TSG's steps too
+    ai_busy_max_wait_seconds: int = Field(default=20, ge=1, le=600)  # longest one wait (+-20%), TSG's too
     ai_busy_total_wait_seconds: int = Field(default=60, ge=1, le=600)  # all waits (4 at most), then backup
     ai_model_cool_down_seconds: int = Field(default=120, ge=0, le=3600)  # a refused model is asked last
     ai_busy_limit_floor: int = Field(default=4, ge=1, le=64)  # the fewest questions at once after a 429

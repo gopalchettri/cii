@@ -554,20 +554,21 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """G268: a pending version a regenerate replaced has left the register, so the delivery's next target is
-    no copy for taking its words. Before, the delivery's list kept it, and that target was blocked."""
+    no copy for taking its words. Before, the delivery's list kept it, and that target was blocked. The set
+    saves in slot order, so p2 is checked once p1's version 1 is replaced."""
     record_id = _written_run(["Threat 1", "Threat 2"])
     first, other = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
     replaced = _scenarios().find_one({"_id": first})["content"]["statement"]
-    superseded, supersede = threading.Event(), path_writing.supersede_scenario_version
+    superseded: list[str] = []
+    supersede = path_writing.supersede_scenario_version
 
     def supersede_and_tell(*args: Any) -> None:
         supersede(*args)
-        superseded.set()
+        superseded.append(args[1])
 
     def answer(prompt: str) -> dict[str, Any]:
         if "Threat 2" not in prompt:  # p1: other words
             return _answer_for(prompt) | {"scenario_statement": replaced.replace("tamper with", "disrupt")}
-        assert superseded.wait(10)  # p2 is checked once p1's version 1 is replaced
         return _answer_for(prompt) | {"scenario_statement": replaced}
 
     monkeypatch.setattr(path_writing, "supersede_scenario_version", supersede_and_tell)
@@ -575,6 +576,7 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
     assert _regenerate(client, api_key, record_id, [first, other]).status_code == 202
     _deliver(record_id, 2)
     assert _scenarios().find_one({"_id": scenario_id(record_id, "p2", 2)})["status"] == ScenarioStatus.DONE
+    assert superseded == [first, other]
 
 
 @pytest.mark.usefixtures("sent")

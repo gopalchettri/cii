@@ -903,6 +903,7 @@
       "tenant_id",
       "entity_id",
       "status",
+      "generation",
       "job"
      ]
     }

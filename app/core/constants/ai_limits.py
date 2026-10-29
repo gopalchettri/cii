@@ -29,10 +29,11 @@ class AiLimits:
     # A worker asks a rate-limited (HTTP 429) model again, not its fallback (55-99 s), as rate_limited_wait
     # says; the API retries a 429 as any busy answer.
     RATE_LIMITED_WAITS_SECONDS: Final = (2, 5, 10, 15)
-    RATE_LIMITED_JITTER: Final = 0.2
-    # a longer Retry-After is honoured up to this (CII_AI_BUSY_MAX_WAIT_SECONDS, one gateway window: 60)
+    RATE_LIMITED_JITTER: Final = 0.2  # +-, after the cap: pods refused together do not ask again together
+    # A longer Retry-After is honoured up to this (CII_AI_BUSY_MAX_WAIT_SECONDS: 20). LiteLLM's is always its
+    # whole 60 s window, yet the answer room its calls reserved and did not use comes back within seconds.
     RATE_LIMITED_MAX_WAIT_SECONDS: Final = TUNING.ai_busy_max_wait_seconds
-    # one call's 429 waits in all, then the fallback (CII_AI_BUSY_TOTAL_WAIT_SECONDS, one window: 60)
+    # one call's 429 waits in all, then the fallback (CII_AI_BUSY_TOTAL_WAIT_SECONDS: 60; tries 0/20/40/60 s)
     RATE_LIMITED_TOTAL_WAIT_SECONDS: Final = TUNING.ai_busy_total_wait_seconds
     # A gateway 429 limits the AI calls in flight on every pod (AiSlots.note_rate_limited):
     # never below: every running job still moves; fewer only starves them (CII_AI_BUSY_LIMIT_FLOOR: 4)
@@ -44,6 +45,9 @@ class AiLimits:
     CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
     # Prompt characters per token: 4.3-6.1 measured on Kimi-K2.6; 3 leaves room for glm and non-English text.
     PROMPT_CHARS_PER_TOKEN: Final = 3
+    # the most tokens (prompt estimate + answer room) one AI call may hold; a bigger batch is sent as halves
+    # (CII_AI_CALL_TOKENS_LIMIT: 20000)
+    CALL_TOKENS_LIMIT: Final = TUNING.ai_call_tokens_limit
     # a timed-out or still rate-limited model is asked last this long (CII_AI_MODEL_COOL_DOWN_SECONDS: 120)
     MODEL_COOL_DOWN_SECONDS: Final = TUNING.ai_model_cool_down_seconds
     SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod

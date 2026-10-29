@@ -23,7 +23,6 @@ from app.core.config import Settings
 from app.core.constants import (
     LITELLM_MODEL_PREFIX,
     ChatModule,
-    Generation,
     Lease,
     Queue,
     ThreatFinding,
@@ -761,7 +760,7 @@ def test_each_ai_module_s_workers_can_fill_its_cap_and_no_one_job_takes_it_all()
     assert limits and all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
     calls_per_job = {  # a job's chat calls in flight, and the module whose AI slots they hold
         Queue.THREATS: (ChatModule.SCENARIO, ThreatFinding.AI_BATCHES_AT_ONCE),
-        Queue.SCENARIOS: (ChatModule.SCENARIO, Generation.WRITER_BATCH),
+        Queue.SCENARIOS: (ChatModule.SCENARIO, 1),  # a set's calls, one after another
         Queue.REMEDIATION: (ChatModule.REMEDIATION, 1),  # one plan, one call
         Queue.SERVICEMAPPER: (ChatModule.SERVICE_MAPPER, 1),  # one mapping, one call
     }

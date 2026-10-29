@@ -9,7 +9,7 @@
 #   oc -n ai-common rollout status deployment/worker-reaper --timeout=10m
 #   oc apply -f deploy/deploy_threatgen.yaml
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
-# New release: in every deploy_*.yaml, replace the image tag (29-Oct-2026) with the one build-image.bat printed.
+# New release: in every deploy_*.yaml, replace the image tag (31-Oct-2026) with the one build-image.bat printed.
 # Quota here: 6 CPU, 12 Gi memory (limits), 60 Gi storage. These pods use 5.2 CPU and 10.5 Gi, with the monitoring
 # proxy (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an update never adds a pod (maxSurge 0 everywhere). No volumes.
 # One worker per queue: the quota has no room for a second. A worker update stops the old pod first (maxSurge 0):
@@ -58,7 +58,7 @@ spec:                                            # what to run
                 topologyKey: kubernetes.io/hostname   # on another node: one node failure leaves an API pod serving (D29)
       containers:                                # the programs in the pod
         - name: api                              # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # a tag never changes content: pull only if missing
           command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --proxy-headers, "--forwarded-allow-ips=*", --no-access-log, --timeout-graceful-shutdown, "30"]   # start the web API on port 8000
           envFrom:                               # every setting, as environment variables
@@ -125,7 +125,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_threats]   # 2 threads on the tsg_threats queue
           envFrom:                               # every setting, as environment variables
@@ -187,7 +187,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_scenarios]   # 2 threads on the tsg_scenarios queue
           envFrom:                               # every setting, as environment variables
@@ -249,7 +249,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "1", -Q, tsg_controls]   # 1 thread on the tsg_controls queue (each job maps several scenarios at once)
           envFrom:                               # every setting, as environment variables
@@ -311,7 +311,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_remediation]   # 4 threads on the tsg_remediation queue: 4 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS)
           envFrom:                               # every setting, as environment variables
@@ -373,7 +373,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_servicemapper]   # 2 threads on the tsg_servicemapper queue
           envFrom:                               # every setting, as environment variables
@@ -437,7 +437,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "3", -Q, tsg_maintenance]   # 3 threads on the tsg_maintenance queue
           envFrom:                               # every setting, as environment variables
@@ -494,7 +494,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: beat                             # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, beat, -s, /tmp/beat/schedule]   # the timer; it keeps its schedule file in /tmp/beat
           envFrom:                               # every setting, as environment variables

@@ -23,7 +23,6 @@ _TELLING_ORDER = (
     (PlanStage.ATTACKER, PlanLoss.NO_LINKED_ACTOR),
     (PlanStage.MERGE, CandidateRejection.ASSET_TYPE_MISMATCH),
     (PlanStage.MERGE, PlanLoss.MERGED),
-    (PlanStage.CHECKS, PlanLoss.NEEDS_UNRECORDED_ELSEWHERE),
     (PlanStage.CHECKS, CandidateRejection.ASSET_TYPE_MISMATCH),
     *((PlanStage.GAP_FILL, reason) for reason in (PlanLoss.TYPE_UNMATCHED, PlanLoss.NO_LINKED_ACTOR)),
     *((PlanStage.GAP_FILL, reason) for reason in (CandidateRejection.NEEDS_UNRECORDED, PlanLoss.NOT_JUDGED)),
@@ -48,10 +47,7 @@ def gate_drops(audits: list[CategoryAudit], system_names: dict[str, str]) -> lis
         for rejected in audit.rejected:
             detail = replace_codes_with_names(rejected.get("detail") or "", system_names)
             stage, reason = PlanStage.GATE, str(rejected["code"])
-            if under := rejected.get("under"):  # refused here for a need found under another kind
-                stage, reason = PlanStage.CHECKS, PlanLoss.NEEDS_UNRECORDED_ELSEWHERE
-                detail = f"{under}: {detail}"
-            elif rejected["code"] == CandidateRejection.ASSET_TYPE_MISMATCH:
+            if rejected["code"] == CandidateRejection.ASSET_TYPE_MISMATCH:
                 stage = PlanStage.CHECKS
             key = f"lib:{rejected['library_id']}"
             drops.append(plan_drop(key, rejected["threat"], kind, stage, reason, detail))
@@ -106,7 +102,7 @@ def _counts(findings: ThreatFindings, plan: dict[str, Any], by: Counter[tuple[st
         "not_relevant": by[(PlanStage.GATE, CandidateRejection.NOT_RELEVANT)],
         "needs_unrecorded": by[(PlanStage.GATE, CandidateRejection.NEEDS_UNRECORDED)],
         "asset_type_mismatch": by[(PlanStage.CHECKS, CandidateRejection.ASSET_TYPE_MISMATCH)],
-        "needs_unrecorded_elsewhere": by[(PlanStage.CHECKS, PlanLoss.NEEDS_UNRECORDED_ELSEWHERE)],
+        "needs_unrecorded_elsewhere": 0,  # one verdict per threat: a need refuses it under every category
     }
     selected = sum(bool(path["selected"]) for path in plan["paths"])
     return {

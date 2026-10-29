@@ -762,6 +762,78 @@ builds and pods. Tick each line as you finish it; the details follow.
 - [ ] Step 7. Remove TSG's old copy from ai-remediation (once)
 - [ ] Step 8. Check
 
+**What is new in this release (31-Oct-2026):**
+- The service mapper: `POST /v1/service-mapper` answers 500 on UAT. A MongoDB rule from the 20-Oct release on
+  `tsg_service_mappings` still requires the field `generation`, which 29-Oct-2026 does not write, and the app's
+  MongoDB user may not change that rule (`collMod`), so MongoDB refuses every new mapping. This release writes
+  `generation` again, so that rule fits it: after step 6 a new mapping is accepted (202), with nothing for the
+  DBA to do. Only to fix the running 29-Oct-2026 release before then, the DBA, once: first the read-only check,
+  in `mongosh` on TSG's database:
+
+  ```text
+  db.getCollectionInfos({name:"tsg_service_mappings"})[0].options.validator
+  ```
+
+  **You should see:** a `$jsonSchema` whose `required` list holds `generation`. Then the fix:
+
+  ```text
+  db.runCommand({collMod:"tsg_service_mappings", validator:{$jsonSchema:{bsonType:"object", required:["_id","tenant_id","entity_id","status","job"]}}, validationLevel:"moderate", validationAction:"error"})
+  ```
+
+  **You should see:** `{ ok: 1 }`, and the check again shows `required` without `generation`. It takes effect at
+  once, on the running release: a new mapping is accepted (202). No restart is needed. This release's pods then
+  log `mongodb.validator_not_applied` (a warning) once at start-up, since their rule requires `generation`
+  again: nothing to do, they write it.
+- Before step 1, the DBA: the 4 SQL files of 29-Oct-2026, if they are not installed yet (no SQL file changed
+  since): `tsg_GetServiceMapperAssociations.sql`, `tsg_Onboarding_GetSectorsAndSubsectorsList.sql`,
+  `tsg_Onboarding_GetServicesWithSectorDetails.sql`, then `grants.sql`. Without them every service-mapper run
+  ends `failed` with `setup_error`.
+- Step 2: build with `deploy\build-image.bat 31-Oct-2026`. The deploy files already carry that tag, so step 3
+  only shows it. A new tag is a must: the pods pull an image only when their node lacks its tag
+  (`IfNotPresent`), so an image rebuilt under `29-Oct-2026` would never reach them.
+- Step 5: the secrets check prints nothing: this release adds no secret.
+- The settings change in two steps.
+  - **Now, on the running 29-Oct-2026 image** (safe on either image): `CII_AI_BUSY_MAX_WAIT_SECONDS` from
+    `"60"` to `"20"`; `CII_AI_BUSY_TOTAL_WAIT_SECONDS` stays `"60"`. Set it in the running release's
+    `deploy\configmap.yaml`, then apply it and restart (Part 5, "Change a setting or secret later"). After a 429
+    TSG then asks again at 20, 40 and 60 s instead of once at 60 s: the gateway gives back, within seconds, the
+    answer room its calls held and did not use.
+  - **With this release's image only** (step 5 applies them, step 6 starts the image that needs them; go on to
+    step 6 right after step 5). `deploy\configmap.yaml` holds them, for kimi-k2.5's budget of 25,000 tokens a
+    minute:
+
+    | Setting | 29-Oct-2026 | 31-Oct-2026 | When the budget is 300,000 |
+    |---|---|---|---|
+    | `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 0 | 24000: each call waits its turn instead of drawing a 429 | 290000 |
+    | `CII_THREATS_PER_QUESTION` | 10 | 40 whole threats a question (35 threats: 1 question) | 12 (optional, faster) |
+    | `CII_THREAT_QUESTIONS_AT_ONCE` | 8 | 1 | 3 (optional) |
+    | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 16 | 4 (2 workers × 2 jobs × 1 call) | 16, with more worker threads |
+    | `CII_ANSWER_TOKENS_RELEVANCE_GATE`, `..._WRITE_SCENARIO`, `..._REPAIR_SCENARIO`, `..._PLAN_CHECK` | 4096, 3072, 3072, 2048 | 10240, 6144, 6144, 3072: answers for whole sets | the same |
+    | `CII_SCENARIOS_WRITTEN_AT_ONCE` | 6 (threads) | 6 scenarios in one write call; 3 if a write times out | 6 |
+    | `CII_AI_CALL_TOKENS_LIMIT` (new) | - | 20000: a bigger call is sent as two halves | 250000 |
+    | `CII_SCENARIO_CHAT_FALLBACK_MODEL` | glm-5.3 | `""`: none (glm-5.3 cannot write a whole set) | `""` |
+
+- **Rollback** is the pair: tag `29-Oct-2026` with that release's `configmap.yaml` (the 29-Oct-2026 column),
+  never one without the other: on the old image, 24000 tokens a minute and 1 question at once make threat
+  finding slow. Use the 29-Oct-2026 code folder (keep `CII_AI_BUSY_MAX_WAIT_SECONDS: "20"` there) and Part 5,
+  "Roll back to the previous release", steps 2 and 3. Skip its step 1: 29-Oct-2026 has the monitoring proxy and
+  the reaper worker too. Without the DBA's `collMod`, `POST /v1/service-mapper` answers 500 again on
+  29-Oct-2026, which does not write `generation`.
+- **What users see:**
+  - One card per threat. A threat that applies as several kinds of attack is one scenario, told as the kind the
+    AI names first; the others show as "also" ("Category: Denial of Service (also Tampering)", the API's
+    `contributing_categories`). Before, each kind had its own near-copy card. Entity 69: 41 planned paths
+    become 16, with the same 15 threats selected.
+  - Far fewer AI calls. A click (plan + first set of 6) makes 3 AI calls when every answer is good (1 threat
+    check, 1 write, 1 review) and at most 4 a set; it made 68 attempts on 29 Oct. At 25,000 tokens a minute a
+    click shows most cards in about 2 minutes (about 3.5 when some scenarios need a second round), not 4-6.
+  - A set's good scenarios are saved together; any that need a rewrite follow a little later.
+  - No API path, request or answer changes; fields are only added. Every prompt label moves to `-2`
+    (`planner-2`, `scenario writer-2`, `remediation-2`): tell the UI team.
+- After step 8, one click on UAT: at most 7 AI attempts, at most 2 refused (429), at most 4 minutes; the
+  service-mapper POST answers 202. A write call over 100 s: set `CII_SCENARIOS_WRITTEN_AT_ONCE` to `"3"`.
+- A pod that logs `mongodb.validator_stale` at start-up: Part 5.
+
 **What is new in this release (29-Oct-2026):**
 - Before step 1: 4 files in `scripts\sql` changed since the 24-Oct release. The DBA installs
   `tsg_GetServiceMapperAssociations.sql` (changed), `tsg_Onboarding_GetSectorsAndSubsectorsList.sql` and
@@ -809,7 +881,7 @@ The same as Part 2, step 1.
 ### Step 2. Build the app image and write down its tag
 
 The same as Part 2, step 4. When "What is new in this release" names a tag, build with that tag, e.g.
-`deploy\build-image.bat 29-Oct-2026`; otherwise:
+`deploy\build-image.bat 31-Oct-2026`; otherwise:
 
 ```powershell
 deploy\build-image.bat
@@ -991,7 +1063,9 @@ oc adm top pods -n ai-common -l app=worker-reaper
 restarted with `OOMKilled` (Part 5), ask the developer to raise its limit.
 
 Then watch the first threat-scenario run: in Grafana, the panel **AI gateway refusals (429) per minute** should
-stay at 0. If it does not: Part 5, the row "The AI gateway answers 429".
+stay at 0, or near it (at most 2 a click: threat scenarios wait their turn under
+`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, 24000 at kimi-k2.5's 25,000 budget). If it does not: Part 5, the row "The
+AI gateway answers 429".
 
 After every release, run the worker list of step 7 again: each worker once, none in ai-remediation.
 
@@ -1031,7 +1105,8 @@ the events, in the left column below.
 | `field is immutable` | An older Deployment with the same name is still there. In `ai-threatgen`: Part 2, step 9. In `ai-common` (the chatbot runs there too): run `oc -n ai-common get deployment <name> --show-labels`. If it shows `part-of=tsg-monitoring`, `part-of=tsg` or `app.kubernetes.io/part-of=tsg-observability` (TSG's older label), it is TSG's: run `oc -n ai-common delete deployment <name>` and apply again (the end of Part 2, step 9 removes all the older ones at once). Otherwise it is not TSG's: do not delete it, ask its owner (the chatbot team). |
 | `Pending` | The last lines (Events) of `oc -n <project> describe pod <name>` say why. `unbound ... PersistentVolumeClaims`: run `oc -n <project> get pvc`. A claim that is `Pending` with an empty `STORAGECLASS` means the cluster has no default storage class: ask the cluster admin which one to use (the other claims there show one) and tell the developer, who names it in `deploy\deploy_common.yaml`. With that new file, delete the `Pending` claim (it holds no data yet: `oc -n <project> delete pvc <name>`) and apply again. Otherwise ask the cluster admin for storage. |
 | `/ready` answers `not_ready` (503) | The API cannot reach MongoDB (`"mongo":false`): `oc -n ai-threatgen logs deployment/api` shows why. Another `false` (SQL Server, Redis) or a worker count of 0 is reported but does not make it `not_ready`: that store or worker's own logs show why. |
-| The AI gateway answers 429 (Grafana: **AI gateway refusals (429) per minute**, by model, above 0) | A few that stop by themselves need nothing: TSG waits and asks again. If the panel stays above 0 for 10 minutes, find the budget the gateway names: "The budget a 429 names" below. Two sets of workers are the other cause: Part 4, step 7. |
+| The AI gateway answers 429 (Grafana: **AI gateway refusals (429) per minute**, by model, above 0) | A few that stop by themselves need nothing: TSG asks again at 20, 40 and 60 s (`CII_AI_BUSY_MAX_WAIT_SECONDS` 20, `CII_AI_BUSY_TOTAL_WAIT_SECONDS` 60); a threat-scenario call still refused then waits for its job's next try (there is no backup model). If the panel stays above 0 for 10 minutes, find the budget the gateway names: "The budget a 429 names" below. Two sets of workers are the other cause: Part 4, step 7. |
+| `mongodb.validator_stale` (an error) in a pod's start-up log | MongoDB keeps an older rule on the collection the line names that still requires a field TSG no longer writes, and the app's MongoDB user may not replace it (`collMod`), so MongoDB refuses new records there (their API answers 500). The pod starts anyway. The line names the fields and the command to run: send it to the DBA. It applies at once, with no restart; the next start-up logs nothing. `mongodb.validator_not_applied` (a warning) means TSG could not read the rule: nothing to do unless records are refused. |
 | `CrashLoopBackOff` | `oc -n <project> logs deployment/<name> --previous` shows why (often a setting). |
 | Flower stops with `invalid literal for int() ... 'tcp://...'` | The pod still takes OpenShift's service variables (`FLOWER_PORT`): apply this release's `deploy\deploy_common.yaml` (Part 2, step 13). |
 
@@ -1044,10 +1119,11 @@ foreach ($w in 'worker-threats', 'worker-scenarios', 'worker-remediation', 'work
 
 **You should see:** nothing (every 429 was waited out and answered: change nothing), or lines with e.g.
 `"limit_type": "tokens"` and `"limit_scope": "team", "limit": 300000`: a budget of 300,000 tokens a minute. Under
-that worker's module, set its `CII_<MODULE>_CHAT_TOKENS_PER_MINUTE` in `deploy\configmap.yaml` a little below it
-(e.g. `"280000"`; threat scenarios: `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`); for `"limit_type": "requests"`, its
-`..._CHAT_REQUESTS_PER_MINUTE`. Apply it and restart the app ("Change a setting or secret later"). No new image is
-needed.
+that worker's module, set its `CII_<MODULE>_CHAT_TOKENS_PER_MINUTE` in `deploy\configmap.yaml` just under it:
+`"24000"` at a budget of 25,000 (UAT's kimi-k2.5 since 31-Oct-2026), `"290000"` at 300,000 (threat scenarios:
+`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`; at 300,000 also the other values of that column in Part 4, "What is new
+in this release (31-Oct-2026)"); for `"limit_type": "requests"`, its `..._CHAT_REQUESTS_PER_MINUTE`. Apply it and
+restart the app ("Change a setting or secret later"). No new image is needed.
 
 ### Change a setting or secret later
 
@@ -1164,9 +1240,9 @@ read the job queues in Redis with the same `tsg-secrets`; and the monitoring pro
 Example: a user starts a run for one asset.
 
 1. The API puts a job on the queue `tsg_threats`. **worker-threats** asks the AI which library threats apply to
-   the asset (about 40 AI calls, 8 at a time).
-2. The run moves on to `tsg_scenarios`. **worker-scenarios** writes the first set of 6 scenarios at once, each with
-   its evidence.
+   the asset (one AI call for up to 40 threats: usually 1 call).
+2. The run moves on to `tsg_scenarios`. **worker-scenarios** writes the first set of 6 scenarios in one AI call
+   and checks them in one more, each with its evidence.
 3. As each scenario is saved, `tsg_controls` gets a job. **worker-controls** picks its controls (6 scenarios at
    once).
 4. When the user asks for a remediation plan, `tsg_remediation` gets a job. **worker-remediation** writes it.
@@ -1204,19 +1280,27 @@ scenarios use kimi-k2.5, remediation and the service mapper glm-5.3. kimi-k2.5 t
 scenarios send it at most 180 (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`): the gateway admin confirmed that only TSG
 uses kimi-k2.5 (Oct 2026). Modules put on one model and key split its limit.
 
-Example: a kimi call takes about 5 seconds, so 180 a minute is about 15 calls running at once for all of TSG (every
-pod together).
+Tokens are the tighter limit: the organization gets 25,000 kimi-k2.5 tokens a minute (UAT, Oct 2026), and the
+gateway counts each call's question and its whole answer room while it runs. Threat scenarios pace themselves just
+under it (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` 24000), so a call waits its turn instead of drawing a 429.
 
-- One user alone: threat finding asks 8 questions at once. A measured run (36 questions, still 4 at once) took
-  about 1.5 minutes; with 8 at once expect about a minute (not yet measured).
-- 10 users start runs together: 2 runs find threats at once (the worker-threats pod's 2 jobs) and the other 8 wait
-  their turn in `tsg_threats`. 2 runs at 8 questions each already ask for about the 15 calls kimi allows, so a
-  second worker-threats pod would mostly wait for kimi too: at about a minute a run, all 10 finish threat finding in
-  roughly 5 minutes (not yet measured).
+Example: a click (plan + first set of 6) is about 3 big calls (a threat check, a write and a review) and about
+40,000 tokens. At 25,000 a minute that is about 2 minutes, the floor whatever the pods do; at 300,000 about
+1.3 minutes.
+
+- One user alone: threat finding asks one question for up to 40 threats (`CII_THREATS_PER_QUESTION`), one at a
+  time (`CII_THREAT_QUESTIONS_AT_ONCE`); a set is one write and one review, at most 4 calls when some scenarios
+  need a second round.
+- 10 users click together: at 25,000 tokens a minute their roughly 400,000 tokens take about 16 minutes, however
+  the work is spread (an estimate). At 300,000, 2 runs find threats at once (the worker-threats pod's 2 jobs) and
+  the others wait their turn in `tsg_threats` (not yet measured).
 - More pods or more jobs at once would not be faster: they would only wait longer for kimi's turn. That is why the
-  threats and scenarios workers run 2 jobs at a time, one copy each. A second copy would not fit the quota either
-  (6.25 CPU of 6). To go faster, ask the gateway admin for more kimi-k2.5 requests a minute, then raise
-  `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`, `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` and the worker's threads (`-c`).
+  threats and scenarios workers run 2 jobs at a time, one copy each, and threat scenarios ask at most 4 calls at
+  once (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS`: 2 workers × 2 jobs × 1 call). A second copy would not fit the
+  quota either (6.25 CPU of 6). To go faster, ask the gateway admin for more kimi-k2.5 tokens a minute (300,000,
+  or no limit), then use the 300,000 column of Part 4, "What is new in this release (31-Oct-2026)":
+  `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` 290000 and, with more worker threads (`-c`),
+  `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` 16.
 
 Memory was measured (on a laptop): a worker uses about 220 MB. The scenarios worker keeps the evidence index
 loaded: about 450 MB, and up to about 815 MB while it rebuilds the index (its limit is 2 Gi). Only the scenarios
@@ -1229,18 +1313,21 @@ small.
 |---|---|---|
 | `CII_SCENARIO_CHAT_MODEL`, `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | kimi-k2.5, glm-5.3, glm-5.3 | each module's own chat model (with its own `..._CHAT_BASE_URL`, and its key in `secrets.yaml`) |
 | `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 192); remediation's and the service mapper's: 0 = no limit until the gateway admin gives glm-5.3's |
-| `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 0 | 0 = no token pacing. After a gateway 429 that names a token budget, set it a little below that budget (Part 5) |
-| `CII_SCENARIO_CHAT_FALLBACK_MODEL` | glm-5.3 | threat scenarios' backup model; remediation and the service mapper have none |
-| `CII_SCENARIO_MAX_CONCURRENT_FALLBACK_CALLS`, `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 10, 4, 2 | at most 16 calls to glm-5.3 at once in all (it takes 55-99 s a call) |
+| `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 24000 | threat scenarios' kimi-k2.5 tokens a minute (question + answer room), all pods: each call waits its turn instead of drawing a 429. Just under the budget a 429 names: 24000 at 25,000, 290000 at 300,000 (Part 5); 0 = no token pacing |
+| `CII_SCENARIO_CHAT_FALLBACK_MODEL` | `""` | none: a whole set is beyond glm-5.3, so a kimi outage waits and the job tries again, reusing the answers it already got; remediation and the service mapper have none either |
+| `CII_SCENARIO_MAX_CONCURRENT_FALLBACK_CALLS`, `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 10, 4, 2 | calls to glm-5.3 at once (it takes 55-99 s a call); threat scenarios' 10 count only when they have a backup model |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
-| `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 16 | at most 16 threat-scenario questions to kimi-k2.5 at once, all pods together: the cap UAT ran fast with until 24 Oct; TSG also backs off by itself after a gateway 429 |
+| `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 4 | at most 4 threat-scenario calls to kimi-k2.5 at once, all pods together (2 workers × 2 jobs × 1 call: each call is a whole batch or set); 16 with more worker threads at a 300,000 budget; TSG also backs off by itself after a gateway 429 |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (embedding, re-ranking) at once: TSG backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling |
 | `CII_<MODULE>_CHAT_MAX_INPUT_TOKENS`, `..._MAX_OUTPUT_TOKENS`, `..._TIMEOUT_SECONDS` (and the backup's) | kimi-k2.5 114688 / 12288 / 120; glm-5.3 262144 / 12288 / 180 | each module's longest question and answer, in tokens, and its wait for one answer: the gateway's own limits |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 4096, remediation 8192, writing 3072 ... | the answer room each task asks for: the gateway counts it against its token budget while a question runs |
-| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 8, 10, 6, 6 | how much TSG asks at once |
-| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 60, 60, 120, 4, 180 | what TSG does after a "too busy" (429) |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, write and rewrite 6144, review 3072, remediation 8192 ... | the answer room each task asks for (the gate's, writer's and reviewer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
+| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 | how much TSG asks at once: threat questions per run and whole threats per question (35 threats: 1 question), scenarios in one write call (3 if a write times out), reranker calls per worker |
+| `CII_AI_CALL_TOKENS_LIMIT` | 20000 | the most tokens one call may hold (question + answer room); a bigger batch is sent as two halves; 250000 at a 300,000 budget |
+| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 120, 4, 180 | what TSG does after a "too busy" (429): it asks the same model again at 20, 40 and 60 s (each wait ±20 %) |
 
-Every line above is changed in `configmap.yaml` and applied with a rollout restart: no new image. `.env.example` explains each in a line.
+Every line above is changed in `configmap.yaml` and applied with a rollout restart: no new image. The 31-Oct-2026
+values need that release's image, and going back to 29-Oct-2026 takes back its values too (Part 4, "What is new
+in this release (31-Oct-2026)"). `.env.example` explains each in a line.
 
 **How TSG backs off after a 429.** When the gateway answers 429 ("too many"), TSG sets one limit for all pods on that
 pool (the search calls', or the module's chat calls'): half the calls in flight at that moment. Each answered call raises it a little, and a few minutes after the
@@ -1248,8 +1335,10 @@ last 429 it disappears: TSG is back to the pool's own limit (none at 0). The Gra
 out of that limit (`tsg_ai_slots_cap` is the limit, 0 = none; `tsg_ai_slots_in_use` counts the calls in flight, also
 at no limit): **No limit set** is the normal state.
 
-If kimi keeps refusing (HTTP 429) or timing out, a pod sends threat scenarios' calls to glm-5.3 first for 2 minutes
-(to kimi when all 10 of their glm-5.3 places are busy), then tries kimi again.
+If kimi keeps refusing (HTTP 429) or timing out, a threat-scenario job waits and tries again later, reusing the
+answers it already got: threat scenarios have no backup model (`CII_SCENARIO_CHAT_FALLBACK_MODEL` `""`). With a
+backup set, a pod sends their calls to it first for 2 minutes (to kimi when all its places are busy), then tries
+kimi again.
 
 ### Updates and node failures
 

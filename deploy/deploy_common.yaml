@@ -29,7 +29,7 @@
 #   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
 # The reaper worker is an app pod: restart it with the app's pods (new settings, passwords or image tag):
 #   oc -n ai-common rollout restart deployment/worker-reaper
-# New release: Flower runs from the app image, so its tag (29-Oct-2026) changes with the deploy_*.yaml files.
+# New release: Flower runs from the app image, so its tag (31-Oct-2026) changes with the deploy_*.yaml files.
 #
 # BEFORE THE FIRST APPLY - images. The cluster pulls only from Quay
 # (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc). The 8 monitoring images are built on Red Hat
@@ -785,7 +785,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: flower                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, flower, --address=0.0.0.0, --port=5555, --url_prefix=flower]   # Flower on port 5555, under /flower
           envFrom:                               # every app setting, as environment variables
@@ -851,7 +851,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:29-Oct-2026   # the TSG image (change the tag per release, with the deploy_*.yaml files)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release, with the deploy_*.yaml files)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_reaper]   # 2 threads on the tsg_reaper queue: a reaper pass never waits behind the sweep
           envFrom:                               # every setting, as environment variables

@@ -4,6 +4,7 @@ takes one); a repository adds a named method only for a real rule (a lease, a gu
 aggregate). No timeout here: the records that need one keep their own. Every write waits for a majority
 (the client's write concern, app/core/database.py)."""
 
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -311,22 +312,64 @@ def _create_compressed(collection: MongoCollection) -> None:
 
 def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> None:
     """A $jsonSchema validator refusing a new or changed record without a `required` field: collMod on an
-    existing collection, else the collection created with it; a server or user refusing it is logged."""
+    existing collection whose stored rule differs, else the collection created with it. Never stops start-up:
+    a read or change refused is logged."""
     if not required:
         return
-    options: Record = {
+    wanted: Record = {
         "validator": {"$jsonSchema": {"bsonType": "object", "required": list(required)}},
         "validationLevel": "moderate",  # records stored invalid before stay writable
         "validationAction": "error",
     }
     database, name = collection.database, collection.name
     try:
-        if database.list_collection_names(filter={"name": name}):
-            database.command("collMod", name, **options)
-        else:
-            database.create_collection(name, **options)
-    except PyMongoError as error:  # an older server or no collMod right: start-up goes on without it
+        found = list(database.list_collections(filter={"name": name}))
+    except PyMongoError as error:  # the stored rule could not be read: start-up goes on without it
         log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, message=str(error))
+        return
+    stored: Record = found[0].get("options", {}) if found else {}
+    if found and _comparable_rule(stored) == _comparable_rule(wanted):
+        return
+    try:
+        if found:
+            database.command("collMod", name, **wanted)
+        else:
+            database.create_collection(name, **wanted)
+    except PyMongoError as error:  # an older server or no collMod right: start-up goes on without it
+        _log_validator_refused(name, stored, wanted, error)
+
+
+def _required_fields(options: Mapping[str, Any]) -> list[str]:
+    """The fields a collection's $jsonSchema validator requires."""
+    return list(options.get("validator", {}).get("$jsonSchema", {}).get("required", []))
+
+
+def _comparable_rule(options: Mapping[str, Any]) -> tuple[Any, ...]:
+    """A collection's validator with its required fields in any order, its validation level and action."""
+    validator = options.get("validator", {})
+    schema = {**validator.get("$jsonSchema", {}), "required": sorted(_required_fields(options))}
+    return (
+        {**validator, "$jsonSchema": schema},
+        options.get("validationLevel"),
+        options.get("validationAction"),
+    )
+
+
+def _log_validator_refused(name: str, stored: Record, wanted: Record, error: PyMongoError) -> None:
+    """A refused validator: an error naming the stale fields and the command for a DBA when the stored rule
+    still requires fields the code no longer lists (every insert is refused), else a warning."""
+    stale_fields = sorted(set(_required_fields(stored)) - set(_required_fields(wanted)))
+    if not stale_fields:
+        log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, message=str(error))
+        return
+    command = f"db.runCommand({json.dumps({'collMod': name, **wanted})})"
+    log.error(
+        LogEvent.MONGODB_VALIDATOR_STALE,
+        collection=name,
+        stale_fields=stale_fields,
+        command=command,
+        message=str(error),
+    )
 
 
 class VectorRepository(MongoRepository):

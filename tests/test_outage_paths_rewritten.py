@@ -46,16 +46,26 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _write_batch,
     chat,
     sent,
+    unreadable_then,
 )
 
 
 def _busy_for(threat_name: str) -> Callable[[str], dict[str, Any]]:
-    """The writer's answers, with the AI service busy for `threat_name`."""
+    """The writer's answers, with the AI service busy for `threat_name`: its first answer is unreadable and
+    its rewrite (the set's second round, that path's alone) meets the outage."""
+    return unreadable_then(threat_name, Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY))
+
+
+def busy_for_and_blocked(busy_threat: str, blocked_threat: str) -> Callable[[str], dict[str, Any]]:
+    """_busy_for(busy_threat), with `blocked_threat`'s scenario citing an advisory id: blocked in the set's
+    first round, so given up at once, apart from the busy path's rewrite."""
+    busy = _busy_for(busy_threat)
 
     def answer(user_prompt: str) -> dict[str, Any]:
-        if f'"{threat_name}"' in user_prompt:
-            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY)
-        return _answer_for(user_prompt)
+        written = busy(user_prompt)
+        if f'"{blocked_threat}"' in user_prompt:
+            return written | {"scenario_statement": written["scenario_statement"] + " CVE-2024-1234 helps."}
+        return written
 
     return answer
 
@@ -92,8 +102,8 @@ def test_a_path_the_ai_was_busy_for_on_the_last_try_is_written_by_the_next_set(
 @pytest.mark.usefixtures("sent")
 def test_a_path_that_keeps_failing_is_still_given_up(fake_chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """An outage counts an attempt, so MAX_PATH_ATTEMPTS ends it; any other failure is given up at once."""
-    fake_chat.responders[AiTask.WRITE_SCENARIO] = _busy_for("Threat 2")
-    record_id = _queued_run(["Threat 1", "Threat 2", "Unreadable threat"])
+    fake_chat.responders[AiTask.WRITE_SCENARIO] = busy_for_and_blocked("Threat 2", "Blocked threat")
+    record_id = _queued_run(["Threat 1", "Threat 2", "Blocked threat"])
     tried = {"plan.paths.1.attempts": Generation.MAX_PATH_ATTEMPTS - 1}
     _sessions().update_one({"_id": record_id}, {"$set": tried})
     _write_batch(_on_last_try(record_id))

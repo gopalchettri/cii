@@ -17,14 +17,12 @@ _GATEWAY_LIMIT: Final = re.compile(
 
 def rate_limited_wait(retry_after: str | None, attempt: int, waited: float) -> float | None:
     """How long a rate-limited request waits before it is asked again: the attempt's
-    RATE_LIMITED_WAITS_SECONDS +-RATE_LIMITED_JITTER, or its Retry-After header's seconds when longer; each
-    wait at most RATE_LIMITED_MAX_WAIT_SECONDS, never past RATE_LIMITED_TOTAL_WAIT_SECONDS in all. None:
-    asked enough (one retry a step), the outage reaches the caller."""
+    RATE_LIMITED_WAITS_SECONDS, or its Retry-After header's seconds when longer, at most
+    RATE_LIMITED_MAX_WAIT_SECONDS, then +-RATE_LIMITED_JITTER; never past RATE_LIMITED_TOTAL_WAIT_SECONDS in
+    all. None: asked enough (one retry a step), the outage reaches the caller."""
     left = AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS - waited
     if attempt >= len(AiLimits.RATE_LIMITED_WAITS_SECONDS) or left <= 0:
         return None
-    jitter = random.uniform(-AiLimits.RATE_LIMITED_JITTER, AiLimits.RATE_LIMITED_JITTER)  # noqa: S311
-    own_step = AiLimits.RATE_LIMITED_WAITS_SECONDS[attempt] * (1 + jitter)
     try:
         asked = float(retry_after or "")
     except ValueError:  # none, or an HTTP date (LiteLLM's proxy sends seconds)
@@ -32,7 +30,11 @@ def rate_limited_wait(retry_after: str | None, attempt: int, waited: float) -> f
     # A gateway still full answers 429 again: a Retry-After shorter than our own step is not asked again
     # sooner. "nan" or "inf" asks for nothing.
     asked = asked if math.isfinite(asked) else 0.0
-    return min(max(own_step, asked), AiLimits.RATE_LIMITED_MAX_WAIT_SECONDS, left)
+    own_step = AiLimits.RATE_LIMITED_WAITS_SECONDS[attempt]
+    capped = min(max(own_step, asked), AiLimits.RATE_LIMITED_MAX_WAIT_SECONDS)
+    # Jittered after the cap: every LiteLLM 429 asks for 60 s, so capped waits would all be the same.
+    jitter = random.uniform(-AiLimits.RATE_LIMITED_JITTER, AiLimits.RATE_LIMITED_JITTER)  # noqa: S311
+    return min(capped * (1 + jitter), left)
 
 
 def busy_retry_wait(attempt: int) -> float | None:

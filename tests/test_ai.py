@@ -23,6 +23,7 @@ from app import ai, container
 from app.ai.common import UnusableAiAnswer
 from app.ai.profiles import CHAT_MODEL_PROFILES
 from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
+from app.core.ai_tuning_settings import TUNING
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     CHAT_MAX_OUTPUT_TOKENS,
@@ -272,8 +273,9 @@ def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pyte
 def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 429 waits 2, 5, 10, 15 s +-20%, or its Retry-After when longer (at most 60 s), at most 60 s in all,
-    and asks the same model again: kimi answers in ~5 s, the fallback glm-5.3 in 55-99 s."""
+    """A 429 waits 2, 5, 10, 15 s, or its Retry-After when longer (at most CII_AI_BUSY_MAX_WAIT_SECONDS),
+    +-20%, at most 60 s in all, and asks the same model again: kimi answers in ~5 s, the fallback glm-5.3 in
+    55-99 s."""
     waits: list[float] = []
     monkeypatch.setattr(ai.common, "sleep_unless_lease_lost", waits.append)
     retry_after = iter(["20", "3", "", "", ""])
@@ -291,7 +293,7 @@ def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
         "ok": True
     }
     assert asked == ["first"] * 5 + ["fallback"]
-    assert waits[0] == 20 and 4 <= waits[1] <= 6 and 8 <= waits[2] <= 12 and 12 <= waits[3] <= 18
+    assert 16 <= waits[0] <= 24 and 4 <= waits[1] <= 6 and 8 <= waits[2] <= 12 and 12 <= waits[3] <= 18
     assert sum(waits) <= AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS
 
 
@@ -1129,7 +1131,7 @@ def test_every_chat_task_asks_for_its_own_answer_room_never_the_model_s_whole() 
     chat_tasks = set(AiTask) - {AiTask.EMBED, AiTask.RERANK}
     assert set(CHAT_MAX_OUTPUT_TOKENS) == chat_tasks
     assert all(256 <= room < 12_288 for room in CHAT_MAX_OUTPUT_TOKENS.values())
-    assert CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE] == 4096
+    assert CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE] == TUNING.answer_tokens_relevance_gate
 
 
 def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pytest.MonkeyPatch) -> None:

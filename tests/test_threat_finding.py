@@ -31,7 +31,7 @@ from app.models.library.library import LibraryActor, ThreatLibrary
 from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.plan import ActorPick, PlannedActor, PlannedThreat, Verdict
 from app.search.service import LibrarySearch
-from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in, truncated
+from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in
 from tests.planner_samples import (
     ACTORS,
     ADMIN_ABUSE,
@@ -47,7 +47,9 @@ from tests.planner_samples import (
     S,
     audit_of,
     finder,
+    gap_fill,
     gap_fill_for_elevation,
+    gap_filled,
     judged,
     library_search,
     planned,
@@ -104,70 +106,76 @@ def test_the_landscape_names_systems_by_alias_and_keeps_to_its_budget() -> None:
     assert "…" in scada_line and '"asset_type": "OT"' in scada_line
 
 
+#: A candidate as the gate is shown it: the sample ransomware, filed under Tampering and Denial of Service.
+_CANDIDATE = {"slot": "R1", "threat_type": "Malware", "threat": RANSOMWARE.name, "attackers": []}
+_CANDIDATE["categories"] = [S.TAMPERING, S.DENIAL_OF_SERVICE]
+
+
+def _applies(**fields: Any) -> dict[str, Any]:
+    """The sample candidate's verdict: relevant as Tampering, HIGH, on SYS1."""
+    kind = {"name": "Tampering", "impact": "HIGH", "reason": "It encrypts SYS1."}
+    verdict = {"slot": "R1", "threat": RANSOMWARE.name, "relevant": True, "categories": [kind]}
+    return verdict | {"systems": ["SYS1"], "entry_points": ["SYS1"], "confidence": 80} | fields
+
+
 def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
-    bad = {
-        "slot": "R1",
-        "relevant": True,
-        "systems": ["SYS9"],
-        "reason": "",
-        "impact": "BIG",
-        "confidence": 101,
-    }
-    assert parse_verdict(bad, {"SYS1": 321}, [])[1] == [
+    bad = _applies(systems=["SYS9"], confidence=101, categories=[{"name": "Tampering", "impact": "BIG"}])
+    assert parse_verdict(bad, _CANDIDATE, {"SYS1": 321})[1] == [
         "R1: systems must be listed aliases only (SYS1, SYS2 ...)",
-        "R1: impact must be HIGH, MEDIUM or LOW",
+        "R1: Tampering needs its impact (HIGH, MEDIUM or LOW) and its reason",
         "R1: confidence must be a number from 0 to 100",
-        "R1: every verdict needs its reason, a rejection's too",
     ]
-    not_an_alias = {"slot": "R1", "relevant": True, "systems": [["SYS1"]], "reason": "On SYS1."}
-    verdict, problems = parse_verdict(not_an_alias | {"impact": "HIGH", "confidence": 80}, {"SYS1": 321}, [])
-    assert verdict is None and problems == ["R1: systems must be listed aliases only (SYS1, SYS2 ...)"]
-    rejection = {"slot": "R2", "relevant": False, "systems": [], "reason": "No mail.", "impact": "N/A"}
-    verdict, problems = parse_verdict(rejection | {"confidence": 5}, {"SYS1": 321}, [])
-    assert problems == [] and verdict == Verdict(False, (), "No mail.", 0, 5.0)
-    short = {"slot": "R3", "relevant": False, "reason": "No mail.", "needs": ["mail"]}  # the form asked for
-    assert parse_verdict(short, {"SYS1": 321}, []) == (Verdict(False, (), "No mail.", 0, 0.0, ("mail",)), [])
+    verdicts, problems = parse_verdict(_applies(systems=[["SYS1"]]), _CANDIDATE, {"SYS1": 321})
+    assert verdicts is None and problems == ["R1: systems must be listed aliases only (SYS1, SYS2 ...)"]
+    rejection = {
+        "slot": "R1",
+        "threat": RANSOMWARE.name,
+        "relevant": False,
+        "systems": [],
+        "reason": "No mail.",
+    }
+    verdicts, problems = parse_verdict(rejection | {"impact": "N/A", "confidence": 5}, _CANDIDATE, {})
+    no_mail = Verdict(False, (), "No mail.", 0, 0.0)
+    assert problems == [] and verdicts == {S.TAMPERING: no_mail, S.DENIAL_OF_SERVICE: no_mail}
+    short = rejection | {"needs": ["mail"]}  # the form asked for
+    needing = Verdict(False, (), "No mail.", 0, 0.0, ("mail",))
+    assert parse_verdict(short, _CANDIDATE, {}) == ({S.TAMPERING: needing, S.DENIAL_OF_SERVICE: needing}, [])
+    assert parse_verdict(rejection | {"reason": ""}, _CANDIDATE, {})[1] == [
+        "R1: a threat that does not apply needs its reason"
+    ]
 
 
 def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
     """The gate says through which of a threat's systems an attacker could get in: at least one when it
     names systems, never one it does not name; a rejection needs none, and the asset itself has none."""
     aliases = {"SYS1": 321, "SYS2": 322}
-    relevant = {"slot": "R1", "relevant": True, "systems": ["SYS1", "SYS2"], "reason": "On both."}
-    relevant |= {"impact": "HIGH", "confidence": 80}
-    assert parse_verdict(relevant, aliases, [])[1] == [
+    relevant = _applies(systems=["SYS1", "SYS2"], entry_points=[])
+    assert parse_verdict(relevant, _CANDIDATE, aliases)[1] == [
         "R1: entry_points must name the systems among its own an attacker could get in through"
     ]
     outside = relevant | {"systems": ["SYS1"], "entry_points": ["SYS2"]}
-    assert parse_verdict(outside, aliases, [])[1] == ["R1: entry_points must be aliases from its own systems"]
-    verdict, problems = parse_verdict(relevant | {"entry_points": ["SYS2"]}, aliases, [])
-    assert problems == [] and verdict is not None
-    assert (verdict.systems, verdict.entry_points) == ((321, 322), (322,))
-    rejected = relevant | {"relevant": False, "impact": None, "entry_points": ["SYS9"]}
-    assert parse_verdict(rejected, aliases, [])[1] == []
-    asset = relevant | {"systems": [], "entry_points": []}
-    assert parse_verdict(asset, aliases, [])[0] == Verdict(True, (), "On both.", 3, 80.0)
-    prompt = relevance_gate_prompt("LANDSCAPE", S.TAMPERING, [{"slot": "R1"}])[1]
+    assert parse_verdict(outside, _CANDIDATE, aliases)[1] == [
+        "R1: entry_points must be aliases from its own systems"
+    ]
+    verdicts, problems = parse_verdict(relevant | {"entry_points": ["SYS2"]}, _CANDIDATE, aliases)
+    assert problems == [] and verdicts is not None
+    assert (verdicts[S.TAMPERING].systems, verdicts[S.TAMPERING].entry_points) == ((321, 322), (322,))
+    rejected = relevant | {"relevant": False, "reason": "No.", "entry_points": ["SYS9"]}
+    assert parse_verdict(rejected, _CANDIDATE, aliases)[1] == []
+    asset = parse_verdict(relevant | {"systems": [], "entry_points": []}, _CANDIDATE, aliases)[0]
+    assert asset is not None
+    assert asset[S.TAMPERING] == Verdict(True, (), "It encrypts SYS1.", 3, 80.0, kinds=(S.TAMPERING,))
+    prompt = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
     assert '"entry_points": ["SYS1"]' in prompt and "one, several or all of them" in prompt
 
 
-def test_an_unreadable_gate_reply_retries_before_gap_fill_and_a_cut_off_one_is_skipped() -> None:
+def test_an_unreadable_gate_reply_retries_the_job_before_any_gap_fill() -> None:
+    """Re-asked once in the same conversation, then the job retries; no gap fill guesses meanwhile."""
     chat = planner_chat({LOG_WIPE.name: ["SYS1"]})
-    gate = chat.responders[AiTask.RELEVANCE_GATE]
-    chat.responders[AiTask.RELEVANCE_GATE] = lambda u: (
-        {"verdicts": "?"} if "category: Spoofing" in u else gate(u)
-    )
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda _: {"verdicts": "?"}
     with pytest.raises(Unavailable):
         finder(chat).find_threats(CONTEXT)
-    assert chat.asked(AiTask.GAP_FILL) == []
-
-    def cut_off_spoofing(user_prompt: str) -> dict[str, Any]:
-        if "category: Spoofing" in user_prompt:
-            raise truncated()
-        return gate(user_prompt)
-
-    chat.responders[AiTask.RELEVANCE_GATE] = cut_off_spoofing
-    assert [threat.name for threat in finder(chat).find_threats(CONTEXT).threats] == [LOG_WIPE.name]
+    assert len(chat.asked(AiTask.RELEVANCE_GATE)) == 2 and chat.asked(AiTask.GAP_FILL) == []
 
 
 def test_once_a_gate_call_raises_unavailable_no_new_gate_call_starts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,18 +194,21 @@ def test_once_a_gate_call_raises_unavailable_no_new_gate_call_starts(monkeypatch
         assert len(chat.asked(AiTask.RELEVANCE_GATE)) == calls
 
 
-def test_on_the_last_attempt_a_broken_batch_is_skipped_and_its_category_gets_no_gap_fill() -> None:
-    chat = planner_chat({LOG_WIPE.name: ["SYS1"]})
+def test_on_the_last_attempt_a_broken_batch_is_skipped_and_its_categories_get_no_gap_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two batches of three: the one holding the phishing threat stays unreadable, so its threats are not
+    judged under any of their categories, and only the categories all judged get the one gap fill."""
+    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 3)
+    chat = planner_chat({FLOOD.name: ["SYS1"]})
     gate = chat.responders[AiTask.RELEVANCE_GATE]
-    chat.responders[AiTask.RELEVANCE_GATE] = lambda u: (
-        {"verdicts": "?"} if "category: Spoofing" in u else gate(u)
-    )
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda u: {"verdicts": "?"} if PHISHING.name in u else gate(u)
     findings = finder(chat).find_threats(CONTEXT, last_attempt=True)
     spoofing = audit_of(findings, S.SPOOFING)
-    assert spoofing.judged_ids == set() and spoofing.rejected == []
-    assert len([user for user in chat.asked(AiTask.RELEVANCE_GATE) if "category: Spoofing" in user]) == 2
-    assert not any("category: Spoofing" in user for user in chat.asked(AiTask.GAP_FILL))
-    assert [threat.name for threat in findings.threats] == [LOG_WIPE.name]
+    assert spoofing.judged_ids == set() and spoofing.rejected == [] and spoofing.not_judged == [PHISHING]
+    assert len([user for user in chat.asked(AiTask.RELEVANCE_GATE) if PHISHING.name in user]) == 2
+    assert gap_filled(chat) == [S.INFORMATION_DISCLOSURE, S.ELEVATION_OF_PRIVILEGE]  # in one ask
+    assert [threat.name for threat in findings.threats] == [FLOOD.name]
 
 
 def test_an_unusable_batch_on_the_last_attempt_costs_only_its_own_threats(
@@ -207,7 +218,7 @@ def test_an_unusable_batch_on_the_last_attempt_costs_only_its_own_threats(
     chat = planner_chat({RANSOMWARE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
     gate = chat.responders[AiTask.RELEVANCE_GATE]
     chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
-        {"verdicts": "?"} if "category: Denial of Service" in user and FLOOD.name in user else gate(user)
+        {"verdicts": "?"} if FLOOD.name in user else gate(user)
     )
     findings = finder(chat).find_threats(CONTEXT, last_attempt=True)
     denial = audit_of(findings, S.DENIAL_OF_SERVICE)
@@ -250,9 +261,10 @@ def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_ga
     assert ai_threat.attacker_check_reason == "Holds the engineering login."
     assert "Nation-state group" not in str(chat.asked(AiTask.RELEVANCE_GATE))
     assert all(query != "Nation-state group" for query, _ in rerank.calls)
-    (elevation,) = [user for user in chat.asked(AiTask.GAP_FILL) if "category: Elevation" in user]
-    assert f'- "{ADMIN_ABUSE.name}"' in elevation  # the rejected library threat is named: never proposed
-    assert not any("category: Repudiation" in user for user in chat.asked(AiTask.GAP_FILL))  # one applied
+    (asked,) = chat.asked(AiTask.GAP_FILL)  # one ask for every empty category
+    listed = {item["category"]: item for item in items_in(asked, "EMPTY CATEGORIES")}
+    assert listed[S.ELEVATION_OF_PRIVILEGE]["rejected"] == [ADMIN_ABUSE.name]  # judged: never proposed
+    assert S.REPUDIATION not in listed  # one applied
 
 
 def test_a_proposal_whose_type_matches_no_library_type_is_never_planned() -> None:
@@ -269,7 +281,7 @@ def test_a_proposal_whose_type_links_no_attacker_is_never_judged() -> None:
     unlinked = dataclasses.replace(ADMIN_ABUSE, linked_actors=())
     threats = tuple(unlinked if threat is ADMIN_ABUSE else threat for threat in THREATS)
     findings = finder(chat, FakeRerankModel(_TYPE_MATCHES), threats=threats).find_threats(CONTEXT)
-    assert any("category: Elevation" in user for user in chat.asked(AiTask.GAP_FILL))
+    assert S.ELEVATION_OF_PRIVILEGE in gap_filled(chat)
     assert all(threat_from_library(threat) for threat in findings.threats)
     assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
 
@@ -354,9 +366,7 @@ def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch
         "threat_type": "Malware",
         "threat": RANSOMWARE.name,
     }  # the gap fill names a library one
-    chat.responders[AiTask.GAP_FILL] = lambda user: (
-        twin if "category: Information Disclosure" in user else {"applies": False, "reason": "None."}
-    )
+    chat.responders[AiTask.GAP_FILL] = gap_fill({S.INFORMATION_DISCLOSURE: twin})
     findings = finder(chat, FakeRerankModel({("Malware", "Malware"): 90.0})).find_threats(CONTEXT)
     assert assigned == [[threat.key for threat in findings.threats]] == [["lib:1"]]
 
@@ -443,18 +453,20 @@ def test_every_alias_the_ai_wrote_reads_as_the_system_name() -> None:
     assert findings.threats[0].reason == f"{LOG_WIPE.name} hits SCADA server."
 
 
-def test_every_category_judges_every_library_threat_of_it_in_library_order() -> None:
+def test_one_gate_call_judges_every_library_threat_once_for_all_its_categories_in_library_order() -> None:
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
     findings = finder(chat).find_threats(CONTEXT)
     for audit in findings.audits:
         in_category = {threat.catalogue_id for threat in THREATS if audit.category in threat.categories}
         assert audit.judged_ids == in_category, audit.category
-    (denial,) = [user for user in chat.asked(AiTask.RELEVANCE_GATE) if "category: Denial of Service" in user]
-    assert [c["threat"] for c in items_in(denial, "CANDIDATES")] == [RANSOMWARE.name, FLOOD.name]
+    (asked,) = chat.asked(AiTask.RELEVANCE_GATE)
+    shown = [(c["threat"], c["categories"]) for c in items_in(asked, "CANDIDATES")]
+    assert shown == [(threat.name, list(threat.categories)) for threat in THREATS]
 
 
 def test_gate_batches_run_at_once_and_every_threat_keeps_its_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)
+    monkeypatch.setattr(ThreatFinding, "AI_BATCHES_AT_ONCE", 4)
     running, peak, lock = [0], [0], threading.Lock()
     gate_answer = judged({RANSOMWARE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
 
@@ -470,8 +482,7 @@ def test_gate_batches_run_at_once_and_every_threat_keeps_its_verdict(monkeypatch
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = slow_answer
     findings = finder(chat).find_threats(CONTEXT)
-    judged_pairs = sum(len(threat.categories) for threat in THREATS)
-    assert peak[0] > 1 and len(chat.asked(AiTask.RELEVANCE_GATE)) == judged_pairs
+    assert peak[0] > 1 and len(chat.asked(AiTask.RELEVANCE_GATE)) == len(THREATS)  # one call a threat
     assert sorted(threat.name for threat in findings.threats) == sorted([FLOOD.name, RANSOMWARE.name])
 
 

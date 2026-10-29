@@ -1457,11 +1457,11 @@
                         "index": 4
                       },
                       "scenario/write_scenario": {
-                        "text": "Write scenario",
+                        "text": "Write scenarios",
                         "index": 5
                       },
                       "scenario/repair_scenario": {
-                        "text": "Repair scenario",
+                        "text": "Rewrite scenarios",
                         "index": 6
                       },
                       "scenario/plan_check": {
@@ -1543,19 +1543,19 @@
                         "index": 3
                       },
                       "scenario/threat_actions": {
-                        "text": "AI lists the attacker actions a threat's name describes",
+                        "text": "AI listed the attacker actions a threat's name describes (older runs only)",
                         "index": 4
                       },
                       "scenario/write_scenario": {
-                        "text": "AI writes one attack scenario for an attack path",
+                        "text": "AI writes a set of attack scenarios, one per attack path, in one call",
                         "index": 5
                       },
                       "scenario/repair_scenario": {
-                        "text": "AI rewrites a draft that missed planned actions",
+                        "text": "AI rewrites, in one call, the scenarios of a set that were unusable or missed planned actions",
                         "index": 6
                       },
                       "scenario/plan_check": {
-                        "text": "AI checks the written scenario carries out its plan",
+                        "text": "AI checks, in one call, that each scenario of a set carries out its plan",
                         "index": 7
                       },
                       "scenario/embed": {

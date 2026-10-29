@@ -216,6 +216,8 @@ class LogEvent(StrEnum):
     MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
     REDIS_EVICTION_POLICY = "redis.eviction_policy"  # at start: maxmemory-policy, error unless noeviction
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
+    # collMod refused while the stored rule requires fields the code no longer writes: every insert fails
+    MONGODB_VALIDATOR_STALE = "mongodb.validator_stale"
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
@@ -244,7 +246,6 @@ class LogEvent(StrEnum):
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
-    WRITER_THREAT_ACTIONS_NOT_SPLIT = "writer.threat_actions_not_split"  # the writer and reviewer split it
     WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"

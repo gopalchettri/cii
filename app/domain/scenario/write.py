@@ -1,5 +1,5 @@
-"""Writing one scenario per attack path: the brief built by code, the writer and reviewer prompts
-(app/prompts.toml), the exact checks, the card stored and the duplicate check."""
+"""Writing one scenario per attack path, a set of paths at a time: the brief built by code, the writer and
+reviewer prompts (app/prompts.toml), the exact checks, the card stored and the duplicate check."""
 
 import dataclasses
 import functools
@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +25,7 @@ from app.core.constants import (
     REAL_WORLD_USER,
     STORY_FINDING_SEVERITIES,
     ActorRole,
+    AiLimits,
     AiOutage,
     AiTask,
     AnswerProblem,
@@ -69,7 +70,9 @@ from app.domain.scenario.plan import attacker_unsupported, raw_system_facts
 from app.domain.shared.ask_ai import (
     ChatPrompt,
     answer_item_problems,
+    answers_for_asked_slots,
     ask_ai_and_check,
+    within_call_limit,
 )
 from app.domain.shared.names import (
     as_json,
@@ -190,13 +193,16 @@ def blocking_finding_code(written: WrittenScenario) -> str:
 
 # --- the writer's and the reviewer's prompts ([scenario.writer] and [scenario.reviewer] in app/prompts.toml)
 
-_SPLIT: dict[str, str] = PROMPTS["scenario"]["threat_actions"]  # splits a threat's name into its actions
-WRITER_SYSTEM_PROMPT: str = PROMPTS["scenario"]["writer"]["text"]
+_WRITER: dict[str, str] = PROMPTS["scenario"]["writer"]
+WRITER_SYSTEM_PROMPT: str = _WRITER["text"]
 PLAN_CHECK_SYSTEM_PROMPT: str = PROMPTS["scenario"]["reviewer"]["text"]
-#: With intelligence off, or nothing citable found: no evidence is fabricated or implied.
-NO_EVIDENCE: str = PROMPTS["scenario"]["writer"]["no_evidence"]
-_REPAIR: str = PROMPTS["scenario"]["writer"]["repair"]  # asks again for the actions not carried out
-_NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"]
+#: The reviewer's system prompt for a set: each slot its own PLAN, EVIDENCE and SCENARIO.
+PLAN_CHECK_SET_PROMPT: str = PLAN_CHECK_SYSTEM_PROMPT + PROMPTS["scenario"]["reviewer"]["set"]
+#: A slot's line with intelligence off, or nothing citable found: no evidence is fabricated or implied.
+NO_EVIDENCE: str = _WRITER["no_evidence"].strip()
+_REPAIR: str = _WRITER["repair"]  # a slot's listed actions its review found not carried out
+_REWRITE: str = _WRITER["rewrite"]  # a slot's problems in its earlier answer
+_NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"].strip()
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _LOOK_ALIKES = re.compile(
     "|".join(re.escape(text) for text in sorted(EvidenceBlock.LOOK_ALIKES, key=len, reverse=True)),
@@ -207,22 +213,29 @@ _GOALS = str(EvidenceFact.TACTICS).split("{")[0]
 _MITIGATIONS = str(EvidenceFact.MITIGATED_BY).split("{")[0]
 
 
-def writer_prompt(brief: WriterBrief) -> ChatPrompt:
-    """The writer's system prompt with the configured word limits; the BRIEF, then the evidence."""
-    if _is_story(brief):
-        return with_word_limits(
-            WRITER_SYSTEM_PROMPT
-        ), f"BRIEF:\n{_brief_text(brief)}\n{evidence_block(brief)}"
-    return with_word_limits(WRITER_SYSTEM_PROMPT) + NO_EVIDENCE, f"BRIEF:\n{_brief_text(brief)}"
+def slot_label(place: int) -> str:
+    """A set's slot label, by the path's place in its batch: never a path or database id."""
+    return f"SC{place}"
 
 
-def plan_check_prompt(brief: WriterBrief, draft: ScenarioDraft) -> ChatPrompt:
-    """The reviewer's PLAN (the writer's BRIEF plus the critical service), the evidence and the scenario."""
+def writer_system_prompt() -> str:
+    """The writer's system prompt with the configured word limits, ending with how a set is answered."""
+    return with_word_limits(WRITER_SYSTEM_PROMPT) + _WRITER["set"]
+
+
+def writer_slot(label: str, brief: WriterBrief, note: str = "") -> str:
+    """One slot of the writer's user prompt: its BRIEF, its evidence or the line saying none is given, and
+    any `note` (a rewrite's problems or a repair's actions)."""
+    evidence = evidence_block(brief) if _is_story(brief) else NO_EVIDENCE
+    return f"SLOT {label}\nBRIEF:\n{_brief_text(brief)}\n{evidence}{note}"
+
+
+def plan_check_slot(label: str, brief: WriterBrief, draft: ScenarioDraft) -> str:
+    """One slot of the reviewer's user prompt: its PLAN (the writer's BRIEF plus the critical service), its
+    evidence or the line saying none is given, and its scenario."""
     plan = _brief_record(brief) | {"critical_service": brief.critical_service}
-    scenario = f"SCENARIO:\n{as_json(draft_answer(draft))}"
-    if _is_story(brief):
-        return PLAN_CHECK_SYSTEM_PROMPT, f"PLAN:\n{as_json(plan)}\n{evidence_block(brief)}\n{scenario}"
-    return PLAN_CHECK_SYSTEM_PROMPT + _NO_EVIDENCE_REVIEW, f"PLAN:\n{as_json(plan)}\n{scenario}"
+    evidence = evidence_block(brief) if _is_story(brief) else _NO_EVIDENCE_REVIEW
+    return f"SLOT {label}\nPLAN:\n{as_json(plan)}\n{evidence}\nSCENARIO:\n{as_json(draft_answer(draft))}"
 
 
 def _brief_record(brief: WriterBrief) -> dict[str, Any]:
@@ -412,6 +425,7 @@ def build_brief(
         other_systems=tuple(
             redact(system["name"]) for system in context.systems if system["id"] not in path["systems"]
         ),
+        threat_actions=tuple(redact(action) for action in threat.get("actions") or ()),  # the gate's
         style=style,
         supporting_systems=tuple(
             BriefSystem(system["id"], redact(system["name"]), system["id"] in path["systems"])
@@ -565,8 +579,9 @@ def _named_facts(name: str, facts: dict[str, Any]) -> dict[str, Any]:
 
 # --- the exact checks: safety and data integrity only; meaning is the reviewer's
 
-#: The planner's aliases and slots (SYS1, THR7): never in a brief, so one in a scenario was made up.
-_INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR)\d+\b")
+#: The planner's aliases and slots (SYS1, THR7) and a set's slots (SC2): never in a brief, so one in a
+#: scenario was made up or leaked from another slot.
+_INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR|SC)\d+\b")
 #: Phrases a story's closing sentence never uses: stock openers and talk about sources (owner 2026-10-28).
 _STOCK_WORDS = re.compile(
     r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
@@ -630,43 +645,291 @@ def _unsupplied(pattern: re.Pattern[str], text: str, given: str) -> str:
     return ", ".join(dict.fromkeys(found))
 
 
-# --- the reviewer: one AI call judging meaning against the plan
+# --- writing a set: one write and one review, then one rewrite and one review for the slots that need them
+
+#: A slot's own problems in a set's answer, told in its rewrite.
+_SLOT_MISSING: str = _WRITER["slot_missing"]
+_THREAT_NOT_COPIED: str = _WRITER["threat_not_copied"]
 
 
-def check_against_plan(
-    chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft
-) -> tuple[PlanCheck, tuple[Finding, ...]]:
-    """The reviewer's check and its findings: a note per broken rule, a blocker when the threat or impact
-    changed, a warning when its answer stayed unusable (the scenario is still saved, flagged)."""
+@dataclasses.dataclass
+class _Slot:
+    """One scenario of a set as its rounds settle it."""
+
+    label: str
+    brief: WriterBrief
+    draft: ScenarioDraft | None = None  # its usable draft; a repair's while it is written
+    problems: tuple[str, ...] = ()  # why the second round writes it again
+    review: PlanCheckAnswer | None = None  # its usable review
+    review_problems: tuple[str, ...] = ()  # why its review is asked again (unusable, or no action judged)
+    first: WrittenScenario | None = None  # its reviewed first draft while its repair is written
+
+
+def write_set(
+    chat: ChatModel, briefs: Sequence[tuple[str, WriterBrief]]
+) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
+    """Each slot's scenario (or failure card) as soon as it is final, in at most 4 AI calls: one write and one
+    review, then one rewrite and one review for the slots that need them (unreadable, a re-ask fault, a
+    review to ask again or listed actions to repair); there is no third round. A whole write answer still
+    unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an outage raises Unavailable."""
+    slots = [_Slot(label, brief) for label, brief in briefs]
+    if not slots:
+        return
+    blocks = [(slot.label, writer_slot(slot.label, slot.brief)) for slot in slots]
+    answers = _ask_set(chat, AiTask.WRITE_SCENARIO, writer_system_prompt(), blocks, "scenarios")
+    for slot in slots:
+        item = answers.get(slot.label)
+        slot.draft, problems = _read_slot_draft(slot.brief, item)
+        slot.problems = tuple(problems if slot.draft is None else _first_answer_faults(slot.brief, item))
+    _review(chat, [slot for slot in slots if not slot.problems and _reviewable(slot)])
+    second = []
+    for slot in slots:
+        if (written := _first_round_end(slot)) is None:
+            second.append(slot)
+        else:
+            yield slot.label, written
+    yield from _second_round(chat, second)
+
+
+def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
+    """One rewrite call for the slots to write again (each told its problems or its repair), then one review
+    call for every slot with a draft to judge. On an outage a repair keeps its first draft; the rest raise."""
+    rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
     try:
-        prompt = plan_check_prompt(brief, draft)
-        unjudged = _unjudged_actions if brief.threat_actions else None
-        answer: PlanCheckAnswer = ask_ai_and_check(
-            chat,
-            AiTask.PLAN_CHECK,
-            prompt,
-            _read_plan_check,
-            first_answer_check=unjudged,
-            reuse_earlier_answer=True,  # temperature 0: a retry's same ask gets the same answer, so read back
-        )
+        blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
+        answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, writer_system_prompt(), blocks, "scenarios")
+    except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:  # every slot's rewrite is unusable
+        log.warning(LogEvent.WRITER_PATH_FAILED, message=str(exc), error_type=type(exc).__name__)
+        answers = {}
+    except Unavailable as exc:
+        yield from _firsts_kept(slots, exc)
+        return
+    for slot in rewrite:
+        _take_rewrite(slot, answers.get(slot.label))
+    try:
+        _review(chat, [slot for slot in slots if _reviewable(slot)])
+    except Unavailable as exc:
+        yield from _firsts_kept(slots, exc)
+        return
+    for slot in slots:
+        yield slot.label, _second_round_end(slot)
+
+
+def _ask_set(
+    chat: ChatModel, task: AiTask, system: str, blocks: list[tuple[str, str]], key: str
+) -> dict[str, dict[str, Any]]:
+    """Each slot's item of the answer to `blocks` ((label, text)), asked in one call or in the halves the size
+    check makes; an answer holding no list under `key` after its one re-ask raises. A slot's own faults are
+    never re-asked here: they are its own, so one bad slot never costs the set a second ask."""
+    items: dict[str, dict[str, Any]] = {}
+    for part in within_call_limit(blocks, functools.partial(_set_prompt, system), task) if blocks else ():
+        read = functools.partial(_read_set, key=key, asked={label for label, _ in part})
+        items |= ask_ai_and_check(chat, task, _set_prompt(system, part), read, reuse_earlier_answer=True)
+    return items
+
+
+def _set_prompt(system: str, blocks: Sequence[tuple[str, str]]) -> ChatPrompt:
+    """The system prompt and every slot's block, in the set's order."""
+    return system, "\n\n".join(text for _, text in blocks)
+
+
+def _read_set(
+    answer: dict[str, Any], key: str, asked: set[str]
+) -> tuple[dict[str, dict[str, Any]] | None, list[str]]:
+    """The answer's item for each asked slot, or the problem when it holds no list under `key`."""
+    kept, problems = answers_for_asked_slots(answer, key, asked)
+    if not isinstance(answer.get(key), list):
+        return None, problems
+    return {str(item["slot"]): item for item in kept}, []
+
+
+def _read_slot_draft(
+    brief: WriterBrief, item: dict[str, Any] | None
+) -> tuple[ScenarioDraft | None, list[str]]:
+    """A slot's draft from its item, or its problems: no item, another threat copied back, or a hard fault
+    (_read_draft); with no evidence given, a passage is never kept."""
+    if item is None:
+        return None, [_SLOT_MISSING]
+    if name_match_key(str(item.get("threat") or "")) != name_match_key(brief.threat):
+        return None, [_THREAT_NOT_COPIED]  # another slot's answer, or none: written again
+    systems = tuple(system.name for system in brief.supporting_systems)
+    draft, problems = _read_draft(item, brief_entry_point_options(brief), systems)
+    if draft is not None and not _is_story(brief):
+        draft = dataclasses.replace(draft, evidence_statement="")
+    return draft, problems
+
+
+def _first_answer_faults(brief: WriterBrief, item: dict[str, Any] | None) -> list[str]:
+    """A first answer's faults that have it written again (its draft is kept should that fail): a listed
+    action shown in no sentence of its own story, or a story's closing sentence that cannot be cited."""
+    answer = item or {}
+    faults = _acts_without_a_sentence(answer, brief.threat_actions) if brief.threat_actions else []
+    return faults + (_passage_answer_faults(answer, _cited_entry(brief)) if _is_story(brief) else [])
+
+
+def _reviewable(slot: _Slot) -> bool:
+    """Whether the slot has a draft the reviewer may judge: one no exact finding blocks."""
+    return slot.draft is not None and not _blocks(check_exact_rules(slot.draft, slot.brief))
+
+
+def _blocks(findings: Iterable[Finding]) -> bool:
+    """Whether any finding is a blocker."""
+    return any(finding_severity(finding) == FindingSeverity.BLOCKER for finding in findings)
+
+
+def _review(chat: ChatModel, slots: list[_Slot]) -> None:
+    """One reviewer call for every slot's draft: each slot keeps its usable review, or notes why it got none
+    (an earlier usable review then stays)."""
+    if not slots:
+        return
+    blocks = [(slot.label, plan_check_slot(slot.label, slot.brief, _draft_of(slot))) for slot in slots]
+    try:  # temperature 0: a retry's same ask gets the same answer, so it is read back
+        reviews = _ask_set(chat, AiTask.PLAN_CHECK, PLAN_CHECK_SET_PROMPT, blocks, "reviews")
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, message=str(exc))
-        reason = shorten_text(str(exc), Writing.PROBLEM_MAX_CHARS)
-        warning = Finding(
-            FindingCode.PLAN_CHECK_NOT_MADE, FindingMessage.PLAN_CHECK_NOT_MADE.format(reason=reason)
-        )
-        return PlanCheck(PlanCheckStatus.UNCHECKED), (warning,)
-    problems = _broken_rules(answer)
-    status = PlanCheckStatus.INCONSISTENT if problems else PlanCheckStatus.CONSISTENT
+        reviews = {}
+    for slot in slots:
+        review, problems = _read_slot_review(slot.brief, reviews.get(slot.label))
+        slot.review, slot.review_problems = review or slot.review, tuple(problems)
+
+
+def _read_slot_review(
+    brief: WriterBrief, item: dict[str, Any] | None
+) -> tuple[PlanCheckAnswer | None, list[str]]:
+    """A slot's review, or its problems; one judging none of the brief's listed actions is usable but asked
+    again."""
+    if item is None:
+        return None, [_SLOT_MISSING]
+    if name_match_key(str(item.get("threat") or "")) != name_match_key(brief.threat):
+        return None, [_THREAT_NOT_COPIED]
+    answer, problems = _read_plan_check(item)
+    if answer is not None and brief.threat_actions:
+        problems = _unjudged_actions(item)
+    return answer, problems
+
+
+def _draft_of(slot: _Slot) -> ScenarioDraft:
+    """The slot's draft, once it has one."""
+    assert slot.draft is not None  # only a slot with a usable draft is reviewed
+    return slot.draft
+
+
+def _first_round_end(slot: _Slot) -> WrittenScenario | None:
+    """The slot's scenario when the first round settles it; None while the second round must write or
+    review it again (its repair's first draft is kept on the slot)."""
+    if slot.draft is None or slot.problems or slot.review_problems:
+        return None
+    written = _checked(slot)
+    check = written.plan_check
+    if check.status is PlanCheckStatus.INCONSISTENT and check.actions_not_carried_out:
+        slot.first = written
+        return None
+    return written
+
+
+def _note(slot: _Slot) -> str:
+    """What a slot's rewrite is told: the listed actions its review found not carried out, else its earlier
+    answer's problems."""
+    if slot.first is not None:
+        actions = slot.first.plan_check.actions_not_carried_out
+        return _REPAIR.replace("{actions}", ", ".join(json.dumps(act, ensure_ascii=False) for act in actions))
+    shown = (
+        problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in slot.problems[: AiLimits.REASK_MAX_PROBLEMS]
+    )
+    return _REWRITE.replace("{problems}", "; ".join(shown))
+
+
+def _take_rewrite(slot: _Slot, item: dict[str, Any] | None) -> None:
+    """The slot's rewrite in place of its draft when it reads; else a repair is dropped (its first draft
+    stays) and a slot keeps its usable first draft, if it had one."""
+    draft, problems = _read_slot_draft(slot.brief, item)
+    if draft is not None or slot.first is not None:
+        slot.draft, slot.review, slot.review_problems = draft, None, ()
+    slot.problems = tuple(problems) if slot.draft is None else ()
+
+
+def _second_round_end(slot: _Slot) -> WrittenScenario | PathFailure:
+    """The slot's final scenario: a repair or its first draft, the draft checked and reviewed, or a failure
+    card when no usable draft came."""
+    if slot.first is not None:
+        return _repair_or_first(slot, slot.first)
+    if slot.draft is None:
+        return PathFailure(ErrorCode.GENERATION_FAILED, _rejected(AiTask.REPAIR_SCENARIO, slot.problems))
+    return _checked(slot)
+
+
+def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
+    """The repair, marked rewritten, when it fixes the first draft (_fixes); else the first draft."""
+    if slot.draft is None:
+        log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", message="; ".join(slot.problems))
+        return first
+    repair = _checked(slot)
+    fixed = _fixes(repair, first)
+    log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
+    return dataclasses.replace(repair, rewritten=True) if fixed else first
+
+
+def _firsts_kept(slots: list[_Slot], outage: Unavailable) -> Iterator[tuple[str, WrittenScenario]]:
+    """On an outage in the second round, each repair's first draft, kept as it was; any other slot left
+    raises the outage (its path is retried)."""
+    for slot in slots:
+        if slot.first is not None:
+            log.warning(
+                LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", error_type=type(outage).__name__
+            )
+            yield slot.label, slot.first
+    if any(slot.first is None for slot in slots):
+        raise outage
+
+
+def _checked(slot: _Slot) -> WrittenScenario:
+    """The slot's draft with its exact findings and, unless one blocks it, its review's verdict; a story's
+    passage that cannot be cited is dropped with a warning (code cites its own sentence), never a blocker."""
+    draft, brief = _draft_of(slot), slot.brief
+    findings = check_exact_rules(draft, brief)
+    check: PlanCheck
+    notes: tuple[Finding, ...]
+    if _blocks(findings):
+        check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
+    else:
+        check, notes = _plan_check_of(brief, slot.review, slot.review_problems)
+    if _is_story(brief) and (problem := _passage_problem(draft, check, _cited_entry(brief))):
+        draft = dataclasses.replace(draft, evidence_statement="")
+        message = FindingMessage.CITATION_REMOVED.format(reason=problem)
+        notes = (*notes, Finding(FindingCode.CITATION_REMOVED, message))
+    return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, brief.threat)
+
+
+def _rejected(task: AiTask, problems: Sequence[str]) -> str:
+    """Why an answer stayed unusable, as a card or a warning says it."""
+    message = ErrorMessage.AI_ANSWER_REJECTED.format(task=task, problems="; ".join(problems[:3]))
+    return shorten_text(message, Writing.PROBLEM_MAX_CHARS)
+
+
+# --- the reviewer's verdicts: meaning judged against the plan
+
+
+def _plan_check_of(
+    brief: WriterBrief, answer: PlanCheckAnswer | None, problems: Sequence[str]
+) -> tuple[PlanCheck, tuple[Finding, ...]]:
+    """The review's check and its findings: a note per broken rule, a blocker when the threat or impact
+    changed, a warning when no usable review came (the scenario is still saved, flagged)."""
+    if answer is None:
+        reason = _rejected(AiTask.PLAN_CHECK, problems)
+        log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, message=reason)
+        warning = FindingMessage.PLAN_CHECK_NOT_MADE.format(reason=reason)
+        return PlanCheck(PlanCheckStatus.UNCHECKED), (Finding(FindingCode.PLAN_CHECK_NOT_MADE, warning),)
+    broken = _broken_rules(answer)
+    status = PlanCheckStatus.INCONSISTENT if broken else PlanCheckStatus.CONSISTENT
     check = PlanCheck(
         status,
-        problems,
+        broken,
         same_threat=answer.same_threat,
         same_impact=answer.same_impact,
         evidence_supported=answer.evidence_supported is True,
         actions_not_carried_out=_not_carried_out(brief.threat_actions, answer),
     )
-    notes = tuple(Finding(FindingCode.PLAN_CHECK, problem) for problem in problems)
+    notes = tuple(Finding(FindingCode.PLAN_CHECK, problem) for problem in broken)
     return check, notes + _mismatch(answer)
 
 
@@ -711,76 +974,22 @@ def _mismatch(answer: PlanCheckAnswer) -> tuple[Finding, ...]:
 
 
 def _read_plan_check(answer: dict[str, Any]) -> tuple[PlanCheckAnswer | None, list[str]]:
-    """The reviewer's answer, or the problems to re-ask with."""
+    """The reviewer's answer, or the problems it has."""
     problems = answer_item_problems(PlanCheckAnswer, answer, "the reply")
     return (None, problems) if problems else (PlanCheckAnswer.model_validate(answer), [])
 
 
 def _unjudged_actions(answer: dict[str, Any]) -> list[str]:
-    """The re-ask problem when the reviewer judged none of PLAN's listed actions."""
+    """The problem when the reviewer judged none of PLAN's listed actions."""
     return [] if answer.get("threat_actions") else [AnswerProblem.THREAT_ACTION_VERDICTS_REQUIRED]
 
 
-# --- the writer: split the threat's name, write, check, review
-
-
-def split_threat_actions(chat: ChatModel, threat: str) -> tuple[str, ...]:
-    """The actions `threat`'s name states, as the AI splits it; () when its answer stays unusable (the writer
-    and the reviewer then split the name themselves). An outage raises Unavailable."""
-    prompt = _SPLIT["system"], f"{_SPLIT['text']}THREAT: {json.dumps(threat, ensure_ascii=False)}"
-    try:
-        actions: tuple[str, ...] = ask_ai_and_check(
-            chat, AiTask.THREAT_ACTIONS, prompt, _read_threat_actions, reuse_earlier_answer=True
-        )
-    except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(LogEvent.WRITER_THREAT_ACTIONS_NOT_SPLIT, message=str(exc))
-        return ()
-    return actions
-
-
-def _read_threat_actions(answer: dict[str, Any]) -> tuple[tuple[str, ...] | None, list[str]]:
-    """The split's actions, each a non-empty phrase, or the problem to re-ask with."""
-    actions = answer.get("actions")
-    if isinstance(actions, list) and actions and all(isinstance(a, str) and a.strip() for a in actions):
-        return tuple(" ".join(action.split()) for action in actions), []
-    return None, [AnswerProblem.THREAT_ACTIONS_REQUIRED]
-
-
-def write_scenario(chat: ChatModel, brief: WriterBrief) -> WrittenScenario:
-    """The scenario for `brief`, written, checked and reviewed; one whose review is inconsistent with a listed
-    action not carried out is written once more (_repaired). An unreadable answer raises; an outage raises
-    Unavailable."""
-    first = _reviewed(chat, brief, _drafted(chat, AiTask.WRITE_SCENARIO, brief, writer_prompt(brief)))
-    check = first.plan_check
-    if check.status is PlanCheckStatus.INCONSISTENT and check.actions_not_carried_out:
-        return _repaired(chat, brief, first)
-    return first
-
-
-def _drafted(chat: ChatModel, task: AiTask, brief: WriterBrief, prompt: ChatPrompt) -> ScenarioDraft:
-    """The writer's draft for `brief`, asked with `prompt`; a first answer that shows no sentence of its own
-    statement for a listed action, or a story's closing sentence that cannot be cited, is asked again once."""
-    systems = tuple(system.name for system in brief.supporting_systems)
-    read = functools.partial(_read_draft, options=brief_entry_point_options(brief), systems=systems)
-    checks: list[Callable[[dict[str, Any]], list[str]]] = []
-    if brief.threat_actions:
-        checks.append(functools.partial(_acts_without_a_sentence, actions=brief.threat_actions))
-    if _is_story(brief):
-        checks.append(functools.partial(_passage_answer_faults, cited=_cited_entry(brief)))
-    draft: ScenarioDraft = ask_ai_and_check(
-        chat,
-        task,
-        prompt,
-        read,
-        first_answer_check=functools.partial(_all_problems, checks=checks) if checks else None,
-        reuse_earlier_answer=True,  # a re-delivery reads its draft back; a new version is a new epoch
-    )
-    return draft
+# --- the writer's own faults, found in code
 
 
 def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -> list[str]:
-    """The re-ask problem when `answer`'s action_sentences copies no sentence of its own scenario_statement
-    for one of the brief's listed `actions`: each action must happen in the story, not only in the risk."""
+    """The problem when `answer`'s action_sentences copies no sentence of its own scenario_statement for one
+    of the brief's listed `actions`: each action must happen in the story, not only in the risk."""
     statement = name_match_key(str(answer.get("scenario_statement") or ""))
     given = answer.get("action_sentences")
     quoted = (
@@ -797,32 +1006,10 @@ def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -
     return [AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=listed)]
 
 
-def _all_problems(answer: dict[str, Any], checks: list[Callable[[dict[str, Any]], list[str]]]) -> list[str]:
-    """Every re-ask problem `checks` find in `answer`."""
-    return [problem for check in checks for problem in check(answer)]
-
-
 def _passage_answer_faults(answer: dict[str, Any], cited: dict[str, Any] | None) -> list[str]:
-    """The re-ask problem when `answer`'s closing sentence cannot be cited as written (_passage_faults)."""
+    """The problem when `answer`'s closing sentence cannot be cited as written (_passage_faults)."""
     reason = _passage_faults(" ".join(str(answer.get("evidence_statement") or "").split()), cited)
     return [Precedent.REASK.format(reason=reason)] if reason else []
-
-
-def _repaired(chat: ChatModel, brief: WriterBrief, first: WrittenScenario) -> WrittenScenario:
-    """`first` written again, told the actions its review found not carried out; the repair is kept, marked
-    rewritten, only when it fixes `first` (_fixes), else `first`, as on an outage or an unusable answer."""
-    actions = first.plan_check.actions_not_carried_out
-    listed = ", ".join(json.dumps(action, ensure_ascii=False) for action in actions)
-    system, user = writer_prompt(brief)
-    prompt = system, user + _REPAIR.replace("{actions}", listed)
-    try:
-        repair = _reviewed(chat, brief, _drafted(chat, AiTask.REPAIR_SCENARIO, brief, prompt))
-    except (Unavailable, UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", error_type=type(exc).__name__)
-        return first
-    fixed = _fixes(repair, first)
-    log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
-    return dataclasses.replace(repair, rewritten=True) if fixed else first
 
 
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
@@ -835,25 +1022,6 @@ def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
         {problem.split(":", 1)[0] for problem in written.plan_check.problems} for written in (repair, first)
     )
     return repair_rules <= first_rules
-
-
-def _reviewed(chat: ChatModel, brief: WriterBrief, draft: ScenarioDraft) -> WrittenScenario:
-    """The draft checked by the safety rules, then by the reviewer unless they block it; a story's passage
-    that cannot be cited is dropped with a warning (code cites its own sentence), never a blocker."""
-    if not _is_story(brief):  # no evidence given: a passage is never checked, reviewed or kept
-        draft = dataclasses.replace(draft, evidence_statement="")
-    findings = check_exact_rules(draft, brief)
-    check: PlanCheck
-    notes: tuple[Finding, ...]
-    if any(finding_severity(finding) == FindingSeverity.BLOCKER for finding in findings):
-        check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
-    else:
-        check, notes = check_against_plan(chat, brief, draft)
-    if _is_story(brief) and (problem := _passage_problem(draft, check, _cited_entry(brief))):
-        draft = dataclasses.replace(draft, evidence_statement="")
-        message = FindingMessage.CITATION_REMOVED.format(reason=problem)
-        notes = (*notes, Finding(FindingCode.CITATION_REMOVED, message))
-    return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, brief.threat)
 
 
 def _passage_problem(draft: ScenarioDraft, check: PlanCheck, cited: dict[str, Any] | None) -> str:

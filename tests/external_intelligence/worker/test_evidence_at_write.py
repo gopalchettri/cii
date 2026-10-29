@@ -91,15 +91,7 @@ def test_a_threat_shared_by_two_paths_is_searched_once(intel: Intel) -> None:
 
 def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -> None:
     record_id = _queued_run(["Threat 1", "Threat 2"])
-    down = {"once": True}
-    plain = story_chat.responders[AiTask.WRITE_SCENARIO]
-
-    def down_once(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt and down.pop("once", False):
-            raise Unavailable("AI down")
-        return plain(user_prompt)
-
-    story_chat.responders[AiTask.WRITE_SCENARIO] = down_once
+    story_chat.queue(AiTask.WRITE_SCENARIO, Unavailable("AI down"))  # the first delivery's set write
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable):
         _write_batch(lease)
@@ -107,7 +99,7 @@ def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -
     assert len(intel.finder.calls) == 1
     assert _deliver_until_done(record_id) == 1
     assert len(intel.finder.calls) == 2 and len(_scenarios_of(record_id)) == 2
-    assert len(intel.finder.calls[1][0]) == 1  # only the threat still to write
+    assert len(intel.finder.calls[1][0]) == 2  # every threat still to write
     assert len(_audit_rows(record_id)) == 2
 
 

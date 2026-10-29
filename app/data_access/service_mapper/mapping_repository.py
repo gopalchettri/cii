@@ -32,7 +32,9 @@ class MappingRepository(MongoRepository):
                 },
                 {"keys": [("tenant_id", 1), ("entity_id", 1), ("request_keys.key", 1)]},
             ),
-            required=("_id", "tenant_id", "entity_id", "status", "job"),
+            # generation (the latest run) stays required: the rule UAT stored on 20 Oct requires it and its
+            # database user may not change a rule (collMod), so every write must still carry it
+            required=("_id", "tenant_id", "entity_id", "status", "generation", "job"),
         )
 
     def create_indexes(self) -> None:
@@ -57,6 +59,7 @@ class MappingRepository(MongoRepository):
             {
                 "$set": {
                     "status": Status.QUEUED,
+                    "generation": run,
                     "job": new_job(TaskName.MAP_SERVICES, run, now, requested_at=now),
                     "request": request,
                     "input_hash": input_hash,

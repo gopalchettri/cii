@@ -40,6 +40,7 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _write_batch,
     chat,
     sent,
+    unreadable_then,
 )
 
 
@@ -89,13 +90,8 @@ def test_a_path_whose_ai_slot_wait_ran_out_on_the_last_try_gets_a_card_in_that_w
     chat: FakeChatModel,  # noqa: F811
 ) -> None:
     slots_full = ErrorMessage.AI_BUSY.format(seconds=300)
-
-    def threat_two_waits_out(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt:
-            raise Unavailable(slots_full, reason=AiOutage.BUSY)  # TSG's own slots stayed full: no gateway 429
-        return _answer_for(user_prompt)
-
-    chat.responders[AiTask.WRITE_SCENARIO] = threat_two_waits_out
+    waits_out = Unavailable(slots_full, reason=AiOutage.BUSY)  # TSG's own slots stayed full: no gateway 429
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 2", waits_out)
     record_id = _queued_run(["Threat 1", "Threat 2"])
     _write_batch(_on_last_try(record_id))
     assert _scenarios_of(record_id)[1]["failure"] == {
