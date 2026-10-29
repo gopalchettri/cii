@@ -684,8 +684,8 @@ def write_set(
 ) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """Each slot's scenario (or failure card) as soon as it is final, in at most 4 AI calls: one write and one
     review, then one rewrite and one review for the slots that need them (unreadable, a re-ask fault, a
-    review to ask again or listed actions to repair); there is no third round. A whole write answer still
-    unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an outage raises Unavailable."""
+    repeated link, a review to ask again or listed actions to repair); there is no third round. A whole write
+    answer still unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an outage raises Unavailable."""
     slots = [_Slot(label, brief) for label, brief in briefs]
     if not slots:
         return
@@ -695,6 +695,7 @@ def write_set(
         item = answers.get(slot.label)
         slot.draft, problems = _read_slot_draft(slot.brief, item)
         slot.problems = tuple(problems if slot.draft is None else _first_answer_faults(slot.brief, item))
+    _flag_repeated_links(slots)
     _review(chat, [slot for slot in slots if not slot.problems and _reviewable(slot)])
     second = []
     for slot in slots:
@@ -1030,6 +1031,40 @@ def _passage_answer_faults(answer: dict[str, Any], cited: dict[str, Any] | None)
     """The problem when `answer`'s closing sentence cannot be cited as written (_passage_faults)."""
     reason = _passage_faults(" ".join(str(answer.get("evidence_statement") or "").split()), cited)
     return [Precedent.REASK.format(reason=reason)] if reason else []
+
+
+#: Words that never tell two links apart; "related" is one (nearest evidence must say it).
+_LINK_FILLERS = frozenset({"the", "a", "an", "technique", "related"})
+#: A link ending in one of these is told by its last two words ("form of", "corresponds to").
+_LINK_JOINERS = frozenset({"of", "to", "with", "as", "by", "in", "on", "for", "from", "like"})
+
+
+def passage_link(passage: str) -> str:
+    """The words a closing sentence links its step to its quoted title with ('' with no quoted title)."""
+    # ponytail: heuristic, the last word before the title (two after a joiner); widen if repeats slip past
+    head, quote, _ = passage.replace("\u201c", '"').partition('"')
+    words = [word for word in re.findall(r"[\w'-]+", head.casefold()) if word not in _LINK_FILLERS]
+    if not (quote and words):
+        return ""
+    return " ".join(words[-2:]) if words[-1] in _LINK_JOINERS else words[-1]
+
+
+def _flag_repeated_links(slots: Sequence[_Slot]) -> None:
+    """A clean story slot linking like an earlier clean one is written again, told the links taken."""
+    # never a citation fault (_passage_faults): a repeat that survives its rewrite is still cited
+    links = {
+        slot.label: passage_link(slot.draft.evidence_statement)
+        for slot in slots
+        if slot.draft is not None and not slot.problems and _is_story(slot.brief)
+    }
+    taken: dict[str, str] = {}
+    for label, link in links.items():
+        if link:
+            taken.setdefault(link, label)  # the first slot keeps its words
+    used = ", ".join(f'"{link}"' for link in taken)
+    for slot in slots:
+        if (link := links.get(slot.label, "")) and taken[link] != slot.label:
+            slot.problems = (Precedent.REPEATED_LINK.format(words=link, used=used),)
 
 
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:

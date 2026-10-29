@@ -226,8 +226,14 @@ class Precedent:
     OPENS_ON_EVIDENCE: Final = "it opens with the evidence, not with this attacker's action"
     # the re-ask problem quoted to the writer
     REASK: Final = (
-        "evidence_statement cannot be cited: {reason}. Write it again as ONE sentence that opens with this "
-        "attacker's action as scenario_statement tells it and ties that action to the cited entry"
+        "evidence_statement cannot be cited: {reason}. Write it again as ONE sentence that refers back to "
+        "the step of scenario_statement the cited entry is about, with the system or asset where it happens, "
+        "and links that step to the cited entry in words of its own"
+    )
+    # a story linking its step to its title like an earlier slot of the set (never names a slot label)
+    REPEATED_LINK: Final = (
+        'evidence_statement links its step to its title with "{words}", like another slot: link them in '
+        "words no slot uses (taken: {used})"
     )
 
 

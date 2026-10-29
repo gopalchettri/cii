@@ -3,29 +3,41 @@ need them, never more than 4 AI calls; each slot read on its own, saved as soon 
 evidence and its threat copied back; a set too big for one call goes as halves. Fake AI models, no network."""
 
 import dataclasses
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-from app.core.constants import AiLimits, AiTask, ErrorCode, FindingCode, PlanCheckStatus, Status, TaskName
+from app.core.constants import (
+    AiLimits,
+    AiTask,
+    ErrorCode,
+    FindingCode,
+    PlanCheckStatus,
+    ScenarioStatus,
+    Status,
+    TaskName,
+)
 from app.core.exceptions import Unavailable
 from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import (
     PLAN_CHECK_SET_PROMPT,
     check_exact_rules,
     draft_answer,
+    passage_link,
     slot_label,
     write_set,
     writer_slot,
     writer_system_prompt,
+    written_record,
 )
 from app.domain.shared.ask_ai import call_tokens
 from app.models.scenario.write import PathFailure, WrittenScenario
 from tests.external_intelligence.fakes import TECHNIQUE
-from tests.external_intelligence.writing.test_evidence_story import _GROUPS, _story_brief
+from tests.external_intelligence.writing.test_evidence_story import _GROUPS, _KEV, _story_brief
 from tests.fakes import FakeChatModel, brief_of, slot_blocks, truncated
+from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _CLEAN, _CONSISTENT, _brief_of, _plan_threat
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _on_last_try,
@@ -246,7 +258,8 @@ def test_each_slot_carries_its_own_evidence_or_its_own_no_evidence_line() -> Non
 def test_each_story_slot_repeats_the_evidence_rule_with_its_own_cited_title() -> None:
     """Laptop e2e, 29 Oct: in a set the writer dropped the evidence rule (no quoted title, or no sentence) in
     13 of 13 first drafts, each costing a rewrite. A story slot now says it beside its own evidence, with its
-    own title; an original-style slot does not, and the system prompt shows the sentence's shape once."""
+    own title and in words no other slot uses; an original-style slot does not. Laptop e2e, 30 Oct: all 10
+    closing sentences copied the system prompt's made-up example, so it shows none."""
     briefs = [
         ("SC1", _story_brief(TECHNIQUE)),
         ("SC2", _story_brief(_GROUPS)),
@@ -261,7 +274,144 @@ def test_each_story_slot_repeats_the_evidence_rule_with_its_own_cited_title() ->
     assert '"Module Firmware" in double quotes' in blocks["SC1"] and rule in blocks["SC1"]
     assert '"Valid Accounts" in double quotes' in blocks["SC2"] and "Module Firmware" not in blocks["SC2"]
     assert rule not in blocks["SC3"]
-    assert writer_system_prompt().count("made-up example") == 1
+    assert all("in words no other slot uses" in blocks[label] for label in ("SC1", "SC2"))
+    system = writer_system_prompt()
+    assert "made-up example" not in system and "matches the technique" not in system
+    assert "nor the words another slot's evidence_statement links its step to its entry with" in system
+
+
+@pytest.mark.parametrize(
+    ("passage", "link"),
+    [
+        ('Altering telemetry matches the technique "Disable or Modify Tools", which X used.', "matches"),
+        ('Altering telemetry resembles the related technique "Manipulate I/O Image".', "resembles"),
+        ('The process behavior matches the related technique "Manipulate I/O Image".', "matches"),
+        ('Abusing the operations matches "Command Message", a technique the APT28 group used.', "matches"),
+        ('The opening flood is a form of "Network Denial of Service", a technique X used.', "form of"),
+        ("Signing in this way corresponds to the \u201cValid Accounts\u201d technique.", "corresponds to"),
+        ("Exploiting that WinCC weakness could let the attacker in, as CISA lists it exploited.", ""),
+    ],
+    ids=["technique", "related", "related_matches", "bare", "joiner", "curly_quotes", "no_title"],
+)
+def test_passage_link(passage: str, link: str) -> None:
+    """The words a closing sentence links its step to its title with: the last word before the title (two
+    after a joiner), "the", "technique" and "related" aside; none without a quoted title."""
+    assert passage_link(passage) == link
+
+
+#: Each cited title's closing sentence, both linking with "matches" (laptop e2e, 30 Oct: 10 of 10 did).
+_MATCHES = {
+    "Module Firmware": (
+        'Pushing rogue firmware to the SCADA server matches the technique "Module Firmware", which the '
+        "Sandworm Team group has used."
+    ),
+    "Valid Accounts": (
+        'Signing in to the SCADA server with the maintenance login matches the technique "Valid Accounts", '
+        "which the APT41 and FIN8 groups have used."
+    ),
+}
+_FORM_OF = (
+    'Signing in to the SCADA server with the maintenance login is a form of "Valid Accounts", a technique '
+    "the APT41 and FIN8 groups have used."
+)
+_KEV_CLOSING = "Exploiting that WinCC weakness on the SCADA server could let the attacker in, as CISA lists."
+
+
+def _title_of(block: str) -> str:
+    return "Valid Accounts" if '"Valid Accounts"' in block else "Module Firmware"
+
+
+def _story_set() -> list[tuple[str, Any]]:
+    """Two story slots, each citing its own technique."""
+    return [("SC1", _story_brief(TECHNIQUE)), ("SC2", _story_brief(_GROUPS))]
+
+
+def _write_stories(
+    briefs: list[tuple[str, Any]], closing: Callable[[str], str]
+) -> tuple[FakeChatModel, dict[str, WrittenScenario | PathFailure], dict[str, int]]:
+    """The set written with each slot's closing sentence from `closing` (its block) and every one confirmed:
+    the fake, each slot's outcome, and how many calls were made when it came out."""
+    fake = FakeChatModel()
+    fake.responders |= {
+        AiTask.WRITE_SCENARIO: lambda block: draft_answer(_CLEAN) | {"evidence_statement": closing(block)},
+        AiTask.PLAN_CHECK: lambda block: _review_of(block) | {"evidence_supported": True},
+    }
+    outcomes: dict[str, WrittenScenario | PathFailure] = {}
+    calls_when_final: dict[str, int] = {}
+    for label, written in write_set(fake, briefs):  # type: ignore[arg-type]
+        outcomes[label], calls_when_final[label] = written, len(fake.calls)
+    return fake, outcomes, calls_when_final
+
+
+_TWO_ROUNDS = [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
+
+
+def test_a_story_slot_linking_like_an_earlier_slot_is_written_again() -> None:
+    """Laptop e2e, 30 Oct: every closing sentence of a set linked with "matches the technique". SC2, linking
+    like SC1, is written again in the set's one rewrite, told the link taken; SC1 keeps its words and comes
+    out after the first round."""
+    fake, outcomes, calls_when_final = _write_stories(
+        _story_set(), lambda block: _FORM_OF if "REJECTED:" in block else _MATCHES[_title_of(block)]
+    )
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS and calls_when_final == {"SC1": 2, "SC2": 4}
+    assert _labels(fake.asked(AiTask.PLAN_CHECK)[0]) == ["SC1"]
+    (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
+    assert _labels(rewrite) == ["SC2"]
+    assert 'with "matches", like another slot' in rewrite.split("REJECTED:")[1]
+    first, second = outcomes["SC1"], outcomes["SC2"]
+    assert isinstance(first, WrittenScenario) and isinstance(second, WrittenScenario)
+    assert first.draft.evidence_statement == _MATCHES["Module Firmware"]
+    assert second.draft.evidence_statement == _FORM_OF
+
+
+@pytest.mark.parametrize(
+    ("briefs", "closing"),
+    [
+        (_story_set, lambda block: _FORM_OF if '"Valid Accounts"' in block else _MATCHES["Module Firmware"]),
+        (lambda: [("SC1", _story_brief(_KEV)), ("SC2", _story_brief(_KEV))], lambda _: _KEV_CLOSING),
+    ],
+    ids=["different_links", "no_quoted_title"],
+)
+def test_story_slots_linking_in_their_own_words_or_with_no_title_are_not_written_again(
+    briefs: Callable[[], list[tuple[str, Any]]], closing: Callable[[str], str]
+) -> None:
+    """Two links of their own, or two sentences tied to a vulnerability's facts (no quoted title, so no link
+    to compare): one write and one review, every sentence cited."""
+    fake, outcomes, _ = _write_stories(briefs(), closing)
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert all(isinstance(o, WrittenScenario) and o.findings == () for o in outcomes.values())
+
+
+def test_a_slot_written_again_for_another_fault_claims_no_link() -> None:
+    """SC1's closing sentence says "documented", so it is written again anyway: its draft, about to be
+    replaced, never sends SC2 (linking like it) to the rewrite."""
+    users = "which the Sandworm Team group has used"
+    documented = _MATCHES["Module Firmware"].replace(users, "as documented")
+
+    def closing(block: str) -> str:
+        if _title_of(block) == "Valid Accounts":
+            return _MATCHES["Valid Accounts"]
+        return _MATCHES["Module Firmware"] if "REJECTED:" in block else documented
+
+    fake, outcomes, _ = _write_stories(_story_set(), closing)
+    (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS and _labels(rewrite) == ["SC1"]
+    assert '"documented"' in rewrite and "like another slot" not in rewrite
+    assert all(isinstance(o, WrittenScenario) and o.findings == () for o in outcomes.values())
+
+
+def test_a_rewrite_that_still_links_like_another_slot_is_cited_as_written() -> None:
+    """The guard asks once and never refuses: SC2's rewrite still links with "matches" and is cited as the
+    writer wrote it, never replaced by code's own sentence (no CITATION_REMOVED) and never blocked."""
+    fake, outcomes, _ = _write_stories(_story_set(), lambda block: _MATCHES[_title_of(block)])
+    second = outcomes["SC2"]
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS and isinstance(second, WrittenScenario)
+    threat = _plan_threat(evidence=[_GROUPS.as_doc()], intel_search={"query": "q"})
+    run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
+    path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
+    record = written_record(run, path, threat, _story_set()[1][1], second)
+    assert record["status"] == ScenarioStatus.DONE and record["findings"] == []
+    assert record["content"]["statement"].endswith(f"{_MATCHES['Valid Accounts'].removesuffix('.')} [1].")
 
 
 def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(

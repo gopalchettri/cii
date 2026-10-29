@@ -354,7 +354,17 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     # Owner 2026-10-28: the evidence passage closes the story with one link to its action, no stock opener.
     assert "In real-world attacks" not in writer and 'Never write "real-world"' in writer
     assert "End with at" not in writer and "ONE complete sentence" in writer
-    assert "Open the sentence with this attacker's action itself, in this story's own words" in writer
+    # D60: it opens on the story's own step, on its named system, linked in words chosen for this sentence
+    opening = "Open the sentence by referring back to the one step of this story that the cited entry is"
+    assert opening in writer and "the system or asset where it happens, by name" in writer
+    assert "Then link that step to the cited entry in linking words chosen for this sentence." in writer
+    assert 'and say it is related when evidence_mode is "nearest"' in writer
+    assert 'called "the related technique"' not in writer and "where it reads best in the sentence" in writer
+    assert "Never name it in scenario_statement: explain its exclusion only in system_reasons" in writer
+    assert "End scenario_statement on this consequence." in writer
+    assert 'No "no" system named in scenario_statement' in writer
+    assert "links that step to the entry in words no other slot uses" in writer
+    assert "(with the system or asset it acts on, named as the story names them)" in reviewer
     assert 'never with "The attacker" or "This"' in writer  # owner 2026-10-28: 11 of 26 opened alike
     assert "The story may describe the attacker's steps in the cited entry's terms" in writer
     assert "Do not reshape the specified threat" not in writer  # owner 2026-10-28: it may fit the evidence
@@ -368,6 +378,12 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "every action its name states is its own" in gate
     assert [prompt for prompt in (gate, gap, writer, reviewer) if "recorded in the platform" in prompt] == []
     assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
+
+
+def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None:
+    """The customer's 25,000 tokens a minute: D60's wording grew each system prompt by under 1% (writer
+    21,434 and reviewer 8,675 characters before it)."""
+    assert len(writer_system_prompt()) <= 21_650 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 8_760
 
 
 def test_the_asset_and_its_affected_systems_form_one_whole() -> None:
