@@ -38,25 +38,56 @@ items:                                           # one tsg-config per project th
       CII_SCENARIO_CHAT_BASE_URL: "https://llmapi.govai.ae"           # threat finding and scenario writing: the AI gateway its chat calls go to
       CII_SCENARIO_CHAT_MODEL: "litellm_proxy/kimi-k2.5"              # its main chat model
       CII_SCENARIO_CHAT_MODEL_THINKING: "false"                       # false = the model's "thinking" mode off (faster)
+      CII_SCENARIO_CHAT_MAX_INPUT_TOKENS: "114688"                    # kimi-k2.5: longest question in tokens (the gateway's limit)
+      CII_SCENARIO_CHAT_MAX_OUTPUT_TOKENS: "12288"                    # kimi-k2.5: longest answer in tokens
+      CII_SCENARIO_CHAT_TIMEOUT_SECONDS: "120"                        # kimi-k2.5: seconds to wait for one answer before giving up
       CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 192
-      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "0"                        # kimi-k2.5 tokens a minute (its 429s say limit_type "tokens"), estimated from each prompt: set it well below the limit the gateway admin gives; 0 = no limit
-      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "0"                       # its calls at once, all pods; 0 = no fixed limit: it backs off by itself after a gateway 429
+      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "0"                        # kimi-k2.5 tokens a minute (question + answer room), all pods: set it a little below the budget a 429 names (ai.call_unavailable limit); 0 = no limit
+      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "16"                      # its questions at the same time, all pods: 16 kept UAT fast until 24 Oct; it also backs off after a 429
       CII_SCENARIO_CHAT_FALLBACK_MODEL: "litellm_proxy/glm-5.3"       # its backup when kimi-k2.5 keeps failing; "" = none
       CII_SCENARIO_CHAT_FALLBACK_MODEL_THINKING: "false"              # the backup's thinking mode
+      CII_SCENARIO_CHAT_FALLBACK_MAX_INPUT_TOKENS: "262144"           # the backup glm-5.3: longest question in tokens (the gateway's limit)
+      CII_SCENARIO_CHAT_FALLBACK_MAX_OUTPUT_TOKENS: "12288"           # the backup glm-5.3: longest answer in tokens
+      CII_SCENARIO_CHAT_FALLBACK_TIMEOUT_SECONDS: "180"               # the backup glm-5.3: seconds to wait for one answer before giving up
       CII_SCENARIO_CHAT_FALLBACK_REQUESTS_PER_MINUTE: "0"             # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
       CII_SCENARIO_MAX_CONCURRENT_FALLBACK_CALLS: "10"                # its calls at once to glm-5.3, all pods
       CII_REMEDIATION_CHAT_BASE_URL: "https://llmapi.govai.ae"        # remediation plans: the AI gateway its chat calls go to
       CII_REMEDIATION_CHAT_MODEL: "litellm_proxy/glm-5.3"             # its main chat model
       CII_REMEDIATION_CHAT_MODEL_THINKING: "false"                    # false = the model's "thinking" mode off (faster)
+      CII_REMEDIATION_CHAT_MAX_INPUT_TOKENS: "262144"                 # glm-5.3: longest question in tokens (the gateway's limit)
+      CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # glm-5.3: longest answer in tokens
+      CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "180"                     # glm-5.3: seconds to wait for one answer before giving up
       CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
       CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "4"                    # its calls at once to glm-5.3, all pods
       CII_REMEDIATION_CHAT_FALLBACK_MODEL: ""                         # "" = no backup: a job glm-5.3 cannot answer is tried again later
       CII_SERVICE_MAPPER_CHAT_BASE_URL: "https://llmapi.govai.ae"     # the service mapper: the AI gateway its chat calls go to
       CII_SERVICE_MAPPER_CHAT_MODEL: "litellm_proxy/glm-5.3"          # its main chat model
       CII_SERVICE_MAPPER_CHAT_MODEL_THINKING: "false"                 # false = the model's "thinking" mode off (faster)
+      CII_SERVICE_MAPPER_CHAT_MAX_INPUT_TOKENS: "262144"              # glm-5.3: longest question in tokens (the gateway's limit)
+      CII_SERVICE_MAPPER_CHAT_MAX_OUTPUT_TOKENS: "12288"              # glm-5.3: longest answer in tokens
+      CII_SERVICE_MAPPER_CHAT_TIMEOUT_SECONDS: "180"                  # glm-5.3: seconds to wait for one answer before giving up
       CII_SERVICE_MAPPER_CHAT_REQUESTS_PER_MINUTE: "0"                # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
       CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "2"                 # its calls at once to glm-5.3, all pods
       CII_SERVICE_MAPPER_CHAT_FALLBACK_MODEL: ""                      # "" = no backup: a job glm-5.3 cannot answer is tried again later
+      # Answer room per task, in tokens: the AI service counts it against its budget while a question runs; an
+      # answer that needs more is asked once more with the model's full room.
+      CII_ANSWER_TOKENS_RELEVANCE_GATE: "4096"                        # threat finding: is each threat relevant (about 180 a threat)
+      CII_ANSWER_TOKENS_GAP_FILL: "1024"                              # threat finding: a threat for a STRIDE kind that found none
+      CII_ANSWER_TOKENS_THREAT_ACTIONS: "1024"                        # scenario writing: the actions a threat's name states
+      CII_ANSWER_TOKENS_WRITE_SCENARIO: "3072"                        # scenario writing: one scenario
+      CII_ANSWER_TOKENS_REPAIR_SCENARIO: "3072"                       # scenario writing: a scenario written again after a check
+      CII_ANSWER_TOKENS_PLAN_CHECK: "2048"                            # scenario writing: does the scenario carry out its plan
+      CII_ANSWER_TOKENS_REMEDIATION_PLAN: "8192"                      # remediation: one treatment plan (about 140 a control)
+      CII_ANSWER_TOKENS_SERVICE_MAPPER: "4096"                        # service mapper: one mapping
+      CII_THREAT_QUESTIONS_AT_ONCE: "8"                               # threat finding: questions sent at the same time, per run
+      CII_THREATS_PER_QUESTION: "10"                                  # threat finding: threats checked in one question
+      CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: scenarios written at the same time, per job
+      CII_RERANKS_AT_ONCE: "6"                                        # search: reranker calls at the same time, per worker
+      CII_AI_BUSY_MAX_WAIT_SECONDS: "60"                              # after "too busy" (HTTP 429): longest wait before asking the same model again
+      CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the backup model
+      CII_AI_MODEL_COOL_DOWN_SECONDS: "120"                           # seconds a refused model is tried last (its backup goes first)
+      CII_AI_BUSY_LIMIT_FLOOR: "4"                                    # after "too busy": the fewest questions still allowed at the same time
+      CII_AI_BUSY_LIMIT_SECONDS: "180"                                # seconds that slow-down lasts after the last "too busy"; a whole number
       CII_EMBEDDING_BASE_URL: "https://llmapi.govai.ae"            # the AI gateway for embeddings (text to vectors)
       CII_EMBEDDING_MODEL: "litellm_proxy/qwen3-embedding-8b"      # embedding model for the library searches
       CII_RERANK_BASE_URL: "https://llmapi.govai.ae"               # the AI gateway for re-ranking search results

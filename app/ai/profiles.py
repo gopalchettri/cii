@@ -25,15 +25,16 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         context_tokens=100_000,
     ),
     # UAT, LiteLLM proxy. kimi answers in ~5 s; 120 s covers its longest answers.
-    # Context: the gateway's /model/info max_tokens (2026-07-29); no tpm or key limit set there.
+    # Context: the gateway's model info (2026-10-29): max_input_tokens 114,688, plus the answer kept free.
     "litellm_proxy/kimi-k2.5": ChatModelProfile(
         max_output_tokens=12_288,
         timeout_seconds=120,
         supports_json_mode=True,
         reasoning_effort="none",
-        context_tokens=262_144,
+        context_tokens=114_688 + 12_288,
     ),
-    # UAT's fallback model (CII_<MODULE>_CHAT_FALLBACK_MODEL); 1 million tokens of input (owner, 2026-10-23).
+    # UAT's glm (remediation, service mapper, scenario fallback): the gateway's model info (2026-10-29),
+    # max_input_tokens 262,144, plus the answer kept free.
     # It answers in 55-99 s: 180 s keeps its longest answers from timing out (a timed-out gate batch fails
     # the job).
     "litellm_proxy/glm-5.3": ChatModelProfile(
@@ -41,7 +42,7 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         timeout_seconds=180,
         supports_json_mode=True,
         reasoning_effort="none",
-        context_tokens=1_000_000,
+        context_tokens=262_144 + 12_288,
     ),
 }
 

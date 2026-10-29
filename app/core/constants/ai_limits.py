@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
+
 
 class AiOutageSource(StrEnum):
     """tsg_ai_outages_total{source}: who refused the call."""
@@ -28,17 +30,22 @@ class AiLimits:
     # says; the API retries a 429 as any busy answer.
     RATE_LIMITED_WAITS_SECONDS: Final = (2, 5, 10, 15)
     RATE_LIMITED_JITTER: Final = 0.2
-    RATE_LIMITED_MAX_WAIT_SECONDS: Final = 60  # a longer Retry-After is honoured up to one gateway window
-    RATE_LIMITED_TOTAL_WAIT_SECONDS: Final = 60  # one call's 429 waits in all: one window, then the fallback
+    # a longer Retry-After is honoured up to this (CII_AI_BUSY_MAX_WAIT_SECONDS, one gateway window: 60)
+    RATE_LIMITED_MAX_WAIT_SECONDS: Final = TUNING.ai_busy_max_wait_seconds
+    # one call's 429 waits in all, then the fallback (CII_AI_BUSY_TOTAL_WAIT_SECONDS, one window: 60)
+    RATE_LIMITED_TOTAL_WAIT_SECONDS: Final = TUNING.ai_busy_total_wait_seconds
     # A gateway 429 limits the AI calls in flight on every pod (AiSlots.note_rate_limited):
-    ADAPTIVE_LIMIT_FLOOR: Final = 4  # never below: every running job still moves; fewer only starves them
+    # never below: every running job still moves; fewer only starves them (CII_AI_BUSY_LIMIT_FLOOR: 4)
+    ADAPTIVE_LIMIT_FLOOR: Final = TUNING.ai_busy_limit_floor
     ADAPTIVE_CUT_SPACING_SECONDS: Final = 5  # one cut per burst of 429s: about one kimi answer (3-8 s)
-    ADAPTIVE_LIMIT_TTL_SECONDS: Final = 180  # gone after 3 minutes with no 429: three 60 s gateway windows
+    # gone this long after the last 429 (CII_AI_BUSY_LIMIT_SECONDS, three 60 s gateway windows: 180)
+    ADAPTIVE_LIMIT_TTL_SECONDS: Final = TUNING.ai_busy_limit_seconds
     LEASE_CHECK_SECONDS: Final = 1.0  # a job waiting to ask the AI checks its lease this often
     CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
     # Prompt characters per token: 4.3-6.1 measured on Kimi-K2.6; 3 leaves room for glm and non-English text.
     PROMPT_CHARS_PER_TOKEN: Final = 3
-    MODEL_COOL_DOWN_SECONDS: Final = 120  # a timed-out or still rate-limited model is asked last this long
+    # a timed-out or still rate-limited model is asked last this long (CII_AI_MODEL_COOL_DOWN_SECONDS: 120)
+    MODEL_COOL_DOWN_SECONDS: Final = TUNING.ai_model_cool_down_seconds
     SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod
     SLOTS_LIMIT_KEY: Final = "tsg:ai_slots:limit"  # the limit a gateway 429 set on it (a Redis hash)
     FALLBACK_SLOTS_KEY: Final = "tsg:ai_fallback_slots"  # the same for the fallback model's calls alone

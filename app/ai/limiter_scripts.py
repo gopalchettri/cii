@@ -7,12 +7,14 @@ the Redis server's own clock (TIME), so pods whose clocks differ still agree."""
 #: refusal also takes it out of the line. 1 = taken, 0 = not its turn. No cap and no limit: always taken, no
 #: line. With one, the line decides: a free slot goes to the first in it. A waiter's place is when it stops
 #: waiting (its first poll + its wait), so the API's callers (30 s) go ahead of every worker (whose wait only
-#: its lease ends), each in the order they came.
+#: its lease ends), each in the order they came. ARGV[7...]: this process's slots whose release a Redis
+#: failure missed, freed first, so no finished call still counts as in flight.
 #: ponytail: a waiter that stops without its last try (a lost lease, a dead pod) keeps its place for up to
 #: ARGV[4] s; leave the line on LeaseLost if those pauses ever matter.
 TAKE_FREE_SLOT_SCRIPT = """
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
+for i = 7, #ARGV do redis.call('ZREM', KEYS[1], ARGV[i]) end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 local cap = tonumber(ARGV[1])
 local limit = tonumber(redis.call('HGET', KEYS[2], 'limit'))

@@ -9,7 +9,8 @@ from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
 from app import ai
-from app.ai.retry_waits import rate_limited_wait
+from app.ai.common import _counted_outage
+from app.ai.retry_waits import gateway_limit, rate_limited_wait
 from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS
 from app.core.constants import AiLimits, AiOutage, AiOutageSource, AiTask, LogEvent
 from app.core.exceptions import Unavailable
@@ -80,3 +81,35 @@ def test_the_outage_log_carries_the_gateway_s_retry_after_and_limit_type_never_i
     assert logged == (429, "60", "max_parallel_requests")
     assert "sk-hidden" not in str(outage)
     assert REGISTRY.get_sample_value("tsg_ai_outages_total", labels) == before + 1
+
+
+LITELLM_429 = (
+    'litellm.RateLimitError: RateLimitError: Litellm_proxyException - {"error":{"message":"Rate limit '
+    "exceeded for team: efd5f7f8-e398-46ac-9d89-81fa998d0fca. Limit type: tokens. Current limit: 300000, "
+    'Remaining: 0. Limit resets at: 2026-10-28 10:19:52 UTC","type":"None","param":"None","code":"429"}}'
+)
+
+
+def test_a_gateway_429_logs_the_budget_it_names_never_who_owns_it() -> None:
+    """UAT's 429s said only "tokens": which budget (team, user, key) and its size were thrown away with the
+    message. Now the kind and the numbers are logged, never the team, user or key the message names."""
+    error = litellm.RateLimitError(LITELLM_429, llm_provider="litellm_proxy", model="litellm_proxy/kimi-k2.5")
+    assert gateway_limit(error) == {"limit_scope": "team", "limit": 300_000, "limit_remaining": 0}
+    assert gateway_limit(litellm.RateLimitError("busy", llm_provider="openai", model="m")) == {}
+    with capture_logs() as logs:
+        _counted_outage(AiTask.RELEVANCE_GATE, "litellm_proxy/kimi-k2.5", error)
+    [logged] = [entry for entry in logs if entry["event"] == LogEvent.AI_CALL_UNAVAILABLE]
+    assert (logged["limit_scope"], logged["limit"], logged["limit_remaining"]) == ("team", 300_000, 0)
+    assert "efd5f7f8" not in repr(logged)
+
+
+def test_no_wait_after_a_429_is_longer_than_the_longest_wait_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CII_AI_BUSY_MAX_WAIT_SECONDS is the longest one wait, TSG's own 10 and 15 s steps too: before, only a
+    Retry-After was cut to it. CII_AI_BUSY_TOTAL_WAIT_SECONDS counts within the 4 retries."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_MAX_WAIT_SECONDS", 5)
+    waits = [rate_limited_wait(None, attempt, waited=0) for attempt in range(4)]
+    assert all(wait is not None and wait <= 5 for wait in waits)
+    assert rate_limited_wait(None, attempt=4, waited=0) is None  # asked enough: the backup model answers
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_MAX_WAIT_SECONDS", 60)
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_TOTAL_WAIT_SECONDS", 240)  # UAT's Retry-After 60, four times
+    assert [rate_limited_wait("60", n, waited=60 * n) for n in range(5)] == [60] * 4 + [None]

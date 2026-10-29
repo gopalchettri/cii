@@ -2,6 +2,7 @@
 corrective re-ask for a task that checks its answer, and one record per call (metrics, log line, audit copy in
 tsg_ai_calls)."""
 
+import dataclasses
 import time
 from collections.abc import Callable
 from functools import partial
@@ -203,10 +204,10 @@ class ChatModel:
     def _call_model(
         self, task: AiTask, messages: list[dict], model: str, profile: ChatModelProfile, capped: bool
     ) -> tuple[Any, float]:
-        """One model's response and seconds, with retries."""
+        """One model's response and seconds, with retries; paced by prompt + answer room, as LiteLLM is."""
         options = build_request_options(profile, task, model, model in self._thinking_on, capped)
         ask = partial(litellm.completion, model=model, messages=messages, **self._connection, **options)
-        rate, tokens = self._request_rates[model], _estimated_tokens(messages)
+        rate, tokens = self._request_rates[model], _estimated_tokens(messages) + options["max_tokens"]
         try:
             with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
                 return call_with_retries(ask, rate, self._slots, model=model, task=task, tokens=tokens)
@@ -229,9 +230,22 @@ def _with_correction_turn(
 
 
 def _estimated_tokens(messages: list[dict]) -> int:
-    """A prompt's tokens, erring high (its answer's are left out), for a tokens-a-minute limit."""
-    # ponytail: input only, at 3 chars a token (4.3-6.1 measured), covers a typical answer; count usage if not
+    """A prompt's tokens, erring high (3 chars a token; 4.3-6.1 measured)."""
     return count_prompt_chars(messages) // AiLimits.PROMPT_CHARS_PER_TOKEN
+
+
+def _profile_of(
+    model: str, max_input: int | None, max_output: int | None, timeout: int | None
+) -> ChatModelProfile:
+    """`model`'s profile (app/ai/profiles.py) with the module's own longest question and answer, in tokens,
+    and wait for an answer (CII_<MODULE>_CHAT_...); each None keeps the profile's."""
+    profile = find_model_profile(CHAT_MODEL_PROFILES, model)
+    output = max_output or profile.max_output_tokens
+    question = max_input or profile.context_tokens - profile.max_output_tokens
+    timeout = timeout or profile.timeout_seconds
+    return dataclasses.replace(
+        profile, max_output_tokens=output, context_tokens=question + output, timeout_seconds=timeout
+    )
 
 
 def _find_answer_problems(answer: dict[str, Any] | None, check_answer: AnswerChecker) -> list[str]:
@@ -248,11 +262,13 @@ def chat_model_from(
     fallback_request_rate: AiRequestRate,
 ) -> ChatModel:
     """A module's chat model, with its fallback if it has one, its call records and its limiters."""
-    model_names = [chat.model] + ([chat.fallback_model] if chat.fallback_model else [])
+    main = (chat.model, chat.max_input_tokens, chat.max_output_tokens, chat.timeout_seconds)
+    backup = (chat.fallback_model, chat.fallback_max_input_tokens, chat.fallback_max_output_tokens)
+    models = [main, (*backup, chat.fallback_timeout_seconds)] if chat.fallback_model else [main]
     thinking = ((chat.model, chat.model_thinking), (chat.fallback_model, chat.fallback_model_thinking))
     thinking_on = {name for name, on in thinking if on}
     return ChatModel(
-        [(name, find_model_profile(CHAT_MODEL_PROFILES, name)) for name in model_names],
+        [(name, _profile_of(name, *limits)) for name, *limits in models],
         chat.base_url,
         chat.api_key.get_secret_value(),
         calls,

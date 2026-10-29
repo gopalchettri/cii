@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
+
 
 class Queue(StrEnum):
     THREATS = "tsg_threats"
@@ -129,7 +131,8 @@ class JobControlMessage(StrEnum):
 
 
 class Generation:
-    WRITER_BATCH: Final = 6  # paths one write job writes at once (a set in one round): not a scenario limit
+    # paths one write job writes at once, not a scenario limit (CII_SCENARIOS_WRITTEN_AT_ONCE: 6)
+    WRITER_BATCH: Final = TUNING.scenarios_written_at_once
     MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 

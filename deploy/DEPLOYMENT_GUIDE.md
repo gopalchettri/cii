@@ -941,6 +941,16 @@ oc adm top pods -n ai-common -l app=worker-reaper
 **You should see:** one pod, well under its 768Mi limit (on a laptop the worker uses about 230Mi). If it was
 restarted with `OOMKilled` (Part 5), ask the developer to raise its limit.
 
+After every release, check that only **one** set of TSG workers runs. Two sets (the old ai-remediation copy still
+running) send twice the AI questions on the same key, which is how UAT slowed down from 24 Oct:
+
+```powershell
+oc get deploy -A | findstr "worker-"
+```
+
+**You should see:** each worker once (`worker-threats`, `worker-scenarios`, ...), in ai-threatgen, and
+`worker-reaper` in ai-common. A `worker-...` in ai-remediation is the old copy: delete it as in Part 2, step 11.
+
 ---
 
 ## Part 5. If something fails
@@ -1126,7 +1136,14 @@ small.
 | `CII_SCENARIO_CHAT_FALLBACK_MODEL` | glm-5.3 | threat scenarios' backup model; remediation and the service mapper have none |
 | `CII_SCENARIO_MAX_CONCURRENT_FALLBACK_CALLS`, `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 10, 4, 2 | at most 16 calls to glm-5.3 at once in all (it takes 55-99 s a call) |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
-| `CII_MAX_CONCURRENT_AI_CALLS`, `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (and threat scenarios' calls) at once: TSG runs at full speed and backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling for all pods together |
+| `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 16 | at most 16 threat-scenario questions to kimi-k2.5 at once, all pods together: the cap UAT ran fast with until 24 Oct; TSG also backs off by itself after a gateway 429 |
+| `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (embedding, re-ranking) at once: TSG backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling |
+| `CII_<MODULE>_CHAT_MAX_INPUT_TOKENS`, `..._MAX_OUTPUT_TOKENS`, `..._TIMEOUT_SECONDS` (and the backup's) | kimi-k2.5 114688 / 12288 / 120; glm-5.3 262144 / 12288 / 180 | each module's longest question and answer, in tokens, and its wait for one answer: the gateway's own limits |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 4096, remediation 8192, writing 3072 ... | the answer room each task asks for: the gateway counts it against its token budget while a question runs |
+| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 8, 10, 6, 6 | how much TSG asks at once |
+| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 60, 60, 120, 4, 180 | what TSG does after a "too busy" (429) |
+
+Every line above is changed in `configmap.yaml` and applied with a rollout restart: no new image. `.env.example` explains each in a line.
 
 **How TSG backs off after a 429.** When the gateway answers 429 ("too many"), TSG sets one limit for all pods on that
 pool (the search calls', or the module's chat calls'): half the calls in flight at that moment. Each answered call raises it a little, and a few minutes after the

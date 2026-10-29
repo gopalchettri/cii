@@ -335,8 +335,10 @@ def test_a_task_s_answer_cap_applies_under_its_model_s_limit_unless_the_model_th
 
     assert max_tokens(large, AiTask.PLAN_CHECK) == CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK] < 12_288
     assert max_tokens(JSON_CHAT, AiTask.PLAN_CHECK) == 100  # the model's own limit is lower
-    assert max_tokens(large, AiTask.GAP_FILL) == 12_288  # no cap: too few calls measured
-    assert max_tokens(large, AiTask.REMEDIATION_PLAN) == 12_288  # no cap: grows with its 1-50 controls
+    assert max_tokens(large, AiTask.GAP_FILL) == CHAT_MAX_OUTPUT_TOKENS[AiTask.GAP_FILL] < 12_288
+    assert (
+        max_tokens(large, AiTask.REMEDIATION_PLAN) == CHAT_MAX_OUTPUT_TOKENS[AiTask.REMEDIATION_PLAN] < 12_288
+    )
     assert max_tokens(large, AiTask.PLAN_CHECK, thinking=True) == 12_288
 
 
@@ -1099,9 +1101,35 @@ def test_a_cut_off_answer_or_a_too_long_prompt_is_truncated(monkeypatch: pytest.
 
 
 def test_the_prompt_limit_is_the_smaller_models_so_either_can_answer() -> None:
-    """UAT: kimi-k2.5 first, glm-5.3 (1M tokens) as fallback; a prompt kimi cannot take is never sent."""
+    """UAT: kimi-k2.5 first, glm-5.3 as fallback, each with the gateway's own input limit (model info,
+    2026-10-29: 114,688 and 262,144 tokens). Before, TSG assumed 262,144 and 1,000,000, so a prompt between
+    the two was sent and refused whole."""
     uat = [(name, CHAT_MODEL_PROFILES[name]) for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3")]
-    assert _chat_model(*uat).max_prompt_chars == (262_144 - 12_288) * 3
+    assert _chat_model(*uat).max_prompt_chars == 114_688 * 3
+    assert _chat_model(uat[1]).max_prompt_chars == 262_144 * 3
+
+
+def test_a_prompt_over_the_gateway_s_input_limit_is_refused_before_it_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt kimi-k2.5's gateway refuses (over 114,688 tokens) is never sent: the caller cuts it."""
+    sent: list[object] = []
+    monkeypatch.setattr(litellm, "completion", lambda **kwargs: sent.append(kwargs))
+    chat = _chat_model(("litellm_proxy/kimi-k2.5", CHAT_MODEL_PROFILES["litellm_proxy/kimi-k2.5"]))
+    too_long = "x" * (114_688 * 3)  # the old limit took it: (262,144 - 12,288) x 3 characters
+    with pytest.raises(ai.TruncatedAiAnswer, match="takes at most"):
+        _ask(chat, AiTask.RELEVANCE_GATE, user_prompt=too_long)
+    assert sent == []
+
+
+def test_every_chat_task_asks_for_its_own_answer_room_never_the_model_s_whole() -> None:
+    """LiteLLM reserves each request's answer room against the token budget while it runs. Before, the gate
+    asked for 8,192 (largest answer 3,642) and four tasks for the model's whole 12,288, so TSG looked about 3x
+    its real use (UAT 2026-10-28 10:20: 19,431 used, 50,274 counted). Each task's room is its own setting."""
+    chat_tasks = set(AiTask) - {AiTask.EMBED, AiTask.RERANK}
+    assert set(CHAT_MAX_OUTPUT_TOKENS) == chat_tasks
+    assert all(256 <= room < 12_288 for room in CHAT_MAX_OUTPUT_TOKENS.values())
+    assert CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE] == 4096
 
 
 def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1383,8 +1411,15 @@ def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to
     assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
     assert turns == ["first"] * (AiLimits.RETRIES + 1) + ["fallback"]
     prompt = ai.chat_messages.build_conversation("system", "user")
-    expected = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
-    assert expected > 0 and sizes == [expected] * len(turns)
+    question = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
+    room = {
+        name: ai.chat_messages.max_answer_tokens(profile, AiTask.RELEVANCE_GATE, False)
+        for name, profile in models
+    }
+    # as LiteLLM counts against a token budget: the question and all the answer room asked for
+    assert question > 0 and sizes == [question + room["first"]] * (len(turns) - 1) + [
+        question + room["fallback"]
+    ]
 
 
 def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
@@ -1550,3 +1585,24 @@ def test_a_batch_another_process_stored_meanwhile_is_not_sent_again(monkeypatch:
     matrix = _embedding_model(2, batch_size=1).embed_search_queries(texts, EmbeddingCorpus.CONTROL)
     (sent,) = requested
     assert [list(row) for row in matrix] == [[1.0, 0.0] if [text] == sent else [0.0, 1.0] for text in texts]
+
+
+def test_each_module_s_model_limits_replace_the_model_s_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-29: CII_<MODULE>_CHAT_MAX_INPUT_TOKENS, _MAX_OUTPUT_TOKENS and _TIMEOUT_SECONDS (and the
+    backup's) set from the ConfigMap; a blank one keeps the model's own (app/ai/profiles.py)."""
+    _with_module_settings(monkeypatch)
+    settings = container.get_settings().model_copy(
+        update={
+            "scenario_chat_max_input_tokens": 50_000,
+            "scenario_chat_timeout_seconds": 33,
+            "scenario_chat_fallback_max_output_tokens": 2048,
+        }
+    )
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    scenario = container.get_scenario_chat_model._build()
+    profiles = dict(scenario._models)
+    assert scenario.max_prompt_chars == 50_000 * AiLimits.PROMPT_CHARS_PER_TOKEN  # under glm's own 262,144
+    assert (profiles[KIMI].timeout_seconds, profiles[KIMI].max_output_tokens) == (33, 12_288)
+    assert (profiles[GLM].max_output_tokens, profiles[GLM].timeout_seconds) == (2048, 180)
+    remediation = dict(container.get_remediation_chat_model._build()._models)
+    assert remediation[GLM] == CHAT_MODEL_PROFILES[GLM]  # every line blank: the model's own

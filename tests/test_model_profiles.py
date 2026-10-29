@@ -55,10 +55,10 @@ def test_each_chat_model_states_its_own_context_with_the_answer_kept_free() -> N
     }
     assert "context_tokens" not in defaults
     contexts = {name: chat.context_tokens for name, chat in CHAT_MODEL_PROFILES.items()}
-    assert contexts == {
+    assert contexts == {  # the gateway's max_input_tokens (model info, 2026-10-29) + the answer kept free
         "openai/Kimi-K2.6": 100_000,
-        "litellm_proxy/kimi-k2.5": 262_144,
-        "litellm_proxy/glm-5.3": 1_000_000,
+        "litellm_proxy/kimi-k2.5": 114_688 + 12_288,
+        "litellm_proxy/glm-5.3": 262_144 + 12_288,
     }
     assert CHAT_MODEL_PROFILES["openai/Kimi-K2.6"].max_input_chars == (100_000 - 12_288) * 3
 

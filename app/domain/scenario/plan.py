@@ -356,7 +356,7 @@ def gap_fill_prompt(
 # --- the relevance gate's verdicts, checked in code
 
 #: Threats judged per gate call.
-GATE_BATCH_SIZE = 10
+GATE_BATCH_SIZE = ThreatFinding.THREATS_PER_QUESTION  # CII_THREATS_PER_QUESTION
 
 
 def _candidate_for_gate(slot: str, threat_type: str, threat: str, attackers: list[str]) -> dict[str, Any]:

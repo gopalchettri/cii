@@ -2,6 +2,9 @@
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,8 @@ import structlog
 from pydantic import ValidationError
 
 from app.ai.module_chat import module_chat
+from app.core.ai_tuning_settings import AiTuningSettings
+from app.core.chat_settings import ChatModelSettings
 from app.core.config import Settings, get_settings
 from app.core.constants import ChatModule, Env, LogEvent
 from app.core.logging import configure_logging
@@ -79,6 +84,69 @@ def test_each_module_reads_its_own_chat_lines_and_a_missing_one_stops_start_up(
     del without_model["service_mapper_chat_model"]  # its line missing, or blank (a blank line is no line)
     with pytest.raises(ValidationError, match="service_mapper_chat_model"):
         Settings(_env_file=None, **without_model)  # type: ignore[call-arg]
+
+
+def test_every_setting_in_env_example_says_what_it_does() -> None:
+    """Owner 2026-10-29: a plain comment above every setting (or above the group it opens), so .env.example
+    explains itself; a setting added without one fails here."""
+    lines = (REPO / ".env.example").read_text(encoding="utf-8").splitlines()
+    unexplained = []
+    for number, line in enumerate(lines):
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        above = number - 1
+        while above >= 0 and "=" in lines[above] and not lines[above].lstrip().startswith("#"):
+            above -= 1  # a group of settings under one comment
+        if above < 0 or not lines[above].lstrip().startswith("#"):
+            unexplained.append(line.split("=", 1)[0])
+    assert unexplained == []
+
+
+def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
+    """config.py and .env.example agree: each AI tuning setting's default is the value .env.example writes,
+    and each module's model limits are blank there (the model's own, app/ai/profiles.py)."""
+    lines = (REPO / ".env.example").read_text(encoding="utf-8").splitlines()
+    written = {
+        key: value for key, _, value in (line.partition("=") for line in lines if line.startswith("CII_"))
+    }
+    for field, info in AiTuningSettings.model_fields.items():
+        assert written[f"CII_{field.upper()}"] == str(info.default), field
+    limits = [f for f in ChatModelSettings.model_fields if f.endswith(("_tokens", "_timeout_seconds"))]
+    limits = [f for f in limits if not f.endswith("tokens_per_minute")]
+    assert len(limits) == 18
+    assert all(written[f"CII_{f.upper()}"] == "" and Settings.model_fields[f].default is None for f in limits)
+
+
+def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changed in the ConfigMap, then a rollout restart: no new image. A fresh process, as a restarted pod."""
+    changed = {
+        "CII_THREAT_QUESTIONS_AT_ONCE": "3",
+        "CII_THREATS_PER_QUESTION": "5",
+        "CII_SCENARIOS_WRITTEN_AT_ONCE": "2",
+        "CII_RERANKS_AT_ONCE": "2",
+        "CII_ANSWER_TOKENS_RELEVANCE_GATE": "2048",
+        "CII_AI_BUSY_MAX_WAIT_SECONDS": "20",
+        "CII_AI_BUSY_TOTAL_WAIT_SECONDS": "30",
+        "CII_AI_MODEL_COOL_DOWN_SECONDS": "45",
+        "CII_AI_BUSY_LIMIT_FLOOR": "2",
+        "CII_AI_BUSY_LIMIT_SECONDS": "90",
+    }
+    probe = (
+        "import json; from app.core.constants import AiLimits as L, AiTask, CHAT_MAX_OUTPUT_TOKENS as C, "
+        "Generation as G, RerankGateLimits as R, ThreatFinding as T; from app.domain.scenario import plan; "
+        "print(json.dumps([T.AI_BATCHES_AT_ONCE, plan.GATE_BATCH_SIZE, G.WRITER_BATCH, R.RERANKS_AT_ONCE, "
+        "C[AiTask.RELEVANCE_GATE], L.RATE_LIMITED_MAX_WAIT_SECONDS, L.RATE_LIMITED_TOTAL_WAIT_SECONDS, "
+        "L.MODEL_COOL_DOWN_SECONDS, L.ADAPTIVE_LIMIT_FLOOR, L.ADAPTIVE_LIMIT_TTL_SECONDS]))"
+    )
+    restarted = subprocess.run(  # noqa: S603 - our own probe
+        [sys.executable, "-c", probe], cwd=REPO, env=os.environ | changed, capture_output=True, text=True
+    )
+    assert json.loads(restarted.stdout.strip().splitlines()[-1]) == [int(v) for v in changed.values()]
+    monkeypatch.setenv("CII_THREAT_QUESTIONS_AT_ONCE", "0")
+    with pytest.raises(ValidationError, match="threat_questions_at_once"):
+        AiTuningSettings()
 
 
 def test_the_plan_version_cap_is_configurable_within_one_to_forty(monkeypatch: pytest.MonkeyPatch) -> None:

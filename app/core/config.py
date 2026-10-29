@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.ai_tuning_settings import AiTuningSettings
 from app.core.chat_settings import ChatModelSettings
 from app.core.constants import (
     COUNTRY_REGIONS,
@@ -118,7 +119,7 @@ def _word_range(setting: str, text: str) -> tuple[int, int]:
     return least, most
 
 
-class Settings(ChatModelSettings, AiOutputSettings):
+class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )

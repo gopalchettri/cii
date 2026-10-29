@@ -325,3 +325,22 @@ def test_a_model_s_saturated_limit_never_delays_another_model_s_request(
             AiRequestRate(get_redis_client(), model, per_minute=1, wait_seconds=5).wait_for_turn(TASK) < 0.5
         )
     assert max(slept) < 0.5
+
+
+def test_a_slot_whose_release_redis_missed_is_freed_by_the_next_call() -> None:
+    """A call that ends while Redis is being skipped (a blip) could not free its slot, so it still counted as
+    in flight until its lease ended (60 s): with a 429's limit in force, every new call waited for nothing.
+    The next call's take frees it first."""
+    key = f"tsg:test_phantom:{uuid.uuid4().hex}"
+    redis = get_redis_client()
+    slots = AiSlots(redis, cap=0, wait_seconds=5, key=key)
+    redis.hset(f"{key}:limit", "limit", 1)  # a 429 cut this pool to one call at once
+    try:
+        with slots.hold_slot(AiTask.RELEVANCE_GATE):
+            slots._skip_redis_until = time.monotonic() + 60  # Redis fails while the call runs
+        assert redis.zcard(key) == 1  # its release was skipped
+        slots._skip_redis_until = 0.0  # Redis is back
+        with slots.hold_slot(AiTask.RELEVANCE_GATE, waits=False):  # no wait at all: refused if not free
+            assert redis.zcard(key) == 1  # itself alone, the missed slot freed
+    finally:
+        redis.delete(key, f"{key}:limit", f"{key}:line", f"{key}:line_polls")

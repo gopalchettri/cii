@@ -3,6 +3,7 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
 from app.core.constants.scenario import FindingSeverity
 
 
@@ -54,7 +55,8 @@ class EvidenceLimits:
 
 
 class RerankGateLimits:
-    RERANKS_AT_ONCE: Final = 6  # reranker calls in flight in the whole process (the remote reranker)
+    # remote reranker calls in flight in the whole process (CII_RERANKS_AT_ONCE: 6)
+    RERANKS_AT_ONCE: Final = TUNING.reranks_at_once
     LOCAL_RERANKS_AT_ONCE: Final = 1  # the local CPU model predicts one at a time
     CHECK_EVERY_SECONDS: Final = 2.0  # a waiter checks its job's lease (and deadline) this often
 

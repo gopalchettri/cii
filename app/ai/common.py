@@ -13,7 +13,7 @@ import litellm
 import structlog
 
 from app.ai.module_chat import module_chat
-from app.ai.retry_waits import busy_retry_wait
+from app.ai.retry_waits import busy_retry_wait, gateway_limit
 from app.ai.slots import AiRequestRate, AiSlots, sleep_unless_lease_lost
 from app.core import metrics
 from app.core.config import Settings
@@ -194,9 +194,8 @@ def _set_proxy_variables(proxies: dict[str, str]) -> None:
 
 
 def build_api_key_header(header: str, api_key: str, option: str = "extra_headers") -> dict[str, Any]:
-    """{option: {header: key}} for a gateway that reads the key from its own header (settings.ai_key_header);
-    {} when none is set. litellm's rerank takes `headers` (it drops `extra_headers`); chat and embedding take
-    `extra_headers`."""
+    """{option: {header: key}} for a gateway reading the key from its own header (settings.ai_key_header), {}
+    when none is set. litellm's rerank takes `headers` (it drops `extra_headers`), chat and embeddings not."""
     return {option: {header: api_key}} if header else {}
 
 
@@ -242,8 +241,8 @@ def call_with_retries[Answer](
 def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
     """A provider outage, counted and logged, as the Unavailable that tells the UI which outage it was."""
     metrics.AI_CALLS.labels(task, model, AiOutcome.UNAVAILABLE).inc()
-    # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it is
-    # logged with the gateway's Retry-After and limit type, never the message (it may hold the gateway URL).
+    # Which outage it was decides the cure: logged with the gateway's Retry-After, limit type and the budget
+    # a 429 names (gateway_limit), never the message itself (it may hold the gateway URL or the key's owner).
     outage = ai_outage_of(error)
     metrics.AI_OUTAGES.labels(task, outage, AiOutageSource.GATEWAY).inc()
     headers = getattr(getattr(error, "response", None), "headers", None) or {}
@@ -256,6 +255,7 @@ def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
         reason=outage,
         retry_after=headers.get("retry-after"),
         limit_type=headers.get("rate_limit_type"),  # LiteLLM's: requests, tokens or max_parallel_requests
+        **gateway_limit(error),
     )
     return Unavailable(AI_OUTAGE_MESSAGES[outage], reason=outage)
 

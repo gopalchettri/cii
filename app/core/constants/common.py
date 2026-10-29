@@ -3,6 +3,7 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
 from app.core.prompts import PROMPTS
 
 
@@ -156,16 +157,17 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.REPAIR_SCENARIO: None,
 }
 
-#: Most answer tokens per chat task: twice the most an ok call used (dev, thinking off), at least 2048,
-#: rounded up to 1024; an answer cut off at it is asked once more at the model's limit. Not listed, or a model
-#: thinking: the model's limit. remediation_plan: ~140 tokens a control (2601 at dev's most, 10; up to 50).
+#: Most answer tokens per chat task (CII_ANSWER_TOKENS_<TASK>), counted against the AI service's budget while
+#: a question runs; an answer cut off at it is asked again at the model's limit, as a thinking model is.
 CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
-    AiTask.RELEVANCE_GATE: 8192,  # most used: 3642 by a batch of 20 threats, 1877 by one of 10
-    AiTask.SERVICE_MAPPER: 4096,  # 1997, at 10 upstream and 10 downstream (SERVICE_MAPPER_*_TOTAL_COUNT)
-    AiTask.WRITE_SCENARIO: 3072,  # 1158
-    AiTask.REPAIR_SCENARIO: 3072,  # the writer's answer again
-    AiTask.PLAN_CHECK: 2048,  # 478
-    AiTask.THREAT_ACTIONS: 2048,  # the least: a few short phrases
+    AiTask.RELEVANCE_GATE: TUNING.answer_tokens_relevance_gate,
+    AiTask.GAP_FILL: TUNING.answer_tokens_gap_fill,
+    AiTask.THREAT_ACTIONS: TUNING.answer_tokens_threat_actions,
+    AiTask.WRITE_SCENARIO: TUNING.answer_tokens_write_scenario,
+    AiTask.REPAIR_SCENARIO: TUNING.answer_tokens_repair_scenario,
+    AiTask.PLAN_CHECK: TUNING.answer_tokens_plan_check,
+    AiTask.REMEDIATION_PLAN: TUNING.answer_tokens_remediation_plan,
+    AiTask.SERVICE_MAPPER: TUNING.answer_tokens_service_mapper,
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"

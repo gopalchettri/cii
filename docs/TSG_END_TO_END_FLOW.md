@@ -1139,7 +1139,7 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    - one thread per kind (`ThreatFinding.CATEGORIES_AT_ONCE` = 6);
    - one shared pool for the gate calls of all kinds (`ThreatFinding.AI_BATCHES_AT_ONCE` = 8), so at most 8 gate calls run at once per plan.
 
-   `run_in_shared_pool` returns results in STRIDE order. Every chat call also holds one of the scenario module's Redis AI slots (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS`, blank = `CII_MAX_CONCURRENT_AI_CALLS`, across all pods) and waits its turn under its model's own requests a minute (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`, the fallback's `CII_SCENARIO_CHAT_FALLBACK_REQUESTS_PER_MINUTE`; section 15). Once one gate call finds the AI unavailable, no new one starts: the job is retried anyway.
+   `run_in_shared_pool` returns results in STRIDE order. Every chat call also holds one of the scenario module's Redis AI slots (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS`, default 16, across all pods) and waits its turn under its model's own requests a minute (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`, the fallback's `CII_SCENARIO_CHAT_FALLBACK_REQUESTS_PER_MINUTE`; section 15). Once one gate call finds the AI unavailable, no new one starts: the job is retried anyway.
 2. **Slots.** `_CategoryJudge.judge_category` numbers the kind's whole bucket `R1`, `R2`, … (`ThreatFinding.RECORD_SLOT`). `_candidate_for_gate` gives each candidate `{slot, threat_type, threat, attackers}`, with library codes removed. `attackers` holds the type's linked actors.
 3. **Batches.** `_judge` splits the slots with `itertools.batched(items, GATE_BATCH_SIZE)` (10), so R41-R50 is the 5th batch. `_judge_batch` makes one call per batch: `ask_ai_and_check(chat, AiTask.RELEVANCE_GATE, relevance_gate_prompt(…), _read_verdicts)`.
 4. **Prompt** (`relevance_gate_prompt`). Every AI prompt and the prompt version live in one file, `app/prompts.toml`, one section per prompt, loaded once by `app/core/prompts.py` into `PROMPTS` (D37). The gate's is `[scenario.gate]`.
@@ -2502,8 +2502,8 @@ asked for, left out):
 6. **The `ChatModel` wrapper**, briefly:
    - A prompt longer than the smallest `max_input_chars` raises `TruncatedAiAnswer` before any call.
    - `AiSlots.hold_slot` (`app/ai/slots.py`) holds one Redis slot of its module's pool
-     (`CII_<MODULE>_MAX_CONCURRENT_AI_CALLS`, blank = `CII_MAX_CONCURRENT_AI_CALLS`: 16; 0 in UAT: no fixed limit,
-     only the one a gateway 429 sets, section 15), shared by every pod. A worker waits for
+     (`CII_<MODULE>_MAX_CONCURRENT_AI_CALLS`, default 16; UAT: threat scenarios 16, remediation 4, the service
+     mapper 2; 0 = no fixed limit, only the one a gateway 429 sets, section 15), shared by every pod. A worker waits for
      its slot until its lease ends (`AiLimits.WORKER_SLOT_WAIT_SECONDS`, 86,400 s, stands for no clock).
    - Every request, each retry included, first waits its turn under its model's own limit:
      its module's `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE`, or the fallback's
@@ -4200,7 +4200,10 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5); a treatment-plan version that failed for an outage is written again in place and uses no version |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | the search calls (embedding, reranker) at once, all pods |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the embedding model and the reranker, each its own |
-| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16) | each module's own chat model, URL, key, thinking and limits, 11 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT: threat scenarios on kimi-k2.5, 180 requests a minute, glm-5.3 backup (10 at once); remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
+| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16); model limits blank = the model's | each module's own chat model, URL, key, thinking, longest question and answer, timeout and limits, 17 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT: threat scenarios on kimi-k2.5, 180 requests a minute, 16 at once, glm-5.3 backup (10 at once); remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 4096, gap fill 1024, threat actions 1024, writing 3072, repair 3072, plan check 2048, remediation 8192, service mapper 4096 | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
+| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 8, 10, 6, 6 | gate batches at once per run, threats per gate batch, paths written at once per job, remote reranker calls at once per process |
+| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 60, 60, 120, 4, 180 | after a 429: the longest one wait (TSG's own 2, 5, 10, 15 s steps too), all waits (4 retries at most) before the fallback, how long a refused model goes last, the slow-down's floor and how long it lasts (section 15) |
 | `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |
 
 ---
