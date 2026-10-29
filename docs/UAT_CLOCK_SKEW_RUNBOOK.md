@@ -47,7 +47,17 @@ alert says when one is not.
 
 ## Checking every pod's clock by hand (optional)
 
-From a Linux shell or the OpenShift web terminal, logged in with `oc`. It prints each pod's node and how far its
+From the project folder, logged in with `oc` (reads only):
+
+```
+python scripts/uat_clock_check.py
+```
+
+It prints how far MongoDB's, Redis' and every TSG pod's clock is from this computer's, marks each one more than
+2 s off (`--max-skew` changes it) as OFF, and names each node to fix with its `chronyc` command. MongoDB and Redis
+are read from inside the app pods with the app's own connections. Exit code 1 means something is off.
+
+Without Python, from a Linux shell or the OpenShift web terminal, logged in with `oc`. It prints each pod's node and how far its
 clock is from the shell's; within about ±2 s is fine.
 
 ```
