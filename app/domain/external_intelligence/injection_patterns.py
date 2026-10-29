@@ -40,19 +40,25 @@ _OF_THE_MODEL = (
     r"(?:your|its|my|our|above|previous|prior|preceding|hidden|secret|system|developer|initial|original"
     r"|full|entire|exact|given)"
 )
-_OPERATING_SYSTEM_INSTRUCTIONS = r"operating\s+system\s+instructions?\b"
-#: "Operating system instructions" are a computer's (an injection story says it), unless said to the model:
-#: "your ... operating system instructions", "operating system instructions you were given".
-_PROMPT_REFERENCE = (
-    r"\b(?:system|developer|hidden|initial|original|secret)\s+"
-    r"(?:prompt|message|(?<!operating\ssystem\s)instructions?)\b"
-    rf"|\byour\b(?:\W+\w+){{0,3}}?\W+{_OPERATING_SYSTEM_INSTRUCTIONS}"
-    rf"|\b{_OPERATING_SYSTEM_INSTRUCTIONS}\s+(?:that\s+)?you\s+(?:were\s+given|received|have|got)\b"
-    rf"|\b(?:reveal|repeat|print|show|leak|disclose|display)\b(?:\W+\w+){{0,4}}?\W+{_OF_THE_MODEL}\b"
+_PROMPT_NAME = r"\b(?:system|developer|hidden|initial|original|secret)\s+(?:prompt|message|instructions?)\b"
+_REVEAL_PROMPT = (
+    rf"\b(?:reveal|repeat|print|show|leak|disclose|display)\b(?:\W+\w+){{0,4}}?\W+{_OF_THE_MODEL}\b"
     r"(?:\W+\w+){0,2}?\W+(?:prompt|instructions?|rules)\b"
     r"|\b(?:reveal|repeat|print|leak|disclose)\s+(?:me\s+)?(?:the\s+)?(?:prompt|rules)\b"
     r"|\b(?:reveal|repeat|print|show|leak|disclose)\b.{0,25}\b(?:prompt|instructions|rules)\s+"
     r"(?:that\s+)?(?:you|i)\s+(?:were|was|have|had|got|received)\b"
+)
+#: Ingest, the trust boundary (a hit quarantines one record): any "system prompt / message / instructions".
+_PROMPT_REFERENCE = rf"{_PROMPT_NAME}|{_REVEAL_PROMPT}"
+_OS_PROMPT = r"operating[\s-]system\s+(?:prompt|message|instructions?)\b"
+#: The writer's echo check (a hit blocks a scenario): a computer's "operating system prompt / message /
+#: instructions" in an attack story is skipped unless said to the model: "your" or "the model's" just before
+#: it, "you" just after it, or an order to output it.
+_ECHO_PROMPT_REFERENCE = (
+    rf"(?<!operating[\s-]){_PROMPT_NAME}|{_REVEAL_PROMPT}"
+    rf"|\b(?:your|{_AI}['’]s)\b(?:\W+\w+){{0,3}}?\W+{_OS_PROMPT}"
+    rf"|{_OS_PROMPT}(?:\W+\w+){{0,3}}?\W+(?:you|your)\b"
+    rf"|\b(?:reveal|repeat|print|leak|disclose|output|quote)\b(?:\W+\w+){{0,2}}?\W+{_OS_PROMPT}"
 )
 _ROLE_MARKER = r"(?:^|[.!?:;]\s|\n|[\[(<\"'])\s*(?:system|assistant|human|developer|ai|bot)\s*:"
 _CHAT_TEMPLATE = (
@@ -159,7 +165,7 @@ ECHO_PATTERNS: Final = _compile(
         r"(?:previous|prior|above|earlier|preceding)\b(?:\W+\w+){0,2}?\W+"
         r"(?:instructions?|prompts?|directions?|directives?|guidelines)\b",
         "role_switch": _ROLE_SWITCH,
-        "prompt_reference": _PROMPT_REFERENCE,
+        "prompt_reference": _ECHO_PROMPT_REFERENCE,
         "role_marker": _ROLE_MARKER,
         "chat_template": _CHAT_TEMPLATE,
         "tool_injection": _TOOL_MARKERS,

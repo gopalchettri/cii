@@ -458,32 +458,37 @@ def test_a_relinked_slot_keeps_its_reviewed_cited_draft_when_its_rewrite_does_wo
     assert second.draft.evidence_statement == _MATCHES["Valid Accounts"]
 
 
+_UNUSABLE = {"rules": "?"}  # a review answer no reader can use
+
+
 @pytest.mark.parametrize(
-    ("rewrite", "closing"),
-    [({"evidence_statement": _FORM_OF}, _FORM_OF), ({"entry_point": "Laptop"}, _MATCHES["Valid Accounts"])],
-    ids=["rewritten", "rewrite_unreadable"],
+    ("second_review", "status", "findings"),
+    [
+        (_confirmed, PlanCheckStatus.CONSISTENT, []),
+        (
+            _UNUSABLE,
+            PlanCheckStatus.UNCHECKED,
+            [FindingCode.PLAN_CHECK_NOT_MADE, FindingCode.CITATION_REMOVED],
+        ),
+    ],
+    ids=["reviewed", "review_unusable_again"],
 )
-def test_a_relinked_slot_whose_review_is_asked_again_is_still_written_again(
-    rewrite: dict[str, Any], closing: str
+def test_a_relinked_slot_whose_review_is_asked_again_is_reviewed_again_never_rewritten(
+    second_review: Any, status: PlanCheckStatus, findings: list[FindingCode]
 ) -> None:
-    """Review, 30 Oct: SC2 linked like SC1 and its first review was unusable, so it was reviewed again but
-    never written again and its repeated link was cited. It now goes to the one rewrite, told the link taken;
-    an unreadable rewrite leaves its draft, reviewed in the second round."""
-
-    def write(block: str) -> dict[str, Any]:
-        answer = draft_answer(_CLEAN) | {"evidence_statement": _MATCHES[_title_of(block)]}
-        return answer | (rewrite if "REJECTED:" in block else {})
-
-    fake = FakeChatModel()
-    fake.queue(AiTask.PLAN_CHECK, _confirmed, {"rules": "?"})
-    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _confirmed}
-    second = dict(write_set(fake, _story_set()))["SC2"]  # type: ignore[arg-type]
-    (note,) = fake.asked(AiTask.REPAIR_SCENARIO)
-    assert [task for task, _ in fake.calls] == _TWO_ROUNDS and _labels(note) == ["SC2"]
-    assert 'with "matches the technique" like another slot' in note.split("REJECTED:")[1]
-    assert isinstance(second, WrittenScenario) and second.findings == () and not second.rewritten
-    assert second.plan_check.status is PlanCheckStatus.CONSISTENT
-    assert second.draft.evidence_statement == closing
+    """Final review, 30 Oct: SC2 links like SC1 and its first review is unusable, so it has no reviewed draft
+    to fall back on. It is not rewritten (a clean draft is never risked for variety): its own draft is
+    reviewed again and saved, its repeated link cited when that review confirms it (D60)."""
+    fake, outcomes, _ = _write_stories(
+        _story_set(), lambda block: _MATCHES[_title_of(block)], reviews=(_confirmed, _UNUSABLE, second_review)
+    )
+    second = outcomes["SC2"]
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK, AiTask.PLAN_CHECK]
+    assert _labels(fake.asked(AiTask.PLAN_CHECK)[1]) == ["SC2"]
+    assert isinstance(second, WrittenScenario) and not second.rewritten
+    assert second.draft.statement == draft_answer(_CLEAN)["scenario_statement"]
+    assert second.plan_check.status is status and [finding.code for finding in second.findings] == findings
+    assert second.draft.evidence_statement == ("" if findings else _MATCHES["Valid Accounts"])
 
 
 _HIDE = "hiding the change"
@@ -524,6 +529,25 @@ def test_a_relinked_slot_with_an_action_to_repair_is_told_both_and_its_repair_is
     assert isinstance(second, WrittenScenario) and second.rewritten
     assert second.plan_check.status is PlanCheckStatus.CONSISTENT and second.draft.evidence_statement == ""
     assert [finding.code for finding in second.findings] == [FindingCode.CITATION_REMOVED]
+
+
+def test_a_relinks_citable_rewrite_is_taken_though_its_consistent_review_leaves_an_action_unjudged() -> None:
+    """Final review, 30 Oct: SC2 lists two actions and links like SC1; both its reviews are consistent and
+    judge only one. Its rewrite, citable and linking in its own words, was refused for the action left
+    unjudged, which a consistent review never repairs (_listed_actions): it is now taken."""
+    acting = dataclasses.replace(_story_brief(_GROUPS), threat_actions=(_ACT, _HIDE))
+    one_judged = _CONSISTENT | {"evidence_supported": True, "threat_actions": {_ACT: "carried out"}}
+    fake, outcomes, _ = _write_stories(
+        [("SC1", _story_brief(TECHNIQUE)), ("SC2", acting)],
+        lambda block: _FORM_OF if "REJECTED:" in block else _MATCHES[_title_of(block)],
+        reviews=(_confirmed, one_judged, one_judged),
+    )
+    second = outcomes["SC2"]
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS
+    assert isinstance(second, WrittenScenario) and second.rewritten and second.findings == ()
+    assert second.plan_check.status is PlanCheckStatus.CONSISTENT
+    assert second.plan_check.actions_not_carried_out == (_HIDE,)
+    assert second.draft.evidence_statement == _FORM_OF
 
 
 def test_a_blocked_slot_claims_no_link() -> None:

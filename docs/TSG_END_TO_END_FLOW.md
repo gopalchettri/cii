@@ -2214,10 +2214,11 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 4. **Round 2, only when needed:** one rewrite call (task `repair_scenario`) for the slots that were unreadable,
    had a fault worth asking again, or need a repair, each with its own problems, or whose closing sentence links
    to its title in the same words as an earlier clean slot's (`_flag_repeated_links`, D60: told the links taken);
-   then one review call for those slots. A repair or relink is kept only if it fixed the first draft (`_fixes`,
-   §8.5 step 8), and a relink with no action to repair only if its sentence can still be cited; else the
-   reviewed first draft stays. A relink whose first review is asked again is rewritten too; its draft stays
-   only if the rewrite is unusable. A slot still unusable keeps
+   then one review call for those slots and the slots whose first review is asked again. A repair or relink is
+   kept only if it fixed the first draft (`_fixes`, §8.5 step 8), and a relink with no action to repair only if
+   its sentence can still be cited; else the reviewed first draft stays. A relink whose first review is asked
+   again has no reviewed draft to fall back on, so it is not rewritten: its clean draft is reviewed again and
+   its repeated link cited (D60). A slot still unusable keeps
    its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
    round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's or relink's first draft; any other draft checked,
    with `plan_check_not_made` naming the outage when it has no review); only a slot with no usable draft keeps
@@ -2688,7 +2689,8 @@ near copy.
    acts, an unjudged one included), the writer is asked once more, with task `repair_scenario`: the same
    prompt plus `[scenario.writer]` `repair`, which names those acts. The rewrite is checked and reviewed like
    any draft (8.4, 8.5). It replaces the first draft (`rewritten: true`) only if it is not blocked, keeps
-   `same_threat` and `same_impact` true, carries out every act and breaks no rule the first draft held.
+   `same_threat` and `same_impact` true, leaves no act to repair (`_listed_actions`: an act a consistent
+   review leaves unjudged does not count) and breaks no rule the first draft held.
    Otherwise the first draft is kept with its notes, and so it is when the rewrite or its review hits an
    outage or an unusable answer. Log `writer.scenario_repaired`, outcome `fixed` or `kept_first`. A complete
    first draft costs no extra call.
@@ -2732,9 +2734,9 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
    5. it is more than one sentence: "it is more than one sentence";
    6. for a technique only: the title is not in double quotes (straight or curly), or the passage opens with the
       title, a user, "the technique", "threat groups" or malware named as evidence ("Malware, such as …",
-      "A malware family called …"; "Malware planted on …" and "The malware used by the attacker …" are
-      steps): 'it does not give the title …' / "it opens with the evidence, not with this attacker's
-      action";
+      "A malware family called …", "Malware used by the attackers behind …" or "by the attacker group …";
+      "Malware planted on …" and "The malware used by the attacker …" are steps): 'it does not give the
+      title …' / "it opens with the evidence, not with this attacker's action";
    7. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
       reviewer did not confirm it against its source".
 2. A problem blanks the passage and adds a `citation_removed` **warning**, never a blocker: "The writer's

@@ -601,13 +601,14 @@ _STOCK_WORDS = re.compile(
     r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
 )
 #: A closing sentence that opens with the evidence itself instead of this attacker's action: the technique,
-#: threat groups, or malware named as evidence ("Malware, such as ..."; "Malware planted on ..." and "The
-#: malware used by the attacker ..." are steps).
+#: threat groups, or malware named as evidence ("Malware, such as ..."; "Malware used by the attackers behind
+#: ..." or "by the attacker group ..."; "Malware planted on ..." and "The malware used by the attacker ..."
+#: are steps).
 _EVIDENCE_OPENER = re.compile(
     r"(?:the |a |an )?(?:related )?(?:technique|threat (?:groups?|actors?))\b"
     r"|(?:the |a |an )?(?:malicious software|malware)(?:\s+(?:famil(?:y|ies)|tools?|strains?))?,?\s+"
     r"(?:such as|called|named|like|known as|including|associated with"
-    r"|used by(?!\s+(?:the|this)\s+attacker))\b",
+    r"|used by(?!\s+(?:the|this)\s+attacker\b(?!\s+groups?\b)))\b",
     re.IGNORECASE,
 )
 _QUOTED = re.compile(r'"[^"]*"')
@@ -679,7 +680,7 @@ class _Slot:
     brief: WriterBrief
     draft: ScenarioDraft | None = None  # its usable draft; a repair's while it is written
     problems: tuple[str, ...] = ()  # why the second round writes it again
-    relink: str = ""  # a clean draft's link repeated from another slot: rewritten, its reviewed draft kept
+    relink: str = ""  # a clean draft's link repeated from another slot: rewritten once reviewed, draft kept
     review: PlanCheckAnswer | None = None  # its usable review
     review_problems: tuple[str, ...] = ()  # why its review is asked again (unusable, or no action judged)
     first: WrittenScenario | None = None  # its reviewed first draft while its repair or relink is written
@@ -689,9 +690,10 @@ def write_set(
     chat: ChatModel, briefs: Sequence[tuple[str, WriterBrief]]
 ) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """Each slot's scenario (or failure card) as soon as it is final, in at most 4 AI calls: one write and one
-    review, then one rewrite and one review for the slots that need them (unreadable, a re-ask fault, a
-    review to ask again, or listed actions to repair or a repeated link, each with its reviewed draft kept);
-    there is no third round. A whole write answer still unusable raises UnreadableAiAnswer or
+    review, then one rewrite for the slots that need it (unreadable, a re-ask fault, or listed actions to
+    repair or a repeated link, each with its reviewed draft kept) and one review for those and the slots
+    whose review is asked again (a relink among them is not rewritten: a clean draft is never risked for
+    variety); there is no third round. A whole write answer still unusable raises UnreadableAiAnswer or
     TruncatedAiAnswer; an outage raises Unavailable."""
     slots = [_Slot(label, brief) for label, brief in briefs]
     if not slots:
@@ -715,9 +717,11 @@ def write_set(
 
 def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """One rewrite call for the slots to write again (each told its problems or its repair), then one review
-    call for every slot with a draft to judge. On an outage each slot keeps its usable draft (_firsts_kept);
-    one with none raises."""
-    rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first or slot.relink]
+    call for every slot with a draft to judge. A relink whose first review is asked again has no reviewed
+    draft to fall back on, so it is never rewritten: its clean draft is reviewed again and its repeated link
+    cited (a repeat never blocks). On an outage each slot keeps its usable draft (_firsts_kept); one with
+    none raises."""
+    rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
     try:
         blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
         answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, writer_system_prompt(), blocks, "scenarios")
@@ -1103,10 +1107,10 @@ def _repeated_link(words: str, used: Sequence[str]) -> str:
 
 
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
-    """True when `repair` was reviewed, is not blocked (another threat or impact blocks), carries out every
-    listed action and breaks no rule `first` held (each problem starts "Rule n:")."""
+    """True when `repair` was reviewed, is not blocked (another threat or impact blocks), has no listed action
+    to repair (_listed_actions) and breaks no rule `first` held (each problem starts "Rule n:")."""
     check = repair.plan_check
-    if check.status is PlanCheckStatus.UNCHECKED or check.actions_not_carried_out or is_blocked(repair):
+    if check.status is PlanCheckStatus.UNCHECKED or _listed_actions(check) or is_blocked(repair):
         return False  # a review not made is never a pass
     repair_rules, first_rules = (
         {problem.split(":", 1)[0] for problem in written.plan_check.problems} for written in (repair, first)

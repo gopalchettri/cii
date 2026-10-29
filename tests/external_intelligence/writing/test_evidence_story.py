@@ -500,6 +500,14 @@ def test_the_reask_fits_one_reask_problem_whatever_its_reason() -> None:
         ('Malware tools like those of FIN8 have used the "Valid Accounts" technique.', _GROUPS, "evidence"),
         ('Malware associated with APT41 has used the "Valid Accounts" technique.', _GROUPS, "evidence"),
         (
+            "Malware used by the attackers behind Industroyer pushed firmware the way "
+            '"Valid Accounts" describes.',
+            _GROUPS,
+            "evidence",
+        ),
+        ('Malware used by the attacker group Sandworm is a form of "Valid Accounts".', _GROUPS, "evidence"),
+        ('Malware used by the attacker groups APT41 and FIN8 fits "Valid Accounts".', _GROUPS, "evidence"),
+        (
             'Malware planted on the SCADA server through a shared drive is a form of "Valid Accounts", a '
             "technique the APT41 group has used.",
             _GROUPS,
@@ -525,6 +533,9 @@ def test_the_reask_fits_one_reask_problem_whatever_its_reason() -> None:
         "opens_on_malware_including",
         "opens_on_malware_tools_like",
         "opens_on_malware_associated",
+        "opens_on_malware_used_by_attackers",  # final review, 30 Oct: these three passed as steps
+        "opens_on_malware_used_by_attacker_group",
+        "opens_on_malware_used_by_attacker_groups",
         "malware_step",  # review, 30 Oct: rule 10 invites a noun phrase, so "Malware planted on ..." opens
         "malware_used_by_the_attacker",  # review, 30 Oct: this attacker's step was refused
         "documented",

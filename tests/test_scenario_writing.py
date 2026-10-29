@@ -705,6 +705,7 @@ _ACTIONS = ("pushing firmware", "hiding the change")
 _ALL_DONE = _CONSISTENT | {"threat_actions": dict.fromkeys(_ACTIONS, "carried out")}
 _ONE_MISSING = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out", _ACTIONS[1]: "missing"}}
 _MISSING_ONE_UNJUDGED = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out"}}
+_NAMED_ONE_UNJUDGED = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "only named"}}  # inconsistent
 _ALL_DONE_RULE_5_BROKEN = _ALL_DONE | {"rules": {"1": "holds", "5": 'broken: "x" - y'}}
 _MISSING_NOTE = 'Rule 1: "hiding the change" is missing, not carried out'
 _REPAIR_TEXT = PROMPTS["scenario"]["writer"]["repair"]
@@ -742,7 +743,7 @@ def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_rep
     ("repairs", "checks", "calls", "error_type"),
     [
         ([draft_answer(_CLEAN)], [_ONE_MISSING], _REVIEWED, None),  # still missing: no second repair
-        ([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED], _REVIEWED, None),
+        ([draft_answer(_CLEAN)], [_NAMED_ONE_UNJUDGED], _REVIEWED, None),
         ([draft_answer(_CLEAN)], [_ALL_DONE_RULE_5_BROKEN], _REVIEWED, None),  # a rule the first held
         ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_threat": False}], _REVIEWED, None),
         ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_impact": False}], _REVIEWED, None),
@@ -757,8 +758,8 @@ def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_rep
 def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_note(
     repairs: list[Any], checks: list[Any], calls: list[AiTask], error_type: str | None
 ) -> None:
-    """Still missing or left unjudged, a new broken rule, another threat, blocked, not reviewed, an outage or
-    an unusable answer: the first."""
+    """Still missing or left unjudged by an inconsistent review, a new broken rule, another threat, blocked,
+    not reviewed, an outage or an unusable answer: the first."""
     chat = _repair_answering(repairs, checks)
     with capture_logs() as logs:
         written = write_scenario(chat, _listed_brief())
@@ -767,6 +768,18 @@ def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_n
     assert written.plan_check.actions_not_carried_out == ("hiding the change",)
     (logged,) = [log for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED]
     assert (logged["outcome"], logged.get("error_type")) == ("kept_first", error_type)
+
+
+def test_a_repair_whose_consistent_review_leaves_a_listed_action_unjudged_is_kept() -> None:
+    """Final review, 30 Oct: a consistent review's unjudged action is never repaired (_listed_actions), in a
+    repair's review as in a first draft's, so it no longer keeps the repair from being taken."""
+    chat = _repair_answering([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED])
+    with capture_logs() as logs:
+        written = write_scenario(chat, _listed_brief())
+    assert _calls(chat) == _REVIEWED and written.rewritten and written.findings == ()
+    assert written.plan_check.status is PlanCheckStatus.CONSISTENT
+    assert written.plan_check.actions_not_carried_out == ("hiding the change",)
+    assert [log["outcome"] for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED] == ["fixed"]
 
 
 _PUSH = _CLEAN.statement  # the sentence in which the attacker pushes the firmware
