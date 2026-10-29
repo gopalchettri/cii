@@ -1036,13 +1036,24 @@ def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -
         if isinstance(given, dict)
         else {}
     )
-    missing = [
-        act for act in actions if not (text := quoted.get(name_match_key(act))) or text not in statement
-    ]
+    missing = [act for act in actions if not _quote_in_story(quoted.get(name_match_key(act), ""), statement)]
     if not missing:
         return []
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in missing)
     return [AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=listed)]
+
+
+#: A quote's opening up to its first "could" and one joining word after it, which the writer may reword.
+_QUOTE_OPENING = re.compile(r"^.*?\bcould (?:(?:then|also|next|finally|later) )?")
+#: The fewest words a quote must keep after its opening to be found by them alone.
+_QUOTE_TAIL_MIN_WORDS = 5
+
+
+def _quote_in_story(quote: str, statement: str) -> bool:
+    """Whether `quote` is in `statement` (both name_match_key forms), whole or from its first "could" on."""
+    tail = _QUOTE_OPENING.sub("", quote, count=1)
+    long_tail = len(tail.split()) >= _QUOTE_TAIL_MIN_WORDS
+    return bool(quote) and (quote in statement or (long_tail and tail in statement))
 
 
 def _passage_answer_faults(answer: dict[str, Any], cited: dict[str, Any] | None) -> list[str]:

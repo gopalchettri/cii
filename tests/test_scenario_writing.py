@@ -22,6 +22,7 @@ from app.core.constants import (
     FINDING_SEVERITIES,
     ActorRole,
     AiTask,
+    AnswerProblem,
     Collection,
     Decision,
     ErrorCode,
@@ -49,6 +50,7 @@ from app.domain.scenario.write import (
     PLAN_CHECK_SET_PROMPT,
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
+    _acts_without_a_sentence,
     brief_entry_point_options,
     build_brief,
     check_exact_rules,
@@ -825,6 +827,77 @@ def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> 
     assert _calls(twice) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
     rewrite_failed = _chat_answering([still, {"title": "x"}], [_ALL_DONE])  # its first draft is kept
     assert write_scenario(rewrite_failed, _listed_brief()).draft.statement == _CLEAN.statement
+
+
+_ECCC = "Enterprise Command & Control Centre Platform"
+#: A real set (30 Oct, epoch 3): a listed action, its story's sentence, and the writer's quote of that
+#: sentence with its opening reworded; each slot was written again for it alone.
+_REWORDED_OPENINGS = [
+    (
+        f"tamper authoritative data on {_ECCC}",
+        f"A nation-state actor could enter through the {_ECCC} and, assuming privileged access, tamper "
+        f"authoritative data on the {_ECCC} to alter historical incident logs and current congestion "
+        "indices.",
+        f"The attacker could then tamper authoritative data on the {_ECCC} to alter historical incident logs "
+        "and current congestion indices.",
+    ),
+    (
+        f"evade monitoring on {_ECCC}",
+        "A nation-state actor could enter through the Intelligent Traffic Systems Platform and, assuming "
+        f"elevated OT access, evade monitoring on the {_ECCC} by disabling or filtering agent telemetry "
+        "before it reaches the central dashboard.",
+        f"The attacker could then evade monitoring on the {_ECCC} by disabling or filtering agent telemetry "
+        "before it reaches the central dashboard.",
+    ),
+    (
+        f"compromise backup on {_ECCC}",
+        "A nation-state actor could enter through the Traffic Signal Control System and, assuming "
+        f"administrative access to backup infrastructure, compromise backup on the {_ECCC} by deleting or "
+        "encrypting database and configuration backups.",
+        f"The attacker could then compromise backup on the {_ECCC} by deleting or encrypting database and "
+        "configuration backups.",
+    ),
+    (
+        f"install infostealer on {_ECCC}",
+        "A cybercriminal could enter through the Incident Detection & Response Platform and, assuming an "
+        f"initial foothold such as a malicious attachment, install infostealer on the {_ECCC} to harvest "
+        "browser-saved passwords, tokens and traffic system configuration files.",
+        f"The attacker could then install infostealer on the {_ECCC} to harvest browser-saved passwords, "
+        "tokens and traffic system configuration files.",
+    ),
+]
+_TAMPER, _, _BACKUP, _ = _REWORDED_OPENINGS
+
+
+@pytest.mark.parametrize(("action", "story", "quote"), _REWORDED_OPENINGS)
+def test_a_quote_with_its_opening_reworded_is_found_in_its_story(action: str, story: str, quote: str) -> None:
+    """Root cause of a rewrite for an act the story has: the quote is found from its first "could" on."""
+    answer = {"scenario_statement": story, "action_sentences": {action: quote}}
+    assert _acts_without_a_sentence(answer, (action,)) == []
+
+
+@pytest.mark.parametrize(
+    ("action", "story", "sentences"),
+    [
+        (
+            _BACKUP[0],
+            f"The attacker could also compromise recovery on the {_ECCC} by corrupting failover "
+            "orchestration scripts.",
+            {_BACKUP[0]: _BACKUP[2]},
+        ),  # another act on the same system
+        (_TAMPER[0], _TAMPER[1], {_TAMPER[0]: f"The attacker could then wipe every backup of the {_ECCC}."}),
+        (_TAMPER[0], _TAMPER[1], {"another action": _TAMPER[2]}),  # no quote for the listed action
+        (_TAMPER[0], _TAMPER[1], {_TAMPER[0]: "They could then act."}),  # "act" is in "actor": too short
+    ],
+)
+def test_a_quote_of_an_act_the_story_does_not_have_is_refused(
+    action: str, story: str, sentences: dict[str, str]
+) -> None:
+    """A reworded opening is forgiven, never another act, a missing quote, or a tail too short to tell."""
+    answer = {"scenario_statement": story, "action_sentences": sentences}
+    assert _acts_without_a_sentence(answer, (action,)) == [
+        AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=json.dumps(action, ensure_ascii=False))
+    ]
 
 
 def test_the_writer_names_each_action_s_story_sentence() -> None:
