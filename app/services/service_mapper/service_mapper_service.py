@@ -8,6 +8,7 @@ from uuid import uuid4
 from app.core.clock import utc_now
 from app.core.config import Settings
 from app.core.constants import (
+    AiApi,
     AuditAction,
     AuditTarget,
     MapperConflict,
@@ -23,7 +24,7 @@ from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepo
 from app.data_access.service_mapper.mapping_repository import MappingRepository, request_key
 from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.views import mapping_list_item, mapping_status, mapping_view
-from app.domain.shared.audit import audit_target, caller_actor
+from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
 from app.domain.shared.idempotency import duplicate_request
 from app.domain.shared.names import name_match_key
 from app.models.admin.api_clients import Principal
@@ -61,6 +62,7 @@ class ServiceMapperService:
         self._audit = audit
         self._publish = publish
 
+    @origin_of_its_jobs(AiApi.CREATE_MAPPING)
     def create_service_mapping(
         self,
         principal: Principal,
@@ -100,6 +102,7 @@ class ServiceMapperService:
                 return started
         raise Conflict(MapperMessage.GENERATION_IN_PROGRESS, reason=MapperConflict.GENERATION_IN_PROGRESS)
 
+    @origin_of_its_jobs(AiApi.REGENERATE)
     def regenerate_service_mapping(
         self,
         principal: Principal,

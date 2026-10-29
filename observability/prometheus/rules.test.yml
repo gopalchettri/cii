@@ -497,6 +497,44 @@ tests:
               summary: "litellm_proxy/kimi-k2.5 requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
               description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens: CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise its setting; the dashboard's 429 panel shows refusals."
 
+  # Three AI usage rows MongoDB did not take at 3 minutes (logged for replay): one alert, then quiet once the
+  # 15 minutes have passed with none more.
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_usage_spilled_total{instance="worker-scenarios"}
+        values: 0 0 0 3x30
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AiUsageNotRecorded
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AiUsageNotRecorded
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "3 AI usage rows could not be stored in the last 15 minutes."
+              description: "The AI calls went on; their usage rows were logged whole as ai.usage_row_spilled. Within 7 days, export those lines from Loki and replay them in an app pod (ai_usage_tools; deploy/DEPLOYMENT_GUIDE.md, AI usage)."
+      - eval_time: 25m
+        alertname: AiUsageNotRecorded
+        exp_alerts: []
+
+  # The add-up runs every 5 minutes, then its worker stops at 10 minutes: quiet while it runs, then one alert.
+  - interval: 1m
+    input_series:
+      - series: tsg_ai_usage_rollup_last_success_timestamp_seconds{instance="worker-maintenance"}
+        values: 0 0 0 0 0 300 300 300 300 300 600
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AiUsageRollupBehind
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: AiUsageRollupBehind
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The AI usage totals have not been added up for 15 minutes; dashboards show old totals."
+              description: "No rows are lost: the next add-up catches up. Check the beat pod and the maintenance worker, and its ai.usage_rollup_done lines."
+
   - interval: 1m
     input_series:
       - series: tsg_audit_failures_total

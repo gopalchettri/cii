@@ -54,8 +54,9 @@ def test_on_with_nothing_imported_refuses_a_regenerate_before_it_is_queued(
     run = SessionStatus(
         session_id="run", entity_id=1, asset_id=1, status=Status.DONE, step=Step.SCENARIOS, updated_at=NOW
     )
+    caller: Any = SimpleNamespace(entity_id=1, user_id="u1", client_id="c1")  # a Principal's fields
     with pytest.raises(Conflict) as refused:
-        actions.regenerate_threat_scenarios(SimpleNamespace(), run, ScenarioIdsRequest(scenario_ids=["s1"]))  # type: ignore[arg-type]
+        actions.regenerate_threat_scenarios(caller, run, ScenarioIdsRequest(scenario_ids=["s1"]))
     assert refused.value.reason == ConflictReason.INTEL_NO_DATA
 
 

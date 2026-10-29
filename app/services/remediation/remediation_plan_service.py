@@ -9,6 +9,7 @@ from app.core.callables import Publish, SendJob
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
+    AiApi,
     AuditAction,
     AuditTarget,
     ConflictReason,
@@ -60,7 +61,7 @@ from app.domain.remediation.rules import (
     version_in_progress,
 )
 from app.domain.scenario.plan import freeze_context
-from app.domain.shared.audit import audit_target, caller_actor
+from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
 from app.domain.shared.idempotency import duplicate_request
 from app.models.admin.api_clients import Principal
 from app.models.remediation.plan import (
@@ -103,6 +104,7 @@ class RemediationPlanService:
         self._assets, self._library, self._audit = assets, library, audit
         self._send_job, self._publish_remediation_status = send_job, publish_remediation_status
 
+    @origin_of_its_jobs(AiApi.CREATE_PLAN)
     def create_remediation_plan(
         self, principal: Principal, body: PlanRequest, idempotency_key: str, *, derived: bool = False
     ) -> tuple[PlanStarted, bool]:
@@ -116,6 +118,7 @@ class RemediationPlanService:
         self._check_register_systems(body, checked["session_id"])
         return self._plan_scenario(principal, body.register(), checked), True
 
+    @origin_of_its_jobs(AiApi.REGENERATE)
     def regenerate_remediation_plan(self, principal: Principal, remediation_id: str) -> PlanRequested:
         """Starts the plan's next version, or writes a latest one that failed for an outage again in place
         (no version used), unless its run is being deleted or its latest one still runs."""

@@ -22,6 +22,21 @@
   "EMBEDDINGS_BUILD": "embeddings_build",
   "INTEL_REFRESH": "intel_refresh"
  },
+ "AiApi": {
+  "CREATE_MAPPING": "create_mapping",
+  "CREATE_PLAN": "create_plan",
+  "CREATE_SCENARIO": "create_scenario",
+  "NEXT_SET": "next_set",
+  "REGENERATE": "regenerate"
+ },
+ "AiBucket": {
+  "CONTROLS": "controls",
+  "REMEDIATION": "remediation",
+  "SCENARIO": "scenario",
+  "SERVICE_MAPPER": "service_mapper",
+  "SHARED": "shared",
+  "THREATS": "threats"
+ },
  "AiOutage": {
   "BUSY": "ai_busy",
   "DOWN": "ai_down",
@@ -51,6 +66,43 @@
   "THREAT_ACTIONS": "threat_actions",
   "WRITE_SCENARIO": "write_scenario"
  },
+ "AiUsageCollection": {
+  "HOURLY": "tsg_ai_usage_hourly",
+  "REQUESTS": "tsg_ai_usage_requests",
+  "USAGE": "tsg_ai_usage"
+ },
+ "AiUsageGroup": {
+  "API": "api",
+  "BUCKET": "bucket",
+  "CLIENT_ID": "client_id",
+  "DAY": "day",
+  "ENTITY_ID": "entity_id",
+  "HOUR": "hour",
+  "MODEL": "model",
+  "MODULE": "module",
+  "MONTH": "month",
+  "TASK": "task"
+ },
+ "AiUsageLogEvent": {
+  "COMPRESSION_NOT_APPLIED": "ai.usage_compression_not_applied",
+  "EXPIRY_FOUND": "ai.usage_expiry_found",
+  "REPORT_CACHE_FAILED": "ai.usage_report_cache_failed",
+  "ROLLUP_BUSY": "ai.usage_rollup_busy",
+  "ROLLUP_DONE": "ai.usage_rollup_done",
+  "ROLLUP_LOCK_LOST": "ai.usage_rollup_lock_lost",
+  "ROW_SPILLED": "ai.usage_row_spilled"
+ },
+ "AiUsageOutcome": {
+  "ERROR": "error",
+  "OK": "ok",
+  "REUSED": "reused",
+  "TRUNCATED": "truncated",
+  "UNAVAILABLE": "unavailable",
+  "UNREADABLE": "unreadable"
+ },
+ "AiUsageReason": {
+  "NO_CHOICES": "no_choices"
+ },
  "AnswerProblem": {
   "ACTION_SENTENCES_MISSING": "action_sentences must quote the statement's sentence for each of: {actions}",
   "ENTRY_POINT_NOT_OFFERED": "entry_point must be one of entry_point_options, copied exactly: {options}",
@@ -62,6 +114,7 @@
   "THREAT_ACTION_VERDICTS_REQUIRED": "threat_actions must judge every item of PLAN.threat.threat_actions"
  },
  "ApiTag": {
+  "AI_USAGE": "12. AI usage",
   "API_KEYS": "2. Set-up: API keys",
   "CURATION": "10. Library curation",
   "EMBEDDINGS": "3. Set-up: library embeddings",
@@ -145,7 +198,7 @@
  },
  "Collection": {
   "ADMIN_JOBS": "tsg_admin_jobs",
-  "AI_CALLS": "tsg_ai_calls",
+  "AI_CALLS": "tsg_ai_call_texts",
   "API_CLIENTS": "tsg_api_clients",
   "AUDIT": "tsg_audit",
   "EMBEDDINGS": "tsg_embeddings",
@@ -692,6 +745,7 @@
   "REAP": "tsg_reap",
   "REFRESH_EXTERNAL_INTELLIGENCE": "tsg_refresh_external_intelligence",
   "RETRY_CONTROLS": "tsg_retry_controls",
+  "ROLL_UP_AI_USAGE": "tsg_roll_up_ai_usage",
   "WRITE_PLAN": "tsg_write_plan",
   "WRITE_SCENARIOS": "tsg_write_scenarios"
  },

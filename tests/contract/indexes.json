@@ -33,21 +33,12 @@
   },
   "options": {}
  },
- "tsg_ai_calls": {
+ "tsg_ai_call_texts": {
   "indexes": {
    "_id_": {
     "key": [
      [
       "_id",
-      1
-     ]
-    ]
-   },
-   "created_at_1": {
-    "expireAfterSeconds": 1209600,
-    "key": [
-     [
-      "created_at",
       1
      ]
     ]
@@ -73,7 +64,132 @@
     ]
    }
   },
-  "options": {}
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
+ },
+ "tsg_ai_usage": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "created_at_1": {
+    "key": [
+     [
+      "created_at",
+      1
+     ]
+    ]
+   },
+   "request_id_1_created_at_1": {
+    "key": [
+     [
+      "request_id",
+      1
+     ],
+     [
+      "created_at",
+      1
+     ]
+    ],
+    "partialFilterExpression": {
+     "request_id": {
+      "$exists": true
+     }
+    }
+   },
+   "session_id_1_created_at_1": {
+    "key": [
+     [
+      "session_id",
+      1
+     ],
+     [
+      "created_at",
+      1
+     ]
+    ],
+    "partialFilterExpression": {
+     "session_id": {
+      "$exists": true
+     }
+    }
+   }
+  },
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
+ },
+ "tsg_ai_usage_hourly": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "hour_1": {
+    "key": [
+     [
+      "hour",
+      1
+     ]
+    ]
+   }
+  },
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
+ },
+ "tsg_ai_usage_requests": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "first_at_-1__id_-1": {
+    "key": [
+     [
+      "first_at",
+      -1
+     ],
+     [
+      "_id",
+      -1
+     ]
+    ]
+   }
+  },
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
  },
  "tsg_api_clients": {
   "indexes": {

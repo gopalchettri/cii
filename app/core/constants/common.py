@@ -44,7 +44,7 @@ class Collection(StrEnum):
     API_CLIENTS = "tsg_api_clients"
     EMBEDDINGS = "tsg_embeddings"  # the library's vectors
     QUERY_VECTORS = "tsg_query_vectors"  # search queries' vectors, kept Cache.QUERY_VECTOR_DAYS
-    AI_CALLS = "tsg_ai_calls"
+    AI_CALLS = "tsg_ai_call_texts"  # kept for good: a name no older release gives an expiry
     AUDIT = "tsg_audit"
     REMEDIATIONS = "tsg_remediations"  # one remediation plan per scenario, with its versions
     ADMIN_JOBS = "tsg_admin_jobs"
@@ -121,7 +121,7 @@ AI_OUTAGE_MESSAGES: Final = {
 
 class AiTask(StrEnum):
     SERVICE_MAPPER = "service_mapper"
-    """Why an AI model is called (metrics label and tsg_ai_calls field)."""
+    """Why an AI model is called (metrics label, tsg_ai_call_texts and tsg_ai_usage field)."""
 
     RELEVANCE_GATE = "relevance_gate"
     GAP_FILL = "gap_fill"

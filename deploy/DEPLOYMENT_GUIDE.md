@@ -988,6 +988,16 @@ stay at 0. If it does not: Part 5, the row "The AI gateway answers 429".
 
 After every release, run the worker list of step 7 again: each worker once, none in ai-remediation.
 
+After the first release with AI usage tracking, carry the AI call texts of the last 14 days over to the
+collection that keeps them for good (the previous release expires them after 14 days; safe to run again):
+
+```powershell
+oc -n ai-threatgen exec deploy/api -- python -m app.worker.admin.ai_usage_tools copy-texts
+```
+
+**You should see:** `tsg_ai_call_texts now holds <n> AI call texts`. Five minutes later,
+`GET /v1/ai-usage` answers with counts (the first ones after the first run).
+
 ---
 
 ## Part 5. If something fails
@@ -1092,6 +1102,30 @@ order:
 
    **You should see:** 8 lines ending with `successfully rolled out`. Grafana is then at the previous release's
    address (its guide's Part 3).
+
+A release before AI usage tracking records no AI usage while it runs, and writes the AI call texts to
+`tsg_ai_calls` (expired after 14 days) again; the usage rows and texts already kept are never touched. Going
+forward again, run its `copy-texts` once more (Part 4, step 8).
+
+### AI usage rows not stored (alert `AiUsageNotRecorded`)
+
+The AI calls went on; MongoDB did not take their usage rows, which were logged whole as `ai.usage_row_spilled`.
+Loki keeps them 7 days: within them, export those lines (Grafana, Explore, Loki,
+`{app="tsg"} |= "ai.usage_row_spilled"`, raise the line limit above the alert's count, then Download as
+JSON or as text; or `logcli query --output=raw --limit=0 ...`) and replay them. Any of those files works,
+UTF-8 or UTF-16:
+
+```powershell
+Get-Content spilled.json -Raw | oc -n ai-threatgen exec -i deploy/api -- python -m app.worker.admin.ai_usage_tools replay -
+```
+
+**You should see:** `<n> spilled AI usage rows stored`. A row already stored is skipped, so a second run does
+no harm; it adds up every hour from the oldest replayed row to now again. It stores and adds up under the
+5-minute add-up's lock, waiting up to 5 minutes for it; `Another add-up of AI usage is running` means it
+stored nothing: run it again. `This add-up of AI usage ran past its lock and stopped` or `MongoDB did not
+answer in time` means MongoDB was too slow: the rows it stored are kept and the next 5-minute add-up counts
+them; run it again to count them now (the stored rows are skipped). `AiUsageRollupBehind` needs no
+replay: the next add-up (every 5 minutes) catches up from where it stopped by itself.
 
 ---
 

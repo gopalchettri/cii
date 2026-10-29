@@ -11,6 +11,7 @@ from typing import Any
 import litellm
 import structlog
 
+from app.ai.attempts import call_with_retries
 from app.ai.chat_messages import (
     build_conversation,
     build_request_options,
@@ -24,7 +25,6 @@ from app.ai.chat_messages import (
 from app.ai.common import (
     AI_REFUSED_REPLY_ERRORS,
     build_api_key_header,
-    call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.profiles import CHAT_MODEL_PROFILES, find_model_profile
@@ -34,6 +34,7 @@ from app.core.constants import (
     AiOutage,
     AiOutcome,
     AiTask,
+    AiUsageReason,
     ErrorMessage,
     LogEvent,
 )
@@ -46,6 +47,8 @@ log = structlog.get_logger(__name__)
 
 #: A task's own check of an answer: the problems found, an empty list when the answer is right.
 AnswerChecker = Callable[[dict[str, Any]], list[str]]
+#: An answer with no choice at all: its usage row's reason.
+_NO_CHOICES = AiUsageReason.NO_CHOICES
 
 
 class UnreadableAiAnswer(Exception):
@@ -109,7 +112,7 @@ class ChatModel:
         answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable or finds
         the AI unavailable.
         `reuse_earlier_answer`: an ask this job already got an answer to that `check_answer` accepts (any
-        delivery of the same record, epoch and stage) takes that answer from tsg_ai_calls, with no AI call."""
+        delivery of this record, epoch and stage) takes that answer from tsg_ai_call_texts: no AI call."""
         messages = build_conversation(system_prompt, user_prompt)
         reuse_check = check_answer if reuse_earlier_answer else None
         answer, reply, capped = self._ask_and_read_answer(task, messages, reuse_check, capped=True)
@@ -167,7 +170,7 @@ class ChatModel:
         truncated and asked once more at the model's own limit (TruncatedAiAnswer when cut off there too)."""
         model, response, seconds = self._call_first_available_model(task, messages, capped)
         if not response.choices:
-            update_call_metrics(task, model, AiOutcome.UNREADABLE, 0, 0, seconds)
+            update_call_metrics(task, model, AiOutcome.UNREADABLE, 0, 0, seconds, reason=_NO_CHOICES)
             raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error="no choices"))
         if getattr(response.choices[0], "finish_reason", None) != "length":
             return model, response, seconds, capped

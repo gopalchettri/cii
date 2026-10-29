@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from app.ai import ChatModel
+from app.ai.attempts import one_ask
 from app.core.constants import AiTask
 
 #: (system prompt, user prompt)
@@ -27,14 +28,16 @@ def ask_ai_and_check(
     """What a checked answer means. An answer with problems is asked again once with them; raises
     UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
     `first_answer_check` also judges a usable first answer, and `reuse_earlier_answer` takes this job's
-    earlier answers (see ChatModel.ask_for_checked_json)."""
-    answer = chat.ask_for_checked_json(
-        task,
-        *prompt,
-        lambda candidate: read_answer(candidate)[1],
-        first_answer_check=first_answer_check,
-        reuse_earlier_answer=reuse_earlier_answer,
-    )
+    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, the fallback model, a
+    re-ask) is one ask in tsg_ai_usage."""
+    with one_ask():
+        answer = chat.ask_for_checked_json(
+            task,
+            *prompt,
+            lambda candidate: read_answer(candidate)[1],
+            first_answer_check=first_answer_check,
+            reuse_earlier_answer=reuse_earlier_answer,
+        )
     meaning, _ = read_answer(answer)
     return meaning
 

@@ -174,6 +174,7 @@ class ApiTag(StrEnum):
     LIVE_UPDATES = "9. Live updates"
     CURATION = "10. Library curation"
     SERVICE_MAPPER = "11. Service mapper"
+    AI_USAGE = "12. AI usage"
 
 
 class AuditAction(StrEnum):

@@ -19,7 +19,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
-from app.core.logging import current_request_id
+from app.core.logging import current_job_origin, current_request_id
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
 #: What a claim reads of every job: its lease carries them, with the task's own fields.
@@ -27,19 +27,23 @@ _CLAIM_FIELDS = (
     "job.attempts",
     "job.due_at",
     "job.lease_until",
+    "job.origin",
     "job.request_id",
     "job.waiting",
     "job.waiting_since",
+    "session_id",  # a plan's run; a run's or a mapping's own id stands in when there is none
 )
 
 
 def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[str, Any]:
     """A queued job, due now, never claimed, with the id of the API request that made it (each stage logs
-    it); `fields` add the task's own inputs."""
+    it) and the API call and caller it works for (its AI usage rows carry them); `fields` add the task's own
+    inputs."""
     return {
         "task": task,
         "epoch": epoch,
         "request_id": current_request_id(),
+        "origin": current_job_origin(),
         "task_id": None,
         "attempts": 0,
         "due_at": now,
@@ -101,6 +105,19 @@ class JobLease:
         self.task_id = task_id
         self.attempts = attempts
         self.record = record or {}
+
+    @property
+    def origin(self) -> dict[str, Any]:
+        """Who the job works for, as the claim read it: the API request and call that queued it, its caller
+        and its session; bound on the job's log lines and AI usage rows."""
+        job = self.record.get("job") or {}
+        found = {
+            "request_id": job.get("request_id"),
+            "session_id": self.record.get("session_id") or self.record_id,
+        }
+        return {
+            name: value for name, value in (found | (job.get("origin") or {})).items() if value is not None
+        }
 
     @property
     def fence(self) -> dict[str, Any]:

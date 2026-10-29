@@ -52,6 +52,11 @@ _GROUPS: dict[ApiTag, str] = {
         "service), review each relationship, and regenerate to add more. Requires the caller identity "
         "headers."
     ),
+    ApiTag.AI_USAGE: (
+        "How many AI calls each module, API call, session and request made, per part of the work "
+        "(threats, scenario, controls, remediation, service mapper) and per model, successful and failed, "
+        "with each activity's name and description. Counts only. No key."
+    ),
 }
 
 #: Swagger shows the groups in this order (ApiTag's).

@@ -17,6 +17,11 @@ from app.core.readiness import count_online_workers, log_mongodb_topology, log_r
 from app.core.singletons import singleton
 from app.data_access.admin.admin_job_repository import AdminJobRepository
 from app.data_access.admin.ai_call_repository import AiCallRepository
+from app.data_access.admin.ai_usage_repository import (
+    AiUsageHourlyRepository,
+    AiUsageRepository,
+    AiUsageRequestRepository,
+)
 from app.data_access.admin.api_client_repository import ApiClientRepository
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.admin.embedding_repository import EmbeddingRepository
@@ -52,6 +57,7 @@ from app.search.library_cache import LibraryCache
 from app.search.service import LibrarySearch
 from app.search.service_mapper import ServiceCandidateSearch
 from app.services.admin.admin_service import AdminService
+from app.services.ai_usage.ai_usage_service import AiUsageService
 from app.services.external_intelligence.external_intelligence_service import ExternalIntelligenceService
 from app.services.job_monitor.job_monitor_service import JobMonitorService
 from app.services.jobs.job_service import JobService
@@ -123,6 +129,32 @@ def ai_request_rate_for(
 @singleton
 def get_ai_call_repository() -> AiCallRepository:
     return AiCallRepository()
+
+
+@singleton
+def get_ai_usage_repository() -> AiUsageRepository:
+    return AiUsageRepository()
+
+
+@singleton
+def get_ai_usage_hourly_repository() -> AiUsageHourlyRepository:
+    return AiUsageHourlyRepository()
+
+
+@singleton
+def get_ai_usage_request_repository() -> AiUsageRequestRepository:
+    return AiUsageRequestRepository()
+
+
+@singleton
+def get_ai_usage_service() -> AiUsageService:
+    """The AI usage reports and the hourly add-up (its lock and the reports' cache in Redis)."""
+    return AiUsageService(
+        get_ai_usage_repository(),
+        get_ai_usage_hourly_repository(),
+        get_ai_usage_request_repository(),
+        get_redis_client(),
+    )
 
 
 @singleton
@@ -523,6 +555,9 @@ def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
         get_mapping_repository(),
         get_audit_repository(),
         get_ai_call_repository(),
+        get_ai_usage_repository(),
+        get_ai_usage_hourly_repository(),
+        get_ai_usage_request_repository(),
         get_embedding_repository(),
     ):
         repository.create_indexes()

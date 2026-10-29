@@ -168,12 +168,18 @@ class RunControls:
         return claimed
 
     def _map_and_count(self, scenario: dict[str, Any]) -> int:
-        """Map one claimed scenario under the request that wrote it (the run's job may be a later one's),
-        then, mapped or failed, update the run's counts, watchers and lease: 1 when saved."""
-        writer = scenario["controls"].get("request_id")  # None on a card written before it was stored
+        """Map one claimed scenario under the request and API call that wrote it (the run's job may be a later
+        one's), then, mapped or failed, update the run's counts, watchers and lease: 1 when saved."""
+        # None on a card written before they were stored.
+        writer = {
+            "request_id": scenario["controls"].get("request_id"),
+            **(scenario["controls"].get("origin") or {}),
+        }
         started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
         # A context manager, not a bind: one scenario runs in the caller's context (run_in_parallel).
-        with structlog.contextvars.bound_contextvars(**({"request_id": writer} if writer else {})):
+        with structlog.contextvars.bound_contextvars(
+            **{name: value for name, value in writer.items() if value}
+        ):
             try:
                 return self._map_one(scenario)
             finally:

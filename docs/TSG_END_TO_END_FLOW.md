@@ -1214,7 +1214,7 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
 5. **Retry or skip** (`_retry_or_skip`):
    - An `UnreadableAiAnswer` on a normal attempt raises `Unavailable`, so the whole job is retried later.
    - A `TruncatedAiAnswer` (reply cut off even when asked again at the model's full limit, or prompt too long) on any attempt skips that batch, and so does any bad answer on the last attempt. The skip is logged as `planner.threats_not_judged`.
-   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer (in a writing job also the threat-action split and the reviewer's answers; in a remediation job the plan) the job already got and accepted from `tsg_ai_calls` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
+   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer (in a writing job also the threat-action split and the reviewer's answers; in a remediation job the plan) the job already got and accepted from `tsg_ai_call_texts` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
    - If the buckets held threats but no batch of any kind was answered, it raises `Unavailable` ("The AI could not answer. Start a new session later.").
 6. **Sorting** (`judge_category`):
    - no verdict (batch skipped) → `not_judged`;
@@ -1521,7 +1521,7 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 | Telling the UI (D16) | Each give-back after an outage (not a wait for another job) stores `job.retry` {reason, message, attempt, max_attempts, retry_at}; the status shows it as `progress.retrying` (with the stage) while the run or plan waits for its next try. The reason is `ai_down` (HTTP 500, 502), `ai_unreachable` (no connection), `ai_busy` (429, 503; a worker waits for its AI slot or request turn until its lease ends, so TSG's own limiter is never the cause here) or `ai_timed_out`; null for a store outage. A send the job queue refused is told the same way (reason null, "The queue and live-update service is unreachable.", `retry_at` the reaper's re-send 120 s on). An AI outage in the evidence search (intelligence on) is told the same way. The claim of the next try, a hand-over, the end, the last failure or a reaper requeue clears it; the plan status, the service-mapping status and the jobs list show it too (D17). A path the last try lost keeps the outage on its failure card (`failure.reason`), a regenerate on `regenerate_error.reason`, and a card's control mapping on `controls_error`; a run that failed for it shows `progress.error_reason` |
 | Answer with problems | asked again once with the problems; still wrong on a normal attempt → `Unavailable` (job retried); on the last attempt → that batch or proposal is skipped and planning goes on (`_retry_or_skip`) |
 | Answer cut off, or prompt too long | a reply cut off at the task's `max_tokens` is asked once more at the model's full limit (section 15); still cut off, or a prompt too long → `TruncatedAiAnswer`: skipped on any attempt, never retried |
-| Delivery retried or re-sent | the gate and gap-fill answers the job already accepted are reused from `tsg_ai_calls` (5.6) |
+| Delivery retried or re-sent | the gate and gap-fill answers the job already accepted are reused from `tsg_ai_call_texts` (5.6) |
 | No batch of any kind answered | `Unavailable` with *"The AI could not answer. Start a new session later."*, retried like an outage; after the 5th attempt the session fails with that message |
 | SQL Server down | the last loaded library keeps serving; only a process's first load fails (`Unavailable`, retried) |
 | MongoDB down at the claim | nothing is owned yet: the same message is retried after 15 s (`_claim_or_ignore`) |
@@ -2521,7 +2521,9 @@ asked for, left out):
      `truncated`) is asked once more at the model's full limit; cut off again, it raises `TruncatedAiAnswer`,
      which also becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused
      key or an unknown model fails the whole job (`ai_misconfigured`).
-   - Every answered call is copied to `tsg_ai_calls` (14 days).
+   - Every answered call is copied to `tsg_ai_call_texts`, kept for good. Every attempt (a failed or
+     retried one too) and every reused answer is also one lean row in `tsg_ai_usage`, with the module,
+     API call, session and request it served (16, AI usage).
    - A task that also judges a usable first answer (the treatment plan, the service mapper) asks again for
      its faults. An unusable re-ask, or one that finds the AI busy or down, keeps the first answer
      (`ai.first_answer_kept`). The writer has no such check: its re-ask is only for an answer it cannot use.
@@ -3879,7 +3881,9 @@ the run's cancel stands, else queued for the run), and recounts and publishes th
   switch (turning it on answers the import's `refresh_job_id`), the import (refresh), health, and revoking or
   approving a source (section 2.3).
 - **Audit and AI logs:** `tsg_audit` is append-only and kept 365 days; it has no read route. The AI call log
-  `tsg_ai_calls` is kept 14 days.
+  `tsg_ai_call_texts` and the AI usage rows (`tsg_ai_usage`, `tsg_ai_usage_hourly`) are kept for good.
+- **AI usage** (`/v1/ai-usage/...`, no key, counts only): how many AI calls each module, API call,
+  session and request made, per part of the work and per model, successful and failed (16, AI usage).
 - **Service mapper** (`docs/service_mapper/SERVICE_MAPPER.md`): one AI call per generation, on queue
   `tsg_servicemapper`. Its status and `mapping.updated` carry `progress.timings` `{catalog, services}`, the
   latest run's seconds, null until it is done (`job.timings.catalog_s` / `services_s`). A generation that
@@ -4042,8 +4046,9 @@ stateDiagram-v2
     answer cut off at its cap is recorded with outcome `truncated` and asked once more at the model's limit.
   - **Answers:** an unreadable answer is asked again once. A usable first answer that a task re-asks for its
     faults is kept when the re-ask is unusable or finds the AI busy or down. Every chat call that gets an
-    answer is copied to `tsg_ai_calls`, where any later delivery of a plan job finds its accepted answers
-    (5.6); every AI call (chat, embedding, rerank) is counted in `tsg_ai_calls_total`.
+    answer is copied to `tsg_ai_call_texts`, where any later delivery of a plan job finds its accepted
+    answers (5.6); every AI call (chat, embedding, rerank) is counted in `tsg_ai_calls_total`, and every
+    attempt and reused answer is a row in `tsg_ai_usage` (16, AI usage).
   - **Embeddings:** processes building the same index at once share its batches: each sends them in its own
     order and skips a batch another process has already stored.
 - **Cancel and delete** are fenced the same way: a cancel stops the job at its next renewal, AI call or save;
@@ -4099,6 +4104,26 @@ stateDiagram-v2
   to do. Alertmanager emails them: through the company mail relay (`company-smtp`) or Gmail (`gmail`,
   smtp.gmail.com:587), whichever the one `route.receiver` line names; the passwords are files from Secret
   `tsg-monitoring`. In UAT an alert names a pod as `<project>/<pod>`.
+- **AI usage** (owner, 2026-10-29; `app/ai/attempts.py`): every attempt sent to an AI model (chat,
+  embedding, rerank; a failed or retried one too) and every earlier answer reused is one lean row in
+  `tsg_ai_usage`, written once per ask when it ends: module, API call (`job.origin.api`, saved by the API call
+  that queued the job), session, request, entity, client, part of the work (`threats`, `scenario`, `controls`,
+  `remediation`, `service_mapper`; `shared` for a library or evidence index build no request asked for), task,
+  model, outcome, reason, tokens, seconds, and the ask it served (`ask_id`, `try_no`). Nothing deletes the rows.
+  `tsg_roll_up_ai_usage` (every 5 minutes on `worker-maintenance`, under a Redis lock) adds them up per
+  hour into `tsg_ai_usage_hourly` from its frontier (catching up after any downtime) and keeps one summary
+  per request in `tsg_ai_usage_requests`. An answer's row holds its own attempt's seconds, never its
+  retries' or waits'. Reports, no key, counts only, each with its model, activity and description, at most
+  2 at a time per API process on threads of their own (one more waits up to 2 s, then answers 503; a cached
+  one has 4 places of its own; each answer is written as JSON on those threads, so they never hold the UI's):
+  `GET /v1/ai-usage` (totals by module, API call, part, task, model, entity, hour, day or month in a whole-hour
+  time zone; cached 60 s), `/v1/ai-usage/requests?session_id=` (each request of a session, live, with its
+  totals; or of a range, from the summaries),
+  `/v1/ai-usage/requests/{request_id}` (one request's activities) and `/v1/ai-usage/calls?request_id=` (its
+  every call). Grafana's "AI usage" row shows the same counts from `tsg_ai_usage_calls_total`. A row MongoDB
+  refuses is logged whole (`ai.usage_row_spilled`, alert `AiUsageNotRecorded`): replay it with
+  `python -m app.worker.admin.ai_usage_tools replay` within 7 days (stored and added up under the add-up's
+  lock, so no row is stored uncounted).
 - **Seeing jobs:** `GET /v1/admin/jobs` (admin key) lists every job of every kind (runs, plans, service
   mappings, intelligence refreshes, embeddings builds) with its `module` (threat_scenarios, remediation,
   service_mapper, external_intelligence, library_embeddings, maintenance), its status, the retry it waits for, its error and
@@ -4177,7 +4202,8 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | MongoDB `tsg_remediations` | treatment plans and their versions |
 | MongoDB `tsg_intel`, `tsg_external_feed_status`, `tsg_external_intelligence_snapshots` | intelligence records, source state and switch, evidence snapshots |
 | MongoDB `tsg_embeddings`, `tsg_query_vectors` | vector cache |
-| MongoDB `tsg_api_clients`, `tsg_admin_jobs`, `tsg_audit`, `tsg_ai_calls`, `tsg_sql_operations` | keys, admin jobs, audit, AI call log, SQL write safety |
+| MongoDB `tsg_api_clients`, `tsg_admin_jobs`, `tsg_audit`, `tsg_ai_call_texts`, `tsg_sql_operations` | keys, admin jobs, audit, AI call texts (kept for good), SQL write safety |
+| MongoDB `tsg_ai_usage`, `tsg_ai_usage_hourly` | one row per AI attempt or reused answer, and their hourly totals: kept for good |
 | SQL Server | threat and control library, asset context, curation (stored procedures only) |
 | Redis | Celery broker (`tsg:` prefix, two lists per queue: next stages and retries first, then new work), live events, AI slots and request rate, worker heartbeats |
 

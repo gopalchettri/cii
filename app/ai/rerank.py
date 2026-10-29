@@ -8,11 +8,11 @@ from typing import Any
 
 import litellm
 
+from app.ai.attempts import call_with_retries, note_ai_usage, one_ask
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
     build_api_key_header,
-    call_with_retries,
     count_and_convert_ai_errors,
 )
 from app.ai.local_turns import LocalTurns
@@ -57,12 +57,15 @@ class RerankModel:
         if not documents:
             return []
         # A local model that would not load is counted too, so AiErrorRateHigh sees it on the laptop.
-        with count_and_convert_ai_errors(AiTask.RERANK, self._model):
-            scores, seconds = (
-                self._score_with_provider(query, documents)
-                if self._base_url
-                else self._score_with_local_model(query, documents)
-            )
+        with one_ask():  # its failed attempts and its answer: one ask's usage rows, written as it ends
+            with count_and_convert_ai_errors(AiTask.RERANK, self._model):
+                scores, seconds = (
+                    self._score_with_provider(query, documents)
+                    if self._base_url
+                    else self._score_with_local_model(query, documents)
+                )
+            # ponytail: a local (laptop-only) model that fails gets no usage row: it never reaches a provider
+            note_ai_usage(AiTask.RERANK, self._model, AiOutcome.OK, seconds=seconds)
         metrics.AI_CALLS.labels(AiTask.RERANK, self._model, AiOutcome.OK).inc()
         metrics.AI_SECONDS.labels(AiTask.RERANK, self._model).observe(seconds)
         return scores
@@ -121,18 +124,20 @@ class RerankModel:
         prediction at a time (G199): one already uses every core, so ten at once (a worker's threads) only
         thrashed, and none of them finished in 38 minutes (live test 2026-10-11). A few documents per turn,
         scenarios first (G222, local_turns.py): a 40-control mapping never holds it while a next set waits.
-        Each pair is scored on its own, so the turns change no score. (The scores, the seconds.)"""
-        started = time.perf_counter()
-        step = AiLimits.LOCAL_RERANK_TURN_DOCUMENTS
+        Each pair is scored on its own, so the turns change no score. (The scores, the seconds predicting:
+        never the waits for a turn or the model's loading, as a provider call's are its own attempt's.)"""
+        seconds, step = 0.0, AiLimits.LOCAL_RERANK_TURN_DOCUMENTS
         scores: list[float] = []
         for start in range(0, len(documents), step):
             with self._turns.turn():
                 # A job stopped while it waited (G214) ends here: no CPU prediction for no one.
                 raise_if_lease_lost()
                 pairs = [(query, document) for document in documents[start : start + step]]
+                model, started = self._loaded_local_model(), time.perf_counter()
                 # CrossEncoder.predict already applies the sigmoid for a one-label model: scores are 0..1.
-                scores += [100.0 * float(p) for p in self._loaded_local_model().predict(pairs)]
-        return scores, time.perf_counter() - started
+                scores += [100.0 * float(p) for p in model.predict(pairs)]
+                seconds += time.perf_counter() - started
+        return scores, seconds
 
     def _loaded_local_model(self) -> Any:
         if self._local_model is None:

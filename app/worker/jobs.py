@@ -216,11 +216,11 @@ def _claim_or_ignore(
     if due_at := lease.record["job"].get("due_at"):
         waited = (utc_now() - due_at).total_seconds()
         metrics.record_queue_wait(task.name, waited)
-    structlog.contextvars.bind_contextvars(  # the job (record, epoch, stage): a re-send finds its AI answers
-        record_id=record_id, epoch=epoch, task=task.name, attempt=lease.attempts
+    # The job (record, epoch, stage): a re-send finds its AI answers. Its origin (request, API call, caller,
+    # session) also for a re-send without the request header: its AI usage rows carry it.
+    structlog.contextvars.bind_contextvars(
+        record_id=record_id, epoch=epoch, task=task.name, attempt=lease.attempts, **lease.origin
     )
-    if request_id := lease.record["job"].get("request_id"):
-        structlog.contextvars.bind_contextvars(request_id=request_id)  # also for a re-send without header
     return lease
 
 

@@ -48,6 +48,30 @@ AI_REQUEST_RATE_WAIT = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
 )
 AI_RATE_LIMITED = Counter("tsg_ai_rate_limited_total", "HTTP 429 answers from the AI gateway", ["model"])
+#: Every AI usage row (app/ai/attempts.py): each attempt sent, failed and retried ones too, and each reused
+#: answer; labels from enums only ("none" when a row has no value), never an id: ids stay in tsg_ai_usage.
+AI_USAGE_CALLS = Counter(
+    "tsg_ai_usage_calls_total",
+    "AI attempts and reused answers by module, API call, part, task, model, outcome and reason",
+    ["module", "api", "bucket", "task", "model", "outcome", "reason"],
+)
+AI_USAGE_TOKENS = Counter(
+    "tsg_ai_usage_tokens_total", "AI tokens by module and API call", ["module", "api", "direction"]
+)
+AI_USAGE_WRITE_SECONDS = Histogram(
+    "tsg_ai_usage_write_seconds",
+    "Seconds one ask's usage rows took to write",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5),
+)
+#: Rows MongoDB did not take, logged whole for replay instead (AiUsageNotRecorded): Loki keeps them 7 days.
+AI_USAGE_SPILLED = Counter("tsg_ai_usage_spilled_total", "AI usage rows not stored: logged for replay")
+#: When the hourly add-up last finished (AiUsageRollupBehind). Exported from the first add-up of the process
+#: that runs it (record_reaper_time), never as a 0.
+AI_USAGE_ROLLUP_LAST_SUCCESS = Gauge(
+    "tsg_ai_usage_rollup_last_success_timestamp_seconds",
+    "When the AI usage hourly add-up last finished (Unix time)",
+    registry=None,
+)
 DEPENDENCY_UP = Gauge("tsg_dependency_up", "1 when the dependency answered the last check", ["name"])
 JOBS_NOW = Gauge(
     "tsg_jobs_current",

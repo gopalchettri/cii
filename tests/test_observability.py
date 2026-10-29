@@ -74,6 +74,9 @@ BUILT_ALERTS = {
     "JobHung",
     # Log lines Alloy dropped or Loki refused while both were up.
     "LogLinesLost",
+    # 2026-10-29: AI usage rows MongoDB did not take (logged for replay); the hourly AI usage add-up behind.
+    "AiUsageNotRecorded",
+    "AiUsageRollupBehind",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {

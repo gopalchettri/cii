@@ -52,6 +52,7 @@ JOB_MODULES: Final[dict[str, Module]] = {
     TaskName.BUILD_LIBRARY_INDEXES: Module.LIBRARY_EMBEDDINGS,
     AdminJobKind.EMBEDDINGS_BUILD: Module.LIBRARY_EMBEDDINGS,
     TaskName.REAP: Module.MAINTENANCE,
+    TaskName.ROLL_UP_AI_USAGE: Module.MAINTENANCE,
 }
 
 

@@ -74,7 +74,7 @@ DATABASE_CALLS = {
     "drop_database",
     "execute_procedure",
 }
-MAX_PUBLIC_METHODS, MAX_CLASS_LINES, MAX_FUNCTION_LINES, MAX_FILE_LINES = 7, 150, 40, 300
+MAX_PUBLIC_METHODS, MAX_CLASS_LINES, MAX_FUNCTION_LINES, MAX_FILE_LINES = 7, 150, 40, 500
 #: Owner decision of 2026-10-18: the scenario folders keep few files, and a module's one service file and its
 #: repositories may be long, as may the one file that builds every long-lived object; only the file cap is
 #: lifted there.

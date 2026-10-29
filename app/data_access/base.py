@@ -21,7 +21,7 @@ from pymongo.errors import (
 )
 from pymongo.results import BulkWriteResult
 
-from app.core.constants import ErrorMessage, LogEvent
+from app.core.constants import AiUsageLogEvent, AiUsageMessage, ErrorMessage, LogEvent
 from app.core.database import expire_documents_after, get_mongodb
 from app.core.exceptions import DuplicateRecord
 
@@ -35,6 +35,8 @@ _REPLICATION_TIMED_OUT = 64  # MongoDB's error code for a write the replicas did
 _INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
 #: The field create and save stamp with the record shape version; a record without it is version 1.
 SCHEMA_VERSION_FIELD = "schema_version"
+#: WiredTiger's zstd block compressor for a collection kept for good (about half snappy's size on text).
+_ZSTD_STORAGE = {"wiredTiger": {"configString": "block_compressor=zstd"}}
 
 log = structlog.get_logger(__name__)
 
@@ -269,6 +271,42 @@ def drop_retired_index(collection: MongoCollection, name: str) -> None:
     except OperationFailure as exc:
         if exc.code != _INDEX_NOT_FOUND:
             raise
+
+
+class NeverDeletedRepository(MongoRepository):
+    """A collection kept for good (AI usage and the AI call texts, owner 2026-10-29): created zstd-compressed,
+    never given an expiry (one found at start-up is dropped and logged as an error), and `delete` is
+    refused."""
+
+    def __init__(self, collection: str | MongoCollection, **options: Any) -> None:
+        if "ttl" in options:
+            raise TypeError(AiUsageMessage.NEVER_DELETED.format(collection=collection))
+        super().__init__(collection, **options)
+
+    def create_indexes(self) -> None:
+        """The collection (compressed, when new), any expiring index dropped first (it would delete rows kept
+        for good, and an index of ours on the same field would clash with it), then its indexes."""
+        _create_compressed(self.collection)
+        for name, index in self.collection.index_information().items():
+            if "expireAfterSeconds" in index:
+                log.error(AiUsageLogEvent.EXPIRY_FOUND, collection=self.collection.name, index=name)
+                drop_retired_index(self.collection, name)
+        super().create_indexes()
+
+    def delete(self, **where: Any) -> int:
+        raise PermissionError(AiUsageMessage.NEVER_DELETED.format(collection=self.collection.name))
+
+
+def _create_compressed(collection: MongoCollection) -> None:
+    """The collection created with zstd blocks (its rows are kept for good); one that exists, or a server
+    refusing zstd, is left as it is (its default compressor)."""
+    database, name = collection.database, collection.name
+    if database.list_collection_names(filter={"name": name}):
+        return
+    try:
+        database.create_collection(name, storageEngine=_ZSTD_STORAGE)
+    except PyMongoError as error:  # another process made it a moment ago, or zstd is not built in
+        log.warning(AiUsageLogEvent.COMPRESSION_NOT_APPLIED, collection=name, message=str(error))
 
 
 def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> None:
