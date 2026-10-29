@@ -28,6 +28,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     STRIDE_DEFINITIONS,
     ActorRole,
+    AiLimits,
     AiOutage,
     AiTask,
     AttackerCheck,
@@ -324,6 +325,7 @@ def _landscape_text(
 # --- the planner's prompts ([scenario.gate] and [scenario.gap_fill] in app/prompts.toml)
 
 _GATE_RULES: str = PROMPTS["scenario"]["gate"]["text"]
+_GATE_FOLLOW_UP: str = PROMPTS["scenario"]["gate"]["follow_up"]
 _GAP_FILL_RULES: str = PROMPTS["scenario"]["gap_fill"]["text"]
 _PLANNER_SYSTEM: str = PROMPTS["scenario"]["gate"]["system"]
 
@@ -333,10 +335,17 @@ def _stride_lines(categories: Iterable[StrideCategory]) -> str:
     return "STRIDE CATEGORIES:\n" + "".join(f"- {kind}: {STRIDE_DEFINITIONS[kind]}.\n" for kind in categories)
 
 
-def relevance_gate_prompt(landscape: str, slots: list[dict[str, Any]]) -> ChatPrompt:
+def relevance_gate_prompt(
+    landscape: str, slots: list[dict[str, Any]], problems: Sequence[str] = ()
+) -> ChatPrompt:
     """The gate's ask: does each candidate apply to the asset, under which of its own categories, and which
-    listed attacker could do it."""
+    listed attacker could do it; a follow-up is also told the `problems` the earlier answer had with them."""
     rules = _stride_lines(StrideCategory) + _GATE_RULES
+    if problems:
+        shown = (
+            problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in problems[: AiLimits.REASK_MAX_PROBLEMS]
+        )
+        rules += _GATE_FOLLOW_UP.replace("{problems}", "; ".join(shown))
     return _PLANNER_SYSTEM, f"LANDSCAPE:\n{landscape}\n\n{rules}\n\nCANDIDATES:\n" + json.dumps(
         slots, ensure_ascii=False
     )
@@ -511,17 +520,20 @@ def _needs(names: list[str]) -> tuple[str, ...]:
 
 def _read_verdicts(
     answer: dict[str, Any], asked: dict[str, dict[str, Any]], aliases: dict[str, int]
-) -> tuple[dict[str, dict[StrideCategory, Verdict]], list[str]]:
-    """{slot: its verdicts} for every asked slot answered well (`asked`: the candidates by slot); the
-    problems only when no slot was, so one bad slot never re-asks the whole batch."""
+) -> tuple[tuple[dict[str, dict[StrideCategory, Verdict]], dict[str, list[str]]], list[str]]:
+    """({slot: its verdicts} for every asked slot answered well, {slot: its problems} for each answered
+    wrongly) (`asked`: the candidates by slot); the re-ask problems only when no slot was answered well, so
+    one bad slot never re-asks the whole batch."""
     items, problems = answers_for_asked_slots(answer, "verdicts", set(asked))
-    judged = {}
+    judged, faults = {}, {}
     for item in items:
         verdicts, item_problems = parse_verdict(item, asked[item["slot"]], aliases)
         problems += item_problems
-        if verdicts is not None:
+        if verdicts is None:
+            faults[item["slot"]] = item_problems
+        else:
             judged[item["slot"]] = verdicts
-    return judged, [] if judged else problems
+    return (judged, faults), [] if judged else problems
 
 
 def _read_proposals(
@@ -601,7 +613,7 @@ def _own_verdicts(
     if verdicts is None:
         return None
     if unlisted := sorted(set(verdicts) - set(own)):
-        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, threat_key=key, categories=unlisted)
+        log.warning(LogEvent.PLANNER_CATEGORY_DROPPED, threat_key=key, categories=unlisted)
     return {kind: verdicts[kind] for kind in own}
 
 
@@ -708,30 +720,34 @@ class _ThreatJudge:
         return {slot: verdicts for batch in judged for slot, verdicts in batch.items()}
 
     def _judge_batch(
-        self, batch: list[dict[str, Any]], first_ask: bool = True
+        self, batch: list[dict[str, Any]], problems: list[str] | None = None, halved: bool = False
     ) -> dict[str, dict[StrideCategory, Verdict]]:
-        """One gate call's verdicts. A cut-off answer is asked again as halves once, and the slots it left out
-        or got wrong are asked once more on their own; none when it is skipped or the job already retries."""
+        """One gate call's verdicts (`problems`: this is the follow-up, told what the earlier answer got wrong
+        with its slots). A cut-off first ask is asked again as halves once, each a first ask of its own; the
+        slots a first ask left out or got wrong get the one follow-up. None: skipped, or the job retries."""
         if self._unavailable.is_set():
             return {}
-        prompt = relevance_gate_prompt(self._landscape.text, batch)
+        first_ask = problems is None
+        prompt = relevance_gate_prompt(self._landscape.text, batch, problems or ())
         asked = {item["slot"]: item for item in batch}
         read = functools.partial(_read_verdicts, asked=asked, aliases=self._landscape.system_ids)
+        judged: dict[str, dict[StrideCategory, Verdict]]
+        faults: dict[str, list[str]]
         try:
-            judged: dict[str, dict[StrideCategory, Verdict]] = _ask_reusing(
-                self._chat, AiTask.RELEVANCE_GATE, prompt, read
-            )
+            judged, faults = _ask_reusing(self._chat, AiTask.RELEVANCE_GATE, prompt, read)
         except Unavailable:
             self._unavailable.set()
             raise
         except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-            if isinstance(exc, TruncatedAiAnswer) and first_ask and len(batch) > 1:
+            if isinstance(exc, TruncatedAiAnswer) and first_ask and not halved and len(batch) > 1:
                 half = (len(batch) + 1) // 2  # ponytail: halved once; a half cut off again is not judged
-                return self._judge_batch(batch[:half], False) | self._judge_batch(batch[half:], False)
+                first, second = batch[:half], batch[half:]
+                return self._judge_batch(first, halved=True) | self._judge_batch(second, halved=True)
             self._retry_or_skip(AiTask.RELEVANCE_GATE, exc, [item["threat"] for item in batch], first_ask)
             return {}
         if first_ask and (missing := [item for item in batch if item["slot"] not in judged]):
-            judged |= self._judge_batch(missing, first_ask=False)  # ponytail: once; still wrong = not judged
+            told = [problem for item in missing for problem in faults.get(item["slot"], ())]
+            judged |= self._judge_batch(missing, told)  # ponytail: once; still wrong = not judged
         return judged
 
     def _retry_or_skip(
@@ -1264,7 +1280,8 @@ def _judgeable(
     threats: Sequence[LibraryThreat], allowed: Collection[str]
 ) -> tuple[list[LibraryThreat], list[dict[str, Any]]]:
     """The library threats the gate is asked about: their type fits the asset or a chosen system and links an
-    attacker. Those threats, and a drop for each one left out."""
+    attacker, and they sit in a STRIDE category. Those threats, and a drop for each one left out (one in
+    custom categories only never reaches a scenario, so it is left out without one)."""
     fitting, drops = [], []
     for threat in threats:
         key, stage = f"lib:{threat.catalogue_id}", PlanStage.PRE_FILTER
@@ -1273,7 +1290,7 @@ def _judgeable(
             drops.append(plan_drop(key, threat.name, None, stage, PlanLoss.TYPE_FITS_NO_PLACE, detail))
         elif not threat.linked_actors:
             drops.append(plan_drop(key, threat.name, None, stage, PlanLoss.NO_LINKED_ACTOR))
-        else:
+        elif threat.categories:
             fitting.append(threat)
     if unlinked := [drop["threat_key"] for drop in drops if drop["reason"] == PlanLoss.NO_LINKED_ACTOR]:
         log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, threat_keys=unlinked)

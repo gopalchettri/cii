@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from app.core.constants import AiLimits, AiTask, ErrorCode, FindingCode, Status, TaskName
+from app.core.constants import AiLimits, AiTask, ErrorCode, FindingCode, PlanCheckStatus, Status, TaskName
 from app.core.exceptions import Unavailable
 from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import (
@@ -25,7 +25,7 @@ from app.domain.shared.ask_ai import call_tokens
 from app.models.scenario.write import PathFailure, WrittenScenario
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.writing.test_evidence_story import _GROUPS, _story_brief
-from tests.fakes import FakeChatModel, brief_of, slot_blocks
+from tests.fakes import FakeChatModel, brief_of, slot_blocks, truncated
 from tests.test_scenario_writing import _CLEAN, _CONSISTENT, _brief_of, _plan_threat
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _on_last_try,
@@ -66,9 +66,10 @@ def _review_of(block: str) -> dict[str, Any]:
 
 
 def test_two_bad_slots_cost_one_rewrite_and_one_review_and_the_good_ones_are_saved_first() -> None:
-    """Slot 3 names an entry point it was not offered, slot 5 shows no story sentence for its listed action:
-    exactly 4 calls; the rewrite and its review hold only SC3 and SC5, each told its own problems, and slots
-    1, 2, 4 and 6 come out before the rewrite is asked."""
+    """Slot 3 names an entry point it was not offered, slot 5 shows no story sentence for its listed action,
+    and slot 2's first review judges none of its listed actions: exactly 4 calls; the rewrite holds only SC3
+    and SC5, each told its own problems, its review those two and SC2 (its draft kept as written), and slots
+    1, 4 and 6 come out before the rewrite is asked."""
 
     def write(block: str) -> dict[str, Any]:
         answer = draft_answer(_CLEAN)
@@ -78,19 +79,56 @@ def test_two_bad_slots_cost_one_rewrite_and_one_review_and_the_good_ones_are_sav
             return answer | {"entry_point": "Engineering laptop"}
         return answer | ({"action_sentences": {}} if '"Threat 5"' in block else {})
 
+    reviews_of_slot_2: list[str] = []
+
+    def review(block: str) -> dict[str, Any]:
+        if '"Threat 2"' in block:
+            reviews_of_slot_2.append(block)
+            if len(reviews_of_slot_2) == 1:  # usable, but it judges none of the listed actions
+                return _review_of(block) | {"threat_actions": {}}
+        return _review_of(block)
+
     fake = FakeChatModel()
-    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _review_of}
+    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: review}
     calls_when_final: dict[str, int] = {}
-    for label, written in write_set(fake, _briefs(6, acted={5})):  # type: ignore[arg-type]
+    for label, written in write_set(fake, _briefs(6, acted={2, 5})):  # type: ignore[arg-type]
         assert isinstance(written, WrittenScenario) and written.findings == ()
         calls_when_final[label] = len(fake.calls)
-    assert calls_when_final == {"SC1": 2, "SC2": 2, "SC4": 2, "SC6": 2, "SC3": 4, "SC5": 4}
+    assert calls_when_final == {"SC1": 2, "SC4": 2, "SC6": 2, "SC2": 4, "SC3": 4, "SC5": 4}
     tasks = [task for task, _ in fake.calls]
     assert tasks == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
     (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
-    assert _labels(rewrite) == ["SC3", "SC5"] and _labels(fake.asked(AiTask.PLAN_CHECK)[1]) == ["SC3", "SC5"]
+    assert _labels(rewrite) == ["SC3", "SC5"]
+    assert _labels(fake.asked(AiTask.PLAN_CHECK)[1]) == ["SC2", "SC3", "SC5"]
+    assert reviews_of_slot_2[0] == reviews_of_slot_2[1]  # the same draft reviewed again, never rewritten
     third, fifth = (block for _, block in slot_blocks(rewrite))
     assert "entry_point" in third.split("REJECTED:")[1] and _ACT in fifth.split("REJECTED:")[1]
+
+
+def test_an_outage_in_the_second_round_keeps_each_usable_draft_and_retries_only_the_rest() -> None:
+    """Slot 1's first answer is unreadable and slot 2's shows no story sentence for its action; the AI is
+    down for their rewrite. Slot 2 keeps its first draft, flagged as not reviewed with the outage, and only
+    slot 1 (no usable draft) raises the outage, so its path alone is retried."""
+
+    def write(block: str) -> dict[str, Any]:
+        if "REJECTED:" in block:
+            raise Unavailable("The AI service is busy.")
+        if '"Threat 1"' in block:
+            return {"scenario_title": "x"}
+        return draft_answer(_CLEAN) | {"action_sentences": {}}
+
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _review_of}
+    kept: dict[str, WrittenScenario | PathFailure] = {}
+    with pytest.raises(Unavailable):
+        for label, written in write_set(fake, _briefs(2, acted={2})):  # type: ignore[arg-type]
+            kept[label] = written
+    (second,) = kept.values()
+    assert list(kept) == ["SC2"] and isinstance(second, WrittenScenario)
+    assert second.plan_check.status is PlanCheckStatus.UNCHECKED and not second.rewritten
+    assert [(f.code, "The AI service is busy." in f.message) for f in second.findings] == [
+        (FindingCode.PLAN_CHECK_NOT_MADE, True)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -147,6 +185,20 @@ def test_a_set_answer_unreadable_twice_retries_the_job_and_on_its_last_try_gives
     _write_batch(_on_last_try(record_id))
     cards = _scenarios_of(record_id)
     assert [card["failure"]["code"] for card in cards] == [ErrorCode.GENERATION_FAILED] * 2
+
+
+@pytest.mark.usefixtures("sent")
+def test_a_set_answer_cut_off_at_the_models_full_room_gives_failure_cards_on_the_first_try(
+    chat: FakeChatModel,  # noqa: F811 - the imported fixture
+) -> None:
+    """At temperature 0 a retry would be cut off again, so the job is not given back: each path gets its
+    failure card at once."""
+    chat.queue(AiTask.WRITE_SCENARIO, truncated())
+    record_id = _queued_run(["Threat 1", "Threat 2"])
+    _write_batch(JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first"))
+    cards = _scenarios_of(record_id)
+    assert [card["failure"]["code"] for card in cards] == [ErrorCode.GENERATION_FAILED] * 2
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 1
 
 
 def test_a_slot_answered_with_another_slots_threat_is_written_again_and_a_slot_label_is_blocked() -> None:

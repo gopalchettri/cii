@@ -144,8 +144,8 @@ class BatchWriter:
         (self._run.get("last_action") or {}).setdefault("writing_started_at", now)  # PlanProgress reads it
 
     def _write_set(self, to_write: list[str]) -> dict[str, BaseException]:
-        """Write the paths as one set, its slots in the batch's order (a retry asks the same), each saved as
-        soon as it is final; the outages of the paths left, by path."""
+        """Write the paths as one set, its slots in the batch's order (a retry that saved nothing asks the
+        same), each saved as soon as it is final; the outages of the paths left, by path."""
         paths, started, numbered = self._progress.paths, utc_now(), enumerate(self._batch, start=1)
         slots = [(slot_label(place), paths[key]) for place, key in numbered if key in to_write]
         outages: dict[str, BaseException] = {}

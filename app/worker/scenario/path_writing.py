@@ -73,7 +73,9 @@ class PathWriter:
     ) -> Iterator[tuple[str, PathOutcome | Exception]]:
         """Each path's outcome by its id as soon as it is final, the set ((slot label, path)) written in one
         set of AI calls (write_set). The paths left when the AI cannot go on get the outage to retry; a whole
-        answer unusable twice is one too, but on the job's `last_try` each of them gets a failure card."""
+        answer unusable twice is one too, but on the job's `last_try` each of them gets a failure card. One
+        cut off at the model's full room (or too long to send) gets them at once: a retry would be cut off
+        again."""
         briefs: dict[str, WriterBrief] = {}
         path_ids = {label: path["path_id"] for label, path in slots}
         for label, path in slots:
@@ -89,7 +91,8 @@ class PathWriter:
                 yield path_ids[label], written if isinstance(written, PathFailure) else (brief, written)
         except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
             reason = shorten_text(str(exc), Writing.PROBLEM_MAX_CHARS)
-            failure = PathFailure(ErrorCode.GENERATION_FAILED, reason) if last_try else Unavailable(reason)
+            final = last_try or isinstance(exc, TruncatedAiAnswer)
+            failure = PathFailure(ErrorCode.GENERATION_FAILED, reason) if final else Unavailable(reason)
             yield from ((path_ids[label], failure) for label in left)
         except _RAISED_FROM_A_PATH as exc:
             yield from ((path_ids[label], exc) for label in left)

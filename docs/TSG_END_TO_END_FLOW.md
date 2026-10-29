@@ -1124,9 +1124,10 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    | OT | OT, IT\OT |
    | IT\OT | IT, OT, IT\OT |
 
-2. `_judgeable` keeps a library threat only when both of these hold:
+2. `_judgeable` keeps a library threat only when all of these hold:
    - Its asset type fits the run (`asset_type_fits`). An untyped threat, or one with an unrecognised type, always fits. Otherwise it is dropped as `type_fits_no_place`, stage `pre_filter`.
    - Its type links at least one actor. Otherwise it is dropped as `no_linked_actor`, stage `pre_filter`.
+   - It sits in at least one STRIDE kind. A threat in custom categories only never reaches a scenario, so it is left out with no drop, and is never a gate candidate no answer could judge.
 3. Buckets: `{kind: [threats whose library categories include kind]}` for each of the six STRIDE kinds, in library id order.
 
 **In the example**
@@ -1197,13 +1198,13 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
 2. Each item is checked by `parse_verdict`:
    - `_place_problems`: `systems` are listed aliases; for a relevant verdict, `entry_points` are among them, with at least one way in when it names systems.
    - `relevant` is true or false; the copied-back `threat` is the slot's own.
-   - **Kind names are read strictly.** Each name is matched with `name_match_key` against the six STRIDE names, so "Denial-of-Service" is Denial of Service. A name that is no STRIDE kind ("DoS"), or a relevant verdict with none of the threat's own kinds, is a problem of that slot. A real STRIDE kind the threat does not list is dropped, with a warning naming the threat.
+   - **Kind names are read strictly.** Each name is matched with `name_match_key` against the six STRIDE names, so "Denial-of-Service" is Denial of Service. A name that is no STRIDE kind ("DoS"), or a relevant verdict with none of the threat's own kinds, is a problem of that slot. A real STRIDE kind the threat does not list is dropped, with a warning naming the threat (`planner.category_dropped`).
    - Each kind's `impact` is HIGH, MEDIUM or LOW; `confidence` is 0-100, unless rejected.
    - Each `reason` is not empty.
    - `needs` is a list of names.
    - The item then goes through `answer_item_problems(RelevanceVerdict, …)`.
-3. **One follow-up call** asks only the bad slots, in a new small prompt, with their problems (at most 20 of at most 200 characters, `AiLimits`). A slot still bad after it is `not_judged`. An answer that is no JSON object at all is first asked again once in the same conversation (`ChatModel._ask_until_checked`, *"Your previous reply was rejected:"*).
-4. **A cut-off answer** (or a prompt too long) halves the batch once; a half cut off again is `not_judged`.
+3. **One follow-up call** asks only the bad slots, in a new small prompt, with the problems each wrong slot had (`[scenario.gate] follow_up`, *"REJECTED: the earlier answer for these slots had these problems"*; at most 20 of at most 200 characters, `AiLimits`); a slot that was only left out is asked with no note. A slot still bad after it is `not_judged`. An answer with no slot answered well is first asked again once in the same conversation (`ChatModel.ask_for_checked_json`, *"Your previous reply was rejected:"*).
+4. **A cut-off answer** (or a prompt too long) halves the batch once. Each half is a first ask of its own: it gets its own follow-up (step 3), and an unusable half retries the job (step 7). A half cut off again is `not_judged`.
 5. **Spread back per kind.** Code turns each relevant verdict into one verdict per kind it names, each with that kind's impact and reason and the threat's shared systems, ways in, confidence, needs and attacker pick, so everything after the gate reads the same per-kind findings as before.
 6. **What a good item keeps** (`Verdict`):
    - systems and ways in as sorted SQL ids;
@@ -1215,7 +1216,7 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
    - `actions`, for a relevant verdict only, with system names.
 7. **Retry or skip** (`_retry_or_skip`):
    - A whole answer unusable (`UnreadableAiAnswer`) on a normal attempt raises `Unavailable`, so the whole job is retried later.
-   - A half still cut off (step 4) skips that half on any attempt, and an unusable answer on the last attempt skips its batch. The skip is logged as `planner.threats_not_judged`.
+   - A half still cut off (step 4) or an unusable follow-up (step 3) is skipped on any attempt, and an unusable answer on the last attempt skips its batch. The skip is logged as `planner.threats_not_judged`.
    - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer (in a writing job also the threat-action split and the reviewer's answers; in a remediation job the plan) the job already got and accepted from `tsg_ai_call_texts` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. The follow-up and half prompts are fixed by their slots, so they are reused too. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
    - If the candidates were not empty but no batch was answered, it raises `Unavailable` ("The AI could not answer. Start a new session later.").
 8. **Sorting**, for each of the threat's own kinds (`gate_asked` still counts each threat once per kind it sits in):
@@ -1410,7 +1411,7 @@ None of lib:281's four paths was held.
    - the lowest library id;
    - `path_id`;
    - sha256 of the threat text.
-5. **Threat turn** (`rank_paths`): after sorting by strength, each path gets its threat's turn number: 0 for the threat's strongest path, 1 for its next, and so on. A stable sort by that number puts every threat's strongest kind ahead of any threat's second kind, with strength order kept within a turn. With one path per threat every path is turn 0, so strength alone orders them.
+5. **Order** (`rank_paths`): a plain sort by that key. With one path per threat there are no threat turns any more (before 31-Oct-2026 each threat's strongest kind went ahead of any threat's second kind).
 6. **System turn** (`take_turns`, D14) deals the ranked records over the systems in request order (`landscape.system_ids`), then the asset itself, then SYS1 again:
    - Each turn takes the best record left that an attacker could get in through that system (`_best_through`; `_enters_through`: the system is in the record's `entry_points`; for the asset itself, a path on no system). That system becomes its `entry_system`.
    - A turn skips a record when a system still to play in that round has no other way in, as long as the current system has another record. Otherwise it takes its best record.
@@ -2206,7 +2207,7 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 
 **How** (`write.py`, `path_writing.py`, `write_job.py`)
 1. **Round 1: one write call for the set.** The batch's paths are slots `SC1`..`SCn`, in `job.batch` order, so a
-   retried delivery sends the same prompt and reuses the earlier answer (5.6). Each slot carries its own BRIEF
+   retried delivery that saved nothing sends the same prompt and reuses the earlier answer (5.6). Each slot carries its own BRIEF
    (§8.1, with the threat's actions from the plan) and its own evidence block, or the no-evidence line (§8.2).
    The answer is `{"scenarios": [...]}`, one item per slot with the eight fields of §8.2, each copying back its
    threat's name.
@@ -2218,9 +2219,14 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 4. **Round 2, only when needed:** one rewrite call (task `repair_scenario`) for the slots that were unreadable,
    had a fault worth asking again, or need a repair, each with its own problems; then one review call for those
    slots. A repair is kept only if it fixed the first draft (`_fixes`, §8.5 step 8). A slot still unusable keeps
-   its usable first draft, or gets a failure card (`generation_failed`). There is no third round.
+   its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
+   round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's first draft; any other draft checked,
+   with `plan_check_not_made` naming the outage when it has no review); only a slot with no usable draft keeps
+   the outage, so its path alone is retried, written afresh in a smaller set.
 5. **A whole answer unreadable twice** (no `scenarios` list): `Unavailable`, so the job is retried, with no card
-   and no path given up; on the last attempt (`Lease.MAX_ATTEMPTS`) the paths get failure cards.
+   and no path given up; on the last attempt (`Lease.MAX_ATTEMPTS`) the paths get failure cards. A write answer
+   still cut off at the model's full room (or a prompt too long to send) gives them failure cards at once: at
+   temperature 0 a retry would be cut off again.
 6. Regenerate, next set and spares use the same flow; a batch of 1 is just a batch. A call over
    `CII_AI_CALL_TOKENS_LIMIT` (UAT 20,000) is sent as two halves. The answer room is `CII_ANSWER_TOKENS_WRITE_SCENARIO`,
    `..._REPAIR_SCENARIO` and `..._PLAN_CHECK` (UAT 6,144, 6,144 and 3,072), for a whole set.
@@ -2525,7 +2531,7 @@ asked for, left out):
    In a set (§8.0) only an answer with no `scenarios` list is asked again in the conversation; a slot with any
    problem below goes to round 2's rewrite with its problems, and one still unusable after it keeps its usable
    first draft or becomes a `generation_failed` card. For one answer:
-2. **Asked again once** (`ChatModel._ask_until_checked`: one corrective turn in the same conversation, message
+2. **Asked again once** (`ChatModel.ask_for_checked_json`: one corrective turn in the same conversation, message
    `AiLimits.REASK_MESSAGE`, at most 20 problems of at most 200 characters; the rejected answer is quoted while
    it still fits the input limit) when:
    - the reply is not one JSON object (`ErrorMessage.AI_REPLY_NOT_A_JSON_OBJECT`);

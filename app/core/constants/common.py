@@ -243,6 +243,7 @@ class LogEvent(StrEnum):
     LIBRARY_INDEXES_BUILT = "library.indexes_built"
     LIBRARY_INDEXES_BUILD_FAILED = "library.indexes_build_failed"
     PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
+    PLANNER_CATEGORY_DROPPED = "planner.category_dropped"  # the gate named a category the threat lacks
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"

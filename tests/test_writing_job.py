@@ -329,7 +329,9 @@ def test_an_unreadable_path_is_abandoned_at_once_and_the_run_ends_partial(
         AiTask.PLAN_CHECK,
         AiTask.REPAIR_SCENARIO,
     ]
-    assert '"Good threat"' not in chat.asked(AiTask.REPAIR_SCENARIO)[0]
+    (rewrite,) = chat.asked(AiTask.REPAIR_SCENARIO)
+    assert '"Good threat"' not in rewrite  # the rewrite is told why its first answer was unreadable
+    assert "scenario_statement Field required" in rewrite.split("REJECTED:")[1]
 
 
 def test_a_path_the_plan_cannot_support_is_abandoned_at_once(

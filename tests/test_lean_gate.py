@@ -16,6 +16,7 @@ from app.core.constants import (
     CandidateRejection,
     LogEvent,
 )
+from app.core.exceptions import Unavailable
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import build_plan
 from app.models.library.library import LibraryActor, LibraryThreat
@@ -144,6 +145,56 @@ def test_a_cut_off_batch_is_asked_again_as_two_halves_both_judged() -> None:
     assert sorted(threat.name for threat in findings.threats) == sorted([PHISHING.name, LOG_WIPE.name])
 
 
+def test_each_half_of_a_cut_off_batch_is_a_first_ask_with_its_own_follow_up_and_retry() -> None:
+    """A half that leaves a slot out gets the one follow-up for it; a half whose answer is unreadable raises
+    Unavailable (the job retries), and only on the job's last attempt are its threats not judged."""
+    names = [PHISHING.name, LOG_WIPE.name, FLOOD.name]
+    gate = judged({PHISHING.name: ["SYS1"], LOG_WIPE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
+
+    def halves(left_out: str = "", unreadable: str = "") -> Any:
+        def answer(user_prompt: str) -> dict[str, Any]:
+            asked = [item["threat"] for item in items_in(user_prompt, "CANDIDATES")]
+            if len(asked) == 3:
+                raise truncated()
+            if asked == [unreadable]:
+                return {"verdicts": "none"}
+            whole = len(asked) > 1
+            return {
+                "verdicts": [v for v in gate(user_prompt)["verdicts"] if not whole or v["threat"] != left_out]
+            }
+
+        return answer
+
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = halves(left_out=LOG_WIPE.name)
+    findings = finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT)
+    asked = [
+        [i["threat"] for i in items_in(user, "CANDIDATES")] for user in chat.asked(AiTask.RELEVANCE_GATE)
+    ]
+    assert asked == [names, names[:2], [LOG_WIPE.name], [FLOOD.name]]
+    assert sorted(threat.name for threat in findings.threats) == sorted(names)
+    chat.responders[AiTask.RELEVANCE_GATE] = halves(unreadable=FLOOD.name)
+    with pytest.raises(Unavailable):
+        finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT)
+    findings = finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT, last_attempt=True)
+    assert audit_of(findings, S.DENIAL_OF_SERVICE).not_judged == [FLOOD]
+    assert sorted(threat.name for threat in findings.threats) == sorted(names[:2])
+
+
+def test_a_threat_in_custom_categories_only_never_reaches_the_gate() -> None:
+    """A library threat with no STRIDE category is left out before the gate, as before the lean gate: no
+    answer could judge it, and a library of only such threats is no outage."""
+    custom = dataclasses.replace(FLOOD, catalogue_id=7, name="Misuse in a custom category", categories=())
+    chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
+    findings = finder(chat, threats=(RANSOMWARE, custom)).find_threats(CONTEXT)
+    (asked,) = chat.asked(AiTask.RELEVANCE_GATE)
+    assert [item["threat"] for item in items_in(asked, "CANDIDATES")] == [RANSOMWARE.name]
+    assert [threat.name for threat in findings.threats] == [RANSOMWARE.name]
+    chat = planner_chat({})
+    assert finder(chat, threats=(custom,)).find_threats(CONTEXT).threats == []
+    assert chat.asked(AiTask.RELEVANCE_GATE) == []
+
+
 def test_a_batch_over_the_call_limit_is_sent_as_halves_each_under_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """CII_AI_CALL_TOKENS_LIMIT: the prompt's estimate plus the gate's answer room."""
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
@@ -187,10 +238,13 @@ def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the
     assert len(again) == 2 and all(
         {i["threat"] for i in items_in(user, "CANDIDATES")} == bad for user in again
     )
+    told = again[0].rsplit("\nCANDIDATES:\n", 1)[0].split("REJECTED:")[1]  # each slot told what it got wrong
+    assert "'Spoof' is no STRIDE category" in told and "categories must list" in told
+    assert "threat must be this slot's own threat" in told
     assert audit_of(findings, S.REPUDIATION).not_judged == [LOG_WIPE]  # not judged; the job never retries
-    dropped = [e for e in logs if e["event"] == LogEvent.PLANNER_THREATS_NOT_JUDGED and "threat_key" in e]
+    dropped = [e for e in logs if e["event"] == LogEvent.PLANNER_CATEGORY_DROPPED]
     assert [(e["threat_key"], e["categories"]) for e in dropped] == [("lib:1", [S.SPOOFING])]
-    skipped = [e["asked"] for e in logs if e["event"] == LogEvent.PLANNER_THREATS_NOT_JUDGED and "asked" in e]
+    skipped = [e["asked"] for e in logs if e["event"] == LogEvent.PLANNER_THREATS_NOT_JUDGED]
     assert skipped == [[PHISHING.name, LOG_WIPE.name, FLOOD.name]]  # the ask again: logged, then not judged
     (ransomware,) = [threat for threat in findings.threats if threat.key == "lib:1"]
     assert ransomware.categories == (S.DENIAL_OF_SERVICE, S.TAMPERING)

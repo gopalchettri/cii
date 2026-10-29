@@ -693,7 +693,8 @@ def write_set(
 
 def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """One rewrite call for the slots to write again (each told its problems or its repair), then one review
-    call for every slot with a draft to judge. On an outage a repair keeps its first draft; the rest raise."""
+    call for every slot with a draft to judge. On an outage each slot keeps its usable draft (_firsts_kept);
+    one with none raises."""
     rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
     try:
         blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
@@ -870,21 +871,25 @@ def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
 
 
 def _firsts_kept(slots: list[_Slot], outage: Unavailable) -> Iterator[tuple[str, WrittenScenario]]:
-    """On an outage in the second round, each repair's first draft, kept as it was; any other slot left
-    raises the outage (its path is retried)."""
+    """On an outage in the second round, each slot's usable draft, kept: a repair's first draft as it was,
+    else its own draft checked, flagged with the outage when it has no review; a slot with no usable draft
+    raises the outage (its path is retried, so a retry never throws a usable draft away)."""
     for slot in slots:
         if slot.first is not None:
             log.warning(
                 LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", error_type=type(outage).__name__
             )
             yield slot.label, slot.first
-    if any(slot.first is None for slot in slots):
+        elif slot.draft is not None:
+            yield slot.label, _checked(slot, outage)
+    if any(slot.first is None and slot.draft is None for slot in slots):
         raise outage
 
 
-def _checked(slot: _Slot) -> WrittenScenario:
-    """The slot's draft with its exact findings and, unless one blocks it, its review's verdict; a story's
-    passage that cannot be cited is dropped with a warning (code cites its own sentence), never a blocker."""
+def _checked(slot: _Slot, outage: Unavailable | None = None) -> WrittenScenario:
+    """The slot's draft with its exact findings and, unless one blocks it, its review's verdict (`outage`:
+    why it has none); a story's passage that cannot be cited is dropped with a warning (code cites its own
+    sentence), never a blocker."""
     draft, brief = _draft_of(slot), slot.brief
     findings = check_exact_rules(draft, brief)
     check: PlanCheck
@@ -892,7 +897,8 @@ def _checked(slot: _Slot) -> WrittenScenario:
     if _blocks(findings):
         check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
     else:
-        check, notes = _plan_check_of(brief, slot.review, slot.review_problems)
+        not_made = str(outage) if outage else _rejected(AiTask.PLAN_CHECK, slot.review_problems)
+        check, notes = _plan_check_of(brief, slot.review, not_made)
     if _is_story(brief) and (problem := _passage_problem(draft, check, _cited_entry(brief))):
         draft = dataclasses.replace(draft, evidence_statement="")
         message = FindingMessage.CITATION_REMOVED.format(reason=problem)
@@ -910,12 +916,12 @@ def _rejected(task: AiTask, problems: Sequence[str]) -> str:
 
 
 def _plan_check_of(
-    brief: WriterBrief, answer: PlanCheckAnswer | None, problems: Sequence[str]
+    brief: WriterBrief, answer: PlanCheckAnswer | None, not_made: str
 ) -> tuple[PlanCheck, tuple[Finding, ...]]:
     """The review's check and its findings: a note per broken rule, a blocker when the threat or impact
-    changed, a warning when no usable review came (the scenario is still saved, flagged)."""
+    changed, a warning saying why (`not_made`) when no usable review came (the scenario is still saved)."""
     if answer is None:
-        reason = _rejected(AiTask.PLAN_CHECK, problems)
+        reason = shorten_text(not_made, Writing.PROBLEM_MAX_CHARS)
         log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, message=reason)
         warning = FindingMessage.PLAN_CHECK_NOT_MADE.format(reason=reason)
         return PlanCheck(PlanCheckStatus.UNCHECKED), (Finding(FindingCode.PLAN_CHECK_NOT_MADE, warning),)
