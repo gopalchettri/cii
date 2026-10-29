@@ -765,7 +765,18 @@ def _read_set(
     kept, problems = answers_for_asked_slots(answer, key, asked)
     if not isinstance(answer.get(key), list):
         return None, problems
-    return {str(item["slot"]): item for item in kept}, []
+    return {str(item["slot"]): _with_ampersands(item) for item in kept}, []
+
+
+def _with_ampersands(value: Any) -> Any:
+    """An answer with "&amp;" read as "&": the model escapes names such as "Command & Control"."""
+    if isinstance(value, str):
+        return value.replace("&amp;", "&")
+    if isinstance(value, dict):
+        return {_with_ampersands(key): _with_ampersands(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_with_ampersands(item) for item in value]
+    return value
 
 
 def _read_slot_draft(
@@ -883,9 +894,27 @@ def _note(slot: _Slot) -> str:
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in actions)
     mismatch = _mismatch_problems(slot.first) if slot.first else ()
     problems = (*mismatch, *slot.problems, *((slot.relink,) if slot.relink else ()))
-    shown = (problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in problems[: AiLimits.REASK_MAX_PROBLEMS])
+    shown = (_within_reask(problem) for problem in problems[: AiLimits.REASK_MAX_PROBLEMS])
     repair = _REPAIR.replace("{actions}", listed) if actions else ""
     return repair + (_REWRITE.replace("{problems}", "; ".join(shown)) if problems else "")
+
+
+#: A reviewer's problem: 'Rule n: "<quoted words>" - <reason>'.
+_QUOTED_PROBLEM = re.compile(r'(?P<rule>Rule \d+: )"(?P<quote>.*)"(?P<reason> - .*)', re.DOTALL)
+_LEAST_QUOTE_CHARS = 30  # a shorter quote no longer finds its sentence
+
+
+def _within_reask(problem: str) -> str:
+    """A re-ask problem within AiLimits.REASK_PROBLEM_CHARS, cut at a word: a reviewer's long quote is
+    shortened so its reason stays whole."""
+    most = AiLimits.REASK_PROBLEM_CHARS
+    if len(problem) <= most:
+        return problem
+    parts = _QUOTED_PROBLEM.fullmatch(problem)
+    room = most - len(parts["rule"]) - len(parts["reason"]) - 3 if parts else 0
+    if parts and room >= _LEAST_QUOTE_CHARS:
+        return f'{parts["rule"]}"{parts["quote"][:room].rsplit(" ", 1)[0]}…"{parts["reason"]}'
+    return problem[:most].rsplit(" ", 1)[0]
 
 
 def _take_rewrite(slot: _Slot, item: dict[str, Any] | None) -> None:
@@ -921,9 +950,16 @@ def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
     repair = _checked(slot)
     link_only = not (_listed_actions(first.plan_check) or _mismatched(first))
     lost = link_only and bool(first.draft.evidence_statement) and not repair.draft.evidence_statement
-    fixed = _fixes(repair, first) and not lost and not slot.review_problems
+    # a blocked first draft costs its path: any reviewed repair no rule blocks is better
+    better = _reviewed_unblocked(repair) if _mismatched(first) else _fixes(repair, first) and not lost
+    fixed = better and not slot.review_problems
     log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
     return dataclasses.replace(repair, rewritten=True) if fixed else first
+
+
+def _reviewed_unblocked(written: WrittenScenario) -> bool:
+    """Whether a draft was reviewed and nothing blocks it."""
+    return written.plan_check.status is not PlanCheckStatus.UNCHECKED and not is_blocked(written)
 
 
 def _firsts_kept(slots: list[_Slot], outage: Unavailable) -> Iterator[tuple[str, WrittenScenario]]:

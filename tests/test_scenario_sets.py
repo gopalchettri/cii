@@ -24,6 +24,7 @@ from app.data_access.jobs.job_repository import JobRepository
 from app.domain.scenario.write import (
     PLAN_CHECK_SET_PROMPT,
     _repeated_link,
+    _within_reask,
     check_exact_rules,
     draft_answer,
     is_blocked,
@@ -651,6 +652,36 @@ def test_a_mismatch_repair_that_fails_keeps_the_blocked_first_draft(
     assert _LATER_USE in second.draft.statement and _record_of(second)["status"] == ScenarioStatus.BLOCKED
 
 
+def test_a_mismatch_repair_breaking_another_rule_is_taken_over_the_blocked_first_draft() -> None:
+    """Review, 30 Oct: a repair clearing the mismatch was thrown away for one rule its first draft held,
+    so the blocked draft was saved and a reserve written; a reviewed repair nothing blocks is taken."""
+
+    def review(block: str) -> dict[str, Any]:
+        if _LATER_USE in block:
+            return _mismatch_review(block)
+        return _confirmed(block) | {"rules": {"3": 'broken: "the stolen logins" - an invented detail'}}
+
+    fake = FakeChatModel()
+    fake.responders |= {
+        AiTask.WRITE_SCENARIO: lambda block: (
+            draft_answer(_CLEAN) if "REJECTED:" in block else _with_later_use(block)
+        ),
+        AiTask.PLAN_CHECK: review,
+    }
+    ((_, written),) = write_set(fake, _briefs(1))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS
+    assert isinstance(written, WrittenScenario) and written.rewritten and not is_blocked(written)
+
+
+def test_a_reviewers_long_quote_is_shortened_in_the_rewrite_note_and_its_reason_kept_whole() -> None:
+    """Live replay, 30 Oct: the note cut the reviewer's reason mid-word ("This adds a p")."""
+    quote = " ".join(["the attacker could then pivot to the Intelligent Traffic Systems Platform"] * 4)
+    reason = " - This adds a pivot and an exfiltration the threat's name does not state."
+    shown = _within_reask(f'Rule 1: "{quote}"{reason}')
+    assert len(shown) <= AiLimits.REASK_PROBLEM_CHARS and shown.endswith(reason)
+    assert shown.startswith('Rule 1: "the attacker could then pivot') and '…"' in shown
+
+
 def test_a_mismatch_repair_whose_evidence_sentence_cannot_be_cited_is_still_taken() -> None:
     """Keeping a cited sentence guards a link-only relink: a repair clearing a mismatch is taken though its
     sentence cannot be cited (code's own is), never the blocked first draft."""
@@ -711,6 +742,19 @@ def test_a_slot_whose_system_reasons_name_a_system_with_html_entities_is_read_fi
     ((_, written),) = write_set(fake, [("SC1", brief)])  # type: ignore[arg-type]
     assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
     assert isinstance(written, WrittenScenario) and written.draft.system_reasons == ((name, reason),)
+
+
+def test_a_scenario_written_with_html_entities_is_saved_with_its_characters() -> None:
+    """The card shows "Command & Control", never "Command &amp; Control"."""
+    escaped = f"{_CLEAN.statement} The Command &amp; Control Centre could relay the commands."
+    fake = FakeChatModel()
+    fake.responders |= {
+        AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN) | {"scenario_statement": escaped},
+        AiTask.PLAN_CHECK: _review_of,
+    }
+    ((_, written),) = write_set(fake, _briefs(1))  # type: ignore[arg-type]
+    assert isinstance(written, WrittenScenario)
+    assert "Command & Control Centre" in written.draft.statement and "&amp;" not in written.draft.statement
 
 
 def test_a_repeated_links_note_lists_only_the_whole_taken_links_that_fit_a_reask_problem() -> None:

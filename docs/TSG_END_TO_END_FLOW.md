@@ -2215,8 +2215,9 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    had a fault worth asking again, or need a repair (a listed act not carried out, or a `scenario_mismatch`
    told the reviewer's quoted words, D62), each with its own problems, or whose closing sentence links
    to its title in the same words as an earlier clean slot's (`_flag_repeated_links`, D60: told the links taken);
-   then one review call for those slots and the slots whose first review is asked again. A repair or relink is
-   kept only if it fixed the first draft (`_fixes`, §8.5 step 8) and its review is not asked again, and a relink
+   then one review call for those slots and the slots whose first review is asked again. A mismatch repair is
+   kept when it was reviewed and nothing blocks it; a repair or relink only if it fixed the first draft
+   (`_fixes`, §8.5 step 8); either only when its review is not asked again, and a relink
    with no act or mismatch to repair only if its sentence can still be cited; else the reviewed first draft
    stays (a mismatched one is saved blocked and a reserve path follows). A relink whose first review is asked
    again has no reviewed draft to fall back on, so it is not rewritten: its clean draft is reviewed again and
