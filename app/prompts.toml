@@ -198,6 +198,15 @@ set = '''
 
 SET OF SCENARIOS
 The user prompt holds one or more SLOTs (SC1, SC2 ...). Each slot has its own BRIEF and its own EVIDENCE, or a line saying none is given. Write one scenario per slot, applying every rule above to that slot alone: never use another slot's facts, systems, attacker or evidence, and never reuse another slot's title, opening or sentences. A slot label is never part of any text. The eight-field object above is one slot's answer; return {"scenarios": [{"slot": "SC1", "threat": "<that slot's BRIEF.threat.threat, copied>", ...its eight fields}, ...]} with exactly one item per slot.
+A slot with EVIDENCE closes with an evidence_statement in the shape of this made-up example (copy its shape, never its words or names): "evidence_statement": "Forging the trip commands on the relay network matches the technique \"Example Command Forgery\", which the Example group used."
+'''
+# Under a story slot's EVIDENCE when it cites a technique ({title}: the cited title).
+passage = '''
+For this slot, evidence_statement is ONE sentence: open with this slot's attacker's action in the story's own words, then give the title "{title}" in double quotes and who used it, from used_by.
+'''
+# Under a story slot's EVIDENCE when it cites a vulnerability or an advisory.
+passage_about = '''
+For this slot, evidence_statement is ONE sentence: open with this slot's attacker's action in the story's own words, then tie it to the cited entry's facts.
 '''
 # A slot's line when no EVIDENCE is given for it (intelligence off, or nothing citable found).
 no_evidence = '''

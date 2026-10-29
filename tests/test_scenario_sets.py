@@ -243,6 +243,27 @@ def test_each_slot_carries_its_own_evidence_or_its_own_no_evidence_line() -> Non
     assert seen[AiTask.WRITE_SCENARIO] == seen[AiTask.PLAN_CHECK] == {"SC1", "SC2", "SC3"}
 
 
+def test_each_story_slot_repeats_the_evidence_rule_with_its_own_cited_title() -> None:
+    """Laptop e2e, 29 Oct: in a set the writer dropped the evidence rule (no quoted title, or no sentence) in
+    13 of 13 first drafts, each costing a rewrite. A story slot now says it beside its own evidence, with its
+    own title; an original-style slot does not, and the system prompt shows the sentence's shape once."""
+    briefs = [
+        ("SC1", _story_brief(TECHNIQUE)),
+        ("SC2", _story_brief(_GROUPS)),
+        ("SC3", _brief_of(_plan_threat(key="lib:3", name="Threat 3"))),
+    ]
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN), AiTask.PLAN_CHECK: _review_of}
+    list(write_set(fake, briefs))  # type: ignore[arg-type]
+    write = next(prompt for task, prompt in fake.calls if task == AiTask.WRITE_SCENARIO)
+    blocks = dict(slot_blocks(write))
+    rule = "For this slot, evidence_statement is ONE sentence"
+    assert '"Module Firmware" in double quotes' in blocks["SC1"] and rule in blocks["SC1"]
+    assert '"Valid Accounts" in double quotes' in blocks["SC2"] and "Module Firmware" not in blocks["SC2"]
+    assert rule not in blocks["SC3"]
+    assert writer_system_prompt().count("made-up example") == 1
+
+
 def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

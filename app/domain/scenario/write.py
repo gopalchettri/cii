@@ -200,6 +200,8 @@ PLAN_CHECK_SYSTEM_PROMPT: str = PROMPTS["scenario"]["reviewer"]["text"]
 PLAN_CHECK_SET_PROMPT: str = PLAN_CHECK_SYSTEM_PROMPT + PROMPTS["scenario"]["reviewer"]["set"]
 #: A slot's line with intelligence off, or nothing citable found: no evidence is fabricated or implied.
 NO_EVIDENCE: str = _WRITER["no_evidence"].strip()
+_PASSAGE: str = _WRITER["passage"].strip()  # a story slot's evidence sentence, its cited title filled in
+_PASSAGE_ABOUT: str = _WRITER["passage_about"].strip()  # the same for a vulnerability or an advisory
 _REPAIR: str = _WRITER["repair"]  # a slot's listed actions its review found not carried out
 _REWRITE: str = _WRITER["rewrite"]  # a slot's problems in its earlier answer
 _NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"].strip()
@@ -226,8 +228,20 @@ def writer_system_prompt() -> str:
 def writer_slot(label: str, brief: WriterBrief, note: str = "") -> str:
     """One slot of the writer's user prompt: its BRIEF, its evidence or the line saying none is given, and
     any `note` (a rewrite's problems or a repair's actions)."""
-    evidence = evidence_block(brief) if _is_story(brief) else NO_EVIDENCE
+    evidence = f"{evidence_block(brief)}{_passage_line(brief)}" if _is_story(brief) else NO_EVIDENCE
     return f"SLOT {label}\nBRIEF:\n{_brief_text(brief)}\n{evidence}{note}"
+
+
+def _passage_line(brief: WriterBrief) -> str:
+    """Under a story slot's evidence: what its evidence sentence must do, with the cited title it must quote
+    (in a set the writer drops the rule otherwise: 13 of 13 first drafts, 29 Oct)."""
+    cited = _cited_entry(brief)
+    if cited is None:
+        return ""
+    if cited.get("kind") != IntelKind.TECHNIQUE:
+        return f"\n{_PASSAGE_ABOUT}"
+    title = (_safe_facts([str(cited.get("title") or "")]) or [""])[0]
+    return f"\n{_PASSAGE.format(title=title)}" if title else ""
 
 
 def plan_check_slot(label: str, brief: WriterBrief, draft: ScenarioDraft) -> str:
