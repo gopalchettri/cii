@@ -1068,6 +1068,19 @@ def test_an_answer_without_its_summary_is_re_asked_then_fails() -> None:
     assert failed.value.code == ErrorCode.GENERATION_FAILED
 
 
+def test_an_answer_without_its_title_is_kept_and_named_by_code() -> None:
+    """Code names the plan from its controls' domains, else the scenario's title: no re-ask for a title."""
+    untitled = {key: value for key, value in _answer("CII-CID-5", "CII-CID-6").items() if key != "title"}
+    plan, _, chat = _written(untitled)
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 1
+    assert plan["title"] == "Access and Monitoring Remediation"
+    snapshot = _snapshot()
+    for row in snapshot["existing_controls"]["library_mapped"]:
+        row["domain"] = None
+    plan, _, _ = _written(untitled, snapshot=snapshot)
+    assert plan["title"] == SCENARIO["content"]["title"]
+
+
 @pytest.mark.parametrize(
     ("answers", "error", "code"),
     [
