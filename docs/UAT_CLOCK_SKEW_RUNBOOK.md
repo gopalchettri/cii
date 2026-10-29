@@ -53,12 +53,14 @@ From the project folder, logged in with `oc` (reads only):
 python scripts/uat_clock_check.py
 ```
 
-It prints how far MongoDB's, Redis' and every TSG pod's clock is from this computer's, marks each one more than
-2 s off (`--max-skew` changes it) as OFF, and names each node to fix with its `chronyc` command. MongoDB and Redis
-are read from inside the app pods with the app's own connections. Exit code 1 means something is off.
+It checks every pod in every project your login sees, plus MongoDB and Redis (read from inside the app pods with
+the app's own connections). Each difference is said in words ("1 min 18 s ahead") and marked RIGHT or WRONG
+(more than 2 s; `--max-skew` changes it): MongoDB and Redis first, then each project's pods with their node. Under
+"To fix" it names each wrong node with its `chronyc` command, and a wrong MongoDB or Redis server: those run
+outside the cluster, so their own admins turn on time sync. Exit code 1 means something is wrong.
 
-Without Python, from a Linux shell or the OpenShift web terminal, logged in with `oc`. It prints each pod's node and how far its
-clock is from the shell's; within about ±2 s is fine.
+Without Python, from a Linux shell or the OpenShift web terminal, logged in with `oc`. It prints each pod's node
+and how far its clock is from the shell's; within about ±2 s is fine.
 
 ```
 NS=ai-threatgen; for p in $(oc get pods -n $NS -o name); do here=$(date -u +%s); there=$(oc exec -n $NS ${p#pod/} -- date -u +%s 2>/dev/null); node=$(oc get $p -n $NS -o jsonpath='{.spec.nodeName}'); if [ -n "$there" ]; then echo "$p node=$node pod_minus_here=$((there-here))s"; else echo "$p node=$node (no date command)"; fi; done
