@@ -36,7 +36,7 @@ _TYPOGRAPHY: Final = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '
 _ALLOWED: Final = frozenset(string.ascii_letters + string.digits + " .,;:!?'\"()[]-_/%+=<>*&#@|")
 
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
-_BLOCK = re.compile(r"<(script|style)\b[^>]*>.*?(?:</\1\s*>|\Z)", re.DOTALL | re.IGNORECASE)
+_BLOCK = re.compile(r"<(script|style)\b[^<>]*>.*?(?:</\1\s*>|\Z)", re.DOTALL | re.IGNORECASE)
 _TAG = re.compile(r"</?[A-Za-z!?][^<>]{0,300}>")
 _IMAGE = re.compile(r"!\[[^\]]{0,300}\]\([^)]{0,2000}\)")
 _LINK = re.compile(r"\[([^\]]{0,300})\]\([^)]{0,2000}\)")

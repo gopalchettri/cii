@@ -23,7 +23,7 @@ _AI = r"(?:ai|llm|language\s+model|assistant|model|chatgpt|gpt|claude|copilot|ge
 #: The start of an order: a text or sentence start, or the comma / "please" / "you must" before the verb.
 #: A verb that follows a subject ("An attacker could act as ...") is a description, not an order.
 _ORDER = (
-    r"(?:^|[.!?;:,\n]\s*|\bplease\s+|\byou\s+(?:must|should|will|can|may|need\s+to|have\s+to)\s+)"
+    r"(?:^|[.!?;:,\n][^\S\n]*|\bplease\s+|\byou\s+(?:must|should|will|can|may|need\s+to|have\s+to)\s+)"
     r"(?:(?:now|then|just)\s+)?"
 )
 _CLEAR_THING = r"(?:asset|assets|system|systems|device|devices|product|products|network|networks|it)"
@@ -40,7 +40,7 @@ _OF_THE_MODEL = (
     r"(?:your|its|my|our|above|previous|prior|preceding|hidden|secret|system|developer|initial|original"
     r"|full|entire|exact|given)"
 )
-_PROMPT_NAME = r"\b(?:system|developer|hidden|initial|original|secret)\s+(?:prompt|message|instructions?)\b"
+_PROMPT_NAME = r"\b(?:system|developer|hidden|initial|original|secret)\s+(?:prompt|messages?|instructions?)\b"
 _REVEAL_PROMPT = (
     rf"\b(?:reveal|repeat|print|show|leak|disclose|display)\b(?:\W+\w+){{0,4}}?\W+{_OF_THE_MODEL}\b"
     r"(?:\W+\w+){0,2}?\W+(?:prompt|instructions?|rules)\b"
@@ -50,20 +50,28 @@ _REVEAL_PROMPT = (
 )
 #: Ingest, the trust boundary (a hit quarantines one record): any "system prompt / message / instructions".
 _PROMPT_REFERENCE = rf"{_PROMPT_NAME}|{_REVEAL_PROMPT}"
-_OS_PROMPT = r"operating[\s-]system\s+(?:prompt|message|instructions?)\b"
+_OS_PROMPT = r"operating[\s-]system\s+(?:prompt|messages?|instructions?)\b"
+#: The echo check's own name of the model's prompt: a computer's "operating system ..." is skipped (not
+#: "cooperating system ...", nor "operating hidden prompt").
+_ECHO_PROMPT_NAME = (
+    r"\b(?:(?<!\boperating[\s-])system|developer|hidden|initial|original|secret)\s+"
+    r"(?:prompt|messages?|instructions?)\b"
+)
+#: Whose prompt a possessive names: a backup agent's or a scheduler bot's instructions are a computer's.
+_AI_OWNER = r"(?:ai|llm|language\s+model|assistant|model|chatgpt|gpt|claude|copilot|gemini|writer)"
 #: The writer's echo check (a hit blocks a scenario): a computer's "operating system prompt / message /
 #: instructions" in an attack story is skipped unless said to the model: "your" or "the model's" just before
 #: it, "you" just after it, or an order to output it.
 _ECHO_PROMPT_REFERENCE = (
-    rf"(?<!operating[\s-]){_PROMPT_NAME}|{_REVEAL_PROMPT}"
-    rf"|\b(?:your|{_AI}['’]s)\b(?:\W+\w+){{0,3}}?\W+{_OS_PROMPT}"
+    rf"{_ECHO_PROMPT_NAME}|{_REVEAL_PROMPT}"
+    rf"|\b(?:your|{_AI_OWNER}['’]s)\b(?:\W+\w+){{0,3}}?\W+{_OS_PROMPT}"
     rf"|{_OS_PROMPT}(?:\W+\w+){{0,3}}?\W+(?:you|your)\b"
     rf"|\b(?:reveal|repeat|print|leak|disclose|output|quote)\b(?:\W+\w+){{0,2}}?\W+{_OS_PROMPT}"
 )
-_ROLE_MARKER = r"(?:^|[.!?:;]\s|\n|[\[(<\"'])\s*(?:system|assistant|human|developer|ai|bot)\s*:"
+_ROLE_MARKER = r"(?:^|[.!?:;]\s|\n|[\[(<\"'])[^\S\n]*(?:system|assistant|human|developer|ai|bot)\s*:"
 _CHAT_TEMPLATE = (
     r"<\|[^|>\s]{1,30}\|>|\[/?(?:inst|sys)\]|<</?sys>>"
-    r"|\#{2,}\s*(?:instruction|system|response|input|human|assistant|user)\b"
+    r"|(?<!\#)\#{2,}\s*(?:instruction|system|response|input|human|assistant|user)\b"
     r"|</?(?:s|system|assistant|user|human|prompt|instructions?|tool_call|function_call)>"
 )
 _TOOL_MARKERS = r"\b(?:function_call|tool_calls?|tool_use|tool_result|tool_name)\b"
