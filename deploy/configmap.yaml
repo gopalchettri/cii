@@ -28,7 +28,7 @@ items:                                           # one tsg-config per project th
       labels: { part-of: tsg }                   # marks it as TSG's
     data: &settings                              # "&settings" names this block: ai-common's copy below reuses it unchanged
       CII_ENV: "uat"                             # environment name; anything but "dev" gets production's safety checks
-      CII_CORS_ORIGINS: "https://threatgen-api.apps.dda-desc-az1-01.desccii.local"   # the platform UI's https address(es), comma-separated; "*" stops start-up
+      CII_CORS_ORIGINS: "https://threatgen-api.apps.dda-desc-az1-01.desccii.local"   # the platform UI's https address(es), comma-separated; "*" (any) is accepted in UAT, stops start-up in prod
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
       CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
       # Each module's own chat model (.env.example explains every line; its key is in tsg-secrets). Its limits are

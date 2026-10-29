@@ -224,11 +224,11 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     @model_validator(mode="after")
     def refuse_unsafe_settings_outside_dev(self) -> "Settings":
         """UAT and production refuse settings that are only acceptable on a laptop: start-up stops with the
-        reason instead of running open."""
+        reason instead of running open. A "*" CORS origin is refused in production only."""
         if self.env is Env.DEV:
             return self
-        if "*" in self.cors_origin_list:
-            raise ValueError(ErrorMessage.CORS_WILDCARD_OUTSIDE_DEV)
+        if self.env is Env.PROD and "*" in self.cors_origin_list:
+            raise ValueError(ErrorMessage.CORS_WILDCARD_IN_PROD)
         admin_key = self.admin_api_key.get_secret_value()
         if admin_key and len(admin_key) < Limits.MIN_ADMIN_KEY_CHARS:
             raise ValueError(ErrorMessage.ADMIN_KEY_TOO_SHORT.format(minimum=Limits.MIN_ADMIN_KEY_CHARS))

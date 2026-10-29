@@ -168,7 +168,7 @@ UAT works again here. But a later deployment would bring back the old settings, 
   and must be done **before** the new app starts: runs the new app starts on the old procedure keep only their named
   systems for good, and the deploy does not check it. Get the DBA's confirmation.
 - **`CII_CORS_ORIGINS` must be a real address.** In `deploy\configmap.yaml` replace `CHANGE_ME_UI_ORIGIN` with the
-  real address(es) of the platform UI (guide step 8). `*` stops the app at start.
+  real address(es) of the platform UI (guide step 8). `*` (any web page) is accepted in UAT and stops the app in prod.
 - **The monitoring images must be in Quay** (guide step 3). Step 5 also installs the monitoring in `ai-common` (D24)
   and removes the one in `ai-remediation`. Guide step 3 builds these images on Red Hat UBI 9 and pushes them to
   `quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc`: `prometheus:v3.15.0`, `alertmanager:v0.34.1`,

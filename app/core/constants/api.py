@@ -84,9 +84,7 @@ class ErrorMessage(StrEnum):
         "Worker pool '{pool}' is not supported: start the worker with --pool=threads (or solo to debug)."
     )
     WORKER_START_FAILED = "The worker cannot start: {reason}"
-    CORS_WILDCARD_OUTSIDE_DEV = (
-        "CII_CORS_ORIGINS may not contain * outside dev: list the platform UI origins."
-    )
+    CORS_WILDCARD_IN_PROD = "CII_CORS_ORIGINS may not contain * in prod: list the platform UI origins."
     ADMIN_KEY_TOO_SHORT = "CII_ADMIN_API_KEY must be at least {minimum} characters outside dev."
     LOCAL_RERANKER_MISSING = (
         "CII_RERANK_BASE_URL is empty, so the reranker ({model}) runs on this machine, and it needs the "

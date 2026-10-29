@@ -191,10 +191,13 @@ def test_operational_limits_come_from_the_environment(monkeypatch: pytest.Monkey
         Settings()  # type: ignore[call-arg]
 
 
-@pytest.mark.parametrize("env", [Env.UAT, Env.PROD])
-def test_outside_dev_a_wildcard_cors_origin_stops_start_up(env: Env) -> None:
+def test_in_prod_a_wildcard_cors_origin_stops_start_up() -> None:
     with pytest.raises(ValidationError, match="CII_CORS_ORIGINS"):
-        _settings(env=env, cors_origins="*", admin_api_key="a" * 40)
+        _settings(env=Env.PROD, cors_origins="*", admin_api_key="a" * 40)
+
+
+def test_uat_accepts_a_wildcard_cors_origin() -> None:
+    assert _settings(env=Env.UAT, cors_origins="*", admin_api_key="a" * 40).cors_origin_list == ["*"]
 
 
 def test_outside_dev_a_short_admin_key_stops_start_up() -> None:

@@ -611,13 +611,13 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
 
 def test_the_pods_settings_load_and_a_wildcard_origin_stops_them(monkeypatch: pytest.MonkeyPatch) -> None:
     """A pod builds its settings from tsg-config and tsg-secrets alone: a missing required setting, a short
-    admin key or a "*" CORS origin would stop every pod at start-up, so it must fail here first."""
+    admin key or a "*" CORS origin in prod would stop every pod at start-up, so it must fail here first."""
     monkeypatch.setenv("TSG_TEST_SENTINEL", "kept")
     environment = _settings() | _secrets()
     assert _load_settings(environment).ai_bypass_proxy is True
     assert environment["CII_CORS_ORIGINS"] != "*"
     with pytest.raises(ValidationError):
-        _load_settings(environment | {"CII_CORS_ORIGINS": "*"})
+        _load_settings(environment | {"CII_CORS_ORIGINS": "*", "CII_ENV": "prod"})
     assert os.environ["TSG_TEST_SENTINEL"] == "kept"  # this process's environment is put back
 
 
