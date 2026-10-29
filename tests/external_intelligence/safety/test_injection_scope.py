@@ -44,6 +44,8 @@ LEGITIMATE = [
     "Phishing messages pretend to be a delivery notice.",
     "An attacker with network access could answer as the legitimate server to a request.",
     "The tool is used to run the command and return the output to the operator.",
+    # laptop e2e, 30 Oct: an injection story was blocked as an echo for its computer's instructions
+    "The attacker could insert crafted database commands or operating system instructions into the form.",
 ]  # fmt: skip
 
 #: Real injection payloads, among them the ones typed into names and descriptions by the hostile review.

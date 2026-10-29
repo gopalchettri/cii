@@ -40,8 +40,9 @@ _OF_THE_MODEL = (
     r"(?:your|its|my|our|above|previous|prior|preceding|hidden|secret|system|developer|initial|original"
     r"|full|entire|exact|given)"
 )
+#: "Operating system instructions" are a computer's, never the model's prompt (an injection story says it).
 _PROMPT_REFERENCE = (
-    r"\b(?:system|developer|hidden|initial|original|secret)\s+(?:prompt|message|instructions?)\b"
+    r"(?<!operating\s)\b(?:system|developer|hidden|initial|original|secret)\s+(?:prompt|message|instructions?)\b"
     rf"|\b(?:reveal|repeat|print|show|leak|disclose|display)\b(?:\W+\w+){{0,4}}?\W+{_OF_THE_MODEL}\b"
     r"(?:\W+\w+){0,2}?\W+(?:prompt|instructions?|rules)\b"
     r"|\b(?:reveal|repeat|print|leak|disclose)\s+(?:me\s+)?(?:the\s+)?(?:prompt|rules)\b"
