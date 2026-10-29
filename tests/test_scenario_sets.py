@@ -279,10 +279,14 @@ def test_each_story_slot_repeats_the_evidence_rule_with_its_own_cited_title() ->
     assert all("in words no other slot uses" in blocks[label] for label in ("SC1", "SC2"))
     system = writer_system_prompt()
     assert "made-up example" not in system and "matches the technique" not in system
-    assert "nor any phrase of another slot's evidence_statement: how it links its step to its" in system
+    assert "nor how another slot's evidence_statement links its step to its entry" in system
     # laptop e2e, 30 Oct: 8 of 13 sentences paraphrased their system, 5 ended "a technique used by"
     assert all("naming its system or asset as BRIEF does" in blocks[label] for label in ("SC1", "SC2"))
-    assert "name who used it (from used_by) where it reads best" in blocks["SC1"]
+    # review, 30 Oct: two slots citing one group could not both copy used_by (rule 10) and name it in words
+    # no other slot uses; only the linking words differ, the names are always copied
+    assert "(who used it is copied exactly from used_by: only the linking words differ)" in system
+    assert "where it reads best, copy who used it exactly from used_by" in blocks["SC1"]
+    assert "name who used it (from used_by)" not in blocks["SC1"] and "names who used it" not in system
 
 
 @pytest.mark.parametrize(
@@ -320,6 +324,8 @@ _FORM_OF = (
     'Signing in to the SCADA server with the maintenance login is a form of "Valid Accounts", a technique '
     "the APT41 and FIN8 groups have used."
 )
+#: A rewrite's closing sentence code cannot cite (it says "documented").
+_DOCUMENTED = _FORM_OF.replace("a technique the APT41 and FIN8 groups have used", "as documented")
 _KEV_CLOSING = "Exploiting that WinCC weakness on the SCADA server could let the attacker in, as CISA lists."
 
 
@@ -332,15 +338,22 @@ def _story_set() -> list[tuple[str, Any]]:
     return [("SC1", _story_brief(TECHNIQUE)), ("SC2", _story_brief(_GROUPS))]
 
 
+def _confirmed(block: str) -> dict[str, Any]:
+    """A clean review confirming the closing sentence."""
+    return _review_of(block) | {"evidence_supported": True}
+
+
 def _write_stories(
-    briefs: list[tuple[str, Any]], closing: Callable[[str], str]
+    briefs: list[tuple[str, Any]], closing: Callable[[str], str], reviews: Iterable[Any] = ()
 ) -> tuple[FakeChatModel, dict[str, WrittenScenario | PathFailure], dict[str, int]]:
-    """The set written with each slot's closing sentence from `closing` (its block) and every one confirmed:
-    the fake, each slot's outcome, and how many calls were made when it came out."""
+    """The set written with each slot's closing sentence from `closing` (its block) and every one confirmed,
+    but for the slots answered first by the queued `reviews`: the fake, each slot's outcome, and how many
+    calls were made when it came out."""
     fake = FakeChatModel()
+    fake.queue(AiTask.PLAN_CHECK, *reviews)
     fake.responders |= {
         AiTask.WRITE_SCENARIO: lambda block: draft_answer(_CLEAN) | {"evidence_statement": closing(block)},
-        AiTask.PLAN_CHECK: lambda block: _review_of(block) | {"evidence_supported": True},
+        AiTask.PLAN_CHECK: _confirmed,
     }
     outcomes: dict[str, WrittenScenario | PathFailure] = {}
     calls_when_final: dict[str, int] = {}
@@ -426,7 +439,7 @@ def _busy() -> str:
 
 @pytest.mark.parametrize(
     "rewrite",
-    [lambda: _FORM_OF.replace("a technique the APT41 and FIN8 groups have used", "as documented"), _busy],
+    [lambda: _DOCUMENTED, _busy],
     ids=["rewrite_not_citable", "outage"],
 )
 def test_a_relinked_slot_keeps_its_reviewed_cited_draft_when_its_rewrite_does_worse(
@@ -443,6 +456,74 @@ def test_a_relinked_slot_keeps_its_reviewed_cited_draft_when_its_rewrite_does_wo
     assert isinstance(second, WrittenScenario) and second.findings == () and not second.rewritten
     assert second.plan_check.status is PlanCheckStatus.CONSISTENT
     assert second.draft.evidence_statement == _MATCHES["Valid Accounts"]
+
+
+@pytest.mark.parametrize(
+    ("rewrite", "closing"),
+    [({"evidence_statement": _FORM_OF}, _FORM_OF), ({"entry_point": "Laptop"}, _MATCHES["Valid Accounts"])],
+    ids=["rewritten", "rewrite_unreadable"],
+)
+def test_a_relinked_slot_whose_review_is_asked_again_is_still_written_again(
+    rewrite: dict[str, Any], closing: str
+) -> None:
+    """Review, 30 Oct: SC2 linked like SC1 and its first review was unusable, so it was reviewed again but
+    never written again and its repeated link was cited. It now goes to the one rewrite, told the link taken;
+    an unreadable rewrite leaves its draft, reviewed in the second round."""
+
+    def write(block: str) -> dict[str, Any]:
+        answer = draft_answer(_CLEAN) | {"evidence_statement": _MATCHES[_title_of(block)]}
+        return answer | (rewrite if "REJECTED:" in block else {})
+
+    fake = FakeChatModel()
+    fake.queue(AiTask.PLAN_CHECK, _confirmed, {"rules": "?"})
+    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _confirmed}
+    second = dict(write_set(fake, _story_set()))["SC2"]  # type: ignore[arg-type]
+    (note,) = fake.asked(AiTask.REPAIR_SCENARIO)
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS and _labels(note) == ["SC2"]
+    assert 'with "matches the technique" like another slot' in note.split("REJECTED:")[1]
+    assert isinstance(second, WrittenScenario) and second.findings == () and not second.rewritten
+    assert second.plan_check.status is PlanCheckStatus.CONSISTENT
+    assert second.draft.evidence_statement == closing
+
+
+_HIDE = "hiding the change"
+
+
+def _relinked_acting_slot(first_review: dict[str, Any]) -> tuple[str, WrittenScenario | PathFailure]:
+    """SC2 lists two actions and links like SC1, its first review `first_review`; its rewrite carries out
+    both but says "documented": SC2's rewrite prompt and its outcome."""
+    acting = dataclasses.replace(_story_brief(_GROUPS), threat_actions=(_ACT, _HIDE))
+    fake, outcomes, _ = _write_stories(
+        [("SC1", _story_brief(TECHNIQUE)), ("SC2", acting)],
+        lambda block: _DOCUMENTED if "REJECTED:" in block else _MATCHES[_title_of(block)],
+        reviews=(_confirmed, _CONSISTENT | {"evidence_supported": True} | first_review),
+    )
+    (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS and _labels(rewrite) == ["SC2"]
+    return rewrite, outcomes["SC2"]
+
+
+def test_a_relinked_slot_whose_consistent_review_left_an_action_unjudged_is_told_only_its_link() -> None:
+    """Review, 30 Oct: a consistent review judging one of SC2's two listed actions left the other "not
+    carried out", so SC2's relink was told to repair it and, its link no longer the only ask, a rewrite whose
+    sentence cannot be cited replaced its reviewed, cited first draft. Only an inconsistent review repairs."""
+    rewrite, second = _relinked_acting_slot({"threat_actions": {_ACT: "carried out"}})
+    assert "REVIEW:" not in rewrite and "like another slot" in rewrite.split("REJECTED:")[1]
+    assert isinstance(second, WrittenScenario) and second.findings == () and not second.rewritten
+    assert second.plan_check.status is PlanCheckStatus.CONSISTENT
+    assert second.draft.evidence_statement == _MATCHES["Valid Accounts"]
+
+
+def test_a_relinked_slot_with_an_action_to_repair_is_told_both_and_its_repair_is_kept() -> None:
+    """SC2 links like SC1 and its review finds a listed action not carried out: its rewrite is told both,
+    the action then the link, and a repair carrying the action out is kept though its sentence cannot be
+    cited (code's own is): the link was not the only ask."""
+    rewrite, second = _relinked_acting_slot({"threat_actions": {_ACT: "carried out", _HIDE: "missing"}})
+    review, rejected = rewrite.split("REVIEW:")[1].split("REJECTED:")
+    assert f'were not carried out: "{_HIDE}".' in review and "like another slot" in rejected
+    assert isinstance(second, WrittenScenario) and second.rewritten
+    assert second.plan_check.status is PlanCheckStatus.CONSISTENT and second.draft.evidence_statement == ""
+    assert [finding.code for finding in second.findings] == [FindingCode.CITATION_REMOVED]
 
 
 def test_a_blocked_slot_claims_no_link() -> None:

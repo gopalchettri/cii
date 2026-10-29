@@ -494,9 +494,20 @@ def test_the_reask_fits_one_reask_problem_whatever_its_reason() -> None:
         ('APT41 and FIN8 have used the "Valid Accounts" technique to sign in this way.', _GROUPS, "evidence"),
         ('Threat groups such as APT41 have used the "Valid Accounts" technique.', _GROUPS, "evidence"),
         ('Malware such as the FIN8 tools has used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('Malware, such as the FIN8 tools, has used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('A malware family called NKAbuse has used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('Malware families including NKAbuse have used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('Malware tools like those of FIN8 have used the "Valid Accounts" technique.', _GROUPS, "evidence"),
+        ('Malware associated with APT41 has used the "Valid Accounts" technique.', _GROUPS, "evidence"),
         (
             'Malware planted on the SCADA server through a shared drive is a form of "Valid Accounts", a '
             "technique the APT41 group has used.",
+            _GROUPS,
+            "",
+        ),
+        (
+            "The malware used by the attacker to sign in to the SCADA server is a form of "
+            '"Valid Accounts", a technique the APT41 group has used.',
             _GROUPS,
             "",
         ),
@@ -509,7 +520,13 @@ def test_the_reask_fits_one_reask_problem_whatever_its_reason() -> None:
         "opens_on_users",
         "opens_on_groups",
         "opens_on_malware",
+        "opens_on_malware_comma",  # review, 30 Oct: these five evidence-first openings passed the check
+        "opens_on_malware_called",
+        "opens_on_malware_including",
+        "opens_on_malware_tools_like",
+        "opens_on_malware_associated",
         "malware_step",  # review, 30 Oct: rule 10 invites a noun phrase, so "Malware planted on ..." opens
+        "malware_used_by_the_attacker",  # review, 30 Oct: this attacker's step was refused
         "documented",
     ],
 )

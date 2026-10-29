@@ -2215,7 +2215,9 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    had a fault worth asking again, or need a repair, each with its own problems, or whose closing sentence links
    to its title in the same words as an earlier clean slot's (`_flag_repeated_links`, D60: told the links taken);
    then one review call for those slots. A repair or relink is kept only if it fixed the first draft (`_fixes`,
-   §8.5 step 8), and a relink only if its sentence can still be cited; else the reviewed first draft stays. A slot still unusable keeps
+   §8.5 step 8), and a relink with no action to repair only if its sentence can still be cited; else the
+   reviewed first draft stays. A relink whose first review is asked again is rewritten too; its draft stays
+   only if the rewrite is unusable. A slot still unusable keeps
    its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
    round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's or relink's first draft; any other draft checked,
    with `plan_check_not_made` naming the outage when it has no review); only a slot with no usable draft keeps
@@ -2729,8 +2731,10 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
       "cited"; quoted titles aside): 'it says "{words}"';
    5. it is more than one sentence: "it is more than one sentence";
    6. for a technique only: the title is not in double quotes (straight or curly), or the passage opens with the
-      title, a user, "the technique", "threat groups" or "malware": 'it does not give the title …' / "it opens
-      with the evidence, not with this attacker's action";
+      title, a user, "the technique", "threat groups" or malware named as evidence ("Malware, such as …",
+      "A malware family called …"; "Malware planted on …" and "The malware used by the attacker …" are
+      steps): 'it does not give the title …' / "it opens with the evidence, not with this attacker's
+      action";
    7. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
       reviewer did not confirm it against its source".
 2. A problem blanks the passage and adds a `citation_removed` **warning**, never a blocker: "The writer's

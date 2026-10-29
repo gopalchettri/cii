@@ -601,11 +601,13 @@ _STOCK_WORDS = re.compile(
     r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
 )
 #: A closing sentence that opens with the evidence itself instead of this attacker's action: the technique,
-#: threat groups, or malware named as evidence ("Malware such as ..."; "Malware planted on ..." is a step).
+#: threat groups, or malware named as evidence ("Malware, such as ..."; "Malware planted on ..." and "The
+#: malware used by the attacker ..." are steps).
 _EVIDENCE_OPENER = re.compile(
     r"(?:the |a |an )?(?:related )?(?:technique|threat (?:groups?|actors?))\b"
-    r"|(?:the )?(?:malicious software|malware)(?: famil(?:y|ies))?\s+(?:such as|called|named|like|known as"
-    r"|used by)\b",
+    r"|(?:the |a |an )?(?:malicious software|malware)(?:\s+(?:famil(?:y|ies)|tools?|strains?))?,?\s+"
+    r"(?:such as|called|named|like|known as|including|associated with"
+    r"|used by(?!\s+(?:the|this)\s+attacker))\b",
     re.IGNORECASE,
 )
 _QUOTED = re.compile(r'"[^"]*"')
@@ -715,7 +717,7 @@ def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, Wr
     """One rewrite call for the slots to write again (each told its problems or its repair), then one review
     call for every slot with a draft to judge. On an outage each slot keeps its usable draft (_firsts_kept);
     one with none raises."""
-    rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
+    rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first or slot.relink]
     try:
         blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
         answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, writer_system_prompt(), blocks, "scenarios")
@@ -841,17 +843,22 @@ def _first_round_end(slot: _Slot) -> WrittenScenario | None:
     if slot.draft is None or slot.problems or slot.review_problems:
         return None
     written = _checked(slot)
-    check = written.plan_check
-    if slot.relink or (check.status is PlanCheckStatus.INCONSISTENT and check.actions_not_carried_out):
+    if slot.relink or _listed_actions(written.plan_check):
         slot.first = written
         return None
     return written
 
 
+def _listed_actions(check: PlanCheck) -> tuple[str, ...]:
+    """The listed actions to repair: those an inconsistent review found not carried out; none for a
+    consistent review, whose unjudged actions are never repaired."""
+    return check.actions_not_carried_out if check.status is PlanCheckStatus.INCONSISTENT else ()
+
+
 def _note(slot: _Slot) -> str:
-    """What a slot's rewrite is told: the listed actions its review found not carried out and its repeated
-    link, else its earlier answer's problems."""
-    actions = slot.first.plan_check.actions_not_carried_out if slot.first else ()
+    """What a slot's rewrite is told: the listed actions to repair and its repeated link, else its earlier
+    answer's problems."""
+    actions = _listed_actions(slot.first.plan_check) if slot.first else ()
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in actions)
     problems = (*slot.problems, slot.relink) if slot.relink else slot.problems
     shown = (problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in problems[: AiLimits.REASK_MAX_PROBLEMS])
@@ -885,7 +892,7 @@ def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
         log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", message="; ".join(slot.problems))
         return first
     repair = _checked(slot)
-    link_only = not first.plan_check.actions_not_carried_out
+    link_only = not _listed_actions(first.plan_check)
     lost = link_only and bool(first.draft.evidence_statement) and not repair.draft.evidence_statement
     fixed = _fixes(repair, first) and not lost
     log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
