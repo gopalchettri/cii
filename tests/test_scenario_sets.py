@@ -673,6 +673,33 @@ def test_a_mismatch_repair_breaking_another_rule_is_taken_over_the_blocked_first
     assert isinstance(written, WrittenScenario) and written.rewritten and not is_blocked(written)
 
 
+def test_a_mismatch_rewrite_is_told_the_reviewers_whole_reason_and_most_of_its_quote() -> None:
+    """Review, 30 Oct: the reviewer's problem was cut at 300 characters before the note shortened its quote,
+    so a 217-character quote lost its reason ("...than the plan's cr…")."""
+    quote = f"{_LATER_USE} " + " ".join(
+        ["They could also reuse the session on every connected workstation."] * 3
+    )
+    reason = "This adds a later use of the stolen access, which is a different threat than the plan's one."
+    review_of = {"same_threat": False, "rules": {"1": f'broken: "{quote}" - {reason}'}}
+
+    def review(block: str) -> dict[str, Any]:
+        return _confirmed(block) | (review_of if _LATER_USE in block else {})
+
+    fake = FakeChatModel()
+    fake.responders |= {
+        AiTask.WRITE_SCENARIO: lambda block: (
+            draft_answer(_CLEAN) if "REJECTED:" in block else _with_later_use(block)
+        ),
+        AiTask.PLAN_CHECK: review,
+    }
+    list(write_set(fake, _briefs(1)))  # type: ignore[arg-type]
+    (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
+    told = rewrite.split("REJECTED:")[1]
+    assert f"- {reason}" in told
+    shown_quote = told.split('Rule 1: "')[1].split('…"')[0]
+    assert len(shown_quote) > 150  # a mismatch keeps a stored problem's size, not a re-ask's 200
+
+
 def test_a_reviewers_long_quote_is_shortened_in_the_rewrite_note_and_its_reason_kept_whole() -> None:
     """Live replay, 30 Oct: the note cut the reviewer's reason mid-word ("This adds a p")."""
     quote = " ".join(["the attacker could then pivot to the Intelligent Traffic Systems Platform"] * 4)

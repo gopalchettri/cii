@@ -892,9 +892,12 @@ def _note(slot: _Slot) -> str:
     answer's problems and its repeated link."""
     actions = _listed_actions(slot.first.plan_check) if slot.first else ()
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in actions)
-    mismatch = _mismatch_problems(slot.first) if slot.first else ()
-    problems = (*mismatch, *slot.problems, *((slot.relink,) if slot.relink else ()))
-    shown = (_within_reask(problem) for problem in problems[: AiLimits.REASK_MAX_PROBLEMS])
+    # a mismatch's review is its rewrite's whole instruction: it keeps a stored problem's size
+    reviewed = _mismatch_problems(slot.first) if slot.first else ()
+    mismatch = [_within_reask(problem, Writing.PROBLEM_MAX_CHARS) for problem in reviewed]
+    others = [_within_reask(p) for p in (*slot.problems, *((slot.relink,) if slot.relink else ()))]
+    problems = (*mismatch, *others)
+    shown = problems[: AiLimits.REASK_MAX_PROBLEMS]
     repair = _REPAIR.replace("{actions}", listed) if actions else ""
     return repair + (_REWRITE.replace("{problems}", "; ".join(shown)) if problems else "")
 
@@ -904,10 +907,9 @@ _QUOTED_PROBLEM = re.compile(r'(?P<rule>Rule \d+: )"(?P<quote>.*)"(?P<reason> - 
 _LEAST_QUOTE_CHARS = 30  # a shorter quote no longer finds its sentence
 
 
-def _within_reask(problem: str) -> str:
-    """A re-ask problem within AiLimits.REASK_PROBLEM_CHARS, cut at a word: a reviewer's long quote is
-    shortened so its reason stays whole."""
-    most = AiLimits.REASK_PROBLEM_CHARS
+def _within_reask(problem: str, most: int = AiLimits.REASK_PROBLEM_CHARS) -> str:
+    """A problem within `most` characters, cut at a word: a reviewer's long quote is shortened so its
+    reason stays whole."""
     if len(problem) <= most:
         return problem
     parts = _QUOTED_PROBLEM.fullmatch(problem)
@@ -1055,7 +1057,7 @@ def _broken_rules(answer: PlanCheckAnswer) -> tuple[str, ...]:
         for number, verdict in answer.rules.items()
         if verdict.strip().casefold().startswith("broken") and number.strip() not in Writing.RETIRED_RULES
     )
-    return tuple(shorten_text(problem, Writing.PROBLEM_MAX_CHARS) for problem in (*not_done, *broken))[
+    return tuple(_within_reask(problem, Writing.PROBLEM_MAX_CHARS) for problem in (*not_done, *broken))[
         : Writing.MAX_PLAN_PROBLEMS
     ]
 
