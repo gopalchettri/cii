@@ -40,9 +40,14 @@ _OF_THE_MODEL = (
     r"(?:your|its|my|our|above|previous|prior|preceding|hidden|secret|system|developer|initial|original"
     r"|full|entire|exact|given)"
 )
-#: "Operating system instructions" are a computer's, never the model's prompt (an injection story says it).
+_OPERATING_SYSTEM_INSTRUCTIONS = r"operating\s+system\s+instructions?\b"
+#: "Operating system instructions" are a computer's (an injection story says it), unless said to the model:
+#: "your ... operating system instructions", "operating system instructions you were given".
 _PROMPT_REFERENCE = (
-    r"(?<!operating\s)\b(?:system|developer|hidden|initial|original|secret)\s+(?:prompt|message|instructions?)\b"
+    r"\b(?:system|developer|hidden|initial|original|secret)\s+"
+    r"(?:prompt|message|(?<!operating\ssystem\s)instructions?)\b"
+    rf"|\byour\b(?:\W+\w+){{0,3}}?\W+{_OPERATING_SYSTEM_INSTRUCTIONS}"
+    rf"|\b{_OPERATING_SYSTEM_INSTRUCTIONS}\s+(?:that\s+)?you\s+(?:were\s+given|received|have|got)\b"
     rf"|\b(?:reveal|repeat|print|show|leak|disclose|display)\b(?:\W+\w+){{0,4}}?\W+{_OF_THE_MODEL}\b"
     r"(?:\W+\w+){0,2}?\W+(?:prompt|instructions?|rules)\b"
     r"|\b(?:reveal|repeat|print|leak|disclose)\s+(?:me\s+)?(?:the\s+)?(?:prompt|rules)\b"
