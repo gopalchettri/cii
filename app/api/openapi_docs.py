@@ -3,6 +3,7 @@ tester sets up and tests (ApiTag). Text only: no behaviour lives here."""
 
 from typing import Any
 
+from app.api.openapi_ai_usage import AI_USAGE_GROUP
 from app.core.constants import ApiTag
 
 API_DESCRIPTION = """
@@ -52,11 +53,7 @@ _GROUPS: dict[ApiTag, str] = {
         "service), review each relationship, and regenerate to add more. Requires the caller identity "
         "headers."
     ),
-    ApiTag.AI_USAGE: (
-        "How many AI calls each module, API call, session and request made, per part of the work "
-        "(threats, scenario, controls, remediation, service mapper) and per model, successful and failed, "
-        "with each activity's name and description. Counts only. No key."
-    ),
+    ApiTag.AI_USAGE: AI_USAGE_GROUP,
 }
 
 #: Swagger shows the groups in this order (ApiTag's).

@@ -18,6 +18,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel
 
+from app.api.openapi_ai_usage import (
+    CALLS_DOCS,
+    EXAMPLE_REQUEST_ID,
+    REQUEST_DOCS,
+    REQUESTS_DOCS,
+    TOTALS_DOCS,
+)
 from app.container import get_ai_usage_service
 from app.core.constants import AiUsageLimits, AiUsageMessage, ApiTag
 from app.core.exceptions import Unavailable
@@ -92,23 +99,17 @@ def _rendered_if_kept(shape: type[BaseModel], kept: Callable[[], dict[str, Any] 
     return None if report is None else _rendered(shape, report)
 
 
-@router.get("", response_model=UsageTotals, summary="1. AI calls added up (dashboards)")
+@router.get("", response_model=UsageTotals, summary="1. AI calls added up (dashboards)", **TOTALS_DOCS)
 async def read_ai_usage_totals(query: Annotated[UsageTotalsQuery, Query()], service: Usage) -> Response:
-    """Counts per `group_by` (default module and API call; also hour, day, month, bucket, task, model,
-    entity_id, client_id) over `since`..`until` (default the last 30 days, at most 366) in `tz`: AI calls,
-    successful, failed, API calls (`requests`), tokens, and each part (threats, scenario, controls,
-    remediation, service_mapper). Kept per hour, up to 5 minutes behind; cached 60 s."""
+    """AI calls added up per `group_by` over a time range (Swagger's text: TOTALS_DOCS)."""
     return await _report(
         UsageTotals, lambda: service.summarize_ai_usage(query), lambda: service.kept_ai_usage_totals(query)
     )
 
 
-@router.get("/requests", response_model=RequestUsageList, summary="2. AI calls per request")
+@router.get("/requests", response_model=RequestUsageList, summary="2. AI calls per request", **REQUESTS_DOCS)
 async def list_ai_usage_requests(query: Annotated[RequestUsageQuery, Query()], service: Usage) -> Response:
-    """One entry per API call, newest first: its API (`api_label`, `api_description`), its AI calls per
-    part and per model, successful and failed. With `session_id`: that session's calls, live, and its totals
-    (`summary`); without, a range of at most 366 days (default the last day), up to 5 minutes behind. `next`
-    gives the next page."""
+    """One entry per API call of a session or a time range, newest first (Swagger's text: REQUESTS_DOCS)."""
     return await _report(
         RequestUsageList,
         lambda: service.list_request_ai_usage(query),
@@ -120,16 +121,28 @@ async def list_ai_usage_requests(query: Annotated[RequestUsageQuery, Query()], s
     "/requests/{request_id}",
     response_model=RequestUsageDetail,
     summary="3. One request's AI calls by activity",
+    **REQUEST_DOCS,
 )
-async def read_ai_usage_request(request_id: Annotated[str, Path(max_length=64)], service: Usage) -> Response:
-    """The request's counts, then each activity: its part, name and one-line description, its model, and
-    its AI calls, successful and failed. 404 when no AI call is recorded for the request."""
+async def read_ai_usage_request(
+    request_id: Annotated[
+        str,
+        Path(
+            max_length=64,
+            description="The API call's X-Request-Id, or a `request_id` from report 2.",
+            openapi_examples={
+                "create_scenario": {"summary": "A Create scenario call", "value": EXAMPLE_REQUEST_ID}
+            },
+        ),
+    ],
+    service: Usage,
+) -> Response:
+    """One API call's counts, then each activity (Swagger's text: REQUEST_DOCS)."""
     return await _report(RequestUsageDetail, lambda: service.get_request_ai_usage(request_id))
 
 
-@router.get("/calls", response_model=UsageCallList, summary="4. Every AI call of a request or session")
+@router.get(
+    "/calls", response_model=UsageCallList, summary="4. Every AI call of a request or session", **CALLS_DOCS
+)
 async def list_ai_usage_calls(query: Annotated[UsageCallQuery, Query()], service: Usage) -> Response:
-    """Each AI attempt (and each earlier answer reused), newest first: when, its activity and description,
-    model, outcome and reason, try number within its ask, tokens and seconds. Needs `request_id` or
-    `session_id`; `next` gives the next page."""
+    """Each AI attempt of a request or session, newest first (Swagger's text: CALLS_DOCS)."""
     return await _report(UsageCallList, lambda: service.list_ai_usage_calls(query))

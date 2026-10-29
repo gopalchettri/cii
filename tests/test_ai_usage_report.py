@@ -648,6 +648,8 @@ def test_totals_grouped_by_part_and_task_keep_both_and_name_the_activity(
     assert found[("controls", "rerank")]["total_ai_calls"] == 3
     assert found[("controls", "rerank")]["activity"] == "Control ranking"
     assert found[("threats", "relevance_gate")]["activity_description"].startswith("AI picks which library")
+    # Swagger says so (PartCounts.by_task): in totals the task is in the key, never in by_task
+    assert all(part["by_task"] == {} for item in items for part in item["buckets"].values())
 
 
 def test_a_totals_report_holds_at_most_max_groups_rows(
