@@ -125,7 +125,7 @@ class NameGrammar:
 class EvidenceReason(StrEnum):
     """Why a candidate was left out, for the reviewer who opens a threat's search audit."""
 
-    BELOW_THRESHOLD = "Scored {score:.0f} of 100, under the {threshold:.0f} needed."
+    BELOW_THRESHOLD = "Scored {score:.1f} of 100, under the {threshold:g} needed."  # score rounded down
     DIFFERENT_PRODUCT = "Concerns {vendor} {product}; the asset records none of that vendor or product."
     OTHER_PRODUCT_OF_VENDOR = "Concerns {vendor} {product}; the asset records only other products."
     NO_PRODUCT_LINK = "Concerns a specific product; nothing the asset records ties the asset to it."
@@ -283,8 +283,11 @@ class RecordedFields:
     VERSION_KEYS: Final = ("product_version", "firmware_version", "software_version")
 
 
-#: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on (scripts/calibrate_evidence_threshold.py).
-EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, str]] = {"bge-reranker-v2-m3": "2026-10-19"}
+#: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on: the date and the threshold found there
+#: (scripts/calibrate_evidence_threshold.py).
+EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, tuple[str, float]]] = {
+    "bge-reranker-v2-m3": ("2026-10-19", 30.0)
+}
 
 
 class EvidenceSettingMessage(StrEnum):

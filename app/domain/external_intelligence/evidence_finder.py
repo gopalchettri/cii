@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
+from decimal import ROUND_FLOOR, Decimal
 
 import structlog
 
@@ -252,8 +253,9 @@ class EvidenceSelector:
         return Considered(row.ref, row.score, EvidenceDecision.OVER_LIMIT, reason)
 
     def _below_threshold(self, score: float) -> str:
-        """The reason a score under the threshold gives."""
-        return EvidenceReason.BELOW_THRESHOLD.format(score=score, threshold=self._threshold)
+        """The reason a score under the threshold gives, the score rounded down so it never reads as met."""
+        shown = Decimal(score).quantize(Decimal("0.1"), rounding=ROUND_FLOOR)  # exact: 29.96 reads 29.9
+        return EvidenceReason.BELOW_THRESHOLD.format(score=shown, threshold=self._threshold)
 
 
 def choose_within_limit(usable: list[Evidence], limit: int) -> list[Evidence]:

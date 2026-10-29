@@ -349,6 +349,21 @@ def test_one_source_at_the_threshold_leaves_the_nearest_out() -> None:
     assert "nearest" not in result.evidence[0].as_doc()
 
 
+def test_a_score_under_the_threshold_never_reads_as_reaching_it() -> None:
+    """The score is rounded down to one decimal (29.96 under 30 reads 29.9, never 30.0) and the threshold
+    shown as set (0.5, never 0), whether the record is left out or used as the nearest."""
+    docs = [technique_doc("T1"), technique_doc("T2")]
+    left_out, _ = finder_of(docs, ScoredBy({"Technique T1": 90.0, "Technique T2": 29.96}), threshold=30.0)
+    reasons = {c.ref: c.reason for c in one(left_out, request_of())[0].search.considered}
+    assert reasons["T2"] == "Scored 29.9 of 100, under the 30 needed."
+    nearest, _ = finder_of(docs, ScoredBy({"Technique T1": 0.46, "Technique T2": 0.2}), threshold=0.5)
+    reasons = {c.ref: c.reason for c in one(nearest, request_of())[0].search.considered}
+    assert reasons == {
+        "T1": "Scored 0.4 of 100, under the 0.5 needed.",
+        "T2": "Scored 0.2 of 100, under the 0.5 needed.",
+    }
+
+
 def test_a_not_applicable_or_unlinked_record_is_never_used_as_the_nearest() -> None:
     """Only the threshold is set aside: the product rules still hold."""
     docs = [vulnerability_doc("CVE-2", "Apache", "HTTP Server"), technique_doc("T1")]

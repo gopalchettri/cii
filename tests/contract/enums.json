@@ -360,7 +360,7 @@
   "SOURCE_DOCUMENTED": "source-documented"
  },
  "EvidenceReason": {
-  "BELOW_THRESHOLD": "Scored {score:.0f} of 100, under the {threshold:.0f} needed.",
+  "BELOW_THRESHOLD": "Scored {score:.1f} of 100, under the {threshold:g} needed.",
   "DIFFERENT_PRODUCT": "Concerns {vendor} {product}; the asset records none of that vendor or product.",
   "DUPLICATE": "The same record is already used for this threat.",
   "NO_PRODUCT_LINK": "Concerns a specific product; nothing the asset records ties the asset to it.",

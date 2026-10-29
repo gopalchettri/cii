@@ -77,6 +77,14 @@ def test_a_source_is_due_until_its_period_passes_and_a_cut_short_feed_is_refused
 
 
 def test_the_evidence_settings_name_the_model_never_its_path() -> None:
-    settings = evidence_settings("C:\\models\\bge-reranker-v2-m3\\", 0.5)
-    assert settings["rerank_model"] == "bge-reranker-v2-m3" and settings["threshold_calibrated"]
-    assert evidence_settings("/m/other", 0.5)["threshold_calibrated_on"] is None
+    assert evidence_settings("C:\\models\\bge-reranker-v2-m3\\", 0.5)["rerank_model"] == "bge-reranker-v2-m3"
+
+
+def test_the_threshold_is_calibrated_only_at_the_value_calibrated_on_that_model() -> None:
+    """bge-reranker-v2-m3 was calibrated at 30: 30 is calibrated, with its date; 5 on it is not, nor is any
+    threshold on a model never calibrated."""
+    calibrated = evidence_settings("/m/bge-reranker-v2-m3", 30.0)
+    assert (calibrated["threshold_calibrated"], calibrated["threshold_calibrated_on"]) == (True, "2026-10-19")
+    for model, threshold in (("/m/bge-reranker-v2-m3", 5.0), ("/m/other", 30.0)):
+        shown = evidence_settings(model, threshold)
+        assert (shown["threshold_calibrated"], shown["threshold_calibrated_on"]) == (False, None)
