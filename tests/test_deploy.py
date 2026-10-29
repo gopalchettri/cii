@@ -22,7 +22,6 @@ from app.core.config import Settings
 from app.core.constants import (
     LITELLM_MODEL_PREFIX,
     ChatModule,
-    Controls,
     Generation,
     Lease,
     Queue,
@@ -402,25 +401,19 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
     assert APP_IMAGE.fullmatch(image), image
 
 
-def test_every_queue_has_one_worker_and_the_api_stays_ready_while_it_restarts() -> None:
-    """/ready needs a live worker on every routed queue, and each queue has one worker (the quota has no
-    room for a second), which stops before its new pod starts (maxSurge 0). The API's readiness must outlast
-    that worker's slowest start, or every worker update would take the API out of its Route. The reaper's
+def test_every_queue_has_one_thread_pool_worker_and_the_api_is_ready_on_mongodb_alone() -> None:
+    """Each routed queue has one worker (the quota has no room for a second), on the thread pool. The API's
+    /ready waits for MongoDB alone, so a worker restarting never takes the API out of its Route. The reaper's
     worker runs in ai-common (deploy_common.yaml), the others in ai-threatgen."""
-    queues, slowest_start = [], 0
+    queues = []
     for deployment in _all_deployments():
-        container = _container(deployment)
-        command = container.get("command", [])
+        command = _container(deployment).get("command", [])
         if command[:4] == ["celery", "-A", "app.worker", "worker"]:
             assert "--pool=threads" in command  # the worker refuses any other pool at start-up
-            # Ready once its heartbeat wrote the alive file: rollout status waits until the queue is served.
-            start = container["startupProbe"]
-            start_seconds = start["initialDelaySeconds"] + start["failureThreshold"] * start["periodSeconds"]
-            slowest_start = max(slowest_start, start_seconds)
+            assert deployment["spec"]["replicas"] == 1, deployment["metadata"]["name"]
             queues.append(command[command.index("-Q") + 1])
     assert sorted(queues) == sorted(ROUTED_QUEUES)
-    ready = _container(_deployment("api"))["readinessProbe"]
-    assert ready["failureThreshold"] * ready["periodSeconds"] > slowest_start
+    assert _container(_deployment("api"))["readinessProbe"]["httpGet"]["path"] == "/ready"
 
 
 def test_worker_probes_read_the_heartbeat_file_never_redis() -> None:
@@ -450,9 +443,9 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
     assert budgets == {d["metadata"]["name"] for d in deployments if d["spec"]["replicas"] >= 2} == {"api"}
     for deployment in deployments:
         if deployment["spec"]["strategy"]["type"] == "RollingUpdate":
-            # The API starts its new copy first; a worker stops first: the quota has no room for a second.
-            api = deployment["metadata"]["name"] == "api"
-            expected = {"maxUnavailable": 0, "maxSurge": 1} if api else {"maxUnavailable": 1, "maxSurge": 0}
+            # Every pod stops before its new one starts: the quota has no room for an extra pod (the API at
+            # maxSurge 1 needed exactly 6 CPU). The API's other copy serves meanwhile.
+            expected = {"maxUnavailable": 1, "maxSurge": 0}
             assert deployment["spec"]["strategy"]["rollingUpdate"] == expected, deployment["metadata"]
         else:
             assert deployment["metadata"]["name"] == "beat"
@@ -719,34 +712,42 @@ def test_the_image_gets_only_what_it_runs() -> None:
     assert "local" not in re.findall(r"\[(\w+)\]", dockerfile) and "\nUSER 10001\n" in dockerfile
 
 
-def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
-    """Each AI worker's own threads x AI calls per job x replicas, summed over a project, near
-    CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and times out the job), far fewer leaves the cap
-    unused. With no cap (0), each module's requests-a-minute limit paces its chat calls: each module on
-    kimi-k2.5 has one, and on the one key they share they add up to within what kimi-k2.5 takes."""
+def test_each_ai_module_s_workers_can_fill_its_cap_and_no_one_job_takes_it_all() -> None:
+    """Per module, its workers' threads x chat calls in flight per job reach its cap,
+    CII_<MODULE>_MAX_CONCURRENT_AI_CALLS (UAT had remediation at 4 with 2 threads: half its cap never used,
+    its plans twice as slow), and one job
+    never asks for more than the cap. Each module on kimi-k2.5 has a requests-a-minute limit, and on the one
+    key they share they add up to within what kimi-k2.5 takes."""
     settings = _settings()
-    cap = int(settings["CII_MAX_CONCURRENT_AI_CALLS"])
-    if cap == 0:
-        on_kimi = [m.upper() for m in ChatModule if settings[f"CII_{m.upper()}_CHAT_MODEL"] == KIMI]
-        limits = [int(settings.get(f"CII_{m}_CHAT_REQUESTS_PER_MINUTE", "0")) for m in on_kimi]
-        assert limits and all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
-        return
-    calls_per_job = {
-        Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,
-        Queue.SCENARIOS: Generation.WRITER_BATCH,
-        Queue.CONTROLS: Controls.PER_DELIVERY,
+    on_kimi = [m.upper() for m in ChatModule if settings[f"CII_{m.upper()}_CHAT_MODEL"] == KIMI]
+    limits = [int(settings.get(f"CII_{m}_CHAT_REQUESTS_PER_MINUTE", "0")) for m in on_kimi]
+    assert limits and all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
+    calls_per_job = {  # a job's chat calls in flight, and the module whose AI slots they hold
+        Queue.THREATS: (ChatModule.SCENARIO, ThreatFinding.AI_BATCHES_AT_ONCE),
+        Queue.SCENARIOS: (ChatModule.SCENARIO, Generation.WRITER_BATCH),
+        Queue.REMEDIATION: (ChatModule.REMEDIATION, 1),  # one plan, one call
+        Queue.SERVICEMAPPER: (ChatModule.SERVICE_MAPPER, 1),  # one mapping, one call
     }
-    for namespace, path in APP_FILES.items():
-        asked, checked = 0, set()
-        for deployment in _objects(path, kind="Deployment"):
-            command = _container(deployment)["command"]
-            queue = command[command.index("-Q") + 1] if "-Q" in command else None
-            if queue in calls_per_job:
-                threads = int(command[command.index("-c") + 1])
-                asked += threads * calls_per_job[queue] * deployment["spec"]["replicas"]
-                checked.add(queue)
-        assert checked == set(calls_per_job), namespace
-        assert cap / 2 < asked <= cap, (namespace, asked, cap)
+    caps = {m: int(settings[f"CII_{m.upper()}_MAX_CONCURRENT_AI_CALLS"]) for m in ChatModule}
+    asked, found = dict.fromkeys(ChatModule, 0), set()
+    for deployment in _app_deployments():
+        command = _container(deployment)["command"]
+        queue = command[command.index("-Q") + 1] if "-Q" in command else None
+        if queue in calls_per_job:
+            module, calls = calls_per_job[queue]
+            assert calls <= caps[module] or caps[module] == 0, queue
+            asked[module] += int(command[command.index("-c") + 1]) * calls * deployment["spec"]["replicas"]
+            found.add(queue)
+    assert found == set(calls_per_job)
+    assert all(caps[m] <= asked[m] for m in ChatModule), (asked, caps)
+
+
+def test_tsg_config_holds_uat_s_own_values_never_a_placeholder() -> None:
+    """The owner applies deploy/ to UAT as it is: a CHANGE_ME in tsg-config replaces UAT's real value
+    (CII_CORS_ORIGINS was one: every browser call from the UI would then fail). Alertmanager's addresses,
+    in its own ConfigMap, are the owner's to fill in."""
+    for namespace, values in _shared(CONFIG_FILE, "tsg-config").items():
+        assert not [key for key, value in values.items() if "CHANGE_ME" in str(value)], namespace
 
 
 def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:

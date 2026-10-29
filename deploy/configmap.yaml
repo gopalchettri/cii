@@ -28,7 +28,7 @@ items:                                           # one tsg-config per project th
       labels: { part-of: tsg }                   # marks it as TSG's
     data: &settings                              # "&settings" names this block: ai-common's copy below reuses it unchanged
       CII_ENV: "uat"                             # environment name; anything but "dev" gets production's safety checks
-      CII_CORS_ORIGINS: "CHANGE_ME_UI_ORIGIN"    # CHANGE: the platform UI's https address(es), comma-separated; "*" stops start-up
+      CII_CORS_ORIGINS: "https://threatgen-api.apps.dda-desc-az1-01.desccii.local"   # the platform UI's https address(es), comma-separated; "*" stops start-up
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
       CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
       # Each module's own chat model (.env.example explains every line; its key is in tsg-secrets). Its limits are
@@ -106,6 +106,7 @@ items:                                           # one tsg-config per project th
       REGENERATIONS_MAX_VERSION_COUNT: "10"      # versions kept per remediation plan (first plan + 9 regenerations)
       SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT: "10"      # upstream services the service mapper asks the AI for (0 = off)
       SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT: "10"    # downstream services the service mapper asks the AI for (0 = off)
+      SERVICE_MAPPER_MAX_GENERATIONS: "5"            # runs per mapping, the first included (Generate, then Generate again or Regenerate); 0 = no limit
       ASSET_PROPERTIES_REQUIRED: ""              # asset facts a run must have, comma-separated (empty = none)
       SYSTEM_PROPERTIES_REQUIRED: ""             # supporting-system facts a run must have (empty = none)
       CONTROL_SIMILARITY_THRESHOLD: "50"         # how close a library control must be to a scenario to be kept
@@ -210,8 +211,8 @@ data:                                            # one key per file
             target_label: instance
 
       # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
-      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep the
-      # app project's pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
+      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep
+      # only the pods of TSG's own Deployments (v1 also runs in ai-threatgen, a chatbot in ai-common)
       # (<deployment>-<replicaset hash>-<5 characters>). tests/test_observability.py checks the names.
       - job_name: kube-state-metrics
         honor_labels: true
@@ -219,7 +220,7 @@ data:                                            # one key per file
           - targets: ["kube-state-metrics:8080"]
         metric_relabel_configs:
           - source_labels: [namespace, pod]
-            regex: "ai-threatgen;.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
+            regex: "ai-threatgen;(api|worker-threats|worker-scenarios|worker-controls|worker-remediation|worker-service-mapper|worker-maintenance|beat|monitoring-proxy)-[a-z0-9]+-[a-z0-9]{5}|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
             action: keep
 
       - job_name: prometheus
@@ -303,7 +304,7 @@ data:                                            # one key per file
             labels: { severity: warning }
             annotations:
               summary: "{{ $labels.task }} jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
-              description: The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy.
+              description: The workers cannot keep up. Check that its worker is running; if it is busy, raise its threads (-c in deploy_threatgen.yaml), as the quota has no room for a second copy.
 
           # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
           # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.

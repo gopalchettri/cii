@@ -74,7 +74,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.task }} jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
-          description: The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy.
+          description: The workers cannot keep up. Check that its worker is running; if it is busy, raise its threads (-c in deploy_threatgen.yaml), as the quota has no room for a second copy.
 
       # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
       # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.

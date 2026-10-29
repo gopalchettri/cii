@@ -70,13 +70,13 @@ def test_the_app_file_s_header_names_the_queue_of_every_worker_it_runs() -> None
 
 
 def test_the_app_file_s_header_adds_up_its_own_limits() -> None:
-    """ai-threatgen's header: its pods' limits, with the monitoring proxy, then with the API's update pod."""
+    """ai-threatgen's header: its pods' limits, then with the monitoring proxy; an update adds no pod (every
+    Deployment stops its old pod first, the API too), so that is also the most an update needs."""
     path = APP_FILES[APP_PROJECT]
     deployments = _deployments(path, APP_PROJECT)
-    cpu, gib = _limits([*deployments, *_deployments(COMMON_FILE, APP_PROJECT)])
-    api_cpu, api_gib = _pod_limits(next(d for d in deployments if d["metadata"]["name"] == "api"))
-    expected = [_limits(deployments), (cpu, gib), (cpu + api_cpu, gib + api_gib)]
+    expected = [_limits(deployments), _limits([*deployments, *_deployments(COMMON_FILE, APP_PROJECT)])]
     [sentence] = re.findall(r"These pods use (.+?\.) [A-Z]", _header(path))
+    assert "an update never adds a pod" in sentence
     stated = re.findall(r"([\d.]+) CPU(?:,| and) ([\d.]+) Gi", sentence)
     for (cpu_stated, gib_stated), total in zip(stated, expected, strict=True):
         assert (float(cpu_stated), float(gib_stated)) == pytest.approx(total, abs=0.006)

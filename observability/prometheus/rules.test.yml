@@ -116,7 +116,7 @@ tests:
           - exp_labels: { severity: warning, task: tsg_find_threats }
             exp_annotations:
               summary: "tsg_find_threats jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
-              description: "The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy."
+              description: "The workers cannot keep up. Check that its worker is running; if it is busy, raise its threads (-c in deploy_threatgen.yaml), as the quota has no room for a second copy."
 
   # The reaper's last start as Unix time (promtool's clock starts at 0), from the one worker that runs it:
   # a start every minute for 10 minutes, then none.

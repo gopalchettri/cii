@@ -91,7 +91,7 @@ EXPORTER_METRICS = {
     "loki_discarded_samples_total",  # Loki itself
 }
 PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
-WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's own project: every pod there is TSG's
+WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's app project, where v1's pods run too
 
 
 def _monitoring_script():
@@ -467,9 +467,10 @@ def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
 
 
 def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
-    """ai-common is shared with a chatbot: Prometheus scrapes, Alloy reads and kube-state-metrics' series keep
-    only TSG's pods there, its Services send only to TSG's pods, and a restart there selects TSG's Deployments
-    only."""
+    """ai-common is shared with a chatbot and ai-threatgen with v1: Prometheus scrapes, Alloy reads and
+    kube-state-metrics' series keep only TSG's pods (before, every ai-threatgen pod: v1's restarts raised
+    TSG's pod alerts), ai-common's Services send only to TSG's pods, and a restart there selects TSG's
+    Deployments only."""
     uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
     jobs = {job["job_name"]: job for job in uat["scrape_configs"]}
     tsg_only = jobs["pods"]["relabel_configs"][0]
@@ -493,7 +494,18 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
             assert service["spec"]["selector"]["part-of"] == "tsg-monitoring", service["metadata"]["name"]
     chatbot_pods = ["chatbot-api-7d9f8b6c5d-x2x4z", "grafana-agent-7d9f8b6c5d-x2x4z"]
     assert not [pod for pod in chatbot_pods if re.fullmatch(kept["regex"], f"ai-common;{pod}")]
-    assert all(re.fullmatch(kept["regex"], f"{app};{chatbot_pods[0]}") for app in WATCHED_APP_PROJECTS)
+    threatgen = yaml.safe_load_all((REPO / "deploy" / "deploy_threatgen.yaml").read_text(encoding="utf-8"))
+    app_pods = [
+        f"{d['metadata']['namespace']};{d['metadata']['name']}-7d9f8b6c5d-x2x4z"
+        for d in [
+            *(o for o in threatgen if o and o["kind"] == "Deployment"),
+            *_template_objects("Deployment"),
+        ]
+        if d["metadata"]["namespace"] in WATCHED_APP_PROJECTS
+    ]
+    assert len(app_pods) == 9 and all(re.fullmatch(kept["regex"], pod) for pod in app_pods)  # and the proxy
+    v1_pods = [*chatbot_pods, "tsg-v1-api-7d9f8b6c5d-x2x4z", "api-v1-7d9f8b6c5d-x2x4z"]
+    assert not [pod for pod in v1_pods if re.fullmatch(kept["regex"], f"{WATCHED_APP_PROJECTS[0]};{pod}")]
     restarts = [
         line
         for path in (TEMPLATE, REPO / "deploy" / "configmap.yaml")
