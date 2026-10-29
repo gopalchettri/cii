@@ -44,7 +44,7 @@ def _header(path: Path) -> str:
 
 
 def test_the_every_release_roll_out_starts_the_reaper_first_and_counts_each_deployment() -> None:
-    """Part 4 step 7 rolls out worker-reaper (ai-common) before deploy_threatgen.yaml, so a reaper worker
+    """Part 4 step 6 rolls out worker-reaper (ai-common) before deploy_threatgen.yaml, so a reaper worker
     serves tsg_reaper before the new API and beat send to it; then ai-threatgen's part-of=tsg Deployments,
     then ai-common's monitoring and the proxy: the counts it tells the operator to expect are those."""
     guide = GUIDE.read_text(encoding="utf-8")
