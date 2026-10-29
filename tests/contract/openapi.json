@@ -1561,10 +1561,6 @@
       "title": "Sources",
       "type": "array"
      },
-     "stale": {
-      "title": "Stale",
-      "type": "boolean"
-     },
      "switch": {
       "$ref": "#/components/schemas/IntelSwitchOut"
      }
@@ -1572,7 +1568,6 @@
     "required": [
      "switch",
      "sources",
-     "stale",
      "evidence"
     ],
     "title": "IntelHealthOut",
@@ -12878,7 +12873,7 @@
   },
   "/v1/tsg/intel/health": {
    "get": {
-    "description": "Each source's state, the active `snapshot_id` (set once data is imported and indexed: runs need it),\n`stale`, `pending_sources`, `no_data`, and the evidence settings (reranker, threshold).",
+    "description": "Each source's state, the active `snapshot_id` (set once data is imported and indexed: runs need it),\n`pending_sources`, `no_data`, and the evidence settings (reranker, threshold).",
     "operationId": "read_intel_health_v1_tsg_intel_health_get",
     "responses": {
      "200": {

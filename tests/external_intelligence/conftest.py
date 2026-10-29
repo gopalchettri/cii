@@ -50,7 +50,6 @@ def intel(monkeypatch: pytest.MonkeyPatch) -> Intel:
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
     feeds = container.get_intel_feed_repository()
     monkeypatch.setattr(feeds, "list_approved_sources", lambda: list(IntelSource))  # a test revokes its own
-    monkeypatch.setattr(feeds, "list_source_health", list)  # no health rows: never stale
     monkeypatch.setattr(container, "get_source_refresher", lambda: refresher)
     return Intel(finder, switch, refresher, feeds)
 

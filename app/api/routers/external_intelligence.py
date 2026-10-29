@@ -62,7 +62,7 @@ def read_intel_refresh(job_id: Annotated[str, Path(max_length=64)], service: Int
 @router.get("/health", response_model=IntelHealthOut, summary="5. Feeds and data health")
 def read_intel_health(service: Intelligence) -> dict:
     """Each source's state, the active `snapshot_id` (set once data is imported and indexed: runs need it),
-    `stale`, `pending_sources`, `no_data`, and the evidence settings (reranker, threshold)."""
+    `pending_sources`, `no_data`, and the evidence settings (reranker, threshold)."""
     return service.get_intelligence_health()
 
 

@@ -47,21 +47,21 @@ class FakeFinder:
     """One technique for every request; `down` = the search service is unavailable; `raises` = a bug."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[Sequence[EvidenceRequest], bool]] = []
+        self.calls: list[Sequence[EvidenceRequest]] = []
         self.down = False
         self.outage: AiOutage | None = None  # with `down`: the AI outage that stopped the search
         self.raises = False
         self.evidence: tuple[Evidence, ...] = (TECHNIQUE,)
 
     def find_evidence(
-        self, requests: Sequence[EvidenceRequest], *, stale: bool, approved: Collection[IntelSource]
+        self, requests: Sequence[EvidenceRequest], *, approved: Collection[IntelSource]
     ) -> tuple[list[EvidenceResult], EvidenceBatchSummary]:
-        self.calls.append((requests, stale))
+        self.calls.append(requests)
         if self.raises:
             raise RuntimeError("a bug in the search")
         # as the real index: a record of a source no longer approved is never a candidate
         evidence = tuple(item for item in self.evidence if {item.source, *item.joined} <= set(approved))
-        results = [self._result_of(request, stale, evidence) for request in requests]
+        results = [self._result_of(request, evidence) for request in requests]
         used = 0 if self.down else len(evidence) * len(requests)
         summary = EvidenceBatchSummary(
             SNAPSHOT,
@@ -69,13 +69,10 @@ class FakeFinder:
             len(requests),
             0 if self.down else len(requests),
             used,
-            stale,
         )
         return results, summary
 
-    def _result_of(
-        self, request: EvidenceRequest, stale: bool, evidence: tuple[Evidence, ...]
-    ) -> EvidenceResult:
+    def _result_of(self, request: EvidenceRequest, evidence: tuple[Evidence, ...]) -> EvidenceResult:
         failure = EvidenceSearchFailure.UNAVAILABLE if self.down else None
         considered = () if self.down else (Considered("T0839", 91.0, EvidenceDecision.USED),)
         outage = self.outage if self.down else None
@@ -85,7 +82,6 @@ class FakeFinder:
             SNAPSHOT,
             1.0,
             considered,
-            stale,
             failure,
             "",
             outage,

@@ -46,7 +46,7 @@ def _finder(rerank, gate: RerankGate) -> EvidenceFinder:
 
 def _batch(finder: EvidenceFinder, size: int = 12) -> None:
     results, _ = finder.find_evidence(
-        [request_of(f"Threat: ransomware {n}") for n in range(size)], stale=False, approved=ALL_SOURCES
+        [request_of(f"Threat: ransomware {n}") for n in range(size)], approved=ALL_SOURCES
     )
     assert all(result.evidence for result in results)
 
@@ -85,7 +85,7 @@ def test_a_failing_rerank_releases_its_place() -> None:
 
     finder = _finder(Broken(), gate)
     for _ in range(3):  # a leaked place would make the second batch wait for it
-        results, _ = finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)
+        results, _ = finder.find_evidence([request_of()], approved=ALL_SOURCES)
         assert results[0].search.failure is not None
     with gate.hold_place():
         pass
@@ -158,7 +158,7 @@ def _failures(gate: GiveUpCountingGate, giving_up: int = 0) -> list[EvidenceSear
     """Run 0a84b002's next set in small: 6 threats at once, a model answering one at a time."""
     finder = _finder(BusyUntilGivenUp(gate, giving_up, hold_seconds=0.02), gate)
     results, _ = finder.find_evidence(
-        [request_of(f"Threat: ransomware {n}") for n in range(6)], stale=False, approved=ALL_SOURCES
+        [request_of(f"Threat: ransomware {n}") for n in range(6)], approved=ALL_SOURCES
     )
     return [result.search.failure for result in results if result.search.failure is not None]
 

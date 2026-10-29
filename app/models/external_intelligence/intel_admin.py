@@ -57,7 +57,6 @@ class IntelHealthOut(BaseModel):
     switch: IntelSwitchOut
     snapshot_id: str | None = None
     sources: list[dict[str, Any]]
-    stale: bool  # an approved source that has data is older than the age limit
-    pending_sources: list[str] = []  # approved sources still waiting for their first data (not stale)
+    pending_sources: list[str] = []  # approved sources still waiting for their first data
     no_data: bool = False  # no approved source has ever succeeded
     evidence: EvidenceSettingsOut

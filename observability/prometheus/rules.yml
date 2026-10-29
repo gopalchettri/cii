@@ -1,7 +1,7 @@
 # TSG alerts (docs/BLUEPRINT.md §22.3). Every expression uses a metric that exists today: tests/test_observability.py
 # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
 # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
-# Grafana Alerting. Planned with its metric: IntelStale (M12).
+# Grafana Alerting.
 # Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
 # Alerting) and at /alertmanager.
 

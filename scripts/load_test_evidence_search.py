@@ -48,7 +48,7 @@ def one_batch(finder: EvidenceFinder, user: int) -> float:
     word = WORDS[user % 5]
     requests = [request_of(f"Threat: {word} {user} {part}", {"IT"}) for part in range(REQUESTS_PER_BATCH)]
     started = time.perf_counter()
-    finder.find_evidence(requests, stale=False, approved=ALL_SOURCES)
+    finder.find_evidence(requests, approved=ALL_SOURCES)
     return time.perf_counter() - started
 
 

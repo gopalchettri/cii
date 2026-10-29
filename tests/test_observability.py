@@ -34,7 +34,7 @@ APP_IMAGE = (
 )
 MONITORING_IMAGE = rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*"  # a mirrored image pinned to a version
 
-#: §22.3 alerts that are Built (AiSlotsSaturated and IntelStale wait for their metrics).
+#: §22.3 alerts that are Built.
 BUILT_ALERTS = {
     "Api5xxHigh",
     "ApiLatencyHigh",

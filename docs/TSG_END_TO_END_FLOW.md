@@ -369,9 +369,8 @@ never become rows; they are joined by CVE id into the KEV entry's `data`:
 
 **Health** (`GET /v1/tsg/intel/health` → `get_intelligence_health`). It shows the switch state; the active
 `snapshot_id` (else the one this process serves); each source's row (status, checkpoint, version, records, last
-attempt and success, last error, claim); `stale`, true when an approved source that has succeeded is older than
-`IntelLimits.STALE_AFTER_HOURS` = 48 h; `pending_sources`, the approved sources that never succeeded (never
-"stale"); `no_data`, true when none has succeeded; and `evidence`: the reranker's name, the threshold, and whether
+attempt and success, last error, claim); `pending_sources`, the approved sources that never succeeded; `no_data`,
+true when none has succeeded; and `evidence`: the reranker's name, the threshold, and whether
 the threshold is calibrated for that reranker (`threshold_calibrated`, `threshold_calibrated_on`). With the master
 switch off, it reads no store and shows only the switch.
 
@@ -1674,8 +1673,7 @@ The run we follow: the threat "OT protocol command abuse" on the Traffic Control
    *(asset "Traffic Control Platform" is IT; the threat's systems "Intelligent Traffic Systems Platform" and
    "Traffic Signal Control System" are OT → IT, IT\OT and OT: both kinds)*
 4. **Search only approved sources, in the latest checked copy.** *(all six sources; snapshot
-   `ce8856df3fbc7174e32900fd`, built 03:09 UTC that day, 4,439 searchable records; no source older than 48 hours,
-   so not stale)*
+   `ce8856df3fbc7174e32900fd`, built 03:09 UTC that day, 4,439 searchable records)*
 5. **Find the closest records two ways, then merge the two lists.** One way matches the words, the other matches
    the meaning; merging by position means neither scale has to be tuned against the other. *(`EVIDENCE_CANDIDATES` records, 30 by default; this run, made
    before that setting, used 6; words:
@@ -1768,7 +1766,6 @@ flowchart TB
 | Recorded products | `RecordedFields` (`app/core/constants/evidence.py`): vendor `vendor_name`; product `technology_used`, `operating_system`; version `product_version`, `firmware_version`, `software_version` | Read from the asset's facts (`asset_context`) and each of the threat's systems (`_recorded`); used only for vulnerabilities and advisories (product link, applicability) | none of the six fields on the asset or its four systems → any vulnerability or advisory gets `no_product_link` |
 | Per threat | `EVIDENCE_KEPT_PER_THREAT` (`Settings.evidence_kept_per_threat`, `app/core/config.py`): default **3**, range 1-10; `choose_within_limit` | Best N (3 by default); then a later entry of a missing kind replaces the lowest-scored entry of a kind held more than once | 1 kept |
 | Nearest pass | `EvidenceSelector.select` | When the first pass keeps nothing: the same rules without the threshold; entries marked `nearest` | not needed (rank 5 needed it) |
-| Stale flag | `IntelLimits.STALE_AFTER_HOURS = 48` (`app/core/constants/intelligence.py`); `FeedFreshness.of` | True when an approved source last succeeded over 48 h ago (a source that never succeeded does not count). Only recorded: the evidence is still used | `false` |
 | Country | `THREAT_CONTEXT_COUNTRY`, default "United Arab Emirates" (`COUNTRY_REGIONS`, `PLACE_WORDS` in `app/core/constants/evidence.py`) | **Not used by the search or the selection.** It is only a fact: in the writer's BRIEF (evidence story only) and, while intelligence is on, in the plan job's asset description that the relevance gate and the gap fill read | "United Arab Emirates" in the BRIEF's asset facts |
 
 #### What the question is compared against
@@ -1866,20 +1863,19 @@ whichever path or kind of attack it is written for.
    systems are its `systems` (all the run's systems when none is known); the asset's own category always counts.
 4. **Recorded products**: `RecordedProducts`, one row for the asset (`asset_context`) and one per threat system,
    from the `RecordedFields` keys (`_recorded`).
-5. **The stale flag**: `_is_stale` → `FeedFreshness.of(list_source_health(), approved, now).stale`.
-6. **The index**: `EvidenceFinder.find_evidence` (`app/domain/external_intelligence/evidence_finder.py`) reads the
+5. **The index**: `EvidenceFinder.find_evidence` (`app/domain/external_intelligence/evidence_finder.py`) reads the
    process's `current_index()` once. With no records, no search is made: each threat gets an empty result naming
    `"empty"` (settled empty) or no snapshot (the placeholder before the first build), and no audit row is written.
-7. **Candidates** (`_search_all` → `EvidenceIndex.find_candidates`): both filters (asset types; own and joined
+6. **Candidates** (`_search_all` → `EvidenceIndex.find_candidates`): both filters (asset types; own and joined
    sources approved) apply **before** the top-k cut (k = `EVIDENCE_CANDIDATES`), so a filtered record never takes a place. One
    `embed_search_queries` call for the whole batch, then `HybridIndex.search` per threat (keywords + vectors, rank
    fusion; §5.9 explains the hybrid search; the numbers are in §7.3).
-8. **Rerank**: `run_in_parallel(rank_one, …, 8)`; each threat holds a place of the process's `RerankGate` while
+7. **Rerank**: `run_in_parallel(rank_one, …, 8)`; each threat holds a place of the process's `RerankGate` while
    `score_candidates` makes one `score_relevance` call for its candidates, each read as `scoring_text(hit)` (the
    local CPU model scores them 6 per turn). Scores are 0-100; candidates are
    sorted by score, then id. The local bge model's raw output passes the sigmoid that `CrossEncoder.predict`
    applies for a one-label model (0-1), then × 100.
-9. **Judge each candidate, best first** (`EvidenceSelector._choose` → `_judge`):
+8. **Judge each candidate, best first** (`EvidenceSelector._choose` → `_judge`):
    1. **Threshold**: `score < EVIDENCE_SIMILARITY_THRESHOLD` → `below_threshold`, reason
       `Scored {score:.0f} of 100, under the {threshold:.0f} needed.` (both rounded: a 19.6 reads "Scored 20 of
       100, under the 20 needed").
@@ -1899,24 +1895,24 @@ whichever path or kind of attack it is written for.
    A candidate that passes becomes an `Evidence` entry (`_evidence`): its facts (`PlainFactWriter.write_facts`,
    §2.3), cleaned title and link, `published`, `modified`, `fetched_at`, `role` (`direct` only when `confirmed`,
    else `context`), technique mitigations (at most 3), `joined` and `nearest`.
-10. **Keep at most 3** (`choose_within_limit`): the best 3; then, best first, an entry of a kind not yet held
+9. **Keep at most 3** (`choose_within_limit`): the best 3; then, best first, an entry of a kind not yet held
     replaces the lowest-scored entry of a kind held more than once. The rest get `over_limit`, "More relevant
     records already fill the 3 places for this threat."
-11. **The nearest pass** (`EvidenceSelector.select`): when the first pass keeps nothing, `_choose(nearest=True)`
+10. **The nearest pass** (`EvidenceSelector.select`): when the first pass keeps nothing, `_choose(nearest=True)`
     judges again without the threshold; the other rules stand. Each kept entry has `nearest: true`, and its `used`
     row keeps the below-threshold reason.
-12. **What is recorded**: `EvidenceSearchRecord.as_doc` (`app/models/external_intelligence/evidence.py`) plus
+11. **What is recorded**: `EvidenceSearchRecord.as_doc` (`app/models/external_intelligence/evidence.py`) plus
     `searched_at` becomes the threat's `intel_search`: `query`, `asset_types`, `snapshot_id`, `threshold`,
-    `considered` (one `{ref, score, decision, reason}` per candidate), `stale`, `failure`, `rerank_model`, and
+    `considered` (one `{ref, score, decision, reason}` per candidate), `failure`, `rerank_model`, and
     `outage` and `outage_message` only when the AI stopped the search. The kept
     entries become the threat's `evidence`, in memory only. `_audit_batch` writes **one**
     `external_intelligence.evidence_used` audit row per searched batch: actor `{"system": "tsg_write_scenarios"}`,
     target the session, and `after` holding `snapshot_id`, `source_versions`, `threats_searched`,
-    `threats_with_evidence`, `evidence_used` and `stale`.
-13. **Outages.** An embedding outage gives every threat of the batch `failure: "evidence_search_unavailable"`; a
+    `threats_with_evidence` and `evidence_used`.
+12. **Outages.** An embedding outage gives every threat of the batch `failure: "evidence_search_unavailable"`; a
     reranker outage gives it to that threat only: that search fails, so its path waits and is tried again. Another temporary error while
-    the batch's search runs (for example MongoDB down when the source health is read for the stale flag, or
-    when the audit row is written) sets `intel_search = {"failure": "<type>: <message>"}` on every threat. An
+    the batch's search runs (for example MongoDB down when the audit row is
+    written) sets `intel_search = {"failure": "<type>: <message>"}` on every threat. An
     error while the approved sources are read comes before this guard: it is raised and the job is retried. A failed search, or one with no snapshot,
     holds its path back (`evidence_problem`, §6 step 9); the job is retried. On its last try, when another path of the
     batch was served, the held path gets an `unavailable` failure card with the evidence reason. An AI outage in the
@@ -1952,7 +1948,6 @@ The search stored on scenario `4909e75f-c1c1-5802-bc21-a7a16fd34d36` (`content.i
   "snapshot_id": "ce8856df3fbc7174e32900fd",
   "threshold": 20.0,
   "considered": [{"ref": "T1691.001", "score": 31.194522976875305, "decision": "used", "reason": ""}, …],
-  "stale": false,
   "failure": null,
   "rerank_model": "…/bge-reranker-v2-m3",
   "searched_at": "2026-10-19T08:18:28.122163+00:00"
@@ -1990,10 +1985,10 @@ The run's 6 candidates, best first:
 **The two audit rows** (`external_intelligence.evidence_used`, one per batch; actor
 `{"system": "tsg_write_scenarios"}`, target `{"type": "session", "id": "13bd93f254ce4d2788f18c56f1c011ab"}`):
 
-| Batch | Audit row written | `snapshot_id` | `threats_searched` | `threats_with_evidence` | `evidence_used` | `stale` |
-|---|---|---|---|---|---|---|
-| 1 (ranks 1-4) | 08:17:56.407 | `ce8856df3fbc7174e32900fd` | 4 | 4 | 9 | false |
-| 2 (ranks 5-6) | 08:18:28.117 | `ce8856df3fbc7174e32900fd` | 2 | 2 | 4 | false |
+| Batch | Audit row written | `snapshot_id` | `threats_searched` | `threats_with_evidence` | `evidence_used` |
+|---|---|---|---|---|---|
+| 1 (ranks 1-4) | 08:17:56.407 | `ce8856df3fbc7174e32900fd` | 4 | 4 | 9 |
+| 2 (ranks 5-6) | 08:18:28.117 | `ce8856df3fbc7174e32900fd` | 2 | 2 | 4 |
 
 Both rows carry the snapshot's six `source_versions` (§2.3). The counts match the scenarios' `considered` rows:
 batch 1 kept 3 + 2 + 1 + 3 = 9 entries; batch 2 kept 3 (rank 5, all nearest) + 1 (ours) = 4.

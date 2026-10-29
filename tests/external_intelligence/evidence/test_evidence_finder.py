@@ -52,8 +52,8 @@ def finder_of(
     ), embeddings
 
 
-def one(finder: EvidenceFinder, request: Any, *, stale: bool = False):
-    results, summary = finder.find_evidence([request], stale=stale, approved=ALL_SOURCES)
+def one(finder: EvidenceFinder, request: Any):
+    results, summary = finder.find_evidence([request], approved=ALL_SOURCES)
     return results[0], summary
 
 
@@ -191,13 +191,8 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     assert (summary.snapshot_id, summary.threats_searched, summary.source_versions) == (None, 0, {})
     assert isinstance(evidence_problem({"intel_search": result.search.as_doc()}), Unavailable)  # it waits
     full, embeddings = finder_of([technique_doc("T1")])
-    results, summary = full.find_evidence([], stale=True, approved=ALL_SOURCES)
-    assert (
-        results == []
-        and summary.snapshot_id is None
-        and not summary.stale
-        and "query" not in embeddings.calls
-    )
+    results, summary = full.find_evidence([], approved=ALL_SOURCES)
+    assert results == [] and summary.snapshot_id is None and "query" not in embeddings.calls
 
 
 def test_a_first_index_build_the_ai_stopped_holds_the_paths_back_as_that_outage() -> None:
@@ -228,9 +223,7 @@ def test_a_settled_empty_index_finds_no_evidence_and_is_no_outage() -> None:
 def test_an_embedding_outage_leaves_every_request_without_evidence_and_says_why() -> None:
     finder, embeddings = finder_of([technique_doc("T1")])
     embeddings.queries_down = True
-    results, summary = finder.find_evidence(
-        [request_of(), request_of("Threat: other")], stale=False, approved=ALL_SOURCES
-    )
+    results, summary = finder.find_evidence([request_of(), request_of("Threat: other")], approved=ALL_SOURCES)
     assert all(r.evidence == () and r.search.failure == EvidenceSearchFailure.UNAVAILABLE for r in results)
     assert all(r.search.outage == AiOutage.UNREACHABLE for r in results)  # the gateway's own outage
     assert (summary.threats_searched, summary.threats_with_evidence) == (2, 0)
@@ -245,7 +238,7 @@ def test_a_rerank_outage_costs_only_the_request_it_hit() -> None:
 
     finder, _ = finder_of([technique_doc("T1")], DownFor())
     first, second = finder.find_evidence(
-        [request_of(), request_of("Threat: phishing ransomware")], stale=False, approved=ALL_SOURCES
+        [request_of(), request_of("Threat: phishing ransomware")], approved=ALL_SOURCES
     )[0]
     assert refs(first) == {"T1"} and second.evidence == ()
     assert second.search.failure == EvidenceSearchFailure.UNAVAILABLE
@@ -263,7 +256,7 @@ def test_an_ai_outage_in_the_search_tells_which_and_the_held_path_says_so() -> N
 
     finder, _ = finder_of([technique_doc("T1")], TimedOutFor())
     found, lost = finder.find_evidence(
-        [request_of(), request_of("Threat: phishing ransomware")], stale=False, approved=ALL_SOURCES
+        [request_of(), request_of("Threat: phishing ransomware")], approved=ALL_SOURCES
     )[0]
     assert lost.search.outage == AiOutage.TIMED_OUT and "outage" not in found.search.as_doc()
     problem = evidence_problem({"intel_search": lost.search.as_doc()})
@@ -274,14 +267,14 @@ def test_an_ai_outage_in_the_search_tells_which_and_the_held_path_says_so() -> N
 def test_all_requests_of_a_batch_are_embedded_in_one_call() -> None:
     finder, embeddings = finder_of([technique_doc("T1")])
     requests = [request_of(f"Threat: ransomware {n}") for n in range(5)]
-    results, summary = finder.find_evidence(requests, stale=False, approved=ALL_SOURCES)
+    results, summary = finder.find_evidence(requests, approved=ALL_SOURCES)
     assert embeddings.calls.count("query") == 1 and len(results) == 5 and summary.threats_searched == 5
 
 
-def test_a_stale_index_is_still_used_but_marked() -> None:
+def test_a_batch_summary_names_its_source_versions_and_counts_its_evidence() -> None:
     finder, _ = finder_of([technique_doc("T1")])
-    result, summary = one(finder, request_of(), stale=True)
-    assert refs(result) == {"T1"} and result.search.stale and summary.stale
+    result, summary = one(finder, request_of())
+    assert refs(result) == {"T1"} and "stale" not in result.search.as_doc() | summary.as_doc()
     assert summary.source_versions == {"mitre_attack_enterprise": "r1"}
     assert (summary.threats_with_evidence, summary.evidence_used) == (1, 1)
 

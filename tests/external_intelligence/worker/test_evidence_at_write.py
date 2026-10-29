@@ -61,7 +61,7 @@ def _audit_rows(record_id: str) -> list[dict[str, Any]]:
 def test_a_batch_searches_once_and_only_for_the_threats_it_writes(intel: Intel) -> None:
     record_id = _queued_run([f"Threat {n}" for n in range(1, 9)], first_set=3)  # 8 planned, 3 asked for
     assert _deliver_until_done(record_id) == 1
-    assert len(intel.finder.calls) == 1 and len(intel.finder.calls[0][0]) == 3  # one call, three threats
+    assert len(intel.finder.calls) == 1 and len(intel.finder.calls[0]) == 3  # one call, three threats
     assert not any("intel_search" in threat for threat in _threat_docs(record_id).values())  # nothing kept
     stored = _scenarios_of(record_id)
     assert len(stored) == 3 and {s["status"] for s in stored} == {ScenarioStatus.DONE}
@@ -86,7 +86,7 @@ def test_a_threat_shared_by_two_paths_is_searched_once(intel: Intel) -> None:
     record_id = _queued_run(["Threat 1", "Threat 2"])
     _sessions().update_one({"_id": record_id}, {"$set": {"plan.paths.1.steps": ["lib:1"]}})
     assert _deliver_until_done(record_id) == 1
-    assert len(intel.finder.calls[0][0]) == 1
+    assert len(intel.finder.calls[0]) == 1
 
 
 def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -> None:
@@ -99,7 +99,7 @@ def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -
     assert len(intel.finder.calls) == 1
     assert _deliver_until_done(record_id) == 1
     assert len(intel.finder.calls) == 2 and len(_scenarios_of(record_id)) == 2
-    assert len(intel.finder.calls[1][0]) == 2  # every threat still to write
+    assert len(intel.finder.calls[1]) == 2  # every threat still to write
     assert len(_audit_rows(record_id)) == 2
 
 
@@ -333,17 +333,13 @@ def test_a_threat_already_searched_is_searched_again_reading_the_feeds_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One search per write: a threat's earlier search is replaced by this batch's, and the approved sources
-    and their health are read once for the batch."""
+    are read once for the batch."""
     reads: list[str] = []
 
     class CountedFeeds:
         def list_approved_sources(self) -> list[IntelSource]:
             reads.append("approved")
             return list(IntelSource)
-
-        def list_source_health(self) -> list[Any]:
-            reads.append("health")
-            return []
 
     class NoAudit:
         def create_audit_record(self, *args: Any, **kwargs: Any) -> None:
@@ -356,6 +352,6 @@ def test_a_threat_already_searched_is_searched_again_reading_the_feeds_once(
     threats = {"t": {"name": "Threat 1", "type": {"name": "Malware"}} | earlier}
     progress = SimpleNamespace(paths={"p1": {"steps": ["t"]}})
     EvidenceAtWrite(run, threats, progress, finder, CountedFeeds(), NoAudit()).attach(["p1"])  # type: ignore[arg-type]
-    assert len(finder.calls) == 1 and sorted(reads) == ["approved", "health"]
+    assert len(finder.calls) == 1 and reads == ["approved"]
     assert threats["t"]["intel_search"]["snapshot_id"] == SNAPSHOT
     assert [entry["ref"] for entry in threats["t"]["evidence"]] == [TECHNIQUE.ref]

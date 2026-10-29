@@ -143,7 +143,6 @@ class IntelLimits:
     FAILURE_REASON_CHARS: Final = 200  # how much of a network error's text a failure keeps
     BATCH_SIZE: Final = 1000  # records per bulk write
     CHECK_EVERY_SECONDS: Final = 3_600  # beat asks which sources are due
-    STALE_AFTER_HOURS: Final = 48  # a source not refreshed this long marks its snapshot stale (still used)
     CLAIM_STALE_SECONDS: Final = 3_600  # a refresh claim this old belongs to a dead worker: taken over
     SWITCH_CACHE_SECONDS: Final = 60  # how long a process remembers the on/off switch
     INDEX_AT_START_SECONDS: Final = 120  # a scenarios worker's longest wait for its index before it consumes

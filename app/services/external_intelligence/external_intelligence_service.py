@@ -9,7 +9,6 @@ from typing import Any
 import structlog
 
 from app.core.callables import SendAdminJob
-from app.core.clock import utc_now
 from app.core.config import Settings
 from app.core.constants import (
     AdminJobKind,
@@ -132,9 +131,9 @@ class ExternalIntelligenceService:
         return {"job_id": record.pop("_id"), **record}
 
     def get_intelligence_health(self) -> dict[str, Any]:
-        """The health report with the evidence settings: an approved source that never succeeded is pending,
-        not stale; the snapshot is the fleet's active one, else the one this process serves. Reading starts no
-        build. With the master switch off, only the switch state."""
+        """The health report with the evidence settings: an approved source that never succeeded is pending;
+        the snapshot is the fleet's active one, else the one this process serves. Reading starts no build.
+        With the master switch off, only the switch state."""
         settings = self._settings
         evidence = evidence_settings(settings.rerank_model, settings.evidence_similarity_threshold)
         if not settings.external_intelligence_enabled:
@@ -143,18 +142,17 @@ class ExternalIntelligenceService:
                 "switch": state,
                 "snapshot_id": None,
                 "sources": [],
-                "stale": False,
                 "pending_sources": [],
                 "no_data": False,
                 "evidence": evidence,
             }
         sources = tuple(source_health_in_registry_order(self._feeds.list(sources=True)))
         approved = sources_in_registry_order(self._feeds.list(["_id"], sources=True, approved=True))
-        freshness = FeedFreshness.of(sources, approved, utc_now())
+        freshness = FeedFreshness.of(sources, approved)
         active = self._snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT)
         snapshot_id = active.get("snapshot_id") if active else self._keeper.peek_index().snapshot_id
         report = HealthReport(
-            self._switch.state(), snapshot_id, sources, freshness.stale, freshness.pending, freshness.no_data
+            self._switch.state(), snapshot_id, sources, freshness.pending, freshness.no_data
         )
         return report.as_doc() | {"evidence": evidence}
 

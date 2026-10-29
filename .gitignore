@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+# Local copies of the env files (they hold real keys)
+.env copy*
 .venv/
 __pycache__/
 *.pyc

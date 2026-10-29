@@ -11,11 +11,7 @@ from pymongo.collection import Collection as MongoCollection
 
 from app.core.constants import Collection, IntelSource
 from app.data_access.base import MongoRepository
-from app.models.external_intelligence.source_health import (
-    SourceHealth,
-    source_health_in_registry_order,
-    sources_in_registry_order,
-)
+from app.models.external_intelligence.source_health import SourceHealth, sources_in_registry_order
 
 Record = dict[str, Any]
 ALL_SOURCES = [source.value for source in IntelSource]
@@ -68,10 +64,6 @@ class IntelFeedRepository(MongoRepository):
     def list_approved_sources(self) -> list[IntelSource]:
         """The sources Legal still allows, in registry order."""
         return sources_in_registry_order(self.list(["_id"], sources=True, approved=True))
-
-    def list_source_health(self) -> list[SourceHealth]:
-        """Every source's health, in registry order, from one read."""
-        return source_health_in_registry_order(self.list(sources=True))
 
     def claim_intel_feed_refresh(
         self, source: IntelSource, now: datetime, stale_before: datetime
