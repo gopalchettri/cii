@@ -1,5 +1,6 @@
 """Names as code compares, shows and quotes them."""
 
+import html
 import json
 import re
 import unicodedata
@@ -23,9 +24,10 @@ _ASSET_PREPOSITIONS = "of|from|to|in|on|for|against|at"
 
 
 def name_match_key(name: str) -> str:
-    """The key two names are compared by: case folded, accents dropped, letter<->digit boundaries split, runs
-    of non-word characters collapsed to one space. "Ransomware " == "RANSOMWARE"; "APT41" == "APT-41"."""
-    decomposed = unicodedata.normalize("NFKD", name.casefold())
+    """The key two names are compared by: HTML entities read as their characters, case folded, accents
+    dropped, letter<->digit boundaries split, runs of non-word characters collapsed to one space.
+    "Ransomware " == "RANSOMWARE"; "APT41" == "APT-41"; "C&amp;C" == "C&C"."""
+    decomposed = unicodedata.normalize("NFKD", html.unescape(name).casefold())
     stripped = "".join(character for character in decomposed if not unicodedata.combining(character))
     return _NON_WORD.sub(" ", _LETTER_DIGIT_BOUNDARY.sub(" ", stripped)).strip()
 

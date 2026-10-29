@@ -600,15 +600,13 @@ _INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR|SC)\d+\b")
 _STOCK_WORDS = re.compile(
     r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
 )
-#: A closing sentence that opens with the evidence itself instead of this attacker's action: the technique,
-#: threat groups, or malware named as evidence ("Malware, such as ..."; "Malware used by the attackers behind
-#: ..." or "by the attacker group ..."; "Malware planted on ..." and "The malware used by the attacker ..."
-#: are steps).
+#: A closing sentence that opens with the evidence itself instead of this attacker's action: the technique(s),
+#: threat groups, or malware an explicit introducer names as evidence ("Malware, such as ..."). An ambiguous
+#: opening ("Malware used by ...") is left to the reviewer's evidence_supported rule.
 _EVIDENCE_OPENER = re.compile(
-    r"(?:the |a |an )?(?:related )?(?:technique|threat (?:groups?|actors?))\b"
+    r"(?:the |a |an )?(?:related )?(?:techniques?|threat (?:groups?|actors?))\b"
     r"|(?:the |a |an )?(?:malicious software|malware)(?:\s+(?:famil(?:y|ies)|tools?|strains?))?,?\s+"
-    r"(?:such as|called|named|like|known as|including|associated with"
-    r"|used by(?!\s+(?:the|this)\s+attacker\b(?!\s+groups?\b)))\b",
+    r"(?:such as|called|named|known as|like|including)\b",
     re.IGNORECASE,
 )
 _QUOTED = re.compile(r'"[^"]*"')
@@ -690,11 +688,11 @@ def write_set(
     chat: ChatModel, briefs: Sequence[tuple[str, WriterBrief]]
 ) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """Each slot's scenario (or failure card) as soon as it is final, in at most 4 AI calls: one write and one
-    review, then one rewrite for the slots that need it (unreadable, a re-ask fault, or listed actions to
-    repair or a repeated link, each with its reviewed draft kept) and one review for those and the slots
-    whose review is asked again (a relink among them is not rewritten: a clean draft is never risked for
-    variety); there is no third round. A whole write answer still unusable raises UnreadableAiAnswer or
-    TruncatedAiAnswer; an outage raises Unavailable."""
+    review, then one rewrite for the slots that need it (unreadable, a re-ask fault, or listed actions or a
+    reviewer's mismatch to repair or a repeated link, each with its reviewed draft kept) and one review for
+    those and the slots whose review is asked again (a relink among them is not rewritten: a clean draft is
+    never risked for variety); there is no third round. A whole write answer still unusable raises
+    UnreadableAiAnswer or TruncatedAiAnswer; an outage raises Unavailable."""
     slots = [_Slot(label, brief) for label, brief in briefs]
     if not slots:
         return
@@ -796,7 +794,12 @@ def _first_answer_faults(brief: WriterBrief, item: dict[str, Any] | None) -> lis
 
 def _reviewable(slot: _Slot) -> bool:
     """Whether the slot has a draft the reviewer may judge: one no exact finding blocks."""
-    return slot.draft is not None and not _blocks(check_exact_rules(slot.draft, slot.brief))
+    return slot.draft is not None and not _exactly_blocked(slot.draft, slot.brief)
+
+
+def _exactly_blocked(draft: ScenarioDraft, brief: WriterBrief) -> bool:
+    """Whether an exact finding blocks the draft."""
+    return _blocks(check_exact_rules(draft, brief))
 
 
 def _blocks(findings: Iterable[Finding]) -> bool:
@@ -843,11 +846,11 @@ def _draft_of(slot: _Slot) -> ScenarioDraft:
 
 def _first_round_end(slot: _Slot) -> WrittenScenario | None:
     """The slot's scenario when the first round settles it; None while the second round must write or
-    review it again (the reviewed first draft of a repair or a relink is kept on the slot)."""
+    review it again (the reviewed first draft of an act or mismatch repair, or of a relink, is kept on it)."""
     if slot.draft is None or slot.problems or slot.review_problems:
         return None
     written = _checked(slot)
-    if slot.relink or _listed_actions(written.plan_check):
+    if slot.relink or _listed_actions(written.plan_check) or _mismatched(written):
         slot.first = written
         return None
     return written
@@ -859,12 +862,27 @@ def _listed_actions(check: PlanCheck) -> tuple[str, ...]:
     return check.actions_not_carried_out if check.status is PlanCheckStatus.INCONSISTENT else ()
 
 
+def _mismatched(written: WrittenScenario) -> bool:
+    """Whether the reviewer's mismatch is the only thing blocking it (an exact blocker is never repaired)."""
+    return blocking_codes(written) == [FindingCode.SCENARIO_MISMATCH]
+
+
+def _mismatch_problems(written: WrittenScenario) -> tuple[str, ...]:
+    """A mismatched draft's blocker, then the reviewer's broken rules in its own quoted words; none when no
+    mismatch blocks it."""
+    if not _mismatched(written):
+        return ()
+    blocker = (f.message for f in written.findings if f.code == FindingCode.SCENARIO_MISMATCH)
+    return (*blocker, *written.plan_check.problems)
+
+
 def _note(slot: _Slot) -> str:
-    """What a slot's rewrite is told: the listed actions to repair and its repeated link, else its earlier
-    answer's problems."""
+    """What a slot's rewrite is told: the listed actions to repair, then a mismatch's review, its earlier
+    answer's problems and its repeated link."""
     actions = _listed_actions(slot.first.plan_check) if slot.first else ()
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in actions)
-    problems = (*slot.problems, slot.relink) if slot.relink else slot.problems
+    mismatch = _mismatch_problems(slot.first) if slot.first else ()
+    problems = (*mismatch, *slot.problems, *((slot.relink,) if slot.relink else ()))
     shown = (problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in problems[: AiLimits.REASK_MAX_PROBLEMS])
     repair = _REPAIR.replace("{actions}", listed) if actions else ""
     return repair + (_REWRITE.replace("{problems}", "; ".join(shown)) if problems else "")
@@ -872,8 +890,12 @@ def _note(slot: _Slot) -> str:
 
 def _take_rewrite(slot: _Slot, item: dict[str, Any] | None) -> None:
     """The slot's rewrite in place of its draft when it reads; else a repair is dropped (its first draft
-    stays) and a slot keeps its usable first draft, if it had one."""
+    stays) and a slot keeps its usable first draft, if it had one, also over a rewrite an exact rule blocks
+    when that draft is not blocked (it is reviewed in round 2 instead)."""
     draft, problems = _read_slot_draft(slot.brief, item)
+    old = slot.draft if slot.first is None else None
+    if draft and old and _exactly_blocked(draft, slot.brief) and not _exactly_blocked(old, slot.brief):
+        draft = None
     if draft is not None or slot.first is not None:
         slot.draft, slot.review, slot.review_problems = draft, None, ()
     slot.problems = tuple(problems) if slot.draft is None else ()
@@ -890,15 +912,16 @@ def _second_round_end(slot: _Slot) -> WrittenScenario | PathFailure:
 
 
 def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
-    """The repair, marked rewritten, when it fixes the first draft (_fixes) and, when only its link was asked
-    again, keeps the closing sentence the first draft had cited; else the first draft."""
+    """The repair, marked rewritten, when it fixes the first draft (_fixes) with a review not asked again and,
+    when only its link was asked again, keeps the closing sentence the first draft had cited; else the first
+    draft."""
     if slot.draft is None:
         log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", message="; ".join(slot.problems))
         return first
     repair = _checked(slot)
-    link_only = not _listed_actions(first.plan_check)
+    link_only = not (_listed_actions(first.plan_check) or _mismatched(first))
     lost = link_only and bool(first.draft.evidence_statement) and not repair.draft.evidence_statement
-    fixed = _fixes(repair, first) and not lost
+    fixed = _fixes(repair, first) and not lost and not slot.review_problems
     log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
     return dataclasses.replace(repair, rewritten=True) if fixed else first
 
@@ -1002,7 +1025,7 @@ def _broken_rules(answer: PlanCheckAnswer) -> tuple[str, ...]:
 
 
 def _mismatch(answer: PlanCheckAnswer) -> tuple[Finding, ...]:
-    """A statement of another threat, or a risk of another impact: a blocker a new attempt may clear."""
+    """A statement of another threat, or a risk of another impact: a blocker round 2's repair may clear."""
     wrong = [
         part for part, same in (("threat", answer.same_threat), ("impact", answer.same_impact)) if not same
     ]

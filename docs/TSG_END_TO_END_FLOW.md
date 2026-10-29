@@ -2212,13 +2212,15 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 3. **One review call** covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
    (§8.5), read slot by slot with today's reviewer readers. **A slot that is final is saved at once.**
 4. **Round 2, only when needed:** one rewrite call (task `repair_scenario`) for the slots that were unreadable,
-   had a fault worth asking again, or need a repair, each with its own problems, or whose closing sentence links
+   had a fault worth asking again, or need a repair (a listed act not carried out, or a `scenario_mismatch`
+   told the reviewer's quoted words, D62), each with its own problems, or whose closing sentence links
    to its title in the same words as an earlier clean slot's (`_flag_repeated_links`, D60: told the links taken);
    then one review call for those slots and the slots whose first review is asked again. A repair or relink is
-   kept only if it fixed the first draft (`_fixes`, §8.5 step 8), and a relink with no action to repair only if
-   its sentence can still be cited; else the reviewed first draft stays. A relink whose first review is asked
+   kept only if it fixed the first draft (`_fixes`, §8.5 step 8) and its review is not asked again, and a relink
+   with no act or mismatch to repair only if its sentence can still be cited; else the reviewed first draft
+   stays (a mismatched one is saved blocked and a reserve path follows). A relink whose first review is asked
    again has no reviewed draft to fall back on, so it is not rewritten: its clean draft is reviewed again and
-   its repeated link cited (D60). A slot still unusable keeps
+   its repeated link cited (D60). A slot still unusable, or whose rewrite an exact rule blocks, keeps
    its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
    round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's or relink's first draft; any other draft checked,
    with `plan_check_not_made` naming the outage when it has no review); only a slot with no usable draft keeps
@@ -2619,7 +2621,8 @@ near copy.
 > **In plain words:** A second AI acts as an editor. It reads the plan, the evidence and the draft, and checks
 > seven rules: the same threat, the right attacker, only the listed systems, the right kind of impact, a matching risk, nothing invented, and no real-world claims outside the passage.
 > A broken rule is shown to the human reviewer as a note (a part of the threat only named, not carried out, is
-> one). A draft about a different threat or impact is stopped.
+> one). A draft about a different threat or impact is written once more, told the editor's words, and is
+> stopped only if that fails.
 
 **How**
 1. One call, task `plan_check`, for every slot of the round with no exact blocker (§8.0): the system prompt
@@ -2656,8 +2659,8 @@ near copy.
    Rules 1-3 and 5-8 and the verdicts `same_threat` and `same_impact` judge every field except
    `evidence_statement`. `same_threat` is also false when an added step, not the threat, causes the primary
    impact (using access the threat only obtains to do something its name does not state is one). A stated
-   action missing or only named breaks rule 1 (a note, not a blocker: a blocked draft is not rewritten, so
-   blocking would drop the scenario). The per-action field exists because an omission has no words to
+   action missing or only named breaks rule 1 (a note, not a blocker: a blocked draft whose one repair fails
+   is dropped). The per-action field exists because an omission has no words to
    quote: in the experiments the reviewer caught 0 of 3 incomplete drafts with rule 1's quoted verdict alone,
    and 3 of 3 with `threat_actions` (D40). Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's facts, plus
    exactly one link, at its start, from an action the story tells to that entry; no such opening, any other link, an equated different act,
@@ -2675,7 +2678,8 @@ near copy.
      10 (`_broken_rules`). Each `threat_actions` verdict other than "carried out" becomes one rule 1 note too,
      naming the action and its verdict, within the same limits. The check's status is `inconsistent` when
      there is a note, else `consistent`. An action not carried out is never a blocker.
-   - `same_threat` or `same_impact` false is a `scenario_mismatch` **blocker** (`_mismatch`).
+   - `same_threat` or `same_impact` false is a `scenario_mismatch` **blocker** (`_mismatch`), repaired once
+     in round 2 (step 8, D62).
    - An answer still unusable after the re-ask, or cut off, gives a `plan_check_not_made` **warning**. The
      status is `unchecked`, and the scenario is still saved, flagged.
    - A reviewer outage (`Unavailable`) is raised. The path waits as an outage and is written again on the next
@@ -2690,10 +2694,13 @@ near copy.
    prompt plus `[scenario.writer]` `repair`, which names those acts. The rewrite is checked and reviewed like
    any draft (8.4, 8.5). It replaces the first draft (`rewritten: true`) only if it is not blocked, keeps
    `same_threat` and `same_impact` true, leaves no act to repair (`_listed_actions`: an act a consistent
-   review leaves unjudged does not count) and breaks no rule the first draft held.
-   Otherwise the first draft is kept with its notes, and so it is when the rewrite or its review hits an
+   review leaves unjudged does not count), breaks no rule the first draft held and its review is not asked
+   again. Otherwise the first draft is kept with its notes, and so it is when the rewrite or its review hits an
    outage or an unusable answer. Log `writer.scenario_repaired`, outcome `fixed` or `kept_first`. A complete
-   first draft costs no extra call.
+   first draft costs no extra call. A draft blocked only by `scenario_mismatch` gets the same one rewrite
+   (D62), told the mismatch and the reviewer's broken rules in its own quoted words through `[scenario.writer]`
+   `rewrite`; it is never refused for a closing sentence that cannot be cited. When it fails, the blocked
+   first draft is saved and a reserve path follows.
 
 **In the example**
 
@@ -2733,9 +2740,9 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
       "cited"; quoted titles aside): 'it says "{words}"';
    5. it is more than one sentence: "it is more than one sentence";
    6. for a technique only: the title is not in double quotes (straight or curly), or the passage opens with the
-      title, a user, "the technique", "threat groups" or malware named as evidence ("Malware, such as …",
-      "A malware family called …", "Malware used by the attackers behind …" or "by the attacker group …";
-      "Malware planted on …" and "The malware used by the attacker …" are steps): 'it does not give the
+      title, a user, "the technique(s)", "threat groups" or malware an explicit introducer names as evidence
+      ("Malware, such as …", "A malware family called …", "Techniques like …"; an ambiguous "Malware used by …"
+      or "associated with …" is left to the reviewer's `evidence_supported`, D62): 'it does not give the
       title …' / "it opens with the evidence, not with this attacker's action";
    7. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
       reviewer did not confirm it against its source".

@@ -35,7 +35,7 @@ from app.domain.scenario.write import (
     written_record,
 )
 from app.domain.shared.ask_ai import call_tokens
-from app.models.scenario.write import PathFailure, WrittenScenario
+from app.models.scenario.write import BriefSystem, PathFailure, WrittenScenario
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.writing.test_evidence_story import _GROUPS, _KEV, _story_brief
 from tests.fakes import FakeChatModel, brief_of, slot_blocks, truncated
@@ -569,6 +569,148 @@ def test_a_blocked_slot_claims_no_link() -> None:
     first, second = outcomes["SC1"], outcomes["SC2"]
     assert isinstance(first, WrittenScenario) and is_blocked(first)
     assert isinstance(second, WrittenScenario) and second.findings == ()
+
+
+#: A later use of stolen access the writer adds, which the reviewer quotes in its mismatch.
+_LATER_USE = "They could then sell the stolen logins on a forum."
+_MISMATCH = {
+    "same_threat": False,
+    "rules": {"1": f'broken: "{_LATER_USE}" - a later use of the stolen access is another threat'},
+}
+
+
+def _mismatch_review(block: str) -> dict[str, Any]:
+    """The reviewer's mismatch quoting the added sentence when a draft has it, else a confirming review."""
+    return _confirmed(block) | (_MISMATCH if _LATER_USE in block else {})
+
+
+def _with_later_use(_: str) -> dict[str, Any]:
+    """A draft adding the later use of stolen access."""
+    return draft_answer(_CLEAN) | {"scenario_statement": f"{_CLEAN.statement} {_LATER_USE}"}
+
+
+def _down(_: str) -> dict[str, Any]:
+    raise Unavailable("The AI service is busy.")
+
+
+def _write_mismatched(
+    rewrite: Callable[[str], dict[str, Any]],
+) -> tuple[FakeChatModel, dict[str, WrittenScenario | PathFailure]]:
+    """SC1 clean, SC2's first draft adding the later use and its rewrite answered by `rewrite`: the fake and
+    each slot's outcome."""
+
+    def write(block: str) -> dict[str, Any]:
+        if "REJECTED:" in block:
+            return rewrite(block)
+        return _with_later_use(block) if '"Threat 2"' in block else draft_answer(_CLEAN)
+
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _mismatch_review}
+    return fake, dict(write_set(fake, _briefs(2)))  # type: ignore[arg-type]
+
+
+def _record_of(written: WrittenScenario | PathFailure) -> dict[str, Any]:
+    """The card SC2's outcome is saved as."""
+    assert isinstance(written, WrittenScenario)
+    threat = _plan_threat(key="lib:2", name="Threat 2")
+    run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
+    path = {"path_id": "p2", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
+    return written_record(run, path, threat, _briefs(2)[1][1], written)
+
+
+def test_a_mismatched_draft_is_repaired_in_round_2_told_the_reviewers_quoted_words() -> None:
+    """Owner, 30 Oct: the reviewer blocked 3 of 15 scenarios as mismatched, each giving its path up for a
+    reserve written in a new batch. SC2 is now rewritten in the set's one rewrite, told the mismatch and the
+    reviewer's quoted words, and its fixed rewrite is saved done; SC1 comes out after the first round."""
+    fake, outcomes = _write_mismatched(lambda _: draft_answer(_CLEAN))
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS
+    (rewrite,) = fake.asked(AiTask.REPAIR_SCENARIO)
+    told = rewrite.split("REJECTED:")[1]
+    assert _labels(rewrite) == ["SC2"] and "no longer describes the plan's threat" in told
+    assert f'Rule 1: "{_LATER_USE}" - a later use' in told
+    second = outcomes["SC2"]
+    assert isinstance(second, WrittenScenario) and second.rewritten and second.findings == ()
+    record = _record_of(second)
+    assert record["status"] == ScenarioStatus.DONE and record["rewritten"] is True
+
+
+@pytest.mark.parametrize(
+    ("rewrite", "calls"),
+    [(_with_later_use, _TWO_ROUNDS), (_down, _TWO_ROUNDS[:3])],
+    ids=["still_mismatched", "outage"],
+)
+def test_a_mismatch_repair_that_fails_keeps_the_blocked_first_draft(
+    rewrite: Callable[[str], dict[str, Any]], calls: list[AiTask]
+) -> None:
+    """A repair still mismatched, or an outage at the round-2 rewrite: SC2's blocked first draft is yielded
+    as before, so its path is given up and a reserve still follows."""
+    fake, outcomes = _write_mismatched(rewrite)
+    second = outcomes["SC2"]
+    assert [task for task, _ in fake.calls] == calls
+    assert isinstance(second, WrittenScenario) and not second.rewritten
+    assert _LATER_USE in second.draft.statement and _record_of(second)["status"] == ScenarioStatus.BLOCKED
+
+
+def test_a_mismatch_repair_whose_evidence_sentence_cannot_be_cited_is_still_taken() -> None:
+    """Keeping a cited sentence guards a link-only relink: a repair clearing a mismatch is taken though its
+    sentence cannot be cited (code's own is), never the blocked first draft."""
+
+    def write(block: str) -> dict[str, Any]:
+        if "REJECTED:" in block:
+            return draft_answer(_CLEAN) | {"evidence_statement": _DOCUMENTED}
+        return _with_later_use(block) | {"evidence_statement": _MATCHES["Valid Accounts"]}
+
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _mismatch_review}
+    ((_, written),) = write_set(fake, [("SC1", _story_brief(_GROUPS))])  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS
+    assert isinstance(written, WrittenScenario) and written.rewritten and not is_blocked(written)
+    assert [finding.code for finding in written.findings] == [FindingCode.CITATION_REMOVED]
+    assert written.draft.evidence_statement == ""
+
+
+def test_a_repair_whose_review_must_be_asked_again_keeps_the_first_draft() -> None:
+    """A repair whose round-2 review judges none of the listed actions has a review to ask again, so it is
+    not proven fixed: the reviewed first draft stays."""
+    fake = FakeChatModel()
+    fake.queue(AiTask.PLAN_CHECK, _CONSISTENT | {"threat_actions": {_ACT: "missing"}}, _CONSISTENT)
+    fake.responders |= {AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN)}
+    ((_, written),) = write_set(fake, _briefs(1, acted={1}))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == _TWO_ROUNDS
+    assert isinstance(written, WrittenScenario) and not written.rewritten
+    assert written.plan_check.actions_not_carried_out == (_ACT,)
+
+
+def test_a_faulted_slots_rewrite_an_exact_rule_blocks_leaves_its_own_draft_to_be_reviewed() -> None:
+    """A slot written again for a fault whose rewrite names a made-up label keeps its own unblocked draft,
+    reviewed in round 2, instead of a blocked card."""
+
+    def write(block: str) -> dict[str, Any]:
+        if "REJECTED:" in block:
+            return draft_answer(_CLEAN) | {"scenario_statement": f"{_CLEAN.statement} SYS7 helps."}
+        return draft_answer(_CLEAN) | {"action_sentences": {}}
+
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write, AiTask.PLAN_CHECK: _review_of}
+    ((_, written),) = write_set(fake, _briefs(1, acted={1}))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == [_TWO_ROUNDS[0], *_TWO_ROUNDS[2:]]  # no first review
+    assert isinstance(written, WrittenScenario) and written.findings == ()
+    assert written.draft.statement == _CLEAN.statement
+    assert written.plan_check.status is PlanCheckStatus.CONSISTENT
+
+
+def test_a_slot_whose_system_reasons_name_a_system_with_html_entities_is_read_first_time() -> None:
+    """Live replay, 30 Oct: the writer wrote "&amp;" for "&" in system_reasons, so a reason read as missing
+    and a whole rewrite round ran for 5 slots; the name is now read with its entities."""
+    name = "Enterprise Command & Control Centre Platform"
+    brief = dataclasses.replace(_briefs(1)[0][1], supporting_systems=(BriefSystem(1448, name, True),))
+    reason = "It could relay the attacker's commands."
+    answer = draft_answer(_CLEAN) | {"system_reasons": {name.replace("&", "&amp;"): reason}}
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: lambda _: answer, AiTask.PLAN_CHECK: _review_of}
+    ((_, written),) = write_set(fake, [("SC1", brief)])  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert isinstance(written, WrittenScenario) and written.draft.system_reasons == ((name, reason),)
 
 
 def test_a_repeated_links_note_lists_only_the_whole_taken_links_that_fit_a_reask_problem() -> None:

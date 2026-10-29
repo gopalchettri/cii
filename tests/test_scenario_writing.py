@@ -578,8 +578,10 @@ def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does()
 
 
 def _plan_checked(*answers: Any) -> tuple[PlanCheck, tuple[Finding, ...]]:
+    """_CLEAN reviewed by `answers`; a mismatch's round-2 repair is _CLEAN, judged by the last answer."""
     chat = FakeChatModel()
-    chat.queue(AiTask.PLAN_CHECK, *answers)
+    chat.queue(AiTask.PLAN_CHECK, *answers, answers[-1])
+    chat.queue(AiTask.REPAIR_SCENARIO, draft_answer(_CLEAN))
     return check_against_plan(chat, _brief_of(_plan_threat()), _CLEAN)
 
 
@@ -671,12 +673,13 @@ def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None
     assert write_scenario(chat, _brief_of(_plan_threat(systems=()))).draft.entry_point == ""
 
 
-def test_a_mismatch_blocks_after_one_write_and_is_not_final() -> None:
-    """The blocked draft counts an attempt and its path is given up at once: the writer's own retry is off."""
-    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH])
+def test_a_mismatch_is_repaired_once_and_a_repair_still_mismatched_keeps_the_blocked_first() -> None:
+    """A mismatch is rewritten once in round 2; a repair still mismatched leaves the first draft blocked and
+    not final, so its path is given up for a reserve (the writer's own retry is off)."""
+    chat = _chat_answering([draft_answer(_CLEAN), draft_answer(_CLEAN)], [_MISMATCH, _MISMATCH])
     written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert is_blocked(written) and not is_final(written)
-    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert is_blocked(written) and not is_final(written) and not written.rewritten
+    assert _calls(chat) == _REVIEWED
 
 
 def test_a_draft_the_exact_checks_block_makes_no_reviewer_call() -> None:

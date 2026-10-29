@@ -21,7 +21,7 @@ class ScenarioStatus(StrEnum):
 
     DONE = "done"  # written: served and counted
     FAILED = "failed"  # the writer's answer stayed unreadable: a visible failure card; the path is retried
-    BLOCKED = "blocked"  # a blocker was found: kept for audit only; the path is retried
+    BLOCKED = "blocked"  # a blocker was found: kept for audit; the path is given up, a reserve may follow
 
 
 class ScenarioOutcome(StrEnum):
