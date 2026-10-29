@@ -626,7 +626,7 @@ spec:                                            # what to run
           volumeMounts:                          # folders from the volumes below
             - { name: data, mountPath: /var/lib/grafana }   # Grafana's database
             - { name: provisioning, mountPath: /etc/grafana/provisioning }   # data sources and the dashboard folder, read at start
-            - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }   # the TSG dashboard
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }   # the dashboards: tsg.json (home) and ai_usage.json
           resources:                             # CPU and memory
             requests: { cpu: 100m, memory: 256Mi }   # reserved for the pod
             limits: { cpu: 500m, memory: 512Mi }   # the most it may use
@@ -639,8 +639,11 @@ spec:                                            # what to run
             items:                               # each key to the sub-folder Grafana looks in
               - { key: datasources.yaml, path: datasources/datasources.yaml }   # the data sources
               - { key: dashboards.yaml, path: dashboards/dashboards.yaml }   # where the dashboards are
-        - name: dashboards                       # the dashboard
-          configMap: { name: grafana-dashboards }   # from configmap.yaml (tsg.json)
+        - name: dashboards                       # the dashboards, side by side in one folder
+          projected:                             # several ConfigMaps in one folder (one cannot hold both under oc apply's 256 KiB)
+            sources:                             # each ConfigMap's keys become files of the same name
+              - configMap: { name: grafana-dashboards }   # from configmap.yaml (tsg.json, the home page)
+              - configMap: { name: grafana-dashboard-ai-usage }   # from configmap.yaml (ai_usage.json)
 ---
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod

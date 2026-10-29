@@ -54,6 +54,11 @@ scrape_configs:
         regex: flower
         target_label: ui_url
         replacement: /flower/
+      # The AI usage dashboard's report links open this: Grafana's Route is on the API's own host.
+      - source_labels: [job]
+        regex: api
+        target_label: ui_url
+        replacement: /v1/ai-usage
       - source_labels: [__meta_kubernetes_namespace]
         target_label: namespace
       - source_labels: [__meta_kubernetes_pod_name]

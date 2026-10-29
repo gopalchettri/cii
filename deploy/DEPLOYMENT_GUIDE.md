@@ -540,6 +540,8 @@ first data arrives, a check can still show as a problem.
 **If Overall still shows a problem after 10 minutes:** the panel **What is wrong right now** names it. Fix it with
 Part 5, then go on to step 16.
 
+The page **TSG — AI usage** opens from the home page's **AI usage** tiles (click one).
+
 **Alert email:** each alert that fires is emailed to the recipients of step 8 (and again when it clears). When
 one fires and no email comes, run `oc -n ai-common logs deployment/alertmanager`: it shows why the send failed
 (a wrong login, or the relay or `smtp.gmail.com` not reachable from `ai-common`).
@@ -637,6 +639,7 @@ The first three panels are at the top. Scroll down for the others.
 | **Jobs waiting in each queue** | A queue that keeps growing is missing its worker, or the AI is slow |
 | **Wait for an AI request's turn (95 %), by model** | Long waits mean the AI key is the limit, not the pods |
 | **AI gateway refusals (429) per minute** | Many 429s mean the gateway is refusing calls |
+| **TSG — AI usage** (its own dashboard: click a tile of the home page's **AI usage** row) | AI calls by module, API call and part of the work; failed ones by reason; by activity and model; tokens; whether the tracking works; links to one session's or request's report. Counts only: the exact numbers come from `GET /v1/ai-usage` |
 
 **Example:** a user says "my run is stuck". Copy the run's `session_id` into the box **"Find a run, request or job
 id"** at the top of the page. The section **"Follow one run or request"** then shows its log lines: which stage it
@@ -658,8 +661,9 @@ oc -n ai-common rollout restart deployment/grafana
 
 **You should see:** `secret/tsg-monitoring configured` (the other secrets `unchanged`), then `deployment.apps/grafana restarted`. Grafana is down for about a minute. When `oc -n ai-common get pods -l app=grafana` shows `1/1` and `Running`, sign in with the new password. Grafana takes the password from the secret each time it starts.
 
-The TSG dashboard cannot be changed in the browser. To change it, edit `observability\grafana\dashboards\tsg.json`
-and its copy in `deploy\configmap.yaml` in git, apply `configmap.yaml` (Part 2, step 8), then
+The dashboards cannot be changed in the browser. To change one, edit its file in `observability\grafana\dashboards`
+(`tsg.json` or `ai_usage.json`) and its copy in `deploy\configmap.yaml` (ConfigMap `grafana-dashboards` or
+`grafana-dashboard-ai-usage`) in git, apply `configmap.yaml` (Part 2, step 8), then
 `oc -n ai-common rollout restart deployment/grafana`.
 
 ### Step 4. If the address does not open
@@ -768,6 +772,9 @@ builds and pods. Tick each line as you finish it; the details follow.
 - Step 5: the secrets check prints 5 names: `CII_SCENARIO_CHAT_API_KEY`, `CII_REMEDIATION_CHAT_API_KEY` and
   `CII_SERVICE_MAPPER_CHAT_API_KEY` (each module now has its own AI key line), and `SMTP_RELAY_PASSWORD` and
   `GMAIL_APP_PASSWORD` (`""` for both: UAT sends no alert email yet). The table in step 5 says what to do.
+- Step 5's `configmap.yaml` adds the ConfigMap `grafana-dashboard-ai-usage` (the new dashboard **TSG — AI usage**)
+  and tells Prometheus where the API's AI usage reports are (`ui_url` on the API). Step 6's `deploy_common.yaml`
+  mounts that ConfigMap in Grafana, which restarts by itself.
 - Step 6 adds three pods: the reaper worker and Alloy's volume `alloy-data` (1 Gi) in ai-common, and the
   monitoring proxy in ai-threatgen. ai-common is shared with the chatbot, so first check its room: Part 2,
   step 2, "Then check ai-common" (at least 2.95 CPU, 5.9Gi and 22Gi for TSG).
@@ -870,7 +877,7 @@ Redis TLS: once the Redis owner has turned TLS on (Part 1, "The Redis owner's pa
 `rediss://` in both Redis lines of `tsg-secrets`; until then keep `redis://`.
 
 Then apply both, and restart the monitoring so it loads its new config files: Prometheus its alert rules,
-Grafana its dashboard, Alertmanager its senders. Flower is left out: it runs the app image, and the running one
+Grafana its dashboards, Alertmanager its senders. Flower is left out: it runs the app image, and the running one
 would not start with the new settings; step 6 starts it on the new image, with the app pods.
 
 ```powershell
@@ -996,7 +1003,8 @@ oc -n ai-threatgen exec deploy/api -- python -m app.worker.admin.ai_usage_tools 
 ```
 
 **You should see:** `tsg_ai_call_texts now holds <n> AI call texts`. Five minutes later,
-`GET /v1/ai-usage` answers with counts (the first ones after the first run).
+`GET /v1/ai-usage` answers with counts (the first ones after the first run), and the dashboard **TSG — AI usage**
+shows them.
 
 ---
 
