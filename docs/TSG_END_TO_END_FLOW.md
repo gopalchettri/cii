@@ -4120,8 +4120,9 @@ stateDiagram-v2
   time zone; cached 60 s), `/v1/ai-usage/requests?session_id=` (each request of a session, live, with its
   totals; or of a range, from the summaries),
   `/v1/ai-usage/requests/{request_id}` (one request's activities) and `/v1/ai-usage/calls?request_id=` (its
-  every call). Grafana's "AI usage" row shows the same counts from `tsg_ai_usage_calls_total`. A row MongoDB
-  refuses is logged whole (`ai.usage_row_spilled`, alert `AiUsageNotRecorded`): replay it with
+  every call). Grafana's home "AI usage" row shows the same counts from `tsg_ai_usage_calls_total`, and its
+  tiles open the dashboard "TSG — AI usage", which shows them per API call, part, activity and model. A row
+  MongoDB refuses is logged whole (`ai.usage_row_spilled`, alert `AiUsageNotRecorded`): replay it with
   `python -m app.worker.admin.ai_usage_tools replay` within 7 days (stored and added up under the add-up's
   lock, so no row is stored uncounted).
 - **Seeing jobs:** `GET /v1/admin/jobs` (admin key) lists every job of every kind (runs, plans, service
@@ -4143,8 +4144,10 @@ stateDiagram-v2
   a green/red tile for every part (API, each worker queue, beat, MongoDB, SQL Server, Redis, the AI service,
   log collection, alerting) and the problems now; counts and lists of errors and exceptions, warnings, failed
   jobs and failed API calls; what the workers are doing (with "Jobs now"); what is slow; and "Follow one run
-  or request": every id on the page is a link to all log lines of that run or request. Flower shows the
-  Celery tasks.
+  or request": every id on the page is a link to all log lines of that run or request. "TSG — AI usage"
+  (`ai_usage.json`, opened from the home page's AI usage tiles) counts the AI calls by module, API call, part,
+  activity and model, the failed ones and why, the tokens and whether the tracking works, and links to one
+  session's or request's reports. Flower shows the Celery tasks.
 - **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the job worker
   (`tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation`), the service-mapper worker (`tsg_servicemapper`), the
   maintenance worker (`tsg_maintenance`), the reaper worker (`tsg_reaper`) and beat, starts the monitoring

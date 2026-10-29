@@ -6,6 +6,7 @@ file rules (no kubernetes.io but the node label that spreads the pods, a comment
 spreading over nodes and what goes into the image.
 A broken file must fail here, not halfway through a rollout."""
 
+import json
 import math
 import os
 import re
@@ -102,6 +103,7 @@ EMBEDDED_CONFIGS = {
     "datasources.yaml": "observability/grafana/provisioning/datasources/datasources.yaml",
     "dashboards.yaml": "observability/grafana/provisioning/dashboards/dashboards.yaml",
     "tsg.json": "observability/grafana/dashboards/tsg.json",
+    "ai_usage.json": "observability/grafana/dashboards/ai_usage.json",
     "nginx.conf": "observability/nginx/nginx.conf",  # the monitoring proxy's: UAT only
 }
 #: How a pod names a ConfigMap or Secret it reads (envFrom, env valueFrom).
@@ -293,8 +295,8 @@ def _scalars(node: object, key: object = None) -> list[tuple[object, object]]:
 
 
 def _reads(deployment: dict) -> set[tuple[str, str, str]]:
-    """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes, and
-    its volume claims; key "" = the whole object."""
+    """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes (a
+    projected volume's sources too), and its volume claims; key "" = the whole object."""
     spec = deployment["spec"]["template"]["spec"]
     reads = set()
     for container in _containers(deployment):
@@ -306,12 +308,14 @@ def _reads(deployment: dict) -> set[tuple[str, str, str]]:
                 if reference in REFERENCES:
                     reads.add((REFERENCES[reference], target["name"], target.get("key", "")))
     for volume in spec.get("volumes", []):
-        if "configMap" in volume:
-            keys = [item["key"] for item in volume["configMap"].get("items", [])] or [""]
-            reads |= {("ConfigMap", volume["configMap"]["name"], key) for key in keys}
-        if "secret" in volume:
-            keys = [item["key"] for item in volume["secret"].get("items", [])] or [""]
-            reads |= {("Secret", volume["secret"]["secretName"], key) for key in keys}
+        for source in [volume, *volume.get("projected", {}).get("sources", [])]:
+            if "configMap" in source:
+                keys = [item["key"] for item in source["configMap"].get("items", [])] or [""]
+                reads |= {("ConfigMap", source["configMap"]["name"], key) for key in keys}
+            if "secret" in source:
+                secret = source["secret"]  # a volume names it secretName, a projected source name
+                keys = [item["key"] for item in secret.get("items", [])] or [""]
+                reads |= {("Secret", secret.get("secretName") or secret["name"], key) for key in keys}
         if "persistentVolumeClaim" in volume:
             reads.add(("PersistentVolumeClaim", volume["persistentVolumeClaim"]["claimName"], ""))
     return reads
@@ -685,6 +689,39 @@ def test_each_embedded_monitoring_config_is_its_observability_file_byte_for_byte
         if embedded[key].encode("utf-8") != (REPO / source).read_bytes()
     ]
     assert differ == []
+
+
+def test_grafana_mounts_every_dashboard_file_in_the_folder_it_loads() -> None:
+    """Grafana loads every file of GRAFANA_DASHBOARDS: the ConfigMaps projected there hold exactly the files
+    of observability/grafana/dashboards, and the home page is tsg.json in it. Fails when a dashboard's
+    ConfigMap is dropped from the projected volume, a new dashboard gets no ConfigMap, or the home path
+    moves."""
+    grafana = _deployment("grafana")
+    pod, container = grafana["spec"]["template"]["spec"], _container(grafana)
+    env = {variable["name"]: variable.get("value") for variable in container["env"]}
+    folder = env["GRAFANA_DASHBOARDS"]
+    [mount] = [m for m in container["volumeMounts"] if m["mountPath"] == folder]
+    [volume] = [v for v in pod["volumes"] if v["name"] == mount["name"]]
+    names = {source["configMap"]["name"] for source in volume["projected"]["sources"]}
+    mounted = {
+        key
+        for config_map in _objects(CONFIG_FILE, kind="ConfigMap")
+        if config_map["metadata"]["name"] in names
+        and config_map["metadata"]["namespace"] == MONITORING_NAMESPACE
+        for key in config_map["data"]
+    }
+    dashboards = REPO / "observability" / "grafana" / "dashboards"
+    assert mounted == {path.name for path in dashboards.glob("*.json")}
+    assert env["GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH"] == f"{folder}/tsg.json"
+
+
+def test_every_object_fits_oc_apply_s_last_applied_annotation() -> None:
+    """Client-side oc apply keeps each object, as JSON, in one annotation of at most 262,144 bytes; kubectl
+    writes <, > and & as 6-byte escapes, so each object stays under 250,000 bytes (about 5% margin). Fails
+    when a second dashboard is added to tsg.json's ConfigMap instead of its own."""
+    for item in _objects(CONFIG_FILE, COMMON_FILE):
+        size = len(json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        assert size < 250_000, (item["kind"], item["metadata"]["name"], size)
 
 
 def test_monitoring_images_come_from_the_mirror_with_a_pinned_version() -> None:

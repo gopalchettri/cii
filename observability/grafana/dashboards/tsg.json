@@ -6326,7 +6326,7 @@
     {
       "id": 65,
       "type": "row",
-      "title": "AI usage: how many AI calls, by module, API call and part (counts)",
+      "title": "AI usage (counts): click a tile for the full AI usage page",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -6335,13 +6335,13 @@
         "x": 0,
         "y": 136
       },
-      "description": "How many AI calls TSG made in the chosen time, by module, API call, part of the work and model, and how many failed: counts only. One request or session in full: GET /v1/ai-usage/requests (no key)."
+      "description": "How many AI calls TSG made in the chosen time, by module, API call, part of the work and model, and how many failed: counts only. One request or session in full: GET /v1/ai-usage/requests (no key). Click any tile below for the TSG — AI usage dashboard: by API call, part, activity and model, and one session or request."
     },
     {
       "id": 66,
       "type": "stat",
       "title": "AI calls",
-      "description": "Attempts sent to an AI model (chat, embedding, rerank), retries included. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Attempts sent to an AI model (chat, embedding, rerank), retries included. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6353,7 +6353,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]))) or vector(0)",
+          "expr": "sum((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)",
           "legendFormat": "AI calls",
           "instant": true,
           "range": false,
@@ -6377,7 +6377,13 @@
                 "value": null
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "The AI usage page",
+              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
+            }
+          ]
         },
         "overrides": []
       },
@@ -6405,7 +6411,7 @@
       "id": 67,
       "type": "stat",
       "title": "Successful AI calls",
-      "description": "AI calls that ended ok. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "AI calls that ended ok. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6417,7 +6423,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]))) or vector(0)",
+          "expr": "sum((((tsg_ai_usage_calls_total{outcome=\"ok\"} - tsg_ai_usage_calls_total{outcome=\"ok\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[1h] offset $__range)))) or vector(0)",
           "legendFormat": "Successful AI calls",
           "instant": true,
           "range": false,
@@ -6441,7 +6447,13 @@
                 "value": null
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "The AI usage page",
+              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
+            }
+          ]
         },
         "overrides": []
       },
@@ -6469,7 +6481,7 @@
       "id": 68,
       "type": "stat",
       "title": "Failed AI calls",
-      "description": "AI calls with no usable answer: busy, timed out, cut off, unusable, refused. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "AI calls with no usable answer: busy, timed out, cut off, unusable, refused. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6481,7 +6493,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) or vector(0)",
+          "expr": "sum((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) or vector(0)",
           "legendFormat": "Failed AI calls",
           "instant": true,
           "range": false,
@@ -6505,7 +6517,13 @@
                 "value": null
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "The AI usage page",
+              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}&viewPanel=panel-114"
+            }
+          ]
         },
         "overrides": []
       },
@@ -6533,7 +6551,7 @@
       "id": 69,
       "type": "stat",
       "title": "Earlier answers reused",
-      "description": "Answers a job's retry read back: no AI call made. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Answers a job's retry read back: no AI call made. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6545,7 +6563,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(round(increase(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]))) or vector(0)",
+          "expr": "sum((((tsg_ai_usage_calls_total{outcome=\"reused\"} - tsg_ai_usage_calls_total{outcome=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[1h] offset $__range)))) or vector(0)",
           "legendFormat": "Earlier answers reused",
           "instant": true,
           "range": false,
@@ -6569,7 +6587,13 @@
                 "value": null
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "The AI usage page",
+              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
+            }
+          ]
         },
         "overrides": []
       },
@@ -6597,7 +6621,7 @@
       "id": 70,
       "type": "table",
       "title": "AI calls by module, API call and part",
-      "description": "Parts: threats (finding threats), scenario (writing scenarios), controls (picking controls), remediation (writing the plan), service_mapper (mapping services), shared (indexing no request asked for). Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Parts: threats (finding threats), scenario (writing scenarios), controls (picking controls), remediation (writing the plan), service_mapper (mapping services), shared (indexing no request asked for). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6609,7 +6633,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (module, api, bucket) (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]))) > 0",
+          "expr": "sum by (module, api, bucket) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -6621,7 +6645,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (module, api, bucket) (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) > 0",
+          "expr": "sum by (module, api, bucket) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -6677,7 +6701,7 @@
       "id": 71,
       "type": "table",
       "title": "Failed AI calls by module, API call and reason",
-      "description": "Why calls failed: ai_busy (429 or overloaded), ai_timed_out, ai_unreachable, ai_down (server error), no_choices; unreadable and truncated answers have no outage reason. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Why calls failed: ai_busy (429 or overloaded), ai_timed_out, ai_unreachable, ai_down (server error), no_choices; unreadable and truncated answers have no outage reason. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6689,7 +6713,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (module, api, outcome, reason) (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) > 0",
+          "expr": "sum by (module, api, outcome, reason) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -6745,7 +6769,7 @@
       "id": 72,
       "type": "table",
       "title": "AI calls by model and task",
-      "description": "Each model's calls per task (relevance_gate, gap_fill, threat_actions, write_scenario, repair_scenario, plan_check, remediation_plan, service_mapper, embed, rerank). Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Each model's calls per task (relevance_gate, gap_fill, threat_actions, write_scenario, repair_scenario, plan_check, remediation_plan, service_mapper, embed, rerank). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6757,7 +6781,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (model, task) (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]))) > 0",
+          "expr": "sum by (model, task) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -6769,7 +6793,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (model, task) (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]))) > 0",
+          "expr": "sum by (model, task) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -6824,7 +6848,7 @@
       "id": 73,
       "type": "table",
       "title": "AI tokens by module and API call",
-      "description": "Tokens sent (in) and answered (out) by chat calls. Prometheus counts over the chosen time, from each pod's counters (a pod restart loses its own); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Tokens sent (in) and answered (out) by chat calls. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6836,7 +6860,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (module, api, direction) (round(increase(tsg_ai_usage_tokens_total[$__range]))) > 0",
+          "expr": "sum by (module, api, direction) ((((tsg_ai_usage_tokens_total - tsg_ai_usage_tokens_total offset $__range) and resets(tsg_ai_usage_tokens_total[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total[$__range])) and last_over_time(tsg_ai_usage_tokens_total[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total[$__range]) unless last_over_time(tsg_ai_usage_tokens_total[1h] offset $__range)))) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
