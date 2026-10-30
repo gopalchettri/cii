@@ -77,9 +77,8 @@ class AiCallRepository(NeverDeletedRepository):
         self, task: str, prompt_hash: str, models: list[tuple[str, bool]], since: datetime
     ) -> tuple[str, str] | None:
         """(response, model) of any run's newest ok `task` call with this conversation, answered by one of
-        `models` (name, thinking on; a call recorded before "thinking" was kept counts as off) at or after
-        `since`, read in RECORD_WRITE_SECONDS."""
-        answered_by = [{"model": name, "thinking": True if on else {"$ne": True}} for name, on in models]
+        `models` (name, thinking on) at or after `since`, read in RECORD_WRITE_SECONDS."""
+        answered_by = [{"model": name, "thinking": on} for name, on in models]
         conversation = {
             "prompt_hash": prompt_hash,
             "task": task,
