@@ -83,7 +83,8 @@ def one_ask() -> Iterator[None]:
 
 def note_ai_usage(task: str, model: str, outcome: AiUsageOutcome | AiOutcome, **measures: Any) -> None:
     """One usage row: added to the open ask (written when it ends), else written now. `measures`: call_id
-    (the call text's _id), reason, error_type, tokens_in, tokens_out, seconds, reask."""
+    (the call text's _id), reason, error_type, tokens_in, tokens_out (chat, embedding and rerank), seconds,
+    reask."""
     ask = _open_ask()
     row = _usage_row(task, model, outcome, measures)
     _count(row)
@@ -91,6 +92,23 @@ def note_ai_usage(task: str, model: str, outcome: AiUsageOutcome | AiOutcome, **
         ask.rows.append(row)
     else:
         write_usage_rows([row])
+
+
+def search_tokens(response: Any) -> dict[str, int]:
+    """An embedding or rerank answer's tokens, as the gateway counts them against its budget: an embedding's
+    usage.prompt_tokens, a rerank's meta tokens, else its billed total (LiteLLM's own order); {} for none."""
+    prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+    if prompt_tokens:
+        return {"tokens_in": int(prompt_tokens)}
+    meta = getattr(response, "meta", None) or {}
+    tokens = meta.get("tokens") or {}
+    if tokens.get("input_tokens") or tokens.get("output_tokens"):
+        return {
+            "tokens_in": int(tokens.get("input_tokens") or 0),
+            "tokens_out": int(tokens.get("output_tokens") or 0),
+        }
+    billed = (meta.get("billed_units") or {}).get("total_tokens")
+    return {"tokens_in": int(billed)} if billed else {}
 
 
 def call_with_retries[Answer](
