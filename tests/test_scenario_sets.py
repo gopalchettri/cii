@@ -586,6 +586,35 @@ def test_with_the_reviewer_off_a_faulted_slot_costs_one_rewrite_and_an_outage_ke
     assert second.plan_check.status is PlanCheckStatus.UNCHECKED and not second.rewritten
 
 
+@pytest.mark.usefixtures("reviewer_off")
+@pytest.mark.parametrize("fixed", [True, False], ids=["rewritten", "still_not_english"])
+def test_a_slot_that_slips_out_of_english_is_written_again_and_never_served(fixed: bool) -> None:
+    """Replay, 30 Oct: Kimi wrote "恢复 requires rebuilding ..." (about 1 card in 25-50, old prompt or new).
+    SC2 is written again, told the words; a rewrite still not in English is a failure card, never served.
+    Words the brief gives (a threat named in Arabic) and accented Latin ("naïve") are English enough: SC1 is
+    kept as written."""
+    slipped = f"{_CLEAN.statement} 恢复 requires rebuilding the hosts."
+
+    def write(block: str) -> dict[str, Any]:
+        if '"Threat 2"' in block and not ("REJECTED:" in block and fixed):
+            return draft_answer(_CLEAN) | {"scenario_statement": slipped}
+        return draft_answer(_CLEAN) | {"scenario_statement": f"{_CLEAN.statement} Its naïve default stays."}
+
+    assert "- English only, every word of every field." in writer_system_prompt()  # told first, checked here
+    briefs = [("SC1", _brief_of(_plan_threat(name="Threat مركز"))), _briefs(2)[1]]
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write}
+    outcomes = dict(write_set(fake, briefs))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO]
+    assert "恢复" in fake.calls[1][1] and _labels(fake.calls[1][1]) == ["SC2"]
+    assert isinstance(outcomes["SC1"], WrittenScenario) and outcomes["SC1"].findings == ()
+    second = outcomes["SC2"]
+    if fixed:
+        assert isinstance(second, WrittenScenario) and "恢复" not in second.draft.statement
+    else:
+        assert isinstance(second, PathFailure) and second.code is ErrorCode.GENERATION_FAILED
+
+
 def test_the_reviewer_is_off_by_default_and_in_the_config_map(monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner, 30 Oct (D64): off unless CII_SCENARIO_REVIEW_ENABLED says true."""
     monkeypatch.delenv("CII_SCENARIO_REVIEW_ENABLED")

@@ -106,6 +106,7 @@
  "AnswerProblem": {
   "ACTION_SENTENCES_MISSING": "action_sentences must give the number of the statement's sentence for each of: {actions}",
   "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
+  "NOT_ENGLISH": "every field must be in English only; it has {words}",
   "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
   "TEXT_REQUIRED": "must not be empty",
   "THREAT_ACTIONS_REQUIRED": "the reply must be {\"actions\": [...]}: a non-empty list of short verb phrases",

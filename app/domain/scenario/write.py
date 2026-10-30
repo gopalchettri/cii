@@ -721,6 +721,8 @@ def _named_facts(name: str, facts: dict[str, Any]) -> dict[str, Any]:
 #: The planner's aliases and slots (SYS1, THR7) and a set's slots (SC2): never in a brief, so one in a
 #: scenario was made up or leaked from another slot.
 _INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR|SC)\d+\b")
+#: Letters outside the Latin script ("恢复"): an answer that left English, unless the brief gave them.
+_NOT_LATIN = re.compile(r"[^\W\d_A-Za-zª-ɏḀ-ỿ]+")
 _LEADING_ARTICLE = re.compile(r"^the\s+", re.IGNORECASE)
 #: A public advisory number: CVE, CISA ICS advisory (ICSA, ICSMA), GitHub (GHSA), Microsoft bulletin, CERT/CC.
 _ADVISORY_ID = re.compile(
@@ -900,13 +902,16 @@ def _with_ampersands(value: Any) -> Any:
 
 
 def _read_slot_draft(slot: _Slot, item: dict[str, Any] | None) -> tuple[ScenarioDraft | None, list[str]]:
-    """A slot's draft from its item, or its problems: no item, another threat copied back, or an unreadable
-    answer (_read_draft); a story's closing sentence is code's, from its step (none with no evidence)."""
+    """A slot's draft from its item, or its problems: no item, another threat copied back, words not in
+    English or an unreadable answer (_read_draft); a story's closing sentence is code's, from its step (none
+    with no evidence)."""
     brief = slot.brief
     if item is None:
         return None, [_SLOT_MISSING]
     if name_match_key(str(item.get("threat") or "")) != name_match_key(brief.threat):
         return None, [_THREAT_NOT_COPIED]  # another slot's answer, or none: written again
+    if words := _unsupplied(_NOT_LATIN, json.dumps(item, ensure_ascii=False), _brief_text(brief).casefold()):
+        return None, [AnswerProblem.NOT_ENGLISH.format(words=words)]  # a model slipping into Chinese
     draft, problems = _read_draft(item, brief_entry_point_options(brief), brief.supporting_systems)
     if draft is not None:
         cited = _cited_entry(brief) if _is_story(brief) else None

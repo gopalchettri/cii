@@ -230,6 +230,7 @@ class AnswerProblem(StrEnum):
     ACTION_SENTENCES_MISSING = (
         "action_sentences must give the number of the statement's sentence for each of: {actions}"
     )
+    NOT_ENGLISH = "every field must be in English only; it has {words}"
 
 
 class Controls:
