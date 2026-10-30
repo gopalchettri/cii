@@ -2231,7 +2231,7 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    temperature 0 a retry would be cut off again.
 6. Regenerate, next set and spares use the same flow; a batch of 1 is just a batch. A call over
    `CII_AI_CALL_TOKENS_LIMIT` (UAT 20,000) is sent as two halves. The answer room is `CII_ANSWER_TOKENS_WRITE_SCENARIO`,
-   `..._REPAIR_SCENARIO` and `..._PLAN_CHECK` (UAT 6,144, 6,144 and 3,072), for a whole set.
+   `..._REPAIR_SCENARIO` and `..._PLAN_CHECK` (UAT 6,144, 5,632 and 3,072), for a whole set.
 7. **Calls a set:** 2 when every answer is good, at most 4 however many slots fail. With the plan's 1 gate call,
    a click (plan + first set of 6) is 3 AI calls when every answer is good. With the reviewer off (the default,
    D64): 1 call a set, at most 2, and a click is 2.
@@ -2578,7 +2578,7 @@ asked for, left out):
      busy or unreachable; an HTTP 429 waits longer and asks the same model again. A timeout is not retried
      there; the fallback model answers instead.
    - `max_tokens` is the task's own answer room (`CHAT_MAX_OUTPUT_TOKENS`, from `CII_ANSWER_TOKENS_<TASK>`; UAT
-     for a set: `write_scenario` and `repair_scenario` 6,144, `plan_check` 3,072), or
+     for a set: `write_scenario` 6,144, `repair_scenario` 5,632, `plan_check` 3,072), or
      the model's limit while its thinking is on. An answer cut off at the cap (`finish_reason` "length", outcome
      `truncated`) is asked once more at the model's full limit; cut off again, it raises `TruncatedAiAnswer`,
      which also becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused
@@ -4132,8 +4132,8 @@ stateDiagram-v2
     (`AiLimits.MODEL_COOL_DOWN_SECONDS`), so its calls do not each wait for it first.
   - **Answer length:** each chat task asks for at most its own `max_tokens`, its answer room
     (`CHAT_MAX_OUTPUT_TOKENS`, from `CII_ANSWER_TOKENS_<TASK>`, section 17.4; UAT: `relevance_gate` 10,240,
-    `write_scenario` and `repair_scenario` 6,144, `plan_check` 3,072, each for a whole batch or set;
-    `service_mapper` 4,096); a model whose thinking is on asks for the model's limit. An
+    `write_scenario` 6,144, `repair_scenario` 5,632, `plan_check` 3,072, each for a whole batch or set;
+    `remediation_plan` 3,584, `service_mapper` 3,072); a model whose thinking is on asks for the model's limit. An
     answer cut off at its cap is recorded with outcome `truncated` and asked once more at the model's limit.
   - **Size:** a call whose question estimate and answer room are over `CII_AI_CALL_TOKENS_LIMIT` (UAT 20,000)
     is sent as two halves; the gateway holds both while a call runs, against its tokens a minute.
@@ -4323,7 +4323,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | the search calls (embedding, reranker) at once, all pods |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the embedding model and the reranker, each its own |
 | `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16); model limits blank = the model's | each module's own chat model, URL, key, thinking, longest question and answer, timeout and limits, 17 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT (31-Oct-2026): threat scenarios on kimi-k2.5, 180 requests and 24,000 tokens a minute (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, just under the gateway's 25,000; 290,000 at 300,000), 4 at once, no backup; remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, gap fill 1024, threat actions 1024, writing 6144, repair 6144, plan check 3072, remediation 8192, service mapper 4096 (UAT the same; gate, writing, repair and plan check answer whole batches and sets) | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, gap fill 1024, threat actions 512, writing 6144, repair 5632, plan check 3072, remediation 3584, service mapper 3072 (UAT the same; gate, writing, repair and plan check answer whole batches and sets) | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 (UAT the same; 3, 12 at a 300,000 budget) | gate batches at once per run, whole threats per gate batch (35 threats at 40: 1 call), scenarios in one write call per job (3 if a write times out), remote reranker calls at once per process |
 | `CII_SCENARIO_REVIEW_ENABLED` | false (UAT false) | true: an AI reviewer judges each written set (one call a set, one more for a rewritten set, §8.5); false: code's checks only, each card `unchecked` with no warning (D64) |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 (UAT 20000; 250000 at a 300,000 budget) | the most tokens one AI call may hold (question estimate + answer room); a bigger batch is sent as two halves |

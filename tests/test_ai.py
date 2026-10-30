@@ -23,7 +23,7 @@ from app import ai, container
 from app.ai.common import UnusableAiAnswer
 from app.ai.profiles import CHAT_MODEL_PROFILES
 from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
-from app.core.ai_tuning_settings import TUNING
+from app.core.ai_tuning_settings import TUNING, AiTuningSettings
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     CHAT_MAX_OUTPUT_TOKENS,
@@ -1132,6 +1132,29 @@ def test_every_chat_task_asks_for_its_own_answer_room_never_the_model_s_whole() 
     assert set(CHAT_MAX_OUTPUT_TOKENS) == chat_tasks
     assert all(256 <= room < 12_288 for room in CHAT_MAX_OUTPUT_TOKENS.values())
     assert CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE] == TUNING.answer_tokens_relevance_gate
+
+
+#: The largest answer measured per chat task, in tokens (tsg_ai_usage and tsg_ai_calls, 2026-10-30, ~10,000
+#: calls); a set's task (writer, repair, reviewer) by its largest a slot. Gap fill had no call to measure.
+LARGEST_ANSWER_TOKENS = {
+    AiTask.RELEVANCE_GATE: 8_776,
+    AiTask.THREAT_ACTIONS: 29,
+    AiTask.REMEDIATION_PLAN: 2_601,
+    AiTask.SERVICE_MAPPER: 1_997,
+}
+LARGEST_SLOT_ANSWER_TOKENS = {AiTask.WRITE_SCENARIO: 778, AiTask.REPAIR_SCENARIO: 680, AiTask.PLAN_CHECK: 359}
+
+
+def test_each_answer_room_holds_its_largest_answer_and_at_most_three_tenths_more() -> None:
+    """The gateway reserves prompt + answer room against UAT's 25,000 tokens a minute while a call runs, so
+    room the answer never fills costs budget as input does. Each default room holds the largest answer
+    measured (a set's for its most slots) and is at most that x 1.3, rounded up to 512; a rarer longer
+    answer is asked once more at the model's limit."""
+    slots = AiTuningSettings.model_fields["scenarios_written_at_once"].default
+    for_sets = {task: per_slot * slots for task, per_slot in LARGEST_SLOT_ANSWER_TOKENS.items()}
+    for task, answer in (LARGEST_ANSWER_TOKENS | for_sets).items():
+        room = AiTuningSettings.model_fields[f"answer_tokens_{task}"].default
+        assert answer <= room <= -(-answer * 13 // 5120) * 512, task
 
 
 def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pytest.MonkeyPatch) -> None:

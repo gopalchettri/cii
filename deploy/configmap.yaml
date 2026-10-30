@@ -73,12 +73,12 @@ items:                                           # one tsg-config per project th
       # answer that needs more is asked once more with the model's full room.
       CII_ANSWER_TOKENS_RELEVANCE_GATE: "10240"                       # threat finding: is each threat relevant, as which kinds (one answer for up to 40 threats)
       CII_ANSWER_TOKENS_GAP_FILL: "1024"                              # threat finding: a threat for a STRIDE kind that found none
-      CII_ANSWER_TOKENS_THREAT_ACTIONS: "1024"                        # scenario writing: the actions a threat's name states (no longer asked: the threat check gives them)
-      CII_ANSWER_TOKENS_WRITE_SCENARIO: "6144"                        # scenario writing: one set of scenarios in one answer (about 550 a scenario)
-      CII_ANSWER_TOKENS_REPAIR_SCENARIO: "6144"                       # scenario writing: a set's scenarios written again after a check, in one answer
+      CII_ANSWER_TOKENS_THREAT_ACTIONS: "512"                         # scenario writing: the actions a threat's name states (no longer asked: the threat check gives them)
+      CII_ANSWER_TOKENS_WRITE_SCENARIO: "6144"                        # scenario writing: one set of scenarios in one answer (at most about 780 a scenario)
+      CII_ANSWER_TOKENS_REPAIR_SCENARIO: "5632"                       # scenario writing: a set's scenarios written again after a check, in one answer
       CII_ANSWER_TOKENS_PLAN_CHECK: "3072"                            # scenario writing: does each scenario of a set carry out its plan (one answer)
-      CII_ANSWER_TOKENS_REMEDIATION_PLAN: "8192"                      # remediation: one treatment plan (about 140 a control)
-      CII_ANSWER_TOKENS_SERVICE_MAPPER: "4096"                        # service mapper: one mapping
+      CII_ANSWER_TOKENS_REMEDIATION_PLAN: "3584"                      # remediation: one treatment plan (at most about 260 a control)
+      CII_ANSWER_TOKENS_SERVICE_MAPPER: "3072"                        # service mapper: one mapping (10 + 10 services: at most about 2,000)
       CII_THREAT_QUESTIONS_AT_ONCE: "1"                               # threat finding: questions sent at the same time, per run (3 at 300k a minute)
       CII_THREATS_PER_QUESTION: "40"                                  # threat finding: most whole threats in one question, split evenly (12 at 300k a minute)
       CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)

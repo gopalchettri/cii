@@ -808,7 +808,7 @@ builds and pods. Tick each line as you finish it; the details follow.
     | `CII_THREATS_PER_QUESTION` | 10 | 40 whole threats a question (35 threats: 1 question) | 12 (optional, faster) |
     | `CII_THREAT_QUESTIONS_AT_ONCE` | 8 | 1 | 3 (optional) |
     | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 16 | 4 (2 workers × 2 jobs × 1 call) | 16, with more worker threads |
-    | `CII_ANSWER_TOKENS_RELEVANCE_GATE`, `..._WRITE_SCENARIO`, `..._REPAIR_SCENARIO`, `..._PLAN_CHECK` | 4096, 3072, 3072, 2048 | 10240, 6144, 6144, 3072: answers for whole sets | the same |
+    | `CII_ANSWER_TOKENS_RELEVANCE_GATE`, `..._WRITE_SCENARIO`, `..._REPAIR_SCENARIO`, `..._PLAN_CHECK` | 4096, 3072, 3072, 2048 | 10240, 6144, 5632, 3072: answers for whole sets | the same |
     | `CII_SCENARIOS_WRITTEN_AT_ONCE` | 6 (threads) | 6 scenarios in one write call; 3 if a write times out | 6 |
     | `CII_SCENARIO_REVIEW_ENABLED` (new) | - | `"false"`: no AI reviewer, 1 call a set (2 at most) | `"false"` |
     | `CII_AI_CALL_TOKENS_LIMIT` (new) | - | 20000: a bigger call is sent as two halves | 250000 |
@@ -1321,7 +1321,7 @@ small.
 | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 4 | at most 4 threat-scenario calls to kimi-k2.5 at once, all pods together (2 workers × 2 jobs × 1 call: each call is a whole batch or set); 16 with more worker threads at a 300,000 budget; TSG also backs off by itself after a gateway 429 |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (embedding, re-ranking) at once: TSG backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling |
 | `CII_<MODULE>_CHAT_MAX_INPUT_TOKENS`, `..._MAX_OUTPUT_TOKENS`, `..._TIMEOUT_SECONDS` (and the backup's) | kimi-k2.5 114688 / 12288 / 120; glm-5.3 262144 / 12288 / 180 | each module's longest question and answer, in tokens, and its wait for one answer: the gateway's own limits |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, write and rewrite 6144, review 3072, remediation 8192 ... | the answer room each task asks for (the gate's, writer's and reviewer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, write 6144, rewrite 5632, review 3072, remediation 3584, service mapper 3072 ... | the answer room each task asks for (the gate's, writer's and reviewer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 | how much TSG asks at once: threat questions per run and whole threats per question (35 threats: 1 question), scenarios in one write call (3 if a write times out), reranker calls per worker |
 | `CII_SCENARIO_REVIEW_ENABLED` | false | true: an AI reviewer judges each written set (one more call a set, and one for a rewritten set); false: code's checks only, each card's plan check `unchecked` with no warning |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 | the most tokens one call may hold (question + answer room); a bigger batch is sent as two halves; 250000 at a 300,000 budget |
