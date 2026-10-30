@@ -187,7 +187,7 @@ Verify before returning:
 set = '''
 
 SET OF SCENARIOS
-The user prompt holds one or more SLOTs (SC1, SC2 ...). Each slot has its own BRIEF and its own EVIDENCE, or a line saying none is given. Write one scenario per slot, applying every rule above to that slot alone: never use another slot's facts, systems, attacker or evidence, and never reuse another slot's title, opening or sentences. A slot label is never part of any text. The eight-field object above is one slot's answer; return {"scenarios": [{"slot": "SC1", "threat": "<that slot's BRIEF.threat.threat, copied>", ...its eight fields}, ...]} with exactly one item per slot. Every slot gets the full word ranges, however many slots there are: scenario_statement <scenario words>, risk_statement <risk words> words.
+The user prompt opens with ASSET and SYSTEMS (by name), then one or more SLOTs (SC1, SC2 ...). Each slot has its own BRIEF, which includes ASSET and its "yes" systems' SYSTEMS entries (its own asset or systems field adds facts), and its own EVIDENCE, or a line saying none is given. Write one scenario per slot, applying every rule above to that slot alone: never use a "no" system's facts or another slot's threat, attacker or evidence, and never reuse another slot's title, opening or sentences. A slot label is never part of any text. The eight-field object above is one slot's answer; return {"scenarios": [{"slot": "SC1", "threat": "<that slot's BRIEF.threat.threat, copied>", ...its eight fields}, ...]} with exactly one item per slot. Every slot gets the full word ranges, however many slots there are: scenario_statement <scenario words>, risk_statement <risk words> words.
 '''
 # A slot's line when no EVIDENCE is given for it (intelligence off, or nothing citable found).
 no_evidence = '''
@@ -276,7 +276,7 @@ Ensure all seven rules (1-3 and 5-8) have verdicts; `threat_actions` has one ans
 set = '''
 
 SET OF SCENARIOS
-The user prompt holds one or more SLOTs (SC1, SC2 ...). Each slot has its own PLAN, its own EVIDENCE or a line saying none is given, and its own SCENARIO. Review each slot alone against its own PLAN and EVIDENCE, and quote only that slot's SCENARIO. The object above is one slot's answer; return {"reviews": [{"slot": "SC1", "threat": "<that slot's PLAN.threat.threat, copied>", ...its fields}, ...]} with exactly one item per slot.
+The user prompt opens with ASSET (with the critical service) and SYSTEMS (by name), then one or more SLOTs (SC1, SC2 ...). Each slot has its own PLAN, which includes ASSET and its "yes" systems' SYSTEMS entries (its own asset or systems field adds facts), its own EVIDENCE or a line saying none is given, and its own SCENARIO. Review each slot alone against its own PLAN and EVIDENCE, and quote only that slot's SCENARIO. The object above is one slot's answer; return {"reviews": [{"slot": "SC1", "threat": "<that slot's PLAN.threat.threat, copied>", ...its fields}, ...]} with exactly one item per slot.
 '''
 # A slot's line when no EVIDENCE is given for it.
 no_evidence = '''

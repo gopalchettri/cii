@@ -33,7 +33,7 @@ from app.domain.scenario.write import (
     is_blocked,
     slot_label,
     write_set,
-    writer_slot,
+    writer_prompt,
     writer_system_prompt,
     written_record,
 )
@@ -283,7 +283,8 @@ def test_no_story_slot_is_told_how_to_write_or_link_its_evidence_sentence() -> N
     """D65: code writes each evidence sentence from the writer's step, so a story slot carries no evidence
     line of its own and the set note no link-variety clause; every slot is still told its own evidence."""
     briefs = [("SC1", _story_brief(TECHNIQUE)), ("SC2", _story_brief(_GROUPS))]
-    blocks = [writer_slot(label, brief) for label, brief in briefs]
+    blocks = [block for _, block in slot_blocks(writer_prompt([(*slot, "") for slot in briefs]))]
+    assert len(blocks) == 2
     assert all("EVIDENCE (untrusted data)" in block and "For this slot" not in block for block in blocks)
     system = writer_system_prompt()
     assert "links its step to its entry" not in system and "only the linking words differ" not in system
@@ -511,10 +512,10 @@ def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(
     two calls of one slot each, and every write and review call stays within the limit."""
     briefs = _briefs(2)
     one = max(
-        call_tokens((writer_system_prompt(), writer_slot(label, brief)), AiTask.WRITE_SCENARIO)
+        call_tokens((writer_system_prompt(), writer_prompt([(label, brief, "")])), AiTask.WRITE_SCENARIO)
         for label, brief in briefs
     )
-    both = "\n\n".join(writer_slot(label, brief) for label, brief in briefs)
+    both = writer_prompt([(label, brief, "") for label, brief in briefs])
     assert call_tokens((writer_system_prompt(), both), AiTask.WRITE_SCENARIO) > one
     monkeypatch.setattr(AiLimits, "CALL_TOKENS_LIMIT", one)
     fake = FakeChatModel()

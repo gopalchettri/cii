@@ -60,14 +60,14 @@ from app.domain.scenario.write import (
     finding_severity,
     is_blocked,
     is_final,
+    plan_check_prompt,
     plan_check_record,
-    plan_check_slot,
     scenario_id,
     slot_label,
     title_candidates,
     with_word_limits,
     write_set,
-    writer_slot,
+    writer_prompt,
     writer_system_prompt,
     written_record,
 )
@@ -83,7 +83,7 @@ from app.models.scenario.write import (
     WrittenScenario,
 )
 from app.worker.scenario.path_writing import PathWriter
-from tests.fakes import FakeChatModel, brief_of, slot_blocks, truncated
+from tests.fakes import FakeChatModel, brief_of, shared_facts, slot_blocks, truncated
 from tests.planner_samples import CONTEXT, planned, system_row
 
 #: Everything the sample threats name is still active in the library.
@@ -283,13 +283,18 @@ def test_long_facts_are_cut_to_the_budget_and_the_brief_stays_json() -> None:
 
 
 def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_json() -> None:
-    """The owner's text files, the configured word limits in their slots, each slot's own line saying no
-    evidence is given while intelligence is off; the reviewer's PLAN is the brief plus the critical
-    service."""
+    """The owner's text files, the configured word limits in their slots, the asset's and systems' facts
+    once before the slot, each slot's own line saying no evidence is given while intelligence is off; the
+    reviewer's ASSET also holds the critical service."""
     brief = _brief_of(_plan_threat())
-    system, slot = writer_system_prompt(), writer_slot("SC1", brief)
+    system, user = writer_system_prompt(), writer_prompt([("SC1", brief, "")])
     assert system.startswith(with_word_limits(WRITER_SYSTEM_PROMPT)) and "No EVIDENCE is given" not in system
-    assert "<scenario words>" not in system and slot.startswith("SLOT SC1\nBRIEF:\n")
+    ((label, slot),) = slot_blocks(user)
+    assert "<scenario words>" not in system and (label, slot[: len("SLOT SC1\nBRIEF:\n")]) == (
+        "SC1",
+        "SLOT SC1\nBRIEF:\n",
+    )
+    assert shared_facts(user) == (brief.asset, list(brief.systems))
     no_evidence = (
         'No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evid'
     )
@@ -298,11 +303,14 @@ def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_js
         {"name": "SCADA server", "applicable": "yes"},
         {"name": "Historian", "applicable": "no"},
     ]
-    review = plan_check_slot("SC1", brief, _CLEAN)
-    plan_text, scenario_text = review.removeprefix("SLOT SC1\nPLAN:\n").split("\nSCENARIO:\n")
+    review = plan_check_prompt([("SC1", brief, _CLEAN)])
+    asset = shared_facts(review)[0]
+    plan_text, scenario_text = (
+        slot_blocks(review)[0][1].removeprefix("SLOT SC1\nPLAN:\n").split("\nSCENARIO:\n")
+    )
     plan, rest = json.JSONDecoder().raw_decode(plan_text)
     assert json.loads(scenario_text) == draft_answer(_CLEAN)
-    assert plan["critical_service"] == "Electricity transmission"
+    assert asset["critical_service"] == "Electricity transmission" and "asset" not in plan
     assert plan_text[rest:].strip().startswith("No EVIDENCE is given for this slot: any [n] marker")
     assert (
         PLAN_CHECK_SET_PROMPT.startswith(PLAN_CHECK_SYSTEM_PROMPT)

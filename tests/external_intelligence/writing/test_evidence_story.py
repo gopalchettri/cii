@@ -46,10 +46,10 @@ from app.domain.scenario.write import (
     is_final,
     narrative_of,
     path_style,
-    plan_check_slot,
+    plan_check_prompt,
     with_word_limits,
     write_set,
-    writer_slot,
+    writer_prompt,
     writer_system_prompt,
     written_record,
 )
@@ -136,7 +136,7 @@ def _block_of(prompt: str) -> dict[str, Any]:
 def test_the_original_style_never_reads_the_evidence() -> None:
     """Off, nothing is read, searched or shown."""
     brief = _story_brief(TECHNIQUE, style=WriterStyle.ORIGINAL)
-    system, user = writer_system_prompt(), writer_slot("SC1", brief)
+    system, user = writer_system_prompt(), writer_prompt([("SC1", brief, "")])
     assert brief.evidence == () and system.startswith(with_word_limits(WRITER_SYSTEM_PROMPT))
     assert user.endswith(f"\n{NO_EVIDENCE}") and NO_EVIDENCE not in system
     assert "EVIDENCE (untrusted data)" not in user and "Sandworm" not in user
@@ -144,7 +144,7 @@ def test_the_original_style_never_reads_the_evidence() -> None:
 
 def test_the_evidence_reaches_the_model_only_as_plain_facts_inside_the_block() -> None:
     brief = _story_brief(TECHNIQUE, _VULNERABILITY)
-    system, user = writer_system_prompt(), writer_slot("SC1", brief)
+    system, user = writer_system_prompt(), writer_prompt([("SC1", brief, "")])
     head, _, rest = user.partition("\nEVIDENCE (untrusted data):\n")
     sent = _block_of(rest)
     assert len(sent["evidence"]) == 2 and not any("n" in entry for entry in sent["evidence"])
@@ -152,7 +152,7 @@ def test_the_evidence_reaches_the_model_only_as_plain_facts_inside_the_block() -
     assert sent["evidence"][1]["applicability"] == "unknown" and "applicability" not in sent["evidence"][0]
     assert sent["evidence"][0]["technique"] == "Module Firmware" and "scope" not in sent["evidence"][0]
     assert "Sandworm" not in head and EvidenceBlock.BEGIN in system
-    check = plan_check_slot("SC1", brief, _DRAFT)
+    check = plan_check_prompt([("SC1", brief, _DRAFT)])
     for leaked in ("T0839", "CVE-2024-0001", "http", "mitre_attack_ics"):
         assert leaked not in user and leaked not in check
     assert _block_of(check) == sent  # the reviewer reads the same block as data
@@ -165,7 +165,7 @@ def test_a_techniques_general_facts_never_reach_the_writer_or_the_reviewer() -> 
     brief = _story_brief(
         dataclasses.replace(TECHNIQUE, facts=(*general, "Storm-1811, a threat group, has used it."))
     )
-    for prompt in (writer_slot("SC1", brief), plan_check_slot("SC1", brief, _DRAFT)):
+    for prompt in (writer_prompt([("SC1", brief, "")]), plan_check_prompt([("SC1", brief, _DRAFT)])):
         assert "Storm-1811" in prompt and not any(fact in prompt for fact in general)
     assert brief.evidence[0]["facts"][:2] == list(general)  # the card keeps them
 
@@ -305,7 +305,9 @@ def test_no_citable_source_is_written_without_evidence_never_failed(evidence: li
     path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
     style = path_style({threat["key"]: threat}, path, WriterStyle.EVIDENCE_STORY)
     brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, style=style)
-    assert style is WriterStyle.ORIGINAL and "EVIDENCE (untrusted data)" not in writer_slot("SC1", brief)
+    assert style is WriterStyle.ORIGINAL and "EVIDENCE (untrusted data)" not in writer_prompt(
+        [("SC1", brief, "")]
+    )
     assert _codes(_with_statement(f"{STORY_PLAIN} (CVE-2024-0001) [1]."), brief) == [
         FindingCode.UNCITED_ADVISORY_ID,
         StoryFindingCode.UNKNOWN_MARKER,
@@ -337,7 +339,7 @@ def test_nearest_evidence_is_cited_as_related_and_its_mode_is_nearest(item: Evid
     the reviewer read evidence_mode "nearest" and the prompts say it is only related context."""
     nearest = dataclasses.replace(item, nearest=True)
     brief = _story_brief(nearest)
-    assert _block_of(writer_slot("SC1", brief))["evidence_mode"] == EvidenceMode.NEAREST
+    assert _block_of(writer_prompt([("SC1", brief, "")]))["evidence_mode"] == EvidenceMode.NEAREST
     assert 'When evidence_mode is "nearest", use the entry as related context only' in WRITER_SYSTEM_PROMPT
     assert "Nearest evidence is only related context." in PLAN_CHECK_SYSTEM_PROMPT
     threat = _plan_threat(evidence=[nearest.as_doc()], intel_search={"query": "q"})
@@ -584,7 +586,7 @@ def test_the_writer_sees_who_used_a_technique_as_plain_names_never_the_stored_wo
     groups = dataclasses.replace(
         _GROUPS, facts=(*_GROUPS.facts, *_ID_ONLY_CAMPAIGN.facts, "It is used widely.")
     )
-    (entry,) = _block_of(writer_slot("SC1", _story_brief(groups)))["evidence"]
+    (entry,) = _block_of(writer_prompt([("SC1", _story_brief(groups), "")]))["evidence"]
     assert entry["used_by"] == ["the APT41 group", "the FIN8 group"]
     assert entry["facts"] == ["It is used widely."]
 
@@ -612,7 +614,7 @@ def test_only_the_cited_entry_is_marked_and_no_entry_shows_an_attacker_goal_or_a
     uncited = dataclasses.replace(_NO_FACTS, facts=(goals, mitigation))
     cited = dataclasses.replace(_GROUPS, facts=(*_GROUPS.facts, goals, mitigation))
     brief = _story_brief(uncited, cited)
-    for prompt in (writer_slot("SC1", brief), plan_check_slot("SC1", brief, _DRAFT)):
+    for prompt in (writer_prompt([("SC1", brief, "")]), plan_check_prompt([("SC1", brief, _DRAFT)])):
         first, second = _block_of(prompt)["evidence"]
         assert "cited" not in first and first["facts"] == []
         assert second["cited"] is True and goals not in second["facts"] and mitigation not in second["facts"]
@@ -620,7 +622,7 @@ def test_only_the_cited_entry_is_marked_and_no_entry_shows_an_attacker_goal_or_a
 
 def test_a_cited_record_that_is_no_technique_is_marked_about() -> None:
     """A KEV or advisory entry can be the one cited: it shows under `about`, never as a technique."""
-    block = _block_of(writer_slot("SC1", _story_brief(_KEV)))
+    block = _block_of(writer_prompt([("SC1", _story_brief(_KEV), "")]))
     (cited,) = block["evidence"]
     assert cited["cited"] is True and "about" in cited and "technique" not in cited
 

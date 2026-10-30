@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -223,25 +223,90 @@ def writer_system_prompt() -> str:
     return with_word_limits(WRITER_SYSTEM_PROMPT + _WRITER["set"])
 
 
-def writer_slot(label: str, brief: WriterBrief, note: str = "") -> str:
-    """One slot of the writer's user prompt: its BRIEF, its evidence or the line saying none is given, and
-    any `note` (a rewrite's problems or a repair's actions)."""
-    evidence = evidence_block(brief) if _is_story(brief) else NO_EVIDENCE
-    return f"SLOT {label}\nBRIEF:\n{_brief_text(brief)}\n{evidence}{note}"
+def writer_prompt(slots: Sequence[tuple[str, WriterBrief, str]]) -> str:
+    """The writer's user prompt for one call: the facts its slots share, once, then each slot (label, brief,
+    note): its own BRIEF, its evidence or the line saying none is given, and its note (a rewrite's problems
+    or a repair's actions)."""
+    shared = _shared_facts([brief.asset for _, brief, _ in slots], [brief for _, brief, _ in slots])
+    blocks = (
+        f"SLOT {label}\nBRIEF:\n{as_json(_slot_record(brief, brief.asset, shared))}\n"
+        f"{evidence_block(brief) if _is_story(brief) else NO_EVIDENCE}{note}"
+        for label, brief, note in slots
+    )
+    return "\n\n".join([shared.text(), *blocks])
 
 
-def plan_check_slot(label: str, brief: WriterBrief, draft: ScenarioDraft) -> str:
-    """One slot of the reviewer's user prompt: its PLAN (the writer's BRIEF plus the critical service), its
-    evidence or the line saying none is given, and its scenario."""
-    plan = _brief_record(brief) | {"critical_service": brief.critical_service}
-    evidence = evidence_block(brief) if _is_story(brief) else _NO_EVIDENCE_REVIEW
-    return f"SLOT {label}\nPLAN:\n{as_json(plan)}\n{evidence}\nSCENARIO:\n{as_json(draft_answer(draft))}"
+def plan_check_prompt(slots: Sequence[tuple[str, WriterBrief, ScenarioDraft]]) -> str:
+    """The reviewer's user prompt for one call: the facts its slots share (the asset's with its critical
+    service), once, then each slot (label, brief, draft): its own PLAN, its evidence or the line saying none
+    is given, and its scenario."""
+    assets = [brief.asset | {"critical_service": brief.critical_service} for _, brief, _ in slots]
+    shared = _shared_facts(assets, [brief for _, brief, _ in slots])
+    blocks = (
+        f"SLOT {label}\nPLAN:\n{as_json(_slot_record(brief, asset, shared))}\n"
+        f"{evidence_block(brief) if _is_story(brief) else _NO_EVIDENCE_REVIEW}\n"
+        f"SCENARIO:\n{as_json(draft_answer(draft))}"
+        for (label, brief, draft), asset in zip(slots, assets, strict=True)
+    )
+    return "\n\n".join([shared.text(), *blocks])
 
 
-def _brief_record(brief: WriterBrief) -> dict[str, Any]:
-    """The brief as the writer reads it: what the scenario may take from."""
+@dataclasses.dataclass(frozen=True)
+class _SharedFacts:
+    """The facts every slot of one call holds alike, sent once before its slots."""
+
+    asset: dict[str, Any]
+    systems: dict[str, dict[str, Any]]  # each slot system's shared facts, by its name
+
+    def text(self) -> str:
+        """The block before the slots: ASSET, then SYSTEMS."""
+        return f"ASSET:\n{as_json(self.asset)}\nSYSTEMS:\n{as_json(list(self.systems.values()))}"
+
+
+def _shared_facts(assets: list[dict[str, Any]], briefs: list[WriterBrief]) -> _SharedFacts:
+    """The asset facts all `assets` hold alike, and each system's facts every brief naming it holds alike."""
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for brief in briefs:
+        for system in brief.systems:
+            by_name.setdefault(system["name"], []).append(system)
+    return _SharedFacts(
+        _common_facts(assets), {name: _common_facts(found) for name, found in by_name.items()}
+    )
+
+
+def _common_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """The facts (key and value) every record holds alike, in the first record's order."""
+    first, *rest = records
+    alike = (
+        key for key, value in first.items() if all(key in other and other[key] == value for other in rest)
+    )
+    return {key: first[key] for key in alike}
+
+
+def _own_facts(record: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+    """The facts of `record` the shared block does not hold alike."""
+    return {key: value for key, value in record.items() if key not in shared or shared[key] != value}
+
+
+def _slot_record(brief: WriterBrief, asset: dict[str, Any], shared: _SharedFacts) -> dict[str, Any]:
+    """A slot's own BRIEF: its path's fields, and any asset or system fact the shared block lacks."""
+    own_asset = _own_facts(asset, shared.asset)
+    own_systems = [
+        {"name": system["name"]} | own
+        for system in brief.systems
+        if (own := _own_facts(system, shared.systems[system["name"]]))
+    ]
+    return (
+        ({"asset": own_asset} if own_asset else {})
+        | _path_record(brief)
+        | ({"systems": own_systems} if own_systems else {})
+    )
+
+
+def _path_record(brief: WriterBrief) -> dict[str, Any]:
+    """A brief's own fields: its category, attacker and threat, its entry point options and every supporting
+    system by name, "yes" when the path goes through it."""
     return {
-        "asset": brief.asset,
         "category": brief.category,
         "attacker": brief.attacker,
         "threat": {
@@ -250,7 +315,6 @@ def _brief_record(brief: WriterBrief) -> dict[str, Any]:
             **({"threat_actions": list(brief.threat_actions)} if brief.threat_actions else {}),
             "why_it_applies": brief.why_it_applies,
         },
-        "systems": list(brief.systems),
         "entry_point_options": list(brief_entry_point_options(brief)),
         "supporting_systems": [
             {"name": system.name, "applicable": "yes" if system.applicable else "no"}
@@ -260,8 +324,8 @@ def _brief_record(brief: WriterBrief) -> dict[str, Any]:
 
 
 def _brief_text(brief: WriterBrief) -> str:
-    """The brief as JSON."""
-    return as_json(_brief_record(brief))
+    """The whole brief as JSON, its asset and systems facts included: what the scenario may take from."""
+    return as_json({"asset": brief.asset, "systems": list(brief.systems)} | _path_record(brief))
 
 
 def with_word_limits(template: str) -> str:
@@ -745,8 +809,10 @@ def write_set(
     slots = [_Slot(label, brief, epoch + place) for place, (label, brief) in enumerate(briefs)]
     if not slots:
         return
-    blocks = [(slot.label, writer_slot(slot.label, slot.brief)) for slot in slots]
-    answers = _ask_set(chat, AiTask.WRITE_SCENARIO, writer_system_prompt(), blocks, "scenarios")
+    asked = [(slot.label, slot.brief, "") for slot in slots]
+    answers = _ask_set(
+        chat, AiTask.WRITE_SCENARIO, (writer_system_prompt(), writer_prompt), asked, "scenarios"
+    )
     for slot in slots:
         item = answers.get(slot.label)
         slot.draft, problems = _read_slot_draft(slot, item)
@@ -767,8 +833,9 @@ def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, Wr
     rewritten). On an outage each slot keeps its usable draft (_firsts_kept); one with none raises."""
     rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
     try:
-        blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
-        answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, writer_system_prompt(), blocks, "scenarios")
+        asked = [(slot.label, slot.brief, _note(slot)) for slot in rewrite]
+        prompts = (writer_system_prompt(), writer_prompt)
+        answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, prompts, asked, "scenarios")
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:  # every slot's rewrite is unusable
         log.warning(LogEvent.WRITER_PATH_FAILED, message=str(exc), error_type=type(exc).__name__)
         answers = {}
@@ -786,22 +853,29 @@ def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, Wr
         yield slot.label, _second_round_end(slot)
 
 
+#: A slot as one call asks it: its label, its brief, and its note (writer) or its draft (reviewer).
+_AskedSlot = tuple[str, WriterBrief, Any]
+#: A call's system prompt, and its user prompt for the slots it asks.
+_SetPrompts = tuple[str, Callable[[Sequence[_AskedSlot]], str]]
+
+
 def _ask_set(
-    chat: ChatModel, task: AiTask, system: str, blocks: list[tuple[str, str]], key: str
+    chat: ChatModel, task: AiTask, prompts: _SetPrompts, slots: list[_AskedSlot], key: str
 ) -> dict[str, dict[str, Any]]:
-    """Each slot's item of the answer to `blocks` ((label, text)), asked in one call or in the halves the size
-    check makes; an answer holding no list under `key` after its one re-ask raises. A slot's own faults are
-    never re-asked here: they are its own, so one bad slot never costs the set a second ask."""
+    """Each slot's item of the answer to `slots`, asked in one call or in the halves the size check makes;
+    an answer holding no list under `key` after its one re-ask raises. A slot's own faults are never
+    re-asked here: they are its own, so one bad slot never costs the set a second ask."""
     items: dict[str, dict[str, Any]] = {}
-    for part in within_call_limit(blocks, functools.partial(_set_prompt, system), task) if blocks else ():
-        read = functools.partial(_read_set, key=key, asked={label for label, _ in part})
-        items |= ask_ai_and_check(chat, task, _set_prompt(system, part), read, reuse_earlier_answer=True)
+    for part in within_call_limit(slots, functools.partial(_set_prompt, prompts), task) if slots else ():
+        read = functools.partial(_read_set, key=key, asked={label for label, _, _ in part})
+        items |= ask_ai_and_check(chat, task, _set_prompt(prompts, part), read, reuse_earlier_answer=True)
     return items
 
 
-def _set_prompt(system: str, blocks: Sequence[tuple[str, str]]) -> ChatPrompt:
-    """The system prompt and every slot's block, in the set's order."""
-    return system, "\n\n".join(text for _, text in blocks)
+def _set_prompt(prompts: _SetPrompts, slots: Sequence[_AskedSlot]) -> ChatPrompt:
+    """The system prompt and the user prompt of `slots`, in the set's order."""
+    system, user_prompt = prompts
+    return system, user_prompt(slots)
 
 
 def _read_set(
@@ -872,9 +946,10 @@ def _review(chat: ChatModel, slots: list[_Slot]) -> None:
     (an earlier usable review then stays); no call while the reviewer is off."""
     if not slots or not _review_on():
         return
-    blocks = [(slot.label, plan_check_slot(slot.label, slot.brief, _draft_of(slot))) for slot in slots]
+    asked = [(slot.label, slot.brief, _draft_of(slot)) for slot in slots]
     try:  # temperature 0: a retry's same ask gets the same answer, so it is read back
-        reviews = _ask_set(chat, AiTask.PLAN_CHECK, PLAN_CHECK_SET_PROMPT, blocks, "reviews")
+        prompts = (PLAN_CHECK_SET_PROMPT, plan_check_prompt)
+        reviews = _ask_set(chat, AiTask.PLAN_CHECK, prompts, asked, "reviews")
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, message=str(exc))
         reviews = {}
