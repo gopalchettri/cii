@@ -8,7 +8,7 @@ from typing import Any
 
 import litellm
 
-from app.ai.attempts import call_with_retries, note_ai_usage, one_ask
+from app.ai.attempts import call_with_retries, note_ai_usage, one_ask, search_tokens
 from app.ai.common import (
     IncompleteAiAnswer,
     UnusableAiAnswer,
@@ -59,13 +59,12 @@ class RerankModel:
         # A local model that would not load is counted too, so AiErrorRateHigh sees it on the laptop.
         with one_ask():  # its failed attempts and its answer: one ask's usage rows, written as it ends
             with count_and_convert_ai_errors(AiTask.RERANK, self._model):
-                scores, seconds = (
-                    self._score_with_provider(query, documents)
-                    if self._base_url
-                    else self._score_with_local_model(query, documents)
-                )
+                if self._base_url:
+                    (scores, tokens), seconds = self._score_with_provider(query, documents)
+                else:  # a local model counts against no gateway's budget: no tokens
+                    (scores, seconds), tokens = self._score_with_local_model(query, documents), {}
             # ponytail: a local (laptop-only) model that fails gets no usage row: it never reaches a provider
-            note_ai_usage(AiTask.RERANK, self._model, AiOutcome.OK, seconds=seconds)
+            note_ai_usage(AiTask.RERANK, self._model, AiOutcome.OK, seconds=seconds, **tokens)
         metrics.AI_CALLS.labels(AiTask.RERANK, self._model, AiOutcome.OK).inc()
         metrics.AI_SECONDS.labels(AiTask.RERANK, self._model).observe(seconds)
         return scores
@@ -78,27 +77,26 @@ class RerankModel:
         with self._turns.turn():
             self._loaded_local_model()
 
-    def _score_with_provider(self, query: str, documents: list[str]) -> tuple[list[float], float]:
+    def _score_with_provider(
+        self, query: str, documents: list[str]
+    ) -> tuple[tuple[list[float], dict[str, int]], float]:
+        """((the scores, the tokens the gateway counted), the answering attempt's seconds)."""
+
+        def ask() -> tuple[list[float], dict[str, int]]:
+            response = litellm.rerank(
+                model=self._model,
+                query=query,
+                documents=documents,
+                top_n=len(documents),
+                api_base=self._base_url,
+                api_key=self._api_key,
+                timeout=self.profile.timeout_seconds,
+                **self._key_header,
+            )
+            return self._read_checked_scores(response, len(documents)), search_tokens(response)
+
         # call_with_retries is the only retry and holds an AI slot per try; a short answer is asked again too.
-        return call_with_retries(
-            lambda: self._read_checked_scores(
-                litellm.rerank(
-                    model=self._model,
-                    query=query,
-                    documents=documents,
-                    top_n=len(documents),
-                    api_base=self._base_url,
-                    api_key=self._api_key,
-                    timeout=self.profile.timeout_seconds,
-                    **self._key_header,
-                ),
-                len(documents),
-            ),
-            self._request_rate,
-            self._slots,
-            model=self._model,
-            task=AiTask.RERANK,
-        )
+        return call_with_retries(ask, self._request_rate, self._slots, model=self._model, task=AiTask.RERANK)
 
     def _read_checked_scores(self, response: Any, expected: int) -> list[float]:
         """0-100 per document, in input order, checked: exactly one score per document, each a probability

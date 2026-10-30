@@ -60,10 +60,12 @@ class UsageCounts(BaseModel):
         "again, not an attempt. An outcome with none is left out.",
     )
     tokens_in: int = Field(
-        0, description="Prompt tokens of chat calls; embedding and rerank calls record none."
+        0,
+        description="Input tokens: chat prompts, and embedding and rerank inputs as the gateway counts "
+        "them (recorded from 2026-10-30; a local reranker records none).",
     )
     tokens_out: int = Field(
-        0, description="Answer tokens of chat calls; embedding and rerank calls record none."
+        0, description="Answer tokens of chat calls; a rerank's output tokens when its gateway names any."
     )
     seconds: float = Field(0.0, description="Time the attempts took, added up.")
 
