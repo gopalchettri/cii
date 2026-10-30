@@ -811,6 +811,7 @@ builds and pods. Tick each line as you finish it; the details follow.
     | `CII_ANSWER_TOKENS_RELEVANCE_GATE`, `..._WRITE_SCENARIO`, `..._REPAIR_SCENARIO`, `..._PLAN_CHECK` | 4096, 3072, 3072, 2048 | 10240, 6144, 5632, 3072: answers for whole sets | the same |
     | `CII_SCENARIOS_WRITTEN_AT_ONCE` | 6 (threads) | 6 scenarios in one write call; 3 if a write times out | 6 |
     | `CII_SCENARIO_REVIEW_ENABLED` (new) | - | `"false"`: no AI reviewer, 1 call a set (2 at most) | `"false"` |
+    | `CII_THREAT_FINDING_REUSE_HOURS` (new) | - | `"24"`: a second Start on an unchanged asset reuses threat finding, no gate call | `"24"` |
     | `CII_AI_CALL_TOKENS_LIMIT` (new) | - | 20000: a bigger call is sent as two halves | 250000 |
     | `CII_SCENARIO_CHAT_FALLBACK_MODEL` | glm-5.3 | `""`: none (glm-5.3 cannot write a whole set) | `""` |
 
@@ -1324,6 +1325,7 @@ small.
 | `CII_ANSWER_TOKENS_<TASK>` | gate 10240, write 6144, rewrite 5632, review 3072, remediation 3584, service mapper 3072 ... | the answer room each task asks for (the gate's, writer's and reviewer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 | how much TSG asks at once: threat questions per run and whole threats per question (35 threats: 1 question), scenarios in one write call (3 if a write times out), reranker calls per worker |
 | `CII_SCENARIO_REVIEW_ENABLED` | false | true: an AI reviewer judges each written set (one more call a set, and one for a rewritten set); false: code's checks only, each card's plan check `unchecked` with no warning |
+| `CII_THREAT_FINDING_REUSE_HOURS` | 24 | hours threat finding takes an earlier run's answer to the very same question (same asset facts, systems, library, prompt): a second Start on an unchanged asset makes no gate call; 0 = always ask |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 | the most tokens one call may hold (question + answer room); a bigger batch is sent as two halves; 250000 at a 300,000 budget |
 | `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 120, 4, 180 | what TSG does after a "too busy" (429): it asks the same model again at 20, 40 and 60 s (each wait ±20 %) |
 
