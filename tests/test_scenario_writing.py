@@ -359,7 +359,9 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     # D65: the writer gives only the step its evidence entry is about; code writes the sentence from it
     assert "In real-world attacks" not in writer and "No field includes a real-world precedent" in writer
     step = 'evidence_step: the one step of this story that the entry marked "cited": true is about'
-    assert step in writer and "as a gerund phrase naming the system or asset where it happens" in writer
+    assert step in writer and "as a gerund phrase written as a normal clause with its articles" in writer
+    assert "by its full name exactly as BRIEF gives it" in writer  # 30 Oct: steps said "the platform"
+    assert "in this story's own words rather than the cited title's" in writer
     assert "6 to 20 words, with no title, no group, malware or campaign name and no quotes" in writer
     assert "the application writes the closing evidence sentence from evidence_step" in writer
     assert '"evidence_statement"' not in writer and "words no other slot uses" not in writer

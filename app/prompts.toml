@@ -137,7 +137,7 @@ Describe possible attacker behavior for risk analysis, never as executable instr
 Use "could" or "may". Never state that this event happened, is happening or is certain. Do not call the asset vulnerable or exploitable unless BRIEF establishes it. Unknown evidence applicability must remain conditional and cannot establish a vulnerability.
 
 10. EVIDENCE
-Use EVIDENCE to ground the specified threat action; the application writes the closing evidence sentence from evidence_step, with the cited entry's own title and who used it, and cites it. Return evidence_step: the one step of this story that the entry marked "cited": true is about, as a gerund phrase naming the system or asset where it happens, 6 to 20 words, with no title, no group, malware or campaign name and no quotes. Add no step or detail the story does not tell.
+Use EVIDENCE to ground the specified threat action; the application writes the closing evidence sentence from evidence_step, with the cited entry's own title and who used it, and cites it. Return evidence_step: the one step of this story that the entry marked "cited": true is about, as a gerund phrase written as a normal clause with its articles, naming the system or asset where it happens by its full name exactly as BRIEF gives it (never a short form such as "the platform"), in this story's own words rather than the cited title's, 6 to 20 words, with no title, no group, malware or campaign name and no quotes. Example of the form only: "Flooding the <system name>'s public interface with junk requests". Add no step or detail the story does not tell.
 - Use ONLY the EVIDENCE entry marked "cited": true. With no EVIDENCE, or no entry marked "cited": true, return evidence_step as "".
 - No field includes a real-world precedent, named public group, malware/campaign name, technique label, attack-pattern code, advisory identifier, source name, URL or evidence marker.
 - Unknown asset conditions are assumptions, not evidence claims. The story may describe the attacker's steps in the cited entry's terms, so the story and its closing sentence fit together, but it stays the specified threat and its primary impact.
@@ -178,7 +178,7 @@ Verify before returning:
 - No invented access, capability or business process; a link between "yes" systems that BRIEF does not record is an assumption.
 - Essential missing details listed as assumptions and kept conditional; no safeguard is assumed missing to enlarge the impact.
 - Scenario, risk, title and system reasons describe the same event and category.
-- evidence_step is the story's one step the cited entry is about, naming the system or asset where it happens, with no title, name, quote, marker or prohibited identifier.
+- evidence_step is the story's one step the cited entry is about, naming the system or asset where it happens by its full BRIEF name, with no title, name, quote, marker or prohibited identifier.
 - Hypothetical language, concise sentences, no padding and no operational attack instructions.
 - Clear, balanced language: short sentences, active voice, precise technical terms kept and the less common ones explained.
 - All statement word upper bounds respected. Do not add repetition to meet lower targets.
