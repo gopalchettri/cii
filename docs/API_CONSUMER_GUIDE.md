@@ -335,7 +335,7 @@ Headers: identity headers.
 | `scenario_id` | string | id to accept / regenerate / plan |
 | `scenario` | object or null | null on a failure card |
 | `scenario.threat_category` | string or null | |
-| `scenario.contributing_categories` | string[] | |
+| `scenario.contributing_categories` | string[] | the threat's other STRIDE categories besides `threat_category`, at most 2 (a scenario planned before this release may list more) |
 | `scenario.threat_type` / `.threat_name` | string or null | |
 | `scenario.supporting_systems_involved[]` | object[] | `supporting_system_id`, `supporting_system`, `is_entry_point`, `justification`, `is_applicable` |
 | `scenario.scenario_title` | string or null | |
