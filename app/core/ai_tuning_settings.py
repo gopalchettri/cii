@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AiTuningSettings(BaseSettings):
     """Defaults: the largest answer measured per task, times about 2 (owner 2026-10-29, 9,000+ calls); the
-    rest are the values UAT ran with before 24 Oct."""
+    reviewer off (owner 30 Oct, D64); the rest are the values UAT ran with before 24 Oct."""
 
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True
@@ -30,6 +30,7 @@ class AiTuningSettings(BaseSettings):
     threat_questions_at_once: int = Field(default=1, ge=1, le=64)  # per threat-finding run
     threats_per_question: int = Field(default=40, ge=1, le=50)  # whole threats one relevance question judges
     scenarios_written_at_once: int = Field(default=6, ge=1, le=64)  # most scenarios in one write call
+    scenario_review_enabled: bool = False  # an AI reviewer judges each written set; off: code's checks only
     reranks_at_once: int = Field(default=6, ge=1, le=64)  # remote reranker calls per worker
     # The most tokens (prompt estimate + answer room) one AI call may hold; a bigger batch is sent as halves.
     ai_call_tokens_limit: int = Field(default=20000, ge=1000)

@@ -110,7 +110,7 @@ def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
         key: value for key, _, value in (line.partition("=") for line in lines if line.startswith("CII_"))
     }
     for field, info in AiTuningSettings.model_fields.items():
-        assert written[f"CII_{field.upper()}"] == str(info.default), field
+        assert written[f"CII_{field.upper()}"] == str(info.default).lower(), field  # a bool is "false"
     limits = [f for f in ChatModelSettings.model_fields if f.endswith(("_tokens", "_timeout_seconds"))]
     limits = [f for f in limits if not f.endswith("tokens_per_minute")]
     assert len(limits) == 18

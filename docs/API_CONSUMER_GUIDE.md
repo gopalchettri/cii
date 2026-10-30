@@ -387,6 +387,10 @@ Headers: identity headers.
 | `evidence[]` | object[] | `n`, `ref`, `kind`, `source`, `title`, `url`, `facts`, `applicability`, `published`, `modified`, `fetched_at`, `searched_at`, `role`, `supports`, `mitigations` |
 | `evidence_search` | object or null | |
 
+With the AI reviewer off (`CII_SCENARIO_REVIEW_ENABLED=false`, the default) the JSON is the same, field for
+field: `validation_errors` never holds "The plan check could not be made …", and `validation_notes` holds no
+reviewer notes.
+
 ```json
 {
   "session_id": "938cc176aede40daa154f7c572cd2494",

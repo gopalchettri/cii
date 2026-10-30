@@ -44,6 +44,9 @@ os.environ.update(
 # exercise the original path. A test of the ON path asks for the `intel` fixture
 # (tests/external_intelligence/conftest.py).
 os.environ["EXTERNAL_INTELLIGENCE_ENABLED"] = "false"
+# The scenario reviewer ON for the whole suite, whatever the default (off, D64): the tests of the reviewer's
+# verdicts keep their path. A test of the off path sets it off itself (tests/test_scenario_sets.py).
+os.environ["CII_SCENARIO_REVIEW_ENABLED"] = "true"
 
 from app.core.config import Settings  # noqa: E402  # reads .env only; builds no client
 

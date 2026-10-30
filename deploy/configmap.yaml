@@ -82,6 +82,7 @@ items:                                           # one tsg-config per project th
       CII_THREAT_QUESTIONS_AT_ONCE: "1"                               # threat finding: questions sent at the same time, per run (3 at 300k a minute)
       CII_THREATS_PER_QUESTION: "40"                                  # threat finding: most whole threats in one question, split evenly (12 at 300k a minute)
       CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)
+      CII_SCENARIO_REVIEW_ENABLED: "false"                            # scenario writing: "true" = an AI reviewer judges each written set (one more call a set); "false" = code's checks only
       CII_RERANKS_AT_ONCE: "6"                                        # search: reranker calls at the same time, per worker
       CII_AI_CALL_TOKENS_LIMIT: "20000"                               # most tokens one AI call may hold (question estimate + answer room); a bigger batch goes as halves
       CII_AI_BUSY_MAX_WAIT_SECONDS: "20"                              # after "too busy" (HTTP 429): longest wait (+-20%) before asking the same model again; LiteLLM always asks 60 s, but unused answer room comes back within seconds

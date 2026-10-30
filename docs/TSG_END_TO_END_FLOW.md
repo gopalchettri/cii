@@ -2164,15 +2164,17 @@ says nothing, rather than invent a precedent.
 
 > **In plain words:** An AI writer drafts each scenario from a fixed fact sheet that code prepares, so it can
 > only use facts the platform holds. Plain code checks then look for made-up labels, invented advisory numbers,
-> citation marks and copied instructions. A second AI acts as an editor and checks the draft against the plan.
-> A real-world sentence is cited only when the editor confirms it matches its public source; otherwise code
-> writes its own sentence from that same source.
+> citation marks and copied instructions. A second AI can act as an editor and check the draft against the plan;
+> it is switched off by default (D64). A real-world sentence is cited only when code's checks pass and, while
+> the editor is on, it confirms the sentence matches its public source; otherwise code writes its own sentence
+> from that same source.
 
 Since 31-Oct-2026 a batch of paths is written as one set (§8.0): one write call and one review call for all of
 its slots, and one more round at most. Each slot is still built, read and checked as one path is below
 (§8.1-8.6), so the rest of this section describes one slot. (Before, each path ran this alone in its own pool
 thread, up to 6 at once, with its own action split, write and review calls.) A final slot goes back to the job's
-own thread to be saved (section 9).
+own thread to be saved (section 9). The review call is made only while `CII_SCENARIO_REVIEW_ENABLED` is true
+(default false, D64): off, a set costs one write call (two at most) and each card is `unchecked` with no warning.
 
 ```mermaid
 flowchart TB
@@ -2182,7 +2184,7 @@ flowchart TB
     R -- no --> F["Failure card<br/>generation_failed"]
     R -- yes --> X{"Code blocker?<br/>check_exact_rules"}
     X -- yes --> S["Saved blocked<br/>reviewer skipped"]
-    X -- no --> V["Reviewer (AI)<br/>one call for the set"]
+    X -- no --> V["Reviewer (AI), if on<br/>one call for the set"]
     V --> P{"Passage usable?<br/>_passage_problem"}
     P -- yes --> C1["Cite the writer's passage [1]"]
     P -- no --> C2["Cite code's own sentence [1]<br/>warning citation_removed"]
@@ -2198,7 +2200,7 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 > own fact sheet and evidence, and answers them all in one go. Code checks each answer as before, and the
 > editor AI then reviews all the good ones in one go. Finished scenarios are saved at once, so the first cards
 > appear before any rewrite. Only the scenarios that need it are written and reviewed once more. A set never
-> takes more than 4 AI calls.
+> takes more than 4 AI calls, or 2 with the editor off (the default).
 
 **How** (`write.py`, `path_writing.py`, `write_job.py`)
 1. **Round 1: one write call for the set.** The batch's paths are slots `SC1`..`SCn`, in `job.batch` order, so a
@@ -2209,7 +2211,7 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 2. **Each slot is checked with today's code:** `_read_draft` (§8.3), the action-sentence and passage checks,
    then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2. `SC` is
    one of the internal labels (`_INTERNAL_LABEL`), so a slot label in a draft is an `unknown_id` blocker.
-3. **One review call** covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
+3. **One review call** (reviewer on only, D64) covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
    (§8.5), read slot by slot with today's reviewer readers. **A slot that is final is saved at once.**
 4. **Round 2, only when needed:** one rewrite call (task `repair_scenario`) for the slots that were unreadable,
    had a fault worth asking again, or need a repair (a listed act not carried out, or a `scenario_mismatch`
@@ -2221,10 +2223,11 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    with no act or mismatch to repair only if its sentence can still be cited; else the reviewed first draft
    stays (a mismatched one is saved blocked and a reserve path follows). A relink whose first review is asked
    again has no reviewed draft to fall back on, so it is not rewritten: its clean draft is reviewed again and
-   its repeated link cited (D60). A slot still unusable, or whose rewrite an exact rule blocks, keeps
+   its repeated link cited (D60). With the reviewer off a repeated link is only logged (`writer.links_repeated`),
+   never rewritten, and round 2 makes no review call. A slot still unusable, or whose rewrite an exact rule blocks, keeps
    its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
    round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's or relink's first draft; any other draft checked,
-   with `plan_check_not_made` naming the outage when it has no review); only a slot with no usable draft keeps
+   with `plan_check_not_made` naming the outage when it has no review, while the reviewer is on); only a slot with no usable draft keeps
    the outage, so its path alone is retried, written afresh in a smaller set.
 5. **A whole answer unreadable twice** (no `scenarios` list): `Unavailable`, so the job is retried, with no card
    and no path given up; on the last attempt (`Lease.MAX_ATTEMPTS`) the paths get failure cards. A write answer
@@ -2234,7 +2237,8 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    `CII_AI_CALL_TOKENS_LIMIT` (UAT 20,000) is sent as two halves. The answer room is `CII_ANSWER_TOKENS_WRITE_SCENARIO`,
    `..._REPAIR_SCENARIO` and `..._PLAN_CHECK` (UAT 6,144, 6,144 and 3,072), for a whole set.
 7. **Calls a set:** 2 when every answer is good, at most 4 however many slots fail. With the plan's 1 gate call,
-   a click (plan + first set of 6) is 3 AI calls when every answer is good.
+   a click (plan + first set of 6) is 3 AI calls when every answer is good. With the reviewer off (the default,
+   D64): 1 call a set, at most 2, and a click is 2.
 
 ### 8.1 The brief (`PathWriter.write` → `build_brief`)
 
@@ -2630,6 +2634,10 @@ near copy.
 > one). A draft about a different threat or impact is written once more, told the editor's words, and is
 > stopped only if that fails.
 
+**Off by default** (`CII_SCENARIO_REVIEW_ENABLED=false`, D64): no review call is made, each card's `plan_check`
+is `unchecked` with no warning, and none of this section's verdicts, notes or repairs applies. Exact blockers
+(§8.4) still block.
+
 **How**
 1. One call, task `plan_check`, for every slot of the round with no exact blocker (§8.0): the system prompt
    once, plus `[scenario.reviewer]`'s short note for a set, and per slot the user prompt of step 3; each slot's
@@ -2727,7 +2735,7 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 ### 8.6 The evidence passage (`_passage_problem`, `_cited`)
 
 > **In plain words:** The writer's closing evidence passage is added to the scenario only if it is present, short
-> enough, plain (no links, codes or marks) and confirmed by the editor AI. If any of that fails, code writes its
+> enough, plain (no links, codes or marks) and, while the editor AI is on, confirmed by it. If any of that fails, code writes its
 > own short sentence from the same public source instead, and shows a warning. Either way the scenario ends with
 > one citation, [1], that points to the public source.
 
@@ -2751,7 +2759,8 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
       or "associated with …" is left to the reviewer's `evidence_supported`, D62): 'it does not give the
       title …' / "it opens with the evidence, not with this attacker's action";
    7. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
-      reviewer did not confirm it against its source".
+      reviewer did not confirm it against its source". Only while the reviewer is on (D64): off, checks 1-6
+      alone decide.
 2. A problem blanks the passage and adds a `citation_removed` **warning**, never a blocker: "The writer's
    evidence passage was not cited ({reason}): the platform cites its own precedent sentence from the same source
    instead."
@@ -4304,6 +4313,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16); model limits blank = the model's | each module's own chat model, URL, key, thinking, longest question and answer, timeout and limits, 17 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT (31-Oct-2026): threat scenarios on kimi-k2.5, 180 requests and 24,000 tokens a minute (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, just under the gateway's 25,000; 290,000 at 300,000), 4 at once, no backup; remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
 | `CII_ANSWER_TOKENS_<TASK>` | gate 10240, gap fill 1024, threat actions 1024, writing 6144, repair 6144, plan check 3072, remediation 8192, service mapper 4096 (UAT the same; gate, writing, repair and plan check answer whole batches and sets) | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 (UAT the same; 3, 12 at a 300,000 budget) | gate batches at once per run, whole threats per gate batch (35 threats at 40: 1 call), scenarios in one write call per job (3 if a write times out), remote reranker calls at once per process |
+| `CII_SCENARIO_REVIEW_ENABLED` | false (UAT false) | true: an AI reviewer judges each written set (one call a set, one more for a rewritten set, §8.5); false: code's checks only, each card `unchecked` with no warning (D64) |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 (UAT 20000; 250000 at a 300,000 budget) | the most tokens one AI call may hold (question estimate + answer room); a bigger batch is sent as two halves |
 | `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 120, 4, 180 | after a 429: the longest one wait before its ±20 % (TSG's own 2, 5, 10, 15 s steps too), all waits (4 retries at most: 0, 20, 40, 60 s) before the fallback, how long a refused model goes last, the slow-down's floor and how long it lasts (section 15) |
 | `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |

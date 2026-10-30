@@ -5,15 +5,20 @@ evidence and its threat copied back; a set too big for one call goes as halves. 
 import dataclasses
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
+from structlog.testing import capture_logs
 
+from app.core.ai_tuning_settings import AiTuningSettings
+from app.core.config import get_settings
 from app.core.constants import (
     AiLimits,
     AiTask,
     ErrorCode,
     FindingCode,
+    LogEvent,
     PlanCheckStatus,
     ScenarioStatus,
     Status,
@@ -25,6 +30,7 @@ from app.domain.scenario.write import (
     PLAN_CHECK_SET_PROMPT,
     _repeated_link,
     _within_reask,
+    blocking_codes,
     check_exact_rules,
     draft_answer,
     is_blocked,
@@ -816,3 +822,68 @@ def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(
         assert call_tokens((writer_system_prompt(), prompt), AiTask.WRITE_SCENARIO) <= one
     for prompt in reviews:
         assert call_tokens((PLAN_CHECK_SET_PROMPT, prompt), AiTask.PLAN_CHECK) <= one
+
+
+@pytest.fixture
+def reviewer_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The AI reviewer off, its default (D64); the rest of the suite runs it on (tests/conftest.py)."""
+    monkeypatch.setattr(get_settings(), "scenario_review_enabled", False)
+
+
+@pytest.mark.usefixtures("reviewer_off")
+def test_with_the_reviewer_off_a_clean_set_costs_one_call_and_an_exact_blocker_still_blocks() -> None:
+    """Owner, 30 Oct (D64): no review call. Two stories linking alike, an original slot and a slot naming a
+    made-up label: one write, nothing rewritten (the repeated link only logged: a rewrite could not be judged
+    better); each clean card unchecked with no warning and its own passage cited, the label still blocked."""
+    leaked = f"{_CLEAN.statement} As in SC9, it spreads."
+
+    def write(block: str) -> dict[str, Any]:
+        if '"Threat 4"' in block:
+            return draft_answer(_CLEAN) | {"scenario_statement": leaked}
+        closing = {"evidence_statement": _MATCHES[_title_of(block)]} if "EVIDENCE (untrusted" in block else {}
+        return draft_answer(_CLEAN) | closing
+
+    briefs = [*_story_set(), *_briefs(4)[2:]]
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write}
+    with capture_logs() as logs:
+        outcomes = dict(write_set(fake, briefs))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO]
+    assert [log["slots"] for log in logs if log["event"] == LogEvent.WRITER_LINKS_REPEATED] == [1]
+    blocked = outcomes.pop("SC4")
+    assert isinstance(blocked, WrittenScenario) and blocking_codes(blocked) == [FindingCode.UNKNOWN_ID]
+    for written in outcomes.values():
+        assert isinstance(written, WrittenScenario) and written.findings == () and not written.rewritten
+        assert written.plan_check.status is PlanCheckStatus.UNCHECKED
+    closings = [o.draft.evidence_statement for o in outcomes.values() if isinstance(o, WrittenScenario)]
+    assert closings == [_MATCHES["Module Firmware"], _MATCHES["Valid Accounts"], ""]
+
+
+@pytest.mark.usefixtures("reviewer_off")
+@pytest.mark.parametrize("rewrite", [lambda _: draft_answer(_CLEAN), _down], ids=["rewritten", "outage"])
+def test_with_the_reviewer_off_a_faulted_slot_costs_one_rewrite_and_an_outage_keeps_its_draft(
+    rewrite: Callable[[str], dict[str, Any]],
+) -> None:
+    """SC2 shows no story sentence for its listed action: one write and one rewrite, never a review. When
+    the AI is down for the rewrite, SC2 keeps its own draft, unchecked with no warning (no review was due)."""
+
+    def write(block: str) -> dict[str, Any]:
+        if "REJECTED:" in block:
+            return rewrite(block)
+        return draft_answer(_CLEAN) | ({"action_sentences": {}} if '"Threat 2"' in block else {})
+
+    fake = FakeChatModel()
+    fake.responders |= {AiTask.WRITE_SCENARIO: write}
+    outcomes = dict(write_set(fake, _briefs(2, acted={2})))  # type: ignore[arg-type]
+    assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO]
+    second = outcomes["SC2"]
+    assert isinstance(second, WrittenScenario) and second.findings == ()
+    assert second.plan_check.status is PlanCheckStatus.UNCHECKED and not second.rewritten
+
+
+def test_the_reviewer_is_off_by_default_and_in_the_config_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner, 30 Oct (D64): off unless CII_SCENARIO_REVIEW_ENABLED says true."""
+    monkeypatch.delenv("CII_SCENARIO_REVIEW_ENABLED")
+    assert AiTuningSettings(_env_file=None).scenario_review_enabled is False  # type: ignore[call-arg]
+    configmap = (Path(__file__).parents[1] / "deploy" / "configmap.yaml").read_text(encoding="utf-8")
+    assert 'CII_SCENARIO_REVIEW_ENABLED: "false"' in configmap

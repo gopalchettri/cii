@@ -757,8 +757,9 @@ def write_set(
     review, then one rewrite for the slots that need it (unreadable, a re-ask fault, or listed actions or a
     reviewer's mismatch to repair or a repeated link, each with its reviewed draft kept) and one review for
     those and the slots whose review is asked again (a relink among them is not rewritten: a clean draft is
-    never risked for variety); there is no third round. A whole write answer still unusable raises
-    UnreadableAiAnswer or TruncatedAiAnswer; an outage raises Unavailable."""
+    never risked for variety); there is no third round. With the reviewer off (D64) there is no review call,
+    so at most 2. A whole write answer still unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an
+    outage raises Unavailable."""
     slots = [_Slot(label, brief) for label, brief in briefs]
     if not slots:
         return
@@ -884,10 +885,15 @@ def _blocks(findings: Iterable[Finding]) -> bool:
     return any(finding_severity(finding) == FindingSeverity.BLOCKER for finding in findings)
 
 
+def _review_on() -> bool:
+    """Whether the AI reviewer judges each written set (CII_SCENARIO_REVIEW_ENABLED, off by default: D64)."""
+    return get_settings().scenario_review_enabled
+
+
 def _review(chat: ChatModel, slots: list[_Slot]) -> None:
     """One reviewer call for every slot's draft: each slot keeps its usable review, or notes why it got none
-    (an earlier usable review then stays)."""
-    if not slots:
+    (an earlier usable review then stays); no call while the reviewer is off."""
+    if not slots or not _review_on():
         return
     blocks = [(slot.label, plan_check_slot(slot.label, slot.brief, _draft_of(slot))) for slot in slots]
     try:  # temperature 0: a retry's same ask gets the same answer, so it is read back
@@ -1047,15 +1053,16 @@ def _firsts_kept(slots: list[_Slot], outage: Unavailable) -> Iterator[tuple[str,
 
 
 def _checked(slot: _Slot, outage: Unavailable | None = None) -> WrittenScenario:
-    """The slot's draft with its exact findings and, unless one blocks it, its review's verdict (`outage`:
-    why it has none); a story's passage that cannot be cited is dropped with a warning (code cites its own
-    sentence), never a blocker."""
+    """The slot's draft with its exact findings and, unless one blocks it or the reviewer is off (unchecked,
+    no warning), its review's verdict (`outage`: why it has none); a story's passage that cannot be cited is
+    dropped with a warning (code cites its own sentence), never a blocker."""
     draft, brief = _draft_of(slot), slot.brief
     findings = check_exact_rules(draft, brief)
     check: PlanCheck
     notes: tuple[Finding, ...]
-    if _blocks(findings):
-        check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()  # no verdict could clear an exact blocker
+    if _blocks(findings) or not _review_on():
+        # no verdict could clear an exact blocker; with the reviewer off none is due, so none is missing
+        check, notes = PlanCheck(PlanCheckStatus.UNCHECKED), ()
     else:
         not_made = str(outage) if outage else _rejected(AiTask.PLAN_CHECK, slot.review_problems)
         check, notes = _plan_check_of(brief, slot.review, not_made)
@@ -1228,7 +1235,8 @@ def _link_words(passage: str) -> tuple[str, str]:
 
 def _flag_repeated_links(slots: Sequence[_Slot]) -> None:
     """A clean story slot linking like an earlier clean one is written again, told the links taken; it is
-    reviewed first, so its draft stays should the rewrite do worse (_repair_or_first, _firsts_kept)."""
+    reviewed first, so its draft stays should the rewrite do worse (_repair_or_first, _firsts_kept). With the
+    reviewer off a rewrite could not be judged better, so a repeat is only logged."""
     # never a citation fault (_passage_faults): a repeat that survives its rewrite is still cited
     links = {
         slot.label: _link_words(_draft_of(slot).evidence_statement)
@@ -1241,10 +1249,12 @@ def _flag_repeated_links(slots: Sequence[_Slot]) -> None:
             taken.setdefault(link, label)
     used = [links[label][1] for label in taken.values()]
     repeats = {label: words for label, (link, words) in links.items() if link and taken[link] != label}
+    review_on = _review_on()
     for slot in slots:
-        if slot.label in repeats:
+        if review_on and slot.label in repeats:
             slot.relink = _repeated_link(repeats[slot.label], used)
-    if len(repeats) > 1:  # the prompt's variety rule is not holding (D60): fix the prompt, not the guard
+    # the prompt's variety rule is not holding (D60): fix the prompt, not the guard
+    if len(repeats) > 1 or (repeats and not review_on):
         log.warning(LogEvent.WRITER_LINKS_REPEATED, slots=len(repeats))
 
 
@@ -1271,9 +1281,9 @@ def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
 
 def _passage_problem(draft: ScenarioDraft, check: PlanCheck, cited: dict[str, Any] | None) -> str:
     """Why the writer's evidence passage cannot be cited ('' when it can): code's own checks, then the
-    reviewer's confirmation (the re-ask's answer is not checked again before this)."""
+    reviewer's confirmation while it is on (the re-ask's answer is not checked again before this)."""
     fault = _passage_faults(draft.evidence_statement, cited)
-    return fault or ("" if check.evidence_supported else Precedent.NOT_CONFIRMED)
+    return fault or ("" if check.evidence_supported or not _review_on() else Precedent.NOT_CONFIRMED)
 
 
 def _passage_faults(passage: str, cited: dict[str, Any] | None) -> str:
