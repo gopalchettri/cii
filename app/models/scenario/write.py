@@ -56,7 +56,7 @@ class WriterBrief:
     style: WriterStyle = WriterStyle.ORIGINAL
     # Evidence docs in the plan's order, best first: the writer's grounding; the first citable one is [1].
     evidence: tuple[dict[str, Any], ...] = ()
-    # Every supporting system of the run, applicable or not: the writer gives each a reason.
+    # Every supporting system of the run, applicable or not: each gets a reason (the writer's only for "yes").
     supporting_systems: tuple[BriefSystem, ...] = ()
     entry_system: str = ""  # the system the path gets in through, by its name in `systems` ("" = any of them)
 
@@ -112,14 +112,14 @@ class PathFailure:
 
 
 class ScenarioAnswer(BaseModel):
-    """The writer's answer; the writer checks entry_point against the brief's options."""
+    """The writer's answer; code settles entry_point against the brief's options."""
 
     scenario_title: str
     scenario_statement: str
     risk_statement: str
     assumptions: list[str]
     entry_point: str
-    system_reasons: dict[str, str] = {}  # one sentence per supporting system, by name
+    system_reasons: dict[str, str] = {}  # one sentence per "yes" supporting system, by name
     action_sentences: dict[str, str] = {}  # per listed action, the statement's sentence that carries it out
     evidence_step: str | None = ""  # none given is never a re-ask: code cites its own sentence
 

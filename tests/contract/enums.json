@@ -105,10 +105,8 @@
  },
  "AnswerProblem": {
   "ACTION_SENTENCES_MISSING": "action_sentences must quote the statement's sentence for each of: {actions}",
-  "ENTRY_POINT_NOT_OFFERED": "entry_point must be one of entry_point_options, copied exactly: {options}",
   "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
   "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
-  "SYSTEM_REASONS_MISSING": "system_reasons must give one short sentence for each of: {names}",
   "TEXT_REQUIRED": "must not be empty",
   "THREAT_ACTIONS_REQUIRED": "the reply must be {\"actions\": [...]}: a non-empty list of short verb phrases",
   "THREAT_ACTION_VERDICTS_REQUIRED": "threat_actions must judge every item of PLAN.threat.threat_actions"

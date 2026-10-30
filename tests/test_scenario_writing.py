@@ -37,6 +37,7 @@ from app.core.constants import (
     StrideCategory,
     ValidationStatus,
     WriterStyle,
+    Writing,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
@@ -94,8 +95,8 @@ _CLEAN = ScenarioDraft(
     ("Assumes vendor sessions can update firmware - not recorded in the platform.",),
     "SCADA server",
 )
-#: The reasons the fake writer gives an answer that has none (tests/fakes.py): one per system of the brief.
-_REASONS = (("SCADA server", "It could affect SCADA server."), ("Historian", "It could affect Historian."))
+#: A draft's reasons: the fake writer's (tests/fakes.py) for the "yes" system, code's for the "no" one.
+_REASONS = (("SCADA server", "It could affect SCADA server."), ("Historian", Writing.NOT_REACHED_REASON))
 _READ = dataclasses.replace(_CLEAN, system_reasons=_REASONS)
 _CONSISTENT = {"rules": {"1": "holds"}, "same_threat": True, "same_impact": True}
 _MISMATCH = {"rules": {"1": "holds"}, "same_threat": False, "same_impact": True}
@@ -364,7 +365,13 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert '"evidence_statement"' not in writer and "words no other slot uses" not in writer
     assert "evidence_supported" not in reviewer  # no code reads it: code's sentence states only its source
     assert "except `evidence_statement`, which the platform writes from EVIDENCE" in reviewer
-    assert "Never name it in scenario_statement: explain its exclusion only in system_reasons" in writer
+    # D66: the writer gives reasons only for "yes" systems; code writes a "no" system's
+    assert "Never name it in scenario_statement and give it no system_reasons key" in writer
+    assert 'system_reasons: one key for every BRIEF.supporting_systems name marked "yes"' in writer
+    assert 'Give no reason for a "no" system: the application writes it.' in writer
+    assert (
+        "Applicability missing" not in writer and "explain its exclusion only in system_reasons" not in writer
+    )
     assert "End scenario_statement on this consequence." in writer
     assert 'No "no" system named in scenario_statement' in writer
     assert "The story may describe the attacker's steps in the cited entry's terms" in writer
@@ -763,19 +770,35 @@ def test_a_draft_the_exact_checks_block_makes_no_reviewer_call() -> None:
     assert _calls(chat) == [AiTask.WRITE_SCENARIO]
 
 
-def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again() -> None:
-    """A reason missing for one system is re-asked; a name is matched case and spacing forgiven."""
-    half = draft_answer(_CLEAN) | {"system_reasons": {"scada  SERVER": "It could stop the server."}}
-    whole = draft_answer(_CLEAN) | {
-        "system_reasons": {"SCADA server": "It could stop it.", "Historian": "Its records stay."}
-    }
-    chat = _chat_answering([half, whole], [_CONSISTENT])
-    written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert written.draft.system_reasons == (
-        ("SCADA server", "It could stop it."),
-        ("Historian", "Its records stay."),
-    )
-    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
+@pytest.mark.parametrize(
+    ("given", "scada_reason"),
+    [
+        (
+            {"scada  SERVER": "It could stop the server.", "Historian": "Its records stay."},
+            "It could stop the server.",
+        ),
+        ({}, _CLEAN.statement),
+    ],
+    ids=["no_system_reason_given_anyway", "yes_system_reason_missing"],
+)
+def test_every_supporting_system_gets_its_reason_without_a_rewrite(
+    given: dict[str, str], scada_reason: str
+) -> None:
+    """D66: a "no" system's reason is code's, even over one the writer gave; a "yes" system given none takes
+    the story's sentence naming it; a name matches case and spacing forgiven. Neither costs a rewrite, the
+    reviewer sees every system's reason (its rule 3) and the card serves one justification per system."""
+    chat = _chat_answering([draft_answer(_CLEAN) | {"system_reasons": given}], [_CONSISTENT])
+    brief = _brief_of(_plan_threat())
+    written = write_scenario(chat, brief)
+    reasons = (("SCADA server", scada_reason), ("Historian", Writing.NOT_REACHED_REASON))
+    assert written.draft.system_reasons == reasons
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert Writing.NOT_REACHED_REASON in chat.asked(AiTask.PLAN_CHECK)[0]
+    run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
+    path = {"path_id": "p1", "category": "Tampering", "categories": ["Tampering"], "systems": [321]}
+    view = build_scenario_view(written_record(run, path, _plan_threat(), brief, written))
+    served = [(s.supporting_system, s.justification) for s in view.scenario.supporting_systems_involved]
+    assert served == list(reasons)
 
 
 _ACTIONS = ("pushing firmware", "hiding the change")
@@ -1188,17 +1211,16 @@ def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None
 
 def test_the_writer_gets_in_through_its_turns_system_and_the_card_marks_that_one() -> None:
     """A path whose turn is the Historian's offers only the Historian as the way in: a reply naming the SCADA
-    server is asked again, and the card marks the Historian, though it is the path's second system, even when
-    the two names are redacted alike. A plan made before paths took turns offers any of its systems."""
+    server is never asked again (D66: code assigns the way in), and the card marks the Historian, though it
+    is the path's second system, even when the two names are redacted alike. A plan made before paths took
+    turns offers any of its systems."""
     threat = _plan_threat(systems=(321, 322))
     brief = _brief_of(threat, entry_system=322)
     assert brief_entry_point_options(brief) == ("Historian",)
-    chat = _chat_answering(
-        [draft_answer(_CLEAN), draft_answer(_CLEAN) | {"entry_point": "Historian"}], [_CONSISTENT]
-    )
+    chat = _chat_answering([draft_answer(_CLEAN)], [_CONSISTENT])
     written = write_scenario(chat, brief)
     assert written.draft.entry_point == "Historian"
-    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321, 322]}
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     assert written_record(run, path | {"entry_system": 322}, threat, brief, written)["content"][

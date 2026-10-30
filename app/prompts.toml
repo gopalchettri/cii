@@ -55,7 +55,7 @@ RETURN ONLY THIS VALID JSON OBJECT
   "risk_statement": "string",
   "assumptions": ["string"],
   "entry_point": "string",
-  "system_reasons": {"<exact supporting system name>": "string"},
+  "system_reasons": {"<exact name of each 'yes' supporting system>": "string"},
   "action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>": "<the exact sentence of scenario_statement in which the attacker does it>"},
   "evidence_step": "string"
 }
@@ -67,7 +67,7 @@ SCHEMA
 - The upper number of each range is a hard limit. The lower number is a target, never a reason to add padding. Count the words of each statement before returning.
 - assumptions: short, specific sentences; [] when none are needed.
 - entry_point: an exact BRIEF.entry_point_options value; "" if the list is empty.
-- system_reasons: exactly one key for every BRIEF.supporting_systems name, copied exactly; no missing or extra keys.
+- system_reasons: one key for every BRIEF.supporting_systems name marked "yes", copied exactly; no key for a "no" system.
 - action_sentences: one key for every item of BRIEF.threat.threat_actions, copied exactly; its value is copied word for word from scenario_statement and shows the attacker doing that action, not its purpose ("in order to ...") or the threat's name. {} when BRIEF.threat.threat_actions is absent.
 - evidence_step: only the step described in rule 10; "" when no EVIDENCE is supplied.
 
@@ -101,10 +101,10 @@ State access as a precondition only when supported, otherwise make the essential
 Use the supplied applicability flags unchanged. Do not select additional systems or change "no" to "yes" to broaden coverage.
 - Each "yes" system must have one or two short sentences in scenario_statement identifying how the attack reaches it (its own supported or conditional access, or through another "yes" system), the recorded component/information acted on, the specified threat action and its contribution to the SAME primary asset-level consequence.
 - Explain the shared business or operational consequence once. Do not repeat the opening, full attack narrative, detection discussion or risk statement for every system.
-- A "no" system must not be described as attacked or directly affected. Never name it in scenario_statement: explain its exclusion only in system_reasons, without claiming that it is immune to other threats.
+- A "no" system must not be described as attacked or directly affected. Never name it in scenario_statement and give it no system_reasons key: the application states its exclusion.
 - The asset and its "yes" systems form one whole: they may work together where the event needs it (data or commands passing between them, one access or foothold reaching several). A detail the story depends on that BRIEF does not record goes in assumptions (rule 2).
 - Name only supplied systems. Describe people by recorded or generic role rather than inventing another system.
-- If applicability is missing, do not guess or describe direct activity on that system. Its system_reasons sentence must state that direct activity is not described because applicability is not supplied.
+- If applicability is missing, do not guess or describe direct activity on that system.
 
 5. ATTACKER TYPE
 Use the supplied attacker type or a faithful plain-language equivalent. Never present a named group, malware family or campaign as attacking this asset.
@@ -154,10 +154,7 @@ The primary impact and risk opening must match the supplied category:
 Complete the opening with the adverse event, naming the exact asset. Explain the primary loss/exposure, not later uses of access or information the threat's name does not state. Never force an unsupported category-specific detail, or an added action to reach this category's loss, into the story.
 
 12. SYSTEM REASONS
-Return one short sentence for every exact supporting-system name supplied in BRIEF:
-- "yes": explain the same access condition, specified action and contribution already described for that system. Add no new fact, action or impact.
-- "no": explain why the selected event does not act on that system, using the supplied scope/applicability. Do not claim the system is generally irrelevant, unaffected by all risks or immune.
-- Applicability missing: state that direct activity is not described because applicability is not supplied.
+Return one short sentence for every supporting system BRIEF marks "yes", under its exact name: explain the same access condition, specified action and contribution already described for that system. Add no new fact, action or impact. Give no reason for a "no" system: the application writes it.
 Use "could" or "may" where describing potential actions. Do not name an unlisted system.
 
 13. CLEAR, BALANCED LANGUAGE
@@ -177,7 +174,7 @@ Verify before returning:
 - Every action the threat's name states is carried out, not only named (one of any "or" alternatives), and the primary impact comes from one of them with no added step.
 - action_sentences gives, for each listed action, its own sentence of scenario_statement in which the attacker does it; an action that only touches the asset as a whole (a demand, a message, a public claim) still gets its own sentence in scenario_statement, never only in risk_statement.
 - Every "yes" system has a concise contribution; the common asset consequence is explained once.
-- No "no" system named in scenario_statement and no activity on unknown-applicability systems; supplied applicability unchanged; exact system_reasons keys and allowed entry point.
+- No "no" system named in scenario_statement and no activity on unknown-applicability systems; supplied applicability unchanged; a system_reasons key for each "yes" system only and an allowed entry point.
 - No invented access, capability or business process; a link between "yes" systems that BRIEF does not record is an assumption.
 - Essential missing details listed as assumptions and kept conditional; no safeguard is assumed missing to enlarge the impact.
 - Scenario, risk, title and system reasons describe the same event and category.

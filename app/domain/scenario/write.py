@@ -822,15 +822,14 @@ def _with_ampersands(value: Any) -> Any:
 
 
 def _read_slot_draft(slot: _Slot, item: dict[str, Any] | None) -> tuple[ScenarioDraft | None, list[str]]:
-    """A slot's draft from its item, or its problems: no item, another threat copied back, or a hard fault
-    (_read_draft); a story's closing sentence is code's, from its step (none with no evidence given)."""
+    """A slot's draft from its item, or its problems: no item, another threat copied back, or an unreadable
+    answer (_read_draft); a story's closing sentence is code's, from its step (none with no evidence)."""
     brief = slot.brief
     if item is None:
         return None, [_SLOT_MISSING]
     if name_match_key(str(item.get("threat") or "")) != name_match_key(brief.threat):
         return None, [_THREAT_NOT_COPIED]  # another slot's answer, or none: written again
-    systems = tuple(system.name for system in brief.supporting_systems)
-    draft, problems = _read_draft(item, brief_entry_point_options(brief), systems)
+    draft, problems = _read_draft(item, brief_entry_point_options(brief), brief.supporting_systems)
     if draft is not None:
         cited = _cited_entry(brief) if _is_story(brief) else None
         sentence = evidence_sentence(draft.evidence_step, cited, slot.place)[0]
@@ -1242,52 +1241,49 @@ def _cited_entry(brief: WriterBrief) -> dict[str, Any] | None:
 
 
 def _read_draft(
-    answer: dict[str, Any], options: tuple[str, ...], systems: tuple[str, ...]
+    answer: dict[str, Any], options: tuple[str, ...], systems: tuple[BriefSystem, ...]
 ) -> tuple[ScenarioDraft | None, list[str]]:
-    """The writer's answer as a draft, or the problems to re-ask with: an offered entry point and a reason
-    for every supporting system the brief lists."""
+    """The writer's answer as a draft, or the problems of an unreadable one; its entry point and every
+    supporting system's reason are settled by code, never a fault."""
     problems = answer_item_problems(ScenarioAnswer, answer, "the reply")
     if problems:
         return None, problems
     reply = ScenarioAnswer.model_validate(answer)
-    entry_point = _offered_entry_point(reply.entry_point, options)
-    if entry_point is None:
-        offered = ", ".join(json.dumps(option, ensure_ascii=False) for option in options)
-        return None, [AnswerProblem.ENTRY_POINT_NOT_OFFERED.format(options=offered)]
-    reasons, missing = _reasons_by_system(reply.system_reasons, systems)
-    if missing:
-        names = ", ".join(json.dumps(name, ensure_ascii=False) for name in missing)
-        return None, [AnswerProblem.SYSTEM_REASONS_MISSING.format(names=names)]
+    statement = reply.scenario_statement.strip()
     draft = ScenarioDraft(
         title=reply.scenario_title.strip(),
-        statement=reply.scenario_statement.strip(),
+        statement=statement,
         risk=reply.risk_statement.strip(),
         assumptions=tuple(assumption.strip() for assumption in reply.assumptions),
-        entry_point=entry_point,
-        system_reasons=reasons,
+        entry_point=_offered_entry_point(reply.entry_point, options),
+        system_reasons=_reasons_by_system(reply.system_reasons, systems, statement),
         evidence_step=reply.evidence_step or "",
     )
     return draft, []
 
 
 def _reasons_by_system(
-    written: dict[str, str], systems: tuple[str, ...]
-) -> tuple[tuple[tuple[str, str], ...], list[str]]:
-    """(each brief system with its reason, in the brief's order; the systems given none); a name matches in
-    any of its forms ("DCS" for "Distributed Control System (DCS)")."""
-    reasons = tuple(
-        (name, next((reason.strip() for given, reason in written.items() if is_same_name(name, given)), ""))
-        for name in systems
-    )
-    return reasons, [name for name, reason in reasons if not reason]
+    written: dict[str, str], systems: tuple[BriefSystem, ...], statement: str
+) -> tuple[tuple[str, str], ...]:
+    """Each brief system with its reason, in the brief's order (_system_reason)."""
+    return tuple((system.name, _system_reason(system, written, statement)) for system in systems)
 
 
-def _offered_entry_point(written: str, options: tuple[str, ...]) -> str | None:
-    """The option the answer names, in any of its forms; "" when the threat acts on the asset itself; None
-    when it names no option."""
-    if not options:
-        return ""
-    return next((option for option in options if is_same_name(option, written)), None)
+def _system_reason(system: BriefSystem, written: dict[str, str], statement: str) -> str:
+    """Code's sentence for a "no" system; for a "yes" one the writer's reason (its name in any of its forms:
+    "DCS" for "Distributed Control System (DCS)"), else the story's first sentence naming it, else code's."""
+    if not system.applicable:
+        return Writing.NOT_REACHED_REASON
+    given = (reason.strip() for name, reason in written.items() if is_same_name(system.name, name))
+    named = (line for line in _SENTENCE_END.split(statement) if find_name_mentions(system.name, line))
+    return next(filter(None, given), "") or next(named, Writing.REACHED_REASON)
+
+
+def _offered_entry_point(written: str, options: tuple[str, ...]) -> str:
+    """The option the answer names, in any of its forms, else the first, as code assigns it from the path
+    (D14); "" when the threat acts on the asset itself."""
+    named = (option for option in options if is_same_name(option, written))
+    return next(named, options[0] if options else "")
 
 
 # --- the card stored for one path: the written (or blocked) scenario, or its failure
@@ -1398,7 +1394,7 @@ def _systems_content(
     run: dict[str, Any], path: dict[str, Any], brief: WriterBrief, draft: ScenarioDraft
 ) -> dict[str, Any]:
     """The card's systems with the entry point, and every supporting system of the run with whether the route
-    goes through it and the writer's reason; by recorded name, never the prompt's redacted one."""
+    goes through it and its reason (_system_reason); by recorded name, never the prompt's redacted one."""
     names = {system["id"]: system["name"] for system in run["context"]["systems"]}
     if not draft.entry_point:
         entry = -1

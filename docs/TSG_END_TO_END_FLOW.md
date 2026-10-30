@@ -2383,14 +2383,14 @@ Where each key came from:
 
 > **In plain words:** The AI writer gets two things: a fixed set of writing rules, and the brief with any
 > real-world evidence. It must answer in a fixed form with eight fields: a title, the scenario, the risk,
-> assumptions, the way in, one reason per system, the story sentence of each act, and the step its evidence is about. Word limits are set by the
+> assumptions, the way in, one reason per "yes" system, the story sentence of each act, and the step its evidence is about. Word limits are set by the
 > platform's settings, and the upper limit is strict.
 
 **How**
 1. One call, task `write_scenario`, for the whole set (§8.0) through `ask_ai_and_check`
    (`app/domain/shared/ask_ai.py`): the system prompt below once, plus `[scenario.writer]`'s short note for a
    set, and per slot its `SC` label, BRIEF and evidence block (step 3). Each slot's item is read by
-   `_read_draft` with that slot's entry point options and its supporting systems' names (section 8.3).
+   `_read_draft` with that slot's entry point options and its supporting systems (section 8.3).
 2. **System prompt.** `app/prompts.toml` `[scenario.writer]` `text`, passed through
    `with_word_limits`, which fills two slots with "min to max" (`_spoken`):
 
@@ -2470,8 +2470,8 @@ Where each key came from:
    | `scenario_statement` | the start of `content.statement` |
    | `risk_statement` | `content.risk_statement` |
    | `assumptions` | `content.assumptions` as written; shown with "- not recorded in the platform" added |
-   | `entry_point` | marks `entry_point: true` on one of `content.systems` |
-   | `system_reasons` | the `reason` of each `content.system_applicability` entry |
+   | `entry_point` | marks `entry_point: true` on one of `content.systems`; one not offered is ignored and code assigns the way in (section 8.3) |
+   | `system_reasons` | the `reason` of each "yes" system's `content.system_applicability` entry; a "no" system's, and a missing one's, are code's (section 8.3, D66) |
    | `action_sentences` | not stored: per listed act, the sentence of `scenario_statement` in which the attacker does it. A first answer that gives none for an act, or quotes words not in its own statement, is asked again once; a second answer is kept, for the review and the rewrite (D47) |
    | `evidence_step` | the start of code's evidence sentence: cited at the end of the statement, and the entry's `supports` (section 8.6) |
 
@@ -2528,9 +2528,9 @@ asked for, left out):
 ### 8.3 Reading the answer (`_read_draft`) and the chat gateway (`ChatModel`)
 
 > **In plain words:** Code reads the AI's answer and checks its form. If something basic is wrong (not the
-> agreed format, a blank title, a way in that was not offered, a system with no reason), the AI is asked once
-> more, with the problems listed. If the second answer is still wrong, the platform records a visible failure
-> for this scenario instead of guessing.
+> agreed format, a blank title), the AI is asked once more, with the problems listed. If the second answer is
+> still wrong, the platform records a visible failure for this scenario instead of guessing. The way in and
+> each system's reason are settled by code, never a reason to ask again (D66).
 
 **How**
 1. `ChatModel.ask_for_checked_json` (`app/ai/chat.py`) sends the system and user prompts and passes the reply
@@ -2545,13 +2545,20 @@ asked for, left out):
    - `ScenarioAnswer` finds schema errors: a missing or wrongly typed field, or a blank `scenario_title`,
      `scenario_statement` or `risk_statement` (`AnswerProblem.TEXT_REQUIRED`). Only the declared fields are
      judged (`answer_item_problems`), so an extra field is ignored;
-   - `entry_point` is not one of the offered options, in any form of its name (`is_same_name`;
-     `AnswerProblem.ENTRY_POINT_NOT_OFFERED`);
-   - a supporting system has no reason in `system_reasons` (`AnswerProblem.SYSTEM_REASONS_MISSING`).
-3. **Never asked again:** a missing or null `evidence_step` (it defaults to ""), word counts, and
-   anything the code checks or the reviewer judge later.
+3. **Never asked again:** a missing or null `evidence_step` (it defaults to ""), word counts, the way in,
+   each system's reason, and anything the code checks or the reviewer judge later:
+   - `entry_point` (`_offered_entry_point`): the offered option it names, in any form of its name
+     (`is_same_name`); one not offered (or "") is ignored and the first option taken, as code assigns the way
+     in from the path (D14); "" when the threat acts on the asset itself;
+   - `system_reasons` (`_system_reason`, D66): the writer gives one only for each "yes" system. A "no"
+     system always gets code's sentence (`Writing.NOT_REACHED_REASON`: this threat's actions do not reach it,
+     never a claim that it is immune), even over one the writer gave. A "yes" system given none takes the
+     story's first sentence that names it (`find_name_mentions` over `scenario_statement`), else code's
+     `Writing.REACHED_REASON`.
 4. A good answer becomes a `ScenarioDraft`: title, statement and risk trimmed; `evidence_step` kept and, in a
-   story, code's sentence from it in `evidence_statement` (§8.6); system reasons in the brief's order.
+   story, code's sentence from it in `evidence_statement` (§8.6); one reason per supporting system in the
+   brief's order, so the reviewer's rule 3 sees every system covered and the card serves one
+   `supporting_systems_involved[].justification` per system, as before.
 5. Still wrong after the re-ask: `UnreadableAiAnswer`. `PathWriter.write` turns it into a failure with code
    `generation_failed` (section 9).
 6. **The `ChatModel` wrapper**, briefly:
@@ -2590,7 +2597,8 @@ asked for, left out):
 
 The first answer passed every check: it was one JSON object, the title, statement and risk were not blank,
 "Intelligent Traffic Systems Platform" was one of the two offered options, and all four supporting systems had a
-reason.
+reason. The run predates D66: today the writer gives only the two "yes" systems' reasons and the two "no"
+systems take code's sentence.
 
 ### 8.4 Code checks (`check_exact_rules`)
 

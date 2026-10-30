@@ -12,6 +12,13 @@ class Writing:
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
     PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
+    #: A "no" system's reason: code's, never the writer's; it claims no immunity to other threats.
+    NOT_REACHED_REASON: Final = (
+        "This threat's actions in this scenario do not reach this system; that does not make it immune to "
+        "other threats."
+    )
+    #: A "yes" system's reason when the writer gave none and no story sentence names it.
+    REACHED_REASON: Final = "This threat's actions may reach this system as part of the same event."
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
 

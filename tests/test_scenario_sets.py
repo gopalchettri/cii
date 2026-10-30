@@ -84,7 +84,7 @@ def _review_of(block: str) -> dict[str, Any]:
 
 
 def test_two_bad_slots_cost_one_rewrite_and_one_review_and_the_good_ones_are_saved_first() -> None:
-    """Slot 3 names an entry point it was not offered, slot 5 shows no story sentence for its listed action,
+    """Slot 3 leaves its risk statement blank, slot 5 shows no story sentence for its listed action,
     and slot 2's first review judges none of its listed actions: exactly 4 calls; the rewrite holds only SC3
     and SC5, each told its own problems, its review those two and SC2 (its draft kept as written), and slots
     1, 4 and 6 come out before the rewrite is asked."""
@@ -94,7 +94,7 @@ def test_two_bad_slots_cost_one_rewrite_and_one_review_and_the_good_ones_are_sav
         if "REJECTED:" in block:
             return answer
         if '"Threat 3"' in block:
-            return answer | {"entry_point": "Engineering laptop"}
+            return answer | {"risk_statement": " "}
         return answer | ({"action_sentences": {}} if '"Threat 5"' in block else {})
 
     reviews_of_slot_2: list[str] = []
@@ -120,7 +120,7 @@ def test_two_bad_slots_cost_one_rewrite_and_one_review_and_the_good_ones_are_sav
     assert _labels(fake.asked(AiTask.PLAN_CHECK)[1]) == ["SC2", "SC3", "SC5"]
     assert reviews_of_slot_2[0] == reviews_of_slot_2[1]  # the same draft reviewed again, never rewritten
     third, fifth = (block for _, block in slot_blocks(rewrite))
-    assert "entry_point" in third.split("REJECTED:")[1] and _ACT in fifth.split("REJECTED:")[1]
+    assert "risk_statement" in third.split("REJECTED:")[1] and _ACT in fifth.split("REJECTED:")[1]
 
 
 def test_an_outage_in_the_second_round_keeps_each_usable_draft_and_retries_only_the_rest() -> None:
