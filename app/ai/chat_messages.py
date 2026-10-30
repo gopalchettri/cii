@@ -97,15 +97,22 @@ def build_request_options(
 
 
 def build_call_record(  # noqa: PLR0913 — one chat call, whole
-    task: AiTask, model: str, messages: list[dict], response: Any, seconds: float, outcome: AiOutcome
+    task: AiTask,
+    model: str,
+    messages: list[dict],
+    response: Any,
+    seconds: float,
+    outcome: AiOutcome,
+    thinking: bool = False,
 ) -> dict[str, Any]:
     """The audit copy of one chat call, with the job, the delivery and the request it served (from the log
-    context)."""
+    context), and whether the model's thinking was on (threat finding's reuse across runs matches it)."""
     context = structlog.contextvars.get_contextvars()
     return {
         "created_at": utc_now(),
         "task": task,
         "model": model,
+        "thinking": thinking,
         "outcome": outcome,
         **_job_of(context),  # with prompt_hash: finds one job's AI calls
         "task_id": context.get("task_id"),
@@ -186,10 +193,12 @@ def record_chat_call(  # noqa: PLR0913 - one chat call, whole, and where it is k
     response: Any,
     seconds: float,
     outcome: AiOutcome,
+    thinking: bool = False,
 ) -> None:
     """One outcome per call: counted, logged and its usage row noted, then copied to tsg_ai_call_texts (the
     system prompt as its hash) under the usage row's _id, so every user prompt and answer can be found."""
-    record = {"_id": ObjectId(), **build_call_record(task, model, messages, response, seconds, outcome)}
+    call = build_call_record(task, model, messages, response, seconds, outcome, thinking)
+    record = {"_id": ObjectId(), **call}
     tokens, reask = (record["tokens_in"], record["tokens_out"]), len(messages) > 2  # a correction turn added
     update_call_metrics(task, model, outcome, *tokens, seconds, call_id=record["_id"], reask=reask or None)
     try:
@@ -203,19 +212,20 @@ def find_earlier_answer(
     task: AiTask,
     messages: list[dict],
     check: Callable[[dict[str, Any]], list[str]],
-    models: list[str],
+    models: list[tuple[str, bool]],
 ) -> tuple[dict[str, Any], str] | None:
     """(answer, reply) of this job's newest ok call with exactly these messages, from any of its deliveries,
     else, for threat finding (REUSED_ACROSS_RUNS), any run's newest within REUSE_ACROSS_RUNS_HOURS answered
-    by one of `models`, when `check` accepts that answer: a rejected one is asked again, as the job's retry
-    after it means to. None when there is none (a job's own only inside a leased job) or when
-    tsg_ai_call_texts cannot be read (the AI is asked then). A reused answer is noted as a usage row with no
-    AI call (outcome reused)."""
+    by one of `models` (name, thinking on) as it is set now, when `check` accepts that answer: a rejected one
+    is asked again, as the job's retry after it means to. None outside a leased job (the API, a script or a
+    replay asks afresh), when there is none, or when tsg_ai_call_texts cannot be read (the AI is asked then).
+    A reused answer is noted as a usage row with no AI call (outcome reused)."""
     job, digest = _job_of(structlog.contextvars.get_contextvars()), prompt_hash(messages)
-    across_runs = task in REUSED_ACROSS_RUNS and AiLimits.REUSE_ACROSS_RUNS_HOURS > 0
+    if None in job.values():
+        return None
     try:
-        found = None if None in job.values() else records.find_ok_response(job, digest)
-        if found is None and across_runs:
+        found = records.find_ok_response(job, digest)
+        if found is None and task in REUSED_ACROSS_RUNS and AiLimits.REUSE_ACROSS_RUNS_HOURS > 0:
             since = utc_now() - timedelta(hours=AiLimits.REUSE_ACROSS_RUNS_HOURS)
             found = records.find_recent_ok_response(task, digest, models, since)
     except Exception:  # noqa: BLE001 - ponytail: a failed lookup only costs the AI call it would save

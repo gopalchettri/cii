@@ -43,10 +43,10 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return made
 
 
-def _chat(model: str = "test-chat") -> ai.ChatModel:
-    return ai.ChatModel(
-        [(model, PROFILE)], "http://ai.invalid", "key", AiCallRepository(get_mongodb()[TEXTS])
-    )
+def _chat(model: str = "test-chat", thinking: bool = False) -> ai.ChatModel:
+    records = AiCallRepository(get_mongodb()[TEXTS])
+    on = frozenset({model} if thinking else ())
+    return ai.ChatModel([(model, PROFILE)], "http://ai.invalid", "key", records, thinking_on=on)
 
 
 def _run() -> dict[str, Any]:
@@ -102,3 +102,19 @@ def test_an_answer_older_than_its_hours_from_another_model_or_with_reuse_off_is_
     monkeypatch.setattr(AiLimits, "REUSE_ACROSS_RUNS_HOURS", 0)
     _ask(chat, _run(), question)  # off: asked again, though a fresh answer exists
     assert len(calls) == 4
+
+
+def test_a_thinking_switch_is_asked_afresh_and_an_ask_outside_a_job_never_takes_another_runs_answer(
+    calls: list[str],
+) -> None:
+    """A ConfigMap change of the model's thinking takes effect at once, and a script or replay outside a job
+    (no record bound) asks the AI. Mutation: drop the thinking match, or the leased-job guard."""
+    question = f"gate {uuid.uuid4().hex}"
+    _ask(_chat(), _run(), question)  # thinking off
+    _ask(_chat(thinking=True), _run(), question)  # thinking on: asked afresh
+    _ask(_chat(thinking=True), _run(), question)  # then reused, from the thinking-on answer
+    assert len(calls) == 2
+    ask_ai_and_check(
+        _chat(), AiTask.RELEVANCE_GATE, ("system", question), lambda a: (a, []), reuse_earlier_answer=True
+    )
+    assert len(calls) == 3  # no job bound: asked, though fresh answers exist

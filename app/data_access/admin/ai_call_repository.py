@@ -74,15 +74,17 @@ class AiCallRepository(NeverDeletedRepository):
         return (found["response"], found.get("model", "")) if found else None
 
     def find_recent_ok_response(
-        self, task: str, prompt_hash: str, models: list[str], since: datetime
+        self, task: str, prompt_hash: str, models: list[tuple[str, bool]], since: datetime
     ) -> tuple[str, str] | None:
         """(response, model) of any run's newest ok `task` call with this conversation, answered by one of
-        `models` at or after `since`, read in RECORD_WRITE_SECONDS."""
+        `models` (name, thinking on; a call recorded before "thinking" was kept counts as off) at or after
+        `since`, read in RECORD_WRITE_SECONDS."""
+        answered_by = [{"model": name, "thinking": True if on else {"$ne": True}} for name, on in models]
         conversation = {
             "prompt_hash": prompt_hash,
             "task": task,
             "outcome": AiOutcome.OK,
-            "model": {"$in": models},
+            "$or": answered_by,
             "created_at": {"$gte": since},
         }
         with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
