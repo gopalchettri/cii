@@ -1,7 +1,7 @@
 """tsg_ai_call_texts: the prompt and answer of every answered chat call, kept for good (owner 2026-10-29); its
 usage row in tsg_ai_usage has the same _id."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pymongo
@@ -22,8 +22,12 @@ class AiCallRepository(NeverDeletedRepository):
         """tsg_ai_call_texts with its job index."""
         super().__init__(
             collection,
-            # find one job's AI calls, whichever delivery made them
-            indexes=[{"keys": [("record_id", 1), ("epoch", 1), ("job_task", 1), ("prompt_hash", 1)]}],
+            indexes=[
+                # find one job's AI calls, whichever delivery made them
+                {"keys": [("record_id", 1), ("epoch", 1), ("job_task", 1), ("prompt_hash", 1)]},
+                # find any run's newest answer to one conversation (threat finding's reuse across runs)
+                {"keys": [("prompt_hash", 1), ("created_at", -1)]},
+            ],
             schema_version=1,
         )
 
@@ -68,3 +72,21 @@ class AiCallRepository(NeverDeletedRepository):
                 conversation, **newest
             )
         return (found["response"], found.get("model", "")) if found else None
+
+    def find_recent_ok_response(
+        self, task: str, prompt_hash: str, models: list[str], since: datetime
+    ) -> tuple[str, str] | None:
+        """(response, model) of any run's newest ok `task` call with this conversation, answered by one of
+        `models` at or after `since`, read in RECORD_WRITE_SECONDS."""
+        conversation = {
+            "prompt_hash": prompt_hash,
+            "task": task,
+            "outcome": AiOutcome.OK,
+            "model": {"$in": models},
+            "created_at": {"$gte": since},
+        }
+        with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
+            found = self.collection.find_one(
+                conversation, projection={"response": 1, "model": 1}, sort=[("created_at", -1), ("_id", -1)]
+            )
+        return (found["response"], found["model"]) if found else None

@@ -156,6 +156,9 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.WRITE_SCENARIO: None,
     AiTask.REPAIR_SCENARIO: None,
 }
+#: The asks a run answers with an earlier run's answer to the very same conversation, within
+#: CII_THREAT_FINDING_REUSE_HOURS: threat finding's, asked at 0.0 for a repeatable answer.
+REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL})
 
 #: Most answer tokens per chat task (CII_ANSWER_TOKENS_<TASK>), counted against the AI service's budget while
 #: a question runs; an answer cut off at it is asked again at the model's limit, as a thinking model is.

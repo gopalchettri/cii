@@ -112,7 +112,9 @@ class ChatModel:
         answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable or finds
         the AI unavailable.
         `reuse_earlier_answer`: an ask this job already got an answer to that `check_answer` accepts (any
-        delivery of this record, epoch and stage) takes that answer from tsg_ai_call_texts: no AI call."""
+        delivery of this record, epoch and stage) takes that answer from tsg_ai_call_texts: no AI call; a
+        threat-finding ask also takes any run's recent answer to the very same conversation
+        (find_earlier_answer)."""
         messages = build_conversation(system_prompt, user_prompt)
         reuse_check = check_answer if reuse_earlier_answer else None
         answer, reply, capped = self._ask_and_read_answer(task, messages, reuse_check, capped=True)
@@ -153,7 +155,13 @@ class ChatModel:
         if prompt_chars > limit:
             too_long = ErrorMessage.AI_PROMPT_TOO_LONG.format(task=task, chars=prompt_chars, limit=limit)
             raise TruncatedAiAnswer(too_long)
-        if reuse_check and (earlier := find_earlier_answer(self._call_records, task, messages, reuse_check)):
+        models = [model for model, _ in self._models]
+        earlier = (
+            find_earlier_answer(self._call_records, task, messages, reuse_check, models)
+            if reuse_check
+            else None
+        )
+        if earlier:
             return *earlier, capped
         model, response, seconds, capped = self._ask_for_whole_answer(task, messages, capped)
         reply = response.choices[0].message.content or ""

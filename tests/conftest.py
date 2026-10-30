@@ -47,6 +47,9 @@ os.environ["EXTERNAL_INTELLIGENCE_ENABLED"] = "false"
 # The scenario reviewer ON for the whole suite, whatever the default (off, D64): the tests of the reviewer's
 # verdicts keep their path. A test of the off path sets it off itself (tests/test_scenario_sets.py).
 os.environ["CII_SCENARIO_REVIEW_ENABLED"] = "true"
+# Threat finding never reuses another run's answer in the suite (the default reuses 24 h): tests share one
+# call-text collection, so an earlier test's answer would answer a later one. The reuse tests turn it on.
+os.environ["CII_THREAT_FINDING_REUSE_HOURS"] = "0"
 
 from app.core.config import Settings  # noqa: E402  # reads .env only; builds no client
 

@@ -32,6 +32,10 @@ class AiTuningSettings(BaseSettings):
     threats_per_question: int = Field(default=40, ge=1, le=50)  # whole threats one relevance question judges
     scenarios_written_at_once: int = Field(default=6, ge=1, le=64)  # most scenarios in one write call
     scenario_review_enabled: bool = False  # an AI reviewer judges each written set; off: code's checks only
+    # Threat finding takes the answer an earlier run got to the very same question (the same asset facts,
+    # systems, library and prompt) for this many hours, so a second Start on that asset asks the AI nothing
+    # for it; 0 always asks.
+    threat_finding_reuse_hours: int = Field(default=24, ge=0, le=720)
     reranks_at_once: int = Field(default=6, ge=1, le=64)  # remote reranker calls per worker
     # The most tokens (prompt estimate + answer room) one AI call may hold; a bigger batch is sent as halves.
     ai_call_tokens_limit: int = Field(default=20000, ge=1000)

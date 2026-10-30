@@ -5,6 +5,7 @@ next delivery). No AI call here: app/ai/chat.py makes them."""
 import hashlib
 import json
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import structlog
@@ -17,7 +18,9 @@ from app.core.constants import (
     CHAT_MAX_OUTPUT_TOKENS,
     CHAT_TEMPERATURES,
     LITELLM_MODEL_PREFIX,
+    REUSED_ACROSS_RUNS,
     THINKING_OFF_TEMPLATE_KWARGS,
+    AiLimits,
     AiOutcome,
     AiTask,
     AiUsageOutcome,
@@ -200,16 +203,21 @@ def find_earlier_answer(
     task: AiTask,
     messages: list[dict],
     check: Callable[[dict[str, Any]], list[str]],
+    models: list[str],
 ) -> tuple[dict[str, Any], str] | None:
     """(answer, reply) of this job's newest ok call with exactly these messages, from any of its deliveries,
-    when `check` accepts that answer: a rejected one is asked again, as the job's retry after it means to.
-    None outside a leased job (the API), when there is none, or when tsg_ai_call_texts cannot be read (the AI
-    is asked then). A reused answer is noted as a usage row with no AI call (outcome reused)."""
-    job = _job_of(structlog.contextvars.get_contextvars())
-    if None in job.values():
-        return None
+    else, for threat finding (REUSED_ACROSS_RUNS), any run's newest within REUSE_ACROSS_RUNS_HOURS answered
+    by one of `models`, when `check` accepts that answer: a rejected one is asked again, as the job's retry
+    after it means to. None when there is none (a job's own only inside a leased job) or when
+    tsg_ai_call_texts cannot be read (the AI is asked then). A reused answer is noted as a usage row with no
+    AI call (outcome reused)."""
+    job, digest = _job_of(structlog.contextvars.get_contextvars()), prompt_hash(messages)
+    across_runs = task in REUSED_ACROSS_RUNS and AiLimits.REUSE_ACROSS_RUNS_HOURS > 0
     try:
-        found = records.find_ok_response(job, prompt_hash(messages))
+        found = None if None in job.values() else records.find_ok_response(job, digest)
+        if found is None and across_runs:
+            since = utc_now() - timedelta(hours=AiLimits.REUSE_ACROSS_RUNS_HOURS)
+            found = records.find_recent_ok_response(task, digest, models, since)
     except Exception:  # noqa: BLE001 - ponytail: a failed lookup only costs the AI call it would save
         log.warning(LogEvent.AI_ANSWER_LOOKUP_FAILED, ai_task=task, exc_info=True)
         return None
