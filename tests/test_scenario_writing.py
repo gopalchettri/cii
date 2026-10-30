@@ -874,6 +874,8 @@ _HIDE_MISSING = AnswerProblem.ACTION_SENTENCES_MISSING.format(actions='"hiding t
         {"pushing firmware": 1, "hiding the change": 2},
         {"Pushing  Firmware": "1", "hiding the change": " 2 "},  # a numeric string
         {"pushing firmware": 2, "hiding the change": 2},  # one sentence may carry both
+        {"pushing firmware": [1], "hiding the change": [2, 5]},  # review, 30 Oct: a merged act's sentences
+        {"pushing firmware": "1-2", "hiding the change": 2.0},
     ],
 )
 def test_a_sentence_number_within_the_story_passes(numbers: dict[str, Any]) -> None:

@@ -305,7 +305,9 @@ def _reader_names(facts: list[str]) -> list[str]:
     names = []
     for match in filter(None, map(_USER.fullmatch, facts)):
         kind = _USER_KINDS.get(match["what"] or "")
-        named = f"the {match['name']} {kind}" if kind else match["name"]
+        name = match["name"] or ""  # none for a campaign, named below
+        self_named = name.casefold().split()[-1:] in ([kind], *_NAMED_KINDS)  # "the Lazarus Group"
+        named = match["name"] if not kind else f"the {name}" if self_named else f"the {name} {kind}"
         names.append(f"the {match['campaign']}" if match["campaign"] else named)
     return names
 
@@ -344,6 +346,8 @@ _USER = re.compile(REAL_WORLD_USER)
 _USER_FACT_END = "used this technique."
 #: A user's kind as the writer names it, from the stored kind words ("a threat group": "the X group").
 _USER_KINDS = {ACTOR_KIND_WORDS["group"]: "group", ACTOR_KIND_WORDS["software"]: "malware"}
+#: Last words of a name that already say what it is ("Sandworm Team"): no kind word is added after them.
+_NAMED_KINDS = (["group"], ["team"], ["gang"], ["crew"], ["malware"], ["campaign"])
 
 
 def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str] | None:
@@ -1134,11 +1138,13 @@ def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -
     count = len(_story_sentences(str(answer.get("scenario_statement") or "")))
     given = answer.get("action_sentences")
     numbers = (
-        {name_match_key(str(act)): _sentence_number(number) for act, number in given.items()}
+        {name_match_key(str(act)): _sentence_numbers(number) for act, number in given.items()}
         if isinstance(given, dict)
         else {}
     )
-    missing = [act for act in actions if not 1 <= numbers.get(name_match_key(act), 0) <= count]
+    missing = [
+        act for act in actions if not any(1 <= n <= count for n in numbers.get(name_match_key(act), []))
+    ]
     if not missing:
         return []
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in missing)
@@ -1150,11 +1156,16 @@ def _story_sentences(statement: str) -> list[str]:
     return [sentence for sentence in _SENTENCE_END.split(statement.strip()) if sentence]
 
 
-def _sentence_number(value: Any) -> int:
-    """`value` as a sentence number (an integer or a numeric string); 0, never a sentence, otherwise."""
-    if isinstance(value, str) and value.strip().isdecimal():
-        return int(value)
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+def _sentence_numbers(value: Any) -> list[int]:
+    """`value` as sentence numbers: an integer, a list of them (a merged action spans its alternatives'
+    sentences), or text holding them ("2", "2-3"); none for anything else."""
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, int | float) and value == int(value):
+        return [int(value)]
+    if isinstance(value, list | tuple):
+        return [number for item in value for number in _sentence_numbers(item)]
+    return [int(digits) for digits in re.findall(r"\d+", value)] if isinstance(value, str) else []
 
 
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
@@ -1217,7 +1228,9 @@ def _step_fault(step: str, title: str, facts: list[str]) -> str:
         return Precedent.MANY_SENTENCES
     users = [match["name"] or match["campaign"] for match in filter(None, map(_USER.fullmatch, facts))]
     opening = _LEADING_ARTICLE.sub("", step).casefold()
-    on_evidence = any(opening.startswith(name.casefold()) for name in (title, *users))
+    # a gerund title ("Phishing") names the act itself: the story's step may open with it
+    names = (*users, *([] if title.split()[:1] and title.split()[0].casefold().endswith("ing") else [title]))
+    on_evidence = any(opening.startswith(name.casefold()) for name in names if name)
     return Precedent.OPENS_ON_EVIDENCE if on_evidence else ""
 
 

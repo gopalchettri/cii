@@ -523,6 +523,29 @@ def test_the_title_and_users_come_only_from_the_cited_entry() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("name", "named"),
+    [("Lazarus Group", "the Lazarus Group has used"), ("Sandworm Team", "the Sandworm Team has used"),
+     ("APT41", "the APT41 group has used")],
+)  # fmt: skip
+def test_a_group_whose_name_says_group_is_not_named_twice(name: str, named: str) -> None:
+    """Review, 30 Oct: "Lazarus Group, a threat group" read "the Lazarus Group group has used"."""
+    group = dataclasses.replace(
+        TECHNIQUE, facts=(EvidenceFact.USED_BY.format(name=name, what="a threat group"),)
+    )
+    sentence, fault = evidence_sentence(_STEP, group.as_doc(), 0)
+    assert fault == "" and sentence.endswith(f"a technique {named}")
+
+
+def test_a_gerund_titles_own_act_may_open_the_step() -> None:
+    """Review, 30 Oct: "Phishing the operators ..." was refused for opening on the title "Phishing"."""
+    phishing = dataclasses.replace(_GROUPS, title="Phishing")
+    sentence, fault = evidence_sentence("phishing the operators of the SCADA server", phishing.as_doc(), 0)
+    assert fault == "" and sentence.startswith(
+        'Phishing the operators of the SCADA server matches "Phishing"'
+    )
+
+
 def test_codes_sentence_fits_the_evidence_word_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """EVIDENCE_STATEMENT_WORD_LIMIT caps code's sentence: a step that would take it over is not used."""
     settings = Settings(EVIDENCE_STATEMENT_WORD_LIMIT="10-20")  # type: ignore[call-arg]
