@@ -29,7 +29,7 @@
 #   oc -n ai-threatgen rollout restart deployment/monitoring-proxy
 # The reaper worker is an app pod: restart it with the app's pods (new settings, passwords or image tag):
 #   oc -n ai-common rollout restart deployment/worker-reaper
-# New release: Flower runs from the app image, so its tag (24-Oct-2026) changes with the deploy_*.yaml files.
+# New release: Flower runs from the app image, so its tag (31-Oct-2026) changes with the deploy_*.yaml files.
 #
 # BEFORE THE FIRST APPLY - images. The cluster pulls only from Quay
 # (quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc). The 8 monitoring images are built on Red Hat
@@ -626,7 +626,7 @@ spec:                                            # what to run
           volumeMounts:                          # folders from the volumes below
             - { name: data, mountPath: /var/lib/grafana }   # Grafana's database
             - { name: provisioning, mountPath: /etc/grafana/provisioning }   # data sources and the dashboard folder, read at start
-            - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }   # the TSG dashboard
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true }   # the dashboards: tsg.json (home) and ai_usage.json
           resources:                             # CPU and memory
             requests: { cpu: 100m, memory: 256Mi }   # reserved for the pod
             limits: { cpu: 500m, memory: 512Mi }   # the most it may use
@@ -639,8 +639,11 @@ spec:                                            # what to run
             items:                               # each key to the sub-folder Grafana looks in
               - { key: datasources.yaml, path: datasources/datasources.yaml }   # the data sources
               - { key: dashboards.yaml, path: dashboards/dashboards.yaml }   # where the dashboards are
-        - name: dashboards                       # the dashboard
-          configMap: { name: grafana-dashboards }   # from configmap.yaml (tsg.json)
+        - name: dashboards                       # the dashboards, side by side in one folder
+          projected:                             # several ConfigMaps in one folder (one cannot hold both under oc apply's 256 KiB)
+            sources:                             # each ConfigMap's keys become files of the same name
+              - configMap: { name: grafana-dashboards }   # from configmap.yaml (tsg.json, the home page)
+              - configMap: { name: grafana-dashboard-ai-usage }   # from configmap.yaml (ai_usage.json)
 ---
 apiVersion: v1                                   # core API version
 kind: Service                                    # one stable address in front of the pod
@@ -782,7 +785,7 @@ spec:                                            # what to run
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
       containers:                                # the programs in the pod
         - name: flower                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, flower, --address=0.0.0.0, --port=5555, --url_prefix=flower]   # Flower on port 5555, under /flower
           envFrom:                               # every app setting, as environment variables
@@ -848,7 +851,7 @@ spec:                                            # what to run
       terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its work
       containers:                                # the programs in the pod
         - name: worker                           # container name
-          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:24-Oct-2026   # the TSG image (change the tag per release, with the deploy_*.yaml files)
+          image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release, with the deploy_*.yaml files)
           imagePullPolicy: IfNotPresent          # pull only if missing
           command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_reaper]   # 2 threads on the tsg_reaper queue: a reaper pass never waits behind the sweep
           envFrom:                               # every setting, as environment variables

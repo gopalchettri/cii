@@ -133,6 +133,18 @@ def is_about_ai(content: dict[str, Any]) -> bool:
     return bool(_ABOUT_AI.search(f"{threat.get('type') or ''} {threat.get('name') or ''} {statement}"))
 
 
+def embed_control_queries(
+    scenarios: list[dict[str, Any]], context: FrozenContext, snapshot: LibrarySnapshot
+) -> None:
+    """Embed the scenarios' control queries in one call; each one's search then reads its stored vector."""
+    if not snapshot.library.control_library:  # nothing to search: each mapping fails with no call
+        return
+    contents = [scenario["content"] for scenario in scenarios]
+    snapshot.embed_control_queries(
+        [control_query(content, context, _scenario_systems(content, context)).text for content in contents]
+    )
+
+
 def _scenario_systems(content: dict[str, Any], context: FrozenContext) -> list[dict[str, Any]]:
     """The scenario's own systems, as the run froze them."""
     ids = {system["id"] for system in content.get("systems") or []}

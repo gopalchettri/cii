@@ -21,7 +21,7 @@ from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.logging import mask_secret_values
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.scenario.asset_repository import AssetRepository
-from app.data_access.service_mapper.mapping_repository import MappingHistoryRepository, MappingRepository
+from app.data_access.service_mapper.mapping_repository import MappingRepository
 from app.services.service_mapper.service_mapper_service import ServiceMapperService
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
     CONTROLS,
@@ -89,10 +89,11 @@ def runs(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
 
 @pytest.fixture
 def mapper(client: TestClient) -> Iterator[None]:
-    """The service mapper on the test database, sending and publishing nothing."""
+    """The service mapper on the test database, sending and publishing nothing; no mapping left by an earlier
+    test (a service has one)."""
+    get_mongodb()[Collection.SERVICE_MAPPINGS].delete_many({})
     service = ServiceMapperService(
         MappingRepository(),
-        MappingHistoryRepository(),
         container.get_settings(),
         lambda *args: True,
         None,
@@ -240,7 +241,7 @@ def test_a_keyless_repeat_mapping_or_regenerate_is_refused(
     assert (regenerated.status_code, regenerated.json()["generation"]) == (202, 2), regenerated.text
     _refused_as_duplicate(client.post(path, headers=caller), mapping_id=mapping_id, generation=2)
     stored = get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping_id})
-    assert (stored["generation"], stored["job"]["task"]) == (2, TaskName.MAP_SERVICES)
+    assert (stored["job"]["epoch"], stored["job"]["task"]) == (2, TaskName.MAP_SERVICES)
 
 
 def test_a_repeat_logs_the_key_of_the_request_it_repeats(

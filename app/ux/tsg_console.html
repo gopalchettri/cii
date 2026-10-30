@@ -2032,8 +2032,9 @@ $(function () {
     .on("click", ".rm-copy", function () { copy($(this).siblings(".mono").text()); });
 
   // ---------------- service mapper: describe a service, review the services it depends on ----------------
-  // POST /v1/service-mapper queues a job (202); GET /v1/service-mapper/{id} returns the MappingView, re-read every 3 s
-  // while it is queued or running. Every decision returns the MappingView, so the page redraws from the answer.
+  // POST /v1/service-mapper queues a run (202): one mapping per service, so Generate again for the same service, or
+  // Regenerate, runs it again and only adds services. GET /v1/service-mapper/{id} returns the MappingView, re-read every
+  // 3 s while a run is queued or running. Every decision returns the MappingView, so the page redraws from the answer.
   var smFields = ["smName", "smSector", "smSubsector", "smEntities", "smDesc"], sm = { id: null, timer: null };
   function loadMapperFields() { smFields.forEach(function (id) { $("#" + id).val(store.get(env + "." + id, "")); }); }
   loadMapperFields();
@@ -2052,16 +2053,18 @@ $(function () {
       '<button class="btn sm danger"' + a + ' data-act="reject">Reject</button></span>';
   }
   function smWhy(rel) { return esc(rel.dependency_reason) + (rel.applicability ? '<div class="faint">' + esc(rel.applicability) + "</div>" : ""); }
-  function smService(d) {
+  // "new": found by the latest run, when an earlier run found others.
+  function smService(d, latest) {
     return "<b>" + esc(d.service_name) + "</b>" + (d.ai_suggested ? ' <span class="badge cyan">AI</span>' : "") +
+      (latest > 1 && d.generation === latest ? ' <span class="badge blue">new</span>' : "") +
       '<div class="faint">' + esc([d.sector, d.subsector].filter(Boolean).join(" / ")) + "</div>";
   }
-  function smOneWay(title, items, open) {
+  function smOneWay(title, items, latest) {
     if (!items.length) return "";
     return '<div class="section-title">' + esc(title) + " (" + items.length + ')</div><table class="tbl">' +
       "<tr><th>Service</th><th>Why</th><th>Decision</th></tr>" + items.map(function (d) {
-        return "<tr><td>" + smService(d) + "</td><td>" + smWhy(d) + "</td><td>" + smDecision(d.isAccepted) +
-          smButtons(d.dependency_id, open) + "</td></tr>";
+        return "<tr><td>" + smService(d, latest) + "</td><td>" + smWhy(d) + "</td><td>" + smDecision(d.isAccepted) +
+          smButtons(d.dependency_id, true) + "</td></tr>";
       }).join("") + "</table>";
   }
   function smPending(m) {
@@ -2070,25 +2073,28 @@ $(function () {
   }
   function smRender(m) {
     var sum = m.summary || {}, running = m.status === "queued" || m.status === "running";
-    var open = m.status === "done", pending = smPending(m);
+    var pending = smPending(m), atLimit = m.max_generations > 0 && m.generations_done >= m.max_generations;
+    var runs = "run " + esc(m.generation) + " · " + esc(m.generations_done) + " of " + (m.max_generations ? esc(m.max_generations) : "unlimited") + " runs done";
     var dd = function (k, v) { return "<dt>" + esc(k) + "</dt><dd>" + v + "</dd>"; };
     var statusCls = { done: "green", failed: "red", cancelled: "red" }[m.status] || "blue";
     var html = '<div class="section-title">Mapping</div><dl class="kv">' +
       dd("Mapping id", '<span class="mono">' + esc(m.mapping_id) + "</span>") +
-      dd("Status", '<span class="badge ' + statusCls + '">' + esc(m.status) + (running ? ' <span class="spin"></span>' : "") + "</span> generation " + esc(m.generation) +
-         (open && pending ? ' <span class="muted">' + pending + " relationship(s) still need a decision</span>" : "")) +
+      dd("Status", '<span class="badge ' + statusCls + '">' + esc(m.status) + (running ? ' <span class="spin"></span>' : "") + "</span> " + runs +
+         (pending ? ' <span class="muted">' + pending + " relationship(s) still need a decision</span>" : "")) +
       dd("Summary", esc(sum.unique_services || 0) + " services · " + esc(sum.upstream_count || 0) + " of " + esc(sum.max_upstream) +
          " upstream · " + esc(sum.downstream_count || 0) + " of " + esc(sum.max_downstream) + " downstream") +
       dd("Updated", esc(fmtTime(m.updated_at))) + "</dl>";
     if (m.error) html += '<div class="callout err"><b>' + esc(m.error.reason || m.error.code) + "</b> " + esc(m.error.message) + "</div>";
     if (m.retrying) html += '<div class="callout warn"><code>' + esc(m.retrying.reason || "outage") + "</code> " + esc(retryText(m.retrying)) + "</div>";
     html += '<div class="row" style="margin-top:12px">' +
-      (running ? "" : '<button class="btn" data-sm="regenerate">Regenerate</button>') +
-      (m.status === "done" ? '<button class="btn" data-sm="export" title="This mapping and its services, as a Word document">Export to Word</button>' : "") +
+      '<button class="btn" data-sm="regenerate"' + (running ? ' disabled title="Wait for this run to finish"'
+        : atLimit ? ' disabled title="This mapping has had all its runs (SERVICE_MAPPER_MAX_GENERATIONS)"'
+        : ' title="Run it again: only services it does not hold yet are added"') + ">Regenerate (find more)</button>" +
+      (sum.unique_services ? '<button class="btn" data-sm="export" title="This mapping and its services, as a Word document">Export to Word</button>' : "") +
       '<button class="btn ghost" data-sm="refresh">Refresh</button></div>';
-    var body = smOneWay("Upstream: services it depends on", m.upstream_services, open) +
-      smOneWay("Downstream: services that depend on it", m.downstream_services, open);
-    html += body || (running ? '<div class="empty">Finding dependencies...</div>' : '<div class="empty">No dependencies in this generation.</div>');
+    var body = smOneWay("Upstream: services it depends on", m.upstream_services, m.generation) +
+      smOneWay("Downstream: services that depend on it", m.downstream_services, m.generation);
+    html += body || (running ? '<div class="empty">Finding dependencies...</div>' : '<div class="empty">No dependencies yet.</div>');
     $("#smOut").html(html);
     sm.view = m;
   }
@@ -2109,12 +2115,12 @@ $(function () {
       var rows = smDocxRows(m, dir);
       return [k.H(heading + " (" + rows.length + ")", D.HeadingLevel.HEADING_1),
               rows.length ? k.table(["No.", "Service", "Sector / Subsector", "Why", "Source", "Decision"], rows, [6, 22, 18, 36, 8, 10])
-                          : k.P("None in this generation.")];
+                          : k.P("None.")];
     };
     var body = [
       new D.Paragraph({ text: title, heading: D.HeadingLevel.TITLE }),
       k.H("Mapping", D.HeadingLevel.HEADING_1),
-      k.terms([["Mapping id", m.mapping_id], ["Status", m.status], ["Generation", m.generation],
+      k.terms([["Mapping id", m.mapping_id], ["Status", m.status], ["Runs done", m.generations_done],
                ["Created", fmtTime(m.created_at)], ["Updated", fmtTime(m.updated_at)], ["Exported", new Date().toLocaleString()]])
     ].concat(direction("Upstream: services it depends on", "upstream"), direction("Downstream: services that depend on it", "downstream"));
     // The mapping id on every page, so a printed or forwarded page can be traced back.
@@ -2147,7 +2153,11 @@ $(function () {
       toast("Details missing", "Fill in the service name, sector, subsector, entity names and description.", "warn"); return;
     }
     withBusy($(this), api("POST", "/v1/service-mapper", body))
-      .done(function (r) { toast("Mapping queued", r.mapping_id); smOpen(r.mapping_id); });
+      .done(function (r) {
+        toast(r.status === "done" ? "Nothing new to find: the last run found none and nothing changed since"
+          : "Mapping run " + r.generation + " " + r.status, r.mapping_id);
+        smOpen(r.mapping_id);
+      });
   });
   $("#btnSmOpen").on("click", function () {
     var id = $("#smOpenId").val().trim();
@@ -2157,10 +2167,10 @@ $(function () {
     withBusy($(this), api("GET", "/v1/service-mapper?limit=20")).done(function (r) {
       var items = (r && r.items) || [];
       $("#smList").html('<div class="section-title">Recent mappings (' + esc(r.total) + ")</div>" + (items.length ? '<table class="tbl">' +
-        "<tr><th>Service</th><th>Status</th><th>Generation</th><th>Updated</th></tr>" + items.map(function (i) {
+        "<tr><th>Service</th><th>Status</th><th>Runs done</th><th>Updated</th></tr>" + items.map(function (i) {
           return '<tr style="cursor:pointer" data-open="' + attr(i.mapping_id) + '"><td><b>' + esc((i.selected_service || {}).service_name) +
             '</b><div class="faint mono">' + esc(i.mapping_id) + "</div></td><td>" + esc(i.status) + "</td><td>" +
-            esc(i.generation) + "</td><td>" + esc(fmtTime(i.updated_at)) + "</td></tr>";
+            esc(i.generations_done) + (i.max_generations ? " of " + esc(i.max_generations) : "") + "</td><td>" + esc(fmtTime(i.updated_at)) + "</td></tr>";
         }).join("") + "</table>" : '<div class="empty">No mappings yet.</div>'));
     });
   });
@@ -2180,7 +2190,11 @@ $(function () {
       if (act === "export") { smExportDocx($b, sm.view); return; }
       if (act === "regenerate") {
         withBusy($b, api("POST", root + "/regenerate"))
-          .done(function () { toast("Regenerating", "A new generation is queued."); smOpen(sm.id); });
+          .done(function (r) {
+            if (r.status === "queued") toast("Regenerating", "Run " + r.generation + " is queued: it only adds services.");
+            else toast("Nothing new to find", "The last run found no new service and nothing has changed since: no run started.", "warn");
+            smOpen(sm.id);
+          });
       }
     });
 

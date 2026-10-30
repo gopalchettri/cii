@@ -16,18 +16,21 @@ import numpy as np
 import pytest
 import structlog
 from prometheus_client import REGISTRY
+from pydantic import SecretStr
 from structlog.testing import capture_logs
 
 from app import ai, container
 from app.ai.common import UnusableAiAnswer
 from app.ai.profiles import CHAT_MODEL_PROFILES
 from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
+from app.core.ai_tuning_settings import TUNING, AiTuningSettings
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     CHAT_MAX_OUTPUT_TOKENS,
     AiLimits,
     AiOutage,
     AiTask,
+    ChatModule,
     EmbeddingCorpus,
     ErrorCode,
     TaskName,
@@ -270,8 +273,9 @@ def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pyte
 def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 429 waits 2, 5, 10, 15 s +-20%, or its Retry-After when longer (at most 60 s), at most 60 s in all,
-    and asks the same model again: kimi answers in ~5 s, the fallback glm-5.3 in 55-99 s."""
+    """A 429 waits 2, 5, 10, 15 s, or its Retry-After when longer (at most CII_AI_BUSY_MAX_WAIT_SECONDS),
+    +-20%, at most 60 s in all, and asks the same model again: kimi answers in ~5 s, the fallback glm-5.3 in
+    55-99 s."""
     waits: list[float] = []
     monkeypatch.setattr(ai.common, "sleep_unless_lease_lost", waits.append)
     retry_after = iter(["20", "3", "", "", ""])
@@ -289,19 +293,39 @@ def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
         "ok": True
     }
     assert asked == ["first"] * 5 + ["fallback"]
-    assert waits[0] == 20 and 4 <= waits[1] <= 6 and 8 <= waits[2] <= 12 and 12 <= waits[3] <= 18
+    assert 16 <= waits[0] <= 24 and 4 <= waits[1] <= 6 and 8 <= waits[2] <= 12 and 12 <= waits[3] <= 18
     assert sum(waits) <= AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS
 
 
-def test_an_ai_call_s_seconds_leave_out_its_request_rate_waits() -> None:
+def test_an_ai_call_s_seconds_leave_out_its_request_rate_and_slot_waits() -> None:
+    """tsg_ai_seconds and the call records time the AI alone: a model's pause, its turn and a busy AI slot
+    (each waited 0.2 s here) are left out, so a 429 episode never reads as a slow model."""
+
     class SlowTurn:
-        def wait_for_turn(self, _task: str) -> float:
+        def wait_for_send_time(self, _task: str) -> float:
             time.sleep(0.2)
             return 0.2
 
-    slow, slots = SlowTurn(), UNLIMITED_AI_SLOTS
-    _, seconds = ai.common.call_with_retries(lambda: None, slow, slots, model="m", task="t")  # type: ignore[arg-type]
-    assert seconds < 0.1
+        def wait_for_turn(self, _task: str, _tokens: int = 0) -> float:
+            time.sleep(0.2)
+            return 0.2
+
+    slots = AiSlots(get_redis_client(), cap=1, wait_seconds=5, key=f"tsg:test_seconds:{uuid.uuid4().hex}")
+    busy, release = threading.Event(), threading.Event()
+
+    def hold_a_while() -> None:
+        with slots.hold_slot("t"):
+            busy.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold_a_while)
+    holder.start()
+    assert busy.wait(5)
+    threading.Timer(0.4, release.set).start()  # the slot frees 0.2 s after the pause ends
+    started = time.monotonic()
+    _, seconds = ai.common.call_with_retries(lambda: None, SlowTurn(), slots, model="m", task="t")  # type: ignore[arg-type]
+    holder.join(5)
+    assert time.monotonic() - started >= 0.55 and seconds < 0.1
 
 
 def test_a_task_s_answer_cap_applies_under_its_model_s_limit_unless_the_model_thinks() -> None:
@@ -313,8 +337,10 @@ def test_a_task_s_answer_cap_applies_under_its_model_s_limit_unless_the_model_th
 
     assert max_tokens(large, AiTask.PLAN_CHECK) == CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK] < 12_288
     assert max_tokens(JSON_CHAT, AiTask.PLAN_CHECK) == 100  # the model's own limit is lower
-    assert max_tokens(large, AiTask.GAP_FILL) == 12_288  # no cap: too few calls measured
-    assert max_tokens(large, AiTask.REMEDIATION_PLAN) == 12_288  # no cap: grows with its 1-50 controls
+    assert max_tokens(large, AiTask.GAP_FILL) == CHAT_MAX_OUTPUT_TOKENS[AiTask.GAP_FILL] < 12_288
+    assert (
+        max_tokens(large, AiTask.REMEDIATION_PLAN) == CHAT_MAX_OUTPUT_TOKENS[AiTask.REMEDIATION_PLAN] < 12_288
+    )
     assert max_tokens(large, AiTask.PLAN_CHECK, thinking=True) == 12_288
 
 
@@ -1077,9 +1103,58 @@ def test_a_cut_off_answer_or_a_too_long_prompt_is_truncated(monkeypatch: pytest.
 
 
 def test_the_prompt_limit_is_the_smaller_models_so_either_can_answer() -> None:
-    """UAT: kimi-k2.5 first, glm-5.3 (1M tokens) as fallback; a prompt kimi cannot take is never sent."""
+    """UAT: kimi-k2.5 first, glm-5.3 as fallback, each with the gateway's own input limit (model info,
+    2026-10-29: 114,688 and 262,144 tokens). Before, TSG assumed 262,144 and 1,000,000, so a prompt between
+    the two was sent and refused whole."""
     uat = [(name, CHAT_MODEL_PROFILES[name]) for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3")]
-    assert _chat_model(*uat).max_prompt_chars == (262_144 - 12_288) * 3
+    assert _chat_model(*uat).max_prompt_chars == 114_688 * 3
+    assert _chat_model(uat[1]).max_prompt_chars == 262_144 * 3
+
+
+def test_a_prompt_over_the_gateway_s_input_limit_is_refused_before_it_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt kimi-k2.5's gateway refuses (over 114,688 tokens) is never sent: the caller cuts it."""
+    sent: list[object] = []
+    monkeypatch.setattr(litellm, "completion", lambda **kwargs: sent.append(kwargs))
+    chat = _chat_model(("litellm_proxy/kimi-k2.5", CHAT_MODEL_PROFILES["litellm_proxy/kimi-k2.5"]))
+    too_long = "x" * (114_688 * 3)  # the old limit took it: (262,144 - 12,288) x 3 characters
+    with pytest.raises(ai.TruncatedAiAnswer, match="takes at most"):
+        _ask(chat, AiTask.RELEVANCE_GATE, user_prompt=too_long)
+    assert sent == []
+
+
+def test_every_chat_task_asks_for_its_own_answer_room_never_the_model_s_whole() -> None:
+    """LiteLLM reserves each request's answer room against the token budget while it runs. Before, the gate
+    asked for 8,192 (largest answer 3,642) and four tasks for the model's whole 12,288, so TSG looked about 3x
+    its real use (UAT 2026-10-28 10:20: 19,431 used, 50,274 counted). Each task's room is its own setting."""
+    chat_tasks = set(AiTask) - {AiTask.EMBED, AiTask.RERANK}
+    assert set(CHAT_MAX_OUTPUT_TOKENS) == chat_tasks
+    assert all(256 <= room < 12_288 for room in CHAT_MAX_OUTPUT_TOKENS.values())
+    assert CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE] == TUNING.answer_tokens_relevance_gate
+
+
+#: The largest answer measured per chat task, in tokens (tsg_ai_usage and tsg_ai_calls, 2026-10-30, ~10,000
+#: calls); a set's task (writer, repair, reviewer) by its largest a slot. Gap fill had no call to measure.
+LARGEST_ANSWER_TOKENS = {
+    AiTask.RELEVANCE_GATE: 8_776,
+    AiTask.THREAT_ACTIONS: 29,
+    AiTask.REMEDIATION_PLAN: 2_601,
+    AiTask.SERVICE_MAPPER: 1_997,
+}
+LARGEST_SLOT_ANSWER_TOKENS = {AiTask.WRITE_SCENARIO: 778, AiTask.REPAIR_SCENARIO: 680, AiTask.PLAN_CHECK: 359}
+
+
+def test_each_answer_room_holds_its_largest_answer_and_at_most_three_tenths_more() -> None:
+    """The gateway reserves prompt + answer room against UAT's 25,000 tokens a minute while a call runs, so
+    room the answer never fills costs budget as input does. Each default room holds the largest answer
+    measured (a set's for its most slots) and is at most that x 1.3, rounded up to 512; a rarer longer
+    answer is asked once more at the model's limit."""
+    slots = AiTuningSettings.model_fields["scenarios_written_at_once"].default
+    for_sets = {task: per_slot * slots for task, per_slot in LARGEST_SLOT_ANSWER_TOKENS.items()}
+    for task, answer in (LARGEST_ANSWER_TOKENS | for_sets).items():
+        room = AiTuningSettings.model_fields[f"answer_tokens_{task}"].default
+        assert answer <= room <= -(-answer * 13 // 5120) * 512, task
 
 
 def test_a_call_record_names_the_run_and_the_request_it_served(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1138,8 +1213,8 @@ def test_a_job_that_lost_its_lease_never_calls_the_ai(monkeypatch: pytest.Monkey
 def test_at_most_cap_fallback_calls_run_at_once_and_the_first_model_is_never_capped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CII_MAX_CONCURRENT_FALLBACK_CALLS: when kimi fails, glm (~77 s a call) would otherwise take ~230 calls
-    at once at 180 requests a minute."""
+    """CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS: when kimi fails, glm (~77 s a call) would otherwise take
+    ~230 calls at once at 180 requests a minute."""
     _no_waiting(monkeypatch)
     lock, in_flight, most = threading.Lock(), {"first": 0, "fallback": 0}, {"first": 0, "fallback": 0}
     failing = {"first"}
@@ -1322,7 +1397,7 @@ def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
     with pytest.raises(litellm.RateLimitError):  # a worker's limiter
         ai.common.call_with_retries(rate_limited, *_UNLIMITED, model="m", task=AiTask.RELEVANCE_GATE)
     assert len(waits) == len(AiLimits.RATE_LIMITED_WAITS_SECONDS) and min(waits) > 1
-    for builder in ("create_all_indexes", "get_chat_model", "get_embedding_model", "get_rerank_model"):
+    for builder in ("create_all_indexes", "build_ai_gateways"):
         monkeypatch.setattr(container, builder, lambda *_: None)
     monkeypatch.setattr(container, "_waits_out_rate_limits", False)
     monkeypatch.setattr(container, "_ai_slot_wait_seconds", AiLimits.API_SLOT_WAIT_SECONDS)
@@ -1334,13 +1409,16 @@ def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
 def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """kimi-k2.5 and glm-5.3 each have their own requests-a-minute limit: a fallback request spends glm's."""
+    """kimi-k2.5 and glm-5.3 each have their own requests-a-minute limit: a fallback request spends glm's.
+    Every try states its prompt's estimated tokens, for a tokens-a-minute limit."""
     _no_waiting(monkeypatch)
     turns: list[str] = []
+    sizes: list[int] = []
 
     class CountedTurns(AiRequestRate):
-        def wait_for_turn(self, task: str) -> float:
+        def wait_for_turn(self, task: str, tokens: int = 0) -> float:
             turns.append(self._model)
+            sizes.append(tokens)
             return 0.0
 
     def first_model_overloaded(**kwargs: object) -> SimpleNamespace:
@@ -1357,28 +1435,24 @@ def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to
     )
     assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
     assert turns == ["first"] * (AiLimits.RETRIES + 1) + ["fallback"]
+    prompt = ai.chat_messages.build_conversation("system", "user")
+    question = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
+    room = {
+        name: ai.chat_messages.max_answer_tokens(profile, AiTask.RELEVANCE_GATE, False)
+        for name, profile in models
+    }
+    # as LiteLLM counts against a token budget: the question and all the answer room asked for
+    assert question > 0 and sizes == [question + room["first"]] * (len(turns) - 1) + [
+        question + room["fallback"]
+    ]
 
 
 def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Before: one limiter for the whole gateway, so embedding, rerank and glm requests spent kimi's."""
-    settings = container.get_settings().model_copy(
-        update={
-            "chat_model": "litellm_proxy/kimi-k2.5",
-            "chat_fallback_model": "litellm_proxy/glm-5.3",
-            "embedding_model": "litellm_proxy/qwen3-embedding-8b",
-            "rerank_model": "litellm_proxy/qwen3-reranker-8b",
-            "rerank_base_url": "http://ai.invalid",
-            "chat_requests_per_minute": 11,
-            "chat_fallback_requests_per_minute": 12,
-            "embedding_requests_per_minute": 13,
-            "rerank_requests_per_minute": 14,
-        }
-    )
-    monkeypatch.setattr(container, "get_settings", lambda: settings)
-    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
-    chat = container.get_chat_model._build()
+    _with_module_settings(monkeypatch)
+    chat = container._chat_model_of(ChatModule.SCENARIO)
     embedding = container.get_embedding_model._build()
     rerank = container.get_rerank_model._build()
     rates = {  # by the model each request goes to
@@ -1387,12 +1461,132 @@ def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
         rerank._model: rerank._request_rate,
     }
     assert all(rate._model == model for model, rate in rates.items())  # its own model's Redis key
-    assert {model: rate._per_minute for model, rate in rates.items()} == {
-        "litellm_proxy/kimi-k2.5": 11,
-        "litellm_proxy/glm-5.3": 12,
-        "litellm_proxy/qwen3-embedding-8b": 13,
-        "litellm_proxy/qwen3-reranker-8b": 14,
+    assert {model: (rate._per_minute, rate._tokens_per_minute) for model, rate in rates.items()} == {
+        KIMI: (11, 15),  # a module's tokens a minute pace its main chat model alone
+        GLM: (12, 0),
+        "litellm_proxy/qwen3-embedding-8b": (13, 0),
+        "litellm_proxy/qwen3-reranker-8b": (14, 0),
     }
+
+
+def test_each_module_s_chat_model_has_its_own_model_key_thinking_and_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-28: each module's CII_<MODULE>_CHAT_... lines alone, the same or a different model per
+    module; no fallback model = no fallback limits. Each module's slots and request turns are its own Redis
+    keys, two modules on one model included, so its 429s and limits never touch another module's."""
+    _with_module_settings(monkeypatch)
+
+    getters = {
+        ChatModule.SCENARIO: container.get_scenario_chat_model,
+        ChatModule.REMEDIATION: container.get_remediation_chat_model,
+        ChatModule.SERVICE_MAPPER: container.get_service_mapper_chat_model,
+    }
+
+    def shown(module: ChatModule) -> tuple[object, ...]:
+        chat = getters[module]._build()
+        turns = {
+            model: (r._per_minute, r._tokens_per_minute, r._key) for model, r in chat._request_rates.items()
+        }
+        connection = (chat._connection["api_base"], chat._connection["api_key"], sorted(chat._thinking_on))
+        slots = [(pool._key, pool._cap) for pool in (chat._slots, chat._fallback_slots)]
+        return [name for name, _ in chat._models], connection, turns, slots
+
+    def turn(module: str, model: str) -> str:
+        return AiLimits.REQUEST_RATE_KEY.format(model=f"{module}:{model}")
+
+    def slots(module: str, cap: int, fallback_cap: int) -> list[tuple[str, int]]:
+        return [
+            (f"{AiLimits.SLOTS_KEY}:{module}", cap),
+            (f"{AiLimits.FALLBACK_SLOTS_KEY}:{module}", fallback_cap),
+        ]
+
+    assert shown(ChatModule.SCENARIO) == (
+        [KIMI, GLM],
+        ("http://shared.invalid", "shared-key", []),
+        {KIMI: (11, 15, turn("scenario", KIMI)), GLM: (12, 0, turn("scenario", GLM))},
+        slots("scenario", 7, 2),
+    )
+    assert shown(ChatModule.REMEDIATION) == (  # its own key on its own gateway, glm thinking, no fallback
+        [GLM],
+        ("http://own.invalid", "own-key", [GLM]),
+        {GLM: (21, 22, turn("remediation", GLM))},
+        slots("remediation", 3, 0),
+    )
+    assert shown(ChatModule.SERVICE_MAPPER) == (  # threat scenarios' model and key, its own limits and keys
+        [KIMI],
+        ("http://shared.invalid", "shared-key", []),
+        {KIMI: (31, 0, turn("service_mapper", KIMI))},
+        slots("service_mapper", 6, 0),
+    )
+
+
+def test_each_job_asks_its_own_module_s_chat_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Threat finding and scenario writing ask the scenario module's model, a remediation plan remediation's,
+    the service mapper its own: a job wired to another module's would spend that module's model and limits."""
+    for module in ChatModule:
+        monkeypatch.setattr(container, f"get_{module}_chat_model", lambda module=module: f"{module} chat")
+    jobs = {
+        "scenario": container.get_plan_job._build()._threat_finder._chat,
+        "scenario writing": container.get_scenario_write_job._build()._chat,
+        "remediation": container.get_remediation_plan_job._build()._chat,
+        "service_mapper": container.get_service_mapper_job._build()._chat,
+    }
+    assert jobs == {
+        "scenario": "scenario chat",
+        "scenario writing": "scenario chat",
+        "remediation": "remediation chat",
+        "service_mapper": "service_mapper chat",
+    }
+
+
+KIMI, GLM = "litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"
+
+
+def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Threat scenarios and the service mapper on the same model, URL and key, each with its own limits;
+    remediation on another model, URL and key. The service mapper's fallback limit counts for nothing: it has
+    no fallback model."""
+    settings = container.get_settings().model_copy(
+        update={
+            "embedding_model": "litellm_proxy/qwen3-embedding-8b",
+            "rerank_model": "litellm_proxy/qwen3-reranker-8b",
+            "rerank_base_url": "http://ai.invalid",
+            "embedding_requests_per_minute": 13,
+            "rerank_requests_per_minute": 14,
+            "scenario_chat_base_url": "http://shared.invalid",
+            "scenario_chat_api_key": SecretStr("shared-key"),
+            "scenario_chat_model": KIMI,
+            "scenario_chat_model_thinking": False,
+            "scenario_chat_requests_per_minute": 11,
+            "scenario_chat_tokens_per_minute": 15,
+            "scenario_max_concurrent_ai_calls": 7,
+            "scenario_chat_fallback_model": GLM,
+            "scenario_chat_fallback_model_thinking": False,
+            "scenario_chat_fallback_requests_per_minute": 12,
+            "scenario_max_concurrent_fallback_calls": 2,
+            "remediation_chat_base_url": "http://own.invalid",
+            "remediation_chat_api_key": SecretStr("own-key"),
+            "remediation_chat_model": GLM,
+            "remediation_chat_model_thinking": True,
+            "remediation_chat_requests_per_minute": 21,
+            "remediation_chat_tokens_per_minute": 22,
+            "remediation_max_concurrent_ai_calls": 3,
+            "remediation_chat_fallback_model": "",
+            "service_mapper_chat_base_url": "http://shared.invalid",
+            "service_mapper_chat_api_key": SecretStr("shared-key"),
+            "service_mapper_chat_model": KIMI,
+            "service_mapper_chat_model_thinking": False,
+            "service_mapper_chat_requests_per_minute": 31,
+            "service_mapper_chat_tokens_per_minute": 0,
+            "service_mapper_max_concurrent_ai_calls": 6,
+            "service_mapper_chat_fallback_model": "",
+            "service_mapper_max_concurrent_fallback_calls": 5,
+        }
+    )
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
+    monkeypatch.setattr(container, "get_module_ai_slots", container.get_module_ai_slots._build)
 
 
 def test_a_batch_another_process_stored_meanwhile_is_not_sent_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1416,3 +1610,24 @@ def test_a_batch_another_process_stored_meanwhile_is_not_sent_again(monkeypatch:
     matrix = _embedding_model(2, batch_size=1).embed_search_queries(texts, EmbeddingCorpus.CONTROL)
     (sent,) = requested
     assert [list(row) for row in matrix] == [[1.0, 0.0] if [text] == sent else [0.0, 1.0] for text in texts]
+
+
+def test_each_module_s_model_limits_replace_the_model_s_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-29: CII_<MODULE>_CHAT_MAX_INPUT_TOKENS, _MAX_OUTPUT_TOKENS and _TIMEOUT_SECONDS (and the
+    backup's) set from the ConfigMap; a blank one keeps the model's own (app/ai/profiles.py)."""
+    _with_module_settings(monkeypatch)
+    settings = container.get_settings().model_copy(
+        update={
+            "scenario_chat_max_input_tokens": 50_000,
+            "scenario_chat_timeout_seconds": 33,
+            "scenario_chat_fallback_max_output_tokens": 2048,
+        }
+    )
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    scenario = container.get_scenario_chat_model._build()
+    profiles = dict(scenario._models)
+    assert scenario.max_prompt_chars == 50_000 * AiLimits.PROMPT_CHARS_PER_TOKEN  # under glm's own 262,144
+    assert (profiles[KIMI].timeout_seconds, profiles[KIMI].max_output_tokens) == (33, 12_288)
+    assert (profiles[GLM].max_output_tokens, profiles[GLM].timeout_seconds) == (2048, 180)
+    remediation = dict(container.get_remediation_chat_model._build()._models)
+    assert remediation[GLM] == CHAT_MODEL_PROFILES[GLM]  # every line blank: the model's own

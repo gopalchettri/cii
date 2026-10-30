@@ -1,108 +1,124 @@
-# TSG v2 (cii) - run in UAT, step by step (PowerShell).
-# This file runs TSG from a laptop against the UAT stores. To deploy TSG on OpenShift, follow deploy\DEPLOYMENT_GUIDE.md.
-# NOTE: run every command below from the "cii" folder (the one with pyproject.toml).
-cd "C:\GopalChettri\Projects\desc-ai-modules\cii"
-
-# Needs: Python 3.12, "ODBC Driver 17 for SQL Server", and network/VPN access to the UAT hosts:
-#   SQL Server 10.228.146.2:1444, MongoDB 10.228.146.3:27018, Redis 10.228.146.4:6379, AI gateway llmapi.govai.ae
-# Local MongoDB / Redis / SQL Server are NOT needed - the UAT ones are used.
-# Behind a proxy? Nothing to do: CII_AI_BYPASS_PROXY=true in .env sends the AI calls direct (v1's LITELLM_BYPASS_PROXY).
-# v1 must be STOPPED first (v1 and v2 share the Redis keys "tsg:*" on the same databases).
-# The OpenShift v2 pods must be scaled to 0 first too: they share the Redis queues and would take this laptop's jobs:
-#   oc -n ai-threatgen scale deployment -l part-of=tsg --replicas=0
-#   oc -n ai-common scale deployment/worker-reaper --replicas=0
-#   (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, step 12)
-# The DBA must already have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
-
-# The env MUST be named .venv (dot-prefixed).
-
-# 1. Create the virtual environment (Python 3.12)
-py -3.12 -m venv .venv
-
-# 2. Activate it
-# On Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-# On Windows (CMD):
-.venv\Scripts\activate.bat
-# On Git Bash / WSL:
-source .venv/Scripts/activate
-
-# 3. Upgrade pip
-python -m pip install --upgrade pip
-
-# 4. Install the application with the exact tested versions.
-#    UAT does NOT use ".[local]" (the reranker is the remote qwen3 model) - do not install it.
-pip install -e . -c requirements.txt
-#    (only if you also want to run tests/lint:  pip install -e ".[dev]" -c requirements.txt)
-
-# 5. Verify no dependency conflicts
-pip check
-
-# 6. UAT settings. The app reads ONLY a file named ".env" in this folder (there is no switch to pick another).
-#    Keep your laptop settings, then use the UAT file:
-Copy-Item .env .env.dev.bak -Force
-Copy-Item .env.uat .env -Force
-#    BEFORE STARTING, open .env and fix:
-#      CII_CORS_ORIGINS=*   is REFUSED when CII_ENV=uat -> put the real origin(s), comma-separated,
-#                           e.g. https://threatgen-api.apps.dda-desc-az1-01.desccii.local  (empty = none)
-#      CII_ENV              must be uat (not dev)
-#      CII_CHAT_REQUESTS_PER_MINUTE  must be 180 (kimi-k2.5 takes 192 a minute)
-#      CII_ADMIN_API_KEY    must be at least 32 characters (outside dev)
-#    Change .env BEFORE starting any worker/beat/API; after any later change, restart all of them.
-#      EVIDENCE_SIMILARITY_THRESHOLD must be set while EXTERNAL_INTELLIGENCE_ENABLED=true (it is: 50)
-
-# 7. Check the settings and that the three stores answer (all must be True; a False names the store)
-python -c "from app.core.config import get_settings; s = get_settings(); print(s.env, s.chat_model, s.mongo_db)"
-#    expected: uat litellm_proxy/kimi-k2.5 cii_uat
-#    The first word must be uat. If it says dev, fix CII_ENV in .env.
-#    WARNING: never run pytest on this machine: it would use the UAT MongoDB and Redis.
-python -c "from app.core.readiness import check_readiness; print(check_readiness()[0])"
-
-# 8. Start in this order: workers and beat FIRST, the API LAST
-#    (the API is "ready" only when every queue has a worker).
-#    Open 6 PowerShell windows; in each: cd to the cii folder and activate .venv (step 2).
-
-#   The AI calls skip the corporate proxy by themselves: .env has CII_AI_BYPASS_PROXY=true (as v1's
-#   TSG_LITELLM_BYPASS_PROXY). Keep CII_LOG_LEVEL=INFO: DEBUG is for a short diagnosis only.
-
-# Window 1 - job worker (threat finding, scenarios, controls, remediation plans).
-#   --pool=threads is REQUIRED: gevent / prefork are refused at start-up on purpose.
-celery -A app.worker worker --pool=threads -c 10 -Q tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation -n scenarios@%h --loglevel=INFO
-
-# Window 2 - Service Mapper worker (its own queue, 2 mappings at once; as run.ps1 does locally).
-#   !! RUN BOTH LINES, in this order, in the SAME window: its own metrics port (9103), never the job worker's 9100.
-#   !! After it starts, the first log line must say  "port": 9103  (if 9100, Ctrl+C and redo both lines).
-$env:CII_WORKER_METRICS_PORT = "9103"
-celery -A app.worker worker --pool=threads -c 2 -Q tsg_servicemapper -n mapper@%h --loglevel=INFO
-
-# Window 3 - maintenance worker (library index builds, the intelligence refresh).
-#   !! RUN BOTH LINES, in this order, in the SAME window. The CII_WORKER_METRICS_PORT line gives this
-#   !! worker its own metrics port (9102). Without it the worker silently uses 9100, the job worker's port.
-#   !! After it starts, the first log line must say  "port": 9102  (if 9100, Ctrl+C and redo all lines).
-$env:CII_WORKER_METRICS_PORT = "9102"
-celery -A app.worker worker --pool=threads -c 3 -Q tsg_maintenance -n maintenance@%h --loglevel=INFO
-
-# Window 4 - reaper worker (the reaper that re-sends lost jobs, the controls retry sweep; alone, never behind a long job).
-#   !! RUN BOTH LINES, in this order, in the SAME window: its own metrics port (9104), never the job worker's 9100.
-#   !! After it starts, the first log line must say  "port": 9104  (if 9100, Ctrl+C and redo both lines).
-$env:CII_WORKER_METRICS_PORT = "9104"
-celery -A app.worker worker --pool=threads -c 2 -Q tsg_reaper -n reaper@%h --loglevel=INFO
-
-# Window 5 - beat (the timer: reaper every minute, index warm-up every 30 min). Run exactly ONE.
-celery -A app.worker beat --loglevel=INFO
-
-# Window 6 - the API
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
-
-# 9. Check (browser)
-#    http://localhost:8000/health  -> {"status": "ok"}
-#    http://localhost:8000/ready   -> 200, mongo/sql/redis true, a worker for every queue
-#    http://localhost:8000/docs    -> API documentation
-#    503 on /ready: the body says which store or queue is missing - start that worker / fix that store.
+# TSG v2 (cii) - run on the UAT Windows machine, step by step.
+# This runs TSG on one Windows machine against the UAT stores. To deploy TSG on OpenShift, follow deploy\DEPLOYMENT_GUIDE.md.
 #
-#    PROBLEM: worker log shows  ai.call_unavailable / ProxyError 503 / ERR_CONNECT_FAIL 110 / ai_timed_out, or at
-#             start  ai.gateway_route host=llmapi.govai.ae route=proxy  -> the AI calls go through the corporate proxy.
-#    FIX 1: .env must have CII_AI_BYPASS_PROXY=true (step 6). Fix it, Ctrl+C every window, start again.
+# Use "Windows PowerShell" (the prompt starts with PS). NOT CMD: there a .ps1 file opens in an editor instead of
+# running. NOT PowerShell 7 (pwsh): run.ps1 needs Windows PowerShell 5.1.
+# Run every command from the cii folder (the one with pyproject.toml), e.g.:
+cd C:\Users\gopal.chettri\Documents\cii_tsg_rem-sm
+
+# =====================================================================================================
+# PART 1 - ONE TIME (a new machine, or a new copy of the code)
+# =====================================================================================================
+
+# 1. Check the machine
+py -0
+#    must list 3.12. 3.13 / 3.14 are untested and may fail to install: install Python 3.12 (64-bit) if missing.
+Get-OdbcDriver -Name "ODBC Driver 17 for SQL Server" -Platform 64-bit
+#    must print one driver. Nothing printed -> install "ODBC Driver 17 for SQL Server" (x64).
+Test-NetConnection 10.228.146.2 -Port 1444     # SQL Server
+Test-NetConnection 10.228.146.3 -Port 27018    # MongoDB
+Test-NetConnection 10.228.146.4 -Port 6379     # Redis
+#    each must say  TcpTestSucceeded : True.  False -> ask the network team to open this machine to that IP and port.
+#    No local MongoDB, SQL Server or Redis (Memurai) is needed: TSG uses the UAT ones above.
+
+# 2. Create the Python environment (it MUST be named .venv)
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+#    The prompt now starts with (.venv).
+#    "running scripts is disabled on this system" -> run this once in this window, then activate again:
+#      Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#    Made with the wrong Python earlier? Remove-Item .venv -Recurse -Force, then step 2 again.
+
+# 3. Install the packages through the corporate proxy (straight to pypi.org times out: ConnectTimeoutError)
+$env:HTTP_PROXY  = "http://10.61.192.2:8080"
+$env:HTTPS_PROXY = "http://10.61.192.2:8080"
+pip install -e . -c requirements.txt
+#    UAT does NOT install ".[local]" (the reranker is the remote qwen3 model).
+pip check
+#    must say: No broken requirements found.
+#    Still timing out -> this machine uses another proxy. See which one Windows uses, and put it in the two lines above:
+#      Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" | Select ProxyEnable, ProxyServer, AutoConfigURL
+
+# 4. UAT settings. The app reads ONLY a file named ".env" in this folder - never ".env.uat". Copy it over:
+Copy-Item .env.uat .env -Force
+#    Then open .env and check (start-up stops with the reason if one is wrong):
+#      CII_ENV=uat
+#      CII_CORS_ORIGINS                        the web pages that may call the API, comma-separated, e.g.
+#                                              https://threatgen-api.apps.dda-desc-az1-01.desccii.local; "*" (any) is
+#                                              accepted in UAT, refused in prod
+#      CII_ADMIN_API_KEY                       at least 32 characters
+#      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE=180  kimi-k2.5 takes 192 a minute; only threat scenarios use kimi-k2.5,
+#                                              remediation and the service mapper use glm-5.3
+#      EVIDENCE_SIMILARITY_THRESHOLD=50        must be set while EXTERNAL_INTELLIGENCE_ENABLED=true
+#      CII_AI_BYPASS_PROXY=true                the AI calls go straight to the AI gateway, not through the proxy
+#      CII_LOG_LEVEL=INFO                      DEBUG is for a short diagnosis only
+#    After any later change to .env: .\stop.ps1, then .\run.ps1 again.
+
+# 5. Check the settings and the three UAT stores (window from step 2, .venv activated)
+python -c "from app.core.config import get_settings; s = get_settings(); print(s.env, s.scenario_chat_model, s.mongo_db)"
+#    expected: uat litellm_proxy/kimi-k2.5 cii_uat
+#    The first word must be uat. If it says dev, .env is not the UAT file: step 4.
+python -c "from app.core.readiness import check_readiness; print(check_readiness()[0])"
+#    expected: mongo, sql and redis all True. A False: the warning printed above it says why
+#    (network: step 1; wrong password in .env; ODBC driver missing: step 1).
+#    WARNING: never run pytest on this machine: it would use the UAT MongoDB and Redis.
+
+# =====================================================================================================
+# PART 2 - EVERY TIME
+# =====================================================================================================
+
+# 6. Nothing else may use the UAT Redis queues
+#    - v1 must be STOPPED (v1 and v2 share the Redis keys "tsg:*" on the same databases).
+#    - The OpenShift v2 pods must be scaled to 0: they share the Redis queues and would take this machine's jobs:
+#        oc -n ai-threatgen scale deployment -l part-of=tsg --replicas=0
+#        oc -n ai-common scale deployment/worker-reaper --replicas=0
+#      (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, step 12)
+#    - First time only: the DBA must have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
+
+# 7. Start everything - one command, from the cii folder
+.\run.ps1 -NoBrowser -ApiHost 0.0.0.0
+#    -ApiHost 0.0.0.0 lets other machines (the UI) call the API; without it only this machine can.
+#    It opens 6 windows - TSG api, worker, service_mapper, maintenance, reaper, beat - starts the monitoring tools
+#    (Grafana, Flower, ...), waits up to 90 s and prints the /ready answer.
+#    It uses .venv\Scripts\python.exe itself: no need to activate .venv first.
+#    Good:  /ready: 200 ...
+#    "Not reachable: mongo, sql, redis"     -> .env is not the UAT file (step 4), or the network is closed (step 1).
+#                                              (Ignore its "Start-Service Memurai" hint: that is for the laptop.)
+#    "The monitoring tools did not start"   -> only Grafana / Flower are missing; the API and the workers run (step 13).
+#    "The <name> program has ended"         -> read the error in the window 'TSG <name>'.
+#    "Already running" / "Port ... is in use" -> .\stop.ps1 first.
+#
+#    The 'TSG api' window must say  Uvicorn running on http://0.0.0.0:8000  (127.0.0.1 there = -ApiHost was left out).
+#    Other machines call  http://<this machine's name or IP>:8000 . Windows Firewall must allow TCP port 8000
+#    inbound: the server admin opens it once.
+
+# 8. Check
+.\run.ps1 status
+#    each of the 6 must say "running", and /ready 200 with mongo/sql/redis true and a worker for every queue.
+#    503 on /ready: the body says which store or queue is missing - fix that store, or read that worker's window.
+#    In a browser on this machine:
+#      http://localhost:8000/health  -> {"status": "ok"}
+#      http://localhost:8000/docs    -> API documentation
+#    From ANOTHER PC (the one the UI runs on):
+#      Test-NetConnection <this machine's name or IP> -Port 8000      -> TcpTestSucceeded : True
+#      curl.exe http://<this machine's name or IP>:8000/health        -> {"status": "ok"}
+#    False / timeout: the firewall (step 7) or the network is closed. Fine here but the UI still fails: open the
+#    browser console (F12); a CORS error means its address is missing from CII_CORS_ORIGINS (step 4).
+
+# 9. Stop
+.\stop.ps1
+#    The workers finish their running jobs first (up to 60 s), then every window and the monitoring tools close.
+
+# =====================================================================================================
+# PART 3 - FIRST USE, MONITORING AND PROBLEMS
+# For the python / celery commands below: a new Windows PowerShell window, cd to the cii folder,
+# .venv\Scripts\Activate.ps1
+# =====================================================================================================
+
+# 10. PROBLEM: the AI calls fail
+#    worker log shows  ai.call_unavailable / ProxyError 503 / ERR_CONNECT_FAIL 110 / ai_timed_out, or at
+#    start  ai.gateway_route host=llmapi.govai.ae route=proxy  -> the AI calls go through the corporate proxy.
+#    FIX 1: .env must have CII_AI_BYPASS_PROXY=true (step 4). Fix it, .\stop.ps1, .\run.ps1.
 #    FIX 2: still failing? test direct access from this machine:
 #             nslookup llmapi.govai.ae
 #             Test-NetConnection llmapi.govai.ae -Port 443
@@ -134,11 +150,11 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 #    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line:
 #         oc -n <project> logs deploy/worker-scenarios | findstr ai.gateway_route
 
-# 10. Create an API key (admin key = CII_ADMIN_API_KEY from .env). It is shown ONCE - copy it.
+# 11. Create an API key (admin key = CII_ADMIN_API_KEY from .env). It is shown ONCE - copy it.
 curl.exe -X POST http://localhost:8000/v1/tsg/api-clients -H "X-Admin-Key: <CII_ADMIN_API_KEY>" -H "Content-Type: application/json" -d "{\"name\":\"uat-test\",\"description\":\"uat\"}"
 #    Business calls then send 4 headers: X-API-Key, X-User-Id, X-Entity-Id, X-Tenant-Id
 
-# 11. External intelligence is ON in .env.uat - first time only. No key needed (no admin key, no API key).
+# 12. External intelligence is ON in .env.uat - first time only. No key needed (no admin key, no API key).
 #    Until this import finishes, each window shows ONE line, naming these calls (expected, nothing broken):
 #      external_intelligence.no_data_yet  action="... POST /v1/tsg/intel/refresh ..."
 #    and starting a run answers 409 intel_no_data. Both stop once health shows a snapshot_id.
@@ -150,36 +166,32 @@ curl.exe http://localhost:8000/v1/tsg/intel/refresh/<job_id>
 curl.exe http://localhost:8000/v1/tsg/intel/health
 #    A source "failed": its last_error ends with the reason, e.g. "(last: ConnectTimeout: ...)" or "(last: HTTP 503)".
 #      ConnectTimeout / ConnectError / ProxyError = the app cannot get out (proxy, firewall): set
-#      CII_PROXY_URL=http://<proxy>:<port> in .env, restart API and workers, refresh again. HTTP 5xx or 429 = the
-#      source is busy, the next hourly check tries again. Details: docs/EXTERNAL_INTELLIGENCE.md section 6.
+#      CII_PROXY_URL=<the proxy of step 3> in .env, .\stop.ps1, .\run.ps1, refresh again. HTTP 5xx or 429 = the
+#      source is busy, the next hourly check tries again.
 #    On OpenShift use https://threatgen-api.apps.dda-desc-az1-01.desccii.local instead of http://localhost:8000
 #    (add -k if this PC does not trust the cluster certificate).
 #    ...snapshot_id must be set. EVIDENCE_SIMILARITY_THRESHOLD=50 is provisional (not calibrated on the UAT reranker).
 
-# 12. Grafana + Flower (optional monitoring). Start it AFTER the workers and the API are running.
-#     Open one more window: cd to the cii folder, activate .venv (step 2), then:
-python scripts/monitoring.py start
-python scripts/monitoring.py status
-#    status must show 7 lines, each "ready" (Grafana, Prometheus, Alertmanager, Loki, Alloy, Flower, redis_exporter).
+# 13. Grafana + Flower (monitoring). .\run.ps1 starts them (step 7) and .\stop.ps1 stops them.
+#    .\run.ps1 status lists them: 7 lines, each "ready" (Grafana, Prometheus, Alertmanager, Loki, Alloy, Flower, redis_exporter).
 #    Open:
 #      Grafana (start here)   http://localhost:3000/grafana/
 #      Flower (celery jobs)   http://localhost:5555/flower/
 #      Prometheus             http://localhost:9090/prometheus/
 #      Alertmanager           http://localhost:9093/alertmanager/
 #    Notes:
-#      - The FIRST start downloads about 500 MB (github.com, dl.grafana.com). If this machine has no internet
-#        it fails: download on another machine and copy the folder to %USERPROFILE%\.tsg\monitoring-v2
+#      - The FIRST start downloads about 500 MB (github.com, dl.grafana.com). Behind the proxy: set the two $env:
+#        lines of step 3 in the window before .\run.ps1. No internet at all: download on another machine and copy the
+#        folder to %USERPROFILE%\.tsg\monitoring-v2
 #      - Ports 3000, 5555, 9090, 9093 must be free (v1's monitoring uses the same ports - stop it first).
-#      - Grafana's log panels need log files: set CII_LOG_DIR=logs in .env and restart the API and workers.
-#        With CII_LOG_DIR empty (as in .env.uat) only numbers and alerts show, no logs.
+#      - Grafana's log panels read the log files in logs\ (CII_LOG_DIR=logs, as in .env.uat).
 #      - LOGIN: Flower, Prometheus and Alertmanager need NO login. Grafana needs no login to look.
 #        To change Grafana itself, log in as  admin  with the GRAFANA_ADMIN_PASSWORD line of .env; if that line is
 #        empty or missing, the random password is in  %USERPROFILE%\.tsg\monitoring-v2\grafana-admin-password.txt
 #      - SECURITY: anyone who can reach ports 3000, 5555, 9090, 9093 can read the numbers and logs and silence
 #        alerts. Do not expose these ports beyond the people who need them.
-#      - Stop it:  python scripts/monitoring.py stop
 
-# 13. Check that every celery worker is working (new window, .venv activated):
+# 14. Check that every celery worker is working (.venv activated)
 python -c "from app.core.readiness import count_online_workers; from app.worker import ROUTED_QUEUES; print(count_online_workers(ROUTED_QUEUES))"
 #    each of tsg_threats, tsg_scenarios, tsg_controls, tsg_remediation, tsg_servicemapper, tsg_maintenance, tsg_reaper must show at least 1 (wait up to 20 s after start)
 celery -A app.worker inspect ping
@@ -189,12 +201,8 @@ celery -A app.worker inspect active_queues
 #    tsg_maintenance (intelligence refresh, embeddings builds); reaper@... serves tsg_reaper (the reaper, the controls retry sweep).
 #    Each worker is named by its module:
 #    its log file is logs/worker-<name>.log, and every job line carries module=<module> and worker=<name>@<host>.
-#    Beat is not in these checks: about 1 minute after it starts, the reaper window must log tsg_reap, every minute.
+#    Beat is not in these checks: about 1 minute after it starts, the 'TSG reaper' window must log tsg_reap, every minute.
 #    Every job, queue and worker in one call (admin key; add &status=failed, &kind=tsg_map_services, &hours=72):
 curl.exe -H "X-Admin-Key: <CII_ADMIN_API_KEY>" "http://localhost:8000/v1/admin/jobs?status=queued&status=running&status=failed"
 #    One API call to its worker: take X-Request-ID from the API's answer, then
 python scripts/debug_tools.py find <request id>
-
-# 14. Stop: Ctrl+C in each window (a worker finishes its running jobs first; press twice to force).
-#     Put your laptop settings back:
-Copy-Item .env.dev.bak .env -Force

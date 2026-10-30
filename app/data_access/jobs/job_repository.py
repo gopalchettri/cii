@@ -19,7 +19,7 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
-from app.core.logging import current_request_id
+from app.core.logging import current_job_origin, current_request_id
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
 #: What a claim reads of every job: its lease carries them, with the task's own fields.
@@ -27,19 +27,23 @@ _CLAIM_FIELDS = (
     "job.attempts",
     "job.due_at",
     "job.lease_until",
+    "job.origin",
     "job.request_id",
     "job.waiting",
     "job.waiting_since",
+    "session_id",  # a plan's run; a run's or a mapping's own id stands in when there is none
 )
 
 
 def new_job(task: TaskName, epoch: int, now: datetime, **fields: Any) -> dict[str, Any]:
     """A queued job, due now, never claimed, with the id of the API request that made it (each stage logs
-    it); `fields` add the task's own inputs."""
+    it) and the API call and caller it works for (its AI usage rows carry them); `fields` add the task's own
+    inputs."""
     return {
         "task": task,
         "epoch": epoch,
         "request_id": current_request_id(),
+        "origin": current_job_origin(),
         "task_id": None,
         "attempts": 0,
         "due_at": now,
@@ -103,6 +107,19 @@ class JobLease:
         self.record = record or {}
 
     @property
+    def origin(self) -> dict[str, Any]:
+        """Who the job works for, as the claim read it: the API request and call that queued it, its caller
+        and its session; bound on the job's log lines and AI usage rows."""
+        job = self.record.get("job") or {}
+        found = {
+            "request_id": job.get("request_id"),
+            "session_id": self.record.get("session_id") or self.record_id,
+        }
+        return {
+            name: value for name, value in (found | (job.get("origin") or {})).items() if value is not None
+        }
+
+    @property
     def fence(self) -> dict[str, Any]:
         """The filter that matches the job record only while this delivery owns it."""
         # Running too: once the reaper settles the record, a slow old owner can no longer finish it.
@@ -117,12 +134,18 @@ class JobLease:
             "job.attempts": self.attempts,
         }
 
-    def update_job(self, changes: dict[str, Any], array_filters: list[dict[str, Any]] | None = None) -> None:
+    def update_job(
+        self,
+        changes: dict[str, Any],
+        array_filters: list[dict[str, Any]] | None = None,
+        operators: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         """Write `changes` to the job record while this delivery owns it, else raise LeaseLost;
-        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]. A job claimed while
-        it waited for another job reads queued until this first write after its wait (job.waiting cleared)."""
+        `array_filters` pick the list items a change names, e.g. [{"p.path_id": path_id}]; `operators` adds
+        other update operators to the same write, e.g. {"$push": ...}. A job claimed while it waited for
+        another job reads queued until this first write after its wait (job.waiting cleared)."""
         waited = {"job.waiting": None} if (self.record.get("job") or {}).get("waiting") else {}
-        update = {"$set": {**waited, **changes, "updated_at": utc_now()}}
+        update = {**(operators or {}), "$set": {**waited, **changes, "updated_at": utc_now()}}
         if self._records.update_one(self.fence, update, array_filters=array_filters).matched_count != 1:
             raise LeaseLost(self.record_id)
 

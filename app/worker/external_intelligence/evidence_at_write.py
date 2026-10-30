@@ -33,7 +33,6 @@ from app.models.external_intelligence.evidence_request import (
     RecordedProduct,
     RecordedProducts,
 )
-from app.models.external_intelligence.source_health import FeedFreshness
 from app.models.scenario.asset_context import FrozenContext
 from app.worker.scenario.plan_progress import PlanProgress
 
@@ -70,7 +69,7 @@ class EvidenceAtWrite:
         context = FrozenContext.from_record(self._run["context"])
         try:
             requests = {key: evidence_request(context, self._threats[key]) for key in keys}
-            found = self._search_batch(requests, approved, self._is_stale(approved))
+            found = self._search_batch(requests, approved)
         except TEMPORARY_ERRORS as exc:  # an outage never costs the batch: its paths wait
             log.warning(
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, threats=len(keys), exc_info=True
@@ -83,20 +82,15 @@ class EvidenceAtWrite:
             self._threats[key].update(fields)
 
     def _search_batch(
-        self, requests: dict[str, EvidenceRequest], approved: set[IntelSource], stale: bool
+        self, requests: dict[str, EvidenceRequest], approved: set[IntelSource]
     ) -> EvidenceByThreat:
         """One audited search batch (one embedding call): each threat's fields with when it was searched,
         from approved sources only."""
-        results, summary = self._finder.find_evidence(list(requests.values()), stale=stale, approved=approved)
+        results, summary = self._finder.find_evidence(list(requests.values()), approved=approved)
         self._audit_batch(summary)
         searched_at = utc_now().isoformat()
         pairs = zip(requests, results, strict=True)
         return {key: _threat_fields(result, searched_at) for key, result in pairs}
-
-    def _is_stale(self, approved: set[IntelSource]) -> bool:
-        """True when an approved source that has data is older than IntelLimits.STALE_AFTER_HOURS, from one
-        read of the source health."""
-        return FeedFreshness.of(self._feeds.list_source_health(), approved, utc_now()).stale
 
     def _audit_batch(self, summary: EvidenceBatchSummary) -> None:
         """Write one audit row per search batch (its snapshot, threats and evidence counts); each threat's

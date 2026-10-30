@@ -4,6 +4,7 @@ what is stored and shown. Fake AI models, no network."""
 import copy
 import dataclasses
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -14,13 +15,14 @@ from pydantic import ValidationError
 from structlog.testing import capture_logs
 
 from app import container
-from app.ai import UnreadableAiAnswer
+from app.core.config import get_settings
 from app.core.constants import (
     CHAT_TEMPERATURES,
     FINAL_FINDINGS,
     FINDING_SEVERITIES,
     ActorRole,
     AiTask,
+    AnswerProblem,
     Collection,
     Decision,
     ErrorCode,
@@ -35,6 +37,7 @@ from app.core.constants import (
     StrideCategory,
     ValidationStatus,
     WriterStyle,
+    Writing,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable, Unavailable
@@ -43,11 +46,13 @@ from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRe
 from app.domain.scenario.plan import gap_fill_prompt, planned_threat_record, relevance_gate_prompt
 from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
+    PLAN_CHECK_SET_PROMPT,
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
+    _acts_without_a_sentence,
+    _without_system_names,
     brief_entry_point_options,
     build_brief,
-    check_against_plan,
     check_exact_rules,
     draft_answer,
     failure_record,
@@ -58,11 +63,12 @@ from app.domain.scenario.write import (
     plan_check_prompt,
     plan_check_record,
     scenario_id,
-    split_threat_actions,
+    slot_label,
     title_candidates,
     with_word_limits,
-    write_scenario,
+    write_set,
     writer_prompt,
+    writer_system_prompt,
     written_record,
 )
 from app.models.scenario.plan import PlannedActor
@@ -77,12 +83,11 @@ from app.models.scenario.write import (
     WrittenScenario,
 )
 from app.worker.scenario.path_writing import PathWriter
-from tests.fakes import FakeChatModel, truncated
+from tests.fakes import FakeChatModel, brief_of, shared_facts, slot_blocks, truncated
 from tests.planner_samples import CONTEXT, planned, system_row
 
 #: Everything the sample threats name is still active in the library.
 _LIVE = LiveLibrary(frozenset({297}), frozenset({1}), frozenset({7, 8}))
-_SPLIT = PROMPTS["scenario"]["threat_actions"]
 _CLEAN = ScenarioDraft(
     "Loss of control integrity",
     "A cybercriminal could use a vendor session to push firmware to the SCADA server of Grid Control Centre.",
@@ -90,8 +95,8 @@ _CLEAN = ScenarioDraft(
     ("Assumes vendor sessions can update firmware - not recorded in the platform.",),
     "SCADA server",
 )
-#: The reasons the fake writer gives an answer that has none (tests/fakes.py): one per system of the brief.
-_REASONS = (("SCADA server", "It could affect SCADA server."), ("Historian", "It could affect Historian."))
+#: A draft's reasons: the fake writer's (tests/fakes.py) for the "yes" system, code's for the "no" one.
+_REASONS = (("SCADA server", "It could affect SCADA server."), ("Historian", Writing.NOT_REACHED_REASON))
 _READ = dataclasses.replace(_CLEAN, system_reasons=_REASONS)
 _CONSISTENT = {"rules": {"1": "holds"}, "same_threat": True, "same_impact": True}
 _MISMATCH = {"rules": {"1": "holds"}, "same_threat": False, "same_impact": True}
@@ -132,6 +137,27 @@ def _chat_answering(writes: list[Any], checks: list[Any]) -> FakeChatModel:
 
 def _calls(chat: FakeChatModel) -> list[AiTask]:
     return [task for task, _ in chat.calls]
+
+
+def write_scenario(chat: FakeChatModel, brief: Any) -> WrittenScenario:
+    """One brief written as a set of one: its scenario (a batch of one is a batch)."""
+    ((_, written),) = write_set(chat, [("SC1", brief)])  # type: ignore[arg-type]
+    assert isinstance(written, WrittenScenario), written
+    return written
+
+
+def _failure_of(chat: FakeChatModel, brief: Any) -> PathFailure:
+    """One brief written as a set of one, its slot failing."""
+    ((_, failed),) = write_set(chat, [("SC1", brief)])  # type: ignore[arg-type]
+    assert isinstance(failed, PathFailure), failed
+    return failed
+
+
+def check_against_plan(chat: FakeChatModel, brief: Any, draft: ScenarioDraft) -> tuple[PlanCheck, Any]:
+    """The review of `draft` for `brief`, as a set of one writes it: its check and its findings."""
+    chat.queued[AiTask.WRITE_SCENARIO].insert(0, draft_answer(draft))
+    written = write_scenario(chat, brief)
+    return written.plan_check, written.findings
 
 
 def test_only_a_safety_fault_a_mismatch_or_a_copy_blocks_and_only_a_copy_is_final() -> None:
@@ -257,28 +283,46 @@ def test_long_facts_are_cut_to_the_budget_and_the_brief_stays_json() -> None:
 
 
 def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_json() -> None:
-    """The owner's text files, the configured word limits in their slots, one line saying no evidence is
-    given while intelligence is off; the reviewer's PLAN is the brief plus the critical service."""
+    """The owner's text files, the configured word limits in their slots, the asset's and systems' facts
+    once before the slot, each slot's own line saying no evidence is given while intelligence is off; the
+    reviewer's ASSET also holds the critical service."""
     brief = _brief_of(_plan_threat())
-    system, user = writer_prompt(brief)
-    assert system.startswith(with_word_limits(WRITER_SYSTEM_PROMPT)) and "No EVIDENCE is given" in system
-    assert "<scenario words>" not in system
-    sent = json.loads(user.removeprefix("BRIEF:\n"))
-    assert sent["supporting_systems"] == [
+    system, user = writer_system_prompt(), writer_prompt([("SC1", brief, "")])
+    assert system.startswith(with_word_limits(WRITER_SYSTEM_PROMPT)) and "No EVIDENCE is given" not in system
+    ((label, slot),) = slot_blocks(user)
+    assert "<scenario words>" not in system and (label, slot[: len("SLOT SC1\nBRIEF:\n")]) == (
+        "SC1",
+        "SLOT SC1\nBRIEF:\n",
+    )
+    assert shared_facts(user) == (brief.asset, list(brief.systems))
+    no_evidence = (
+        'No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evid'
+    )
+    assert no_evidence in slot.splitlines()[-1]
+    assert brief_of(slot)["supporting_systems"] == [
         {"name": "SCADA server", "applicable": "yes"},
         {"name": "Historian", "applicable": "no"},
     ]
-    system, user = plan_check_prompt(brief, _CLEAN)
-    plan_text, scenario_text = user.removeprefix("PLAN:\n").split("\nSCENARIO:\n")
-    assert system.startswith(PLAN_CHECK_SYSTEM_PROMPT) and json.loads(scenario_text) == draft_answer(_CLEAN)
-    assert json.loads(plan_text)["critical_service"] == "Electricity transmission"
+    review = plan_check_prompt([("SC1", brief, _CLEAN)])
+    asset = shared_facts(review)[0]
+    plan_text, scenario_text = (
+        slot_blocks(review)[0][1].removeprefix("SLOT SC1\nPLAN:\n").split("\nSCENARIO:\n")
+    )
+    plan, rest = json.JSONDecoder().raw_decode(plan_text)
+    assert json.loads(scenario_text) == draft_answer(_CLEAN)
+    assert asset["critical_service"] == "Electricity transmission" and "asset" not in plan
+    assert plan_text[rest:].strip().startswith("No EVIDENCE is given for this slot: any [n] marker")
+    assert (
+        PLAN_CHECK_SET_PROMPT.startswith(PLAN_CHECK_SYSTEM_PROMPT)
+        and "No EVIDENCE" not in PLAN_CHECK_SET_PROMPT
+    )
     assert CHAT_TEMPERATURES[AiTask.PLAN_CHECK] == 0.0
 
 
 def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_platform_note() -> None:
     """Every prompt bans an added step and asks why, not how; none names the note code adds to assumptions."""
-    gate = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [{"slot": "R1"}])[1]
-    gap = gap_fill_prompt("LANDSCAPE", StrideCategory.TAMPERING, 3, ())[1]
+    gate = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
+    gap = gap_fill_prompt("LANDSCAPE", [(StrideCategory.TAMPERING, 3, ())])[1]
     for prompt in (gate, gap):
         assert "directly causes the loss the STRIDE category line describes" in prompt
         assert "only through an added step that is not part of the threat" in prompt
@@ -293,7 +337,8 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "never from a later use its name does not state (rule 1)" in writer
     split = "two names for the same act are one action"  # each prompt's own split, used without the list
     assert split in writer and split in reviewer
-    assert "naming the threat is not carrying it out" in writer and "is carried out, not only named" in writer
+    assert "naming the threat is not carrying it out" in writer
+    assert "must be carried out in the story as the attacker's action, not only named" in writer
     assert "in your own words and concrete to this asset" in writer and "never copy the list's" in writer
     plain = writer.split("13. CLEAR, BALANCED LANGUAGE")[1].split("GENERATOR FINAL CHECK")[0]  # both readers
     assert "writes for security staff and for operators, managers and auditors who are not security" in writer
@@ -302,7 +347,7 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert '"exfiltrate (copy out) the records"' in plain and 'not "Someone could make the tank' in plain
     assert '"break into" or "take over", not "compromise"' not in plain  # no blanket swap of precise terms
     assert "each part its own short sentence" in writer and "one or two short sentences" in writer
-    assert "Write in clear, balanced language (rule 13)" in writer and "- Clear, balanced language:" in writer
+    assert "Write in clear, balanced language (rule 13)" in writer
     assert "the category's loss (rule 11)" in plain and "locks" not in plain  # clear words keep the category
     assert "in any words (judge the meaning, not the list's wording" in reviewer
     assert "or only named, not carried out as the attacker's action" in reviewer  # a rule 1 note
@@ -316,17 +361,70 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "each one is carried out as the attacker's action, in your own words" in repair
     assert "keep every other rule" in repair
     named = ("ransomware", "data theft extortion", "ddos", "wiper", "phishing and mfa")  # no library threat
-    prompts = (gate, gap, writer, reviewer, repair, _SPLIT["text"], _SPLIT["system"])
+    prompts = (gate, gap, writer, reviewer, repair)
     assert [n for n in named for prompt in prompts if n in prompt.casefold()] == []
     assert "Using access the threat only obtains (a stolen credential, secret or session)" in reviewer
     assert "including using access the threat only obtains" in reviewer
-    assert "Add no sentence linking them to this asset or event" in writer and "End with at" not in writer
-    assert "It is false for any sentence linking the evidence" in reviewer and "plus at most" not in reviewer
+    # D65: the writer gives only the step its evidence entry is about; code writes the sentence from it
+    assert "In real-world attacks" not in writer and "No field includes a real-world precedent" in writer
+    step = 'evidence_step: the one step of this story that the entry marked "cited": true is about'
+    assert step in writer and "as a gerund phrase written as a normal clause with its articles" in writer
+    assert "by its full name exactly as BRIEF gives it" in writer  # 30 Oct: steps said "the platform"
+    assert "in this story's own words rather than the cited title's" in writer
+    assert "6 to 20 words, with no title, no group, malware or campaign name and no quotes" in writer
+    assert "the application writes the closing evidence sentence from evidence_step" in writer
+    assert '"evidence_statement"' not in writer and "words no other slot uses" not in writer
+    assert "evidence_supported" not in reviewer  # no code reads it: code's sentence states only its source
+    assert "except `evidence_statement`, which the platform writes from EVIDENCE" in reviewer
+    # D66: the writer gives reasons only for "yes" systems; code writes a "no" system's
+    assert "Never name it in scenario_statement and give it no system_reasons key." in writer
+    assert 'system_reasons: one key for every BRIEF.supporting_systems name marked "yes"' in writer
+    assert 'copied exactly; no key for a "no" system.' in writer
+    assert "the application writes it" not in writer  # said once, in the schema and rule 4
+    assert (
+        "Applicability missing" not in writer and "explain its exclusion only in system_reasons" not in writer
+    )
+    assert "End scenario_statement on this consequence." in writer
+    assert 'A "no" system must not be described as attacked or directly affected. Never name it' in writer
+    assert "The story may describe the attacker's steps in the cited entry's terms" in writer
+    assert "Do not reshape the specified threat" not in writer  # owner 2026-10-28: it may fit the evidence
     assert 'List an essential missing detail in assumptions as: "assumes <specific condition>".' in writer
     assert "the primary impact comes from an added step that is not part of the threat" in reviewer
     assert "every action its name states is its own" in gate
     assert [prompt for prompt in (gate, gap, writer, reviewer) if "recorded in the platform" in prompt] == []
     assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
+
+
+def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None:
+    """The customer's 25,000 tokens a minute: D65 (code writes the evidence sentence) cut the writer from
+    21,844 characters to 19,836 and the reviewer from 8,745 to 7,691 (the test settings' word ranges), and a
+    story slot no longer carries its own evidence line. 30 Oct: dropping what code does or checks itself
+    and every rule said twice (the final-check list among them) cut the writer from 19,948 to 15,465; English
+    only and the could/may reminder in rules 6 and 13 (replay: stories in the present tense, as certain,
+    went from 3 of 75 to 52 of 75 without them) bring it to 15,578. Each cap is the new size plus about
+    110 characters."""
+    assert len(writer_system_prompt()) <= 15_690 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 7_800
+
+
+def test_the_story_and_the_active_voice_example_keep_could_or_may() -> None:
+    """Replay, 30 Oct: with the slimmed prompt's only active-voice example in the present tense ("the attacker
+    copies the records") and rule 6's could/may clause cut, 52 of 75 stories were told as certain (old 3)."""
+    writer = writer_system_prompt()
+    assert '(rule 13) with hypothetical language such as "could" or "may".' in writer
+    assert '("the attacker could copy the records")' in writer and "attacker copies the records" not in writer
+
+
+def test_the_set_note_gives_every_slot_the_configured_word_ranges() -> None:
+    """Risk statements ran short in sets (11 of 13 under 80 words, 30 Oct): the set note, the prompt's last
+    words, repeats each statement's range from the settings (the evidence sentence is code's: none asked)."""
+    note = writer_system_prompt().rpartition("SET OF SCENARIOS")[2]
+    settings = get_settings()
+    for field, (least, most) in (
+        ("scenario_statement", settings.scenario_words),
+        ("risk_statement", settings.risk_words),
+    ):
+        assert f"{field} {least} to {most}" in note
+    assert "evidence_statement" not in note and "evidence_step" not in note
 
 
 def test_the_asset_and_its_affected_systems_form_one_whole() -> None:
@@ -335,6 +433,7 @@ def test_the_asset_and_its_affected_systems_form_one_whole() -> None:
     writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
     whole = 'The asset and its "yes" systems form one whole: they may work together where the event needs'
     assert whole in writer and 'or through another "yes" system' in writer
+    assert "Name only supplied systems, exactly as given." in writer  # once, no longer also in rule 13
     assert "goes in assumptions (rule 2)" in writer
     assert 'A "no" system must not be described as attacked or directly affected.' in writer  # unreached
     for removed in (
@@ -377,15 +476,11 @@ def test_the_brief_never_carries_the_platform_note_of_an_older_record() -> None:
     assert _brief_of(threat).why_it_applies == "The SCADA server takes firmware, assumes X."
 
 
-def test_the_split_and_both_prompts_carry_the_threats_actions() -> None:
-    """The split's general rules and five invented examples from other fields; the writer carries out each
-    listed action in step 3 and the reviewer answers for each; without the list each splits the name."""
-    split, writer, reviewer = _SPLIT["text"], WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
-    assert "Give no more acts than the name states." in split and 'Return {"actions": ["..."]}.' in split
-    assert 'Alternatives joined by "or" are one act: keep them together in one phrase.' in split
-    assert "Examples (invented, from other fields):" in split and split.count('\n- "') == 5
-    skimming = '"Card skimming with cash-out" -> ["copying card data with a skimmer", "withdrawing cash'
-    assert skimming in split and "split a cyber threat's name into the acts" in _SPLIT["system"]
+def test_both_prompts_carry_the_threats_actions_and_no_split_prompt_is_left() -> None:
+    """The writer carries out each listed action (the threat check's) in step 3 and the reviewer answers for
+    each; without the list (a plan made before the threat check gave them) each splits the name itself."""
+    writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
+    assert "threat_actions" not in PROMPTS["scenario"]  # no split prompt: no split call
     step3 = "3) Carry out every action in BRIEF.threat.threat_actions (without that list, every action"
     assert f"{step3} of your own split) once, in a realistic order" in writer
     assert "When the list is absent, split the specified threat's name into the actions it states" in writer
@@ -397,21 +492,6 @@ def test_the_split_and_both_prompts_carry_the_threats_actions() -> None:
     assert "other_scenarios" not in writer and "described in rule 10" in writer and "12. SYSTEM" in writer
 
 
-def test_the_split_gives_the_actions_and_an_unusable_answer_gives_none() -> None:
-    """A usable answer is the tuple; one still unusable after the re-ask, or cut off, gives () (the writer and
-    the reviewer split the name); an outage is raised, so the path is retried."""
-    chat = FakeChatModel()
-    chat.queue(AiTask.THREAT_ACTIONS, {"actions": ["pushing  firmware", "hiding the change"]})
-    assert split_threat_actions(chat, "Firmware push") == ("pushing firmware", "hiding the change")
-    assert chat.asked(AiTask.THREAT_ACTIONS)[0].endswith('\nTHREAT: "Firmware push"')
-    for answers in (({"acts": ["x"]}, {"actions": [" "]}), (truncated(),)):
-        chat.queue(AiTask.THREAT_ACTIONS, *answers)
-        assert split_threat_actions(chat, "Firmware push") == ()
-    chat.queue(AiTask.THREAT_ACTIONS, Unavailable("AI down"))
-    with pytest.raises(Unavailable):
-        split_threat_actions(chat, "Firmware push")
-
-
 def _path_writer(chat: FakeChatModel, threat: dict[str, Any]) -> PathWriter:
     """One delivery's writer for a run planning `threat`, every library record still active."""
     run = {"_id": "r1", "context": CONTEXT.to_record(), "plan": {"threats": [threat]}}
@@ -420,59 +500,141 @@ def _path_writer(chat: FakeChatModel, threat: dict[str, Any]) -> PathWriter:
     return PathWriter(run, chat, library, WriterStyle.ORIGINAL)  # type: ignore[arg-type]
 
 
-def _sent_threat(prompt: str) -> dict[str, Any]:
-    """The threat of the BRIEF or PLAN a writer or reviewer prompt carries."""
-    return dict(json.JSONDecoder().raw_decode(prompt.split(":\n", 1)[1])[0]["threat"])
+def _sent_threats(chat: FakeChatModel) -> list[dict[str, Any]]:
+    """The threat of every slot's BRIEF and PLAN the writer and the reviewer were sent."""
+    prompts = [*chat.asked(AiTask.WRITE_SCENARIO), *chat.asked(AiTask.PLAN_CHECK)]
+    blocks = [block for prompt in prompts for _, block in slot_blocks(prompt)]
+    return [dict(json.JSONDecoder().raw_decode(block.split(":\n", 1)[1])[0]["threat"]) for block in blocks]
 
 
-def test_a_delivery_splits_each_threat_once_and_the_brief_and_plan_carry_its_actions() -> None:
-    """Two paths of one threat ask for its split once; the writer's BRIEF and the reviewer's PLAN list the
-    actions under the threat."""
-    threat = _plan_threat()
+def _path(threat: dict[str, Any], path_id: str = "p1") -> dict[str, Any]:
+    return {
+        "path_id": path_id,
+        "steps": [threat["key"]],
+        "category": "Tampering",
+        "systems": threat["systems"],
+    }
+
+
+def test_the_threat_checks_actions_reach_the_brief_and_the_review_with_no_split_call() -> None:
+    """The plan's threat actions (the threat check's, systems by name) are the listed actions, without the
+    names, of every BRIEF and PLAN of that threat; the set makes one write and one review, and no
+    threat_actions call."""
+    threat = _plan_threat(actions=["altering the SCADA server's setpoints", "hiding the change"])
+    listed = ["altering setpoints", "hiding the change"]
     chat = FakeChatModel()
-    listed = ["pushing firmware", "hiding the change"]
-    chat.queue(AiTask.THREAT_ACTIONS, {"actions": listed})
     done = {"threat_actions": dict.fromkeys(listed, "carried out")}
     chat.responders |= {
         AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN),
         AiTask.PLAN_CHECK: lambda _: _CONSISTENT | done,
     }
-    writer = _path_writer(chat, threat)
-    path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
-    outcomes = [writer.write(path | {"path_id": path_id}) for path_id in ("p1", "p2")]
-    assert len(chat.asked(AiTask.THREAT_ACTIONS)) == 1
-    assert [outcome[0].threat_actions for outcome in outcomes if isinstance(outcome, tuple)] == [
+    slots = [(slot_label(place), _path(threat, f"p{place}")) for place in (1, 2)]
+    outcomes = dict(_path_writer(chat, threat).write_set(slots, last_try=False))
+    assert [outcome[0].threat_actions for outcome in outcomes.values() if isinstance(outcome, tuple)] == [
         tuple(listed)
     ] * 2
-    sent = [*chat.asked(AiTask.WRITE_SCENARIO), *chat.asked(AiTask.PLAN_CHECK)]
-    assert len(sent) == 4 and all(_sent_threat(prompt)["threat_actions"] == listed for prompt in sent)
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    sent = _sent_threats(chat)
+    assert len(sent) == 4 and all(threat["threat_actions"] == listed for threat in sent)
 
 
-def test_a_split_outage_is_raised_to_each_path_of_its_threat_with_one_ask() -> None:
-    """The split's outage is kept for the delivery: the threat's other path raises it without asking again."""
+@pytest.mark.parametrize(
+    ("name", "actions", "briefed"),
+    [
+        (  # the Historian is not on the path: no system named, the or-only name's alternatives one item
+            "Secrets, API key or service credential theft",
+            [
+                "steal secrets from SCADA server",
+                "steal API keys from the Historian",
+                "steal service credentials",
+            ],
+            ["steal secrets or steal API keys or steal service credentials"],
+        ),
+        (  # "and" names several acts: each its own item
+            "Credential phishing and MFA session theft",
+            ["phish credentials from SCADA server", "steal MFA session from Historian"],
+            ["phish credentials", "steal MFA session"],
+        ),
+        ("Log wiping", ["SCADA server", "wipe the logs on the Historian"], ["wipe the logs"]),  # nothing left
+        ("Log wiping", ["wipe logs on SCADA server", "wipe logs in Historian", "Wipe  logs"], ["wipe logs"]),
+        ("Data encryption", ["encrypt SCADA server"], ["encrypt the system"]),  # the act's object
+        (
+            "API abuse",
+            ["access API of SCADA server without authorization"],
+            ["access API without authorization"],
+        ),
+        ("Data theft", ["steal data from SCADA server and Historian"], ["steal data"]),  # a list of names
+        ("Data theft", ["steal data from SCADA server, the Historian"], ["steal data"]),
+        ("Data theft", ["steal SCADA server and Historian data"], ["steal data"]),
+        ("Code injection", ["inject into the Historian"], ["inject into the system"]),  # a bare verb left
+        (
+            "Impersonation",
+            ["impersonate executive to SCADA server staff"],
+            ["impersonate executive to staff"],
+        ),
+        (
+            "Extortion",
+            ["extort with Historian data", "extort via the Historian's data"],
+            ["extort with data", "extort via data"],
+        ),
+        (  # an "and" inside a part of the name: left split, so every act is still carried out
+            "Command and Control channel or beacon abuse",
+            ["open a command channel to SCADA server", "beacon from Historian"],
+            ["open a command channel", "beacon from the system"],
+        ),
+    ],
+)
+def test_the_briefs_actions_name_no_system_and_an_or_only_names_alternatives_are_one_item(
+    name: str, actions: list[str], briefed: list[str]
+) -> None:
+    """The writer carries out every listed action and names no system the path is not on, and the reviewer
+    reads an or-only name as one of its alternatives: the brief's actions agree with both."""
+    assert list(_brief_of(_plan_threat(name=name, actions=actions)).threat_actions) == briefed
+
+
+def test_a_system_name_inside_another_is_taken_out_with_it() -> None:
+    """Review, 30 Oct: "Historian" inside "Plant Historian" was cut first, leaving "wipe logs on Plant"."""
+    assert (
+        _without_system_names("wipe logs on Plant Historian", ["Historian", "Plant Historian"]) == "wipe logs"
+    )
+
+
+def test_an_old_plan_sends_no_actions_and_makes_no_split_call() -> None:
+    """D3: a plan made before the threat check gave actions sends none: the writer and the reviewer split the
+    name themselves (their prompts say how), with no AI call of their own, and the scenario is written."""
     threat = _plan_threat()
-    chat = FakeChatModel()
-    chat.queue(AiTask.THREAT_ACTIONS, Unavailable("AI down"))
-    writer = _path_writer(chat, threat)
-    path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
-    for path_id in ("p1", "p2"):
-        with pytest.raises(Unavailable):
-            writer.write(path | {"path_id": path_id})
-    assert len(chat.asked(AiTask.THREAT_ACTIONS)) == 1
-
-
-def test_with_no_list_the_brief_sends_none_and_the_scenario_is_still_written() -> None:
-    """An unusable split, like a brief of an old plan path, sends no threat_actions: the writer and the
-    reviewer split the name themselves and the scenario is written."""
-    threat = _plan_threat()
+    threat.pop("actions", None)  # stored before the threat check gave actions
     chat = _chat_answering([draft_answer(_CLEAN)], [_CONSISTENT])
-    chat.queue(AiTask.THREAT_ACTIONS, {"acts": []}, {"acts": []})
-    path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
-    outcome = _path_writer(chat, threat).write(path)
+    ((_, outcome),) = _path_writer(chat, threat).write_set([("SC1", _path(threat))], last_try=False)
     assert isinstance(outcome, tuple) and outcome[0].threat_actions == ()
     assert outcome[1].draft == _READ and not is_blocked(outcome[1])
-    sent = [*chat.asked(AiTask.WRITE_SCENARIO), *chat.asked(AiTask.PLAN_CHECK)]
-    assert len(sent) == 2 and all("threat_actions" not in _sent_threat(prompt) for prompt in sent)
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert [sorted(threat) for threat in _sent_threats(chat)] == [
+        ["threat", "threat_type", "why_it_applies"]
+    ] * 2
+
+
+def test_no_writer_or_reviewer_prompt_carries_a_database_id() -> None:
+    """Names only reach the AI: no catalogue, type, system, actor, asset or path id, no threat key, no id
+    field, in the write, the rewrite or the review of a set."""
+    threat = _plan_threat(systems=(321, 322), actions=["pushing firmware"])
+    chat = FakeChatModel()
+    chat.queue(AiTask.WRITE_SCENARIO, {"scenario_title": "x"})  # unreadable: the rewrite is sent too
+    chat.responders |= {
+        AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN),
+        AiTask.PLAN_CHECK: lambda _: _CONSISTENT | {"threat_actions": {"pushing firmware": "carried out"}},
+    }
+    slots = [(slot_label(place), _path(threat, f"path-{place}")) for place in (1, 2)]
+    list(_path_writer(chat, threat).write_set(slots, last_try=False))
+    assert _calls(chat) == [
+        AiTask.WRITE_SCENARIO,
+        AiTask.PLAN_CHECK,
+        AiTask.REPAIR_SCENARIO,
+        AiTask.PLAN_CHECK,
+    ]
+    for _, prompt in chat.calls:
+        found = re.findall(r'\b(?:297|321|322|103|86)\b|"id"|lib:297|path-\d|\br1\b', prompt)
+        assert found == [], found
 
 
 def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does() -> None:
@@ -497,8 +659,10 @@ def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does()
 
 
 def _plan_checked(*answers: Any) -> tuple[PlanCheck, tuple[Finding, ...]]:
+    """_CLEAN reviewed by `answers`; a mismatch's round-2 repair is _CLEAN, judged by the last answer."""
     chat = FakeChatModel()
-    chat.queue(AiTask.PLAN_CHECK, *answers)
+    chat.queue(AiTask.PLAN_CHECK, *answers, answers[-1])
+    chat.queue(AiTask.REPAIR_SCENARIO, draft_answer(_CLEAN))
     return check_against_plan(chat, _brief_of(_plan_threat()), _CLEAN)
 
 
@@ -574,10 +738,15 @@ def test_an_unreadable_answer_is_asked_once_more_and_twice_fails_the_scenario() 
     elsewhere = draft_answer(_CLEAN) | {"entry_point": "scada  SERVER"}  # an offered option, any spelling
     chat = _chat_answering([no_risk, elsewhere], [_CONSISTENT])
     assert write_scenario(chat, _brief_of(_plan_threat())).draft == _READ
-    assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
+    assert (
+        "REJECTED: the earlier answer for this slot had these problems: the reply: risk_statement"
+        in (chat.asked(AiTask.REPAIR_SCENARIO)[0])
+    )
     chat = _chat_answering([{"title": "x"}, {"title": "y"}], [])
-    with pytest.raises(UnreadableAiAnswer):
-        write_scenario(chat, _brief_of(_plan_threat()))
+    failed = _failure_of(chat, _brief_of(_plan_threat()))
+    assert failed.code == ErrorCode.GENERATION_FAILED and "repair_scenario" in failed.message
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO]
 
 
 def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None:
@@ -585,12 +754,13 @@ def test_an_asset_level_threat_has_no_entry_point_whatever_was_written() -> None
     assert write_scenario(chat, _brief_of(_plan_threat(systems=()))).draft.entry_point == ""
 
 
-def test_a_mismatch_blocks_after_one_write_and_is_not_final() -> None:
-    """The blocked draft counts an attempt and its path is given up at once: the writer's own retry is off."""
-    chat = _chat_answering([draft_answer(_CLEAN)], [_MISMATCH])
+def test_a_mismatch_is_repaired_once_and_a_repair_still_mismatched_keeps_the_blocked_first() -> None:
+    """A mismatch is rewritten once in round 2; a repair still mismatched leaves the first draft blocked and
+    not final, so its path is given up for a reserve (the writer's own retry is off)."""
+    chat = _chat_answering([draft_answer(_CLEAN), draft_answer(_CLEAN)], [_MISMATCH, _MISMATCH])
     written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert is_blocked(written) and not is_final(written)
-    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert is_blocked(written) and not is_final(written) and not written.rewritten
+    assert _calls(chat) == _REVIEWED
 
 
 def test_a_draft_the_exact_checks_block_makes_no_reviewer_call() -> None:
@@ -602,25 +772,42 @@ def test_a_draft_the_exact_checks_block_makes_no_reviewer_call() -> None:
     assert _calls(chat) == [AiTask.WRITE_SCENARIO]
 
 
-def test_every_supporting_system_needs_its_reason_or_the_answer_is_asked_again() -> None:
-    """A reason missing for one system is re-asked; a name is matched case and spacing forgiven."""
-    half = draft_answer(_CLEAN) | {"system_reasons": {"scada  SERVER": "It could stop the server."}}
-    whole = draft_answer(_CLEAN) | {
-        "system_reasons": {"SCADA server": "It could stop it.", "Historian": "Its records stay."}
-    }
-    chat = _chat_answering([half, whole], [_CONSISTENT])
-    written = write_scenario(chat, _brief_of(_plan_threat()))
-    assert written.draft.system_reasons == (
-        ("SCADA server", "It could stop it."),
-        ("Historian", "Its records stay."),
-    )
-    assert _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
+@pytest.mark.parametrize(
+    ("given", "scada_reason"),
+    [
+        (
+            {"scada  SERVER": "It could stop the server.", "Historian": "Its records stay."},
+            "It could stop the server.",
+        ),
+        ({}, _CLEAN.statement),
+    ],
+    ids=["no_system_reason_given_anyway", "yes_system_reason_missing"],
+)
+def test_every_supporting_system_gets_its_reason_without_a_rewrite(
+    given: dict[str, str], scada_reason: str
+) -> None:
+    """D66: a "no" system's reason is code's, even over one the writer gave; a "yes" system given none takes
+    the story's sentence naming it; a name matches case and spacing forgiven. Neither costs a rewrite, the
+    reviewer sees every system's reason (its rule 3) and the card serves one justification per system."""
+    chat = _chat_answering([draft_answer(_CLEAN) | {"system_reasons": given}], [_CONSISTENT])
+    brief = _brief_of(_plan_threat())
+    written = write_scenario(chat, brief)
+    reasons = (("SCADA server", scada_reason), ("Historian", Writing.NOT_REACHED_REASON))
+    assert written.draft.system_reasons == reasons
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert Writing.NOT_REACHED_REASON in chat.asked(AiTask.PLAN_CHECK)[0]
+    run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
+    path = {"path_id": "p1", "category": "Tampering", "categories": ["Tampering"], "systems": [321]}
+    view = build_scenario_view(written_record(run, path, _plan_threat(), brief, written))
+    served = [(s.supporting_system, s.justification) for s in view.scenario.supporting_systems_involved]
+    assert served == list(reasons)
 
 
 _ACTIONS = ("pushing firmware", "hiding the change")
 _ALL_DONE = _CONSISTENT | {"threat_actions": dict.fromkeys(_ACTIONS, "carried out")}
 _ONE_MISSING = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out", _ACTIONS[1]: "missing"}}
 _MISSING_ONE_UNJUDGED = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "carried out"}}
+_NAMED_ONE_UNJUDGED = _CONSISTENT | {"threat_actions": {_ACTIONS[0]: "only named"}}  # inconsistent
 _ALL_DONE_RULE_5_BROKEN = _ALL_DONE | {"rules": {"1": "holds", "5": 'broken: "x" - y'}}
 _MISSING_NOTE = 'Rule 1: "hiding the change" is missing, not carried out'
 _REPAIR_TEXT = PROMPTS["scenario"]["writer"]["repair"]
@@ -658,23 +845,23 @@ def test_a_draft_missing_a_listed_action_is_written_once_more_and_a_complete_rep
     ("repairs", "checks", "calls", "error_type"),
     [
         ([draft_answer(_CLEAN)], [_ONE_MISSING], _REVIEWED, None),  # still missing: no second repair
-        ([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED], _REVIEWED, None),
+        ([draft_answer(_CLEAN)], [_NAMED_ONE_UNJUDGED], _REVIEWED, None),
         ([draft_answer(_CLEAN)], [_ALL_DONE_RULE_5_BROKEN], _REVIEWED, None),  # a rule the first held
         ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_threat": False}], _REVIEWED, None),
         ([draft_answer(_CLEAN)], [_ALL_DONE | {"same_impact": False}], _REVIEWED, None),
         ([draft_answer(_CLEAN) | {"scenario_statement": "SYS7 helps."}], [], _NOT_REVIEWED, None),
-        ([draft_answer(_CLEAN)], [{"verdict": "x"}, {"verdict": "y"}], [*_REVIEWED, AiTask.PLAN_CHECK], None),
+        ([draft_answer(_CLEAN)], [{"verdict": "x"}], _REVIEWED, None),  # no third round: not reviewed
         ([Unavailable("AI down")], [], _NOT_REVIEWED, "Unavailable"),
-        ([{"title": "x"}, {"title": "y"}], [], [*_NOT_REVIEWED, _NOT_REVIEWED[2]], "UnreadableAiAnswer"),
-        ([truncated()], [], _NOT_REVIEWED, "TruncatedAiAnswer"),
+        ([{"title": "x"}], [], _NOT_REVIEWED, None),  # unreadable: never asked again
+        ([truncated()], [], _NOT_REVIEWED, None),
         ([draft_answer(_CLEAN)], [Unavailable("AI down")], _REVIEWED, "Unavailable"),
     ],
 )
 def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_note(
     repairs: list[Any], checks: list[Any], calls: list[AiTask], error_type: str | None
 ) -> None:
-    """Still missing or left unjudged, a new broken rule, another threat, blocked, not reviewed, an outage or
-    an unusable answer: the first."""
+    """Still missing or left unjudged by an inconsistent review, a new broken rule, another threat, blocked,
+    not reviewed, an outage or an unusable answer: the first."""
     chat = _repair_answering(repairs, checks)
     with capture_logs() as logs:
         written = write_scenario(chat, _listed_brief())
@@ -685,34 +872,77 @@ def test_a_repair_that_is_not_complete_or_fails_keeps_the_first_draft_with_its_n
     assert (logged["outcome"], logged.get("error_type")) == ("kept_first", error_type)
 
 
-_PUSH = _CLEAN.statement  # the sentence in which the attacker pushes the firmware
-_HIDE = "They could then hide the change."
+def test_a_repair_whose_consistent_review_leaves_a_listed_action_unjudged_is_kept() -> None:
+    """Final review, 30 Oct: a consistent review's unjudged action is never repaired (_listed_actions), in a
+    repair's review as in a first draft's, so it no longer keeps the repair from being taken."""
+    chat = _repair_answering([draft_answer(_CLEAN)], [_MISSING_ONE_UNJUDGED])
+    with capture_logs() as logs:
+        written = write_scenario(chat, _listed_brief())
+    assert _calls(chat) == _REVIEWED and written.rewritten and written.findings == ()
+    assert written.plan_check.status is PlanCheckStatus.CONSISTENT
+    assert written.plan_check.actions_not_carried_out == ("hiding the change",)
+    assert [log["outcome"] for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED] == ["fixed"]
+
+
+_PUSH = _CLEAN.statement  # sentence 1: the attacker pushes the firmware
+_HIDE = "They could then hide the change."  # sentence 2
 _COMPLETE = draft_answer(_CLEAN) | {
     "scenario_statement": f"{_PUSH} {_HIDE}",
-    "action_sentences": {"pushing firmware": _PUSH, "Hiding the  CHANGE": _HIDE},  # case and spacing forgiven
+    "action_sentences": {"pushing firmware": 1, "Hiding the  CHANGE": 2},  # case and spacing forgiven
 }
+_HIDE_MISSING = AnswerProblem.ACTION_SENTENCES_MISSING.format(actions='"hiding the change"')
+
+
+@pytest.mark.parametrize(
+    "numbers",
+    [
+        {"pushing firmware": 1, "hiding the change": 2},
+        {"Pushing  Firmware": "1", "hiding the change": " 2 "},  # a numeric string
+        {"pushing firmware": 2, "hiding the change": 2},  # one sentence may carry both
+        {"pushing firmware": [1], "hiding the change": [2, 5]},  # review, 30 Oct: a merged act's sentences
+        {"pushing firmware": "1-2", "hiding the change": 2.0},
+    ],
+)
+def test_a_sentence_number_within_the_story_passes(numbers: dict[str, Any]) -> None:
+    """D67: each listed act points at a sentence of its own scenario_statement by number."""
+    answer = {"scenario_statement": f"{_PUSH} {_HIDE}", "action_sentences": numbers}
+    assert _acts_without_a_sentence(answer, _ACTIONS) == []
+
+
+@pytest.mark.parametrize("number", [None, 0, 3, -1, "3", "", "the second", 1.5, True])
+def test_a_missing_or_out_of_range_sentence_number_is_the_fault(number: Any) -> None:
+    """D67: a missing key, or a number that is no sentence of the story (counted from 1), names the act."""
+    numbers = {"pushing firmware": 1} | ({} if number is None else {"hiding the change": number})
+    answer = {"scenario_statement": f"{_PUSH} {_HIDE}", "action_sentences": numbers}
+    assert _acts_without_a_sentence(answer, _ACTIONS) == [_HIDE_MISSING]
 
 
 @pytest.mark.parametrize(
     "sentences",
     [
-        {"pushing firmware": _PUSH},  # no sentence for one action
-        {
-            "pushing firmware": _PUSH,
-            "hiding the change": "They hide the change in the risk.",
-        },  # not in the story
-        {"pushing firmware": _PUSH, "hiding the change": ""},
-        "every action is in the story",  # not a sentence per action
+        {"pushing firmware": 1},  # no number for one action
+        {"pushing firmware": 1, "hiding the change": 2},  # past the end of a one-sentence story
+        {"pushing firmware": 1, "hiding the change": 0},
+        "every action is in the story",  # not a number per action
     ],
 )
 def test_a_draft_that_shows_no_story_sentence_for_a_listed_action_is_asked_again(sentences: Any) -> None:
     """Root cause of an act left only named: the writer must point at the story sentence where the attacker
-    does each listed act, and code checks the sentence is really in scenario_statement."""
+    does each listed act, and code checks the number is a sentence of scenario_statement."""
     first = draft_answer(_CLEAN) | {"action_sentences": sentences}
     chat = _chat_answering([first, _COMPLETE], [_ALL_DONE])
     written = write_scenario(chat, _listed_brief())
-    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
     assert written.draft.statement == _COMPLETE["scenario_statement"] and written.findings == ()
+
+
+def test_the_rewrite_is_told_the_action_with_no_sentence_number() -> None:
+    """D67: the round-2 note names the listed act whose number is past the story's end."""
+    first = draft_answer(_CLEAN) | {"action_sentences": {"pushing firmware": 1, "hiding the change": 2}}
+    chat = _chat_answering([first, _COMPLETE], [_ALL_DONE])
+    write_scenario(chat, _listed_brief())
+    (rewrite,) = chat.asked(AiTask.REPAIR_SCENARIO)
+    assert _HIDE_MISSING in rewrite.split("REJECTED:")[1]
 
 
 def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> None:
@@ -722,19 +952,25 @@ def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> 
     no_list = _chat_answering([draft_answer(_CLEAN) | {"action_sentences": {}}], [_CONSISTENT])
     write_scenario(no_list, _brief_of(_plan_threat()))
     assert _calls(chat) == _calls(no_list) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
-    still = draft_answer(_CLEAN) | {"action_sentences": {"pushing firmware": _PUSH}}
+    still = draft_answer(_CLEAN) | {"action_sentences": {"pushing firmware": 1}}
     twice = _chat_answering([still, still], [_ALL_DONE])
     assert write_scenario(twice, _listed_brief()).draft.statement == _CLEAN.statement
-    assert _calls(twice) == [AiTask.WRITE_SCENARIO, AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
+    assert _calls(twice) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
+    rewrite_failed = _chat_answering([still, {"title": "x"}], [_ALL_DONE])  # its first draft is kept
+    assert write_scenario(rewrite_failed, _listed_brief()).draft.statement == _CLEAN.statement
 
 
-def test_the_writer_names_each_action_s_story_sentence() -> None:
-    """The writer's eighth field and its final check."""
+def test_the_writer_gives_each_action_s_story_sentence_number() -> None:
+    """The writer's eighth field: a sentence number, never a copied quote; an act on the asset as a whole
+    still gets a story sentence of its own (said once, in the schema, since the final check no longer
+    repeats it)."""
     writer = WRITER_SYSTEM_PROMPT
-    assert '"action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>"' in writer
-    assert "Include exactly these eight top-level fields" in writer and "Exactly the eight required" in writer
-    assert "its value is copied word for word from scenario_statement and shows the attacker doing" in writer
+    assert '{"<each item of BRIEF.threat.threat_actions, copied>": <sentence number>}' in writer
+    assert "Include exactly these eight top-level fields" in writer
+    assert "its value is the number (the first is 1) of the sentence of scenario_statement" in writer
+    assert "of the sentence of scenario_statement that shows the attacker doing that action" in writer
     assert "still gets its own sentence in scenario_statement, never only in risk_statement" in writer
+    assert "word for word" not in writer
 
 
 def test_a_rule_4_verdict_is_never_a_note_and_no_extra_call_is_made() -> None:
@@ -745,7 +981,7 @@ def test_a_rule_4_verdict_is_never_a_note_and_no_extra_call_is_made() -> None:
     chat = _chat_answering([], [_CONSISTENT | {"rules": rules}])
     check, notes = check_against_plan(chat, _brief_of(_plan_threat()), _CLEAN)
     assert notes == () and check.status is PlanCheckStatus.CONSISTENT and check.problems == ()
-    assert _calls(chat) == [AiTask.PLAN_CHECK]
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
 
 
 def test_every_action_not_carried_out_is_named_in_the_repair_prompt() -> None:
@@ -941,16 +1177,16 @@ def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None
 
 def test_the_writer_gets_in_through_its_turns_system_and_the_card_marks_that_one() -> None:
     """A path whose turn is the Historian's offers only the Historian as the way in: a reply naming the SCADA
-    server is asked again, and the card marks the Historian, though it is the path's second system, even when
-    the two names are redacted alike. A plan made before paths took turns offers any of its systems."""
+    server is never asked again (D66: code assigns the way in), and the card marks the Historian, though it
+    is the path's second system, even when the two names are redacted alike. A plan made before paths took
+    turns offers any of its systems."""
     threat = _plan_threat(systems=(321, 322))
     brief = _brief_of(threat, entry_system=322)
     assert brief_entry_point_options(brief) == ("Historian",)
-    chat = _chat_answering(
-        [draft_answer(_CLEAN), draft_answer(_CLEAN) | {"entry_point": "Historian"}], [_CONSISTENT]
-    )
+    chat = _chat_answering([draft_answer(_CLEAN)], [_CONSISTENT])
     written = write_scenario(chat, brief)
-    assert written.draft.entry_point == "Historian" and _calls(chat).count(AiTask.WRITE_SCENARIO) == 2
+    assert written.draft.entry_point == "Historian"
+    assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321, 322]}
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     assert written_record(run, path | {"entry_system": 322}, threat, brief, written)["content"][

@@ -7,12 +7,14 @@ the Redis server's own clock (TIME), so pods whose clocks differ still agree."""
 #: refusal also takes it out of the line. 1 = taken, 0 = not its turn. No cap and no limit: always taken, no
 #: line. With one, the line decides: a free slot goes to the first in it. A waiter's place is when it stops
 #: waiting (its first poll + its wait), so the API's callers (30 s) go ahead of every worker (whose wait only
-#: its lease ends), each in the order they came.
+#: its lease ends), each in the order they came. ARGV[7...]: this process's slots whose release a Redis
+#: failure missed, freed first, so no finished call still counts as in flight.
 #: ponytail: a waiter that stops without its last try (a lost lease, a dead pod) keeps its place for up to
 #: ARGV[4] s; leave the line on LeaseLost if those pauses ever matter.
 TAKE_FREE_SLOT_SCRIPT = """
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
+for i = 7, #ARGV do redis.call('ZREM', KEYS[1], ARGV[i]) end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 local cap = tonumber(ARGV[1])
 local limit = tonumber(redis.call('HGET', KEYS[2], 'limit'))
@@ -80,6 +82,24 @@ local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 return redis.call('ZCARD', KEYS[1])
+"""
+
+#: KEYS[1] a model's next send time: the seconds until it (0 when past), reserving nothing.
+SECONDS_TO_SEND_TIME_SCRIPT = """
+local now_parts = redis.call('TIME')
+local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
+return tostring(math.max(0, tonumber(redis.call('GET', KEYS[1]) or now) - now))
+"""
+
+#: KEYS[1] a model's next send time, moved to at least ARGV[1] s from now: a 429 pauses it on every pod.
+PAUSE_SEND_TIME_SCRIPT = """
+local now_parts = redis.call('TIME')
+local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
+local pause_end = now + tonumber(ARGV[1])
+if pause_end > tonumber(redis.call('GET', KEYS[1]) or 0) then
+  redis.call('SET', KEYS[1], tostring(pause_end), 'PX', math.ceil(tonumber(ARGV[1]) * 1000))
+end
+return 1
 """
 
 #: KEYS[1] the next send time · ARGV[1] seconds between two requests · ARGV[2] the longest wait accepted.

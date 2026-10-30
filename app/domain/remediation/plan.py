@@ -629,7 +629,7 @@ def _finish(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any],
     named = validated if covered else [row for row in rows if row["control_code"] in recommended]
     every_system = snapshot["risk_scope"]["all_supporting_systems_applicable"] == 1
     plan |= {
-        "title": _title(named, covered) or plan["title"],
+        "title": _plan_title(named, covered, plan["title"], snapshot),
         "applicable_to_all_subsystems": YesNo.YES if every_system else YesNo.NO,  # the risk flag's, for v1
         "controls_to_be_implemented": {
             "control_coverage": ControlCoverage.COVERED if covered else ControlCoverage.GAPS,
@@ -689,6 +689,12 @@ def _unresolved_gaps(
     return gaps + [
         {"kind": GapKind.UNCOVERED_RISK, "control_code": None, "detail": text} for text in texts if text
     ]
+
+
+def _plan_title(named: list[dict[str, Any]], covered: bool, drafted: str, snapshot: dict[str, Any]) -> str:
+    """The controls' domains, else the AI's title, else the scenario's, else its threat's name."""
+    scenario, threat = snapshot["scenario"]["title"], snapshot["threat"]["name"]
+    return _title(named, covered) or drafted or scenario or threat or ""
 
 
 def _title(controls: list[dict[str, Any]], covered: bool) -> str | None:

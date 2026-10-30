@@ -93,7 +93,6 @@ class EvidenceSearchRecord:
     snapshot_id: str | None  # None: no snapshot yet, so nothing was searched
     threshold: float
     considered: tuple[Considered, ...] = field(default_factory=tuple)
-    stale: bool = False  # the snapshot's sources have not refreshed within the age limit; still used
     failure: EvidenceSearchFailure | None = None  # the search could not be made: no evidence, run goes on
     # Rerank scores are 0-100 ranking scores whose scale differs per model and the threshold is cut on them:
     # the audit row is only readable next to the model that gave the scores.
@@ -120,7 +119,6 @@ class EvidenceBatchSummary:
     threats_searched: int
     threats_with_evidence: int
     evidence_used: int
-    stale: bool
 
     def as_doc(self) -> dict[str, Any]:
         """The summary as its audit row stores it."""

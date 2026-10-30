@@ -1,0 +1,872 @@
+{
+  "totals": {
+    "one_module": {
+      "call": "/v1/ai-usage?module=threat_scenarios&since=2026-10-29T19:00:00Z&until=2026-10-29T20:00:00Z",
+      "answer": {
+        "since": "2026-10-29T19:00:00Z",
+        "until": "2026-10-29T20:00:00Z",
+        "tz": "UTC",
+        "group_by": [
+          "module",
+          "api"
+        ],
+        "truncated": false,
+        "total": {
+          "total_ai_calls": 52,
+          "successful_calls": 52,
+          "failed_calls": 0,
+          "asks": 52,
+          "extra_attempts": 0,
+          "reused_answers": 0,
+          "outcomes": {
+            "ok": 52
+          },
+          "tokens_in": 73818,
+          "tokens_out": 32744,
+          "seconds": 353.0
+        },
+        "items": [
+          {
+            "total_ai_calls": 25,
+            "successful_calls": 25,
+            "failed_calls": 0,
+            "asks": 25,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 25
+            },
+            "tokens_in": 39110,
+            "tokens_out": 26472,
+            "seconds": 250.0,
+            "key": {
+              "module": "threat_scenarios",
+              "api": "create_scenario"
+            },
+            "requests": 2,
+            "api_label": "Create scenario",
+            "api_description": "Starts a run: finds threats, writes the first set, picks controls",
+            "activity": null,
+            "activity_description": null,
+            "buckets": {
+              "threats": {
+                "label": "Finding threats",
+                "description": "Deciding which threats apply to the asset",
+                "total_ai_calls": 3,
+                "successful_calls": 3,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "scenario": {
+                "label": "Writing scenarios",
+                "description": "Writing and checking each attack scenario",
+                "total_ai_calls": 10,
+                "successful_calls": 10,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 12,
+                "successful_calls": 12,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          },
+          {
+            "total_ai_calls": 22,
+            "successful_calls": 22,
+            "failed_calls": 0,
+            "asks": 22,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 22
+            },
+            "tokens_in": 22084,
+            "tokens_out": 4866,
+            "seconds": 83.6,
+            "key": {
+              "module": "threat_scenarios",
+              "api": "next_set"
+            },
+            "requests": 1,
+            "api_label": "Next set",
+            "api_description": "Writes the next set of scenarios for the run",
+            "activity": null,
+            "activity_description": null,
+            "buckets": {
+              "threats": {
+                "label": "Finding threats",
+                "description": "Deciding which threats apply to the asset",
+                "total_ai_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "scenario": {
+                "label": "Writing scenarios",
+                "description": "Writing and checking each attack scenario",
+                "total_ai_calls": 10,
+                "successful_calls": 10,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 12,
+                "successful_calls": 12,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          },
+          {
+            "total_ai_calls": 5,
+            "successful_calls": 5,
+            "failed_calls": 0,
+            "asks": 5,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 5
+            },
+            "tokens_in": 12624,
+            "tokens_out": 1406,
+            "seconds": 19.4,
+            "key": {
+              "module": "threat_scenarios",
+              "api": "regenerate"
+            },
+            "requests": 1,
+            "api_label": "Regenerate scenarios",
+            "api_description": "Rewrites the chosen scenarios",
+            "activity": null,
+            "activity_description": null,
+            "buckets": {
+              "threats": {
+                "label": "Finding threats",
+                "description": "Deciding which threats apply to the asset",
+                "total_ai_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "scenario": {
+                "label": "Writing scenarios",
+                "description": "Writing and checking each attack scenario",
+                "total_ai_calls": 3,
+                "successful_calls": 3,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 2,
+                "successful_calls": 2,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          }
+        ]
+      }
+    },
+    "per_day_and_part": {
+      "call": "/v1/ai-usage?module=threat_scenarios&group_by=day&group_by=bucket&tz=Asia/Dubai&since=2026-10-29T19:00:00Z&until=2026-10-29T20:00:00Z",
+      "answer": {
+        "since": "2026-10-29T23:00:00+04:00",
+        "until": "2026-10-30T00:00:00+04:00",
+        "tz": "Asia/Dubai",
+        "group_by": [
+          "day",
+          "bucket"
+        ],
+        "truncated": false,
+        "total": {
+          "total_ai_calls": 52,
+          "successful_calls": 52,
+          "failed_calls": 0,
+          "asks": 52,
+          "extra_attempts": 0,
+          "reused_answers": 0,
+          "outcomes": {
+            "ok": 52
+          },
+          "tokens_in": 73818,
+          "tokens_out": 32744,
+          "seconds": 353.0
+        },
+        "items": [
+          {
+            "total_ai_calls": 26,
+            "successful_calls": 26,
+            "failed_calls": 0,
+            "asks": 26,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 26
+            },
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 68.3,
+            "key": {
+              "day": "2026-10-29",
+              "bucket": "controls"
+            },
+            "requests": 0,
+            "api_label": null,
+            "api_description": null,
+            "activity": null,
+            "activity_description": null,
+            "buckets": {
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 26,
+                "successful_calls": 26,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          },
+          {
+            "total_ai_calls": 23,
+            "successful_calls": 23,
+            "failed_calls": 0,
+            "asks": 23,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 23
+            },
+            "tokens_in": 57565,
+            "tokens_out": 11884,
+            "seconds": 129.0,
+            "key": {
+              "day": "2026-10-29",
+              "bucket": "scenario"
+            },
+            "requests": 2,
+            "api_label": null,
+            "api_description": null,
+            "activity": null,
+            "activity_description": null,
+            "buckets": {
+              "scenario": {
+                "label": "Writing scenarios",
+                "description": "Writing and checking each attack scenario",
+                "total_ai_calls": 23,
+                "successful_calls": 23,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          },
+          {
+            "total_ai_calls": 3,
+            "successful_calls": 3,
+            "failed_calls": 0,
+            "asks": 3,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 3
+            },
+            "tokens_in": 16253,
+            "tokens_out": 20860,
+            "seconds": 155.8,
+            "key": {
+              "day": "2026-10-29",
+              "bucket": "threats"
+            },
+            "requests": 2,
+            "api_label": null,
+            "api_description": null,
+            "activity": null,
+            "activity_description": null,
+            "buckets": {
+              "threats": {
+                "label": "Finding threats",
+                "description": "Deciding which threats apply to the asset",
+                "total_ai_calls": 3,
+                "successful_calls": 3,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "requests": {
+    "one_session": {
+      "call": "/v1/ai-usage/requests?session_id=c1310faba61d40df9b88cd9e52c72ecf&limit=2",
+      "answer": {
+        "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+        "summary": {
+          "total_ai_calls": 52,
+          "successful_calls": 52,
+          "failed_calls": 0,
+          "asks": 52,
+          "extra_attempts": 0,
+          "reused_answers": 0,
+          "outcomes": {
+            "ok": 52
+          },
+          "tokens_in": 72169,
+          "tokens_out": 27436,
+          "seconds": 329.5,
+          "requests": 4,
+          "models": {
+            "openai/Kimi-K2.6": 14,
+            "openai/text-embedding-3-large": 13,
+            "C:/models/bge-reranker-v2-m3": 25
+          },
+          "buckets": {
+            "remediation": {
+              "label": "Writing the plan",
+              "description": "Writing the treatment plan for a scenario's controls",
+              "total_ai_calls": 1,
+              "successful_calls": 1,
+              "failed_calls": 0,
+              "by_task": {
+                "remediation_plan": 1
+              }
+            },
+            "scenario": {
+              "label": "Writing scenarios",
+              "description": "Writing and checking each attack scenario",
+              "total_ai_calls": 23,
+              "successful_calls": 23,
+              "failed_calls": 0,
+              "by_task": {
+                "write_scenario": 3,
+                "plan_check": 5,
+                "repair_scenario": 3,
+                "rerank": 12
+              }
+            },
+            "controls": {
+              "label": "Picking controls",
+              "description": "Finding and ranking the controls for each scenario",
+              "total_ai_calls": 26,
+              "successful_calls": 26,
+              "failed_calls": 0,
+              "by_task": {
+                "embed": 13,
+                "rerank": 13
+              }
+            },
+            "threats": {
+              "label": "Finding threats",
+              "description": "Deciding which threats apply to the asset",
+              "total_ai_calls": 2,
+              "successful_calls": 2,
+              "failed_calls": 0,
+              "by_task": {
+                "relevance_gate": 2
+              }
+            }
+          }
+        },
+        "items": [
+          {
+            "total_ai_calls": 1,
+            "successful_calls": 1,
+            "failed_calls": 0,
+            "asks": 1,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 1
+            },
+            "tokens_in": 3878,
+            "tokens_out": 1676,
+            "seconds": 17.1,
+            "request_id": "4a8907097cac4615ab4abb89c93c2da6",
+            "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "module": "remediation",
+            "api": "create_plan",
+            "api_label": "Create remediation plan",
+            "api_description": "Writes a treatment plan for one scenario",
+            "entity_id": 125,
+            "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+            "first_at": "2026-10-29T19:49:53.940000Z",
+            "last_at": "2026-10-29T19:49:53.940000Z",
+            "models": {
+              "openai/Kimi-K2.6": 1
+            },
+            "buckets": {
+              "remediation": {
+                "label": "Writing the plan",
+                "description": "Writing the treatment plan for a scenario's controls",
+                "total_ai_calls": 1,
+                "successful_calls": 1,
+                "failed_calls": 0,
+                "by_task": {
+                  "remediation_plan": 1
+                }
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          },
+          {
+            "total_ai_calls": 22,
+            "successful_calls": 22,
+            "failed_calls": 0,
+            "asks": 22,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 22
+            },
+            "tokens_in": 22084,
+            "tokens_out": 4866,
+            "seconds": 83.6,
+            "request_id": "448cf60d7e5843d097c90e8a4ada20c4",
+            "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "module": "threat_scenarios",
+            "api": "next_set",
+            "api_label": "Next set",
+            "api_description": "Writes the next set of scenarios for the run",
+            "entity_id": 125,
+            "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+            "first_at": "2026-10-29T19:48:38.411000Z",
+            "last_at": "2026-10-29T19:49:53.794000Z",
+            "models": {
+              "openai/Kimi-K2.6": 4,
+              "C:/models/bge-reranker-v2-m3": 12,
+              "openai/text-embedding-3-large": 6
+            },
+            "buckets": {
+              "threats": {
+                "label": "Finding threats",
+                "description": "Deciding which threats apply to the asset",
+                "total_ai_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "by_task": {}
+              },
+              "scenario": {
+                "label": "Writing scenarios",
+                "description": "Writing and checking each attack scenario",
+                "total_ai_calls": 10,
+                "successful_calls": 10,
+                "failed_calls": 0,
+                "by_task": {
+                  "plan_check": 2,
+                  "rerank": 6,
+                  "write_scenario": 1,
+                  "repair_scenario": 1
+                }
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 12,
+                "successful_calls": 12,
+                "failed_calls": 0,
+                "by_task": {
+                  "rerank": 6,
+                  "embed": 6
+                }
+              }
+            }
+          }
+        ],
+        "next": "WyIyMDI2LTEwLTI5VDE5OjQ4OjM4LjQxMTAwMCswMDowMCIsICI0NDhjZjYwZDdlNTg0M2QwOTdjOTBlOGE0YWRhMjBjNCJd"
+      }
+    },
+    "a_range": {
+      "call": "/v1/ai-usage/requests?module=remediation&since=2026-10-29T19:00:00Z&until=2026-10-29T20:00:00Z&limit=2",
+      "answer": {
+        "session_id": null,
+        "summary": null,
+        "items": [
+          {
+            "total_ai_calls": 2,
+            "successful_calls": 2,
+            "failed_calls": 0,
+            "asks": 2,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 2
+            },
+            "tokens_in": 3412,
+            "tokens_out": 1373,
+            "seconds": 16.6,
+            "request_id": "6c4149a803b0470387215a1e6cbc752c",
+            "session_id": "f9028452889f577288e6269a70ba0101",
+            "module": "remediation",
+            "api": "create_plan",
+            "api_label": "Create remediation plan",
+            "api_description": "Writes a treatment plan for one scenario",
+            "entity_id": 125,
+            "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+            "first_at": "2026-10-29T19:50:05.314000Z",
+            "last_at": "2026-10-29T19:50:20.450000Z",
+            "models": {
+              "openai/Kimi-K2.6": 1,
+              "C:/models/bge-reranker-v2-m3": 1
+            },
+            "buckets": {
+              "remediation": {
+                "label": "Writing the plan",
+                "description": "Writing the treatment plan for a scenario's controls",
+                "total_ai_calls": 1,
+                "successful_calls": 1,
+                "failed_calls": 0,
+                "by_task": {
+                  "remediation_plan": 1
+                }
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 1,
+                "successful_calls": 1,
+                "failed_calls": 0,
+                "by_task": {
+                  "rerank": 1
+                }
+              }
+            }
+          },
+          {
+            "total_ai_calls": 1,
+            "successful_calls": 1,
+            "failed_calls": 0,
+            "asks": 1,
+            "extra_attempts": 0,
+            "reused_answers": 0,
+            "outcomes": {
+              "ok": 1
+            },
+            "tokens_in": 3878,
+            "tokens_out": 1676,
+            "seconds": 17.1,
+            "request_id": "4a8907097cac4615ab4abb89c93c2da6",
+            "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "module": "remediation",
+            "api": "create_plan",
+            "api_label": "Create remediation plan",
+            "api_description": "Writes a treatment plan for one scenario",
+            "entity_id": 125,
+            "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+            "first_at": "2026-10-29T19:49:53.940000Z",
+            "last_at": "2026-10-29T19:49:53.940000Z",
+            "models": {
+              "openai/Kimi-K2.6": 1
+            },
+            "buckets": {
+              "remediation": {
+                "label": "Writing the plan",
+                "description": "Writing the treatment plan for a scenario's controls",
+                "total_ai_calls": 1,
+                "successful_calls": 1,
+                "failed_calls": 0,
+                "by_task": {
+                  "remediation_plan": 1
+                }
+              },
+              "controls": {
+                "label": "Picking controls",
+                "description": "Finding and ranking the controls for each scenario",
+                "total_ai_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "by_task": {}
+              }
+            }
+          }
+        ],
+        "next": null
+      }
+    }
+  },
+  "request": {
+    "create_scenario": {
+      "call": "/v1/ai-usage/requests/588c13a8968947048c9dbf2cfec5270a",
+      "answer": {
+        "total_ai_calls": 24,
+        "successful_calls": 24,
+        "failed_calls": 0,
+        "asks": 24,
+        "extra_attempts": 0,
+        "reused_answers": 0,
+        "outcomes": {
+          "ok": 24
+        },
+        "tokens_in": 33583,
+        "tokens_out": 19488,
+        "seconds": 209.4,
+        "request_id": "588c13a8968947048c9dbf2cfec5270a",
+        "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+        "module": "threat_scenarios",
+        "api": "create_scenario",
+        "api_label": "Create scenario",
+        "api_description": "Starts a run: finds threats, writes the first set, picks controls",
+        "entity_id": 125,
+        "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+        "first_at": "2026-10-29T19:46:19.468000Z",
+        "last_at": "2026-10-29T19:48:29.549000Z",
+        "models": {
+          "C:/models/bge-reranker-v2-m3": 12,
+          "openai/Kimi-K2.6": 6,
+          "openai/text-embedding-3-large": 6
+        },
+        "buckets": {
+          "threats": {
+            "label": "Finding threats",
+            "description": "Deciding which threats apply to the asset",
+            "total_ai_calls": 2,
+            "successful_calls": 2,
+            "failed_calls": 0,
+            "by_task": {
+              "relevance_gate": 2
+            }
+          },
+          "scenario": {
+            "label": "Writing scenarios",
+            "description": "Writing and checking each attack scenario",
+            "total_ai_calls": 10,
+            "successful_calls": 10,
+            "failed_calls": 0,
+            "by_task": {
+              "rerank": 6,
+              "write_scenario": 1,
+              "repair_scenario": 1,
+              "plan_check": 2
+            }
+          },
+          "controls": {
+            "label": "Picking controls",
+            "description": "Finding and ranking the controls for each scenario",
+            "total_ai_calls": 12,
+            "successful_calls": 12,
+            "failed_calls": 0,
+            "by_task": {
+              "rerank": 6,
+              "embed": 6
+            }
+          }
+        },
+        "activities": [
+          {
+            "bucket": "threats",
+            "bucket_label": "Finding threats",
+            "task": "relevance_gate",
+            "activity": "Relevance check",
+            "description": "AI picks which library threats apply to the asset (one call per batch of up to 10 threats)",
+            "model": "openai/Kimi-K2.6",
+            "total_ai_calls": 2,
+            "successful_calls": 2,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 10726,
+            "tokens_out": 13876,
+            "seconds": 115.2
+          },
+          {
+            "bucket": "scenario",
+            "bucket_label": "Writing scenarios",
+            "task": "plan_check",
+            "activity": "Plan check",
+            "description": "AI checks, in one call, that each scenario of a set carries out its plan",
+            "model": "openai/Kimi-K2.6",
+            "total_ai_calls": 2,
+            "successful_calls": 2,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 10370,
+            "tokens_out": 1254,
+            "seconds": 11.4
+          },
+          {
+            "bucket": "scenario",
+            "bucket_label": "Writing scenarios",
+            "task": "repair_scenario",
+            "activity": "Rewrite scenarios",
+            "description": "AI rewrites, in one call, the scenarios of a set that were unusable or missed planned actions",
+            "model": "openai/Kimi-K2.6",
+            "total_ai_calls": 1,
+            "successful_calls": 1,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 5014,
+            "tokens_out": 906,
+            "seconds": 8.1
+          },
+          {
+            "bucket": "scenario",
+            "bucket_label": "Writing scenarios",
+            "task": "rerank",
+            "activity": "Evidence ranking",
+            "description": "Ranks the evidence found for a scenario",
+            "model": "C:/models/bge-reranker-v2-m3",
+            "total_ai_calls": 6,
+            "successful_calls": 6,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 14.4
+          },
+          {
+            "bucket": "scenario",
+            "bucket_label": "Writing scenarios",
+            "task": "write_scenario",
+            "activity": "Write scenarios",
+            "description": "AI writes a set of attack scenarios, one per attack path, in one call",
+            "model": "openai/Kimi-K2.6",
+            "total_ai_calls": 1,
+            "successful_calls": 1,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 7473,
+            "tokens_out": 3452,
+            "seconds": 31.2
+          },
+          {
+            "bucket": "controls",
+            "bucket_label": "Picking controls",
+            "task": "embed",
+            "activity": "Control search",
+            "description": "Turns the scenario into a vector to search the controls",
+            "model": "openai/text-embedding-3-large",
+            "total_ai_calls": 6,
+            "successful_calls": 6,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 4.7
+          },
+          {
+            "bucket": "controls",
+            "bucket_label": "Picking controls",
+            "task": "rerank",
+            "activity": "Control ranking",
+            "description": "Ranks candidate controls by how well they fit",
+            "model": "C:/models/bge-reranker-v2-m3",
+            "total_ai_calls": 6,
+            "successful_calls": 6,
+            "failed_calls": 0,
+            "reused_answers": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 24.6
+          }
+        ]
+      }
+    }
+  },
+  "calls": {
+    "first_page": {
+      "call": "/v1/ai-usage/calls?request_id=588c13a8968947048c9dbf2cfec5270a&limit=2",
+      "answer": {
+        "items": [
+          {
+            "id": "6ae3a30dfc34d3894c20b8c2",
+            "created_at": "2026-10-29T19:48:29.549000Z",
+            "module": "threat_scenarios",
+            "api": "create_scenario",
+            "bucket": "controls",
+            "task": "rerank",
+            "activity": "Control ranking",
+            "description": "Ranks candidate controls by how well they fit",
+            "model": "C:/models/bge-reranker-v2-m3",
+            "outcome": "ok",
+            "reason": null,
+            "error_type": null,
+            "ask_id": "6ae3a309fc34d3894c20b8c0",
+            "try_no": 1,
+            "reask": null,
+            "request_id": "588c13a8968947048c9dbf2cfec5270a",
+            "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "record_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "epoch": 1,
+            "attempt": null,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 4.077492199954577
+          },
+          {
+            "id": "6ae3a309fc34d3894c20b8bf",
+            "created_at": "2026-10-29T19:48:25.456000Z",
+            "module": "threat_scenarios",
+            "api": "create_scenario",
+            "bucket": "controls",
+            "task": "embed",
+            "activity": "Control search",
+            "description": "Turns the scenario into a vector to search the controls",
+            "model": "openai/text-embedding-3-large",
+            "outcome": "ok",
+            "reason": null,
+            "error_type": null,
+            "ask_id": "6ae3a308fc34d3894c20b8be",
+            "try_no": 1,
+            "reask": null,
+            "request_id": "588c13a8968947048c9dbf2cfec5270a",
+            "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "record_id": "c1310faba61d40df9b88cd9e52c72ecf",
+            "epoch": 1,
+            "attempt": null,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 0.5302063999697566
+          }
+        ],
+        "next": "WyIyMDI2LTEwLTI5VDE5OjQ4OjI1LjQ1NjAwMCswMDowMCIsICI2YWUzYTMwOWZjMzRkMzg5NGMyMGI4YmYiXQ=="
+      }
+    },
+    "a_failed_call": {
+      "call": "/v1/ai-usage/calls?request_id=d666241f46044706a9ec4463045172f8&limit=1&after=WyIyMDI2LTEwLTI5VDA3OjAwOjQzLjMwODAwMCswMDowMCIsICI2YWUyZWYxYjYzNzE1OTY1NmNmMDM5ZDQiXQ%3D%3D",
+      "answer": {
+        "items": [
+          {
+            "id": "6ae2ef02637159656cf039d2",
+            "created_at": "2026-10-29T07:00:18.255000Z",
+            "module": "service_mapper",
+            "api": "create_mapping",
+            "bucket": "service_mapper",
+            "task": "service_mapper",
+            "activity": "Map services",
+            "description": "AI lists upstream and downstream services for a service",
+            "model": "openai/Kimi-K2.6",
+            "outcome": "unavailable",
+            "reason": "ai_timed_out",
+            "error_type": "Timeout",
+            "ask_id": "6ae2eeed637159656cf039c9",
+            "try_no": 1,
+            "reask": null,
+            "request_id": "d666241f46044706a9ec4463045172f8",
+            "session_id": "40dd129435bf44c1907bd82263ddf49c",
+            "record_id": "40dd129435bf44c1907bd82263ddf49c",
+            "epoch": 1,
+            "attempt": 1,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "seconds": 21.128651199978776
+          }
+        ],
+        "next": "WyIyMDI2LTEwLTI5VDA3OjAwOjE4LjI1NTAwMCswMDowMCIsICI2YWUyZWYwMjYzNzE1OTY1NmNmMDM5ZDIiXQ=="
+      }
+    }
+  }
+}

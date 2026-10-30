@@ -8,13 +8,13 @@ class MapperConflict(StrEnum):
     """The `reason` of a service mapper 409."""
 
     GENERATION_IN_PROGRESS = "generation_in_progress"
+    GENERATION_LIMIT_REACHED = "generation_limit_reached"
 
 
 class MapperDecisionFailure(StrEnum):
     """Why one id of a relationship decision was not saved (the others still are)."""
 
     DEPENDENCY_NOT_FOUND = "dependency_not_found"
-    DECISION_FINAL = "decision_final"
 
 
 class MappingOverall(StrEnum):
@@ -33,8 +33,10 @@ class MapperMessage(StrEnum):
         "SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT."
     )
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another mapping input."
-    MAPPING_NOT_READY = "The mapping is not done: wait while it generates, or regenerate it if it failed."
-    DEPENDENCY_NOT_FOUND = "No such dependency in the current generation."
+    MAPPING_NOT_READY = (
+        "The mapping has no services to decide yet: wait for its first run, or regenerate it if it failed."
+    )
+    DEPENDENCY_NOT_FOUND = "No such dependency in this mapping."
     NOTHING_TO_DECIDE = "Name at least one dependency_id in accept or reject."
     ACCEPTED_AND_REJECTED = "A dependency_id cannot be both accepted and rejected: {ids}."
     TOO_MANY_DECISIONS = "At most {limit} dependency ids per request."
@@ -45,8 +47,8 @@ class MapperMessage(StrEnum):
     CATALOG_ROW_INVALID = "The Service Mapper SQL catalog contains an invalid or inconsistent row."
     NOT_YOUR_ENTITY = "entity_id must be the caller's entity (the X-Entity-Id header)."
     MAPPING_NOT_FOUND = "No such mapping."
-    ROUND_RUNNING = "A round is already running for this mapping."
-    DECISION_FINAL = "This recommendation was already decided differently; decisions are final."
+    GENERATION_IN_PROGRESS = "This mapping is still being generated: wait for this run to finish."
+    GENERATION_LIMIT_REACHED = "This mapping has had its {limit} runs (SERVICE_MAPPER_MAX_GENERATIONS)."
 
 
 class MapperLimits:

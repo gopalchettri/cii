@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
+from decimal import ROUND_FLOOR, Decimal
 
 import structlog
 
@@ -72,25 +73,21 @@ class EvidenceFinder:
         self._scored_lock = threading.Lock()
 
     def find_evidence(
-        self, requests: Sequence[EvidenceRequest], *, stale: bool, approved: Collection[IntelSource]
+        self, requests: Sequence[EvidenceRequest], *, approved: Collection[IntelSource]
     ) -> tuple[list[EvidenceResult], EvidenceBatchSummary]:
         """One result per request, in order, and what the batch did; candidates are of `approved` sources."""
         search = self._provider()
         searched = bool(requests) and search.has_records
         if searched:
-            results = self._search_all(search, requests, stale, approved)
+            results = self._search_all(search, requests, approved)
         else:  # nothing to search: settled empty, or no snapshot yet (search.snapshot_id says which)
             snapshot, outage, words = search.snapshot_id, search.outage, search.outage_message
-            waiting = [self._record(search, r, snapshot, False, (), None, outage, words) for r in requests]
+            waiting = [self._record(search, r, snapshot, (), None, outage, words) for r in requests]
             results = [EvidenceResult((), record) for record in waiting]
-        return results, _summary(search, results, stale and searched, searched)
+        return results, _summary(search, results, searched)
 
     def _search_all(
-        self,
-        search: EvidenceIndex,
-        requests: Sequence[EvidenceRequest],
-        stale: bool,
-        approved: Collection[IntelSource],
+        self, search: EvidenceIndex, requests: Sequence[EvidenceRequest], approved: Collection[IntelSource]
     ) -> list[EvidenceResult]:
         """Embed every request in one call (the IT / OT and approved-source filters applied before ranking),
         then rerank and choose each request's candidates, a few at once."""
@@ -103,7 +100,7 @@ class EvidenceFinder:
                 LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=len(requests), exc_info=True
             )
             outage = outage_reason(exc)
-            lost = [self._record(search, r, snapshot, stale, (), down, outage, str(exc)) for r in requests]
+            lost = [self._record(search, r, snapshot, (), down, outage, str(exc)) for r in requests]
             return [EvidenceResult((), record) for record in lost]
 
         def rank_one(position: int) -> EvidenceResult:
@@ -114,11 +111,11 @@ class EvidenceFinder:
             except _SEARCH_ERRORS as exc:  # the reranker: this request alone gets no evidence now
                 log.warning(LogEvent.EXTERNAL_INTELLIGENCE_EVIDENCE_SEARCH_FAILED, requests=1, exc_info=True)
                 outage = outage_reason(exc)
-                record = self._record(search, request, snapshot, stale, (), down, outage, str(exc))
+                record = self._record(search, request, snapshot, (), down, outage, str(exc))
                 return EvidenceResult((), record)
             checker = ProductLinkChecker(request.recorded_products)
             evidence, considered = self._selector.select(scored, checker)
-            return EvidenceResult(evidence, self._record(search, request, snapshot, stale, considered))
+            return EvidenceResult(evidence, self._record(search, request, snapshot, considered))
 
         return run_in_parallel(
             rank_one, range(len(requests)), EvidenceLimits.SEARCHES_AT_ONCE, "evidence-rerank"
@@ -152,7 +149,6 @@ class EvidenceFinder:
         search: EvidenceIndex,
         request: EvidenceRequest,
         snapshot_id: str | None,
-        stale: bool,
         considered: tuple[Considered, ...] = (),
         failure: EvidenceSearchFailure | None = None,
         outage: AiOutage | None = None,
@@ -166,7 +162,6 @@ class EvidenceFinder:
             snapshot_id,
             self._threshold,
             considered,
-            stale,
             failure,
             search.rerank_model,
             outage,
@@ -258,8 +253,9 @@ class EvidenceSelector:
         return Considered(row.ref, row.score, EvidenceDecision.OVER_LIMIT, reason)
 
     def _below_threshold(self, score: float) -> str:
-        """The reason a score under the threshold gives."""
-        return EvidenceReason.BELOW_THRESHOLD.format(score=score, threshold=self._threshold)
+        """The reason a score under the threshold gives, the score rounded down so it never reads as met."""
+        shown = Decimal(score).quantize(Decimal("0.1"), rounding=ROUND_FLOOR)  # exact: 29.96 reads 29.9
+        return EvidenceReason.BELOW_THRESHOLD.format(score=shown, threshold=self._threshold)
 
 
 def choose_within_limit(usable: list[Evidence], limit: int) -> list[Evidence]:
@@ -280,17 +276,15 @@ def _left_out(hit: IntelHit, decision: EvidenceDecision, reason: str) -> Judgeme
     return None, Considered(hit.external_id, hit.score, decision, reason)
 
 
-def _summary(
-    search: EvidenceIndex, results: list[EvidenceResult], stale: bool, searched: bool
-) -> EvidenceBatchSummary:
+def _summary(search: EvidenceIndex, results: list[EvidenceResult], searched: bool) -> EvidenceBatchSummary:
     """What the batch did, for its one audit row; the search metrics counted."""
     used = sum(len(result.evidence) for result in results)
     found = sum(1 for result in results if result.evidence)
     if not searched:  # no request, or nothing to search: no snapshot named, nothing counted
-        return EvidenceBatchSummary(None, {}, 0, found, used, False)
+        return EvidenceBatchSummary(None, {}, 0, found, used)
     failed = sum(1 for result in results if result.search.failure is not None)
     metrics.EVIDENCE_SEARCHES.labels(metrics.MetricOutcome.FAILED).inc(failed)
     metrics.EVIDENCE_SEARCHES.labels(metrics.MetricOutcome.OK).inc(len(results) - failed)
     metrics.EVIDENCE_USED.inc(used)
     versions = dict(search.source_versions)
-    return EvidenceBatchSummary(search.snapshot_id, versions, len(results), found, used, stale)
+    return EvidenceBatchSummary(search.snapshot_id, versions, len(results), found, used)

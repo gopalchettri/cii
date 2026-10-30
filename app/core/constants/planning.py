@@ -3,8 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
 from app.core.constants.common import EmbeddingCorpus
-from app.core.constants.jobs import Generation
 
 
 class AssetType(StrEnum):
@@ -106,8 +106,7 @@ class Search:
     VECTOR_FLOOR: Final = 0.60  # the vector leg keeps rows at least this similar when any reach it
 
 
-#: What a search of each corpus asks, in English: sent before the query to a model with a query instruction
-#: (EmbeddingModelProfile.query_instruction).
+#: What a search of each corpus asks: sent before the query to a model with a query instruction.
 QUERY_TASKS: Final[dict[EmbeddingCorpus, str]] = {
     EmbeddingCorpus.THREAT: "Given a proposed threat, retrieve the library threats that are the same threat",
     EmbeddingCorpus.THREAT_TYPE: "Given a threat type name, retrieve the threat types with the same meaning",
@@ -173,14 +172,15 @@ class ThreatFinding:
     GAP_FILL_MAX_CHARS: Final = 3_500  # a gap-fill proposal's type + threat
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
-    CATEGORIES_AT_ONCE: Final = 6  # STRIDE categories judged in parallel
-    AI_BATCHES_AT_ONCE: Final = 16  # gate batches of all categories share one pool this size (36 calls: 38 s)
+    AI_BATCHES_AT_ONCE: Final = TUNING.threat_questions_at_once  # gate batches at once
+    THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats, each whole
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id
     RECORD_SLOT: Final = "R"  # R1 ... in the relevance gate
     NEEDS_MAX_ITEMS: Final = 5  # what a verdict says a threat needs that nothing recorded mentions ...
     NEED_MAX_CHARS: Final = 80  # ... each cut to this
+    MAX_CATEGORIES_PER_THREAT: Final = 3  # a threat's main category and at most two others, as its card shows
 
 
 class ActorRole(StrEnum):
@@ -214,6 +214,7 @@ class PlanMessage(StrEnum):
     )
     PLAN_NOTE = "{planned} attack paths selected; {written} written, {remaining} still to write, set by set."
     AI_COULD_NOT_ANSWER = "The AI could not answer. Start a new session later."
+    OTHER_KINDS = "It applies as {kinds} only."  # a category the gate left out of a threat that applies
 
 
 class AnswerProblem(StrEnum):
@@ -225,11 +226,12 @@ class AnswerProblem(StrEnum):
         'every numbered rule needs a verdict: "holds", or broken: "<the exact words of the scenario>" '
         "- <reason>"
     )
-    ENTRY_POINT_NOT_OFFERED = "entry_point must be one of entry_point_options, copied exactly: {options}"
-    SYSTEM_REASONS_MISSING = "system_reasons must give one short sentence for each of: {names}"
     THREAT_ACTIONS_REQUIRED = 'the reply must be {"actions": [...]}: a non-empty list of short verb phrases'
     THREAT_ACTION_VERDICTS_REQUIRED = "threat_actions must judge every item of PLAN.threat.threat_actions"
-    ACTION_SENTENCES_MISSING = "action_sentences must quote the statement's sentence for each of: {actions}"
+    ACTION_SENTENCES_MISSING = (
+        "action_sentences must give the number of the statement's sentence for each of: {actions}"
+    )
+    NOT_ENGLISH = "every field must be in English only; it has {words}"
 
 
 class Controls:
@@ -245,7 +247,7 @@ class Controls:
     SWEEP_EVERY_SECONDS: Final = 300
     RESEND_QUEUED_AFTER_SECONDS: Final = 600  # a queued mapping no worker took: its message was lost
     MAX_MESSAGE_RETRIES: Final = 3  # a delivery's outage retries before any claim (owner); the sweep re-sends
-    PER_DELIVERY: Final = Generation.WRITER_BATCH  # mappings one delivery makes before the run's next turn
+    PER_DELIVERY: Final = 6  # mappings one delivery makes before the run's next turn
 
 
 class ControlMessage(StrEnum):

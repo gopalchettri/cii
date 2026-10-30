@@ -1,12 +1,8 @@
-"""The scenario write job: one batch of a run's paths written at once, each saved as soon as it is done, then
-the set's next batch handed over, the set ended, or the regenerate ended."""
+"""The scenario write job: one batch of a run's paths written as one set, each saved as soon as it is final,
+then the set's next batch handed over, the set ended, or the regenerate ended."""
 
-import contextlib
-import contextvars
-from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
 from datetime import datetime
-from functools import partial
 from typing import Any
 
 import structlog
@@ -20,7 +16,6 @@ from app.core.constants import (
     ErrorMessage,
     FindingCode,
     FindingMessage,
-    Generation,
     Lease,
     LogEvent,
     RunActionKind,
@@ -36,7 +31,7 @@ from app.data_access.jobs.job_repository import JobLease
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
-from app.domain.scenario.write import evidence_problem, held_repeat_of, scenario_id
+from app.domain.scenario.write import evidence_problem, held_repeat_of, scenario_id, slot_label
 from app.domain.shared.parallel import raise_most_retryable
 from app.models.library.library import ThreatLibrary
 from app.models.scenario.write import PathFailure
@@ -92,7 +87,7 @@ class ScenarioWriteJob:
 
 
 class BatchWriter:
-    """One delivery's batch: its paths written at once and saved one by one, then the run moved on."""
+    """One delivery's batch: its paths written as one set and saved one by one, then the run moved on."""
 
     def __init__(
         self,
@@ -125,16 +120,11 @@ class BatchWriter:
         to_write = self._saver.to_write(self._batch, self._replaces, self._regenerate)
         to_write = self._without_repeats(to_write)
         outages: dict[str, BaseException] = {}
-        paths = self._progress.paths
-        splits = ThreadPoolExecutor(Generation.WRITER_BATCH, thread_name_prefix="split")
-        for key in to_write:  # beside the evidence search, not after it; a write waits on its threat's lock
-            splits.submit(contextvars.copy_context().run, self._split_ahead, paths[key])
-        splits.shutdown(wait=False)  # ponytail: never joined; the writes take the splits as they finish
         if self._evidence is not None:
             self._evidence.attach(to_write)  # one evidence search for the paths about to be written
             to_write = [key for key in to_write if not self._held_back(key, outages)]
-        path_jobs = {key: partial(self._paths.write, paths[key]) for key in to_write}
-        outages |= write_at_once(path_jobs, self._save)
+        self._start_writing()  # the action's threats time (its set picked, its evidence searched) ends here
+        outages |= self._write_set(to_write)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
         # delivery that died or failed after saving must not leave its controls to the sweep. The controls
         # job claims each scenario once.
@@ -147,10 +137,26 @@ class BatchWriter:
         else:
             self._progress.continue_or_finish()
 
-    def _split_ahead(self, path: dict[str, Any]) -> None:
-        """A path's split, started early; a refused path (no AI call) or a fault is its write's to tell."""
-        with contextlib.suppress(Exception):
-            self._paths.split_ahead(path)
+    def _start_writing(self) -> None:
+        """Note on the run's last_action when this action's writing began: the first batch's moment ($min)."""
+        now = utc_now()
+        self._lease.update_job({}, operators={"$min": {"last_action.writing_started_at": now}})
+        (self._run.get("last_action") or {}).setdefault("writing_started_at", now)  # PlanProgress reads it
+
+    def _write_set(self, to_write: list[str]) -> dict[str, BaseException]:
+        """Write the paths as one set, its slots in the batch's order (a retry that saved nothing asks the
+        same), each saved as soon as it is final; the outages of the paths left, by path."""
+        paths, started, numbered = self._progress.paths, utc_now(), enumerate(self._batch, start=1)
+        slots = [(slot_label(place), paths[key]) for place, key in numbered if key in to_write]
+        outages: dict[str, BaseException] = {}
+        for path_id, outcome in self._paths.write_set(
+            slots, self._lease.attempts >= Lease.MAX_ATTEMPTS, self._lease.epoch
+        ):
+            if isinstance(outcome, Exception):
+                outages[path_id] = outcome
+            else:
+                self._save(path_id, outcome, started)
+        return outages
 
     def _save(self, path_id: str, outcome: PathOutcome, started_at: datetime) -> None:
         """Save one path's outcome; a scenario that now serves it has its controls mapped while the batch's
@@ -230,36 +236,3 @@ class BatchWriter:
             else:
                 message = ErrorMessage.PATH_AI_UNAVAILABLE.format(tries=tries)
             self._saver.save(path_id, PathFailure(ErrorCode.UNAVAILABLE, message, reason=outage))
-
-
-def write_at_once(
-    jobs: Mapping[str, Callable[[], PathOutcome]], save: Callable[[str, PathOutcome, datetime], None]
-) -> dict[str, BaseException]:
-    """Run every path's AI work in a thread pool and `save` each outcome in this thread as it finishes, with
-    when its work began; return the outages by path, raised by none."""
-    outages: dict[str, BaseException] = {}
-    if not jobs:
-        return outages
-    with ThreadPoolExecutor(min(Generation.WRITER_BATCH, len(jobs)), thread_name_prefix="writer") as pool:
-        # Each job runs in its own copy of this thread's context, so its log lines keep the run's fields.
-        futures = {
-            pool.submit(contextvars.copy_context().run, _run_timed, job): key for key, job in jobs.items()
-        }
-        try:
-            for future in as_completed(futures):
-                if (error := future.exception()) is not None:
-                    outages[futures[future]] = error
-                else:
-                    started, outcome = future.result()
-                    save(futures[future], outcome, started)
-        except BaseException:  # a lost lease or a store outage: the paths not started are not started
-            for future in futures:
-                future.cancel()
-            raise
-    return outages
-
-
-def _run_timed(job: Callable[[], PathOutcome]) -> tuple[datetime, PathOutcome]:
-    """Run `job`; return when it started and its outcome."""
-    started = utc_now()
-    return started, job()

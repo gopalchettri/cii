@@ -5,7 +5,7 @@ scenario takes its threat's linked actors, else its type's, else the whole libra
 import dataclasses
 from typing import Any
 
-from app.core.constants import AiTask, AttackerCheck, LibraryStatus, StrideCategory
+from app.core.constants import AiTask, AttackerCheck, LibraryStatus
 from app.domain.remediation.manual import pick_manual_attacker
 from app.domain.scenario.plan import actor_pick, choose_actor, merge_two_threats, relevance_gate_prompt
 from app.models.scenario.plan import ActorPick, PlannedThreat
@@ -62,7 +62,7 @@ def test_no_usable_pick_takes_the_top_linked_actor_and_none_fits_names_no_one() 
 
 
 def test_the_gate_lists_each_threats_linked_attackers_and_never_judges_one_whose_type_links_none() -> None:
-    _, prompt = relevance_gate_prompt("LANDSCAPE", StrideCategory.TAMPERING, [])
+    _, prompt = relevance_gate_prompt("LANDSCAPE", [])
     assert "never default to the first name, a well-known attacker" in prompt
     assert '"attacker_reason"' in prompt and '"suitability"' not in prompt
     chat = planner_chat({PHISHING.name: ["SYS1"]})

@@ -34,8 +34,7 @@ from tests.conftest import ADMIN
 from tests.external_intelligence.fakes import intelligence_service
 from tests.external_intelligence.switch.test_switch_admin import Flags
 from tests.test_job_monitor import _mapping
-from tests.test_service_mapper import PRINCIPAL, _answer, _catalog, _request
-from tests.test_service_mapper_outage_retry import _mapper
+from tests.test_service_mapper import PRINCIPAL, _answer, _catalog, _mapper, _request
 
 
 def _queue(job_id: str, kind: str, sent: bool = True) -> None:
@@ -155,7 +154,8 @@ def test_an_approval_stands_when_its_refresh_cannot_be_queued(monkeypatch: pytes
     assert approved.refresh_job_id is None and approved.refresh_not_queued == IntelRefreshMessage.NOT_SENT
 
 
-def test_a_mapping_replay_answers_its_generations_real_status() -> None:
+def test_a_mapping_replay_answers_the_mappings_real_status() -> None:
+    """A key's repeat answers the run it started, with the mapping's status now (its latest run's)."""
     create_key = uuid.uuid4().hex
     mapper, _sent = _mapper()
     mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), create_key)[0].mapping_id
@@ -164,6 +164,6 @@ def test_a_mapping_replay_answers_its_generations_real_status() -> None:
     assert mapper.create_service_mapping(PRINCIPAL, _request(), create_key)[0].status == Status.RUNNING
     result = reconcile(mapping_id, 1, _request(), _answer(), _catalog(), 20, 20)
     records.update_one({"_id": mapping_id}, {"$set": {"status": Status.DONE, "result": result}})
-    mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid.uuid4().hex)  # generation 2: queued
+    mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid.uuid4().hex)  # run 2: queued
     replayed, created = mapper.create_service_mapping(PRINCIPAL, _request(), create_key)
-    assert (replayed.generation, replayed.status, created) == (1, Status.DONE, False)
+    assert (replayed.generation, replayed.status, created) == (1, Status.QUEUED, False)

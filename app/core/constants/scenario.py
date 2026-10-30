@@ -8,12 +8,19 @@ class Writing:
     MAX_PLAN_PROBLEMS: Final = 10  # the plan check's problems kept as notes ...
     PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
     RETIRED_RULES: Final = frozenset({"4"})  # reviewer rules no longer asked: never a note (D49)
+    ACTION_SYSTEM: Final = "the system"  # a system a listed action is done to, its name taken out
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
     PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
+    #: A "no" system's reason: code's, never the writer's; it claims no immunity to other threats.
+    NOT_REACHED_REASON: Final = (
+        "This threat's actions in this scenario do not reach this system; that does not make it immune to "
+        "other threats."
+    )
+    #: A "yes" system's reason when the writer gave none and no story sentence names it.
+    REACHED_REASON: Final = "This threat's actions may reach this system as part of the same event."
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
-    EVIDENCE_WORDS_SLOT: Final = "<evidence words>"  # the prompts' slot for EVIDENCE_STATEMENT_WORD_LIMIT
 
 
 class ScenarioStatus(StrEnum):
@@ -21,7 +28,7 @@ class ScenarioStatus(StrEnum):
 
     DONE = "done"  # written: served and counted
     FAILED = "failed"  # the writer's answer stayed unreadable: a visible failure card; the path is retried
-    BLOCKED = "blocked"  # a blocker was found: kept for audit only; the path is retried
+    BLOCKED = "blocked"  # a blocker was found: kept for audit; the path is given up, a reserve may follow
 
 
 class ScenarioOutcome(StrEnum):
@@ -47,7 +54,7 @@ class FindingCode(StrEnum):
     PLAN_CHECK = "plan_check"  # a rule the reviewer says is broken: a note for review
     PLAN_CHECK_NOT_MADE = "plan_check_not_made"
     SCENARIO_MISMATCH = "scenario_mismatch"  # the statement carries out another threat, or the risk another
-    CITATION_REMOVED = "citation_removed"  # the writer's passage not cited: code's own sentence instead
+    CITATION_REMOVED = "citation_removed"  # the writer's step not used: code's own sentence instead
     NO_EVIDENCE_CITED = "no_evidence_cited"  # stored on older scenarios: a story citing none of its sources
     NEAR_DUPLICATE = "near_duplicate"  # the same path, or the very same words, as a scenario already held
 
@@ -59,7 +66,7 @@ class FindingMessage(StrEnum):
     UNCITED_ADVISORY_ID = "Cites {ids}, which no threat intelligence supplied. Remove the advisory numbers."
     PLAN_CHECK_NOT_MADE = "The plan check could not be made: {reason}"
     CITATION_REMOVED = (
-        "The writer's evidence passage was not cited ({reason}): the platform cites its own precedent "
+        "The writer's evidence step was not used ({reason}): the platform cites its own precedent "
         "sentence from the same source instead."
     )
     SCENARIO_MISMATCH = (
@@ -253,7 +260,7 @@ class PlanLoss(StrEnum):
     TYPE_FITS_NO_PLACE = "type_fits_no_place"
     NO_LINKED_ACTOR = "no_linked_actor"
     NOT_JUDGED = "not_judged"  # its gate batch was skipped
-    NEEDS_UNRECORDED_ELSEWHERE = "needs_unrecorded_elsewhere"  # a need found under another kind
+    NEEDS_UNRECORDED_ELSEWHERE = "needs_unrecorded_elsewhere"  # older plans only: a need under another kind
     MERGED = "merged"
     ALREADY_HELD = "already_held"
     LIBRARY_REPEAT = "library_repeat"  # a gap-fill proposal that is a library threat already judged

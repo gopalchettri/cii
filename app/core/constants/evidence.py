@@ -3,6 +3,7 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
 from app.core.constants.scenario import FindingSeverity
 
 
@@ -54,7 +55,8 @@ class EvidenceLimits:
 
 
 class RerankGateLimits:
-    RERANKS_AT_ONCE: Final = 6  # reranker calls in flight in the whole process (the remote reranker)
+    # remote reranker calls in flight in the whole process (CII_RERANKS_AT_ONCE: 6)
+    RERANKS_AT_ONCE: Final = TUNING.reranks_at_once
     LOCAL_RERANKS_AT_ONCE: Final = 1  # the local CPU model predicts one at a time
     CHECK_EVERY_SECONDS: Final = 2.0  # a waiter checks its job's lease (and deadline) this often
 
@@ -123,7 +125,7 @@ class NameGrammar:
 class EvidenceReason(StrEnum):
     """Why a candidate was left out, for the reviewer who opens a threat's search audit."""
 
-    BELOW_THRESHOLD = "Scored {score:.0f} of 100, under the {threshold:.0f} needed."
+    BELOW_THRESHOLD = "Scored {score:.1f} of 100, under the {threshold:g} needed."  # score rounded down
     DIFFERENT_PRODUCT = "Concerns {vendor} {product}; the asset records none of that vendor or product."
     OTHER_PRODUCT_OF_VENDOR = "Concerns {vendor} {product}; the asset records only other products."
     NO_PRODUCT_LINK = "Concerns a specific product; nothing the asset records ties the asset to it."
@@ -167,7 +169,8 @@ class VersionWords(StrEnum):
 #: Who used a technique, as EvidenceFact.USED_BY and CAMPAIGN_USED say it; a campaign ATT&CK names only by
 #: its id (C0027) is no name.
 REAL_WORLD_USER: Final = (
-    r"(?P<name>.+?), [^,]+, has used this technique\.|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
+    r"(?P<name>.+?), (?P<what>[^,]+), has used this technique\."
+    r"|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
 )
 SEVERITY_BANDS: Final = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
 
@@ -206,17 +209,33 @@ class EvidenceMode(StrEnum):
 
 
 class Precedent:
-    """The sentence code cites in an evidence story when the writer's own passage cannot be: from the cited
-    entry's own facts; and why the passage was not cited."""
+    """The sentence code cites in an evidence story: the writer's step tied to the cited entry by a link and
+    a users form picked by the set's epoch and the slot's place (no two slots of a set share one), else code's
+    own sentence from the entry's facts; and why a step was not used."""
 
-    USED_BY: Final = 'In real-world attacks, {names} {verb} used the technique "{technique}"'
+    # a technique: the writer's step, a link, its title and who used it
+    SENTENCE: Final = '{step} {link} "{title}", {users}'
+    # a vulnerability or an advisory: its first fact in place of who used it
+    ABOUT_SENTENCE: Final = '{step} {link} "{title}": {fact}'
+    LINKS: Final = (
+        "matches", "mirrors", "resembles", "echoes", "is an example of", "is a form of", "corresponds to",
+        "reflects",
+    )  # fmt: skip
     # nearest evidence: only related, and said so
-    USED_RELATED: Final = 'In real-world attacks, {names} {verb} used the related technique "{technique}"'
+    RELATED_LINKS: Final = (
+        "is related to", "is closely related to", "relates to", "is broadly related to",
+        "is loosely related to", "is in the same family as",
+    )  # fmt: skip
+    USERS: Final = ("a technique {names} {verb} used", "which {names} {verb} used", "used by {names}")
+    USED_BY: Final = 'This attack could use the "{technique}" technique, which {names} {verb} used'
+    # nearest evidence: only related, and said so
+    USED_RELATED: Final = 'This attack is related to the "{technique}" technique, which {names} {verb} used'
     RELATED_RECORD: Final = "A related record: {fact}"
     NOT_WRITTEN: Final = "none was written"
-    TOO_LONG: Final = "over its {most}-word limit"
-    NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code or an internal label"
-    NOT_CONFIRMED: Final = "the reviewer did not confirm it against its source"
+    TOO_LONG: Final = "its sentence would run over the {most}-word limit"
+    NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code, an internal label or a quote"
+    MANY_SENTENCES: Final = "it is more than one sentence"
+    OPENS_ON_EVIDENCE: Final = "it opens with the evidence, not with this attacker's action"
 
 
 class EvidenceBlock:
@@ -266,8 +285,11 @@ class RecordedFields:
     VERSION_KEYS: Final = ("product_version", "firmware_version", "software_version")
 
 
-#: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on (scripts/calibrate_evidence_threshold.py).
-EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, str]] = {"bge-reranker-v2-m3": "2026-10-19"}
+#: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on: the date and the threshold found there
+#: (scripts/calibrate_evidence_threshold.py).
+EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, tuple[str, float]]] = {
+    "bge-reranker-v2-m3": ("2026-10-19", 30.0)
+}
 
 
 class EvidenceSettingMessage(StrEnum):

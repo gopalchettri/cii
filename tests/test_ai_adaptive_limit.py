@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, suppress
+from types import SimpleNamespace
 
 import litellm
 import pytest
@@ -19,13 +20,23 @@ from structlog.testing import capture_logs
 
 from app import ai, container
 from app.ai import slots as slots_module
-from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, AiRequestRate, AiSlots
-from app.core.constants import AiLimits, AiOutage, AiOutageSource, AiTask, LogEvent
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
+from app.core.constants import (
+    AiLimits,
+    AiOutage,
+    AiOutageSource,
+    AiTask,
+    ChatModule,
+    EmbeddingCorpus,
+    LogEvent,
+)
 from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import Unavailable
 from app.core.singletons import singleton
 from app.data_access.admin.ai_call_repository import AiCallRepository
-from app.models.ai.profiles import ChatModelProfile
+from app.data_access.admin.embedding_repository import EmbeddingRepository
+from app.data_access.base import VectorRepository
+from app.models.ai.profiles import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 from app.worker import lifecycle
 
 TASK = AiTask.RELEVANCE_GATE
@@ -217,8 +228,8 @@ def test_against_a_gateway_that_takes_n_calls_at_once_tsg_settles_near_n_with_fe
 
     def ask_until_stop() -> None:
         while time.monotonic() < stop:
-            # A call given up after its waits (RateLimitError) is the job's to back off.
-            with slots.hold_slot(TASK), suppress(litellm.RateLimitError):
+            # A call given up after its waits (RateLimitError) is the job's to back off; a slot per try.
+            with suppress(litellm.RateLimitError):
                 ai.common.call_with_retries(
                     gateway.answer, UNLIMITED_AI_REQUEST_RATE, slots, model="m", task=TASK
                 )
@@ -239,9 +250,201 @@ def test_against_a_gateway_that_takes_n_calls_at_once_tsg_settles_near_n_with_fe
     assert parallel / 2 <= slots.current_limit() <= 2 * parallel
 
 
+def test_a_call_waiting_out_a_429_holds_no_slot_while_it_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UAT 2026-10-28: a call refused with Retry-After 60 slept the 60 s inside its slot; with the limit cut
+    to 4, four such sleepers stopped every AI call on every pod for about a minute (10:17:54-10:18:51 and
+    10:30:27-10:31:25 UTC). A slot is held per attempt now, so another call takes it during the wait."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (1.0, 1.0, 1.0, 1.0))
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
+    one_slot = AiSlots(get_redis_client(), cap=1, wait_seconds=0.3)
+    refused, asked = threading.Event(), []
+
+    def refuse_once() -> str:
+        asked.append(time.monotonic())
+        if len(asked) == 1:
+            refused.set()
+            raise litellm.RateLimitError("busy", llm_provider="litellm_proxy", model="m")
+        return "ok"
+
+    waiting = threading.Thread(
+        target=ai.common.call_with_retries,
+        args=(refuse_once, UNLIMITED_AI_REQUEST_RATE, one_slot),
+        kwargs={"model": "m", "task": TASK},
+    )
+    waiting.start()
+    assert refused.wait(5)
+    time.sleep(0.1)  # well inside the refused call's 1 s wait
+    with one_slot.hold_slot(TASK):  # free: the waiting call holds none
+        pass
+    waiting.join(5)
+    assert len(asked) == 2 and asked[1] - asked[0] >= 0.9
+
+
+@pytest.mark.parametrize("gateway", ["chat", "rerank", "embed"])
+def test_each_ai_gateway_frees_its_slot_while_it_waits_out_a_429(
+    monkeypatch: pytest.MonkeyPatch, gateway: str
+) -> None:
+    """The UAT freeze through the real callers: ChatModel, RerankModel and the embedder each held one slot
+    around a whole request before, its 429 waits included. While one waits out a 429, another call takes the
+    one slot."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (1.0, 1.0, 1.0, 1.0))
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
+    one_slot, refused, asked = AiSlots(get_redis_client(), cap=1, wait_seconds=0.3), threading.Event(), []
+
+    def answer_after_one_429(**_: object) -> SimpleNamespace:
+        asked.append(time.monotonic())
+        if len(asked) == 1:
+            refused.set()
+            raise litellm.RateLimitError("busy", llm_provider="litellm_proxy", model="m")
+        message = SimpleNamespace(content='{"ok": true}')
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=None,
+            results=[{"index": 0, "relevance_score": 0.5}],
+            data=[{"index": 0, "embedding": [3.0, 4.0]}],
+        )
+
+    monkeypatch.setattr(
+        litellm,
+        {"chat": "completion", "rerank": "rerank", "embed": "embedding"}[gateway],
+        answer_after_one_429,
+    )
+    records, vectors = (get_mongodb()[name] for name in ("test_ai_calls", "test_query_vectors"))
+    embedder = ai.EmbeddingModel(
+        "test-embed",
+        EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=1_000),
+        "http://ai.invalid",
+        "key",
+        EmbeddingRepository(get_mongodb()["test_embeddings"]),
+        VectorRepository(vectors),
+        slots=one_slot,
+    )
+    calls = {
+        "chat": lambda: ai.ChatModel(
+            [("first", FIRST)], "http://ai.invalid", "key", AiCallRepository(records), slots=one_slot
+        ).ask_for_checked_json(TASK, "system", "user", lambda _answer: []),
+        "rerank": lambda: ai.RerankModel(
+            "m", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key", slots=one_slot
+        ).score_relevance("q", ["a"]),
+        "embed": lambda: embedder.embed_search_queries([uuid.uuid4().hex], EmbeddingCorpus.CONTROL),
+    }
+    waiting = threading.Thread(target=calls[gateway])
+    waiting.start()
+    assert refused.wait(5)
+    time.sleep(0.1)  # well inside the refused call's 1 s wait
+    with one_slot.hold_slot(TASK):  # free: the waiting call holds none
+        pass
+    waiting.join(5)
+    assert len(asked) == 2 and asked[1] - asked[0] >= 0.9
+
+
+def test_requests_let_through_a_full_slot_line_together_still_go_out_spaced() -> None:
+    """Review of the fix: a turn reserved before a long slot wait had passed by the time the slot freed, so
+    the requests let through went out back to back. The turn is reserved once the slot is held."""
+    redis = get_redis_client()
+    one_slot, rate = AiSlots(redis, cap=1, wait_seconds=5), AiRequestRate(redis, "spaced", 300, 30)  # 0.2 s
+    sent: list[float] = []
+    busy, release = threading.Event(), threading.Event()
+
+    def hold_a_while() -> None:
+        with one_slot.hold_slot(TASK):
+            busy.set()
+            release.wait(5)
+
+    def send() -> None:
+        ai.common.call_with_retries(
+            lambda: sent.append(time.monotonic()), rate, one_slot, model="m", task=TASK
+        )
+
+    holder = threading.Thread(target=hold_a_while)
+    holder.start()
+    assert busy.wait(5)
+    senders = [threading.Thread(target=send) for _ in range(2)]
+    for sender in senders:
+        sender.start()
+    time.sleep(0.6)  # both turns would have passed while the slot was busy
+    release.set()
+    for thread in [holder, *senders]:
+        thread.join(5)
+    assert len(sent) == 2 and sent[1] - sent[0] >= 0.15, sent
+
+
+def test_a_429_makes_the_next_call_to_its_model_wait_holding_no_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 pauses its model on every pod for the wait it asks, so the calls queued behind it do not each
+    meet a 429 of their own; the pause holds no slot."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (1.0, 1.0, 1.0, 1.0))
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
+    redis = get_redis_client()
+    rate, one_slot, refused = (
+        AiRequestRate(redis, "pausing", 600, 30),
+        AiSlots(redis, 1, 5),
+        threading.Event(),
+    )
+    answers = iter([litellm.RateLimitError("busy", llm_provider="litellm_proxy", model="m"), "ok", "ok"])
+
+    def answer() -> str:
+        reply = next(answers)
+        if isinstance(reply, Exception):
+            refused.set()
+            raise reply
+        return reply
+
+    refused_call = threading.Thread(
+        target=ai.common.call_with_retries, args=(answer, rate, one_slot), kwargs={"model": "m", "task": TASK}
+    )
+    refused_call.start()
+    assert refused.wait(5)
+    started = time.monotonic()
+    ai.common.call_with_retries(answer, rate, one_slot, model="m", task=TASK)
+    waited = time.monotonic() - started
+    refused_call.join(5)
+    assert waited >= 0.8  # the model's pause, not a 429 of its own
+
+
+def test_four_calls_waiting_out_429s_never_stop_the_other_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The UAT freeze, reproduced: the limit is cut to its floor (4) and four calls wait out a 429. Before,
+    they slept inside the 4 slots and no other AI call ran until they woke; now the others keep answering."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (2.0, 2.0, 2.0, 2.0))
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
+    slots = _limited()
+    slots.note_rate_limited()  # nothing in flight: the floor, 4
+    refused_at: list[float] = []
+    answered: list[tuple[str, float]] = []  # (who, when)
+    lock = threading.Lock()
+
+    def refused_once() -> str:
+        who = threading.current_thread().name
+        with lock:
+            if len(refused_at) < 4 and who.startswith("sleeper"):
+                refused_at.append(time.monotonic())
+                raise litellm.RateLimitError("busy", llm_provider="litellm_proxy", model="m")
+        time.sleep(0.05)
+        with lock:
+            answered.append((who, time.monotonic()))
+        return "ok"
+
+    def call() -> None:
+        ai.common.call_with_retries(refused_once, UNLIMITED_AI_REQUEST_RATE, slots, model="m", task=TASK)
+
+    sleepers = [threading.Thread(target=call, name=f"sleeper-{n}") for n in range(4)]
+    for sleeper in sleepers:
+        sleeper.start()
+    deadline = time.monotonic() + 5
+    while len(refused_at) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(refused_at) == 4
+    others = [threading.Thread(target=call, name=f"other-{n}") for n in range(8)]
+    for other in others:
+        other.start()
+    for thread in [*sleepers, *others]:
+        thread.join(10)
+    during_the_wait = [who for who, at in answered if who.startswith("other") and at < min(refused_at) + 2.0]
+    assert len(during_the_wait) == 8, answered  # every other call answered while the four waited
+
+
 def test_a_429_from_the_fallback_model_limits_every_ai_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """kimi and glm share the gateway's key with the embedder and the reranker: a 429 from either sets the
-    one limit on the main slots. A request no model answered never raises it."""
+    """A module's main and fallback model share its slots: a 429 from either sets the one limit on them. A
+    request no model answered never raises it."""
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (0, 0, 0, 0))
     monkeypatch.setattr(AiLimits, "RETRY_FIRST_WAIT_SECONDS", 0)
 
@@ -286,7 +489,7 @@ def test_with_no_cap_a_redis_outage_never_fails_an_ai_call_and_is_logged_once(
         pass
 
 
-def _provide(getter: str, built: AiSlots, monkeypatch: pytest.MonkeyPatch) -> None:
+def _provide(getter: str, built: object, monkeypatch: pytest.MonkeyPatch) -> None:
     """The container hands out `built` as if it had built it."""
     provider = singleton(lambda: built)
     provider()
@@ -296,22 +499,27 @@ def _provide(getter: str, built: AiSlots, monkeypatch: pytest.MonkeyPatch) -> No
 def test_the_dashboard_shows_the_limit_in_force_and_every_call_in_flight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """tsg_ai_slots_cap is the limit in force (0 = none); tsg_ai_slots_in_use counts calls at cap 0 too."""
-    slots = _limited()
-    _provide("get_ai_slots", slots, monkeypatch)
+    """tsg_ai_slots_cap is the limit in force (0 = none); tsg_ai_slots_in_use counts calls at cap 0 too. One
+    pair per pool: the search calls' and each module's, each on its own."""
+    search, scenario = _limited(), AiSlots(get_redis_client(), 0, 30, f"{AiLimits.SLOTS_KEY}:scenario")
+    _provide("get_ai_slots", search, monkeypatch)
+    _provide("get_module_ai_slots", {ChatModule.SCENARIO: (scenario, UNLIMITED_AI_SLOTS)}, monkeypatch)
     for kept in ("_ai_slot_wait_seconds", "_waits_out_rate_limits"):  # set_up_worker changes them
         monkeypatch.setattr(container, kept, getattr(container, kept))
-    for builder in ("create_all_indexes", "get_chat_model", "get_embedding_model", "get_rerank_model"):
+    for builder in ("create_all_indexes", "build_ai_gateways"):
         monkeypatch.setattr(container, builder, lambda *_: None)
     lifecycle._prepare_stores_and_models()
-    assert REGISTRY.get_sample_value("tsg_ai_slots_cap") == 0
-    with slots.hold_slot(TASK), slots.hold_slot(TASK):
-        slots.note_rate_limited()
-        shown = (
-            REGISTRY.get_sample_value("tsg_ai_slots_in_use"),
-            REGISTRY.get_sample_value("tsg_ai_slots_cap"),
+
+    def shown(pool: str) -> tuple[float | None, float | None]:
+        return tuple(
+            REGISTRY.get_sample_value(f"tsg_ai_slots_{gauge}", {"pool": pool}) for gauge in ("in_use", "cap")
         )
-    assert shown == (2, AiLimits.ADAPTIVE_LIMIT_FLOOR)
+
+    assert shown(AiLimits.SEARCH_POOL) == shown(ChatModule.SCENARIO) == (0, 0)
+    with scenario.hold_slot(TASK), scenario.hold_slot(TASK):
+        scenario.note_rate_limited()
+        assert shown(ChatModule.SCENARIO) == (2, AiLimits.ADAPTIVE_LIMIT_FLOOR)
+        assert shown(AiLimits.SEARCH_POOL) == (0, 0)
 
 
 def test_tsg_s_own_refusals_are_counted_apart_from_the_gateway_s(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,3 +539,52 @@ def test_tsg_s_own_refusals_are_counted_apart_from_the_gateway_s(monkeypatch: py
     with pytest.raises(Unavailable):
         kimi.wait_for_turn(TASK)
     assert counted() == before + 2
+
+
+def test_a_429_in_one_module_never_slows_another_module_or_the_search_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owner 2026-10-28: each module its own chat model, key and limits. A 429 to remediation's kimi cuts
+    remediation's slots and pauses its kimi turns for 5 s; the scenario module's kimi answers at once, and
+    neither its slots nor the search calls' are cut."""
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (5.0, 5.0, 5.0, 5.0))
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_TOTAL_WAIT_SECONDS", 5)
+    monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
+    kimi = "litellm_proxy/kimi-k2.5"
+    lines = {"chat_model": kimi, "chat_requests_per_minute": 600, "chat_tokens_per_minute": 0}
+    lines |= {"chat_fallback_model": "", "max_concurrent_ai_calls": 0}
+    update = {f"{module}_{name}": value for module in ChatModule for name, value in lines.items()}
+    settings = container.get_settings().model_copy(update=update)
+    monkeypatch.setattr(container, "get_settings", lambda: settings)
+    monkeypatch.setattr(container, "apply_proxy_once", lambda: None)
+    monkeypatch.setattr(container, "_waits_out_rate_limits", True)  # a worker waits out a 429
+    _provide("get_module_ai_slots", container.get_module_ai_slots._build(), monkeypatch)
+    remediation, scenario = (
+        container._chat_model_of(m) for m in (ChatModule.REMEDIATION, ChatModule.SCENARIO)
+    )
+
+    def refused(**_: object) -> None:
+        raise litellm.RateLimitError("busy", llm_provider="litellm_proxy", model=kimi)
+
+    with monkeypatch.context() as no_sleeping:  # its 5 s waits pass at once; the pause stays in Redis
+        no_sleeping.setattr(litellm, "completion", refused)
+        no_sleeping.setattr(ai.common, "sleep_unless_lease_lost", lambda _seconds: None)
+        no_sleeping.setattr(slots_module, "sleep_unless_lease_lost", lambda _seconds: None)
+        with pytest.raises(Unavailable):
+            remediation.ask_for_checked_json(TASK, "system", "user", lambda _answer: [])
+    redis = get_redis_client()
+
+    def cut_and_paused(module: str) -> tuple[str | None, int]:
+        paused = redis.exists(AiLimits.REQUEST_RATE_KEY.format(model=f"{module}:{kimi}"))
+        return redis.hget(f"{AiLimits.SLOTS_KEY}:{module}:limit", "limit"), paused
+
+    assert cut_and_paused(ChatModule.REMEDIATION) == (str(AiLimits.ADAPTIVE_LIMIT_FLOOR), 1)
+    assert cut_and_paused(ChatModule.SCENARIO) == (None, 0)
+    assert redis.hget(AiLimits.SLOTS_LIMIT_KEY, "limit") is None  # the search calls'
+    answer = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))], usage=None
+    )
+    monkeypatch.setattr(litellm, "completion", lambda **_: answer)
+    started = time.monotonic()
+    assert scenario.ask_for_checked_json(TASK, "system", "user", lambda _answer: []) == {"ok": True}
+    assert time.monotonic() - started < 2  # not remediation's 5 s pause

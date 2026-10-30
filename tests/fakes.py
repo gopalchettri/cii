@@ -2,6 +2,7 @@
 vectors from shared words, rerank scores from a table. Each records what it was asked."""
 
 import json
+import re
 from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
@@ -16,7 +17,7 @@ from app.core.exceptions import Unavailable
 Answer = dict[str, Any] | BaseException | Callable[[str], dict[str, Any]]
 
 
-def _brief(user_prompt: str) -> dict[str, Any]:
+def brief_of(user_prompt: str) -> dict[str, Any]:
     """A writer prompt's BRIEF (the JSON object right after "BRIEF:"); {} for any other prompt."""
     if "BRIEF:\n" not in user_prompt:
         return {}
@@ -24,20 +25,39 @@ def _brief(user_prompt: str) -> dict[str, Any]:
     return dict(brief)
 
 
+def shared_facts(user_prompt: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A set prompt's ASSET and SYSTEMS: the facts sent once, before its slots."""
+    asset, _, rest = user_prompt.removeprefix("ASSET:\n").partition("\nSYSTEMS:\n")
+    systems, _ = json.JSONDecoder().raw_decode(rest)
+    return json.loads(asset), list(systems)
+
+
 def brief_system_names(user_prompt: str) -> list[str]:
     """The supporting systems a writer prompt's BRIEF lists."""
-    return [system["name"] for system in _brief(user_prompt).get("supporting_systems") or []]
+    return [system["name"] for system in brief_of(user_prompt).get("supporting_systems") or []]
 
 
-def _the_name_as_its_action(user_prompt: str) -> dict[str, Any]:
-    """The split's answer when a test is about something else: the threat's name is its one action."""
-    return {"actions": [json.loads(user_prompt.rsplit("THREAT: ", 1)[1])]}
-
-
-#: The responder of a task no test needs to answer; a test's own responder or queue comes first.
-_DEFAULT_RESPONDERS: dict[AiTask, Callable[[str], dict[str, Any]]] = {
-    AiTask.THREAT_ACTIONS: _the_name_as_its_action,
+#: Where each slot of a set prompt starts ("SLOT SC1"), and the list its answer holds the slots' items under.
+_SLOT = re.compile(r"^SLOT (\S+)\n", re.MULTILINE)
+_SET_KEYS = {
+    AiTask.WRITE_SCENARIO: "scenarios",
+    AiTask.REPAIR_SCENARIO: "scenarios",
+    AiTask.PLAN_CHECK: "reviews",
 }
+
+
+def slot_blocks(user_prompt: str) -> list[tuple[str, str]]:
+    """A set prompt's slots, (label, its block), in order; [] for any other prompt."""
+    starts = list(_SLOT.finditer(user_prompt))
+    ends = [match.start() for match in starts[1:]] + [len(user_prompt)]
+    return [(match[1], user_prompt[match.start() : end]) for match, end in zip(starts, ends, strict=False)]
+
+
+def _slot_threat(block: str) -> str:
+    """The threat name a slot's BRIEF or PLAN gives, as an answer copies it back."""
+    heading = "BRIEF:\n" if "BRIEF:\n" in block else "PLAN:\n"
+    record, _ = json.JSONDecoder().raw_decode(block.split(heading, 1)[1])
+    return str(record["threat"]["threat"])
 
 
 def items_in(user_prompt: str, heading: str) -> list[dict[str, Any]]:
@@ -48,7 +68,11 @@ def items_in(user_prompt: str, heading: str) -> list[dict[str, Any]]:
 class FakeChatModel:
     """ChatModel's planner surface. Per task, queued answers are used first, then the task's responder; a
     rejected first answer is re-asked once, and a usable first answer is kept when the re-ask is unusable or
-    finds the AI unavailable, as the real model does (ask_for_checked_json)."""
+    finds the AI unavailable, as the real model does (ask_for_checked_json).
+    A set prompt (writer, rewrite, reviewer) is answered slot by slot: each slot takes the next queued answer
+    or the responder's answer to its own block, with its slot and threat copied back; an exception in any slot
+    fails the whole call, and a queued answer holding the set's list ("scenarios", "reviews") is the whole
+    call's answer, as given. A rewrite with nothing of its own queued or responding is answered as a write."""
 
     def __init__(self, max_prompt_chars: int = 60_000) -> None:
         self._input_limit = max_prompt_chars
@@ -90,16 +114,38 @@ class FakeChatModel:
 
     def _answer(self, task: AiTask, user_prompt: str) -> dict[str, Any]:
         self.calls.append((task, user_prompt))
-        queued = self.queued[task]
-        answer: Answer = queued.pop(0) if queued else self.responders.get(task) or _DEFAULT_RESPONDERS[task]
+        key, slots = _SET_KEYS.get(task), slot_blocks(user_prompt)
+        if key is None or not slots:
+            return self._one_answer(task, user_prompt)
+        whole = self.queued[task][:1]
+        if whole and isinstance(whole[0], dict) and key in whole[0]:
+            return dict(self.queued[task].pop(0))  # type: ignore[arg-type]
+        items = [
+            {"slot": label, "threat": _slot_threat(block)} | self._one_answer(task, block)
+            for label, block in slots
+        ]
+        return {key: items}
+
+    def _one_answer(self, task: AiTask, user_prompt: str) -> dict[str, Any]:
+        """The next answer of `task` to `user_prompt` (one slot's block in a set)."""
+        answer = self._next(task)
+        if answer is None and task is AiTask.REPAIR_SCENARIO:
+            answer = self._next(AiTask.WRITE_SCENARIO)
+        if answer is None:
+            raise KeyError(task)
         if isinstance(answer, BaseException):
             raise answer
         answered = answer(user_prompt) if callable(answer) else answer
         return self._with_writer_defaults(task, answered, user_prompt)
 
+    def _next(self, task: AiTask) -> Answer | None:
+        """`task`'s next queued answer, else its responder; None when it has neither."""
+        queued = self.queued[task]
+        return queued.pop(0) if queued else self.responders.get(task)
+
     def _with_writer_defaults(self, task: AiTask, answer: dict[str, Any], user_prompt: str) -> dict[str, Any]:
         """A writer answer that gives no system_reasons gets one per supporting system of the brief it
-        answers (G216), and one that gives no action_sentences gets its whole statement for each listed
+        answers (G216), and one that gives no action_sentences gets its first sentence (1) for each listed
         action, so a test about something else need not write them; a test of them gives its own (empty
         included)."""
         if task not in (AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO) or not isinstance(answer, dict):
@@ -108,9 +154,9 @@ class FakeChatModel:
         if "system_reasons" not in answer:
             names = brief_system_names(user_prompt)
             defaults["system_reasons"] = {name: f"It could affect {name}." for name in names}
-        acts = (_brief(user_prompt).get("threat") or {}).get("threat_actions") or []
+        acts = (brief_of(user_prompt).get("threat") or {}).get("threat_actions") or []
         if "action_sentences" not in answer and isinstance(answer.get("scenario_statement"), str):
-            defaults["action_sentences"] = {act: answer["scenario_statement"] for act in acts}
+            defaults["action_sentences"] = dict.fromkeys(acts, 1)
         return defaults | answer
 
     def asked(self, task: AiTask) -> list[str]:

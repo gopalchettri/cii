@@ -3,7 +3,7 @@ two searches: candidates of the asset's IT / OT types from approved sources, the
 scores. Indicators of compromise never reach a model."""
 
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -57,6 +57,11 @@ def scoring_text(hit: IntelHit, titles: dict[tuple[IntelSource, str], str]) -> s
     return f"{parent}: {text}" if parent else text
 
 
+def technique_titles(hits: Iterable[IntelHit]) -> dict[tuple[IntelSource, str], str]:
+    """Each technique's title by (source, id): the `titles` scoring_text takes a parent's title from."""
+    return {(hit.source, hit.external_id): hit.title for hit in hits if hit.kind == IntelKind.TECHNIQUE}
+
+
 class EvidenceIndexRefused(Exception):
     """No current record, or rows and vectors out of step."""
 
@@ -96,9 +101,7 @@ class EvidenceIndex:
         self.built_at = utc_now()
         self._asset_types = np.array([hit.asset_type for hit in corpus.hits])
         self._sources = [frozenset({hit.source, *hit.joined}) for hit in corpus.hits]
-        self._titles = {
-            (h.source, h.external_id): h.title for h in corpus.hits if h.kind == IntelKind.TECHNIQUE
-        }
+        self._titles = technique_titles(corpus.hits)
 
     def reuse_for(self, corpus: EvidenceCorpus) -> "EvidenceIndex | None":
         """A new index over `corpus` that shares this one's vectors, when the corpus differs only in what the

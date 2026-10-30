@@ -6,9 +6,11 @@ from typing import Any
 
 import structlog
 
+from app.ai.module_chat import module_chat
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
+    ChatModule,
     Lease,
     LogEvent,
     PlanMessage,
@@ -73,9 +75,8 @@ def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[s
 def _made_with(library_stamp: dict[str, str | None]) -> dict[str, Any]:
     """The models and library version the plan was made with, frozen on the plan for the reviewer."""
     settings = get_settings()
-    chat_models = [settings.chat_model] + (
-        [settings.chat_fallback_model] if settings.chat_fallback_model else []
-    )
+    chat = module_chat(settings, ChatModule.SCENARIO)
+    chat_models = [chat.model] + ([chat.fallback_model] if chat.fallback_model else [])
     return {
         "chat_models": chat_models,
         "embedding_model": settings.embedding_model,

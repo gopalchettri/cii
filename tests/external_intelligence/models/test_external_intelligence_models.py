@@ -106,29 +106,22 @@ def test_the_runtime_switch_can_only_turn_intelligence_off() -> None:
     assert not SwitchState(env_enabled=False, runtime_enabled=True).effective
 
 
-def test_a_source_is_stale_after_the_limit() -> None:
-    fresh = SourceHealth(IntelSource.CISA_KEV, FeedStatus.OK, last_success_at=NOW - timedelta(hours=47))
-    old = SourceHealth(IntelSource.CISA_KEV, FeedStatus.OK, last_success_at=NOW - timedelta(hours=49))
-    assert not fresh.is_stale(NOW)
-    assert old.is_stale(NOW)
-    report = HealthReport(SwitchState(True), None, (fresh,), stale=False)
-    assert report.as_doc()["sources"][0]["source"] == "cisa_kev"
-    assert report.as_doc()["pending_sources"] == [] and report.as_doc()["no_data"] is False
-
-
-def test_a_source_that_never_succeeded_is_pending_not_stale() -> None:
+def test_a_source_that_never_succeeded_is_pending() -> None:
     never_run = SourceHealth(IntelSource.NIST_NVD)
     only_failed = SourceHealth(IntelSource.NIST_NVD, FeedStatus.FAILED, last_attempt_at=NOW)
-    for health in (never_run, only_failed):
-        assert health.is_pending and not health.is_stale(NOW)
+    assert never_run.is_pending and only_failed.is_pending
     old = SourceHealth(IntelSource.CISA_KEV, FeedStatus.OK, last_success_at=NOW - timedelta(hours=49))
-    assert old.is_stale(NOW) and not old.is_pending
+    assert not old.is_pending
+    doc = HealthReport(SwitchState(True), None, (old,)).as_doc()
+    assert (
+        doc["sources"][0]["source"] == "cisa_kev" and doc["pending_sources"] == [] and doc["no_data"] is False
+    )
 
 
 def test_the_report_lists_pending_sources_and_says_when_there_is_no_data() -> None:
-    report = HealthReport(SwitchState(True), None, (), False, (IntelSource.NIST_NVD,), True)
+    report = HealthReport(SwitchState(True), None, (), (IntelSource.NIST_NVD,), True)
     doc = report.as_doc()
-    assert doc["pending_sources"] == ["nist_nvd"] and doc["no_data"] is True and doc["stale"] is False
+    assert doc["pending_sources"] == ["nist_nvd"] and doc["no_data"] is True
 
 
 def test_the_fetch_failure_carries_its_filled_message() -> None:

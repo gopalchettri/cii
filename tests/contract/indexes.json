@@ -33,7 +33,7 @@
   },
   "options": {}
  },
- "tsg_ai_calls": {
+ "tsg_ai_call_texts": {
   "indexes": {
    "_id_": {
     "key": [
@@ -43,12 +43,15 @@
      ]
     ]
    },
-   "created_at_1": {
-    "expireAfterSeconds": 1209600,
+   "prompt_hash_1_created_at_-1": {
     "key": [
      [
-      "created_at",
+      "prompt_hash",
       1
+     ],
+     [
+      "created_at",
+      -1
      ]
     ]
    },
@@ -73,7 +76,132 @@
     ]
    }
   },
-  "options": {}
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
+ },
+ "tsg_ai_usage": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "created_at_1": {
+    "key": [
+     [
+      "created_at",
+      1
+     ]
+    ]
+   },
+   "request_id_1_created_at_1": {
+    "key": [
+     [
+      "request_id",
+      1
+     ],
+     [
+      "created_at",
+      1
+     ]
+    ],
+    "partialFilterExpression": {
+     "request_id": {
+      "$exists": true
+     }
+    }
+   },
+   "session_id_1_created_at_1": {
+    "key": [
+     [
+      "session_id",
+      1
+     ],
+     [
+      "created_at",
+      1
+     ]
+    ],
+    "partialFilterExpression": {
+     "session_id": {
+      "$exists": true
+     }
+    }
+   }
+  },
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
+ },
+ "tsg_ai_usage_hourly": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "hour_1": {
+    "key": [
+     [
+      "hour",
+      1
+     ]
+    ]
+   }
+  },
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
+ },
+ "tsg_ai_usage_requests": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "first_at_-1__id_-1": {
+    "key": [
+     [
+      "first_at",
+      -1
+     ],
+     [
+      "_id",
+      -1
+     ]
+    ]
+   }
+  },
+  "options": {
+   "storageEngine": {
+    "wiredTiger": {
+     "configString": "block_compressor=zstd"
+    }
+   }
+  }
  },
  "tsg_api_clients": {
   "indexes": {
@@ -647,46 +775,6 @@
    }
   }
  },
- "tsg_service_mapping_history": {
-  "indexes": {
-   "_id_": {
-    "key": [
-     [
-      "_id",
-      1
-     ]
-    ]
-   },
-   "mapping_id_1_generation_-1": {
-    "key": [
-     [
-      "mapping_id",
-      1
-     ],
-     [
-      "generation",
-      -1
-     ]
-    ]
-   }
-  },
-  "options": {
-   "validationAction": "error",
-   "validationLevel": "moderate",
-   "validator": {
-    "$jsonSchema": {
-     "bsonType": "object",
-     "required": [
-      "_id",
-      "mapping_id",
-      "generation",
-      "tenant_id",
-      "entity_id"
-     ]
-    }
-   }
-  }
- },
  "tsg_service_mappings": {
   "indexes": {
    "_id_": {
@@ -696,6 +784,28 @@
       1
      ]
     ]
+   },
+   "one_mapping_per_service": {
+    "key": [
+     [
+      "tenant_id",
+      1
+     ],
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "service_key",
+      1
+     ]
+    ],
+    "partialFilterExpression": {
+     "service_key": {
+      "$type": "string"
+     }
+    },
+    "unique": true
    },
    "status_1_finished_at_1": {
     "key": [
@@ -733,28 +843,6 @@
      ]
     ]
    },
-   "tenant_id_1_entity_id_1_create_key_1": {
-    "key": [
-     [
-      "tenant_id",
-      1
-     ],
-     [
-      "entity_id",
-      1
-     ],
-     [
-      "create_key",
-      1
-     ]
-    ],
-    "partialFilterExpression": {
-     "create_key": {
-      "$type": "string"
-     }
-    },
-    "unique": true
-   },
    "tenant_id_1_entity_id_1_created_at_-1": {
     "key": [
      [
@@ -768,6 +856,22 @@
      [
       "created_at",
       -1
+     ]
+    ]
+   },
+   "tenant_id_1_entity_id_1_request_keys.key_1": {
+    "key": [
+     [
+      "tenant_id",
+      1
+     ],
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "request_keys.key",
+      1
      ]
     ]
    },

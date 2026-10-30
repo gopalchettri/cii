@@ -3,6 +3,7 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
 from app.core.prompts import PROMPTS
 
 
@@ -38,13 +39,12 @@ class Step(StrEnum):
 
 class Collection(StrEnum):
     SERVICE_MAPPINGS = "tsg_service_mappings"
-    SERVICE_MAPPING_HISTORY = "tsg_service_mapping_history"
     SESSIONS = "tsg_sessions"
     SCENARIOS = "tsg_scenarios"
     API_CLIENTS = "tsg_api_clients"
     EMBEDDINGS = "tsg_embeddings"  # the library's vectors
     QUERY_VECTORS = "tsg_query_vectors"  # search queries' vectors, kept Cache.QUERY_VECTOR_DAYS
-    AI_CALLS = "tsg_ai_calls"
+    AI_CALLS = "tsg_ai_call_texts"  # kept for good: a name no older release gives an expiry
     AUDIT = "tsg_audit"
     REMEDIATIONS = "tsg_remediations"  # one remediation plan per scenario, with its versions
     ADMIN_JOBS = "tsg_admin_jobs"
@@ -121,7 +121,7 @@ AI_OUTAGE_MESSAGES: Final = {
 
 class AiTask(StrEnum):
     SERVICE_MAPPER = "service_mapper"
-    """Why an AI model is called (metrics label and tsg_ai_calls field)."""
+    """Why an AI model is called (metrics label, tsg_ai_call_texts and tsg_ai_usage field)."""
 
     RELEVANCE_GATE = "relevance_gate"
     GAP_FILL = "gap_fill"
@@ -156,17 +156,21 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.WRITE_SCENARIO: None,
     AiTask.REPAIR_SCENARIO: None,
 }
+#: The asks a run answers with an earlier run's answer to the very same conversation, within
+#: CII_THREAT_FINDING_REUSE_HOURS: threat finding's, asked at 0.0 for a repeatable answer.
+REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL})
 
-#: Most answer tokens per chat task: twice the most an ok call used (dev, thinking off), at least 2048,
-#: rounded up to 1024; an answer cut off at it is asked once more at the model's limit. Not listed, or a model
-#: thinking: the model's limit. remediation_plan: ~140 tokens a control (2601 at dev's most, 10; up to 50).
+#: Most answer tokens per chat task (CII_ANSWER_TOKENS_<TASK>), counted against the AI service's budget while
+#: a question runs; an answer cut off at it is asked again at the model's limit, as a thinking model is.
 CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
-    AiTask.RELEVANCE_GATE: 8192,  # most used: 3642 by a batch of 20 threats, 1877 by one of 10
-    AiTask.SERVICE_MAPPER: 4096,  # 1997, at 10 upstream and 10 downstream (SERVICE_MAPPER_*_TOTAL_COUNT)
-    AiTask.WRITE_SCENARIO: 3072,  # 1158
-    AiTask.REPAIR_SCENARIO: 3072,  # the writer's answer again
-    AiTask.PLAN_CHECK: 2048,  # 478
-    AiTask.THREAT_ACTIONS: 2048,  # the least: a few short phrases
+    AiTask.RELEVANCE_GATE: TUNING.answer_tokens_relevance_gate,
+    AiTask.GAP_FILL: TUNING.answer_tokens_gap_fill,
+    AiTask.THREAT_ACTIONS: TUNING.answer_tokens_threat_actions,
+    AiTask.WRITE_SCENARIO: TUNING.answer_tokens_write_scenario,
+    AiTask.REPAIR_SCENARIO: TUNING.answer_tokens_repair_scenario,
+    AiTask.PLAN_CHECK: TUNING.answer_tokens_plan_check,
+    AiTask.REMEDIATION_PLAN: TUNING.answer_tokens_remediation_plan,
+    AiTask.SERVICE_MAPPER: TUNING.answer_tokens_service_mapper,
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
@@ -215,6 +219,8 @@ class LogEvent(StrEnum):
     MONGODB_TOPOLOGY = "mongodb.topology"  # at start: replica set or standalone, version, write concern
     REDIS_EVICTION_POLICY = "redis.eviction_policy"  # at start: maxmemory-policy, error unless noeviction
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
+    # collMod refused while the stored rule requires fields the code no longer writes: every insert fails
+    MONGODB_VALIDATOR_STALE = "mongodb.validator_stale"
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
@@ -240,10 +246,10 @@ class LogEvent(StrEnum):
     LIBRARY_INDEXES_BUILT = "library.indexes_built"
     LIBRARY_INDEXES_BUILD_FAILED = "library.indexes_build_failed"
     PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
+    PLANNER_CATEGORY_DROPPED = "planner.category_dropped"  # the gate named a category the threat lacks
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
     PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
-    WRITER_THREAT_ACTIONS_NOT_SPLIT = "writer.threat_actions_not_split"  # the writer and reviewer split it
     WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"

@@ -85,7 +85,7 @@ class MappingError(BaseModel):
 
 
 class RelationshipCounts(BaseModel):
-    """The current generation's relationships, one per direction: 0 while it is generating."""
+    """The mapping's relationships, one per direction; a run going on adds to them when it ends."""
 
     total: int
     accepted: int
@@ -93,9 +93,17 @@ class RelationshipCounts(BaseModel):
     pending: int
 
 
+class MappingTimings(BaseModel):
+    """The latest run's seconds per activity, once it is done."""
+
+    catalog: float | None = None  # reading the onboarding catalog
+    services: float | None = None  # finding the upstream and downstream services: ranking, the AI, matching
+
+
 class MappingProgress(BaseModel):
     overall: MappingOverall
     relationships: RelationshipCounts
+    timings: MappingTimings = MappingTimings()
 
 
 class MappingStatus(BaseModel):
@@ -105,7 +113,9 @@ class MappingStatus(BaseModel):
     entity_id: int
     user_id: str | None
     status: Status
-    generation: int
+    generation: int  # the latest run: 1 for the first, one more for each Generate again or Regenerate
+    generations_done: int  # runs that finished; a failed one does not count
+    max_generations: int  # SERVICE_MAPPER_MAX_GENERATIONS: the most runs, the first included (0: no limit)
     progress: MappingProgress
     retrying: RetryNotice | None = None  # waiting out an AI or store outage: why, which try comes when
     error: MappingError | None = None  # once failed
@@ -122,6 +132,7 @@ class DependencyService(BaseModel):
     dependency_reason: str
     applicability: str | None
     ai_suggested: bool
+    generation: int | None = None  # the run that found it (None: found before runs were counted)
     isAccepted: bool | None = None
     accepted_datetime: datetime | None = None
     accepted_by: str | None = None
@@ -138,7 +149,9 @@ class MappingSummary(BaseModel):
 class MappingView(BaseModel):
     mapping_id: str
     status: Status
-    generation: int
+    generation: int  # the latest run: 1 for the first, one more for each Generate again or Regenerate
+    generations_done: int  # runs that finished; a failed one does not count
+    max_generations: int  # SERVICE_MAPPER_MAX_GENERATIONS: the most runs, the first included (0: no limit)
     upstream_services: list[DependencyService]
     downstream_services: list[DependencyService]
     summary: MappingSummary
@@ -151,7 +164,9 @@ class MappingView(BaseModel):
 class MappingListItem(BaseModel):
     mapping_id: str
     status: Status
-    generation: int
+    generation: int  # the latest run: 1 for the first, one more for each Generate again or Regenerate
+    generations_done: int  # runs that finished; a failed one does not count
+    max_generations: int  # SERVICE_MAPPER_MAX_GENERATIONS: the most runs, the first included (0: no limit)
     selected_service: SelectedService
     created_at: datetime
     updated_at: datetime

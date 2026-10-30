@@ -2,8 +2,11 @@
 lease, and a beat sweep requeues stalled ones. Controls belong to scenarios: the epoch is not checked."""
 
 import contextlib
+import threading
 import time
-from datetime import timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from functools import partial
 from typing import Any
 
 import structlog
@@ -30,7 +33,7 @@ from app.core.exceptions import (
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.scenario.controls import ControlMapper, controls_record, embed_control_queries
 from app.domain.shared.parallel import run_in_parallel
 from app.models.scenario.asset_context import FrozenContext
 from app.realtime.publisher import publish_session_status
@@ -106,10 +109,13 @@ class ControlsJob:
 
 
 def recount_and_publish(
-    sessions: ThreatScenarioSessionRepository, session_id: str, controls_seconds: float = 0.0
+    sessions: ThreatScenarioSessionRepository,
+    session_id: str,
+    controls_seconds: float = 0.0,
+    card_queued_at: datetime | None = None,
 ) -> dict[str, int]:
     """Recount a run's counts and tell its watchers: the one path every controls change takes."""
-    counts = sessions.update_scenario_session_counts(session_id, controls_seconds)
+    counts = sessions.update_scenario_session_counts(session_id, controls_seconds, card_queued_at)
     publish_session_status(session_id)
     return counts
 
@@ -133,17 +139,20 @@ class RunControls:
         self._sessions, self._scenarios = sessions, scenarios
         self._snapshot, self._mapper = snapshot, mapper
         self._taken_over = False  # another delivery took the run over mid-turn
+        self._queries_embedded = _OneEmbedCall(lambda: None)  # the claimed scenarios' control queries
 
     def map_all(self) -> int:
         """Map up to Controls.PER_DELIVERY scenarios, all at once on a remote reranker (the local CPU model
-        predicts one at a time: one by one), updating the run's counts and watchers after each; a delivery
-        that used its whole turn hands the run over and queues its next turn behind other work. A failure is
-        raised once the scenarios beside it are saved."""
+        predicts one at a time: one by one), their control queries embedded in one call, updating the run's
+        counts and watchers after each; a delivery that used its whole turn hands the run over and queues its
+        next turn behind other work. A failure is raised once the scenarios beside it are saved."""
         at_once = Controls.PER_DELIVERY if get_settings().rerank_base_url else 1
         mapped = 0
         for _ in range(Controls.PER_DELIVERY // at_once):
             # Claimed before any is mapped: a scenario an outage gives back is never claimed again this turn.
             scenarios = self._claim_up_to(at_once)
+            embed = partial(embed_control_queries, scenarios, self._context, self._snapshot)
+            self._queries_embedded = _OneEmbedCall(embed)
             mapped += sum(run_in_parallel(self._map_and_count, scenarios, at_once, "controls"))
             if self._taken_over:  # the run's lease ran out mid-turn and another delivery took the run over
                 return mapped
@@ -165,16 +174,23 @@ class RunControls:
         return claimed
 
     def _map_and_count(self, scenario: dict[str, Any]) -> int:
-        """Map one claimed scenario under the request that wrote it (the run's job may be a later one's),
-        then, mapped or failed, update the run's counts, watchers and lease: 1 when saved."""
-        writer = scenario["controls"].get("request_id")  # None on a card written before it was stored
+        """Map one claimed scenario under the request and API call that wrote it (the run's job may be a later
+        one's), then, mapped or failed, update the run's counts, watchers and lease: 1 when saved."""
+        # None on a card written before they were stored.
+        writer = {
+            "request_id": scenario["controls"].get("request_id"),
+            **(scenario["controls"].get("origin") or {}),
+        }
         started = time.perf_counter()  # high resolution: monotonic ticks every ~16 ms on Windows
         # A context manager, not a bind: one scenario runs in the caller's context (run_in_parallel).
-        with structlog.contextvars.bound_contextvars(**({"request_id": writer} if writer else {})):
+        with structlog.contextvars.bound_contextvars(
+            **{name: value for name, value in writer.items() if value}
+        ):
             try:
                 return self._map_one(scenario)
             finally:
-                recount_and_publish(self._sessions, self._record_id, time.perf_counter() - started)
+                seconds, queued_at = time.perf_counter() - started, scenario["controls"].get("queued_at")
+                recount_and_publish(self._sessions, self._record_id, seconds, queued_at)
                 if not self._sessions.update_controls_delivery(self._record_id, self._task_id):
                     self._taken_over = True
 
@@ -196,6 +212,7 @@ class RunControls:
             )
             # Background work: on a local CPU reranker any waiting foreground rerank goes first.
             with keep_lease_alive(lease, lease.give_back), background_reranks():
+                self._queries_embedded.wait()  # under this scenario's lease: the call may be slow
                 mapping = self._mapper.map_controls(scenario, self._context, self._snapshot)
         except ControlsNotMapped as exc:
             self._fail(scenario_id, attempts, exc.code, exc.message)
@@ -232,6 +249,35 @@ class RunControls:
         self._scenarios.update_scenario_controls(
             scenario_id, self._task_id, attempts, Status.FAILED, error=error
         )
+
+
+class _OneEmbedCall:
+    """A turn's control queries embedded in one call by the first of its mappings to ask, the others waiting
+    under their own leases; each search then reads its stored vector."""
+
+    def __init__(self, embed: Callable[[], None]) -> None:
+        self._embed, self._lock = embed, threading.Lock()
+        self._tried = False
+        self._outage: Exception | None = None
+
+    def wait(self) -> None:
+        """Embed on the first call. An outage is every mapping's, as its own search would meet it; any other
+        fault is left to each scenario's own search."""
+        with self._lock:
+            if not self._tried:
+                self._tried, self._outage = True, self._embed_or_outage()
+        if self._outage is not None:
+            raise self._outage
+
+    def _embed_or_outage(self) -> Exception | None:
+        """The outage the call met, if any."""
+        try:
+            self._embed()
+        except TEMPORARY_ERRORS as exc:
+            return exc
+        except Exception:  # noqa: BLE001 - each scenario's own search meets it and settles it
+            return None
+        return None
 
 
 class _ScenarioLease:

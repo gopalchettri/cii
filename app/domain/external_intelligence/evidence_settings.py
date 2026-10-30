@@ -6,9 +6,10 @@ from app.core.constants import EVIDENCE_THRESHOLD_CALIBRATED_ON
 
 
 def evidence_settings(rerank_model: str, threshold: float) -> dict[str, Any]:
-    """The reranker's name (never its path), the threshold and whether an operator calibrated it there."""
+    """The reranker's name (never its path), the threshold and whether it is the one calibrated there."""
     model = rerank_model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    calibrated_on = EVIDENCE_THRESHOLD_CALIBRATED_ON.get(model)
+    calibration = EVIDENCE_THRESHOLD_CALIBRATED_ON.get(model)
+    calibrated_on = calibration[0] if calibration and calibration[1] == threshold else None
     return {
         "rerank_model": model,
         "threshold": threshold,

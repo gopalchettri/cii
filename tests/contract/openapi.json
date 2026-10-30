@@ -154,6 +154,84 @@
     "title": "ActionStatus",
     "type": "string"
    },
+   "ActivityUsage": {
+    "description": "One activity (a task in a part) on one model.",
+    "properties": {
+     "activity": {
+      "description": "The task's name in this part, e.g. Relevance check.",
+      "title": "Activity",
+      "type": "string"
+     },
+     "bucket": {
+      "description": "The part of the work, e.g. threats.",
+      "title": "Bucket",
+      "type": "string"
+     },
+     "bucket_label": {
+      "title": "Bucket Label",
+      "type": "string"
+     },
+     "description": {
+      "description": "What the AI does for this activity.",
+      "title": "Description",
+      "type": "string"
+     },
+     "failed_calls": {
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "reused_answers": {
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "task": {
+      "description": "The AI task, e.g. relevance_gate.",
+      "title": "Task",
+      "type": "string"
+     },
+     "tokens_in": {
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "bucket",
+     "bucket_label",
+     "task",
+     "activity",
+     "description",
+     "model",
+     "total_ai_calls",
+     "successful_calls",
+     "failed_calls",
+     "reused_answers",
+     "tokens_in",
+     "tokens_out",
+     "seconds"
+    ],
+    "title": "ActivityUsage",
+    "type": "object"
+   },
    "ActorView": {
     "properties": {
      "actor_id": {
@@ -335,6 +413,31 @@
     "title": "AdminJobStarted",
     "type": "object"
    },
+   "AiApi": {
+    "description": "The API call that started a job's AI work (job.origin.api), stored on every usage row.",
+    "enum": [
+     "create_scenario",
+     "next_set",
+     "regenerate",
+     "create_plan",
+     "create_mapping"
+    ],
+    "title": "AiApi",
+    "type": "string"
+   },
+   "AiBucket": {
+    "description": "The part of a module's work an AI call is counted in.",
+    "enum": [
+     "threats",
+     "scenario",
+     "controls",
+     "remediation",
+     "service_mapper",
+     "shared"
+    ],
+    "title": "AiBucket",
+    "type": "string"
+   },
    "AiOutage": {
     "description": "Why the AI service did not answer: the `reason` of a retry notice and of a stage that failed for it.",
     "enum": [
@@ -344,6 +447,39 @@
      "ai_timed_out"
     ],
     "title": "AiOutage",
+    "type": "string"
+   },
+   "AiTask": {
+    "enum": [
+     "service_mapper",
+     "relevance_gate",
+     "gap_fill",
+     "threat_actions",
+     "write_scenario",
+     "repair_scenario",
+     "plan_check",
+     "remediation_plan",
+     "embed",
+     "rerank"
+    ],
+    "title": "AiTask",
+    "type": "string"
+   },
+   "AiUsageGroup": {
+    "description": "What a totals report adds up by (?group_by=): a time step in the caller's time zone, or a row field.",
+    "enum": [
+     "hour",
+     "day",
+     "month",
+     "module",
+     "api",
+     "bucket",
+     "task",
+     "model",
+     "entity_id",
+     "client_id"
+    ],
+    "title": "AiUsageGroup",
     "type": "string"
    },
    "ApiClientList": {
@@ -936,9 +1072,17 @@
       "title": "Generation",
       "type": "integer"
      },
+     "generations_done": {
+      "title": "Generations Done",
+      "type": "integer"
+     },
      "mapping_id": {
       "title": "Mapping Id",
       "type": "string"
+     },
+     "max_generations": {
+      "title": "Max Generations",
+      "type": "integer"
      },
      "retrying": {
       "anyOf": [
@@ -973,6 +1117,8 @@
      "mapping_id",
      "status",
      "generation",
+     "generations_done",
+     "max_generations",
      "upstream_services",
      "downstream_services",
      "summary",
@@ -1029,6 +1175,17 @@
      "dependency_reason": {
       "title": "Dependency Reason",
       "type": "string"
+     },
+     "generation": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Generation"
      },
      "isAccepted": {
       "anyOf": [
@@ -1449,10 +1606,6 @@
       "title": "Sources",
       "type": "array"
      },
-     "stale": {
-      "title": "Stale",
-      "type": "boolean"
-     },
      "switch": {
       "$ref": "#/components/schemas/IntelSwitchOut"
      }
@@ -1460,7 +1613,6 @@
     "required": [
      "switch",
      "sources",
-     "stale",
      "evidence"
     ],
     "title": "IntelHealthOut",
@@ -2173,8 +2325,7 @@
    "MapperDecisionFailure": {
     "description": "Why one id of a relationship decision was not saved (the others still are).",
     "enum": [
-     "dependency_not_found",
-     "decision_final"
+     "dependency_not_found"
     ],
     "title": "MapperDecisionFailure",
     "type": "string"
@@ -2265,9 +2416,17 @@
       "title": "Generation",
       "type": "integer"
      },
+     "generations_done": {
+      "title": "Generations Done",
+      "type": "integer"
+     },
      "mapping_id": {
       "title": "Mapping Id",
       "type": "string"
+     },
+     "max_generations": {
+      "title": "Max Generations",
+      "type": "integer"
      },
      "selected_service": {
       "$ref": "#/components/schemas/SelectedService"
@@ -2285,6 +2444,8 @@
      "mapping_id",
      "status",
      "generation",
+     "generations_done",
+     "max_generations",
      "selected_service",
      "created_at",
      "updated_at"
@@ -2310,6 +2471,10 @@
      },
      "relationships": {
       "$ref": "#/components/schemas/RelationshipCounts"
+     },
+     "timings": {
+      "$ref": "#/components/schemas/MappingTimings",
+      "default": {}
      }
     },
     "required": [
@@ -2345,9 +2510,17 @@
       "title": "Generation",
       "type": "integer"
      },
+     "generations_done": {
+      "title": "Generations Done",
+      "type": "integer"
+     },
      "mapping_id": {
       "title": "Mapping Id",
       "type": "string"
+     },
+     "max_generations": {
+      "title": "Max Generations",
+      "type": "integer"
      },
      "progress": {
       "$ref": "#/components/schemas/MappingProgress"
@@ -2388,6 +2561,8 @@
      "user_id",
      "status",
      "generation",
+     "generations_done",
+     "max_generations",
      "progress",
      "created_at",
      "updated_at"
@@ -2428,6 +2603,35 @@
     "title": "MappingSummary",
     "type": "object"
    },
+   "MappingTimings": {
+    "description": "The latest run's seconds per activity, once it is done.",
+    "properties": {
+     "catalog": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Catalog"
+     },
+     "services": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Services"
+     }
+    },
+    "title": "MappingTimings",
+    "type": "object"
+   },
    "MappingView": {
     "properties": {
      "created_at": {
@@ -2456,9 +2660,17 @@
       "title": "Generation",
       "type": "integer"
      },
+     "generations_done": {
+      "title": "Generations Done",
+      "type": "integer"
+     },
      "mapping_id": {
       "title": "Mapping Id",
       "type": "string"
+     },
+     "max_generations": {
+      "title": "Max Generations",
+      "type": "integer"
      },
      "retrying": {
       "anyOf": [
@@ -2493,6 +2705,8 @@
      "mapping_id",
      "status",
      "generation",
+     "generations_done",
+     "max_generations",
      "upstream_services",
      "downstream_services",
      "summary",
@@ -2801,6 +3015,50 @@
      "status"
     ],
     "title": "MonitoredJob",
+    "type": "object"
+   },
+   "PartCounts": {
+    "description": "One part of a module's work (threats, scenario, controls, remediation, service_mapper).",
+    "properties": {
+     "by_task": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "AI calls per task in this part, in reports 2 and 3. Always empty in totals (report 1): group by task there, and each row's `key` names it.",
+      "title": "By Task",
+      "type": "object"
+     },
+     "description": {
+      "description": "What the AI does in this part.",
+      "title": "Description",
+      "type": "string"
+     },
+     "failed_calls": {
+      "default": 0,
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "label": {
+      "description": "The part's name, e.g. Finding threats.",
+      "title": "Label",
+      "type": "string"
+     },
+     "successful_calls": {
+      "default": 0,
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "label",
+     "description"
+    ],
+    "title": "PartCounts",
     "type": "object"
    },
    "PendingThreat": {
@@ -3599,6 +3857,35 @@
     "title": "PlanStarted",
     "type": "object"
    },
+   "PlanTimings": {
+    "description": "The latest version's seconds per activity, once each is done: its controls, then its plan.",
+    "properties": {
+     "controls": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Controls"
+     },
+     "plan": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Plan"
+     }
+    },
+    "title": "PlanTimings",
+    "type": "object"
+   },
    "PlanTraceView": {
     "description": "GET /v1/sessions/{id}/plan-trace: how many candidates each planning stage took in and let out, each\ncandidate left out with its reason, and what became of the planned paths.",
     "properties": {
@@ -3952,7 +4239,7 @@
     "type": "object"
    },
    "RelationshipCounts": {
-    "description": "The current generation's relationships, one per direction: 0 while it is generating.",
+    "description": "The mapping's relationships, one per direction; a run going on adds to them when it ends.",
     "properties": {
      "accepted": {
       "title": "Accepted",
@@ -4330,6 +4617,422 @@
      "updated_at"
     ],
     "title": "RemediationSummary",
+    "type": "object"
+   },
+   "RequestUsage": {
+    "description": "One API call's AI work: who asked, when, on which models, in which parts.",
+    "properties": {
+     "api": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api"
+     },
+     "api_description": {
+      "default": "",
+      "description": "What the API call starts.",
+      "title": "Api Description",
+      "type": "string"
+     },
+     "api_label": {
+      "default": "",
+      "description": "The API call's name, e.g. Create scenario.",
+      "title": "Api Label",
+      "type": "string"
+     },
+     "asks": {
+      "default": 0,
+      "description": "Questions put to the AI; one ask may take several attempts.",
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "description": "AI calls per part; every part of the module is listed, 0 when none.",
+      "title": "Buckets",
+      "type": "object"
+     },
+     "client_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The client id of the caller's X-API-Key.",
+      "title": "Client Id"
+     },
+     "entity_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The X-Entity-Id of the caller.",
+      "title": "Entity Id"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "description": "Attempts beyond one per ask: retries, a fallback model, re-asks.",
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "description": "Attempts that did not end `ok`; `outcomes` says how.",
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "first_at": {
+      "description": "When its first AI call was made.",
+      "format": "date-time",
+      "title": "First At",
+      "type": "string"
+     },
+     "last_at": {
+      "description": "When its last AI call was made.",
+      "format": "date-time",
+      "title": "Last At",
+      "type": "string"
+     },
+     "models": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "AI calls per model.",
+      "title": "Models",
+      "type": "object"
+     },
+     "module": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Module"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "Rows per outcome (ok, unreadable, truncated, unavailable, error, reused); `reused` is an earlier answer used again, not an attempt. An outcome with none is left out.",
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "request_id": {
+      "description": "The API call's X-Request-Id: open it with report 3.",
+      "title": "Request Id",
+      "type": "string"
+     },
+     "reused_answers": {
+      "default": 0,
+      "description": "Earlier answers used again, with no call made.",
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "description": "Time the attempts took, added up.",
+      "title": "Seconds",
+      "type": "number"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "successful_calls": {
+      "default": 0,
+      "description": "Attempts that ended `ok`.",
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "description": "Attempts sent to a model (a reused answer is none).",
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "request_id",
+     "first_at",
+     "last_at"
+    ],
+    "title": "RequestUsage",
+    "type": "object"
+   },
+   "RequestUsageDetail": {
+    "properties": {
+     "activities": {
+      "description": "Each activity on each model, by part (threats, scenario, controls, remediation, service_mapper, shared), then by task name: not the order the calls ran.",
+      "items": {
+       "$ref": "#/components/schemas/ActivityUsage"
+      },
+      "title": "Activities",
+      "type": "array"
+     },
+     "api": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api"
+     },
+     "api_description": {
+      "default": "",
+      "description": "What the API call starts.",
+      "title": "Api Description",
+      "type": "string"
+     },
+     "api_label": {
+      "default": "",
+      "description": "The API call's name, e.g. Create scenario.",
+      "title": "Api Label",
+      "type": "string"
+     },
+     "asks": {
+      "default": 0,
+      "description": "Questions put to the AI; one ask may take several attempts.",
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "description": "AI calls per part; every part of the module is listed, 0 when none.",
+      "title": "Buckets",
+      "type": "object"
+     },
+     "client_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The client id of the caller's X-API-Key.",
+      "title": "Client Id"
+     },
+     "entity_id": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The X-Entity-Id of the caller.",
+      "title": "Entity Id"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "description": "Attempts beyond one per ask: retries, a fallback model, re-asks.",
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "description": "Attempts that did not end `ok`; `outcomes` says how.",
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "first_at": {
+      "description": "When its first AI call was made.",
+      "format": "date-time",
+      "title": "First At",
+      "type": "string"
+     },
+     "last_at": {
+      "description": "When its last AI call was made.",
+      "format": "date-time",
+      "title": "Last At",
+      "type": "string"
+     },
+     "models": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "AI calls per model.",
+      "title": "Models",
+      "type": "object"
+     },
+     "module": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Module"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "Rows per outcome (ok, unreadable, truncated, unavailable, error, reused); `reused` is an earlier answer used again, not an attempt. An outcome with none is left out.",
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "request_id": {
+      "description": "The API call's X-Request-Id: open it with report 3.",
+      "title": "Request Id",
+      "type": "string"
+     },
+     "reused_answers": {
+      "default": 0,
+      "description": "Earlier answers used again, with no call made.",
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "description": "Time the attempts took, added up.",
+      "title": "Seconds",
+      "type": "number"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "successful_calls": {
+      "default": 0,
+      "description": "Attempts that ended `ok`.",
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "description": "Attempts sent to a model (a reused answer is none).",
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "request_id",
+     "first_at",
+     "last_at",
+     "activities"
+    ],
+    "title": "RequestUsageDetail",
+    "type": "object"
+   },
+   "RequestUsageList": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/RequestUsage"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Pass as `after` for the next page; null on the last page.",
+      "title": "Next"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SessionUsage"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The whole session's counts, with `session_id`."
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "RequestUsageList",
     "type": "object"
    },
    "RetryNotice": {
@@ -5598,6 +6301,94 @@
     "title": "SessionState",
     "type": "string"
    },
+   "SessionUsage": {
+    "properties": {
+     "asks": {
+      "default": 0,
+      "description": "Questions put to the AI; one ask may take several attempts.",
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "title": "Buckets",
+      "type": "object"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "description": "Attempts beyond one per ask: retries, a fallback model, re-asks.",
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "description": "Attempts that did not end `ok`; `outcomes` says how.",
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "models": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Models",
+      "type": "object"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "Rows per outcome (ok, unreadable, truncated, unavailable, error, reused); `reused` is an earlier answer used again, not an attempt. An outcome with none is left out.",
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "requests": {
+      "default": 0,
+      "description": "API calls of the session that made AI calls.",
+      "title": "Requests",
+      "type": "integer"
+     },
+     "reused_answers": {
+      "default": 0,
+      "description": "Earlier answers used again, with no call made.",
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "description": "Time the attempts took, added up.",
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "default": 0,
+      "description": "Attempts that ended `ok`.",
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "description": "Attempts sent to a model (a reused answer is none).",
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "title": "SessionUsage",
+    "type": "object"
+   },
    "StageState": {
     "description": "One stage of a run (threats, scenarios, controls) as the status shows it.",
     "enum": [
@@ -5611,7 +6402,7 @@
     "type": "string"
    },
    "StageTimings": {
-    "description": "Seconds per stage, once it is complete (scenarios and controls: the last set's or regenerate's).",
+    "description": "The latest action's seconds per activity, once each is complete: identifying the threats, writing\nthe scenarios, identifying their controls.",
     "properties": {
      "controls": {
       "anyOf": [
@@ -6008,6 +6799,152 @@
     "title": "ThreatSource",
     "type": "string"
    },
+   "TotalsRow": {
+    "description": "One group of a totals report: its key (the `group_by` fields) and its counts.",
+    "properties": {
+     "activity": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "With bucket and task in `group_by`.",
+      "title": "Activity"
+     },
+     "activity_description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Activity Description"
+     },
+     "api_description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api Description"
+     },
+     "api_label": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "With module and api in `group_by`.",
+      "title": "Api Label"
+     },
+     "asks": {
+      "default": 0,
+      "description": "Questions put to the AI; one ask may take several attempts.",
+      "title": "Asks",
+      "type": "integer"
+     },
+     "buckets": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/PartCounts"
+      },
+      "title": "Buckets",
+      "type": "object"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "description": "Attempts beyond one per ask: retries, a fallback model, re-asks.",
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "description": "Attempts that did not end `ok`; `outcomes` says how.",
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "key": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "string"
+        }
+       ]
+      },
+      "description": "The group: a value per `group_by` field; empty text for no module or API (shared work).",
+      "title": "Key",
+      "type": "object"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "Rows per outcome (ok, unreadable, truncated, unavailable, error, reused); `reused` is an earlier answer used again, not an attempt. An outcome with none is left out.",
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "requests": {
+      "default": 0,
+      "description": "API calls whose first AI call falls in this group.",
+      "title": "Requests",
+      "type": "integer"
+     },
+     "reused_answers": {
+      "default": 0,
+      "description": "Earlier answers used again, with no call made.",
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "description": "Time the attempts took, added up.",
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "default": 0,
+      "description": "Attempts that ended `ok`.",
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "description": "Attempts sent to a model (a reused answer is none).",
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "key"
+    ],
+    "title": "TotalsRow",
+    "type": "object"
+   },
    "UnresolvedGapView": {
     "description": "A gap the plan could not close with a checked library control, reported apart from its controls.",
     "properties": {
@@ -6035,6 +6972,371 @@
      "detail"
     ],
     "title": "UnresolvedGapView",
+    "type": "object"
+   },
+   "UsageCall": {
+    "description": "One AI attempt (or a reused answer), with what it was for and how it went.",
+    "properties": {
+     "activity": {
+      "title": "Activity",
+      "type": "string"
+     },
+     "api": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Api"
+     },
+     "ask_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The ask it belongs to: retries of one ask share it.",
+      "title": "Ask Id"
+     },
+     "attempt": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Attempt"
+     },
+     "bucket": {
+      "title": "Bucket",
+      "type": "string"
+     },
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "epoch": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Epoch"
+     },
+     "error_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error Type"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "module": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Module"
+     },
+     "outcome": {
+      "description": "ok, unreadable, truncated, unavailable, error, or reused.",
+      "title": "Outcome",
+      "type": "string"
+     },
+     "reask": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reask"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Why it failed, when known, e.g. ai_down.",
+      "title": "Reason"
+     },
+     "record_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The run, plan or mapping it worked on.",
+      "title": "Record Id"
+     },
+     "request_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Request Id"
+     },
+     "seconds": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Seconds"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "task": {
+      "title": "Task",
+      "type": "string"
+     },
+     "tokens_in": {
+      "default": 0,
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "try_no": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Its try within the ask, from 1; null for a reused answer.",
+      "title": "Try No"
+     }
+    },
+    "required": [
+     "id",
+     "created_at",
+     "bucket",
+     "task",
+     "activity",
+     "description",
+     "outcome"
+    ],
+    "title": "UsageCall",
+    "type": "object"
+   },
+   "UsageCallList": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/UsageCall"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Pass as `after` for the next page; null on the last page.",
+      "title": "Next"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "UsageCallList",
+    "type": "object"
+   },
+   "UsageCounts": {
+    "description": "Every count of a set of usage rows.",
+    "properties": {
+     "asks": {
+      "default": 0,
+      "description": "Questions put to the AI; one ask may take several attempts.",
+      "title": "Asks",
+      "type": "integer"
+     },
+     "extra_attempts": {
+      "default": 0,
+      "description": "Attempts beyond one per ask: retries, a fallback model, re-asks.",
+      "title": "Extra Attempts",
+      "type": "integer"
+     },
+     "failed_calls": {
+      "default": 0,
+      "description": "Attempts that did not end `ok`; `outcomes` says how.",
+      "title": "Failed Calls",
+      "type": "integer"
+     },
+     "outcomes": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "description": "Rows per outcome (ok, unreadable, truncated, unavailable, error, reused); `reused` is an earlier answer used again, not an attempt. An outcome with none is left out.",
+      "title": "Outcomes",
+      "type": "object"
+     },
+     "reused_answers": {
+      "default": 0,
+      "description": "Earlier answers used again, with no call made.",
+      "title": "Reused Answers",
+      "type": "integer"
+     },
+     "seconds": {
+      "default": 0.0,
+      "description": "Time the attempts took, added up.",
+      "title": "Seconds",
+      "type": "number"
+     },
+     "successful_calls": {
+      "default": 0,
+      "description": "Attempts that ended `ok`.",
+      "title": "Successful Calls",
+      "type": "integer"
+     },
+     "tokens_in": {
+      "default": 0,
+      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens In",
+      "type": "integer"
+     },
+     "tokens_out": {
+      "default": 0,
+      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "title": "Tokens Out",
+      "type": "integer"
+     },
+     "total_ai_calls": {
+      "default": 0,
+      "description": "Attempts sent to a model (a reused answer is none).",
+      "title": "Total Ai Calls",
+      "type": "integer"
+     }
+    },
+    "title": "UsageCounts",
+    "type": "object"
+   },
+   "UsageTotals": {
+    "properties": {
+     "group_by": {
+      "items": {
+       "$ref": "#/components/schemas/AiUsageGroup"
+      },
+      "title": "Group By",
+      "type": "array"
+     },
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/TotalsRow"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "since": {
+      "description": "The range's start, rounded down to the hour, in `tz`.",
+      "format": "date-time",
+      "title": "Since",
+      "type": "string"
+     },
+     "total": {
+      "$ref": "#/components/schemas/UsageCounts",
+      "description": "The whole range's counts, every group together."
+     },
+     "truncated": {
+      "default": false,
+      "description": "More than 10,000 groups: only the first are listed (`total` still counts all). Narrow the range or the filters.",
+      "title": "Truncated",
+      "type": "boolean"
+     },
+     "tz": {
+      "title": "Tz",
+      "type": "string"
+     },
+     "until": {
+      "description": "The range's end (not included), rounded up to the hour, in `tz`.",
+      "format": "date-time",
+      "title": "Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "since",
+     "until",
+     "tz",
+     "group_by",
+     "total",
+     "items"
+    ],
+    "title": "UsageTotals",
     "type": "object"
    },
    "ValidationError": {
@@ -6267,6 +7569,10 @@
      },
      "review": {
       "$ref": "#/components/schemas/Decision"
+     },
+     "timings": {
+      "$ref": "#/components/schemas/PlanTimings",
+      "default": {}
      }
     },
     "required": [
@@ -6695,6 +8001,1764 @@
     "summary": "Cancel an intelligence import or embeddings build",
     "tags": [
      "8. My jobs"
+    ]
+   }
+  },
+  "/v1/ai-usage": {
+   "get": {
+    "description": "**Use it for** dashboards and reports: AI calls added up over a time range, per\nmodule and API call (the default) or per any mix of `group_by` (hour, day, month, module, api, bucket, task, model, entity_id, client_id). Each row has its API call's\nname, its counts, and each part of the work.\n\n**Try it**\n- Per module and API call, last 30 days: `GET /v1/ai-usage`\n- Create scenario per day and per part, in Dubai time:\n  `GET /v1/ai-usage?module=threat_scenarios&api=create_scenario&group_by=day&group_by=bucket&tz=Asia/Dubai`\n- Per model in October:\n  `GET /v1/ai-usage?group_by=model&since=2026-10-01T00:00:00Z&until=2026-11-01T00:00:00Z`\n\n**Good to know**\n- Counts come from hourly totals, up to 5 minutes behind; an answer is kept 60 seconds.\n- Whole hours: `since` rounds down, `until` rounds up; at most 366 days.\n- `requests` counts the API calls whose first AI call falls in the row; `total` adds up every row.\n- Over 10,000 rows, `truncated` is true: narrow the range or the filters.\n- The modules and their API calls: see this group's notes above.",
+    "operationId": "read_ai_usage_totals_v1_ai_usage_get",
+    "parameters": [
+     {
+      "description": "Only this module's AI calls. The three with API calls are threat_scenarios, remediation and service_mapper; the others run in the background. Empty: every module.",
+      "in": "query",
+      "name": "module",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/Module"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this module's AI calls. The three with API calls are threat_scenarios, remediation and service_mapper; the others run in the background. Empty: every module.",
+       "title": "Module"
+      }
+     },
+     {
+      "description": "Only this API call's AI calls. `regenerate` is in all three modules: pick the module too. Empty: every API call.",
+      "in": "query",
+      "name": "api",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/AiApi"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this API call's AI calls. `regenerate` is in all three modules: pick the module too. Empty: every API call.",
+       "title": "Api"
+      }
+     },
+     {
+      "description": "Only this entity's calls: the X-Entity-Id the caller sent (digits), e.g. `125`.",
+      "in": "query",
+      "name": "entity_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[0-9]{1,18}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this entity's calls: the X-Entity-Id the caller sent (digits), e.g. `125`.",
+       "title": "Entity Id"
+      }
+     },
+     {
+      "description": "Only this API client's calls: the client id of the X-API-Key that started the work (report 2 shows each API call's `client_id`).",
+      "in": "query",
+      "name": "client_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this API client's calls: the client id of the X-API-Key that started the work (report 2 shows each API call's `client_id`).",
+       "title": "Client Id"
+      }
+     },
+     {
+      "description": "The range's start, ISO 8601 with a time zone, e.g. `2026-10-01T00:00:00+04:00` or `2026-10-01T00:00:00Z`; rounded down to the hour. Default: 30 days before `until`; at most 366 days.",
+      "in": "query",
+      "name": "since",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The range's start, ISO 8601 with a time zone, e.g. `2026-10-01T00:00:00+04:00` or `2026-10-01T00:00:00Z`; rounded down to the hour. Default: 30 days before `until`; at most 366 days.",
+       "title": "Since"
+      }
+     },
+     {
+      "description": "The range's end (not included), e.g. `2026-11-01T00:00:00+04:00`; rounded up to the hour. Default: now.",
+      "in": "query",
+      "name": "until",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The range's end (not included), e.g. `2026-11-01T00:00:00+04:00`; rounded up to the hour. Default: now.",
+       "title": "Until"
+      }
+     },
+     {
+      "description": "The time zone of the answer's times and of hour, day and month groups, e.g. `Asia/Dubai`: an IANA name a whole number of hours from UTC (Asia/Kolkata, +5:30, is refused: totals are kept per hour).",
+      "in": "query",
+      "name": "tz",
+      "required": false,
+      "schema": {
+       "default": "UTC",
+       "description": "The time zone of the answer's times and of hour, day and month groups, e.g. `Asia/Dubai`: an IANA name a whole number of hours from UTC (Asia/Kolkata, +5:30, is refused: totals are kept per hour).",
+       "maxLength": 64,
+       "title": "Tz",
+       "type": "string"
+      }
+     },
+     {
+      "description": "What to add up by; pick several to combine (e.g. day and module). hour, day and month are in `tz`; bucket is the part of the work; task the AI task. Default: module and api. At most 6.",
+      "in": "query",
+      "name": "group_by",
+      "required": false,
+      "schema": {
+       "default": [
+        "module",
+        "api"
+       ],
+       "description": "What to add up by; pick several to combine (e.g. day and module). hour, day and month are in `tz`; bucket is the part of the work; task the AI task. Default: module and api. At most 6.",
+       "items": {
+        "$ref": "#/components/schemas/AiUsageGroup"
+       },
+       "maxItems": 6,
+       "title": "Group By",
+       "type": "array"
+      }
+     },
+     {
+      "description": "Only this part of the work. `shared`: library and evidence indexing no request asked for. Empty: every part.",
+      "in": "query",
+      "name": "bucket",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/AiBucket"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this part of the work. `shared`: library and evidence indexing no request asked for. Empty: every part.",
+       "title": "Bucket"
+      }
+     },
+     {
+      "description": "Only these AI tasks; pick several for any of them. Empty: every task.",
+      "in": "query",
+      "name": "task",
+      "required": false,
+      "schema": {
+       "description": "Only these AI tasks; pick several for any of them. Empty: every task.",
+       "items": {
+        "$ref": "#/components/schemas/AiTask"
+       },
+       "maxItems": 20,
+       "title": "Task",
+       "type": "array"
+      }
+     },
+     {
+      "description": "Only this model, exactly as the env file names it, e.g. `openai/Kimi-K2.6`. Empty: every model.",
+      "in": "query",
+      "name": "model",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this model, exactly as the env file names it, e.g. `openai/Kimi-K2.6`. Empty: every model.",
+       "title": "Model"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "one_module": {
+          "description": "`GET /v1/ai-usage?module=threat_scenarios&since=2026-10-29T19:00:00Z&until=2026-10-29T20:00:00Z`",
+          "summary": "Threat scenarios per API call",
+          "value": {
+           "group_by": [
+            "module",
+            "api"
+           ],
+           "items": [
+            {
+             "api_description": "Starts a run: finds threats, writes the first set, picks controls",
+             "api_label": "Create scenario",
+             "asks": 25,
+             "buckets": {
+              "controls": {
+               "by_task": {},
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 12,
+               "total_ai_calls": 12
+              },
+              "scenario": {
+               "by_task": {},
+               "description": "Writing and checking each attack scenario",
+               "failed_calls": 0,
+               "label": "Writing scenarios",
+               "successful_calls": 10,
+               "total_ai_calls": 10
+              },
+              "threats": {
+               "by_task": {},
+               "description": "Deciding which threats apply to the asset",
+               "failed_calls": 0,
+               "label": "Finding threats",
+               "successful_calls": 3,
+               "total_ai_calls": 3
+              }
+             },
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "key": {
+              "api": "create_scenario",
+              "module": "threat_scenarios"
+             },
+             "outcomes": {
+              "ok": 25
+             },
+             "requests": 2,
+             "reused_answers": 0,
+             "seconds": 250.0,
+             "successful_calls": 25,
+             "tokens_in": 39110,
+             "tokens_out": 26472,
+             "total_ai_calls": 25
+            },
+            {
+             "api_description": "Writes the next set of scenarios for the run",
+             "api_label": "Next set",
+             "asks": 22,
+             "buckets": {
+              "controls": {
+               "by_task": {},
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 12,
+               "total_ai_calls": 12
+              },
+              "scenario": {
+               "by_task": {},
+               "description": "Writing and checking each attack scenario",
+               "failed_calls": 0,
+               "label": "Writing scenarios",
+               "successful_calls": 10,
+               "total_ai_calls": 10
+              },
+              "threats": {
+               "by_task": {},
+               "description": "Deciding which threats apply to the asset",
+               "failed_calls": 0,
+               "label": "Finding threats",
+               "successful_calls": 0,
+               "total_ai_calls": 0
+              }
+             },
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "key": {
+              "api": "next_set",
+              "module": "threat_scenarios"
+             },
+             "outcomes": {
+              "ok": 22
+             },
+             "requests": 1,
+             "reused_answers": 0,
+             "seconds": 83.6,
+             "successful_calls": 22,
+             "tokens_in": 22084,
+             "tokens_out": 4866,
+             "total_ai_calls": 22
+            },
+            {
+             "api_description": "Rewrites the chosen scenarios",
+             "api_label": "Regenerate scenarios",
+             "asks": 5,
+             "buckets": {
+              "controls": {
+               "by_task": {},
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 2,
+               "total_ai_calls": 2
+              },
+              "scenario": {
+               "by_task": {},
+               "description": "Writing and checking each attack scenario",
+               "failed_calls": 0,
+               "label": "Writing scenarios",
+               "successful_calls": 3,
+               "total_ai_calls": 3
+              },
+              "threats": {
+               "by_task": {},
+               "description": "Deciding which threats apply to the asset",
+               "failed_calls": 0,
+               "label": "Finding threats",
+               "successful_calls": 0,
+               "total_ai_calls": 0
+              }
+             },
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "key": {
+              "api": "regenerate",
+              "module": "threat_scenarios"
+             },
+             "outcomes": {
+              "ok": 5
+             },
+             "requests": 1,
+             "reused_answers": 0,
+             "seconds": 19.4,
+             "successful_calls": 5,
+             "tokens_in": 12624,
+             "tokens_out": 1406,
+             "total_ai_calls": 5
+            }
+           ],
+           "since": "2026-10-29T19:00:00Z",
+           "total": {
+            "asks": 52,
+            "extra_attempts": 0,
+            "failed_calls": 0,
+            "outcomes": {
+             "ok": 52
+            },
+            "reused_answers": 0,
+            "seconds": 353.0,
+            "successful_calls": 52,
+            "tokens_in": 73818,
+            "tokens_out": 32744,
+            "total_ai_calls": 52
+           },
+           "truncated": false,
+           "tz": "UTC",
+           "until": "2026-10-29T20:00:00Z"
+          }
+         },
+         "per_day_and_part": {
+          "description": "`GET /v1/ai-usage?module=threat_scenarios&group_by=day&group_by=bucket&tz=Asia/Dubai&since=2026-10-29T19:00:00Z&until=2026-10-29T20:00:00Z`",
+          "summary": "Per day and per part",
+          "value": {
+           "group_by": [
+            "day",
+            "bucket"
+           ],
+           "items": [
+            {
+             "asks": 26,
+             "buckets": {
+              "controls": {
+               "by_task": {},
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 26,
+               "total_ai_calls": 26
+              }
+             },
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "key": {
+              "bucket": "controls",
+              "day": "2026-10-29"
+             },
+             "outcomes": {
+              "ok": 26
+             },
+             "requests": 0,
+             "reused_answers": 0,
+             "seconds": 68.3,
+             "successful_calls": 26,
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "total_ai_calls": 26
+            },
+            {
+             "asks": 23,
+             "buckets": {
+              "scenario": {
+               "by_task": {},
+               "description": "Writing and checking each attack scenario",
+               "failed_calls": 0,
+               "label": "Writing scenarios",
+               "successful_calls": 23,
+               "total_ai_calls": 23
+              }
+             },
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "key": {
+              "bucket": "scenario",
+              "day": "2026-10-29"
+             },
+             "outcomes": {
+              "ok": 23
+             },
+             "requests": 2,
+             "reused_answers": 0,
+             "seconds": 129.0,
+             "successful_calls": 23,
+             "tokens_in": 57565,
+             "tokens_out": 11884,
+             "total_ai_calls": 23
+            },
+            {
+             "asks": 3,
+             "buckets": {
+              "threats": {
+               "by_task": {},
+               "description": "Deciding which threats apply to the asset",
+               "failed_calls": 0,
+               "label": "Finding threats",
+               "successful_calls": 3,
+               "total_ai_calls": 3
+              }
+             },
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "key": {
+              "bucket": "threats",
+              "day": "2026-10-29"
+             },
+             "outcomes": {
+              "ok": 3
+             },
+             "requests": 2,
+             "reused_answers": 0,
+             "seconds": 155.8,
+             "successful_calls": 3,
+             "tokens_in": 16253,
+             "tokens_out": 20860,
+             "total_ai_calls": 3
+            }
+           ],
+           "since": "2026-10-29T23:00:00+04:00",
+           "total": {
+            "asks": 52,
+            "extra_attempts": 0,
+            "failed_calls": 0,
+            "outcomes": {
+             "ok": 52
+            },
+            "reused_answers": 0,
+            "seconds": 353.0,
+            "successful_calls": 52,
+            "tokens_in": 73818,
+            "tokens_out": 32744,
+            "total_ai_calls": 52
+           },
+           "truncated": false,
+           "tz": "Asia/Dubai",
+           "until": "2026-10-30T00:00:00+04:00"
+          }
+         }
+        },
+        "schema": {
+         "$ref": "#/components/schemas/UsageTotals"
+        }
+       }
+      },
+      "description": "The report. A field with no value is `null` in the answer; the examples leave it out."
+     },
+     "422": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "half_hour_time_zone": {
+          "description": "`GET /v1/ai-usage?tz=Asia/Kolkata`",
+          "summary": "A time zone that is not a whole number of hours from UTC",
+          "value": {
+           "code": "validation_error",
+           "detail": "Time zone 'Asia/Kolkata' is not a whole number of hours from UTC; totals are kept per hour.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "range_backwards": {
+          "description": "`GET /v1/ai-usage?since=2026-10-30T00:00:00Z&until=2026-10-01T00:00:00Z`",
+          "summary": "`since` after `until`",
+          "value": {
+           "code": "validation_error",
+           "detail": "`since` must be before `until`.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "range_too_long": {
+          "description": "`GET /v1/ai-usage?since=2025-01-01T00:00:00Z&until=2026-10-30T00:00:00Z`",
+          "summary": "A range over 366 days",
+          "value": {
+           "code": "validation_error",
+           "detail": "The range is 667 days; at most 366 days are allowed.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "unknown_module": {
+          "description": "`GET /v1/ai-usage?module=threat_scenario`",
+          "summary": "A module not in the list (a typo)",
+          "value": {
+           "code": "validation_error",
+           "detail": "One or more fields are invalid.",
+           "errors": [
+            {
+             "field": "query.module",
+             "message": "Input should be 'threat_scenarios', 'remediation', 'service_mapper', 'external_intelligence', 'library_embeddings' or 'maintenance'"
+            }
+           ],
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "unknown_time_zone": {
+          "description": "`GET /v1/ai-usage?tz=Mars/Base`",
+          "summary": "A time zone that does not exist",
+          "value": {
+           "code": "validation_error",
+           "detail": "Unknown time zone 'Mars/Base'.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "A value is not allowed: `detail` says why; `errors` lists each value outside its list or limits."
+     },
+     "503": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "busy": {
+          "summary": "Too many reports at once",
+          "value": {
+           "code": "unavailable",
+           "detail": "AI usage reports are busy right now; try again in a few seconds.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         },
+         "database": {
+          "summary": "MongoDB unreachable, or a report over its time limit",
+          "value": {
+           "code": "unavailable",
+           "detail": "The scenario database is unreachable.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "Busy, or MongoDB unreachable: try again after the `Retry-After` header's seconds (5)."
+     }
+    },
+    "summary": "1. AI calls added up (dashboards)",
+    "tags": [
+     "12. AI usage"
+    ]
+   }
+  },
+  "/v1/ai-usage/calls": {
+   "get": {
+    "description": "**Use it for** every AI attempt of one API call or one session, newest first: when, the\nactivity, the model, the outcome and why it failed, its try within its ask, tokens and seconds. Use it to see\nwhy calls failed or were retried.\n\n**Try it**\n- One API call: `GET /v1/ai-usage/calls?request_id=588c13a8968947048c9dbf2cfec5270a&limit=20`\n- One session: `GET /v1/ai-usage/calls?session_id=c1310faba61d40df9b88cd9e52c72ecf`\n\n**Good to know**\n- Give `request_id` or `session_id`. Live (not cached).\n- The attempts of one ask share `ask_id`; `try_no` counts them from 1 (retries, a fallback model).\n- `outcome`: one of `ok`, `unreadable`, `truncated`, `unavailable`, `error`, `reused`; `reused` is an earlier answer used again (no attempt, `try_no` null).",
+    "operationId": "list_ai_usage_calls_v1_ai_usage_calls_get",
+    "parameters": [
+     {
+      "description": "One API call's attempts: its X-Request-Id, or a `request_id` from report 2. Give this or `session_id`.",
+      "in": "query",
+      "name": "request_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "One API call's attempts: its X-Request-Id, or a `request_id` from report 2. Give this or `session_id`.",
+       "title": "Request Id"
+      }
+     },
+     {
+      "description": "A session's id: a threat scenario run's id (POST /v1/sessions answered it), which its remediation plans' calls carry too, or a service mapping's id. Report 2 shows each API call's `session_id`. Every attempt of the session. Give this or `request_id`.",
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "A session's id: a threat scenario run's id (POST /v1/sessions answered it), which its remediation plans' calls carry too, or a service mapping's id. Report 2 shows each API call's `session_id`. Every attempt of the session. Give this or `request_id`.",
+       "title": "Session Id"
+      }
+     },
+     {
+      "description": "Items per page, 1 to 500. Default 50.",
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "description": "Items per page, 1 to 500. Default 50.",
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "The `next` value of the page before, for the page after it. Leave empty for the first page.",
+      "in": "query",
+      "name": "after",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The `next` value of the page before, for the page after it. Leave empty for the first page.",
+       "title": "After"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "a_failed_call": {
+          "description": "`GET /v1/ai-usage/calls?request_id=d666241f46044706a9ec4463045172f8&limit=1&after=WyIyMDI2LTEwLTI5VDA3OjAwOjQzLjMwODAwMCswMDowMCIsICI2YWUyZWYxYjYzNzE1OTY1NmNmMDM5ZDQiXQ%3D%3D`",
+          "summary": "A failed attempt: Map services unavailable (ai_timed_out)",
+          "value": {
+           "items": [
+            {
+             "activity": "Map services",
+             "api": "create_mapping",
+             "ask_id": "6ae2eeed637159656cf039c9",
+             "attempt": 1,
+             "bucket": "service_mapper",
+             "created_at": "2026-10-29T07:00:18.255000Z",
+             "description": "AI lists upstream and downstream services for a service",
+             "epoch": 1,
+             "error_type": "Timeout",
+             "id": "6ae2ef02637159656cf039d2",
+             "model": "openai/Kimi-K2.6",
+             "module": "service_mapper",
+             "outcome": "unavailable",
+             "reason": "ai_timed_out",
+             "record_id": "40dd129435bf44c1907bd82263ddf49c",
+             "request_id": "d666241f46044706a9ec4463045172f8",
+             "seconds": 21.128651199978776,
+             "session_id": "40dd129435bf44c1907bd82263ddf49c",
+             "task": "service_mapper",
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "try_no": 1
+            }
+           ],
+           "next": "WyIyMDI2LTEwLTI5VDA3OjAwOjE4LjI1NTAwMCswMDowMCIsICI2YWUyZWYwMjYzNzE1OTY1NmNmMDM5ZDIiXQ=="
+          }
+         },
+         "first_page": {
+          "description": "`GET /v1/ai-usage/calls?request_id=588c13a8968947048c9dbf2cfec5270a&limit=2`",
+          "summary": "One API call, 2 per page",
+          "value": {
+           "items": [
+            {
+             "activity": "Control ranking",
+             "api": "create_scenario",
+             "ask_id": "6ae3a309fc34d3894c20b8c0",
+             "bucket": "controls",
+             "created_at": "2026-10-29T19:48:29.549000Z",
+             "description": "Ranks candidate controls by how well they fit",
+             "epoch": 1,
+             "id": "6ae3a30dfc34d3894c20b8c2",
+             "model": "C:/models/bge-reranker-v2-m3",
+             "module": "threat_scenarios",
+             "outcome": "ok",
+             "record_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "request_id": "588c13a8968947048c9dbf2cfec5270a",
+             "seconds": 4.077492199954577,
+             "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "task": "rerank",
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "try_no": 1
+            },
+            {
+             "activity": "Control search",
+             "api": "create_scenario",
+             "ask_id": "6ae3a308fc34d3894c20b8be",
+             "bucket": "controls",
+             "created_at": "2026-10-29T19:48:25.456000Z",
+             "description": "Turns the scenario into a vector to search the controls",
+             "epoch": 1,
+             "id": "6ae3a309fc34d3894c20b8bf",
+             "model": "openai/text-embedding-3-large",
+             "module": "threat_scenarios",
+             "outcome": "ok",
+             "record_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "request_id": "588c13a8968947048c9dbf2cfec5270a",
+             "seconds": 0.5302063999697566,
+             "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "task": "embed",
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "try_no": 1
+            }
+           ],
+           "next": "WyIyMDI2LTEwLTI5VDE5OjQ4OjI1LjQ1NjAwMCswMDowMCIsICI2YWUzYTMwOWZjMzRkMzg5NGMyMGI4YmYiXQ=="
+          }
+         }
+        },
+        "schema": {
+         "$ref": "#/components/schemas/UsageCallList"
+        }
+       }
+      },
+      "description": "The report. A field with no value is `null` in the answer; the examples leave it out."
+     },
+     "422": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "calls_bad_cursor": {
+          "description": "`GET /v1/ai-usage/calls?session_id=c1310faba61d40df9b88cd9e52c72ecf&after=not-a-cursor`",
+          "summary": "An `after` that no page returned",
+          "value": {
+           "code": "validation_error",
+           "detail": "`after` is not a cursor this list returned.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "calls_limit_too_small": {
+          "description": "`GET /v1/ai-usage/calls?request_id=588c13a8968947048c9dbf2cfec5270a&limit=0`",
+          "summary": "`limit` outside 1 to 500",
+          "value": {
+           "code": "validation_error",
+           "detail": "One or more fields are invalid.",
+           "errors": [
+            {
+             "field": "query.limit",
+             "message": "Input should be greater than or equal to 1"
+            }
+           ],
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "calls_no_id": {
+          "description": "`GET /v1/ai-usage/calls`",
+          "summary": "Neither `request_id` nor `session_id`",
+          "value": {
+           "code": "validation_error",
+           "detail": "Give `request_id` or `session_id`.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "A value is not allowed: `detail` says why; `errors` lists each value outside its list or limits."
+     },
+     "503": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "busy": {
+          "summary": "Too many reports at once",
+          "value": {
+           "code": "unavailable",
+           "detail": "AI usage reports are busy right now; try again in a few seconds.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         },
+         "database": {
+          "summary": "MongoDB unreachable, or a report over its time limit",
+          "value": {
+           "code": "unavailable",
+           "detail": "The scenario database is unreachable.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "Busy, or MongoDB unreachable: try again after the `Retry-After` header's seconds (5)."
+     }
+    },
+    "summary": "4. Every AI call of a request or session",
+    "tags": [
+     "12. AI usage"
+    ]
+   }
+  },
+  "/v1/ai-usage/requests": {
+   "get": {
+    "description": "**Use it for** one session's API calls: which ones made AI calls, how many each, in\nwhich parts and on which models, successful and failed. A session is a threat scenario run (with its\nremediation plans) or a service mapping. Without `session_id`: every API call over a time range.\n\n**Try it**\n- One run: `GET /v1/ai-usage/requests?session_id=c1310faba61d40df9b88cd9e52c72ecf`\n- Remediation plans of the last day: `GET /v1/ai-usage/requests?module=remediation`\n- The next page: the same call with `after` set to the answer's `next`.\n\n**Good to know**\n- Newest API call first. Open one with report 3, by its `request_id`.\n- With `session_id` the list is live, and `summary` adds up the whole session (every page).\n- Without it: at most 366 days (default the last day), up to 5 minutes behind; an answer is kept 60 seconds.",
+    "operationId": "list_ai_usage_requests_v1_ai_usage_requests_get",
+    "parameters": [
+     {
+      "description": "Only this module's AI calls. The three with API calls are threat_scenarios, remediation and service_mapper; the others run in the background. Empty: every module.",
+      "in": "query",
+      "name": "module",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/Module"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this module's AI calls. The three with API calls are threat_scenarios, remediation and service_mapper; the others run in the background. Empty: every module.",
+       "title": "Module"
+      }
+     },
+     {
+      "description": "Only this API call's AI calls. `regenerate` is in all three modules: pick the module too. Empty: every API call.",
+      "in": "query",
+      "name": "api",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/AiApi"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this API call's AI calls. `regenerate` is in all three modules: pick the module too. Empty: every API call.",
+       "title": "Api"
+      }
+     },
+     {
+      "description": "Only this entity's calls: the X-Entity-Id the caller sent (digits), e.g. `125`.",
+      "in": "query",
+      "name": "entity_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "pattern": "^[0-9]{1,18}$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this entity's calls: the X-Entity-Id the caller sent (digits), e.g. `125`.",
+       "title": "Entity Id"
+      }
+     },
+     {
+      "description": "Only this API client's calls: the client id of the X-API-Key that started the work (report 2 shows each API call's `client_id`).",
+      "in": "query",
+      "name": "client_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only this API client's calls: the client id of the X-API-Key that started the work (report 2 shows each API call's `client_id`).",
+       "title": "Client Id"
+      }
+     },
+     {
+      "description": "A session's id: a threat scenario run's id (POST /v1/sessions answered it), which its remediation plans' calls carry too, or a service mapping's id. Report 2 shows each API call's `session_id`. Lists its API calls live, with the session's totals in `summary`; `since` and `until` are then not used.",
+      "in": "query",
+      "name": "session_id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "A session's id: a threat scenario run's id (POST /v1/sessions answered it), which its remediation plans' calls carry too, or a service mapping's id. Report 2 shows each API call's `session_id`. Lists its API calls live, with the session's totals in `summary`; `since` and `until` are then not used.",
+       "title": "Session Id"
+      }
+     },
+     {
+      "description": "Without `session_id`: API calls whose first AI call is at or after this time, ISO 8601 with a time zone, e.g. `2026-10-29T00:00:00+04:00`. Default: a day before `until`; at most 366 days.",
+      "in": "query",
+      "name": "since",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Without `session_id`: API calls whose first AI call is at or after this time, ISO 8601 with a time zone, e.g. `2026-10-29T00:00:00+04:00`. Default: a day before `until`; at most 366 days.",
+       "title": "Since"
+      }
+     },
+     {
+      "description": "Without `session_id`: the range's end (not included), e.g. `2026-10-30T00:00:00+04:00`. Default: now.",
+      "in": "query",
+      "name": "until",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Without `session_id`: the range's end (not included), e.g. `2026-10-30T00:00:00+04:00`. Default: now.",
+       "title": "Until"
+      }
+     },
+     {
+      "description": "Items per page, 1 to 500. Default 50.",
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "description": "Items per page, 1 to 500. Default 50.",
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "The `next` value of the page before, for the page after it. Leave empty for the first page.",
+      "in": "query",
+      "name": "after",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The `next` value of the page before, for the page after it. Leave empty for the first page.",
+       "title": "After"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "a_range": {
+          "description": "`GET /v1/ai-usage/requests?module=remediation&since=2026-10-29T19:00:00Z&until=2026-10-29T20:00:00Z&limit=2`",
+          "summary": "Remediation plans, 2 per page",
+          "value": {
+           "items": [
+            {
+             "api": "create_plan",
+             "api_description": "Writes a treatment plan for one scenario",
+             "api_label": "Create remediation plan",
+             "asks": 2,
+             "buckets": {
+              "controls": {
+               "by_task": {
+                "rerank": 1
+               },
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 1,
+               "total_ai_calls": 1
+              },
+              "remediation": {
+               "by_task": {
+                "remediation_plan": 1
+               },
+               "description": "Writing the treatment plan for a scenario's controls",
+               "failed_calls": 0,
+               "label": "Writing the plan",
+               "successful_calls": 1,
+               "total_ai_calls": 1
+              }
+             },
+             "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+             "entity_id": 125,
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "first_at": "2026-10-29T19:50:05.314000Z",
+             "last_at": "2026-10-29T19:50:20.450000Z",
+             "models": {
+              "C:/models/bge-reranker-v2-m3": 1,
+              "openai/Kimi-K2.6": 1
+             },
+             "module": "remediation",
+             "outcomes": {
+              "ok": 2
+             },
+             "request_id": "6c4149a803b0470387215a1e6cbc752c",
+             "reused_answers": 0,
+             "seconds": 16.6,
+             "session_id": "f9028452889f577288e6269a70ba0101",
+             "successful_calls": 2,
+             "tokens_in": 3412,
+             "tokens_out": 1373,
+             "total_ai_calls": 2
+            },
+            {
+             "api": "create_plan",
+             "api_description": "Writes a treatment plan for one scenario",
+             "api_label": "Create remediation plan",
+             "asks": 1,
+             "buckets": {
+              "controls": {
+               "by_task": {},
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 0,
+               "total_ai_calls": 0
+              },
+              "remediation": {
+               "by_task": {
+                "remediation_plan": 1
+               },
+               "description": "Writing the treatment plan for a scenario's controls",
+               "failed_calls": 0,
+               "label": "Writing the plan",
+               "successful_calls": 1,
+               "total_ai_calls": 1
+              }
+             },
+             "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+             "entity_id": 125,
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "first_at": "2026-10-29T19:49:53.940000Z",
+             "last_at": "2026-10-29T19:49:53.940000Z",
+             "models": {
+              "openai/Kimi-K2.6": 1
+             },
+             "module": "remediation",
+             "outcomes": {
+              "ok": 1
+             },
+             "request_id": "4a8907097cac4615ab4abb89c93c2da6",
+             "reused_answers": 0,
+             "seconds": 17.1,
+             "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "successful_calls": 1,
+             "tokens_in": 3878,
+             "tokens_out": 1676,
+             "total_ai_calls": 1
+            }
+           ]
+          }
+         },
+         "one_session": {
+          "description": "`GET /v1/ai-usage/requests?session_id=c1310faba61d40df9b88cd9e52c72ecf&limit=2`",
+          "summary": "One run, 2 per page",
+          "value": {
+           "items": [
+            {
+             "api": "create_plan",
+             "api_description": "Writes a treatment plan for one scenario",
+             "api_label": "Create remediation plan",
+             "asks": 1,
+             "buckets": {
+              "controls": {
+               "by_task": {},
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 0,
+               "total_ai_calls": 0
+              },
+              "remediation": {
+               "by_task": {
+                "remediation_plan": 1
+               },
+               "description": "Writing the treatment plan for a scenario's controls",
+               "failed_calls": 0,
+               "label": "Writing the plan",
+               "successful_calls": 1,
+               "total_ai_calls": 1
+              }
+             },
+             "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+             "entity_id": 125,
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "first_at": "2026-10-29T19:49:53.940000Z",
+             "last_at": "2026-10-29T19:49:53.940000Z",
+             "models": {
+              "openai/Kimi-K2.6": 1
+             },
+             "module": "remediation",
+             "outcomes": {
+              "ok": 1
+             },
+             "request_id": "4a8907097cac4615ab4abb89c93c2da6",
+             "reused_answers": 0,
+             "seconds": 17.1,
+             "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "successful_calls": 1,
+             "tokens_in": 3878,
+             "tokens_out": 1676,
+             "total_ai_calls": 1
+            },
+            {
+             "api": "next_set",
+             "api_description": "Writes the next set of scenarios for the run",
+             "api_label": "Next set",
+             "asks": 22,
+             "buckets": {
+              "controls": {
+               "by_task": {
+                "embed": 6,
+                "rerank": 6
+               },
+               "description": "Finding and ranking the controls for each scenario",
+               "failed_calls": 0,
+               "label": "Picking controls",
+               "successful_calls": 12,
+               "total_ai_calls": 12
+              },
+              "scenario": {
+               "by_task": {
+                "plan_check": 2,
+                "repair_scenario": 1,
+                "rerank": 6,
+                "write_scenario": 1
+               },
+               "description": "Writing and checking each attack scenario",
+               "failed_calls": 0,
+               "label": "Writing scenarios",
+               "successful_calls": 10,
+               "total_ai_calls": 10
+              },
+              "threats": {
+               "by_task": {},
+               "description": "Deciding which threats apply to the asset",
+               "failed_calls": 0,
+               "label": "Finding threats",
+               "successful_calls": 0,
+               "total_ai_calls": 0
+              }
+             },
+             "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+             "entity_id": 125,
+             "extra_attempts": 0,
+             "failed_calls": 0,
+             "first_at": "2026-10-29T19:48:38.411000Z",
+             "last_at": "2026-10-29T19:49:53.794000Z",
+             "models": {
+              "C:/models/bge-reranker-v2-m3": 12,
+              "openai/Kimi-K2.6": 4,
+              "openai/text-embedding-3-large": 6
+             },
+             "module": "threat_scenarios",
+             "outcomes": {
+              "ok": 22
+             },
+             "request_id": "448cf60d7e5843d097c90e8a4ada20c4",
+             "reused_answers": 0,
+             "seconds": 83.6,
+             "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+             "successful_calls": 22,
+             "tokens_in": 22084,
+             "tokens_out": 4866,
+             "total_ai_calls": 22
+            }
+           ],
+           "next": "WyIyMDI2LTEwLTI5VDE5OjQ4OjM4LjQxMTAwMCswMDowMCIsICI0NDhjZjYwZDdlNTg0M2QwOTdjOTBlOGE0YWRhMjBjNCJd",
+           "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+           "summary": {
+            "asks": 52,
+            "buckets": {
+             "controls": {
+              "by_task": {
+               "embed": 13,
+               "rerank": 13
+              },
+              "description": "Finding and ranking the controls for each scenario",
+              "failed_calls": 0,
+              "label": "Picking controls",
+              "successful_calls": 26,
+              "total_ai_calls": 26
+             },
+             "remediation": {
+              "by_task": {
+               "remediation_plan": 1
+              },
+              "description": "Writing the treatment plan for a scenario's controls",
+              "failed_calls": 0,
+              "label": "Writing the plan",
+              "successful_calls": 1,
+              "total_ai_calls": 1
+             },
+             "scenario": {
+              "by_task": {
+               "plan_check": 5,
+               "repair_scenario": 3,
+               "rerank": 12,
+               "write_scenario": 3
+              },
+              "description": "Writing and checking each attack scenario",
+              "failed_calls": 0,
+              "label": "Writing scenarios",
+              "successful_calls": 23,
+              "total_ai_calls": 23
+             },
+             "threats": {
+              "by_task": {
+               "relevance_gate": 2
+              },
+              "description": "Deciding which threats apply to the asset",
+              "failed_calls": 0,
+              "label": "Finding threats",
+              "successful_calls": 2,
+              "total_ai_calls": 2
+             }
+            },
+            "extra_attempts": 0,
+            "failed_calls": 0,
+            "models": {
+             "C:/models/bge-reranker-v2-m3": 25,
+             "openai/Kimi-K2.6": 14,
+             "openai/text-embedding-3-large": 13
+            },
+            "outcomes": {
+             "ok": 52
+            },
+            "requests": 4,
+            "reused_answers": 0,
+            "seconds": 329.5,
+            "successful_calls": 52,
+            "tokens_in": 72169,
+            "tokens_out": 27436,
+            "total_ai_calls": 52
+           }
+          }
+         }
+        },
+        "schema": {
+         "$ref": "#/components/schemas/RequestUsageList"
+        }
+       }
+      },
+      "description": "The report. A field with no value is `null` in the answer; the examples leave it out."
+     },
+     "422": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "requests_bad_cursor": {
+          "description": "`GET /v1/ai-usage/requests?session_id=c1310faba61d40df9b88cd9e52c72ecf&after=not-a-cursor`",
+          "summary": "An `after` that no page returned",
+          "value": {
+           "code": "validation_error",
+           "detail": "`after` is not a cursor this list returned.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "requests_limit_too_small": {
+          "description": "`GET /v1/ai-usage/requests?limit=0`",
+          "summary": "`limit` outside 1 to 500",
+          "value": {
+           "code": "validation_error",
+           "detail": "One or more fields are invalid.",
+           "errors": [
+            {
+             "field": "query.limit",
+             "message": "Input should be greater than or equal to 1"
+            }
+           ],
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "requests_range_too_long": {
+          "description": "`GET /v1/ai-usage/requests?since=2025-01-01T00:00:00Z&until=2026-10-30T00:00:00Z`",
+          "summary": "A range over 366 days",
+          "value": {
+           "code": "validation_error",
+           "detail": "The range is 667 days; at most 366 days are allowed.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         },
+         "requests_unknown_api": {
+          "description": "`GET /v1/ai-usage/requests?api=create_scenarios`",
+          "summary": "An API call not in the list (a typo)",
+          "value": {
+           "code": "validation_error",
+           "detail": "One or more fields are invalid.",
+           "errors": [
+            {
+             "field": "query.api",
+             "message": "Input should be 'create_scenario', 'next_set', 'regenerate', 'create_plan' or 'create_mapping'"
+            }
+           ],
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "A value is not allowed: `detail` says why; `errors` lists each value outside its list or limits."
+     },
+     "503": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "busy": {
+          "summary": "Too many reports at once",
+          "value": {
+           "code": "unavailable",
+           "detail": "AI usage reports are busy right now; try again in a few seconds.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         },
+         "database": {
+          "summary": "MongoDB unreachable, or a report over its time limit",
+          "value": {
+           "code": "unavailable",
+           "detail": "The scenario database is unreachable.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "Busy, or MongoDB unreachable: try again after the `Retry-After` header's seconds (5)."
+     }
+    },
+    "summary": "2. AI calls per request",
+    "tags": [
+     "12. AI usage"
+    ]
+   }
+  },
+  "/v1/ai-usage/requests/{request_id}": {
+   "get": {
+    "description": "**Use it for** one API call: what it asked the AI to do (each activity, with its\npart, name, description and model), how many AI calls each took, and how many failed.\n\n**Try it:** `GET /v1/ai-usage/requests/588c13a8968947048c9dbf2cfec5270a`\n\n**Good to know**\n- `request_id` is the `X-Request-Id` header the API call answered with, or a `request_id` from report 2.\n- Live (not cached). 404 while the call has made no AI call (none needed, or still queued).",
+    "operationId": "read_ai_usage_request_v1_ai_usage_requests__request_id__get",
+    "parameters": [
+     {
+      "description": "The API call's X-Request-Id, or a `request_id` from report 2.",
+      "examples": {
+       "create_scenario": {
+        "summary": "A Create scenario call",
+        "value": "588c13a8968947048c9dbf2cfec5270a"
+       }
+      },
+      "in": "path",
+      "name": "request_id",
+      "required": true,
+      "schema": {
+       "description": "The API call's X-Request-Id, or a `request_id` from report 2.",
+       "maxLength": 64,
+       "title": "Request Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "create_scenario": {
+          "description": "`GET /v1/ai-usage/requests/588c13a8968947048c9dbf2cfec5270a`",
+          "summary": "One Create scenario call",
+          "value": {
+           "activities": [
+            {
+             "activity": "Relevance check",
+             "bucket": "threats",
+             "bucket_label": "Finding threats",
+             "description": "AI picks which library threats apply to the asset (one call per batch of up to 10 threats)",
+             "failed_calls": 0,
+             "model": "openai/Kimi-K2.6",
+             "reused_answers": 0,
+             "seconds": 115.2,
+             "successful_calls": 2,
+             "task": "relevance_gate",
+             "tokens_in": 10726,
+             "tokens_out": 13876,
+             "total_ai_calls": 2
+            },
+            {
+             "activity": "Plan check",
+             "bucket": "scenario",
+             "bucket_label": "Writing scenarios",
+             "description": "AI checks, in one call, that each scenario of a set carries out its plan",
+             "failed_calls": 0,
+             "model": "openai/Kimi-K2.6",
+             "reused_answers": 0,
+             "seconds": 11.4,
+             "successful_calls": 2,
+             "task": "plan_check",
+             "tokens_in": 10370,
+             "tokens_out": 1254,
+             "total_ai_calls": 2
+            },
+            {
+             "activity": "Rewrite scenarios",
+             "bucket": "scenario",
+             "bucket_label": "Writing scenarios",
+             "description": "AI rewrites, in one call, the scenarios of a set that were unusable or missed planned actions",
+             "failed_calls": 0,
+             "model": "openai/Kimi-K2.6",
+             "reused_answers": 0,
+             "seconds": 8.1,
+             "successful_calls": 1,
+             "task": "repair_scenario",
+             "tokens_in": 5014,
+             "tokens_out": 906,
+             "total_ai_calls": 1
+            },
+            {
+             "activity": "Evidence ranking",
+             "bucket": "scenario",
+             "bucket_label": "Writing scenarios",
+             "description": "Ranks the evidence found for a scenario",
+             "failed_calls": 0,
+             "model": "C:/models/bge-reranker-v2-m3",
+             "reused_answers": 0,
+             "seconds": 14.4,
+             "successful_calls": 6,
+             "task": "rerank",
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "total_ai_calls": 6
+            },
+            {
+             "activity": "Write scenarios",
+             "bucket": "scenario",
+             "bucket_label": "Writing scenarios",
+             "description": "AI writes a set of attack scenarios, one per attack path, in one call",
+             "failed_calls": 0,
+             "model": "openai/Kimi-K2.6",
+             "reused_answers": 0,
+             "seconds": 31.2,
+             "successful_calls": 1,
+             "task": "write_scenario",
+             "tokens_in": 7473,
+             "tokens_out": 3452,
+             "total_ai_calls": 1
+            },
+            {
+             "activity": "Control search",
+             "bucket": "controls",
+             "bucket_label": "Picking controls",
+             "description": "Turns the scenario into a vector to search the controls",
+             "failed_calls": 0,
+             "model": "openai/text-embedding-3-large",
+             "reused_answers": 0,
+             "seconds": 4.7,
+             "successful_calls": 6,
+             "task": "embed",
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "total_ai_calls": 6
+            },
+            {
+             "activity": "Control ranking",
+             "bucket": "controls",
+             "bucket_label": "Picking controls",
+             "description": "Ranks candidate controls by how well they fit",
+             "failed_calls": 0,
+             "model": "C:/models/bge-reranker-v2-m3",
+             "reused_answers": 0,
+             "seconds": 24.6,
+             "successful_calls": 6,
+             "task": "rerank",
+             "tokens_in": 0,
+             "tokens_out": 0,
+             "total_ai_calls": 6
+            }
+           ],
+           "api": "create_scenario",
+           "api_description": "Starts a run: finds threats, writes the first set, picks controls",
+           "api_label": "Create scenario",
+           "asks": 24,
+           "buckets": {
+            "controls": {
+             "by_task": {
+              "embed": 6,
+              "rerank": 6
+             },
+             "description": "Finding and ranking the controls for each scenario",
+             "failed_calls": 0,
+             "label": "Picking controls",
+             "successful_calls": 12,
+             "total_ai_calls": 12
+            },
+            "scenario": {
+             "by_task": {
+              "plan_check": 2,
+              "repair_scenario": 1,
+              "rerank": 6,
+              "write_scenario": 1
+             },
+             "description": "Writing and checking each attack scenario",
+             "failed_calls": 0,
+             "label": "Writing scenarios",
+             "successful_calls": 10,
+             "total_ai_calls": 10
+            },
+            "threats": {
+             "by_task": {
+              "relevance_gate": 2
+             },
+             "description": "Deciding which threats apply to the asset",
+             "failed_calls": 0,
+             "label": "Finding threats",
+             "successful_calls": 2,
+             "total_ai_calls": 2
+            }
+           },
+           "client_id": "858ba08aca794a0b8ff8dc858a9d3a72",
+           "entity_id": 125,
+           "extra_attempts": 0,
+           "failed_calls": 0,
+           "first_at": "2026-10-29T19:46:19.468000Z",
+           "last_at": "2026-10-29T19:48:29.549000Z",
+           "models": {
+            "C:/models/bge-reranker-v2-m3": 12,
+            "openai/Kimi-K2.6": 6,
+            "openai/text-embedding-3-large": 6
+           },
+           "module": "threat_scenarios",
+           "outcomes": {
+            "ok": 24
+           },
+           "request_id": "588c13a8968947048c9dbf2cfec5270a",
+           "reused_answers": 0,
+           "seconds": 209.4,
+           "session_id": "c1310faba61d40df9b88cd9e52c72ecf",
+           "successful_calls": 24,
+           "tokens_in": 33583,
+           "tokens_out": 19488,
+           "total_ai_calls": 24
+          }
+         }
+        },
+        "schema": {
+         "$ref": "#/components/schemas/RequestUsageDetail"
+        }
+       }
+      },
+      "description": "The report. A field with no value is `null` in the answer; the examples leave it out."
+     },
+     "404": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "request_not_found": {
+          "description": "`GET /v1/ai-usage/requests/0000000000000000000000000000beef`",
+          "summary": "A request with no AI call recorded",
+          "value": {
+           "code": "not_found",
+           "detail": "No AI usage is recorded for request '0000000000000000000000000000beef'.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 404,
+           "title": "Not Found",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "No AI call is recorded for this request."
+     },
+     "422": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "request_id_too_long": {
+          "description": "`GET /v1/ai-usage/requests/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`",
+          "summary": "A `request_id` over 64 characters",
+          "value": {
+           "code": "validation_error",
+           "detail": "One or more fields are invalid.",
+           "errors": [
+            {
+             "field": "path.request_id",
+             "message": "String should have at most 64 characters"
+            }
+           ],
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 422,
+           "title": "Unprocessable Entity",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "A value is not allowed: `detail` says why; `errors` lists each value outside its list or limits."
+     },
+     "503": {
+      "content": {
+       "application/problem+json": {
+        "examples": {
+         "busy": {
+          "summary": "Too many reports at once",
+          "value": {
+           "code": "unavailable",
+           "detail": "AI usage reports are busy right now; try again in a few seconds.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         },
+         "database": {
+          "summary": "MongoDB unreachable, or a report over its time limit",
+          "value": {
+           "code": "unavailable",
+           "detail": "The scenario database is unreachable.",
+           "request_id": "56589d66a1a742c5b6860e4a4259001f",
+           "status": 503,
+           "title": "Service Unavailable",
+           "type": "about:blank"
+          }
+         }
+        }
+       }
+      },
+      "description": "Busy, or MongoDB unreachable: try again after the `Retry-After` header's seconds (5)."
+     }
+    },
+    "summary": "3. One request's AI calls by activity",
+    "tags": [
+     "12. AI usage"
     ]
    }
   },
@@ -7644,7 +10708,7 @@
     ]
    },
    "post": {
-    "description": "202 starts generation 1. The same Idempotency-Key and body answer 200 with that mapping, or 202 with a\nnew try when the key's generation is still the latest and failed for an outage (`error.code`\n`unavailable`). Without a key, the same body again within a minute is 409 `duplicate_request`.",
+    "description": "Generate. A service (name, sector and subsector) has one mapping per entity: the first call makes it\nand starts run 1 (202); a later call starts its next run with these details (202, same `mapping_id`),\nwhich only adds services the mapping does not hold yet. While a run goes on, the same body answers 200\nwith it and another body 409 `generation_in_progress`; past SERVICE_MAPPER_MAX_GENERATIONS runs, 409\n`generation_limit_reached`. After a run that found nothing new, the same body answers 200 with the mapping\nas it is (no run, none used) until the counts or the catalog change. The same Idempotency-Key answers 200\nwith the run it started; without a key, the same body again within a minute is 409 `duplicate_request`.",
     "operationId": "create_mapping_v1_service_mapper_post",
     "parameters": [
      {
@@ -7884,7 +10948,7 @@
   },
   "/v1/service-mapper/{mapping_id}/dependencies/decision": {
    "post": {
-    "description": "Send `{\"accept\": [dependency_id, ...], \"reject\": [...]}`; either list may be null or empty. The valid\nids are saved together; `failed` lists each id that was not, and why. 409 until the mapping is `done`:\nregenerate a `failed` one.",
+    "description": "Send `{\"accept\": [dependency_id, ...], \"reject\": [...]}`; either list may be null or empty. The valid\nids are saved together, a changed decision too; `failed` lists each id that was not, and why. Allowed\nwhile a later run goes on; 409 while the mapping has no services yet.",
     "operationId": "decide_dependencies_v1_service_mapper__mapping_id__dependencies_decision_post",
     "parameters": [
      {
@@ -8132,7 +11196,7 @@
   },
   "/v1/service-mapper/{mapping_id}/regenerate": {
    "post": {
-    "description": "202 starts the next generation of a `done` or `failed` mapping (409 `generation_in_progress` while one\nruns). The same Idempotency-Key answers 200 with the generation it started, or 202 with a new try when\nthat generation is still the latest and failed for an outage (`error.code` `unavailable`). Without a\nkey, a repeat within a minute is 409 `duplicate_request`.",
+    "description": "202 starts the mapping's next run with the details it holds: it only adds services the mapping does\nnot hold yet; every service and decision stays. 409 `generation_in_progress` while a run goes on, 409\n`generation_limit_reached` past SERVICE_MAPPER_MAX_GENERATIONS runs (a failed run does not count). After\na run that found nothing new, 200 with the mapping as it is (no run, none used) until its details, the\ncounts or the catalog change. The same Idempotency-Key answers 200 with the run it started; without a\nkey, a repeat within a minute is 409 `duplicate_request`.",
     "operationId": "regenerate_mapping_v1_service_mapper__mapping_id__regenerate_post",
     "parameters": [
      {
@@ -9244,7 +12308,7 @@
   },
   "/v1/sessions/{session_id}/regenerate/scenarios": {
    "post": {
-    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again in the background (202); follow it with\n`GET /v1/sessions/{session_id}`. The earlier version stays readable (`include_replaced=true`). A card\nthat failed because the AI did not answer is written again in its place.",
+    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again in the background (202); follow it with\n`GET /v1/sessions/{session_id}`. The earlier version stays readable in the results, under the new one. A\ncard that failed because the AI did not answer is written again in its place.",
     "operationId": "regenerate_scenarios_v1_sessions__session_id__regenerate_scenarios_post",
     "parameters": [
      {
@@ -9366,7 +12430,7 @@
   },
   "/v1/sessions/{session_id}/results": {
    "get": {
-    "description": "The written scenarios: threat, actors, systems, evidence and controls. `include_replaced=true` adds\nthe versions a regenerate replaced. Paged with `offset` and `limit`.",
+    "description": "The written scenarios: threat, actors, systems, evidence and controls, each with the versions a\nregenerate replaced (`include_replaced=false` leaves them out). Paged with `offset` and `limit`.",
     "operationId": "list_run_scenarios_v1_sessions__session_id__results_get",
     "parameters": [
      {
@@ -9384,7 +12448,7 @@
       "name": "include_replaced",
       "required": false,
       "schema": {
-       "default": false,
+       "default": true,
        "title": "Include Replaced",
        "type": "boolean"
       }
@@ -11169,7 +14233,7 @@
   },
   "/v1/tsg/intel/health": {
    "get": {
-    "description": "Each source's state, the active `snapshot_id` (set once data is imported and indexed: runs need it),\n`stale`, `pending_sources`, `no_data`, and the evidence settings (reranker, threshold).",
+    "description": "Each source's state, the active `snapshot_id` (set once data is imported and indexed: runs need it),\n`pending_sources`, `no_data`, and the evidence settings (reranker, threshold).",
     "operationId": "read_intel_health_v1_tsg_intel_health_get",
     "responses": {
      "200": {
@@ -11694,8 +14758,12 @@
    "name": "10. Library curation"
   },
   {
-   "description": "Generate upstream and downstream service dependencies from a described service, review each relationship, and regenerate a new version. Requires the caller identity headers.",
+   "description": "Generate upstream and downstream service dependencies from a described service (one mapping per service), review each relationship, and regenerate to add more. Requires the caller identity headers.",
    "name": "11. Service mapper"
+  },
+  {
+   "description": "How many AI calls each module, API call, session and request made, per part of the work\nand per model, successful and failed, with each activity's name and description. Counts only, never a prompt\nor an answer. No key.\n\n| You want to know | Use |\n|---|---|\n| AI calls over a time range, per module and API call (or per day, model, part \u2026) | 1. `GET /v1/ai-usage` |\n| One session's API calls (a run and its plans, or a mapping) | 2. `GET /v1/ai-usage/requests` |\n| What one API call asked the AI to do, and on which models | 3. `GET /v1/ai-usage/requests/{request_id}` |\n| Every AI attempt of an API call or a session, and why one failed | 4. `GET /v1/ai-usage/calls` |\n\n**Modules and their API calls.** Pick them from the `module` and `api` lists; there is nothing to type.\n\n| module | api | name | what it starts |\n|---|---|---|---|\n| `threat_scenarios` | `create_scenario` | Create scenario | Starts a run: finds threats, writes the first set, picks controls |\n| `threat_scenarios` | `next_set` | Next set | Writes the next set of scenarios for the run |\n| `threat_scenarios` | `regenerate` | Regenerate scenarios | Rewrites the chosen scenarios |\n| `remediation` | `create_plan` | Create remediation plan | Writes a treatment plan for one scenario |\n| `remediation` | `regenerate` | Regenerate plan | Writes a new version of the plan |\n| `service_mapper` | `create_mapping` | Map services | Finds upstream and downstream services for a service |\n| `service_mapper` | `regenerate` | Regenerate mapping | Runs the mapping again to add new services |\n\n`external_intelligence`, `library_embeddings`, `maintenance` are background jobs with no API call. AI calls no request asked for (library and\nevidence indexing) are counted in the part `shared`.\n\n**Each module's parts of the work** (`bucket`; a report lists every part of the module, 0 when none):\n\n| module | its parts of the work (`bucket`), in report order |\n|---|---|\n| `threat_scenarios` | `threats` (Finding threats), `scenario` (Writing scenarios), `controls` (Picking controls) |\n| `remediation` | `remediation` (Writing the plan), `controls` (Picking controls) |\n| `service_mapper` | `service_mapper` (Mapping services) |\n",
+   "name": "12. AI usage"
   }
  ]
 }

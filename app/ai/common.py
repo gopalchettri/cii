@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 import litellm
 import structlog
 
-from app.ai.retry_waits import busy_retry_wait
+from app.ai.module_chat import module_chat
+from app.ai.retry_waits import busy_retry_wait, gateway_limit
 from app.ai.slots import AiRequestRate, AiSlots, sleep_unless_lease_lost
 from app.core import metrics
 from app.core.config import Settings
@@ -24,6 +25,7 @@ from app.core.constants import (
     AiOutage,
     AiOutageSource,
     AiOutcome,
+    ChatModule,
     ErrorCode,
     ErrorMessage,
     LogEvent,
@@ -133,12 +135,10 @@ def apply_proxy_settings(settings: Settings) -> None:
 
 def _gateways(settings: Settings) -> set[tuple[str, str]]:
     """(LITELLM_MODEL_PREFIX or "", host) of every AI model's base URL: which hosts the AI calls go to."""
-    models = (
-        (settings.chat_model, settings.chat_base_url),
-        (settings.chat_fallback_model, settings.chat_base_url),
-        (settings.embedding_model, settings.embedding_base_url),
-        (settings.rerank_model, settings.rerank_base_url),
-    )
+    models = [(settings.embedding_model, settings.embedding_base_url)]
+    models += [(settings.rerank_model, settings.rerank_base_url)]
+    for chat in (module_chat(settings, module) for module in ChatModule):  # each module's main and fallback
+        models += [(chat.model, chat.base_url), (chat.fallback_model, chat.base_url)]
     return {
         (LITELLM_MODEL_PREFIX if model.startswith(LITELLM_MODEL_PREFIX) else "", host)
         for model, url in models
@@ -194,38 +194,37 @@ def _set_proxy_variables(proxies: dict[str, str]) -> None:
 
 
 def build_api_key_header(header: str, api_key: str, option: str = "extra_headers") -> dict[str, Any]:
-    """{option: {header: key}} for a gateway that reads the key from its own header (settings.ai_key_header);
-    {} when none is set. litellm's rerank takes `headers` (it drops `extra_headers`); chat and embedding take
-    `extra_headers`."""
+    """{option: {header: key}} for a gateway reading the key from its own header (settings.ai_key_header), {}
+    when none is set. litellm's rerank takes `headers` (it drops `extra_headers`), chat and embeddings not."""
     return {option: {header: api_key}} if header else {}
 
 
 def call_with_retries[Answer](
-    call: Callable[[], Answer], request_rate: AiRequestRate, slots: AiSlots, *, model: str, task: str
+    call: Callable[[], Answer], rate: AiRequestRate, slots: AiSlots, *, model: str, task: str, tokens: int = 0
 ) -> tuple[Answer, float]:
-    """(the answer, its seconds without the request-rate waits) of an AI call to `model` for `task` and the
-    check of its answer. Each request first waits its turn at `request_rate`, `model`'s own. Asked again when
-    the provider is busy or unreachable or the answer came back short: AiLimits.RETRIES times, 0.5 s, 1 s, 2 s
-    apart; a 429 (counted) as request_rate.wait_after_rate_limit says. Each 429 is told to `slots`, the limit
-    on calls in flight (an answer is told as its slot is freed). litellm's own retries are off
-    (app/ai/__init__.py). A call that timed out is not asked again: the fallback model answers, or the job's
-    own back-off asks later."""
+    """(the answer, its seconds without the request-turn and slot waits) of an AI call to `model` for `task`
+    and the check of its answer. Each attempt waits out `rate`'s pause or line holding no slot, then holds a
+    slot of `slots` for its own turn (`tokens`: its size) and the call alone. A 429 pauses `rate` on every pod
+    and is told to `slots`. Asked again when busy, unreachable or short: AiLimits.RETRIES times, 0.5, 1, 2 s
+    apart; a 429 (counted) as rate.wait_after_rate_limit says. A timed-out call is not asked again."""
     started, attempt = time.perf_counter(), 0
-    rate_waits = rate_limited_waits = 0.0
+    waits = rate_limited_waits = 0.0  # request turns and AI slots: not the call's own seconds
     while True:
-        rate_waits += request_rate.wait_for_turn(task)
+        waits += rate.wait_for_send_time(task)  # a 429's pause or a long line: waited holding no slot
         try:
-            answer, seconds = call(), time.perf_counter() - started - rate_waits
+            with slots.hold_slot(task) as slot_wait:  # per attempt: a 429's Retry-After keeps no slot
+                waits += slot_wait + rate.wait_for_turn(task, tokens)  # spaced as sent, after any slot wait
+                answer, seconds = call(), time.perf_counter() - started - waits
         except litellm.Timeout:
             raise
         except litellm.RateLimitError as exc:
             metrics.AI_RATE_LIMITED.labels(model).inc()
             slots.note_rate_limited()  # the gateway is full: fewer calls at once, on every pod
             retry_after = exc.response.headers.get("retry-after")
-            wait = request_rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
+            wait = rate.wait_after_rate_limit(retry_after, attempt, rate_limited_waits)
             if wait is None:
                 raise
-            rate_limited_waits += wait
+            rate_limited_waits += rate.pause(wait)  # the model waits too, so no line of 429s follows
         except Exception as exc:
             unmapped = is_unmapped_outage(exc)  # a timed-out status is a timeout too: not asked again
             if unmapped and ai_outage_of(exc) is AiOutage.TIMED_OUT:
@@ -242,8 +241,8 @@ def call_with_retries[Answer](
 def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
     """A provider outage, counted and logged, as the Unavailable that tells the UI which outage it was."""
     metrics.AI_CALLS.labels(task, model, AiOutcome.UNAVAILABLE).inc()
-    # Which outage it was (rate limit, timeout, lost connection, gateway restart) decides the cure, so it is
-    # logged with the gateway's Retry-After and limit type, never the message (it may hold the gateway URL).
+    # Which outage it was decides the cure: logged with the gateway's Retry-After, limit type and the budget
+    # a 429 names (gateway_limit), never the message itself (it may hold the gateway URL or the key's owner).
     outage = ai_outage_of(error)
     metrics.AI_OUTAGES.labels(task, outage, AiOutageSource.GATEWAY).inc()
     headers = getattr(getattr(error, "response", None), "headers", None) or {}
@@ -256,6 +255,7 @@ def _counted_outage(task: str, model: str, error: Exception) -> Unavailable:
         reason=outage,
         retry_after=headers.get("retry-after"),
         limit_type=headers.get("rate_limit_type"),  # LiteLLM's: requests, tokens or max_parallel_requests
+        **gateway_limit(error),
     )
     return Unavailable(AI_OUTAGE_MESSAGES[outage], reason=outage)
 

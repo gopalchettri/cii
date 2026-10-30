@@ -78,7 +78,7 @@ def test_a_failed_fetch_keeps_the_checkpoint_frees_the_claim_and_gives_a_people_
     run.refresh_due_sources(NOW)
     run, feeds2, records2, _ = refresher({KEV: StubFetcher(KEV, RuntimeError("password=hunter2"))}, [KEV])
     feeds2.health = feeds.health
-    summary = run.refresh_due_sources(NOW + timedelta(days=2))
+    summary = run.refresh_due_sources(NOW + timedelta(hours=REFRESH_AFTER_HOURS[KEV] + 1))
     assert summary.failed == (KEV,) and feeds2.claimed == {}
     ((_, reason),) = feeds2.failures
     assert "RuntimeError" in reason and "hunter2" not in reason
@@ -123,7 +123,7 @@ def test_nothing_new_counts_as_fresh_without_storing() -> None:
     run, feeds, records, _ = refresher({KEV: first}, [KEV])
     run.refresh_due_sources(NOW)
     first.result = None
-    summary = run.refresh_due_sources(NOW + timedelta(days=2))
+    summary = run.refresh_due_sources(NOW + timedelta(hours=REFRESH_AFTER_HOURS[KEV] + 1))
     assert summary.sources[0].result == RefreshResult.UNCHANGED and len(records.saved) == 1
     assert first.checkpoints[-1] == "v1" and feeds.successes[-1][1] == "v1"
 
@@ -235,7 +235,7 @@ def test_a_checkpoint_without_its_version_is_downloaded_in_full_and_saved_whole_
     run.refresh_due_sources(NOW)
     feeds.health[KEV] = dataclasses.replace(feeds.health[KEV], source_version=None)  # a damaged row
     first.result = result("A", "B", version="v2")
-    run.refresh_due_sources(NOW + timedelta(days=2))
+    run.refresh_due_sources(NOW + timedelta(hours=REFRESH_AFTER_HOURS[KEV] + 1))
     assert first.checkpoints[-1] is None  # not trusted: asked from the start
     assert feeds.successes[-1][1:3] == ("v2", "v2") and feeds.health[KEV].source_version == "v2"
 

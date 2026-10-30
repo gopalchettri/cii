@@ -19,7 +19,7 @@ from app.core.exceptions import Unavailable
 from app.data_access.admin.ai_call_repository import AiCallRepository
 from app.data_access.jobs.job_repository import JobRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.write import write_scenario
+from app.domain.scenario.write import slot_label, write_set
 from app.models.ai.profiles import ChatModelProfile
 from tests.fakes import FakeChatModel
 from tests.test_run_actions import _deliver, _regenerate, api_key, queued  # noqa: F401 - fixtures by name
@@ -46,31 +46,42 @@ _ROOMY_CHAT = ChatModelProfile(
 )
 
 
-def test_a_redelivery_of_the_same_job_reads_back_the_writers_accepted_draft(
+def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The writer is asked once per job: a re-delivery (same record, epoch and stage) takes the draft its
-    first delivery got accepted, and the same scenario comes out."""
+    """The set's asks are the same on a re-delivery (slots in the batch's order, the second round built only
+    from the first's answers), so a re-delivery of the same job (same record, epoch and stage) takes every
+    answer its first delivery got: 0 AI calls, and the same scenarios come out."""
     answers = FakeChatModel()  # works each answer out from its prompt
+    answers.queue(AiTask.WRITE_SCENARIO, {"scenario_title": "x"})  # SC1 unreadable: the second round runs
     answers.responders[AiTask.WRITE_SCENARIO] = _answer_for
     answers.responders[AiTask.PLAN_CHECK] = lambda _: _CONSISTENT
 
     def complete(**request: Any) -> SimpleNamespace:
         user = request["messages"][1]["content"]
-        task = AiTask.WRITE_SCENARIO if user.startswith("BRIEF:") else AiTask.PLAN_CHECK
+        task = AiTask.PLAN_CHECK if "\nPLAN:\n" in user else AiTask.WRITE_SCENARIO
+        task = AiTask.REPAIR_SCENARIO if "REJECTED:" in user else task
         reply = SimpleNamespace(message=SimpleNamespace(content=json.dumps(answers._answer(task, user))))
         return SimpleNamespace(choices=[reply], usage=None)
 
     monkeypatch.setattr(litellm, "completion", complete)
     calls = AiCallRepository(get_mongodb()["test_ai_calls"])
     model = ai.ChatModel([("test-chat", _ROOMY_CHAT)], "http://ai.invalid", "key", calls)
-    brief = _brief_of(_plan_threat())
+    threats = [_plan_threat(), _plan_threat(key="lib:298", name="Historian wipe")]
+    briefs = [(slot_label(place), _brief_of(threat)) for place, threat in enumerate(threats, start=1)]
     job = {"record_id": uuid.uuid4().hex, "epoch": 1, "task": TaskName.WRITE_SCENARIOS}
     with structlog.contextvars.bound_contextvars(**job, task_id="first"):
-        first = write_scenario(model, brief)
+        first = list(write_set(model, briefs))
+    asked = len(answers.calls)
     with structlog.contextvars.bound_contextvars(**job, task_id="resent"):
-        again = write_scenario(model, brief)
-    assert len(answers.asked(AiTask.WRITE_SCENARIO)) == 1 and again == first
+        again = list(write_set(model, briefs))
+    assert [task for task, _ in answers.calls] == [
+        AiTask.WRITE_SCENARIO,
+        AiTask.PLAN_CHECK,
+        AiTask.REPAIR_SCENARIO,
+        AiTask.PLAN_CHECK,
+    ]
+    assert len(answers.calls) == asked and again == first and len(first) == 2
 
 
 @pytest.mark.usefixtures("sent")
@@ -105,13 +116,16 @@ def test_a_card_and_its_give_up_are_counted_once_when_a_redelivery_saves_the_pat
 
 
 def _answers_with(blocked: str, busy: set[str]) -> Any:
-    """The writer's answers: `blocked`'s draft cites an advisory, the AI service is busy for `busy`."""
+    """The writer's answers: `blocked`'s draft cites an advisory, the AI service is busy for `busy` (their
+    first answers unreadable, their rewrite in the set's second round meeting the outage)."""
 
     def answer(user_prompt: str) -> dict[str, Any]:
         if any(f'"{name}"' in user_prompt for name in busy):
+            if "REJECTED:" not in user_prompt:
+                return {"scenario_title": "x"}
             raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY)
         written = _answer_for(user_prompt)
-        if f'"{blocked}"' in user_prompt:
+        if blocked and f'"{blocked}"' in user_prompt:  # "" is in every slot's no-evidence line
             written["scenario_statement"] += " CVE-2024-1234 helps."
         return written
 

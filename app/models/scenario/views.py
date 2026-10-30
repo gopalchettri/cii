@@ -102,7 +102,8 @@ class SessionStatus(BaseModel):
     asset_name: str | None = None
     attempts: int = 0  # the job's tries so far: 0 = its stage has not started yet
     retry: dict[str, Any] | None = None  # the outage its stage waits out: RetryNotice's fields but the stage
-    timings: dict[str, float] = Field(default_factory=dict)  # threats_s, scenarios_s, controls_s
+    # the latest action's threats_s, scenarios_s, controls_s
+    timings: dict[str, float] = Field(default_factory=dict)
     last_next_set: dict[str, Any] | None = None  # {outcome, requested, delivered}
     last_regen: dict[str, Any] | None = None  # {outcome, requested, replaced}
     cancelled: dict[str, Any] | None = None  # {at, user_id, client_id}: its owner stopped it
@@ -289,7 +290,8 @@ class ScenarioCount(BaseModel):
 
 
 class StageTimings(BaseModel):
-    """Seconds per stage, once it is complete (scenarios and controls: the last set's or regenerate's)."""
+    """The latest action's seconds per activity, once each is complete: identifying the threats, writing
+    the scenarios, identifying their controls."""
 
     threats: float | None
     scenarios: float | None

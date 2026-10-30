@@ -1,4 +1,4 @@
-"""Turn one persisted generation into the minimal public JSON shape."""
+"""Turn one persisted mapping into the minimal public JSON shape."""
 
 from app.core.constants import MappingOverall, Status
 from app.models.jobs.views import retry_notice_of
@@ -8,6 +8,7 @@ from app.models.service_mapper.contract import (
     MappingProgress,
     MappingStatus,
     MappingSummary,
+    MappingTimings,
     MappingView,
     RelationshipCounts,
     SelectedService,
@@ -15,7 +16,7 @@ from app.models.service_mapper.contract import (
 
 
 def pending_relationships(result: dict) -> list[dict[str, str]]:
-    """Every relationship of a generation still without a decision, as {dependency_id, direction}."""
+    """Every relationship of a mapping still without a decision, as {dependency_id, direction}."""
     return [
         {"dependency_id": dependency["dependency_id"], "direction": direction}
         for dependency in result.get("dependencies", [])
@@ -25,8 +26,8 @@ def pending_relationships(result: dict) -> list[dict[str, str]]:
 
 
 def approved_relationships(record: dict) -> list[tuple[dict, str]]:
-    """The (dependency, direction) pairs an approved dependency graph may use: the current generation's
-    relationships a reviewer accepted. Every graph consumer reads through this."""
+    """The (dependency, direction) pairs an approved dependency graph may use: the mapping's relationships a
+    reviewer accepted. Every graph consumer reads through this."""
     return [
         (dependency, direction)
         for dependency in (record.get("result") or {}).get("dependencies", [])
@@ -35,20 +36,19 @@ def approved_relationships(record: dict) -> list[tuple[dict, str]]:
     ]
 
 
-def mapping_view(record: dict) -> MappingView:
-    result = record.get("result") or {}
+def mapping_view(record: dict, max_generations: int) -> MappingView:
+    dependencies = (record.get("result") or {}).get("dependencies") or []
     by_direction: dict[str, list[DependencyService]] = {"upstream": [], "downstream": []}
-    for dependency in result.get("dependencies", []):
+    for dependency in dependencies:
         for direction, relation in dependency["relations"].items():  # one, or both in an older record
             by_direction[direction].append(DependencyService(**_common(dependency), **relation))
-    summary = result.get("summary") or _empty_summary(record.get("limits") or {})
     return MappingView(
         mapping_id=record["_id"],
         status=record["status"],
-        generation=record["generation"],
+        **_runs(record, max_generations),
         upstream_services=by_direction["upstream"],
         downstream_services=by_direction["downstream"],
-        summary=MappingSummary.model_validate(summary),
+        summary=_summary(dependencies, record.get("limits") or {}),
         error=record.get("job", {}).get("error") if record["status"] == Status.FAILED else None,
         retrying=retry_notice_of(record["status"], record.get("job", {}).get("retry")),
         created_at=record["created_at"],
@@ -56,8 +56,8 @@ def mapping_view(record: dict) -> MappingView:
     )
 
 
-def mapping_status(record: dict) -> MappingStatus:
-    """The mapping's status: where its generation is, and how many relationships are decided."""
+def mapping_status(record: dict, max_generations: int) -> MappingStatus:
+    """The mapping's status: where its latest run is, and how many relationships are decided."""
     flags = [
         relation["isAccepted"]
         for dependency in (record.get("result") or {}).get("dependencies", [])
@@ -72,13 +72,19 @@ def mapping_status(record: dict) -> MappingStatus:
         entity_id=record["entity_id"],
         user_id=record.get("created_by"),
         status=status,
-        generation=record["generation"],
-        progress=MappingProgress(overall=_overall(status), relationships=counts),
+        **_runs(record, max_generations),
+        progress=MappingProgress(overall=_overall(status), relationships=counts, timings=_timings(job)),
         retrying=retry_notice_of(status, job.get("retry")),
         error=job.get("error") if status == Status.FAILED else None,
         created_at=record["created_at"],
         updated_at=record["updated_at"],
     )
+
+
+def _timings(job: dict) -> MappingTimings:
+    """The latest run's times, kept in its job (every new run starts a new one)."""
+    seconds = job.get("timings") or {}
+    return MappingTimings(catalog=seconds.get("catalog_s"), services=seconds.get("services_s"))
 
 
 def _overall(status: str) -> MappingOverall:
@@ -88,22 +94,32 @@ def _overall(status: str) -> MappingOverall:
     return MappingOverall(status)
 
 
-def _empty_summary(limits: dict) -> dict:
-    """The summary of a generation that has no result yet."""
+def _runs(record: dict, max_generations: int) -> dict[str, int]:
+    """The latest run's number, how many runs finished, and the most a mapping may have (0: no limit)."""
     return {
-        "unique_services": 0,
-        "upstream_count": 0,
-        "downstream_count": 0,
-        "max_upstream": limits.get("max_upstream", 0),
-        "max_downstream": limits.get("max_downstream", 0),
+        "generation": record["job"]["epoch"],
+        "generations_done": record.get("generations_done", 0),
+        "max_generations": max_generations,
     }
 
 
-def mapping_list_item(record: dict) -> MappingListItem:
+def _summary(dependencies: list[dict], limits: dict) -> MappingSummary:
+    """How many services the mapping holds in each direction, and each run's most per direction."""
+    directions = [direction for dependency in dependencies for direction in dependency["relations"]]
+    return MappingSummary(
+        unique_services=len(dependencies),
+        upstream_count=directions.count("upstream"),
+        downstream_count=directions.count("downstream"),
+        max_upstream=limits.get("max_upstream", 0),
+        max_downstream=limits.get("max_downstream", 0),
+    )
+
+
+def mapping_list_item(record: dict, max_generations: int) -> MappingListItem:
     return MappingListItem(
         mapping_id=record["_id"],
         status=record["status"],
-        generation=record["generation"],
+        **_runs(record, max_generations),
         selected_service=_selected(record),
         created_at=record["created_at"],
         updated_at=record["updated_at"],
@@ -118,7 +134,5 @@ def _selected(record: dict) -> SelectedService:
 
 
 def _common(dependency: dict) -> dict:
-    return {
-        key: dependency[key]
-        for key in ("dependency_id", "service_id", "service_name", "sector", "subsector", "ai_suggested")
-    }
+    keys = ("dependency_id", "service_id", "service_name", "sector", "subsector", "ai_suggested")
+    return {key: dependency[key] for key in keys} | {"generation": dependency.get("generation")}

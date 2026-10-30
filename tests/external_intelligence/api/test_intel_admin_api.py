@@ -235,19 +235,20 @@ def test_a_job_of_another_kind_is_not_found_here(client: TestClient, api: Api) -
 def test_health_shows_the_evidence_settings_and_whether_they_were_calibrated(
     client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    bge = {"rerank_model": "C:/models/bge-reranker-v2-m3", "evidence_similarity_threshold": 30.0}
+    api.service = api.build(get_settings().model_copy(update=bge))
     health = client.get(f"{URL}/health", headers=ADMIN).json()
-    assert (
-        health["snapshot_id"] == "snap-1"
-        and health["evidence"]["threshold"] == get_settings().evidence_similarity_threshold
-    )
+    assert health["snapshot_id"] == "snap-1" and health["evidence"]["threshold"] == 30.0
     assert health["evidence"]["rerank_model"] == "bge-reranker-v2-m3"  # the name only, never the folder
     assert health["evidence"]["threshold_calibrated"] is True
-    assert health["pending_sources"] == [] and health["no_data"] is False and health["stale"] is False
+    assert health["pending_sources"] == [] and health["no_data"] is False and "stale" not in health
     uat = get_settings().model_copy(update={"rerank_model": "litellm_proxy/qwen3-reranker-8b"})
-    api.service = api.build(uat)
-    shown = client.get(f"{URL}/health", headers=ADMIN).json()["evidence"]
-    assert (shown["rerank_model"], shown["threshold_calibrated"]) == ("qwen3-reranker-8b", False)
-    assert shown["threshold_calibrated_on"] is None
+    other_threshold = get_settings().model_copy(update=bge | {"evidence_similarity_threshold": 5.0})
+    for settings, model in ((uat, "qwen3-reranker-8b"), (other_threshold, "bge-reranker-v2-m3")):
+        api.service = api.build(settings)
+        shown = client.get(f"{URL}/health", headers=ADMIN).json()["evidence"]
+        assert (shown["rerank_model"], shown["threshold_calibrated"]) == (model, False)
+        assert shown["threshold_calibrated_on"] is None
 
 
 def test_health_with_the_master_switch_off_reads_no_store(

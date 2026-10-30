@@ -4,6 +4,7 @@ takes one); a repository adds a named method only for a real rule (a lease, a gu
 aggregate). No timeout here: the records that need one keep their own. Every write waits for a majority
 (the client's write concern, app/core/database.py)."""
 
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -21,7 +22,7 @@ from pymongo.errors import (
 )
 from pymongo.results import BulkWriteResult
 
-from app.core.constants import ErrorMessage, LogEvent
+from app.core.constants import AiUsageLogEvent, AiUsageMessage, ErrorMessage, LogEvent
 from app.core.database import expire_documents_after, get_mongodb
 from app.core.exceptions import DuplicateRecord
 
@@ -35,6 +36,8 @@ _REPLICATION_TIMED_OUT = 64  # MongoDB's error code for a write the replicas did
 _INDEX_NAME_IN_ERROR = re.compile(r"index: (\S+)")
 #: The field create and save stamp with the record shape version; a record without it is version 1.
 SCHEMA_VERSION_FIELD = "schema_version"
+#: WiredTiger's zstd block compressor for a collection kept for good (about half snappy's size on text).
+_ZSTD_STORAGE = {"wiredTiger": {"configString": "block_compressor=zstd"}}
 
 log = structlog.get_logger(__name__)
 
@@ -271,24 +274,102 @@ def drop_retired_index(collection: MongoCollection, name: str) -> None:
             raise
 
 
+class NeverDeletedRepository(MongoRepository):
+    """A collection kept for good (AI usage and the AI call texts, owner 2026-10-29): created zstd-compressed,
+    never given an expiry (one found at start-up is dropped and logged as an error), and `delete` is
+    refused."""
+
+    def __init__(self, collection: str | MongoCollection, **options: Any) -> None:
+        if "ttl" in options:
+            raise TypeError(AiUsageMessage.NEVER_DELETED.format(collection=collection))
+        super().__init__(collection, **options)
+
+    def create_indexes(self) -> None:
+        """The collection (compressed, when new), any expiring index dropped first (it would delete rows kept
+        for good, and an index of ours on the same field would clash with it), then its indexes."""
+        _create_compressed(self.collection)
+        for name, index in self.collection.index_information().items():
+            if "expireAfterSeconds" in index:
+                log.error(AiUsageLogEvent.EXPIRY_FOUND, collection=self.collection.name, index=name)
+                drop_retired_index(self.collection, name)
+        super().create_indexes()
+
+    def delete(self, **where: Any) -> int:
+        raise PermissionError(AiUsageMessage.NEVER_DELETED.format(collection=self.collection.name))
+
+
+def _create_compressed(collection: MongoCollection) -> None:
+    """The collection created with zstd blocks (its rows are kept for good); one that exists, or a server
+    refusing zstd, is left as it is (its default compressor)."""
+    database, name = collection.database, collection.name
+    if database.list_collection_names(filter={"name": name}):
+        return
+    try:
+        database.create_collection(name, storageEngine=_ZSTD_STORAGE)
+    except PyMongoError as error:  # another process made it a moment ago, or zstd is not built in
+        log.warning(AiUsageLogEvent.COMPRESSION_NOT_APPLIED, collection=name, message=str(error))
+
+
 def _apply_validator(collection: MongoCollection, required: Sequence[str]) -> None:
     """A $jsonSchema validator refusing a new or changed record without a `required` field: collMod on an
-    existing collection, else the collection created with it; a server or user refusing it is logged."""
+    existing collection whose stored rule differs, else the collection created with it. Never stops start-up:
+    a read or change refused is logged."""
     if not required:
         return
-    options: Record = {
+    wanted: Record = {
         "validator": {"$jsonSchema": {"bsonType": "object", "required": list(required)}},
         "validationLevel": "moderate",  # records stored invalid before stay writable
         "validationAction": "error",
     }
     database, name = collection.database, collection.name
     try:
-        if database.list_collection_names(filter={"name": name}):
-            database.command("collMod", name, **options)
-        else:
-            database.create_collection(name, **options)
-    except PyMongoError as error:  # an older server or no collMod right: start-up goes on without it
+        found = list(database.list_collections(filter={"name": name}))
+    except PyMongoError as error:  # the stored rule could not be read: start-up goes on without it
         log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, message=str(error))
+        return
+    stored: Record = found[0].get("options", {}) if found else {}
+    if found and _comparable_rule(stored) == _comparable_rule(wanted):
+        return
+    try:
+        if found:
+            database.command("collMod", name, **wanted)
+        else:
+            database.create_collection(name, **wanted)
+    except PyMongoError as error:  # an older server or no collMod right: start-up goes on without it
+        _log_validator_refused(name, stored, wanted, error)
+
+
+def _required_fields(options: Mapping[str, Any]) -> list[str]:
+    """The fields a collection's $jsonSchema validator requires."""
+    return list(options.get("validator", {}).get("$jsonSchema", {}).get("required", []))
+
+
+def _comparable_rule(options: Mapping[str, Any]) -> tuple[Any, ...]:
+    """A collection's validator with its required fields in any order, its validation level and action."""
+    validator = options.get("validator", {})
+    schema = {**validator.get("$jsonSchema", {}), "required": sorted(_required_fields(options))}
+    return (
+        {**validator, "$jsonSchema": schema},
+        options.get("validationLevel"),
+        options.get("validationAction"),
+    )
+
+
+def _log_validator_refused(name: str, stored: Record, wanted: Record, error: PyMongoError) -> None:
+    """A refused validator: an error naming the stale fields and the command for a DBA when the stored rule
+    still requires fields the code no longer lists (every insert is refused), else a warning."""
+    stale_fields = sorted(set(_required_fields(stored)) - set(_required_fields(wanted)))
+    if not stale_fields:
+        log.warning(LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, collection=name, message=str(error))
+        return
+    command = f"db.runCommand({json.dumps({'collMod': name, **wanted})})"
+    log.error(
+        LogEvent.MONGODB_VALIDATOR_STALE,
+        collection=name,
+        stale_fields=stale_fields,
+        command=command,
+        message=str(error),
+    )
 
 
 class VectorRepository(MongoRepository):

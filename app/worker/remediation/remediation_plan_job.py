@@ -87,6 +87,7 @@ class RemediationPlanJob:
         """Writes the leased version: its snapshot rebuilt and saved, the checked plan, then the audit."""
         try:
             snapshot = self._save_snapshot(lease)
+            started = time.perf_counter()
             plan, warnings = write_plan(self._chat, snapshot)
         except JobFailed:
             metrics.PLANS.labels(Status.FAILED).inc()
@@ -98,7 +99,8 @@ class RemediationPlanJob:
             "prompt_version": PromptVersion.REMEDIATION,
             "completed_at": utc_now(),
         }
-        self._remediations.update_remediation_plan_version(lease, written, done=True)
+        plan_seconds = {"plan_s": time.perf_counter() - started}
+        self._remediations.update_remediation_plan_version(lease, written, done=True, timings=plan_seconds)
         metrics.PLANS.labels(Status.DONE).inc()
         target = audit_target(AuditTarget.REMEDIATION, lease.record_id)
         after = {"version": lease.epoch, "warnings": len(warnings)}
@@ -107,7 +109,9 @@ class RemediationPlanJob:
         )
 
     def _save_snapshot(self, lease: JobLease) -> dict[str, Any]:
-        """The version's input from the scenario now and the stored register, saved on the version."""
+        """The version's input from the scenario now and the stored register, saved on the version with the
+        time it took."""
+        started = time.perf_counter()
         scenario = self._scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=lease.record["scenario_id"])
         if scenario is None:  # deleted with its run (and its plan with it)
             raise LeaseLost(lease.record_id)
@@ -141,7 +145,8 @@ class RemediationPlanJob:
         snapshot = build_snapshot(
             scenario, context, register, library_mapped, warnings, affected, alternatives
         )
-        self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot})
+        seconds = {"controls_s": time.perf_counter() - started}
+        self._remediations.update_remediation_plan_version(lease, {"snapshot": snapshot}, timings=seconds)
         return snapshot
 
     def _mapped_controls(
@@ -201,8 +206,10 @@ class RemediationPlanJob:
         return record
 
     def _settle(self, claimed: dict[str, Any], seconds: float = 0.0) -> None:
-        """Updates the run's counts and tells its watchers after a scenario's controls changed state."""
-        self._sessions.update_scenario_session_counts(claimed["session_id"], seconds)
+        """Updates the run's counts and tells its watchers after a scenario's controls changed state; only a
+        hand-written scenario's run counts this mapping's time (a generated run times its own actions)."""
+        manual = claimed.get("source") == RunKind.MANUAL
+        self._sessions.update_scenario_session_counts(claimed["session_id"], seconds if manual else 0.0)
         publish_session_status(claimed["session_id"])
 
 

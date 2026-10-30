@@ -6,6 +6,7 @@ file rules (no kubernetes.io but the node label that spreads the pods, a comment
 spreading over nodes and what goes into the image.
 A broken file must fail here, not halfway through a rollout."""
 
+import json
 import math
 import os
 import re
@@ -19,7 +20,14 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import LITELLM_MODEL_PREFIX, Controls, Generation, Lease, Queue, ThreatFinding, Worker
+from app.core.constants import (
+    LITELLM_MODEL_PREFIX,
+    ChatModule,
+    Lease,
+    Queue,
+    ThreatFinding,
+    Worker,
+)
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -55,7 +63,7 @@ SECRET_NAMES = {
     "CII_MONGO_URL",
     "CII_REDIS_URL",
     "CII_REDIS_CELERY_BROKER_URL",
-    "CII_CHAT_API_KEY",
+    *(f"CII_{module.upper()}_CHAT_API_KEY" for module in ChatModule),
     "CII_EMBEDDING_API_KEY",
     "CII_RERANK_API_KEY",
     "CII_ADMIN_API_KEY",
@@ -65,10 +73,13 @@ SECRET_NAMES = {
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
 STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
 DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
-#: Each AI model and the base URL its calls go to.
+#: Each AI model and the base URL its calls go to: each module's main and fallback chat model on its own.
 GATEWAYS = (
-    ("CII_CHAT_MODEL", "CII_CHAT_BASE_URL"),
-    ("CII_CHAT_FALLBACK_MODEL", "CII_CHAT_BASE_URL"),
+    *(
+        (f"CII_{module.upper()}_CHAT_{model}", f"CII_{module.upper()}_CHAT_BASE_URL")
+        for module in ChatModule
+        for model in ("MODEL", "FALLBACK_MODEL")
+    ),
     ("CII_EMBEDDING_MODEL", "CII_EMBEDDING_BASE_URL"),
     ("CII_RERANK_MODEL", "CII_RERANK_BASE_URL"),
 )
@@ -91,6 +102,7 @@ EMBEDDED_CONFIGS = {
     "datasources.yaml": "observability/grafana/provisioning/datasources/datasources.yaml",
     "dashboards.yaml": "observability/grafana/provisioning/dashboards/dashboards.yaml",
     "tsg.json": "observability/grafana/dashboards/tsg.json",
+    "ai_usage.json": "observability/grafana/dashboards/ai_usage.json",
     "nginx.conf": "observability/nginx/nginx.conf",  # the monitoring proxy's: UAT only
 }
 #: How a pod names a ConfigMap or Secret it reads (envFrom, env valueFrom).
@@ -102,6 +114,7 @@ REFERENCES = {
 }
 BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
 CHAT_MODEL_REQUESTS_PER_MINUTE = 192  # kimi-k2.5's own limit on UAT's gateway key (owner, 2026-10-24)
+KIMI = "litellm_proxy/kimi-k2.5"
 #: Every worker's startup and liveness probe: the heartbeat's file exists, then is fresh. No Redis.
 FILE_AGE = f"$(( $(date +%s) - $(stat -c %Y {Worker.LIVENESS_FILE}) ))"
 WORKER_PROBES = {
@@ -281,8 +294,8 @@ def _scalars(node: object, key: object = None) -> list[tuple[object, object]]:
 
 
 def _reads(deployment: dict) -> set[tuple[str, str, str]]:
-    """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes, and
-    its volume claims; key "" = the whole object."""
+    """Each (kind, name, key) a pod reads: ConfigMaps and Secrets by envFrom, env valueFrom and volumes (a
+    projected volume's sources too), and its volume claims; key "" = the whole object."""
     spec = deployment["spec"]["template"]["spec"]
     reads = set()
     for container in _containers(deployment):
@@ -294,12 +307,14 @@ def _reads(deployment: dict) -> set[tuple[str, str, str]]:
                 if reference in REFERENCES:
                     reads.add((REFERENCES[reference], target["name"], target.get("key", "")))
     for volume in spec.get("volumes", []):
-        if "configMap" in volume:
-            keys = [item["key"] for item in volume["configMap"].get("items", [])] or [""]
-            reads |= {("ConfigMap", volume["configMap"]["name"], key) for key in keys}
-        if "secret" in volume:
-            keys = [item["key"] for item in volume["secret"].get("items", [])] or [""]
-            reads |= {("Secret", volume["secret"]["secretName"], key) for key in keys}
+        for source in [volume, *volume.get("projected", {}).get("sources", [])]:
+            if "configMap" in source:
+                keys = [item["key"] for item in source["configMap"].get("items", [])] or [""]
+                reads |= {("ConfigMap", source["configMap"]["name"], key) for key in keys}
+            if "secret" in source:
+                secret = source["secret"]  # a volume names it secretName, a projected source name
+                keys = [item["key"] for item in secret.get("items", [])] or [""]
+                reads |= {("Secret", secret.get("secretName") or secret["name"], key) for key in keys}
         if "persistentVolumeClaim" in volume:
             reads.add(("PersistentVolumeClaim", volume["persistentVolumeClaim"]["claimName"], ""))
     return reads
@@ -389,25 +404,19 @@ def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened
     assert APP_IMAGE.fullmatch(image), image
 
 
-def test_every_queue_has_one_worker_and_the_api_stays_ready_while_it_restarts() -> None:
-    """/ready needs a live worker on every routed queue, and each queue has one worker (the quota has no
-    room for a second), which stops before its new pod starts (maxSurge 0). The API's readiness must outlast
-    that worker's slowest start, or every worker update would take the API out of its Route. The reaper's
+def test_every_queue_has_one_thread_pool_worker_and_the_api_is_ready_on_mongodb_alone() -> None:
+    """Each routed queue has one worker (the quota has no room for a second), on the thread pool. The API's
+    /ready waits for MongoDB alone, so a worker restarting never takes the API out of its Route. The reaper's
     worker runs in ai-common (deploy_common.yaml), the others in ai-threatgen."""
-    queues, slowest_start = [], 0
+    queues = []
     for deployment in _all_deployments():
-        container = _container(deployment)
-        command = container.get("command", [])
+        command = _container(deployment).get("command", [])
         if command[:4] == ["celery", "-A", "app.worker", "worker"]:
             assert "--pool=threads" in command  # the worker refuses any other pool at start-up
-            # Ready once its heartbeat wrote the alive file: rollout status waits until the queue is served.
-            start = container["startupProbe"]
-            start_seconds = start["initialDelaySeconds"] + start["failureThreshold"] * start["periodSeconds"]
-            slowest_start = max(slowest_start, start_seconds)
+            assert deployment["spec"]["replicas"] == 1, deployment["metadata"]["name"]
             queues.append(command[command.index("-Q") + 1])
     assert sorted(queues) == sorted(ROUTED_QUEUES)
-    ready = _container(_deployment("api"))["readinessProbe"]
-    assert ready["failureThreshold"] * ready["periodSeconds"] > slowest_start
+    assert _container(_deployment("api"))["readinessProbe"]["httpGet"]["path"] == "/ready"
 
 
 def test_worker_probes_read_the_heartbeat_file_never_redis() -> None:
@@ -437,9 +446,9 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
     assert budgets == {d["metadata"]["name"] for d in deployments if d["spec"]["replicas"] >= 2} == {"api"}
     for deployment in deployments:
         if deployment["spec"]["strategy"]["type"] == "RollingUpdate":
-            # The API starts its new copy first; a worker stops first: the quota has no room for a second.
-            api = deployment["metadata"]["name"] == "api"
-            expected = {"maxUnavailable": 0, "maxSurge": 1} if api else {"maxUnavailable": 1, "maxSurge": 0}
+            # Every pod stops before its new one starts: the quota has no room for an extra pod (the API at
+            # maxSurge 1 needed exactly 6 CPU). The API's other copy serves meanwhile.
+            expected = {"maxUnavailable": 1, "maxSurge": 0}
             assert deployment["spec"]["strategy"]["rollingUpdate"] == expected, deployment["metadata"]
         else:
             assert deployment["metadata"]["name"] == "beat"
@@ -605,13 +614,13 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
 
 def test_the_pods_settings_load_and_a_wildcard_origin_stops_them(monkeypatch: pytest.MonkeyPatch) -> None:
     """A pod builds its settings from tsg-config and tsg-secrets alone: a missing required setting, a short
-    admin key or a "*" CORS origin would stop every pod at start-up, so it must fail here first."""
+    admin key or a "*" CORS origin in prod would stop every pod at start-up, so it must fail here first."""
     monkeypatch.setenv("TSG_TEST_SENTINEL", "kept")
     environment = _settings() | _secrets()
     assert _load_settings(environment).ai_bypass_proxy is True
     assert environment["CII_CORS_ORIGINS"] != "*"
     with pytest.raises(ValidationError):
-        _load_settings(environment | {"CII_CORS_ORIGINS": "*"})
+        _load_settings(environment | {"CII_CORS_ORIGINS": "*", "CII_ENV": "prod"})
     assert os.environ["TSG_TEST_SENTINEL"] == "kept"  # this process's environment is put back
 
 
@@ -681,6 +690,39 @@ def test_each_embedded_monitoring_config_is_its_observability_file_byte_for_byte
     assert differ == []
 
 
+def test_grafana_mounts_every_dashboard_file_in_the_folder_it_loads() -> None:
+    """Grafana loads every file of GRAFANA_DASHBOARDS: the ConfigMaps projected there hold exactly the files
+    of observability/grafana/dashboards, and the home page is tsg.json in it. Fails when a dashboard's
+    ConfigMap is dropped from the projected volume, a new dashboard gets no ConfigMap, or the home path
+    moves."""
+    grafana = _deployment("grafana")
+    pod, container = grafana["spec"]["template"]["spec"], _container(grafana)
+    env = {variable["name"]: variable.get("value") for variable in container["env"]}
+    folder = env["GRAFANA_DASHBOARDS"]
+    [mount] = [m for m in container["volumeMounts"] if m["mountPath"] == folder]
+    [volume] = [v for v in pod["volumes"] if v["name"] == mount["name"]]
+    names = {source["configMap"]["name"] for source in volume["projected"]["sources"]}
+    mounted = {
+        key
+        for config_map in _objects(CONFIG_FILE, kind="ConfigMap")
+        if config_map["metadata"]["name"] in names
+        and config_map["metadata"]["namespace"] == MONITORING_NAMESPACE
+        for key in config_map["data"]
+    }
+    dashboards = REPO / "observability" / "grafana" / "dashboards"
+    assert mounted == {path.name for path in dashboards.glob("*.json")}
+    assert env["GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH"] == f"{folder}/tsg.json"
+
+
+def test_every_object_fits_oc_apply_s_last_applied_annotation() -> None:
+    """Client-side oc apply keeps each object, as JSON, in one annotation of at most 262,144 bytes; kubectl
+    writes <, > and & as 6-byte escapes, so each object stays under 250,000 bytes (about 5% margin). Fails
+    when a second dashboard is added to tsg.json's ConfigMap instead of its own."""
+    for item in _objects(CONFIG_FILE, COMMON_FILE):
+        size = len(json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        assert size < 250_000, (item["kind"], item["metadata"]["name"], size)
+
+
 def test_monitoring_images_come_from_the_mirror_with_a_pinned_version() -> None:
     """The cluster pulls only from the Quay mirror, and a moving tag (latest) would change a pod at its next
     restart. Flower and the reaper worker run from the app image, checked with the app pods."""
@@ -706,32 +748,42 @@ def test_the_image_gets_only_what_it_runs() -> None:
     assert "local" not in re.findall(r"\[(\w+)\]", dockerfile) and "\nUSER 10001\n" in dockerfile
 
 
-def test_ai_workers_ask_for_about_as_many_ai_calls_as_the_cap_allows() -> None:
-    """Each AI worker's own threads x AI calls per job x replicas, summed over a project, near
-    CII_MAX_CONCURRENT_AI_CALLS: more only waits on a slot (and times out the job), far fewer leaves the cap
-    unused. With no cap (0), the chat
-    model's requests-a-minute limit paces the calls: it is set, and within what kimi-k2.5 takes."""
+def test_each_ai_module_s_workers_can_fill_its_cap_and_no_one_job_takes_it_all() -> None:
+    """Per module, its workers' threads x chat calls in flight per job reach its cap,
+    CII_<MODULE>_MAX_CONCURRENT_AI_CALLS (UAT had remediation at 4 with 2 threads: half its cap never used,
+    its plans twice as slow), and one job
+    never asks for more than the cap. Each module on kimi-k2.5 has a requests-a-minute limit, and on the one
+    key they share they add up to within what kimi-k2.5 takes."""
     settings = _settings()
-    cap = int(settings["CII_MAX_CONCURRENT_AI_CALLS"])
-    if cap == 0:
-        assert 0 < int(settings["CII_CHAT_REQUESTS_PER_MINUTE"]) <= CHAT_MODEL_REQUESTS_PER_MINUTE
-        return
-    calls_per_job = {
-        Queue.THREATS: ThreatFinding.AI_BATCHES_AT_ONCE,
-        Queue.SCENARIOS: Generation.WRITER_BATCH,
-        Queue.CONTROLS: Controls.PER_DELIVERY,
+    on_kimi = [m.upper() for m in ChatModule if settings[f"CII_{m.upper()}_CHAT_MODEL"] == KIMI]
+    limits = [int(settings.get(f"CII_{m}_CHAT_REQUESTS_PER_MINUTE", "0")) for m in on_kimi]
+    assert limits and all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
+    calls_per_job = {  # a job's chat calls in flight, and the module whose AI slots they hold
+        Queue.THREATS: (ChatModule.SCENARIO, ThreatFinding.AI_BATCHES_AT_ONCE),
+        Queue.SCENARIOS: (ChatModule.SCENARIO, 1),  # a set's calls, one after another
+        Queue.REMEDIATION: (ChatModule.REMEDIATION, 1),  # one plan, one call
+        Queue.SERVICEMAPPER: (ChatModule.SERVICE_MAPPER, 1),  # one mapping, one call
     }
-    for namespace, path in APP_FILES.items():
-        asked, checked = 0, set()
-        for deployment in _objects(path, kind="Deployment"):
-            command = _container(deployment)["command"]
-            queue = command[command.index("-Q") + 1] if "-Q" in command else None
-            if queue in calls_per_job:
-                threads = int(command[command.index("-c") + 1])
-                asked += threads * calls_per_job[queue] * deployment["spec"]["replicas"]
-                checked.add(queue)
-        assert checked == set(calls_per_job), namespace
-        assert cap / 2 < asked <= cap, (namespace, asked, cap)
+    caps = {m: int(settings[f"CII_{m.upper()}_MAX_CONCURRENT_AI_CALLS"]) for m in ChatModule}
+    asked, found = dict.fromkeys(ChatModule, 0), set()
+    for deployment in _app_deployments():
+        command = _container(deployment)["command"]
+        queue = command[command.index("-Q") + 1] if "-Q" in command else None
+        if queue in calls_per_job:
+            module, calls = calls_per_job[queue]
+            assert calls <= caps[module] or caps[module] == 0, queue
+            asked[module] += int(command[command.index("-c") + 1]) * calls * deployment["spec"]["replicas"]
+            found.add(queue)
+    assert found == set(calls_per_job)
+    assert all(caps[m] <= asked[m] for m in ChatModule), (asked, caps)
+
+
+def test_tsg_config_holds_uat_s_own_values_never_a_placeholder() -> None:
+    """The owner applies deploy/ to UAT as it is: a CHANGE_ME in tsg-config replaces UAT's real value
+    (CII_CORS_ORIGINS was one: every browser call from the UI would then fail). Alertmanager's addresses,
+    in its own ConfigMap, are the owner's to fill in."""
+    for namespace, values in _shared(CONFIG_FILE, "tsg-config").items():
+        assert not [key for key, value in values.items() if "CHANGE_ME" in str(value)], namespace
 
 
 def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:

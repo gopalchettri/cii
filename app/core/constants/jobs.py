@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
+
 
 class Queue(StrEnum):
     THREATS = "tsg_threats"
@@ -24,6 +26,7 @@ class TaskName(StrEnum):
     BUILD_LIBRARY_INDEXES = "tsg_build_library_indexes"
     WRITE_PLAN = "tsg_write_plan"  # one remediation plan version
     REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # sources due, then a snapshot
+    ROLL_UP_AI_USAGE = "tsg_roll_up_ai_usage"  # AI usage rows added up per hour, for dashboards
 
 
 TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Celery app's task_routes)
@@ -36,6 +39,7 @@ TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Cele
     TaskName.RETRY_CONTROLS: {"queue": Queue.REAPER},
     TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
     TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
+    TaskName.ROLL_UP_AI_USAGE: {"queue": Queue.MAINTENANCE},
 }
 #: The queues some task is routed to: /ready needs a live worker on each (an unrouted queue needs none).
 ROUTED_QUEUES: Final[tuple[str, ...]] = tuple(sorted({route["queue"] for route in TASK_ROUTES.values()}))
@@ -129,7 +133,8 @@ class JobControlMessage(StrEnum):
 
 
 class Generation:
-    WRITER_BATCH: Final = 6  # paths one write job writes at once (a set in one round): not a scenario limit
+    # paths one write job writes at once, not a scenario limit (CII_SCENARIOS_WRITTEN_AT_ONCE: 6)
+    WRITER_BATCH: Final = TUNING.scenarios_written_at_once
     MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 

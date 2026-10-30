@@ -19,7 +19,7 @@ from structlog.testing import capture_logs
 import app.ai  # noqa: F401  # caps the library loggers on import
 from app.ai.common import apply_proxy_settings, merged_no_proxy
 from app.core.config import Settings, get_settings
-from app.core.constants import LogEvent
+from app.core.constants import ChatModule, LogEvent
 
 GATEWAY = "https://llmapi.example:443/v1"
 COMPANY_PROXY = "http://proxy.test:8080"  # what Windows' own proxy setting (Internet Options) names
@@ -31,9 +31,9 @@ def _settings(bypass: bool, proxy_url: str = "") -> Settings:
         update={
             "ai_bypass_proxy": bypass,
             "proxy_url": SecretStr(proxy_url),
-            "chat_model": "litellm_proxy/chat",
-            "chat_base_url": GATEWAY,
-            "chat_fallback_model": "",
+            **{f"{module}_chat_model": "litellm_proxy/chat" for module in ChatModule},
+            **{f"{module}_chat_base_url": GATEWAY for module in ChatModule},
+            **{f"{module}_chat_fallback_model": "" for module in ChatModule},
             "embedding_model": "litellm_proxy/embed",
             "embedding_base_url": "llmapi.example",  # no scheme: still read as a host
             "rerank_model": "openai/rerank",  # not a LiteLLM gateway model: its host keeps the proxy
@@ -61,6 +61,16 @@ def test_the_gateway_goes_on_no_proxy_once_and_keeps_what_was_there() -> None:
     apply_proxy_settings(_settings(True))  # a second call adds no host twice
     assert os.environ["NO_PROXY"] == "localhost,llmapi.example"
     assert os.environ["no_proxy"].split(",")[-1] == "llmapi.example"  # Linux tools read the lowercase one
+
+
+def test_a_module_s_own_gateway_goes_on_no_proxy_too() -> None:
+    """Owner 2026-10-28: a module may call its chat model on its own gateway (CII_<MODULE>_CHAT_BASE_URL)."""
+    own = {
+        "remediation_chat_base_url": "https://own-gateway.example",
+        "remediation_chat_model": "litellm_proxy/x",
+    }
+    apply_proxy_settings(_settings(True).model_copy(update=own))
+    assert os.environ["NO_PROXY"].split(",") == ["localhost", "llmapi.example", "own-gateway.example"]
 
 
 def test_off_leaves_the_proxy_in_charge() -> None:
@@ -124,7 +134,9 @@ def test_with_the_bypass_off_the_ai_calls_use_the_configured_proxy_too() -> None
 def test_importing_the_ai_layer_never_copies_the_env_file_into_the_environment(tmp_path: Path) -> None:
     # G263: litellm loaded ./.env into os.environ on import. CII_AI_BYPASS_PROXY then read as a proxy variable
     # (its name ends in _PROXY), so Windows' proxy setting was ignored from start-up; every key went along.
-    (tmp_path / ".env").write_text("CII_AI_BYPASS_PROXY=true\nCII_CHAT_API_KEY=must-stay-in-the-file\n")
+    (tmp_path / ".env").write_text(
+        "CII_AI_BYPASS_PROXY=true\nCII_SCENARIO_CHAT_API_KEY=must-stay-in-the-file\n"
+    )
     probe = (
         "import json, os, urllib.request, app.ai; "
         "print(json.dumps([sorted(k for k in os.environ if k.upper().startswith('CII_')), "

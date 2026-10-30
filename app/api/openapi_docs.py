@@ -3,6 +3,7 @@ tester sets up and tests (ApiTag). Text only: no behaviour lives here."""
 
 from typing import Any
 
+from app.api.openapi_ai_usage import AI_USAGE_GROUP
 from app.core.constants import ApiTag
 
 API_DESCRIPTION = """
@@ -48,9 +49,11 @@ _GROUPS: dict[ApiTag, str] = {
         "`X-Admin-Key`."
     ),
     ApiTag.SERVICE_MAPPER: (
-        "Generate upstream and downstream service dependencies from a described service, review each "
-        "relationship, and regenerate a new version. Requires the caller identity headers."
+        "Generate upstream and downstream service dependencies from a described service (one mapping per "
+        "service), review each relationship, and regenerate to add more. Requires the caller identity "
+        "headers."
     ),
+    ApiTag.AI_USAGE: AI_USAGE_GROUP,
 }
 
 #: Swagger shows the groups in this order (ApiTag's).

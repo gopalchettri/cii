@@ -540,6 +540,9 @@ def test_missing_controls_are_mapped_by_the_plan_job_never_the_request(
     saved = _scenario_controls(scenario_id)
     assert (saved["status"], [item["code"] for item in saved["items"]]) == (Status.DONE, ["CII-CID-1"])
     assert world["mapper"].mapped["items"] == saved["items"]  # the alternatives see the record just mapped
+    # Owner 2026-10-28: a plan's mapping is never added to the generated run's own (latest action's) times.
+    run = get_mongodb()[Collection.SESSIONS].find_one({"_id": _record(remediation_id)["session_id"]})
+    assert "controls_s" not in (run.get("timings") or {})
     assert _request(client, api_key, generated(scenario_id)).status_code == 409
     assert world["mapper"].asked == [scenario_id]  # refused before any control was mapped
 
@@ -682,9 +685,13 @@ def test_a_regenerate_writes_a_new_version_from_the_scenario_as_it_is_now(
     get_mongodb()[Collection.SCENARIOS].update_one(
         {"_id": scenario_id}, {"$set": {"controls.items": remapped}}
     )
+    first = _status(client, api_key, remediation_id).json()["progress"]["timings"]
+    assert None not in (first["controls"], first["plan"])  # owner 2026-10-28: version 1, timed
     answer = _post(client, api_key, remediation_id, "regenerate", {})
     assert (answer.status_code, answer.json()["version"]) == (202, 2), answer.text
     assert (TaskName.WRITE_PLAN, remediation_id, 2) in world["sent"]
+    timings = _status(client, api_key, remediation_id).json()["progress"]["timings"]
+    assert timings == {"controls": None, "plan": None}  # version 1's times are gone
     record = _record(remediation_id)
     assert [(v["version"], v["status"]) for v in record["versions"]] == [(1, Status.DONE), (2, Status.QUEUED)]
     assert record["versions"][1]["snapshot"] is None  # its job builds it
@@ -697,6 +704,7 @@ def test_a_regenerate_writes_a_new_version_from_the_scenario_as_it_is_now(
     assert (_mapped_codes(versions[0]), _mapped_codes(versions[1])) == (["CII-CID-1"], ["CII-CID-2"])
     status = _status(client, api_key, remediation_id).json()
     assert (status["latest_version"], status["latest_status"], status["decision"]) == (2, "done", "pending")
+    assert all(0 <= seconds < 60 for seconds in status["progress"]["timings"].values())  # version 2's own
     assert _audits(remediation_id, AuditAction.PLAN_REGENERATED) == 1
 
 

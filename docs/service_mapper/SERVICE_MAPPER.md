@@ -10,16 +10,19 @@ reviewer to accept or reject relationship by relationship. The definitions follo
 
 ## Flow
 
-1. `POST /v1/service-mapper` freezes the request (service name, description, sector, subsector, entity names) and
-   the per-direction counts from `.env` (`SERVICE_MAPPER_UPSTREAM/DOWNSTREAM_TOTAL_COUNT`), then queues a job on
-   `tsg_servicemapper`.
+1. `POST /v1/service-mapper` (Generate) keeps the request (service name, description, sector, subsector, entity
+   names) and the per-direction counts from `.env` (`SERVICE_MAPPER_UPSTREAM/DOWNSTREAM_TOTAL_COUNT`), then queues
+   a run on `tsg_servicemapper`. A service (its name, sector and subsector, case and spacing forgiven) has **one
+   mapping per entity** (a unique index): the first Generate makes it; a later one runs it again with the details
+   it sends, on the same `mapping_id`.
 2. The worker reads the SQL onboarding catalog (`app/worker/service_mapper/catalog_provider.py`): every service
    with its sectors and subsectors (`tsg_Onboarding_GetSectorsAndSubsectorsList`,
    `tsg_Onboarding_GetServicesWithSectorDetails`, `tsg_GetServiceMapperAssociations`: TSG's own procedures in
    `scripts/sql`), and the onboarding platform's `Onboarding_GetSectorServiceMappings`.
 3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `app/prompts.toml` `[service_mapper.generate]` and a JSON user
    message with the selected service (with its recorded `known_upstream`/`known_downstream` when it is in the catalog), the counts (`upstream_count`, `downstream_count`, a
-   maximum each) and `catalog`: **every** database service, grouped by sector and subsector, groups and services
+   maximum each), `already_mapped` (from the second run: the names the mapping holds, by direction; those
+   services are left out of `catalog`, so the AI is not offered them again) and `catalog`: **every** database service, grouped by sector and subsector, groups and services
    ordered most relevant first by hybrid search (`app/search/service_mapper.py`); the selected service is left
    out. Only a catalog too large for the input keeps just its most relevant services. **No catalog ID ever
    reaches the AI**: services are named, and the answer names services.
@@ -34,22 +37,29 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    the AI busy or down, keeps the first answer.
 5. `reconcile.py` maps each name to its catalog service (exact name, then a name form; services that share a name
    are told apart by sector and subsector), drops what is left of the above, keeps each service in one direction,
-   caps each list at its count and stores the generation.
-6. A reviewer accepts or rejects each relationship (`POST .../dependencies/decision`); regenerate starts a new
-   generation with every relationship pending. A generation that failed for an outage (`job.error.code`
-   `unavailable`) leaves no lasting mark: the same Idempotency-Key, on create or regenerate, starts a new try
-   while that key's generation is still the latest, instead of replaying the failed mapping; any other failure
-   replays as before. A create key that started a new try is also stored in `regen_keys`, so a regenerate sent
-   with that same key replays that generation. Use a fresh key for each request. A retried delivery of the same
-   generation reuses the AI answer it already got (`reuse_earlier_answer`, keyed on the generation), so a
-   regenerate always asks afresh. A relationship decision on a mapping that is not `done` is a 409: wait while it
-   generates, or regenerate it if it failed.
+   drops every service the mapping already holds (either direction, or another name form of one the AI named),
+   caps each list at its count, and adds the new services after those the mapping holds: a run never rewrites
+   or removes one. Each service has one `dependency_id` in its mapping. The status (`GET .../status`, SSE
+   `mapping.updated`) shows `progress.timings` `{catalog, services}`: the latest run's seconds for step 2 and for
+   steps 3-5, null until it is done (`job.timings.catalog_s` / `services_s`; the next run starts a new `job`).
+6. A reviewer accepts or rejects each relationship (`POST .../dependencies/decision`), and may change a decision,
+   at any time once the mapping has services, even while a later run goes on. Generate again for the same
+   service, or `POST .../regenerate` (the details the mapping holds), runs it again: every service and decision
+   stays, only new services are added. While a run goes on, another is refused (409 `generation_in_progress`;
+   the same Generate body answers 200 with the running mapping). `SERVICE_MAPPER_MAX_GENERATIONS` caps the runs
+   (409 `generation_limit_reached`); a failed run keeps everything and does not count. After a run that found
+   nothing new, another with the same details, counts and catalog would send the AI the same prompt (temperature
+   0: the same answer), so it is not started: the call answers 200 with the mapping as it is, no run used. The same Idempotency-Key
+   answers 200 with the run it started. A retried delivery of the same run reuses the AI answer it already got
+   (`reuse_earlier_answer`, keyed on the run), so each run asks afresh. There is no history collection: the
+   mapping itself holds every run's services (owner, 2026-10-28).
 
 ## Settings
 
 | Setting | Default | What it does |
 |---|---|---|
-| `SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT` / `..._DOWNSTREAM_...` | 10 | The most services per direction (0 turns one off). |
+| `SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT` / `..._DOWNSTREAM_...` | 10 | The most new services per direction in one run (0 turns one off). |
+| `SERVICE_MAPPER_MAX_GENERATIONS` | 5 | The most runs per mapping, the first included (0 = no limit). |
 
 ## Rules (owner, 2026-10-22)
 

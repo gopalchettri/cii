@@ -1,13 +1,14 @@
 """Asking the AI and checking its answer in code: one with problems is asked again once, with the problems
 listed."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
 from app.ai import ChatModel
-from app.core.constants import AiTask
+from app.ai.attempts import one_ask
+from app.core.constants import CHAT_MAX_OUTPUT_TOKENS, AiLimits, AiTask
 
 #: (system prompt, user prompt)
 ChatPrompt = tuple[str, str]
@@ -27,16 +28,37 @@ def ask_ai_and_check(
     """What a checked answer means. An answer with problems is asked again once with them; raises
     UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
     `first_answer_check` also judges a usable first answer, and `reuse_earlier_answer` takes this job's
-    earlier answers (see ChatModel.ask_for_checked_json)."""
-    answer = chat.ask_for_checked_json(
-        task,
-        *prompt,
-        lambda candidate: read_answer(candidate)[1],
-        first_answer_check=first_answer_check,
-        reuse_earlier_answer=reuse_earlier_answer,
-    )
+    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, the fallback model, a
+    re-ask) is one ask in tsg_ai_usage."""
+    with one_ask():
+        answer = chat.ask_for_checked_json(
+            task,
+            *prompt,
+            lambda candidate: read_answer(candidate)[1],
+            first_answer_check=first_answer_check,
+            reuse_earlier_answer=reuse_earlier_answer,
+        )
     meaning, _ = read_answer(answer)
     return meaning
+
+
+def call_tokens(prompt: ChatPrompt, task: AiTask) -> int:
+    """The tokens one call of `task` holds at the gateway: its prompt, erring high, plus its answer room."""
+    return sum(map(len, prompt)) // AiLimits.PROMPT_CHARS_PER_TOKEN + CHAT_MAX_OUTPUT_TOKENS[task]
+
+
+def within_call_limit[Item](
+    items: Sequence[Item], prompt_of: Callable[[Sequence[Item]], ChatPrompt], task: AiTask
+) -> list[Sequence[Item]]:
+    """`items` as one batch, or halved, again where needed, until each batch's call fits
+    AiLimits.CALL_TOKENS_LIMIT; one item is never split (the gateway judges it)."""
+    if len(items) <= 1 or call_tokens(prompt_of(items), task) <= AiLimits.CALL_TOKENS_LIMIT:
+        return [items]
+    half = (len(items) + 1) // 2
+    return [
+        *within_call_limit(items[:half], prompt_of, task),
+        *within_call_limit(items[half:], prompt_of, task),
+    ]
 
 
 def answer_item_problems(contract: type[BaseModel], item: Any, where: str) -> list[str]:

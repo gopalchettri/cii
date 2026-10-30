@@ -24,6 +24,9 @@
 .PARAMETER NoBrowser
     Do not open Grafana after the start.
 
+.PARAMETER ApiHost
+    The address the API listens on. Default 127.0.0.1 (this machine only); 0.0.0.0 lets other machines call it.
+
 .PARAMETER DrainSeconds
     How long stop waits for the worker to finish its running jobs before it closes the window. Default 60.
 
@@ -44,6 +47,7 @@ param(
     [string]$Action = 'start',
     [switch]$Reload,
     [switch]$NoBrowser,
+    [string]$ApiHost = '127.0.0.1',
     [int]$DrainSeconds = 60
 )
 
@@ -69,7 +73,7 @@ $GrafanaUrl = 'http://localhost:3000/grafana/'
 # (live test 2026-10-11); library builds and intelligence refreshes, up to an hour each, get the maintenance one.
 # tsg_controls stays in the job worker: the laptop's local CPU reranker is shared within one process.
 $Programs = [ordered]@{
-    api         = @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000')
+    api         = @('-m', 'uvicorn', 'app.main:app', '--host', $ApiHost, '--port', '8000')
     worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '10',
                     '-Q', 'tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation', '-n', $WorkerName,
                     '--loglevel=INFO')

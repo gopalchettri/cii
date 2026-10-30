@@ -24,6 +24,8 @@ REPO = Path(__file__).resolve().parents[1]
 OBS = REPO / "observability"
 RULES = OBS / "prometheus" / "rules.yml"
 DASHBOARD = OBS / "grafana" / "dashboards" / "tsg.json"
+DASHBOARDS = sorted((OBS / "grafana" / "dashboards").glob("*.json"))
+EVERY_DASHBOARD = pytest.mark.parametrize("dashboard", DASHBOARDS, ids=lambda path: path.name)
 TEMPLATE = REPO / "deploy" / "deploy_common.yaml"
 MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
 #: build-image.bat's tag: the build date dd-Mon-yyyy (English month), -<suffix> on a same-day rebuild.
@@ -32,7 +34,7 @@ APP_IMAGE = (
 )
 MONITORING_IMAGE = rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*"  # a mirrored image pinned to a version
 
-#: §22.3 alerts that are Built (AiSlotsSaturated and IntelStale wait for their metrics).
+#: §22.3 alerts that are Built.
 BUILT_ALERTS = {
     "Api5xxHigh",
     "ApiLatencyHigh",
@@ -74,6 +76,9 @@ BUILT_ALERTS = {
     "JobHung",
     # Log lines Alloy dropped or Loki refused while both were up.
     "LogLinesLost",
+    # 2026-10-29: AI usage rows MongoDB did not take (logged for replay); the hourly AI usage add-up behind.
+    "AiUsageNotRecorded",
+    "AiUsageRollupBehind",
 }
 #: Metrics that come from the exporters, not the app.
 EXPORTER_METRICS = {
@@ -91,7 +96,7 @@ EXPORTER_METRICS = {
     "loki_discarded_samples_total",  # Loki itself
 }
 PUBLIC_PATHS = {"/grafana", "/flower"}  # owner: Prometheus, Alertmanager and Loki only by oc port-forward
-WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's own project: every pod there is TSG's
+WATCHED_APP_PROJECTS = ("ai-threatgen",)  # TSG's app project, where v1's pods run too
 
 
 def _monitoring_script():
@@ -131,27 +136,42 @@ def _rules() -> list[dict]:
     ]
 
 
-def _panels() -> list[dict]:
-    """Every dashboard panel, those inside a folded row too."""
-    top = json.loads(DASHBOARD.read_text(encoding="utf-8"))["panels"]
+def _panels(dashboard: Path = DASHBOARD) -> list[dict]:
+    """Every panel of one dashboard, those inside a folded row too."""
+    top = json.loads(dashboard.read_text(encoding="utf-8"))["panels"]
     return top + [child for panel in top for child in panel.get("panels", [])]
 
 
 def _prometheus_queries() -> list[str]:
-    from_dashboard = [
+    """Every alert's expression and every Prometheus query of every dashboard."""
+    from_dashboards = [
         target["expr"]
-        for panel in _panels()
-        if panel.get("datasource", {}).get("uid") == "prometheus"
-        for target in panel["targets"]
+        for dashboard in DASHBOARDS
+        for panel in _panels(dashboard)
+        for target in panel.get("targets", [])
+        if (target.get("datasource") or panel.get("datasource") or {}).get("uid") == "prometheus"
     ]
-    return [rule["expr"] for rule in _rules()] + from_dashboard
+    return [rule["expr"] for rule in _rules()] + from_dashboards
 
 
 def test_every_config_file_parses() -> None:
     for path in [*OBS.rglob("*.yml"), *OBS.rglob("*.yaml")]:
         assert yaml.safe_load(path.read_text(encoding="utf-8")), path
     assert _uat_objects()
-    json.loads(DASHBOARD.read_text(encoding="utf-8"))
+
+
+@EVERY_DASHBOARD
+def test_every_dashboard_parses(dashboard: Path) -> None:
+    assert _panels(dashboard)
+
+
+def test_every_dashboard_has_its_own_uid_and_title() -> None:
+    """Grafana keeps one dashboard per uid: a copied file with the same uid hides the other."""
+    dashboards = [json.loads(path.read_text(encoding="utf-8")) for path in DASHBOARDS]
+    uids = [dashboard["uid"] for dashboard in dashboards]
+    titles = [dashboard["title"] for dashboard in dashboards]
+    assert DASHBOARD in DASHBOARDS and all(uids) and all(titles)
+    assert len(set(uids)) == len(uids) and len(set(titles)) == len(titles)
 
 
 def test_every_metric_in_alerts_and_dashboard_exists() -> None:
@@ -317,22 +337,39 @@ def test_the_example_documents_grafana_settings_but_none_the_scripts_fix() -> No
     assert grafana and not [key for key in grafana if key.startswith(fixed)]
 
 
-def test_every_dashboard_panel_uses_a_provisioned_data_source() -> None:
+@EVERY_DASHBOARD
+def test_every_dashboard_panel_uses_a_provisioned_data_source(dashboard: Path) -> None:
     sources = yaml.safe_load(
         (OBS / "grafana" / "provisioning" / "datasources" / "datasources.yaml").read_text(encoding="utf-8")
     )["datasources"]
     uids = {source["uid"] for source in sources}
-    panels = _panels()
-    assert len({p["id"] for p in panels}) == len(panels)
-    assert {p["datasource"]["uid"] for p in panels if "datasource" in p} <= uids
+    used = {
+        source["uid"]
+        for panel in _panels(dashboard)
+        for source in [
+            panel.get("datasource"),
+            *(target.get("datasource") for target in panel.get("targets", [])),
+        ]
+        if source
+    }
+    assert used <= uids
 
 
-def test_every_panel_says_what_it_shows_and_the_health_tiles_cover_every_part() -> None:
-    """Owner, 2026-10-23: plain enough for anyone. Each panel's description says what it means; the top tiles
-    name a live worker for every routed queue and every store, so a missing one cannot go unseen."""
-    panels = _panels()
-    assert [p["title"] for p in panels if not p.get("description")] == []
-    [health] = [p for p in panels if p["title"] == "Parts of the system"]
+def test_panel_ids_are_unique_across_every_dashboard() -> None:
+    ids = [panel["id"] for dashboard in DASHBOARDS for panel in _panels(dashboard)]
+    assert len(set(ids)) == len(ids)
+
+
+@EVERY_DASHBOARD
+def test_every_panel_says_what_it_shows(dashboard: Path) -> None:
+    """Owner, 2026-10-23: plain enough for anyone. Each panel's description says what it means."""
+    assert [p["title"] for p in _panels(dashboard) if not p.get("description")] == []
+
+
+def test_the_health_tiles_cover_every_part() -> None:
+    """The top tiles name a live worker for every routed queue and every store, so a missing one cannot go
+    unseen."""
+    [health] = [p for p in _panels() if p["title"] == "Parts of the system"]
     queries = " ".join(t["expr"] for t in health["targets"])
     assert all(f'queue="{queue}"' in queries for queue in ROUTED_QUEUES)
     assert all(f'name="{store.value}"' in queries for store in Dependency)
@@ -467,9 +504,10 @@ def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
 
 
 def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
-    """ai-common is shared with a chatbot: Prometheus scrapes, Alloy reads and kube-state-metrics' series keep
-    only TSG's pods there, its Services send only to TSG's pods, and a restart there selects TSG's Deployments
-    only."""
+    """ai-common is shared with a chatbot and ai-threatgen with v1: Prometheus scrapes, Alloy reads and
+    kube-state-metrics' series keep only TSG's pods (before, every ai-threatgen pod: v1's restarts raised
+    TSG's pod alerts), ai-common's Services send only to TSG's pods, and a restart there selects TSG's
+    Deployments only."""
     uat = yaml.safe_load((OBS / "prometheus" / "prometheus.yml").read_text(encoding="utf-8"))
     jobs = {job["job_name"]: job for job in uat["scrape_configs"]}
     tsg_only = jobs["pods"]["relabel_configs"][0]
@@ -493,7 +531,18 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
             assert service["spec"]["selector"]["part-of"] == "tsg-monitoring", service["metadata"]["name"]
     chatbot_pods = ["chatbot-api-7d9f8b6c5d-x2x4z", "grafana-agent-7d9f8b6c5d-x2x4z"]
     assert not [pod for pod in chatbot_pods if re.fullmatch(kept["regex"], f"ai-common;{pod}")]
-    assert all(re.fullmatch(kept["regex"], f"{app};{chatbot_pods[0]}") for app in WATCHED_APP_PROJECTS)
+    threatgen = yaml.safe_load_all((REPO / "deploy" / "deploy_threatgen.yaml").read_text(encoding="utf-8"))
+    app_pods = [
+        f"{d['metadata']['namespace']};{d['metadata']['name']}-7d9f8b6c5d-x2x4z"
+        for d in [
+            *(o for o in threatgen if o and o["kind"] == "Deployment"),
+            *_template_objects("Deployment"),
+        ]
+        if d["metadata"]["namespace"] in WATCHED_APP_PROJECTS
+    ]
+    assert len(app_pods) == 9 and all(re.fullmatch(kept["regex"], pod) for pod in app_pods)  # and the proxy
+    v1_pods = [*chatbot_pods, "tsg-v1-api-7d9f8b6c5d-x2x4z", "api-v1-7d9f8b6c5d-x2x4z"]
+    assert not [pod for pod in v1_pods if re.fullmatch(kept["regex"], f"{WATCHED_APP_PROJECTS[0]};{pod}")]
     restarts = [
         line
         for path in (TEMPLATE, REPO / "deploy" / "configmap.yaml")

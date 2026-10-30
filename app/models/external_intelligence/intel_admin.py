@@ -49,7 +49,7 @@ class EvidenceSettingsOut(BaseModel):
 
     rerank_model: str  # the model's name only, never its folder or address
     threshold: float  # EVIDENCE_SIMILARITY_THRESHOLD, on that model's own 0-100 scale
-    threshold_calibrated: bool  # true only for a model an operator recorded a calibration of
+    threshold_calibrated: bool  # true only at the threshold an operator calibrated for that model
     threshold_calibrated_on: str | None = None  # that calibration's date
 
 
@@ -57,7 +57,6 @@ class IntelHealthOut(BaseModel):
     switch: IntelSwitchOut
     snapshot_id: str | None = None
     sources: list[dict[str, Any]]
-    stale: bool  # an approved source that has data is older than the age limit
-    pending_sources: list[str] = []  # approved sources still waiting for their first data (not stale)
+    pending_sources: list[str] = []  # approved sources still waiting for their first data
     no_data: bool = False  # no approved source has ever succeeded
     evidence: EvidenceSettingsOut

@@ -423,7 +423,7 @@ def find_threats(self: Task, record_id: str, epoch: int) -> None:
     run_leased_job(self, Collection.SESSIONS, record_id, epoch, plan, fields=("context",))
 ```
 
-**C9. Read stored status, not Celery results.** `ThreatScenarioService.get_threat_scenario_session_status()` reads a small session projection and checks ownership. `app/domain/scenario/results.py:build_board()` turns it into `RunBoard`. `list_threat_scenarios_of_session()` reads paged current versions; `include_replaced=true` adds old versions. The GET routes remain useful when Redis event delivery is delayed.
+**C9. Read stored status, not Celery results.** `ThreatScenarioService.get_threat_scenario_session_status()` reads a small session projection and checks ownership. `app/domain/scenario/results.py:build_board()` turns it into `RunBoard`. `list_threat_scenarios_of_session()` reads paged current versions with their old versions (`include_replaced`, default `true`; `false` leaves them out). The GET routes remain useful when Redis event delivery is delayed.
 
 **C10. Run the tests in this order.**
 
@@ -810,7 +810,7 @@ Complete the write path in this exact order:
 4. In `ThreatScenarioSessionRepository.create_scenario_session()`, persist one session with `entity_id`, asset/request/context, idempotency key (always: the caller's or the derived one), status, and queued job epoch. Its unique index arbitrates parallel starts with the same idempotency key for that entity, so two parallel key-less starts with the same body are one run and a 409 `duplicate_request`; sessions of one asset never clash (D43).
 5. In `ThreatScenarioService.create_threat_scenario_session()`, check same-key replay first (a derived key's repeat: 409 `duplicate_request`); check the intelligence snapshot only when intelligence is on; fetch/freeze facts; create the session; resolve a competing insert as replay or named 409; call `send_job(TaskName.FIND_THREATS, id, epoch)`; audit the start. Return `(RunBoard, created)` so the router can answer 202 or 200.
 6. In `app/api/routers/scenario.py`, inject `Caller` and `ThreatScenarioService`. The POST route does one service call and changes `Response.status_code` to 200 only for a replay. All session GET routes use `CallersRun` for 404/403 ownership before their service read. List calls use `Offset` and `Limit`.
-7. In `app/domain/scenario/results.py`, build response views from persisted records. Results include only current versions unless `include_replaced=true`; never leak another entity's record or an internal MongoDB field.
+7. In `app/domain/scenario/results.py`, build response views from persisted records. Results nest old versions under each current one unless `include_replaced=false`; never leak another entity's record or an internal MongoDB field.
 8. Add providers in `app/container.py` for the asset/session/scenario repositories and scenario service. Register `scenario.router` in `app/main.py`.
 
 The current POST route is deliberately thin. This is its executable shape, with imports omitted:

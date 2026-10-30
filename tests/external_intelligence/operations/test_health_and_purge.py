@@ -1,4 +1,4 @@
-"""Health (freshness per source, snapshot, switch) and the purge of a revoked source."""
+"""Health (each source, pending sources, snapshot, switch) and the purge of a revoked source."""
 
 from datetime import timedelta
 
@@ -6,15 +6,12 @@ import pytest
 
 from app import container
 from app.core.config import get_settings
-from app.core.constants import Collection, EmbeddingCorpus, FeedStatus, IntelLimits, IntelSource
+from app.core.constants import Collection, EmbeddingCorpus, FeedStatus, IntelSource
 from app.core.database import get_mongodb
 from app.models.external_intelligence.source_health import (
     SourceHealth,
 )
 from app.models.external_intelligence.switch_state import SwitchState
-from app.services.external_intelligence import external_intelligence_service as service_module
-from app.worker.external_intelligence import evidence_at_write
-from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
 from tests.external_intelligence.evidence_fakes import (
     NOW,
     MemoryFeeds,
@@ -34,10 +31,9 @@ class FixedSwitch:
 
 
 @pytest.fixture(autouse=True)
-def env_on_at_now(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The env master switch on, and NOW the service's time."""
+def env_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The env master switch on."""
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    monkeypatch.setattr(service_module, "utc_now", lambda: NOW)
 
 
 def _health(feeds: MemoryFeeds, pointer: MemoryPointer) -> dict:
@@ -50,56 +46,37 @@ def _fresh(source: IntelSource, hours: float) -> SourceHealth:
     return SourceHealth(source, FeedStatus.OK, "c", "v", 5, NOW, NOW - timedelta(hours=hours))
 
 
-def test_health_shows_each_source_the_snapshot_the_switch_and_whether_anything_is_stale() -> None:
+def test_health_shows_each_source_the_snapshot_and_the_switch() -> None:
     feeds, pointer = MemoryFeeds([KEV, EPSS]), MemoryPointer()
-    feeds.health = {KEV: _fresh(KEV, 1), EPSS: _fresh(EPSS, 1)}
+    feeds.health = {KEV: _fresh(KEV, 1), EPSS: _fresh(EPSS, 1000)}
     pointer.active = {"snapshot_id": "snap-1", "checksum": "c"}
     report = _health(feeds, pointer)
-    assert (report["snapshot_id"], report["stale"], len(report["sources"])) == ("snap-1", False, 2)
+    assert (report["snapshot_id"], len(report["sources"])) == ("snap-1", 2)
     assert report["switch"]["runtime_enabled"] is False and report["switch"]["effective"] is False
-    feeds.health[EPSS] = _fresh(EPSS, IntelLimits.STALE_AFTER_HOURS + 1)
-    assert _health(feeds, pointer)["stale"]
 
 
-def test_a_never_run_source_is_pending_not_stale_while_the_others_are_fresh() -> None:
-    """The live run: five sources refreshed, NVD's first pass (hours) not yet. That is no staleness."""
+def test_a_never_run_source_is_pending_while_the_others_have_data() -> None:
+    """The live run: five sources refreshed, NVD's first pass (hours) not yet."""
     feeds, pointer = MemoryFeeds([KEV, EPSS, NVD]), MemoryPointer()
     feeds.health = {KEV: _fresh(KEV, 1), EPSS: _fresh(EPSS, 2), NVD: SourceHealth(NVD)}
     report = _health(feeds, pointer)
-    assert not report["stale"] and report["pending_sources"] == ["nist_nvd"] and not report["no_data"]
+    assert report["pending_sources"] == ["nist_nvd"] and not report["no_data"]
 
 
-def test_a_source_with_data_older_than_the_limit_is_stale_even_beside_a_pending_one() -> None:
-    feeds, pointer = MemoryFeeds([KEV, NVD]), MemoryPointer()
-    feeds.health = {KEV: _fresh(KEV, IntelLimits.STALE_AFTER_HOURS + 1), NVD: SourceHealth(NVD)}
-    report = _health(feeds, pointer)
-    assert report["stale"] and report["pending_sources"] == [NVD]
-
-
-def test_when_no_source_ever_succeeded_there_is_no_data_and_nothing_is_stale() -> None:
+def test_when_no_source_ever_succeeded_there_is_no_data() -> None:
     feeds, pointer = MemoryFeeds([KEV, EPSS]), MemoryPointer()
     feeds.health = {KEV: SourceHealth(KEV), EPSS: SourceHealth(EPSS, FeedStatus.FAILED, last_attempt_at=NOW)}
     report = _health(feeds, pointer)
     # no pointer, empty index
-    assert report["no_data"] and not report["stale"] and report["snapshot_id"] is None
+    assert report["no_data"] and report["snapshot_id"] is None
     assert set(report["pending_sources"]) == {KEV, EPSS}
 
 
-def test_a_revoked_source_counts_neither_as_stale_nor_as_pending() -> None:
+def test_a_revoked_source_does_not_count_as_pending() -> None:
     feeds, pointer = MemoryFeeds([KEV]), MemoryPointer()
     feeds.health = {KEV: _fresh(KEV, 1), EPSS: _fresh(EPSS, 1000), NVD: SourceHealth(NVD)}
     report = _health(feeds, pointer)
-    assert not report["stale"] and report["pending_sources"] == [] and not report["no_data"]
-
-
-def test_the_worker_search_flag_follows_the_same_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    feeds = MemoryFeeds([KEV, NVD])
-    feeds.health = {KEV: _fresh(KEV, 1), NVD: SourceHealth(NVD)}
-    monkeypatch.setattr(evidence_at_write, "utc_now", lambda: NOW)
-    batch = EvidenceAtWrite({}, {}, None, None, feeds, None)  # type: ignore[arg-type]
-    assert batch._is_stale(set(feeds.list_approved_sources())) is False
-    feeds.health[KEV] = _fresh(KEV, IntelLimits.STALE_AFTER_HOURS + 1)
-    assert batch._is_stale(set(feeds.list_approved_sources())) is True
+    assert report["pending_sources"] == [] and not report["no_data"]
 
 
 class MemoryVectors:

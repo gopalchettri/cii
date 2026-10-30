@@ -200,14 +200,17 @@ class WorkControlRepository:
             scenario_id, claim["task_id"], claim["attempts"], outcome
         )
 
-    def resume_scenario_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
+    def resume_scenario_controls(
+        self, session_id: str, cancelled_at: datetime | None, restart_times: bool = False
+    ) -> int | None:
         """A scenario session resumed on purpose: the controls a cancel stopped wait again (how many), and a
         session not at work reads done again. None when it is being deleted (nothing resumed). The session
         changes first, so the sweep never stops the re-queued controls as a cancelled session's; the delete's
         mark is checked again after the re-queue, so either this sees it or the delete's check for work sees
         these controls. A cancel landing since the caller read the session wins: the session changes only
         while its cancel stamp is still `cancelled_at` (the one the caller saw, None for none), else this
-        re-queue is undone and nothing is resumed (0)."""
+        re-queue is undone and nothing is resumed (0). `restart_times`: the resume is the session's latest
+        action (a next set with nothing left to write), so its times start again."""
         sessions, scenarios = self._sessions.collection, self._scenarios.collection
         stopped = {"session_id": session_id, "controls.status": Status.CANCELLED}
         if scenarios.find_one(stopped, {"_id": 1}) is None:
@@ -218,20 +221,16 @@ class WorkControlRepository:
         ).matched_count:
             return None if self._sessions.is_being_deleted(session_id) else 0
         requeued_at = utc_now()
-        requeued = scenarios.update_many(
-            stopped,
-            {
-                "$set": {
-                    "controls.status": Status.QUEUED,
-                    "controls.queued_at": requeued_at,
-                    "controls.error": None,
-                }
-            },
-        ).modified_count
+        waits = {"controls.status": Status.QUEUED, "controls.queued_at": requeued_at, "controls.error": None}
+        requeued = scenarios.update_many(stopped, {"$set": waits}).modified_count
         if self._sessions.is_being_deleted(session_id):
             self._stop_requeued_controls(session_id, requeued_at)  # undone: as before the click
             return None
-        if not sessions.update_one(stamp_seen, {"$unset": {"cancelled": ""}}).matched_count:
+        resumed: dict[str, Any] = {"$unset": {"cancelled": ""}}
+        if restart_times:  # nothing is found or written again: only the controls take time
+            times = {"threats_s": 0.0, "scenarios_s": 0.0}
+            resumed["$set"] = {"timings": times, "last_action.started_at": requeued_at}
+        if not sessions.update_one(stamp_seen, resumed).matched_count:
             self._stop_requeued_controls(session_id, requeued_at)  # cancelled meanwhile: the cancel stands
             return 0
         self._sessions.update_scenario_session_counts(session_id)

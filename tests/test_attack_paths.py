@@ -81,30 +81,24 @@ def test_every_threat_is_its_own_asset_level_path_none_grouped_under_another() -
     assert [t["key"] for t in plan["threats"]] == ["lib:2", "lib:1", "lib:4", "lib:3"]  # every threat, once
 
 
-def test_a_threat_is_a_path_for_every_kind_it_fits_and_distinct_threats_come_first() -> None:
-    """Each kind a threat was accepted for is its own scenario (another consequence for the asset), shown as
-    that kind; every threat's strongest kind comes before any threat's next one, so the first sets tell
-    distinct threats."""
+def test_a_threat_is_one_path_told_as_its_main_category_the_others_contributing() -> None:
+    """D6 (owner 2026-10-29): one card per threat, told as the category its first lists (the gate's main),
+    never one per category; the others go with it as contributing categories, whatever STRIDE's order."""
     login = planned("lib:1", "Fake operator login", (321,), categories=(S.SPOOFING, S.REPUDIATION), impact=3)
     wipe = planned("lib:2", "Log wipe", (321,), categories=(S.REPUDIATION,), impact=1)
     plan = build_plan(findings_of(login, wipe), 0)
-    assert [(p["steps"], p["category"], p["categories"][0]) for p in plan["paths"]] == [
-        (["lib:1"], S.SPOOFING, S.SPOOFING),
-        (["lib:2"], S.REPUDIATION, S.REPUDIATION),  # lib:2's only kind before lib:1's second
-        (["lib:1"], S.REPUDIATION, S.REPUDIATION),
+    assert [(p["steps"], p["category"], p["categories"]) for p in plan["paths"]] == [
+        (["lib:1"], S.SPOOFING, [S.SPOOFING, S.REPUDIATION]),
+        (["lib:2"], S.REPUDIATION, [S.REPUDIATION]),
     ]
-    alone = planned("lib:5", "Ladder logic change", (321,), categories=(S.TAMPERING, S.DENIAL_OF_SERVICE))
-    paths = build_plan(findings_of(alone), 0)["paths"]
-    assert [(p["category"], p["steps"]) for p in paths] == [
-        (S.TAMPERING, ["lib:5"]),
-        (S.DENIAL_OF_SERVICE, ["lib:5"]),  # only one threat: told once per kind, as that kind
-    ]
-    assert paths[0]["path_id"] != paths[1]["path_id"]
+    denial_first = planned("lib:5", "Ladder logic", (321,), categories=(S.DENIAL_OF_SERVICE, S.TAMPERING))
+    (path,) = build_plan(findings_of(denial_first), 0)["paths"]
+    assert (path["category"], path["categories"]) == (S.DENIAL_OF_SERVICE, [S.DENIAL_OF_SERVICE, S.TAMPERING])
 
 
-def test_each_kind_enters_through_its_own_systems_with_its_own_impact_and_confidence() -> None:
-    """A threat accepted as two kinds on different systems keeps each verdict through the merge: each kind's
-    scenario enters only through the systems the gate named for it."""
+def test_the_card_enters_through_its_main_kinds_own_systems_with_its_own_impact_and_confidence() -> None:
+    """A threat accepted as two kinds on different systems keeps each verdict through the merge: its one
+    scenario, told as its main kind, enters only through the systems the gate named for that kind."""
     tampering = planned(
         "lib:5", "Logic change", (321,), impact=3, kind_places=((S.TAMPERING, KindPlace((321,), 3, 80.0)),)
     )
@@ -118,11 +112,14 @@ def test_each_kind_enters_through_its_own_systems_with_its_own_impact_and_confid
     )
     (merged,) = merge_same_threats([tampering, denial])
     assert merged.systems == (321, 322)  # the union, for the evidence search
-    paths = build_plan(findings_of(merged), 0)["paths"]
-    assert [(p["category"], p["systems"], p["impact"], p["confidence"]) for p in paths] == [
-        (S.TAMPERING, [321], 3, 80.0),
-        (S.DENIAL_OF_SERVICE, [322], 1, 50.0),
-    ]
+    (path,) = build_plan(findings_of(merged), 0)["paths"]
+    assert (path["category"], path["systems"], path["impact"], path["confidence"]) == (
+        S.TAMPERING,
+        [321],
+        3,
+        80.0,
+    )
+    assert path["categories"] == [S.TAMPERING, S.DENIAL_OF_SERVICE]
 
 
 def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_steps() -> None:
@@ -141,16 +138,10 @@ def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_s
         attack_path_from_library(path),
     ) == ((321, 322), 3, 60.0, False)
     findings = replace(findings_of(wipe), category_ids={"tampering": 5, "spoofing": 1})
-    record, as_repudiation = build_plan(findings, 0)["paths"]  # every kind
+    (record,) = build_plan(findings, 0)["paths"]  # one card, as its main kind
     on_route = AttackPath((wipe,), scope="Tampering@system:321")  # the kind and the route name the path
-    assert (
-        record["path_id"]
-        == attack_path_id(on_route)
-        != attack_path_id(AttackPath((wipe,)))
-        != as_repudiation["path_id"]
-    )
+    assert record["path_id"] == attack_path_id(on_route) != attack_path_id(AttackPath((wipe,)))
     assert record["steps"] == ["ai:wipe"] and record["systems"] == [321]
-    assert as_repudiation["category"] == S.REPUDIATION and as_repudiation["steps"] == ["ai:wipe"]
     assert record["category"] == S.TAMPERING and record["categories"] == [S.TAMPERING, S.REPUDIATION]
     assert record["category_id"] == 5  # the library's id, kept for the results
     assert (record["rank"], record["served"], record["attempts"], record["abandoned"]) == (1, None, 0, False)
@@ -341,7 +332,7 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     assert run["counts"]["planned"] == 2 and sent == [(TaskName.WRITE_SCENARIOS, record_id, 1)]
     # What made the plan, so a later reviewer can tell why this plan and not another.
     assert set(plan["made_with"]) == {"chat_models", "embedding_model", "rerank_model", "library"}
-    assert plan["made_with"]["chat_models"][0] == get_settings().chat_model
+    assert plan["made_with"]["chat_models"][0] == get_settings().scenario_chat_model
     # Its trace, saved in the same write: each stage's counts add up.
     counts = run["plan_trace"]["counts"]
     assert (counts["threats"], counts["paths"], counts["selected"], counts["first_set"]) == (2, 2, 2, 1)

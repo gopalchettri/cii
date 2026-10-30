@@ -1,11 +1,12 @@
 """Canonical matching, direct-dependency filtering, global deduplication and directional caps."""
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import asdict, replace
 from uuid import NAMESPACE_URL, uuid5
 
 from app.core.prompts import PROMPTS
-from app.domain.shared.names import is_same_name, name_match_key
+from app.domain.shared.names import are_one_name, is_same_name, name_match_key
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
 from app.models.service_mapper.generation import GeneratedAnswer, ProposedDependency, ResolvedDependency
@@ -21,28 +22,30 @@ def reconcile(
     catalog: CatalogSnapshot,
     max_upstream: int,
     max_downstream: int,
+    held: Sequence[dict] = (),
 ) -> dict:
+    """The run's new dependencies (none the mapping holds already), each direction capped at its count."""
     (upstream, _), (downstream, _) = resolve_both(request, answer, catalog)
     upstream, downstream = _one_direction(upstream, downstream)
-    upstream = upstream[:max_upstream]
-    downstream = downstream[:max_downstream]
-    dependencies = _merge(mapping_id, generation, upstream, downstream, catalog)
+    upstream = _not_held(upstream, held)[:max_upstream]
+    downstream = _not_held(downstream, held)[:max_downstream]
     selected = request.model_dump() | {
         "service_id": selected_service_id(request, catalog),
         "operational_context": answer.operational_context,
     }
     return {
         "selected_service": selected,
-        "dependencies": dependencies,
+        "dependencies": _merge(mapping_id, generation, upstream, downstream, catalog),
         "catalog_version": catalog.version,
-        "summary": {
-            "unique_services": len(dependencies),
-            "upstream_count": len(upstream),
-            "downstream_count": len(downstream),
-            "max_upstream": max_upstream,
-            "max_downstream": max_downstream,
-        },
     }
+
+
+def _not_held(items: list[ResolvedDependency], held: Sequence[dict]) -> list[ResolvedDependency]:
+    """The items the mapping does not hold yet, in either direction or as another form of an AI-named one."""
+    ids = {dependency.get("identity") for dependency in held}
+    named = [dependency["service_name"] for dependency in held if dependency["ai_suggested"]]
+    fresh = [item for item in items if item.identity not in ids]
+    return [item for item in fresh if not any(are_one_name(name, item.service_name) for name in named)]
 
 
 def selected_service_id(request: CreateMappingRequest, catalog: CatalogSnapshot) -> int | None:
@@ -109,11 +112,7 @@ def _recorded_only_with_a_record(
 
 def _same_new_service(a: ResolvedDependency, b: ResolvedDependency) -> bool:
     """Two services the AI named itself that are one service in two forms, either way round."""
-    return (
-        a.ai_suggested
-        and b.ai_suggested
-        and (is_same_name(a.service_name, b.service_name) or is_same_name(b.service_name, a.service_name))
-    )
+    return a.ai_suggested and b.ai_suggested and are_one_name(a.service_name, b.service_name)
 
 
 def resolve_proposals(
@@ -284,7 +283,8 @@ def _record(
 ) -> dict:
     matched = by_id.get(item.service_id) if item.service_id is not None else None
     return {
-        "dependency_id": uuid5(NAMESPACE_URL, f"{mapping_id}:{generation}:{item.identity}").hex,
+        "dependency_id": uuid5(NAMESPACE_URL, f"{mapping_id}:{item.identity}").hex,  # one id per service
+        "generation": generation,  # the run that found it
         "identity": item.identity,
         "service_id": item.service_id,
         "service_name": item.service_name,

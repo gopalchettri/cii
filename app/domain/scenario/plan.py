@@ -6,8 +6,8 @@ import functools
 import hashlib
 import itertools
 import json
+import math
 import threading
-from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import date
@@ -28,6 +28,7 @@ from app.core.config import get_settings
 from app.core.constants import (
     STRIDE_DEFINITIONS,
     ActorRole,
+    AiLimits,
     AiOutage,
     AiTask,
     AttackerCheck,
@@ -62,6 +63,7 @@ from app.domain.shared.ask_ai import (
     answer_item_problems,
     answers_for_asked_slots,
     ask_ai_and_check,
+    within_call_limit,
 )
 from app.domain.shared.names import (
     as_json,
@@ -193,6 +195,7 @@ def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
         ],
         "attacker_check": threat.attacker_check,
         "attacker_check_reason": threat.attacker_check_reason or None,
+        "actions": list(threat.actions),
     }
     return record
 
@@ -322,92 +325,163 @@ def _landscape_text(
 # --- the planner's prompts ([scenario.gate] and [scenario.gap_fill] in app/prompts.toml)
 
 _GATE_RULES: str = PROMPTS["scenario"]["gate"]["text"]
+_GATE_FOLLOW_UP: str = PROMPTS["scenario"]["gate"]["follow_up"]
 _GAP_FILL_RULES: str = PROMPTS["scenario"]["gap_fill"]["text"]
 _PLANNER_SYSTEM: str = PROMPTS["scenario"]["gate"]["system"]
-_REJECTED_HEADING: str = PROMPTS["scenario"]["gap_fill"]["rejected_heading"]
 
 
-def _category_line(category: StrideCategory) -> str:
-    """The prompt line naming the STRIDE category and its definition."""
-    return f"STRIDE category: {category} ({STRIDE_DEFINITIONS[category]}).\n"
+def _stride_lines(categories: Iterable[StrideCategory]) -> str:
+    """The STRIDE category lines a prompt's categories are judged by, once each."""
+    return "STRIDE CATEGORIES:\n" + "".join(f"- {kind}: {STRIDE_DEFINITIONS[kind]}.\n" for kind in categories)
 
 
 def relevance_gate_prompt(
-    landscape: str, category: StrideCategory, slots: list[dict[str, Any]]
+    landscape: str, slots: list[dict[str, Any]], problems: Sequence[str] = ()
 ) -> ChatPrompt:
-    """The gate's ask: does each candidate apply to the asset, and which listed attacker could do it."""
-    rules = _category_line(category) + _GATE_RULES
+    """The gate's ask: does each candidate apply to the asset, under which of its own categories, and which
+    listed attacker could do it; a follow-up is also told the `problems` the earlier answer had with them."""
+    rules = _stride_lines(StrideCategory) + _GATE_RULES
+    if problems:
+        shown = (
+            problem[: AiLimits.REASK_PROBLEM_CHARS] for problem in problems[: AiLimits.REASK_MAX_PROBLEMS]
+        )
+        rules += _GATE_FOLLOW_UP.replace("{problems}", "; ".join(shown))
     return _PLANNER_SYSTEM, f"LANDSCAPE:\n{landscape}\n\n{rules}\n\nCANDIDATES:\n" + json.dumps(
         slots, ensure_ascii=False
     )
 
 
-def gap_fill_prompt(
-    landscape: str, category: StrideCategory, checked: int, rejected: Sequence[str]
-) -> ChatPrompt:
-    """The one ask for an AI threat of a category; `rejected`: the library threats judged not to apply."""
-    listed = (
-        _REJECTED_HEADING + "".join(f"- {quoted_for_prompt(name)}\n" for name in rejected) if rejected else ""
+def gap_fill_prompt(landscape: str, empty: Sequence[tuple[StrideCategory, int, Sequence[str]]]) -> ChatPrompt:
+    """The one ask for an AI threat for each empty category: (category, library threats judged, the names of
+    those judged not to apply)."""
+    listed = [{"category": kind, "judged": judged, "rejected": list(names)} for kind, judged, names in empty]
+    rules = _stride_lines(kind for kind, _, _ in empty) + _GAP_FILL_RULES
+    return _PLANNER_SYSTEM, f"LANDSCAPE:\n{landscape}\n\n{rules}\n\nEMPTY CATEGORIES:\n" + json.dumps(
+        listed, ensure_ascii=False
     )
-    rules = _GAP_FILL_RULES.replace("{checked}", str(checked)).replace("{rejected}", listed)
-    return _PLANNER_SYSTEM, f"LANDSCAPE:\n{landscape}\n\n{_category_line(category)}{rules}"
 
 
 # --- the relevance gate's verdicts, checked in code
 
-#: Threats judged per gate call.
-GATE_BATCH_SIZE = 10
+#: Most threats judged per gate call (CII_THREATS_PER_QUESTION); more are split evenly over the fewest calls.
+GATE_BATCH_SIZE = ThreatFinding.THREATS_PER_QUESTION
+#: A STRIDE category by the key its name is matched with: "Denial-of-Service" is Denial of Service.
+_STRIDE_BY_KEY: Final = {name_match_key(kind): kind for kind in StrideCategory}
 
 
-def _candidate_for_gate(slot: str, threat_type: str, threat: str, attackers: list[str]) -> dict[str, Any]:
-    """A candidate as the gate is shown it: names without library codes."""
+def _gate_prompt_of(landscape: str, batch: Sequence[dict[str, Any]]) -> ChatPrompt:
+    """The gate prompt a batch of candidates would be asked in."""
+    return relevance_gate_prompt(landscape, list(batch))
+
+
+def _candidate_for_gate(
+    slot: str, threat_type: str, threat: str, categories: Iterable[StrideCategory], attackers: list[str]
+) -> dict[str, Any]:
+    """A candidate as the gate is shown it: names without library codes, its own categories."""
     return {
         "slot": slot,
         "threat_type": threat_name_without_code(threat_type),
         "threat": threat_name_without_code(threat),
+        "categories": [str(kind) for kind in categories],
         "attackers": attackers,
     }
 
 
 def parse_verdict(
-    item: dict[str, Any], aliases: dict[str, int], listed: Sequence[str]
-) -> tuple[Verdict | None, list[str]]:
-    """One verdict checked: known aliases, a way in among them when relevant, a yes/no, an impact and a 0-100
-    confidence unless rejected, and always a reason. The attacker pick is read from the slot's `listed`
-    attackers only."""
-    slot, systems = item["slot"], item.get("systems") or []
-    entry_points = (item.get("entry_points") or []) if item.get("relevant") is True else None
-    impact = str(item.get("impact") or "").upper()
-    confidence, reason = item.get("confidence"), str(item.get("reason") or "").strip()
-    needs = item.get("needs") or []
+    item: dict[str, Any], candidate: dict[str, Any], aliases: dict[str, int]
+) -> tuple[dict[StrideCategory, Verdict] | None, list[str]]:
+    """One threat's verdict checked against its `candidate`, as its verdict under each category it named and
+    under each of its own (one it lists but did not name does not apply); a named category it does not list
+    is kept for code to drop. Systems, ways in, confidence, needs, attacker and actions are the threat's."""
+    named, problems = _verdict_problems(item, candidate, aliases)
+    if problems:
+        return None, problems
+    relevant, reason = item["relevant"], str(item.get("reason") or "").strip()
+    own = [kind for kind in named if kind in candidate["categories"]]
+    entry_points = (item.get("entry_points") or ()) if relevant else ()
+    shared = Verdict(
+        relevant=False,
+        systems=tuple(sorted({aliases[alias] for alias in item.get("systems") or ()})),
+        entry_points=tuple(sorted({aliases[alias] for alias in entry_points})),
+        reason=PlanMessage.OTHER_KINDS.format(kinds=", ".join(own))
+        if relevant
+        else reason[: ThreatFinding.REASON_MAX_CHARS],
+        impact=0,
+        confidence=float(item.get("confidence") or 0) if relevant else 0.0,
+        needs=_needs(item.get("needs") or []),
+        actor_pick=actor_pick(item, candidate["attackers"]) if relevant else None,
+        kinds=tuple(own),
+        actions=_actions(item.get("actions")) if relevant else (),
+    )
+    verdicts = {StrideCategory(kind): shared for kind in candidate["categories"]}
+    for kind, (impact, kind_reason) in named.items():
+        verdicts[kind] = dataclasses.replace(shared, relevant=True, impact=impact, reason=kind_reason)
+    return verdicts, []
+
+
+def _verdict_problems(
+    item: dict[str, Any], candidate: dict[str, Any], aliases: dict[str, int]
+) -> tuple[dict[StrideCategory, tuple[int, str]], list[str]]:
+    """What is wrong with a verdict: its threat copied back, known aliases, a way in among them, its own
+    categories and a 0-100 confidence when relevant, a reason when rejected. Its named categories too."""
+    slot, relevant, systems = item["slot"], item.get("relevant"), item.get("systems") or []
+    entry_points = (item.get("entry_points") or []) if relevant is True else None
+    confidence, needs = item.get("confidence"), item.get("needs") or []
     problems = _place_problems(slot, systems, entry_points, aliases)
-    if not isinstance(item.get("relevant"), bool):
+    if _name_key(str(item.get("threat") or "")) != _name_key(candidate["threat"]):
+        problems.append(f"{slot}: threat must be this slot's own threat, copied exactly")
+    if not isinstance(relevant, bool):
         problems.append(f"{slot}: relevant must be true or false")
-    if item.get("relevant") is True and impact not in ThreatFinding.IMPACT_RANK:
-        problems.append(f"{slot}: impact must be HIGH, MEDIUM or LOW")
-    rejected = item.get("relevant") is False  # a rejection keeps only its reason and needs
-    if not rejected and (
-        isinstance(confidence, bool) or not isinstance(confidence, int | float) or not 0 <= confidence <= 100
-    ):
-        problems.append(f"{slot}: confidence must be a number from 0 to 100")
-    if not reason:
-        problems.append(f"{slot}: every verdict needs its reason, a rejection's too")
+    named, kind_problems = _named_kinds(slot, item.get("categories"), candidate["categories"])
+    if relevant is True:
+        problems += kind_problems
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, int | float)
+            or not 0 <= confidence <= 100
+        ):
+            problems.append(f"{slot}: confidence must be a number from 0 to 100")
+    elif not str(item.get("reason") or "").strip():
+        problems.append(f"{slot}: a threat that does not apply needs its reason")
     if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
         problems.append(f"{slot}: needs must be a list of names ([] when everything it needs is recorded)")
-    shown = {**item, "impact": impact if item.get("relevant") else None, "systems": systems, "needs": needs}
-    shown["entry_points"] = entry_points or []
-    if problems or (problems := answer_item_problems(RelevanceVerdict, shown, slot)):
-        return None, problems
-    return Verdict(
-        relevant=item["relevant"],
-        systems=tuple(sorted({aliases[alias] for alias in systems})),
-        entry_points=tuple(sorted({aliases[alias] for alias in entry_points or ()})),
-        reason=reason[: ThreatFinding.REASON_MAX_CHARS],
-        impact=ThreatFinding.IMPACT_RANK.get(impact, 0),
-        confidence=float(confidence or 0),
-        needs=_needs(needs),
-        actor_pick=actor_pick(item, listed) if item["relevant"] else None,
-    ), []
+    shown = {**item, "systems": systems, "needs": needs, "entry_points": entry_points or []}
+    problems = problems or answer_item_problems(RelevanceVerdict, shown, slot)
+    return (named if relevant is True else {}), problems
+
+
+def _named_kinds(
+    slot: str, named: Any, own: Sequence[str]
+) -> tuple[dict[StrideCategory, tuple[int, str]], list[str]]:
+    """The STRIDE categories a relevant verdict names, the main first, each with its impact and reason; a
+    name that is no STRIDE category, or none of the slot's own, is a problem."""
+    if not isinstance(named, list) or not named:
+        return {}, [f"{slot}: categories must list the slot's own categories it belongs to, the main first"]
+    kinds: dict[StrideCategory, tuple[int, str]] = {}
+    problems = []
+    for entry in named:
+        entry = entry if isinstance(entry, dict) else {}
+        kind = _STRIDE_BY_KEY.get(name_match_key(str(entry.get("name") or "")))
+        impact, reason = str(entry.get("impact") or "").upper(), str(entry.get("reason") or "").strip()
+        if kind is None:
+            listed = ", ".join(own)
+            problems.append(f"{slot}: {entry.get('name')!r} is no STRIDE category: copy its own: {listed}")
+        elif impact not in ThreatFinding.IMPACT_RANK or not reason:
+            problems.append(f"{slot}: {kind} needs its impact (HIGH, MEDIUM or LOW) and its reason")
+        else:
+            kinds.setdefault(
+                kind, (ThreatFinding.IMPACT_RANK[impact], reason[: ThreatFinding.REASON_MAX_CHARS])
+            )
+    if not problems and not set(kinds) & set(own):
+        problems.append(f"{slot}: categories must name at least one of its own: {', '.join(own)}")
+    return kinds, problems
+
+
+def _actions(listed: Any) -> tuple[str, ...]:
+    """The gate's actions for a threat, each a non-empty phrase; () when it gave none usable (no re-ask)."""
+    if not isinstance(listed, list):
+        return ()
+    return tuple(" ".join(action.split()) for action in listed if isinstance(action, str) and action.strip())
 
 
 def _place_problems(slot: str, systems: Any, entry_points: Any, aliases: dict[str, int]) -> list[str]:
@@ -445,17 +519,44 @@ def _needs(names: list[str]) -> tuple[str, ...]:
 
 
 def _read_verdicts(
-    answer: dict[str, Any], listed: dict[str, list[str]], aliases: dict[str, int]
-) -> tuple[dict[str, Verdict], list[str]]:
-    """{slot: verdict} for every asked slot, and the problems to re-ask with."""
-    items, problems = answers_for_asked_slots(answer, "verdicts", set(listed))
-    verdicts = {}
+    answer: dict[str, Any], asked: dict[str, dict[str, Any]], aliases: dict[str, int]
+) -> tuple[tuple[dict[str, dict[StrideCategory, Verdict]], dict[str, list[str]]], list[str]]:
+    """({slot: its verdicts} for every asked slot answered well, {slot: its problems} for each answered
+    wrongly) (`asked`: the candidates by slot); the re-ask problems only when no slot was answered well, so
+    one bad slot never re-asks the whole batch."""
+    items, problems = answers_for_asked_slots(answer, "verdicts", set(asked))
+    judged, faults = {}, {}
     for item in items:
-        verdict, item_problems = parse_verdict(item, aliases, listed[item["slot"]])
+        verdicts, item_problems = parse_verdict(item, asked[item["slot"]], aliases)
         problems += item_problems
-        if verdict is not None:
-            verdicts[item["slot"]] = verdict
-    return verdicts, problems
+        if verdicts is None:
+            faults[item["slot"]] = item_problems
+        else:
+            judged[item["slot"]] = verdicts
+    return (judged, faults), [] if judged else problems
+
+
+def _read_proposals(
+    answer: dict[str, Any], asked: Sequence[StrideCategory], aliases: dict[str, int]
+) -> tuple[dict[StrideCategory, dict[str, Any]], list[str]]:
+    """{category: its proposal} for every asked category answered well; the problems only when none was."""
+    items = answer.get("proposals")
+    if not isinstance(items, list):
+        return {}, ['the reply must be {"proposals": [...]}']
+    by_key = {name_match_key(kind): kind for kind in asked}
+    proposals: dict[StrideCategory, dict[str, Any]] = {}
+    problems = []
+    for item in items:
+        named = str(item.get("category") or "") if isinstance(item, dict) else ""
+        kind = by_key.get(name_match_key(named))
+        if kind is None or kind in proposals:
+            problems.append(f"category {named or '?'} is not listed or answered twice")
+            continue
+        proposal, item_problems = _read_proposal(item, aliases)
+        problems += [f"{kind}: {problem}" for problem in item_problems]
+        if proposal is not None:
+            proposals[kind] = proposal
+    return proposals, [] if proposals else problems
 
 
 def _read_proposal(
@@ -495,138 +596,242 @@ def _rejected(threat: LibraryThreat, code: CandidateRejection, detail: str = "")
 
 #: A gate or gap-fill ask: a job's retry or re-send takes the answers its earlier try got (tsg_ai_calls).
 _ask_reusing = functools.partial(ask_ai_and_check, reuse_earlier_answer=True)
+#: A gap fill's outcome for one category: its AI threat, else why the proposal was not kept (None: none).
+_GapOutcome = tuple[PlannedThreat | None, dict[str, Any] | None]
 
 
-class _CategoryJudge:
-    """One run's relevance gate and gap fill: one landscape, one library snapshot, one shared call pool."""
+def _attackers_for(threat: LibraryThreat | LibraryThreatType) -> list[str]:
+    """What a candidate lists for the gate's pick: its type's linked actors."""
+    return [actor.name for actor in threat.linked_actors]
+
+
+def _own_verdicts(
+    key: str, own: Sequence[StrideCategory], verdicts: dict[StrideCategory, Verdict] | None
+) -> dict[StrideCategory, Verdict] | None:
+    """A threat's verdicts under its own categories (None: not judged); a STRIDE category the gate named that
+    the threat does not list is dropped, with a warning naming the threat."""
+    if verdicts is None:
+        return None
+    if unlisted := sorted(set(verdicts) - set(own)):
+        log.warning(LogEvent.PLANNER_CATEGORY_DROPPED, threat_key=key, categories=unlisted)
+    return {kind: verdicts[kind] for kind in own}
+
+
+def _file_verdict(result: CategoryFindings, threat: LibraryThreat, verdict: Verdict | None) -> None:
+    """A library threat's verdict under one category, filed in that category's result: accepted, refused for
+    a need nothing records, not relevant, or not judged (None)."""
+    audit = result.audit
+    if verdict is None:
+        audit.not_judged.append(threat)
+        return
+    audit.judged_ids.add(threat.catalogue_id)
+    if verdict_applies(verdict):
+        result.accepted.append((threat, verdict))
+    elif verdict.needs:
+        needs = "; ".join(verdict.needs)
+        audit.rejected.append(_rejected(threat, CandidateRejection.NEEDS_UNRECORDED, needs))
+    else:
+        audit.rejected.append(_rejected(threat, CandidateRejection.NOT_RELEVANT, verdict.reason))
+
+
+def _checked_proposal(
+    kind: StrideCategory,
+    proposal: dict[str, Any],
+    library_type: LibraryThreatType,
+    verdicts: dict[StrideCategory, Verdict] | None,
+) -> _GapOutcome:
+    """A gap-fill proposal as the gate judged it: the AI threat it becomes, else why it was not kept."""
+    threat = proposal["threat"]
+    own = _own_verdicts(f"ai:{name_match_key(threat)}", (kind,), verdicts)
+    if own is None:  # its gate reply was skipped
+        return None, _lost(threat, PlanLoss.NOT_JUDGED)
+    if not verdict_applies(verdict := own[kind]):
+        code = CandidateRejection.NEEDS_UNRECORDED if verdict.needs else CandidateRejection.NOT_RELEVANT
+        return None, _lost(threat, code, "; ".join(verdict.needs) or verdict.reason)
+    return _ai_threat(kind, proposal, verdict, library_type), None
+
+
+class _ThreatJudge:
+    """One run's relevance gate and gap fill: one landscape, the run's judgeable library threats, one shared
+    call pool."""
 
     def __init__(
         self,
         chat: ChatModel,
-        rerank: RerankModel,
-        snapshot: LibrarySnapshot,
+        matcher: "_ProposalMatcher",
         landscape: Landscape,
-        by_category: dict[StrideCategory, list[LibraryThreat]],
-        allowed_types: Collection[str],
+        threats: list[LibraryThreat],
         pool: Executor,
         last_attempt: bool,
     ) -> None:
-        self._chat, self._rerank, self._snapshot = chat, rerank, snapshot
-        self._landscape, self._by_category = landscape, by_category
-        self._allowed_types, self._pool = allowed_types, pool
-        self._last_attempt = last_attempt
+        self._chat, self._matcher, self._landscape = chat, matcher, landscape
+        self._threats, self._pool, self._last_attempt = threats, pool, last_attempt
         self._unavailable = threading.Event()  # set once a call raised Unavailable: no new gate call starts
 
-    def judge_category(self, category: StrideCategory) -> CategoryFindings:
-        """Every library threat of `category` judged; a skipped batch leaves only its threats unjudged."""
-        threats, audit = self._by_category[category], CategoryAudit(category)
+    def judge_all(self) -> list[CategoryFindings]:
+        """Every library threat judged once for all its own categories and filed under each: one result per
+        category, in STRIDE order; a threat whose batch was skipped is not judged under any."""
         items = [
             _candidate_for_gate(
-                f"{ThreatFinding.RECORD_SLOT}{n}", t.type_name, t.name, self._attackers_for(t)
+                f"{ThreatFinding.RECORD_SLOT}{n}", t.type_name, t.name, t.categories, _attackers_for(t)
             )
-            for n, t in enumerate(threats, start=1)
+            for n, t in enumerate(self._threats, start=1)
         ]
-        verdicts = self._judge(category, items)
-        accepted = []
-        for item, threat in zip(items, threats, strict=True):
-            verdict = verdicts.get(item["slot"])
-            if verdict is None:  # its batch was skipped
-                audit.not_judged.append(threat)
-                continue
-            audit.judged_ids.add(threat.catalogue_id)
-            if verdict_applies(verdict):
-                accepted.append((threat, verdict))
-            elif verdict.needs:
-                needs = "; ".join(verdict.needs)
-                audit.rejected.append(_rejected(threat, CandidateRejection.NEEDS_UNRECORDED, needs))
-            else:
-                audit.rejected.append(_rejected(threat, CandidateRejection.NOT_RELEVANT, verdict.reason))
-        return CategoryFindings(accepted=accepted, ai_threat=None, audit=audit)
+        judged = self._judge(items)
+        found = {kind: CategoryFindings([], None, CategoryAudit(kind)) for kind in StrideCategory}
+        for item, threat in zip(items, self._threats, strict=True):
+            verdicts = _own_verdicts(
+                f"lib:{threat.catalogue_id}", threat.categories, judged.get(item["slot"])
+            )
+            for kind in threat.categories:
+                _file_verdict(found[kind], threat, None if verdicts is None else verdicts[kind])
+        return list(found.values())
 
-    def fill_gap(self, found: CategoryFindings) -> CategoryFindings:
-        """The category's one AI threat, asked only when none of its library threats applies and all were
-        judged."""
-        audit = found.audit
-        if found.accepted:
-            return found
-        if not {threat.catalogue_id for threat in self._by_category[audit.category]} <= audit.judged_ids:
-            return found
-        proposed, audit.gap_fill_lost = self._propose(audit)
-        return dataclasses.replace(found, ai_threat=proposed)
+    def fill_gaps(self, found: list[CategoryFindings]) -> list[CategoryFindings]:
+        """One AI threat for each category none of whose library threats applies though all were judged: one
+        gap-fill ask for all of them, then one gate check of the proposals."""
+        empty = [result.audit for result in found if not result.accepted and self._all_judged(result.audit)]
+        outcomes = self._gap_threats(empty) if empty else {}
+        for audit in empty:
+            audit.gap_fill_lost = outcomes[audit.category][1]
+        return [
+            dataclasses.replace(result, ai_threat=outcomes.get(result.audit.category, (None, None))[0])
+            for result in found
+        ]
 
-    def _attackers_for(self, threat: LibraryThreat | LibraryThreatType) -> list[str]:
-        """What a candidate lists for the gate's pick: its type's linked actors."""
-        return [actor.name for actor in threat.linked_actors]
+    def _all_judged(self, audit: CategoryAudit) -> bool:
+        """Whether every library threat of the category came back judged."""
+        return {t.catalogue_id for t in self._threats if audit.category in t.categories} <= audit.judged_ids
 
-    def _judge(self, category: StrideCategory, items: list[dict[str, Any]]) -> dict[str, Verdict]:
-        """Batches of GATE_BATCH_SIZE judged at once: the verdicts of every batch not skipped."""
-        batches = [list(batch) for batch in itertools.batched(items, GATE_BATCH_SIZE)]
-        judged = run_in_shared_pool(self._pool, functools.partial(self._judge_batch, category), batches)
-        return {slot: verdict for verdicts in judged for slot, verdict in verdicts.items()}
+    def _judge(self, items: list[dict[str, Any]]) -> dict[str, dict[StrideCategory, Verdict]]:
+        """Every slot judged: at most GATE_BATCH_SIZE a batch, split evenly over the fewest batches and halved
+        while a call would hold more than CII_AI_CALL_TOKENS_LIMIT, judged CII_THREAT_QUESTIONS_AT_ONCE at
+        once; a skipped slot has no verdicts."""
+        if not items:
+            return {}
+        size = math.ceil(len(items) / math.ceil(len(items) / GATE_BATCH_SIZE))
+        prompt_of = functools.partial(_gate_prompt_of, self._landscape.text)
+        batches = [
+            list(part)
+            for batch in itertools.batched(items, size)
+            for part in within_call_limit(batch, prompt_of, AiTask.RELEVANCE_GATE)
+        ]
+        judged = run_in_shared_pool(self._pool, self._judge_batch, batches)
+        return {slot: verdicts for batch in judged for slot, verdicts in batch.items()}
 
-    def _judge_batch(self, category: StrideCategory, batch: list[dict[str, Any]]) -> dict[str, Verdict]:
-        """One gate call: its verdicts, or none when its reply is skipped or the job already retries."""
+    def _judge_batch(
+        self, batch: list[dict[str, Any]], problems: list[str] | None = None, halved: bool = False
+    ) -> dict[str, dict[StrideCategory, Verdict]]:
+        """One gate call's verdicts (`problems`: this is the follow-up, told what the earlier answer got wrong
+        with its slots). A cut-off first ask is asked again as halves once, each a first ask of its own; the
+        slots a first ask left out or got wrong get the one follow-up. None: skipped, or the job retries."""
         if self._unavailable.is_set():
             return {}
-        listed = {item["slot"]: item["attackers"] for item in batch}
-        prompt = relevance_gate_prompt(self._landscape.text, category, batch)
-        read = functools.partial(_read_verdicts, listed=listed, aliases=self._landscape.system_ids)
+        first_ask = problems is None
+        prompt = relevance_gate_prompt(self._landscape.text, batch, problems or ())
+        asked = {item["slot"]: item for item in batch}
+        read = functools.partial(_read_verdicts, asked=asked, aliases=self._landscape.system_ids)
+        judged: dict[str, dict[StrideCategory, Verdict]]
+        faults: dict[str, list[str]]
         try:
-            verdicts: dict[str, Verdict] = _ask_reusing(self._chat, AiTask.RELEVANCE_GATE, prompt, read)
+            judged, faults = _ask_reusing(self._chat, AiTask.RELEVANCE_GATE, prompt, read)
         except Unavailable:
             self._unavailable.set()
             raise
         except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-            self._retry_or_skip(category, AiTask.RELEVANCE_GATE, exc)
+            if isinstance(exc, TruncatedAiAnswer) and first_ask and not halved and len(batch) > 1:
+                half = (len(batch) + 1) // 2  # ponytail: halved once; a half cut off again is not judged
+                first, second = batch[:half], batch[half:]
+                return self._judge_batch(first, halved=True) | self._judge_batch(second, halved=True)
+            self._retry_or_skip(AiTask.RELEVANCE_GATE, exc, [item["threat"] for item in batch], first_ask)
             return {}
-        return verdicts
+        if first_ask and (missing := [item for item in batch if item["slot"] not in judged]):
+            told = [problem for item in missing for problem in faults.get(item["slot"], ())]
+            judged |= self._judge_batch(missing, told)  # ponytail: once; still wrong = not judged
+        return judged
 
-    def _retry_or_skip(self, category: StrideCategory, check: AiTask, error: Exception) -> None:
-        """An unreadable reply raises Unavailable, so the job asks again later, unless this is the job's last
-        attempt; a cut-off reply, or any on the last attempt, is skipped with a warning."""
-        if isinstance(error, UnreadableAiAnswer) and not self._last_attempt:
+    def _retry_or_skip(
+        self, check: AiTask, error: Exception, asked: list[str], first_ask: bool = True
+    ) -> None:
+        """An unreadable reply to a first ask raises Unavailable, so the job asks again later, unless this is
+        the job's last attempt; a cut-off reply, one to an ask again, or any on the last attempt, is skipped
+        with a warning naming what it asked."""
+        if isinstance(error, UnreadableAiAnswer) and first_ask and not self._last_attempt:
             self._unavailable.set()
             raise Unavailable(str(error)) from error
-        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, category=category, check=check, message=str(error))
+        log.warning(LogEvent.PLANNER_THREATS_NOT_JUDGED, check=check, asked=asked, message=str(error))
 
-    def _propose(self, audit: CategoryAudit) -> tuple[PlannedThreat | None, dict[str, Any] | None]:
-        """The AI's one proposal, kept when it is no library threat already judged, its type matches a library
-        type that links an attacker and the gate finds it applies, with the gate's pick among those; else
-        why a proposal was not kept (None when the AI proposed none)."""
-        names = list(
-            dict.fromkeys(threat_name_without_code(rejected["threat"]) for rejected in audit.rejected)
-        )
-        prompt = gap_fill_prompt(self._landscape.text, audit.category, len(audit.judged_ids), names)
-        read = functools.partial(_read_proposal, aliases=self._landscape.system_ids)
+    def _gap_threats(self, empty: list[CategoryAudit]) -> dict[StrideCategory, _GapOutcome]:
+        """Each empty category's AI threat, or why its proposal was not kept: one gap-fill ask, the library
+        checks, then one gate check of every proposal left."""
+        proposals = self._proposals(empty)
+        outcomes: dict[StrideCategory, _GapOutcome] = {}
+        to_judge: list[tuple[StrideCategory, dict[str, Any], LibraryThreatType, dict[str, Any]]] = []
+        for kind in (audit.category for audit in empty):
+            if (proposal := proposals.get(kind)) is None:  # not answered, or the reply was skipped
+                outcomes[kind] = None, _lost("", PlanLoss.NOT_JUDGED)
+                continue
+            library_type, lost = self._matcher.library_type(kind, proposal)
+            outcomes[kind] = None, lost  # a proposal the gate judges gets the gate's outcome below
+            if library_type is not None:
+                slot, threat_type = f"{ThreatFinding.RECORD_SLOT}{len(to_judge) + 1}", proposal["threat_type"]
+                item = _candidate_for_gate(
+                    slot, threat_type, proposal["threat"], (kind,), _attackers_for(library_type)
+                )
+                to_judge.append((kind, proposal, library_type, item))
+        judged = self._judge([item for *_, item in to_judge])
+        for kind, proposal, library_type, item in to_judge:
+            outcomes[kind] = _checked_proposal(kind, proposal, library_type, judged.get(item["slot"]))
+        return outcomes
+
+    def _proposals(self, empty: list[CategoryAudit]) -> dict[StrideCategory, dict[str, Any]]:
+        """The gap fill's one ask for every empty category, each with the library threats judged not to apply:
+        {category: its proposal}; {} when the reply is skipped."""
+        kinds = [audit.category for audit in empty]
+        rejected = [dict.fromkeys(threat_name_without_code(r["threat"]) for r in a.rejected) for a in empty]
+        asked = [
+            (a.category, len(a.judged_ids), list(names)) for a, names in zip(empty, rejected, strict=True)
+        ]
+        read = functools.partial(_read_proposals, asked=kinds, aliases=self._landscape.system_ids)
         try:
-            proposal: dict[str, Any] = _ask_reusing(self._chat, AiTask.GAP_FILL, prompt, read)
+            proposals: dict[StrideCategory, dict[str, Any]] = _ask_reusing(
+                self._chat, AiTask.GAP_FILL, gap_fill_prompt(self._landscape.text, asked), read
+            )
         except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-            self._retry_or_skip(audit.category, AiTask.GAP_FILL, exc)
-            return None, _lost("", PlanLoss.NOT_JUDGED)
+            self._retry_or_skip(AiTask.GAP_FILL, exc, [str(kind) for kind in kinds])
+            return {}
+        return proposals
+
+
+class _ProposalMatcher:
+    """A gap-fill proposal against the run's library snapshot: a repeat of a threat judged, or the library
+    type it is planned under."""
+
+    def __init__(
+        self, rerank: RerankModel, snapshot: LibrarySnapshot, allowed_types: Collection[str]
+    ) -> None:
+        self._rerank, self._snapshot, self._allowed_types = rerank, snapshot, allowed_types
+
+    def library_type(
+        self, kind: StrideCategory, proposal: dict[str, Any]
+    ) -> tuple[LibraryThreatType | None, dict[str, Any] | None]:
+        """The library type an applying proposal is planned under: it is no library threat already judged,
+        and its type matches one that links an attacker; else why it was not kept (None: none proposed)."""
         if not proposal["applies"]:
             return None, None
         threat = proposal["threat"]
-        if self._is_library_threat(threat, audit.category):
+        if self._is_library_threat(threat, kind):
             return None, _lost(threat, PlanLoss.LIBRARY_REPEAT)
         (types,) = self._snapshot.find_threat_types(
-            [proposal["threat_type"]], top_k=ThreatFinding.LIBRARY_MATCH_CANDIDATES, category=audit.category
+            [proposal["threat_type"]], top_k=ThreatFinding.LIBRARY_MATCH_CANDIDATES, category=kind
         )
         matched = self._best_match(proposal["threat_type"], [(found, found.name) for found, _ in types])
         if matched is None:
             return None, _lost(threat, PlanLoss.TYPE_UNMATCHED, proposal["threat_type"])
         if not matched.linked_actors:
-            log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, category=audit.category, type_id=matched.type_id)
+            log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, category=kind, type_id=matched.type_id)
             return None, _lost(threat, PlanLoss.NO_LINKED_ACTOR, matched.name)
-        item = _candidate_for_gate(
-            f"{ThreatFinding.RECORD_SLOT}1", proposal["threat_type"], threat, self._attackers_for(matched)
-        )
-        verdict = self._judge(audit.category, [item]).get(item["slot"])
-        if verdict is None:  # its gate reply was skipped
-            return None, _lost(threat, PlanLoss.NOT_JUDGED)
-        if not verdict_applies(verdict):
-            code = CandidateRejection.NEEDS_UNRECORDED if verdict.needs else CandidateRejection.NOT_RELEVANT
-            return None, _lost(threat, code, "; ".join(verdict.needs) or verdict.reason)
-        return _ai_threat(audit.category, proposal, verdict, matched), None
+        return matched, None
 
     def _is_library_threat(self, threat: str, category: StrideCategory) -> bool:
         """Whether a proposal is a library threat of the category this run judged (and found not to apply)."""
@@ -666,6 +871,7 @@ def _ai_threat(
         reason=verdict.reason,
         kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
+        actions=verdict.actions,
     )
 
 
@@ -684,6 +890,7 @@ def _library_threat(category: StrideCategory, threat: LibraryThreat, verdict: Ve
         reason=verdict.reason,
         kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
+        actions=verdict.actions,
     )
 
 
@@ -718,7 +925,7 @@ def library_threats_named(library: ThreatLibrary, name: str) -> _NamedRecord | N
     return None
 
 
-# --- code's checks on the verdicts: the asset-type fit and the needs refusal
+# --- code's check on the verdicts: the asset-type fit
 
 
 def _run_asset_types(context: FrozenContext) -> frozenset[str]:
@@ -726,21 +933,6 @@ def _run_asset_types(context: FrozenContext) -> frozenset[str]:
     return compatible_asset_types(
         context.asset.get("category_code"), (system.get("category_code") for system in context.systems)
     )
-
-
-def _refuse_unrecorded_needs_everywhere(found: list[CategoryFindings]) -> None:
-    """A threat refused under one category for a need nothing records is refused under every category."""
-    refused = {
-        rejection["library_id"]: rejection | {"under": result.audit.category}  # the copies say where from
-        for result in found
-        for rejection in result.audit.rejected
-        if rejection["code"] == CandidateRejection.NEEDS_UNRECORDED
-    }
-    for result in found:
-        result.audit.rejected.extend(
-            refused[threat.catalogue_id] for threat, _ in result.accepted if threat.catalogue_id in refused
-        )
-        result.accepted[:] = [(t, verdict) for t, verdict in result.accepted if t.catalogue_id not in refused]
 
 
 def _place_on_matching_systems(found: list[CategoryFindings], context: FrozenContext) -> None:
@@ -860,6 +1052,7 @@ def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThrea
         impact=max(kept.impact, other.impact),
         confidence=max(kept.confidence, other.confidence),
         actor_pick=_named_pick_first(kept.actor_pick, other.actor_pick),
+        actions=kept.actions or other.actions,
         kind_reasons=tuple((threat_reasons_by_kind(other) | threat_reasons_by_kind(kept)).items()),
         kind_places=tuple((places_by_kind(other) | places_by_kind(kept)).items()),
     )
@@ -1049,9 +1242,12 @@ class ThreatFinder:
         ]
         names = {threat.key: threat.name for threat in accepted + ai_threats}
         folded: dict[str, str] = {}
+        main_first = {f"lib:{t.catalogue_id}": v.kinds for result in found for t, v in result.accepted}
         threats = merge_same_threats(accepted + ai_threats, folded)
+        threats = [_main_category_first(threat, main_first.get(threat.key, ())) for threat in threats]
         threats = merge_reworded_threats(threats, self._embeddings, context.asset["name"], folded)
         threats, drops = _keep_on_matching_systems(threats, snapshot.library.threat_library.threats, context)
+        threats = [_main_and_two_others(threat, main_first.get(threat.key, ())) for threat in threats]
         for key, kept in folded.items():
             drops.append(plan_drop(key, names[key], None, PlanStage.MERGE, PlanLoss.MERGED, f"into {kept}"))
         threats = assign_attackers(snapshot, threats, land.sector)
@@ -1065,36 +1261,28 @@ class ThreatFinder:
     def _judge_categories(
         self, snapshot: LibrarySnapshot, context: FrozenContext, landscape: Landscape, last_attempt: bool
     ) -> tuple[list[CategoryFindings], list[dict[str, Any]]]:
-        """The six categories at once, their gate calls in one shared pool; the asset-type fit and the needs
-        refusal; then any gap fill. In STRIDE order, with the threats left out before the gate. A threat
-        whose type links no attacker is never judged; gate batches asked and not one answered: Unavailable."""
+        """Every judgeable threat judged once for all its own categories, the gate calls in one pool; the
+        asset-type fit; then one gap fill for the categories left empty. One result per category in STRIDE
+        order, with the threats left out before the gate. A threat whose type links no attacker is never
+        judged; gate batches asked and not one answered: Unavailable."""
         allowed = _run_asset_types(context)
         fitting, drops = _judgeable(snapshot.library.threat_library.threats, allowed)
-        by_category = {
-            category: [t for t in fitting if category in t.categories] for category in StrideCategory
-        }
-        with (
-            ThreadPoolExecutor(
-                ThreatFinding.AI_BATCHES_AT_ONCE, thread_name_prefix="gate-batch"
-            ) as gate_pool,
-            ThreadPoolExecutor(ThreatFinding.CATEGORIES_AT_ONCE, thread_name_prefix="category-check") as pool,
-        ):
-            judge = _CategoryJudge(
-                self._chat, self._rerank, snapshot, landscape, by_category, allowed, gate_pool, last_attempt
-            )
-            found = run_in_shared_pool(pool, judge.judge_category, list(StrideCategory))
-            if any(by_category.values()) and not any(result.audit.judged_ids for result in found):
+        matcher = _ProposalMatcher(self._rerank, snapshot, allowed)
+        with ThreadPoolExecutor(ThreatFinding.AI_BATCHES_AT_ONCE, thread_name_prefix="gate-batch") as pool:
+            judge = _ThreatJudge(self._chat, matcher, landscape, fitting, pool, last_attempt)
+            found = judge.judge_all()
+            if fitting and not any(result.audit.judged_ids for result in found):
                 raise Unavailable(PlanMessage.AI_COULD_NOT_ANSWER)  # nothing checked is never "none apply"
             _place_on_matching_systems(found, context)  # before any gap fill: these may empty a category
-            _refuse_unrecorded_needs_everywhere(found)
-            return run_in_shared_pool(pool, judge.fill_gap, found), drops
+            return judge.fill_gaps(found), drops
 
 
 def _judgeable(
     threats: Sequence[LibraryThreat], allowed: Collection[str]
 ) -> tuple[list[LibraryThreat], list[dict[str, Any]]]:
     """The library threats the gate is asked about: their type fits the asset or a chosen system and links an
-    attacker. Those threats, and a drop for each one left out."""
+    attacker, and they sit in a STRIDE category. Those threats, and a drop for each one left out (one in
+    custom categories only never reaches a scenario, so it is left out without one)."""
     fitting, drops = [], []
     for threat in threats:
         key, stage = f"lib:{threat.catalogue_id}", PlanStage.PRE_FILTER
@@ -1103,20 +1291,46 @@ def _judgeable(
             drops.append(plan_drop(key, threat.name, None, stage, PlanLoss.TYPE_FITS_NO_PLACE, detail))
         elif not threat.linked_actors:
             drops.append(plan_drop(key, threat.name, None, stage, PlanLoss.NO_LINKED_ACTOR))
-        else:
+        elif threat.categories:
             fitting.append(threat)
     if unlinked := [drop["threat_key"] for drop in drops if drop["reason"] == PlanLoss.NO_LINKED_ACTOR]:
         log.info(LogEvent.PLANNER_THREAT_NOT_PLANNED, threat_keys=unlinked)
     return fitting, drops
 
 
+def _main_category_first(threat: PlannedThreat, gate_order: Sequence[StrideCategory]) -> PlannedThreat:
+    """The threat told as the category the gate put first among those it kept (the one its own action most
+    directly causes), with that category's reason; the others after it, as they were."""
+    lead = next((kind for kind in gate_order if kind in threat.categories), threat.categories[0])
+    return dataclasses.replace(
+        threat,
+        categories=(lead, *(kind for kind in threat.categories if kind != lead)),
+        reason=threat_reason_for(threat, lead),
+    )
+
+
+def _main_and_two_others(threat: PlannedThreat, gate_order: Sequence[StrideCategory]) -> PlannedThreat:
+    """The threat with its main category and at most two others, those the gate named earliest (a kind it did
+    not order last), kept in their own order: a card's "also" list stays short when the AI names every
+    kind."""
+    main, *others = threat.categories
+    if len(others) < ThreatFinding.MAX_CATEGORIES_PER_THREAT:
+        return threat
+    rank = {kind: n for n, kind in enumerate(gate_order)}
+    room = ThreatFinding.MAX_CATEGORIES_PER_THREAT - 1
+    chosen = sorted(others, key=lambda kind: rank.get(kind, len(rank)))[:room]
+    return dataclasses.replace(threat, categories=(main, *(kind for kind in others if kind in chosen)))
+
+
 def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
-    """A threat whose reasons (an AI threat's names too) name systems, never by their aliases."""
+    """A threat whose reasons and actions (an AI threat's names too) name systems, never by their aliases."""
     names = landscape.system_names
     threat = dataclasses.replace(
         threat,
         reason=replace_codes_with_names(threat.reason, names),
+        kind_reasons=tuple((kind, replace_codes_with_names(why, names)) for kind, why in threat.kind_reasons),
         attacker_check_reason=replace_codes_with_names(threat.attacker_check_reason, names),
+        actions=tuple(replace_codes_with_names(action, names) for action in threat.actions),
     )
     if threat_from_library(threat):
         return threat
@@ -1127,7 +1341,7 @@ def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:
     )
 
 
-# --- the plan: one asset-level path per threat per kind of attack, ranked
+# --- the plan: one asset-level path per threat, ranked
 
 #: A path's scope when it is on no listed system: the asset itself.
 _ASSET_ITSELF = "asset"
@@ -1135,15 +1349,15 @@ _STRIDE_ORDER = list(STRIDE_DEFINITIONS)
 
 
 def threat_paths(threats: Sequence[PlannedThreat]) -> list[AttackPath]:
-    """One path per threat per kind of attack it was accepted for (owner 2026-10-19: scenarios at asset
-    level), entering through that kind's own systems and told with that kind's impact and confidence; two
-    threats never share a path, and one is never split per system."""
+    """One path per threat (owner D6: one card per threat; scenarios at asset level), told as its main
+    category through that category's own systems, impact and confidence; its other categories follow it as
+    contributing ones. Two threats never share a path, and one is never split per system."""
     paths = []
     for threat in threats:
-        for kind in dict.fromkeys(threat.categories):
-            place = place_for(threat, kind)
-            step = dataclasses.replace(threat, impact=place.impact, confidence=place.confidence)
-            paths.append(path_on(step, place.systems, kind))
+        kind = threat.categories[0]
+        place = place_for(threat, kind)
+        step = dataclasses.replace(threat, impact=place.impact, confidence=place.confidence)
+        paths.append(path_on(step, place.systems, kind))
     return paths
 
 
@@ -1174,15 +1388,8 @@ def _path_strength(path: AttackPath) -> tuple[Any, ...]:
 
 
 def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
-    """Each threat's strongest kind before any threat's next kind, so the first sets tell distinct threats;
-    within a turn the most relevant first. The same order on every run."""
-    ordered = sorted(paths, key=_path_strength)
-    turns: Counter[str] = Counter()
-    turn_of = {}
-    for path in ordered:
-        turn_of[attack_path_id(path)] = turns[path.steps[0].key]
-        turns[path.steps[0].key] += 1
-    return sorted(ordered, key=lambda path: turn_of[attack_path_id(path)])  # stable: strength within a turn
+    """The most relevant path first, the same order on every run."""
+    return sorted(paths, key=_path_strength)
 
 
 def take_turns(records: list[dict[str, Any]], order: Sequence[int]) -> list[dict[str, Any]]:
@@ -1233,7 +1440,7 @@ def select_up_to_target(paths: list[dict[str, Any]], max_scenarios: int) -> list
 
 
 def build_plan(findings: ThreatFindings, target: int) -> dict[str, Any]:
-    """The plan the run freezes: every threat once, one path per threat per kind, dealt in turns over the
+    """The plan the run freezes: every threat once, one path per threat, dealt in turns over the
     systems, and the `target` (TOTAL_SCENARIO_COUNT, 0 = no cap) best selected; the asset's other sessions
     never take a path away (D15)."""
     threats = [

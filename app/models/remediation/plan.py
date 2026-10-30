@@ -73,7 +73,7 @@ class DraftValidation(BaseModel):
 class PlanDraft(BaseModel):
     """The plan AI's answer; a broken one is asked again once, then the version fails `generation_failed`."""
 
-    title: Given
+    title: str = ""  # a fallback only: code names the plan from its controls' domains (glm leaves it out)
     control_validation: list[DraftValidation]
     controls_to_be_implemented: Annotated[list[DraftControl], BeforeValidator(_the_controls)]
     remediation_action_plan: list[DraftAction]
@@ -102,6 +102,13 @@ class PlanStarted(PlanRequested):
     replayed: bool = False  # this Idempotency-Key had already saved this scenario: nothing new was saved
 
 
+class PlanTimings(BaseModel):
+    """The latest version's seconds per activity, once each is done: its controls, then its plan."""
+
+    controls: float | None = None  # the scenario read, its controls found (mapped if needed), alternatives
+    plan: float | None = None  # the AI writing the plan, code's fix-up and its schedule
+
+
 class Progress(BaseModel):
     __module__ = "app.models.remediation"  # pins the OpenAPI name
 
@@ -109,6 +116,7 @@ class Progress(BaseModel):
     review: Decision  # the record's
     overall: RemediationProgress
     retrying: RetryNotice | None = None  # the generation waiting to try again after an outage
+    timings: PlanTimings = PlanTimings()
 
 
 class RemediationStatus(BaseModel):
@@ -139,6 +147,7 @@ class RemediationStatus(BaseModel):
         "job.error": 1,
         "job.retry": 1,
         "job.waiting": 1,
+        "job.timings": 1,
         "updated_at": 1,
     }
 
@@ -147,6 +156,7 @@ class RemediationStatus(BaseModel):
         """The status of a stored record whose scenario is (or is no longer) accepted."""
         status, decision = shown_plan_status(record), Decision(record["decision"])
         job = record.get("job") or {}
+        seconds = job.get("timings") or {}
         return cls(
             remediation_id=record["_id"],
             entity_id=record["entity_id"],
@@ -161,6 +171,7 @@ class RemediationStatus(BaseModel):
                 review=decision,
                 overall=_overall(status, decision, scenario_accepted),
                 retrying=retry_notice_of(status, job.get("retry")),
+                timings=PlanTimings(controls=seconds.get("controls_s"), plan=seconds.get("plan_s")),
             ),
             error=job.get("error"),
             updated_at=record["updated_at"],

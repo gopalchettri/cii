@@ -13,11 +13,15 @@ from app.ai.profiles import (
     UnknownModelProfile,
     find_model_profile,
 )
+from app.core.constants import ChatModule
 from app.models.ai.profiles import ChatModelProfile
 
 _PROFILES_BY_SETTING = {
-    "CII_CHAT_MODEL": CHAT_MODEL_PROFILES,
-    "CII_CHAT_FALLBACK_MODEL": CHAT_MODEL_PROFILES,
+    **{
+        f"CII_{module.upper()}_CHAT_{model}": CHAT_MODEL_PROFILES
+        for module in ChatModule
+        for model in ("MODEL", "FALLBACK_MODEL")
+    },
     "CII_EMBEDDING_MODEL": EMBEDDING_MODEL_PROFILES,
     "CII_RERANK_MODEL": RERANK_MODEL_PROFILES,
 }
@@ -28,7 +32,7 @@ def test_every_model_named_in_env_example_has_a_profile() -> None:
     for setting, profiles in _PROFILES_BY_SETTING.items():
         match = re.search(rf"^{setting}=(\S*)", env_example, re.MULTILINE)
         assert match, setting
-        if match.group(1):  # an empty fallback model is allowed
+        if match.group(1):  # an empty fallback model (none) is allowed
             find_model_profile(profiles, match.group(1))
 
 
@@ -51,10 +55,10 @@ def test_each_chat_model_states_its_own_context_with_the_answer_kept_free() -> N
     }
     assert "context_tokens" not in defaults
     contexts = {name: chat.context_tokens for name, chat in CHAT_MODEL_PROFILES.items()}
-    assert contexts == {
+    assert contexts == {  # the gateway's max_input_tokens (model info, 2026-10-29) + the answer kept free
         "openai/Kimi-K2.6": 100_000,
-        "litellm_proxy/kimi-k2.5": 262_144,
-        "litellm_proxy/glm-5.3": 1_000_000,
+        "litellm_proxy/kimi-k2.5": 114_688 + 12_288,
+        "litellm_proxy/glm-5.3": 262_144 + 12_288,
     }
     assert CHAT_MODEL_PROFILES["openai/Kimi-K2.6"].max_input_chars == (100_000 - 12_288) * 3
 

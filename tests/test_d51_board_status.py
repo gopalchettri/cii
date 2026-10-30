@@ -41,7 +41,7 @@ from tests.test_control_mapping import _controls_of, _waiting_scenario
 from tests.test_job_control import _run as _stored_run
 from tests.test_job_control import _scenario, _who, api_key, entity, told  # noqa: F401 - fixtures by name
 from tests.test_next_set_rules import _RULE, _path
-from tests.test_outage_paths_rewritten import _busy_for
+from tests.test_outage_paths_rewritten import busy_for_and_blocked
 from tests.test_run_board import _FAILED, _SET, _run, _written
 from tests.test_worker import _insert_job, _records
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
@@ -184,7 +184,7 @@ def test_the_reaper_stores_why_it_gave_each_job_up() -> None:
     board = build_board(session_status_from_record(_records().find_one({"_id": worn_out})))
     assert board.error is not None and board.error.reason == AbandonReason.WORKER_STOPPED
     assert board.progress.error_reason is None  # an AI outage's reason only
-    shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}))
+    shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}), 5)
     assert shown.error is not None and shown.error.reason == AbandonReason.WORKER_STOPPED
 
 
@@ -260,8 +260,8 @@ def test_a_path_given_up_after_its_last_ai_outage_keeps_the_run_awaiting_its_reg
 ) -> None:
     """Through the write job: the path's give-up names the AI outage, as its card does, and the run is not
     complete while that card can still be written."""
-    chat.responders[AiTask.WRITE_SCENARIO] = _busy_for("Threat 2")
-    record_id = _queued_run(["Threat 1", "Threat 2", "Unreadable threat"])
+    chat.responders[AiTask.WRITE_SCENARIO] = busy_for_and_blocked("Threat 2", "Blocked threat")
+    record_id = _queued_run(["Threat 1", "Threat 2", "Blocked threat"])
     tried = {"step": Step.SCENARIOS, "plan.paths.1.attempts": Generation.MAX_PATH_ATTEMPTS - 1}
     _records().update_one({"_id": record_id}, {"$set": tried})
     _write_batch(_on_last_try(record_id))

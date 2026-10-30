@@ -131,8 +131,9 @@ def test_no_limit_makes_no_redis_call() -> None:
 def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CII_CHAT_REQUESTS_PER_MINUTE=20: every pod's requests go 3 s apart, by Redis's clock. A turn further
-    off than the caller waits reserves nothing and is Unavailable (busy); a lost lease ends the wait."""
+    """A module's CHAT_REQUESTS_PER_MINUTE=20: every pod's requests go 3 s apart, by Redis's clock. A turn
+    further off than the caller waits reserves nothing and is Unavailable (busy); a lost lease ends the
+    wait."""
     lease_checking_sleep = slots.sleep_unless_lease_lost
     slept: list[float] = []
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
@@ -152,6 +153,43 @@ def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
         with pytest.raises(LeaseLost):
             lease_checking_sleep(30)
         assert time.monotonic() - started < 3
+
+
+def test_a_tokens_a_minute_limit_spaces_requests_by_their_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UAT's 429s say limit_type "tokens": a module's CHAT_TOKENS_PER_MINUTE=60000 spaces a 600-token request
+    0.6 s from the next, a 6000-token one 6 s more; the requests-a-minute spacing applies when it is longer; a
+    request of no stated size, or no tokens limit, is not spaced by tokens."""
+    slept: list[float] = []
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    redis = get_redis_client()
+    sized = AiRequestRate(redis, "tokens-only", per_minute=0, wait_seconds=30, tokens_per_minute=60_000)
+    for tokens in (600, 6000, 600):  # each request's size spaces the one after it; no sleep is real here
+        sized.wait_for_turn(TASK, tokens)
+    assert slept[0] < 0.1 and slept[1:] == [pytest.approx(0.6, abs=0.1), pytest.approx(6.6, abs=0.1)]
+    assert sized.wait_for_turn(TASK, 0) == 0 and len(slept) == 3  # no stated size: not spaced, no Redis call
+    both = AiRequestRate(redis, "both-limits", per_minute=20, wait_seconds=30, tokens_per_minute=60_000)
+    for _ in range(2):
+        both.wait_for_turn(TASK, 600)  # 3 s a request beats 0.6 s of tokens
+    assert slept[-1] == pytest.approx(3, abs=0.1)
+    assert AiRequestRate(redis, "m", 0, 30, tokens_per_minute=0).wait_for_turn(TASK, 10**6) == 0
+
+
+def test_a_429_pauses_its_model_on_every_pod(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once a refused call frees its slot, the calls queued for its model would each draw a 429 of their own.
+    A 429 moves the model's next send time its wait away on every pod: a worker waits it out holding no slot,
+    the API answers its caller at once; a shorter pause never cuts a longer one; a model with no limit is not
+    paused (no Redis)."""
+    slept: list[float] = []
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    redis = get_redis_client()
+    pod_a, pod_b = (AiRequestRate(redis, "paused", per_minute=600, wait_seconds=120) for _ in range(2))
+    assert pod_a.pause(60) == 60
+    pod_b.pause(10)
+    assert pod_b.wait_for_send_time(TASK) == pytest.approx(60, abs=0.5) and slept == [slept[0]]
+    with pytest.raises(Unavailable):
+        AiRequestRate(redis, "paused", per_minute=600, wait_seconds=30).wait_for_send_time(TASK)
+    unlimited = AiRequestRate(None, "free", per_minute=0, wait_seconds=5)
+    assert unlimited.pause(60) == 60 and unlimited.wait_for_send_time(TASK) == 0
 
 
 def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,8 +225,8 @@ def test_a_redis_that_refuses_writes_shows_unknown_and_never_breaks_a_scrape(
     """READONLY (a replica after a failover) or MISCONF: the count script writes, so it fails. Both gauges
     show NaN and /metrics still answers, instead of a 500 for every metric."""
     limiter = AiSlots(get_redis_client(), cap=4, wait_seconds=5)
-    metrics.AI_SLOTS_IN_USE.set_function(limiter.count_calls_in_progress)
-    metrics.AI_SLOTS_CAP.set_function(limiter.current_limit)
+    metrics.AI_SLOTS_IN_USE.labels(AiLimits.SEARCH_POOL).set_function(limiter.count_calls_in_progress)
+    metrics.AI_SLOTS_CAP.labels(AiLimits.SEARCH_POOL).set_function(limiter.current_limit)
 
     def read_only(*_: object, **__: object) -> None:
         raise ResponseError("READONLY You can't write against a read only replica.")
@@ -196,7 +234,7 @@ def test_a_redis_that_refuses_writes_shows_unknown_and_never_breaks_a_scrape(
     with monkeypatch.context() as replica:
         replica.setattr(limiter._redis, "execute_command", read_only)
         scraped = generate_latest().decode()
-    assert "tsg_ai_slots_in_use NaN" in scraped and "tsg_ai_slots_cap NaN" in scraped
+    assert all(f'tsg_ai_slots_{gauge}{{pool="search"}} NaN' in scraped for gauge in ("in_use", "cap"))
 
 
 def test_an_answered_call_costs_two_redis_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,8 +253,7 @@ def test_an_answered_call_costs_two_redis_round_trips(monkeypatch: pytest.Monkey
 
     with monkeypatch.context() as watched:
         watched.setattr(redis, "execute_command", recorded)
-        with limiter.hold_slot(TASK):
-            call_with_retries(lambda: "answer", UNLIMITED_AI_REQUEST_RATE, limiter, model="m", task=TASK)
+        call_with_retries(lambda: "answer", UNLIMITED_AI_REQUEST_RATE, limiter, model="m", task=TASK)
     assert sent == ["EVALSHA", "EVALSHA"]
     limiter.note_rate_limited()  # nothing in flight: the floor, 4
     with pytest.raises(RuntimeError), limiter.hold_slot(TASK):
@@ -288,3 +325,22 @@ def test_a_model_s_saturated_limit_never_delays_another_model_s_request(
             AiRequestRate(get_redis_client(), model, per_minute=1, wait_seconds=5).wait_for_turn(TASK) < 0.5
         )
     assert max(slept) < 0.5
+
+
+def test_a_slot_whose_release_redis_missed_is_freed_by_the_next_call() -> None:
+    """A call that ends while Redis is being skipped (a blip) could not free its slot, so it still counted as
+    in flight until its lease ended (60 s): with a 429's limit in force, every new call waited for nothing.
+    The next call's take frees it first."""
+    key = f"tsg:test_phantom:{uuid.uuid4().hex}"
+    redis = get_redis_client()
+    slots = AiSlots(redis, cap=0, wait_seconds=5, key=key)
+    redis.hset(f"{key}:limit", "limit", 1)  # a 429 cut this pool to one call at once
+    try:
+        with slots.hold_slot(AiTask.RELEVANCE_GATE):
+            slots._skip_redis_until = time.monotonic() + 60  # Redis fails while the call runs
+        assert redis.zcard(key) == 1  # its release was skipped
+        slots._skip_redis_until = 0.0  # Redis is back
+        with slots.hold_slot(AiTask.RELEVANCE_GATE, waits=False):  # no wait at all: refused if not free
+            assert redis.zcard(key) == 1  # itself alone, the missed slot freed
+    finally:
+        redis.delete(key, f"{key}:limit", f"{key}:line", f"{key}:line_polls")

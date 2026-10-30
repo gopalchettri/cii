@@ -1,8 +1,8 @@
 """The threat plan: gate verdicts, planned threats, attack paths and the planner's AI answer contracts.
-Frozen, so the parallel category checks share them safely."""
+Frozen, so the parallel gate batches share them safely."""
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,7 +25,7 @@ class ActorPick:
 
 @dataclass(frozen=True)
 class Verdict:
-    """The relevance gate's answer for one candidate threat."""
+    """The relevance gate's answer for one candidate threat under one category."""
 
     relevant: bool
     systems: tuple[int, ...]  # supporting system ids; () = the asset itself
@@ -35,6 +35,8 @@ class Verdict:
     needs: tuple[str, ...] = ()  # what the threat needs that no recorded fact mentions
     actor_pick: ActorPick | None = None
     entry_points: tuple[int, ...] = ()  # the systems among `systems` an attacker could get in through
+    kinds: tuple[StrideCategory, ...] = ()  # its own categories the gate found it applies as, the main first
+    actions: tuple[str, ...] = ()  # the acts its name states, as the gate split them
 
 
 @dataclass(frozen=True)
@@ -64,7 +66,7 @@ class PlannedThreat:
     type_id: int  # always a library type
     type_name: str
     name: str
-    categories: tuple[StrideCategory, ...]  # the primary first, the rest in STRIDE order
+    categories: tuple[StrideCategory, ...]  # the gate's main first
     systems: tuple[int, ...]
     impact: int
     confidence: float
@@ -77,6 +79,7 @@ class PlannedThreat:
     attacker_check: AttackerCheck | None = None
     attacker_check_reason: str = ""
     actor_pick: ActorPick | None = None  # the gate's pick, until code decides
+    actions: tuple[str, ...] = ()  # the acts its name states, systems by name: the plan's threats[].actions
 
 
 @dataclass
@@ -85,8 +88,7 @@ class CategoryAudit:
 
     category: StrideCategory
     judged_ids: set[int] = field(default_factory=set)  # library threats whose verdict came back
-    # {threat, library_id, code, detail}, and `under`: the category a need refusing it everywhere came from
-    rejected: list[dict[str, Any]] = field(default_factory=list)
+    rejected: list[dict[str, Any]] = field(default_factory=list)  # {threat, library_id, code, detail}
     not_judged: list[LibraryThreat] = field(default_factory=list)  # in a gate batch that was skipped
     gap_fill_lost: dict[str, Any] | None = None  # the AI's proposal not kept: {threat, reason, detail}
 
@@ -134,20 +136,22 @@ class CategoryFindings:
 
 
 class RelevanceVerdict(BaseModel):
-    """One item of the relevance gate's answer."""
+    """One item of the relevance gate's answer: one threat, judged for all its own categories."""
 
     model_config = ConfigDict(extra="forbid")
     slot: str
+    threat: str  # the candidate's threat, copied back
     relevant: bool
+    categories: Any = None  # [{name, impact, reason}], the main first; read strictly in code
     systems: list[str]
     entry_points: list[str] = Field(default_factory=list)  # among `systems`: where an attacker could get in
-    reason: str
-    impact: Literal["HIGH", "MEDIUM", "LOW"] | None = None
+    reason: str = ""  # a rejection's; an applying threat's reasons are its categories'
     confidence: int | None = Field(default=None, ge=0, le=100)
     needs: list[str] = Field(default_factory=list)  # what the threat needs that nothing recorded mentions
-    # The attacker pick, read leniently in code: a bad one never costs a re-ask.
+    # The attacker pick and the actions, read leniently in code: a bad one never costs a re-ask.
     attacker: Any = None
     attacker_reason: Any = None
+    actions: Any = None
 
 
 class GapFillResponse(BaseModel):

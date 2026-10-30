@@ -31,7 +31,7 @@ _READERS: dict[Collection, tuple[TaskName, dict[str, Any], list[Callable[[dict[s
     Collection.SERVICE_MAPPINGS: (
         TaskName.MAP_SERVICES,
         {"tenant_id": "t-1", "entity_id": 86, "generation": 1, "created_at": datetime.now(UTC)},
-        [lambda record: mapping_status(record).retrying, lambda record: mapping_view(record).retrying],
+        [lambda record: mapping_status(record, 5).retrying, lambda record: mapping_view(record, 5).retrying],
     ),
 }
 

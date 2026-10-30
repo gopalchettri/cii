@@ -1,12 +1,12 @@
 """How each source and the whole feature are doing: a source's stored status, the report built on it, and
-how fresh the approved sources are."""
+which approved sources still wait for their first data."""
 
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
-from app.core.constants import FeedStatus, IntelLimits, IntelSource, StoreLimits
+from app.core.constants import FeedStatus, IntelSource, StoreLimits
 from app.models.external_intelligence.switch_state import SwitchState
 
 
@@ -34,15 +34,8 @@ class SourceHealth:
 
     @property
     def is_pending(self) -> bool:
-        """Never succeeded yet (not run, or only failed so far): waits for first data, is not out of date."""
+        """Never succeeded yet (not run, or only failed so far): waits for first data."""
         return self.last_success_at is None
-
-    def is_stale(self, now: datetime) -> bool:
-        """Has data, but its last success is older than IntelLimits.STALE_AFTER_HOURS. A source that never
-        succeeded is pending, not stale: nothing it holds is old."""
-        return self.last_success_at is not None and now - self.last_success_at > timedelta(
-            hours=IntelLimits.STALE_AFTER_HOURS
-        )
 
     def as_doc(self) -> dict[str, Any]:
         """The row as the health report shows it."""
@@ -66,17 +59,15 @@ class HealthReport:
     switch: SwitchState
     snapshot_id: str | None  # None: no snapshot is active
     sources: tuple[SourceHealth, ...]
-    stale: bool  # an approved source that HAS succeeded is older than the age limit
     #: approved sources that never succeeded: first data awaited
     pending_sources: tuple[IntelSource, ...] = ()
-    no_data: bool = False  # no approved source has ever succeeded: nothing to be stale yet
+    no_data: bool = False  # no approved source has ever succeeded
 
     def as_doc(self) -> dict[str, Any]:
         """The report as the health endpoint serves it."""
         return {
             "switch": self.switch.as_doc(),
             "snapshot_id": self.snapshot_id,
-            "stale": self.stale,
             "pending_sources": list(self.pending_sources),
             "no_data": self.no_data,
             "sources": [source.as_doc() for source in self.sources],
@@ -85,26 +76,18 @@ class HealthReport:
 
 @dataclass(frozen=True)
 class FeedFreshness:
-    """`stale`: an approved source that HAS succeeded is older than IntelLimits.STALE_AFTER_HOURS. `pending`:
-    approved sources that never succeeded (NVD's first pass takes hours; a fresh install has none yet): they
-    wait for first data and are never "stale". `no_data`: no approved source has succeeded yet."""
+    """`pending`: approved sources that never succeeded (NVD's first pass takes hours; a fresh install has
+    none yet): they wait for first data. `no_data`: no approved source has succeeded yet."""
 
-    stale: bool
     pending: tuple[IntelSource, ...]
     no_data: bool
 
     @classmethod
-    def of(
-        cls, sources: Iterable[SourceHealth], approved: Collection[IntelSource], now: datetime
-    ) -> "FeedFreshness":
-        """The freshness of the approved sources among `sources` at `now`."""
+    def of(cls, sources: Iterable[SourceHealth], approved: Collection[IntelSource]) -> "FeedFreshness":
+        """Which approved sources among `sources` still wait for their first data."""
         counted = [health for health in sources if health.source in approved]
         pending = tuple(health.source for health in counted if health.is_pending)
-        return cls(
-            stale=any(health.is_stale(now) for health in counted),
-            pending=pending,
-            no_data=len(pending) == len(counted),
-        )
+        return cls(pending=pending, no_data=len(pending) == len(counted))
 
 
 def refresh_success_fields(
@@ -124,7 +107,7 @@ def refresh_success_fields(
 
 def refresh_failure_fields(error: str, now: datetime) -> dict[str, Any]:
     """What a failed refresh records on its source; the checkpoint and last success stay, so the last good
-    data stays usable until stale."""
+    data stays usable."""
     return {
         "status": FeedStatus.FAILED,
         "last_attempt_at": now,

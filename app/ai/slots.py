@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import cast
+from typing import NoReturn, cast
 
 import structlog
 from redis import Redis
@@ -53,6 +53,9 @@ class AiSlots:
         self._key = key or AiLimits.SLOTS_KEY
         self._limit_key = f"{key}:limit" if key else AiLimits.SLOTS_LIMIT_KEY
         self._held: set[str] = set()  # this process's calls in flight: the slots its renewer renews
+        self._unreleased: set[str] = (
+            set()
+        )  # slots whose release a Redis failure missed: freed by the next take
         self._skip_redis_until = 0.0  # time.monotonic(): set at cap 0 by a Redis failure
         self._untracked_logged = False
         if redis is not None:  # registered: each poll sends EVALSHA, not the whole script
@@ -64,31 +67,29 @@ class AiSlots:
             start_thread_without_lease("ai-slot-leases", self._renew_leases_forever)
 
     @contextmanager
-    def hold_slot(self, task: str, waits: bool = True) -> Iterator[None]:
-        """Holds one slot while the call runs; Unavailable when its turn does not come within the wait (none
-        at all with `waits` false); a call that ends with no error raises a 429's limit by 1 / limit.
-        LeaseLost, before the wait, while it waits and after it, for a job that lost its lease meanwhile (its
-        owner cancelled it): every AI call passes here, so a stopped job spends nothing more, holding no slot
-        another run needs. `task`: whose refusal tsg_ai_outages_total counts."""
+    def hold_slot(self, task: str, waits: bool = True) -> Iterator[float]:
+        """Holds one slot while the call runs, giving the seconds it waited; Unavailable when its turn does
+        not come within the wait (none with `waits` false); an answered call raises a 429's limit by 1 /
+        limit. LeaseLost before, during and after the wait for a job whose lease was lost (cancelled), so a
+        stopped job holds no slot another run needs. `task`: whose refusal tsg_ai_outages_total counts."""
         raise_if_lease_lost()
-        call_id = uuid.uuid4().hex
+        call_id, started = uuid.uuid4().hex, time.monotonic()
         if not self._redis_in_use() or not self._take_slot(call_id, task, waits):
-            yield
+            yield time.monotonic() - started
             return
         self._held.add(call_id)
         answered = False
         try:
             raise_if_lease_lost()
-            yield
+            yield time.monotonic() - started
             answered = True
         finally:
             self._held.discard(call_id)
             self._release_slot(call_id, answered)
 
     def note_rate_limited(self) -> None:
-        """A gateway 429 (any model: they share one key): the limit on every pod becomes half the calls in
-        flight, at most once every ADAPTIVE_CUT_SPACING_SECONDS, never below ADAPTIVE_LIMIT_FLOOR, and
-        lasts until ADAPTIVE_LIMIT_TTL_SECONDS pass with no 429."""
+        """A gateway 429: this pool's limit on every pod becomes half its calls in flight, at most once each
+        ADAPTIVE_CUT_SPACING_SECONDS, never below the floor, until ADAPTIVE_LIMIT_TTL_SECONDS with no 429."""
         if not self._redis_in_use():
             return
         floor, ttl = AiLimits.ADAPTIVE_LIMIT_FLOOR, AiLimits.ADAPTIVE_LIMIT_TTL_SECONDS
@@ -102,8 +103,7 @@ class AiSlots:
             log.info(LogEvent.AI_LIMIT_CUT, limiter=self._key, limit=cut)
 
     def count_calls_in_progress(self) -> float:
-        """Calls in progress across every pod (the tsg_ai_slots_in_use gauge); NaN when Redis cannot say, so a
-        scrape never fails and never shows a stale number."""
+        """Calls in progress on every pod (tsg_ai_slots_in_use); NaN when Redis cannot say, never stale."""
         if self._redis is None:
             return 0.0
         try:
@@ -112,8 +112,7 @@ class AiSlots:
             return math.nan
 
     def current_limit(self) -> float:
-        """The limit in force (the tsg_ai_slots_cap gauge): `cap` or a 429's limit, the lower; 0 = none; NaN
-        when Redis cannot say."""
+        """The limit in force (tsg_ai_slots_cap): `cap` or a 429's, the lower; 0 = none; NaN when unknown."""
         if self._redis is None:
             return float(self._cap)
         try:
@@ -128,18 +127,18 @@ class AiSlots:
         return self._redis is not None and time.monotonic() >= self._skip_redis_until
 
     def _take_slot(self, call_id: str, task: str, waits: bool) -> bool:
-        """True once the call is recorded, when its turn in the line comes within the wait (Unavailable when
-        not). A Redis error with no cap never fails the call: False, it goes ahead unrecorded (logged once);
-        with a cap, which must hold, it is an outage (Unavailable) the job retries."""
+        """True once recorded, when its turn comes within the wait (else Unavailable). A Redis error with no
+        cap never fails the call: False, unrecorded (logged once); with a cap, an outage the job retries."""
         wait = self.wait_seconds if waits else 0
         deadline, pause = time.monotonic() + wait, AiLimits.SLOT_FIRST_PAUSE_SECONDS
         keys = [self._key, self._limit_key, f"{self._key}:line", f"{self._key}:line_polls"]
         stale = AiLimits.SLOT_WAITER_STALE_SECONDS
         args = [str(self._cap), str(AiLimits.SLOT_LEASE_SECONDS), call_id, str(stale), str(self.wait_seconds)]
+        missed = list(self._unreleased)  # freed by the script before it counts the calls in flight
         try:
             while True:
                 last_try = time.monotonic() + pause > deadline  # refused now, it also leaves the line
-                if self._take_free_slot(keys=keys, args=[*args, int(last_try)]):
+                if self._take_free_slot(keys=keys, args=[*args, int(last_try), *missed]):
                     break
                 raise_if_lease_lost()
                 if last_try:
@@ -156,15 +155,18 @@ class AiSlots:
             self._note_redis_failure()
             return False
         self._untracked_logged = False
+        self._unreleased.difference_update(missed)
         return True
 
     def _release_slot(self, call_id: str, answered: bool) -> None:
         """Frees the slot, raising a 429's limit when the call was answered: one round trip."""
         if not self._redis_in_use():
-            return  # its lease ends by itself
+            self._unreleased.add(call_id)  # else it counted as in flight until its lease ended
+            return
         try:
             self._free_slot(keys=[self._key, self._limit_key], args=[call_id, int(answered)])
-        except RedisError:  # its lease ends by itself; the call's answer must not be lost
+        except RedisError:  # the call's answer must not be lost: the next take frees the slot
+            self._unreleased.add(call_id)
             if self._cap:
                 log.warning(LogEvent.AI_SLOT_FREE_FAILED, exc_info=True)
             else:
@@ -190,55 +192,97 @@ class AiSlots:
 
 
 class AiRequestRate:
-    """One model's requests (each model has its own limit), each retry included, spaced 60 / `per_minute` s
-    apart on its own Redis key. `per_minute` 0 = no limit: no Redis call at all. `waits_out_rate_limits`: true
-    in a worker, false in the API (wait_after_rate_limit)."""
+    """One model's requests in a `scope` (a module's own, or none), retries included, on their own Redis key:
+    60 / `per_minute` s apart, or a large request's tokens x 60 / `tokens_per_minute` s; a 429 pauses it
+    (pause). Both 0 = no limit, no Redis call. `waits_out_rate_limits`: true in a worker, false in the API."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — one model's two limits, its scope and how its process waits
         self,
         redis: Redis | None,
         model: str,
         per_minute: int,
         wait_seconds: float,
         waits_out_rate_limits: bool = True,
+        tokens_per_minute: int = 0,
+        scope: str = "",
     ) -> None:
-        self._redis = redis
-        self._model = model
-        self._key = AiLimits.REQUEST_RATE_KEY.format(model=model)
-        self._per_minute = per_minute
-        self.wait_seconds = wait_seconds if per_minute else 0  # no limit: no turn, so no wait for one
+        self._redis, self._model = redis, model
+        self._key = AiLimits.REQUEST_RATE_KEY.format(model=f"{scope}:{model}" if scope else model)
+        self._per_minute, self._tokens_per_minute = per_minute, tokens_per_minute
+        limited = bool(per_minute or tokens_per_minute)
+        self.wait_seconds = wait_seconds if limited else 0  # no limit: no turn, so no wait for one
         self._waits_out_rate_limits = waits_out_rate_limits
         self._skip_redis_until = 0.0  # time.monotonic(): set by a Redis failure
-        if redis is not None and per_minute:
+        if redis is not None and limited:
             self._reserve_send_time = redis.register_script(limiter_scripts.RESERVE_SEND_TIME_SCRIPT)
+            self._seconds_to_send_time = redis.register_script(limiter_scripts.SECONDS_TO_SEND_TIME_SCRIPT)
+            self._pause_send_time = redis.register_script(limiter_scripts.PAUSE_SEND_TIME_SCRIPT)
 
-    def wait_for_turn(self, task: str) -> float:
-        """Waits for the send time it reserves; the seconds waited. Unavailable, nothing reserved, when that
-        time is further away than the wait (counted for `task`); LeaseLost before and while it waits, for a
-        job that lost its lease. A Redis error never fails the request: it goes ahead unspaced (a 429 is
-        still waited out) and Redis is left alone for REDIS_SKIP_SECONDS, logged once."""
-        if self._redis is None or self._per_minute == 0 or time.monotonic() < self._skip_redis_until:
+    def wait_for_turn(self, task: str, tokens: int = 0) -> float:
+        """Waits for the send time it reserves for a request of about `tokens`; the seconds waited.
+        Unavailable, nothing reserved, when that time is further off than the wait; LeaseLost for a job that
+        lost its lease. A Redis error never fails the request: it goes ahead unspaced (_redis_failed)."""
+        interval = max(
+            60 / self._per_minute if self._per_minute else 0.0,
+            tokens * 60 / self._tokens_per_minute if self._tokens_per_minute else 0.0,
+        )
+        if interval == 0 or not self._in_use():
             return 0.0
         raise_if_lease_lost()
-        interval = 60 / self._per_minute
         try:
             wait = float(self._reserve_send_time(keys=[self._key], args=[interval, self.wait_seconds]))
         except RedisError:  # down, hung, or refusing writes (MISCONF, OOM, READONLY)
-            self._skip_redis_until = time.monotonic() + AiLimits.REDIS_SKIP_SECONDS
-            log.warning(LogEvent.AI_SLOTS_UNTRACKED, limiter=self._key, exc_info=True)
-            return 0.0
+            return self._redis_failed()
         if wait < 0:
-            log.warning(
-                LogEvent.AI_REQUEST_RATE_BUSY,
-                model=self._model,
-                per_minute=self._per_minute,
-                wait_seconds=self.wait_seconds,
-            )
-            metrics.AI_OUTAGES.labels(task, AiOutage.BUSY, AiOutageSource.LIMITER).inc()
-            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY)
+            self._refuse(task)
         metrics.AI_REQUEST_RATE_WAIT.labels(self._model).observe(wait)
         sleep_unless_lease_lost(wait)
         return wait
+
+    def wait_for_send_time(self, task: str) -> float:
+        """Waits, reserving nothing and holding no AI slot, for the model's next send time (a 429's pause or a
+        line of turns); the seconds waited. Unavailable when further off than the wait, LeaseLost as above."""
+        if not self._in_use():
+            return 0.0
+        raise_if_lease_lost()
+        try:
+            wait = float(self._seconds_to_send_time(keys=[self._key]))
+        except RedisError:  # down, hung, or refusing writes (MISCONF, OOM, READONLY)
+            return self._redis_failed()
+        if wait > self.wait_seconds:
+            self._refuse(task)
+        sleep_unless_lease_lost(wait)
+        return wait
+
+    def pause(self, seconds: float) -> float:
+        """A 429 from this model: its next send time, on every pod, becomes at least `seconds` away, so the
+        calls queued for it wait (wait_for_send_time) instead of each drawing a 429 of its own; `seconds`."""
+        if self._in_use():
+            try:
+                self._pause_send_time(keys=[self._key], args=[seconds])
+            except RedisError:  # its own retry still waits; the others may meet a 429 of their own
+                self._redis_failed()
+        return seconds
+
+    def _in_use(self) -> bool:
+        """A Redis client and a limit, and no Redis failure in the last REDIS_SKIP_SECONDS."""
+        limited = self._per_minute or self._tokens_per_minute
+        return self._redis is not None and bool(limited) and time.monotonic() >= self._skip_redis_until
+
+    def _redis_failed(self) -> float:
+        """Redis is left alone for REDIS_SKIP_SECONDS, logged; the request waits none."""
+        self._skip_redis_until = time.monotonic() + AiLimits.REDIS_SKIP_SECONDS
+        log.warning(LogEvent.AI_SLOTS_UNTRACKED, limiter=self._key, exc_info=True)
+        return 0.0
+
+    def _refuse(self, task: str) -> NoReturn:
+        """No turn within the wait: TSG's own refusal, counted for `task` (Unavailable, busy)."""
+        limits = {"per_minute": self._per_minute, "tokens_per_minute": self._tokens_per_minute}
+        log.warning(
+            LogEvent.AI_REQUEST_RATE_BUSY, model=self._model, wait_seconds=self.wait_seconds, **limits
+        )
+        metrics.AI_OUTAGES.labels(task, AiOutage.BUSY, AiOutageSource.LIMITER).inc()
+        raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY)
 
     def wait_after_rate_limit(self, retry_after: str | None, attempt: int, waited: float) -> float | None:
         """How long a rate-limited request (HTTP 429) waits before it is asked again: as rate_limited_wait

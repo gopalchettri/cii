@@ -28,14 +28,69 @@ items:                                           # one tsg-config per project th
       labels: { part-of: tsg }                   # marks it as TSG's
     data: &settings                              # "&settings" names this block: ai-common's copy below reuses it unchanged
       CII_ENV: "uat"                             # environment name; anything but "dev" gets production's safety checks
-      CII_CORS_ORIGINS: "CHANGE_ME_UI_ORIGIN"    # CHANGE: the platform UI's https address(es), comma-separated; "*" stops start-up
+      CII_CORS_ORIGINS: "https://threatgen-api.apps.dda-desc-az1-01.desccii.local"   # the platform UI's https address(es), comma-separated; "*" (any) is accepted in UAT, stops start-up in prod
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
       CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
-      CII_CHAT_BASE_URL: "https://llmapi.govai.ae"                 # the AI gateway the chat models are called on
-      CII_CHAT_MODEL: "litellm_proxy/kimi-k2.5"                    # main chat model (threats, scenarios, plans)
-      CII_CHAT_MODEL_THINKING: "false"                             # false = the model's "thinking" mode off (faster)
-      CII_CHAT_FALLBACK_MODEL: "litellm_proxy/glm-5.3"             # used when the main model keeps failing
-      CII_CHAT_FALLBACK_MODEL_THINKING: "false"                    # thinking mode for the fallback model
+      # Each module's own chat model (.env.example explains every line; its key is in tsg-secrets). Its limits are
+      # its own: kimi-k2.5 (192 requests a minute on this key) serves threat scenarios alone, with no backup;
+      # glm-5.3 serves remediation and the service mapper: at most 6 glm-5.3 calls at once in all
+      # (4 + 2; it takes 55-99 s a call: ask the gateway admin how many it takes). A line left out = its default.
+      CII_SCENARIO_CHAT_BASE_URL: "https://llmapi.govai.ae"           # threat finding and scenario writing: the AI gateway its chat calls go to
+      CII_SCENARIO_CHAT_MODEL: "litellm_proxy/kimi-k2.5"              # its main chat model
+      CII_SCENARIO_CHAT_MODEL_THINKING: "false"                       # false = the model's "thinking" mode off (faster)
+      CII_SCENARIO_CHAT_MAX_INPUT_TOKENS: "114688"                    # kimi-k2.5: longest question in tokens (the gateway's limit)
+      CII_SCENARIO_CHAT_MAX_OUTPUT_TOKENS: "12288"                    # kimi-k2.5: longest answer in tokens
+      CII_SCENARIO_CHAT_TIMEOUT_SECONDS: "120"                        # kimi-k2.5: seconds to wait for one answer before giving up
+      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 192
+      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "24000"                    # kimi-k2.5 tokens a minute (question + answer room), all pods: calls take turns instead of drawing 429s; a little below the budget a 429 names (ai.call_unavailable limit): 290000 at a 300k budget; 0 = no limit
+      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "4"                       # its questions at the same time, all pods: 2 workers x 2 threads x 1 call (16 with more threads at 300k); it also backs off after a 429
+      CII_SCENARIO_CHAT_FALLBACK_MODEL: ""                            # its backup when kimi-k2.5 keeps failing; "" = none (a whole set is beyond glm-5.3: an outage waits and the job retries)
+      CII_SCENARIO_CHAT_FALLBACK_MODEL_THINKING: "false"              # the backup's thinking mode
+      CII_SCENARIO_CHAT_FALLBACK_MAX_INPUT_TOKENS: "262144"           # the backup glm-5.3: longest question in tokens (the gateway's limit)
+      CII_SCENARIO_CHAT_FALLBACK_MAX_OUTPUT_TOKENS: "12288"           # the backup glm-5.3: longest answer in tokens
+      CII_SCENARIO_CHAT_FALLBACK_TIMEOUT_SECONDS: "180"               # the backup glm-5.3: seconds to wait for one answer before giving up
+      CII_SCENARIO_CHAT_FALLBACK_REQUESTS_PER_MINUTE: "0"             # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
+      CII_SCENARIO_MAX_CONCURRENT_FALLBACK_CALLS: "10"                # its calls at once to glm-5.3, all pods
+      CII_REMEDIATION_CHAT_BASE_URL: "https://llmapi.govai.ae"        # remediation plans: the AI gateway its chat calls go to
+      CII_REMEDIATION_CHAT_MODEL: "litellm_proxy/glm-5.3"             # its main chat model
+      CII_REMEDIATION_CHAT_MODEL_THINKING: "false"                    # false = the model's "thinking" mode off (faster)
+      CII_REMEDIATION_CHAT_MAX_INPUT_TOKENS: "262144"                 # glm-5.3: longest question in tokens (the gateway's limit)
+      CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # glm-5.3: longest answer in tokens
+      CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "180"                     # glm-5.3: seconds to wait for one answer before giving up
+      CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
+      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "4"                    # its calls at once to glm-5.3, all pods
+      CII_REMEDIATION_CHAT_FALLBACK_MODEL: ""                         # "" = no backup: a job glm-5.3 cannot answer is tried again later
+      CII_SERVICE_MAPPER_CHAT_BASE_URL: "https://llmapi.govai.ae"     # the service mapper: the AI gateway its chat calls go to
+      CII_SERVICE_MAPPER_CHAT_MODEL: "litellm_proxy/glm-5.3"          # its main chat model
+      CII_SERVICE_MAPPER_CHAT_MODEL_THINKING: "false"                 # false = the model's "thinking" mode off (faster)
+      CII_SERVICE_MAPPER_CHAT_MAX_INPUT_TOKENS: "262144"              # glm-5.3: longest question in tokens (the gateway's limit)
+      CII_SERVICE_MAPPER_CHAT_MAX_OUTPUT_TOKENS: "12288"              # glm-5.3: longest answer in tokens
+      CII_SERVICE_MAPPER_CHAT_TIMEOUT_SECONDS: "180"                  # glm-5.3: seconds to wait for one answer before giving up
+      CII_SERVICE_MAPPER_CHAT_REQUESTS_PER_MINUTE: "0"                # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
+      CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "2"                 # its calls at once to glm-5.3, all pods
+      CII_SERVICE_MAPPER_CHAT_FALLBACK_MODEL: ""                      # "" = no backup: a job glm-5.3 cannot answer is tried again later
+      # Answer room per task, in tokens: the AI service counts it against its budget while a question runs; an
+      # answer that needs more is asked once more with the model's full room.
+      CII_ANSWER_TOKENS_RELEVANCE_GATE: "10240"                       # threat finding: is each threat relevant, as which kinds (one answer for up to 40 threats)
+      CII_ANSWER_TOKENS_GAP_FILL: "1024"                              # threat finding: a threat for a STRIDE kind that found none
+      CII_ANSWER_TOKENS_THREAT_ACTIONS: "512"                         # scenario writing: the actions a threat's name states (no longer asked: the threat check gives them)
+      CII_ANSWER_TOKENS_WRITE_SCENARIO: "6144"                        # scenario writing: one set of scenarios in one answer (at most about 780 a scenario)
+      CII_ANSWER_TOKENS_REPAIR_SCENARIO: "5632"                       # scenario writing: a set's scenarios written again after a check, in one answer
+      CII_ANSWER_TOKENS_PLAN_CHECK: "3072"                            # scenario writing: does each scenario of a set carry out its plan (one answer)
+      CII_ANSWER_TOKENS_REMEDIATION_PLAN: "3584"                      # remediation: one treatment plan (at most about 260 a control)
+      CII_ANSWER_TOKENS_SERVICE_MAPPER: "3072"                        # service mapper: one mapping (10 + 10 services: at most about 2,000)
+      CII_THREAT_QUESTIONS_AT_ONCE: "1"                               # threat finding: questions sent at the same time, per run (3 at 300k a minute)
+      CII_THREATS_PER_QUESTION: "40"                                  # threat finding: most whole threats in one question, split evenly (12 at 300k a minute)
+      CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)
+      CII_SCENARIO_REVIEW_ENABLED: "false"                            # scenario writing: "true" = an AI reviewer judges each written set (one more call a set); "false" = code's checks only
+      CII_THREAT_FINDING_REUSE_HOURS: "24"                            # threat finding: hours a run takes an earlier run's answer to the very same question (a second Start on an unchanged asset: no gate call); "0" = always ask
+      CII_RERANKS_AT_ONCE: "6"                                        # search: reranker calls at the same time, per worker
+      CII_AI_CALL_TOKENS_LIMIT: "20000"                               # most tokens one AI call may hold (question estimate + answer room); a bigger batch goes as halves
+      CII_AI_BUSY_MAX_WAIT_SECONDS: "20"                              # after "too busy" (HTTP 429): longest wait (+-20%) before asking the same model again; LiteLLM always asks 60 s, but unused answer room comes back within seconds
+      CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the backup model if one is set
+      CII_AI_MODEL_COOL_DOWN_SECONDS: "120"                           # seconds a refused model is tried last (its backup goes first)
+      CII_AI_BUSY_LIMIT_FLOOR: "4"                                    # after "too busy": the fewest questions still allowed at the same time
+      CII_AI_BUSY_LIMIT_SECONDS: "180"                                # seconds that slow-down lasts after the last "too busy"; a whole number
       CII_EMBEDDING_BASE_URL: "https://llmapi.govai.ae"            # the AI gateway for embeddings (text to vectors)
       CII_EMBEDDING_MODEL: "litellm_proxy/qwen3-embedding-8b"      # embedding model for the library searches
       CII_RERANK_BASE_URL: "https://llmapi.govai.ae"               # the AI gateway for re-ranking search results
@@ -44,11 +99,8 @@ items:                                           # one tsg-config per project th
       CII_AI_BYPASS_PROXY: "true"                # must stay true: AI calls go to the gateway directly, not via the proxy
       CII_WORKER_METRICS_PORT: "9100"            # port each worker serves /metrics on for Prometheus
       CII_MAX_REQUEST_MB: "2"                    # largest request body the API accepts, in MB
-      CII_MAX_CONCURRENT_AI_CALLS: "0"           # 0 = no fixed limit (the owner's choice for UAT): TSG backs off by itself only after a gateway 429 (one limit for all pods, halved at a 429, raised again by each answer, gone a few minutes after the last 429); above 0 = a fixed ceiling on AI calls at once across all pods
-      CII_MAX_CONCURRENT_FALLBACK_CALLS: "16"    # most calls at once to the fallback model (glm-5.3) across all pods; ask the gateway admin how many it takes
-      CII_CHAT_REQUESTS_PER_MINUTE: "180"            # requests a minute to the main chat model (kimi-k2.5) across all pods: its own limit is 192; 180 leaves headroom, assuming nothing else uses kimi-k2.5 on this key
-      CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE: "0"     # the same for the fallback model (glm-5.3); 0 = no limit: set it when the gateway admin gives glm-5.3's limit
-      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # the same for the embedding model; 0 = no limit: set it when the gateway admin gives its limit
+      CII_MAX_CONCURRENT_AI_CALLS: "0"           # 0 = no fixed limit (the owner's choice for UAT): TSG backs off by itself only after a gateway 429 (one limit for all pods, halved at a 429, raised again by each answer, gone a few minutes after the last 429); above 0 = a fixed ceiling on the search calls (embedding, re-ranking) at once across all pods. Each module's chat calls: its own limit above
+      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # embedding requests a minute, all pods; 0 = no limit: set it when the gateway admin gives its limit
       CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: set it when the gateway admin gives its limit
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)
       TOTAL_SCENARIO_COUNT: "15"                 # most scenarios a run produces
@@ -57,6 +109,7 @@ items:                                           # one tsg-config per project th
       REGENERATIONS_MAX_VERSION_COUNT: "10"      # versions kept per remediation plan (first plan + 9 regenerations)
       SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT: "10"      # upstream services the service mapper asks the AI for (0 = off)
       SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT: "10"    # downstream services the service mapper asks the AI for (0 = off)
+      SERVICE_MAPPER_MAX_GENERATIONS: "5"            # runs per mapping, the first included (Generate, then Generate again or Regenerate); 0 = no limit
       ASSET_PROPERTIES_REQUIRED: ""              # asset facts a run must have, comma-separated (empty = none)
       SYSTEM_PROPERTIES_REQUIRED: ""             # supporting-system facts a run must have (empty = none)
       CONTROL_SIMILARITY_THRESHOLD: "50"         # how close a library control must be to a scenario to be kept
@@ -66,7 +119,7 @@ items:                                           # one tsg-config per project th
       NEAREST_CONTROLS: "3"                      # controls kept when none is close enough
       THREAT_SCENARIO_WORD_LIMIT: "150-200"      # words asked for per scenario statement (min-max)
       RISK_STATEMENT_WORD_LIMIT: "100-150"       # words asked for per risk statement (min-max)
-      EVIDENCE_STATEMENT_WORD_LIMIT: "30-80"     # words asked for per evidence passage (min-max)
+      EVIDENCE_STATEMENT_WORD_LIMIT: "20-60"     # words asked for per evidence passage (min-max)
       THREAT_SIMILARITY_THRESHOLD: "60"          # how close an AI-proposed threat must be to count as a library threat
       EXTERNAL_INTELLIGENCE_ENABLED: "true"      # use the outside intelligence feeds (CISA, NVD ...) as evidence
       EVIDENCE_SIMILARITY_THRESHOLD: "50"        # reranker score evidence must reach (required while the feeds are on)
@@ -151,6 +204,11 @@ data:                                            # one key per file
             regex: flower
             target_label: ui_url
             replacement: /flower/
+          # The AI usage dashboard's report links open this: Grafana's Route is on the API's own host.
+          - source_labels: [job]
+            regex: api
+            target_label: ui_url
+            replacement: /v1/ai-usage
           - source_labels: [__meta_kubernetes_namespace]
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
@@ -161,8 +219,8 @@ data:                                            # one key per file
             target_label: instance
 
       # Its own job: kube-state-metrics reports OTHER pods, so their pod/namespace labels must win (honor_labels)
-      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep the
-      # app project's pods and, in ai-common (shared with a chatbot), only the pods of TSG's own Deployments
+      # over the labels of the kube-state-metrics pod itself. It reports every pod of the two projects: keep
+      # only the pods of TSG's own Deployments (v1 also runs in ai-threatgen, a chatbot in ai-common)
       # (<deployment>-<replicaset hash>-<5 characters>). tests/test_observability.py checks the names.
       - job_name: kube-state-metrics
         honor_labels: true
@@ -170,7 +228,7 @@ data:                                            # one key per file
           - targets: ["kube-state-metrics:8080"]
         metric_relabel_configs:
           - source_labels: [namespace, pod]
-            regex: "ai-threatgen;.+|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
+            regex: "ai-threatgen;(api|worker-threats|worker-scenarios|worker-controls|worker-remediation|worker-service-mapper|worker-maintenance|beat|monitoring-proxy)-[a-z0-9]+-[a-z0-9]{5}|ai-common;(prometheus|alertmanager|loki|alloy|grafana|redis-exporter|kube-state-metrics|flower|worker-reaper)-[a-z0-9]+-[a-z0-9]{5}"
             action: keep
 
       - job_name: prometheus
@@ -181,7 +239,7 @@ data:                                            # one key per file
     # TSG alerts (docs/BLUEPRINT.md §22.3). Every expression uses a metric that exists today: tests/test_observability.py
     # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
     # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
-    # Grafana Alerting. Planned with its metric: IntelStale (M12).
+    # Grafana Alerting.
     # Firing alerts are emailed (observability/alertmanager/alertmanager.yml) and show in Grafana (home dashboard,
     # Alerting) and at /alertmanager.
 
@@ -254,7 +312,7 @@ data:                                            # one key per file
             labels: { severity: warning }
             annotations:
               summary: "{{ $labels.task }} jobs have waited more than 5 minutes for a worker (95 %) for 10 minutes."
-              description: The workers cannot keep up. Check that its worker is running; add a copy (oc scale) if it is busy.
+              description: The workers cannot keep up. Check that its worker is running; if it is busy, raise its threads (-c in deploy_threatgen.yaml), as the quota has no room for a second copy.
 
           # Beat sends the reaper every minute. Without it (the beat pod gone or hung), a job whose worker died stays
           # running and a lost message stays queued for ever, and nothing else notices: /ready does not cover beat.
@@ -414,21 +472,23 @@ data:                                            # one key per file
                 }}answered with a server error{{ end }} {{ $value | printf "%.0f" }} times in 10 minutes.
               description: >-
                 Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md).
-                Cannot be reached: check CII_CHAT_BASE_URL, the proxy and the network. Server error: ask the gateway's team.
+                Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and
+                the network. Server error: ask the gateway's team.
 
           # Every worker reports the same numbers, read from Redis at each scrape (app/ai/slots.py): the AI calls in
-          # flight, and the limit in force (CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower; 0 = none,
+          # flight per pool (search, each module), and its limit in force (its MAX_CONCURRENT_AI_CALLS or a 429's; 0 = none,
           # so no alert). Calls then wait for a slot, and jobs slow down or give back.
           - alert: AiSlotsSaturated
-            expr: max(tsg_ai_slots_in_use) >= max(tsg_ai_slots_cap) and max(tsg_ai_slots_cap) > 0
+            expr: max by (pool) (tsg_ai_slots_in_use) >= max by (pool) (tsg_ai_slots_cap) and max by (pool) (tsg_ai_slots_cap) > 0
             for: 10m
             labels: { severity: warning }
             annotations:
-              summary: Every AI slot has been in use for 10 minutes; AI calls are waiting for a free one.
+              summary: Every AI slot of the {{ $labels.pool }} calls has been in use for 10 minutes; they wait for a free one.
               description: >-
-                Jobs slow down. At CII_MAX_CONCURRENT_AI_CALLS 0 the AI gateway keeps answering 429 and TSG holds back
-                by itself: ask the gateway admin for a higher limit on TSG's key. Above 0 with no recent 429 it is the
-                fixed ceiling: raise it if the gateway can take more.
+                Jobs slow down. At the pool's limit 0 the AI gateway keeps answering 429 and TSG holds back by itself:
+                ask the gateway admin for a higher limit on that key. Above 0 with no recent 429 it is the fixed
+                ceiling (search: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; a module: its own
+                CII_<MODULE>_MAX_CONCURRENT_AI_CALLS): raise it if the gateway can take more.
 
           # Every AI request waits its turn under its model's own requests-a-minute setting (app/ai/slots.py
           # AiRequestRate), so by model: a long wait means more work is sent to that model than it allows.
@@ -439,10 +499,37 @@ data:                                            # one key per file
             annotations:
               summary: "{{ $labels.model }} requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
               description: >-
-                More work is sent to {{ $labels.model }} than its requests-a-minute setting allows
-                (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE
-                or CII_RERANK_REQUESTS_PER_MINUTE). Ask the gateway admin whether that model takes more requests a
-                minute, then raise its setting; the dashboard's 429 panel shows refusals.
+                More work is sent to {{ $labels.model }} than its requests-a-minute setting allows (a module's
+                CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE,
+                CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens:
+                CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise
+                its setting; the dashboard's 429 panel shows refusals.
+
+          # An AI usage row MongoDB did not take is logged whole (ai.usage_row_spilled) instead of stored (app/ai/
+          # attempts.py). Loki keeps lines 7 days: replayed within them, nothing is lost.
+          - alert: AiUsageNotRecorded
+            expr: sum(increase(tsg_ai_usage_spilled_total[15m])) > 0
+            for: 1m
+            labels: { severity: warning }
+            annotations:
+              summary: "{{ $value | printf \"%.0f\" }} AI usage rows could not be stored in the last 15 minutes."
+              description: >-
+                The AI calls went on; their usage rows were logged whole as ai.usage_row_spilled. Within 7 days, export
+                those lines from Loki and replay them in an app pod (ai_usage_tools; deploy/DEPLOYMENT_GUIDE.md, AI usage).
+
+          # The hourly add-up the AI usage totals read (tsg_roll_up_ai_usage, every 5 minutes on the maintenance
+          # worker); exported from its first add-up, never as a 0. Per-request reports never wait for it.
+          - alert: AiUsageRollupBehind
+            expr: >-
+              time() - max(tsg_ai_usage_rollup_last_success_timestamp_seconds) > 900
+              or absent_over_time(tsg_ai_usage_rollup_last_success_timestamp_seconds[20m])
+            for: 5m
+            labels: { severity: warning }
+            annotations:
+              summary: The AI usage totals have not been added up for 15 minutes; dashboards show old totals.
+              description: >-
+                No rows are lost: the next add-up catches up. Check the beat pod and the maintenance worker, and its
+                ai.usage_rollup_done lines.
 
       - name: tsg-audit
         rules:
@@ -1518,6 +1605,14 @@ data:                                            # one key per file
                           "LogLinesLost": {
                             "text": "Log lines were lost on the way to Loki",
                             "index": 30
+                          },
+                          "AiUsageNotRecorded": {
+                            "text": "AI usage rows could not be stored: replay them within 7 days",
+                            "index": 31
+                          },
+                          "AiUsageRollupBehind": {
+                            "text": "The AI usage totals are behind",
+                            "index": 32
                           }
                         }
                       }
@@ -5992,8 +6087,8 @@ data:                                            # one key per file
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max(tsg_ai_slots_in_use) / max(tsg_ai_slots_cap > 0)",
-              "legendFormat": "In use",
+              "expr": "max by (pool) (tsg_ai_slots_in_use) / max by (pool) (tsg_ai_slots_cap > 0)",
+              "legendFormat": "{{pool}}",
               "instant": true,
               "range": false,
               "format": "time_series"
@@ -6542,7 +6637,7 @@ data:                                            # one key per file
           "id": 63,
           "type": "timeseries",
           "title": "Wait for an AI request's turn (95 %), by model",
-          "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (CII_CHAT_REQUESTS_PER_MINUTE, CII_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
+          "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -6595,7 +6690,7 @@ data:                                            # one key per file
           "id": 64,
           "type": "timeseries",
           "title": "AI gateway refusals (429) per minute",
-          "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (CII_CHAT_REQUESTS_PER_MINUTE and its siblings) is below that model's limit.",
+          "description": "HTTP 429 answers from the AI gateway per minute, by model: that model's own requests-a-minute limit was hit and the call waits and tries again. Stays at 0 while each model's setting (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE, the search models' CII_EMBEDDING_ and CII_RERANK_REQUESTS_PER_MINUTE) is below that model's limit.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -7191,6 +7286,2898 @@ data:                                            # one key per file
               }
             }
           ]
+        },
+        {
+          "id": 65,
+          "type": "row",
+          "title": "AI usage (counts): click a tile for the full AI usage page",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 136
+          },
+          "description": "How many AI calls TSG made in the chosen time, by module, API call, part of the work and model, and how many failed: counts only. One request or session in full: GET /v1/ai-usage/requests (no key). Click any tile below for the TSG — AI usage dashboard: by API call, part, activity and model, and one session or request."
+        },
+        {
+          "id": 66,
+          "type": "stat",
+          "title": "AI calls",
+          "description": "Attempts sent to an AI model (chat, embedding, rerank), retries included. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              },
+              "links": [
+                {
+                  "title": "The AI usage page",
+                  "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 137
+          }
+        },
+        {
+          "id": 67,
+          "type": "stat",
+          "title": "Successful AI calls",
+          "description": "AI calls that ended ok. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{outcome=\"ok\"} - tsg_ai_usage_calls_total{outcome=\"ok\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Successful AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "green"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "links": [
+                {
+                  "title": "The AI usage page",
+                  "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 137
+          }
+        },
+        {
+          "id": 68,
+          "type": "stat",
+          "title": "Failed AI calls",
+          "description": "AI calls with no usable answer: busy, timed out, cut off, unusable, refused. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Failed AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "red"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  }
+                ]
+              },
+              "links": [
+                {
+                  "title": "The AI usage page",
+                  "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}&viewPanel=panel-114"
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 137
+          }
+        },
+        {
+          "id": 69,
+          "type": "stat",
+          "title": "Earlier answers reused",
+          "description": "Answers a job's retry read back: no AI call made. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{outcome=\"reused\"} - tsg_ai_usage_calls_total{outcome=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Earlier answers reused",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "purple"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "purple",
+                    "value": null
+                  }
+                ]
+              },
+              "links": [
+                {
+                  "title": "The AI usage page",
+                  "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 137
+          }
+        },
+        {
+          "id": 70,
+          "type": "table",
+          "title": "AI calls by module, API call and part",
+          "description": "Parts: threats (finding threats), scenario (writing scenarios), controls (picking controls), remediation (writing the plan), service_mapper (mapping services), shared (indexing no request asked for). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, bucket) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, bucket) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "module": "Module",
+                  "api": "API call",
+                  "bucket": "Part",
+                  "Value #A": "AI calls",
+                  "Value #B": "Failed"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 141
+          }
+        },
+        {
+          "id": 71,
+          "type": "table",
+          "title": "Failed AI calls by module, API call and reason",
+          "description": "Why calls failed: ai_busy (429 or overloaded), ai_timed_out, ai_unreachable, ai_down (server error), no_choices; unreadable and truncated answers have no outage reason. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, outcome, reason) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "module": "Module",
+                  "api": "API call",
+                  "outcome": "Outcome",
+                  "reason": "Reason",
+                  "Value": "Failed calls"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 141
+          }
+        },
+        {
+          "id": 72,
+          "type": "table",
+          "title": "AI calls by model and task",
+          "description": "Each model's calls per task (relevance_gate, gap_fill, threat_actions, write_scenario, repair_scenario, plan_check, remediation_plan, service_mapper, embed, rerank). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model, task) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model, task) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "model": "Model",
+                  "task": "Task",
+                  "Value #A": "AI calls",
+                  "Value #B": "Failed"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 150
+          }
+        },
+        {
+          "id": 73,
+          "type": "table",
+          "title": "AI tokens by module and API call",
+          "description": "Tokens sent (in) and answered (out) by chat calls. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (module, api, direction) ((((tsg_ai_usage_tokens_total - tsg_ai_usage_tokens_total offset $__range) and resets(tsg_ai_usage_tokens_total[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total[$__range])) and last_over_time(tsg_ai_usage_tokens_total[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total[$__range]) unless last_over_time(tsg_ai_usage_tokens_total[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "module": "Module",
+                  "api": "API call",
+                  "direction": "Direction",
+                  "Value": "Tokens"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "No AI calls"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": true,
+              "reducer": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 150
+          }
+        }
+      ]
+    }
+
+# Grafana: the AI usage dashboard. Its own ConfigMap: oc apply keeps each object in one annotation of at most
+# 256 KiB, and tsg.json alone takes about 220 KB of it.
+---
+apiVersion: v1                                   # core API version
+kind: ConfigMap                                  # the AI usage dashboard, mounted beside tsg.json at /var/lib/grafana/dashboards
+metadata:                                        # the object's name and place
+  name: grafana-dashboard-ai-usage               # the name its Deployment mounts (deploy_common.yaml)
+  namespace: ai-common                           # the monitoring's project
+  labels: { part-of: tsg-monitoring }            # marks it as TSG's monitoring
+data:                                            # one key per file
+  ai_usage.json: |                               # the AI usage dashboard: a copy of observability/grafana/dashboards/ai_usage.json
+    {
+      "uid": "tsg-ai-usage",
+      "title": "TSG — AI usage",
+      "description": "How many AI calls TSG made, for which module and API call, in which part of the work, on which model, and how many failed: counts only. Exact numbers per session and request: GET /v1/ai-usage (no key).",
+      "tags": [
+        "tsg",
+        "ai-usage"
+      ],
+      "timezone": "browser",
+      "editable": false,
+      "graphTooltip": 1,
+      "refresh": "1m",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "schemaVersion": 41,
+      "version": 1,
+      "links": [
+        {
+          "title": "Home: is everything working?",
+          "type": "link",
+          "icon": "dashboard",
+          "url": "/grafana/d/tsg/tsg",
+          "keepTime": true,
+          "tooltip": "The TSG home page"
+        },
+        {
+          "title": "All alerts, with what to do",
+          "type": "link",
+          "icon": "bell",
+          "url": "/grafana/alerting/groups?alertmanager=Alertmanager",
+          "tooltip": "Each firing alert's full message and what to do; silence one here"
+        }
+      ],
+      "templating": {
+        "list": [
+          {
+            "name": "module",
+            "label": "Module",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "query": {
+              "qryType": 1,
+              "query": "label_values(tsg_ai_usage_calls_total, module)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "definition": "label_values(tsg_ai_usage_calls_total, module)",
+            "refresh": 2,
+            "hide": 0,
+            "includeAll": true,
+            "multi": true,
+            "allValue": ".*",
+            "sort": 1,
+            "regex": "",
+            "options": [],
+            "current": {
+              "text": [
+                "All"
+              ],
+              "value": [
+                "$__all"
+              ]
+            },
+            "description": "Narrow every count to these modules (All: every one). none = shared work no request asked for."
+          },
+          {
+            "name": "api",
+            "label": "API call",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "query": {
+              "qryType": 1,
+              "query": "label_values(tsg_ai_usage_calls_total{module=~\"$module\"}, api)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "definition": "label_values(tsg_ai_usage_calls_total{module=~\"$module\"}, api)",
+            "refresh": 2,
+            "hide": 0,
+            "includeAll": true,
+            "multi": true,
+            "allValue": ".*",
+            "sort": 1,
+            "regex": "",
+            "options": [],
+            "current": {
+              "text": [
+                "All"
+              ],
+              "value": [
+                "$__all"
+              ]
+            },
+            "description": "Narrow to these API calls. regenerate exists in three modules: pick the module too."
+          },
+          {
+            "name": "session",
+            "label": "Session or request id",
+            "type": "textbox",
+            "query": "",
+            "current": {
+              "text": "",
+              "value": ""
+            },
+            "hide": 0,
+            "description": "Paste a session (run) id or a request id: the links in 'One session or request' open its reports."
+          },
+          {
+            "name": "reports",
+            "label": "AI usage reports address",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "query": {
+              "qryType": 1,
+              "query": "label_values(up{job=\"api\"}, ui_url)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "definition": "label_values(up{job=\"api\"}, ui_url)",
+            "refresh": 1,
+            "hide": 2,
+            "includeAll": false,
+            "multi": false,
+            "sort": 0,
+            "regex": "",
+            "options": [],
+            "current": {},
+            "description": "Hidden. Where this environment's AI usage reports are, as its Prometheus names it (ui_url on the API target): http://localhost:8000/v1/ai-usage on the laptop, /v1/ai-usage in UAT (Grafana is on the API's host)."
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 101,
+          "type": "text",
+          "title": "How to read this page",
+          "description": "Read me first.",
+          "options": {
+            "mode": "markdown",
+            "content": "**How many AI calls TSG made in the time chosen at the top right, and for what.** Counts only. *Module* and *API call* at the top narrow every panel but the by-model table and the tracking checks at the bottom (All = everything); hover the (i) by a title for what it counts.\n\n- **AI call**: one try sent to an AI model; a retried call counts each try.\n- **Earlier answer reused**: a job's retry read back an answer it had: no call.\n- **Part**: the step the call was for.\n\nExact numbers for one session or request: **One session or request**, at the bottom."
+          },
+          "gridPos": {
+            "h": 3,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": 102,
+          "type": "row",
+          "title": "In the chosen time",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 3
+          },
+          "description": "The whole picture in eight numbers, for the modules and API calls chosen at the top."
+        },
+        {
+          "id": 103,
+          "type": "stat",
+          "title": "API calls that started AI work",
+          "description": "API calls that start AI work (Create scenario, Next set, Regenerate scenarios, Create remediation plan, Regenerate plan, Map services, Regenerate mapping) that answered 202: work started. A 200 (a repeat, or nothing new to do) or an error started none. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) or vector(0)",
+              "legendFormat": "API calls that started AI work",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "text"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 4
+          }
+        },
+        {
+          "id": 104,
+          "type": "stat",
+          "title": "AI calls",
+          "description": "Tries sent to an AI model (writing, embedding, ranking), retries included. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 4
+          }
+        },
+        {
+          "id": 105,
+          "type": "stat",
+          "title": "Successful AI calls",
+          "description": "AI calls that got a usable answer. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Successful AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "green"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 4
+          }
+        },
+        {
+          "id": 106,
+          "type": "stat",
+          "title": "Failed AI calls",
+          "description": "AI calls with no usable answer: the AI busy, down, unreachable or too slow, an answer cut off or unusable, or refused. Why: below. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Failed AI calls",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "red"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 4
+          }
+        },
+        {
+          "id": 107,
+          "type": "stat",
+          "title": "Earlier answers reused",
+          "description": "Answers a job's retry read back instead of asking again: no AI call made. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"reused\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Earlier answers reused",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "purple"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "purple",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 8
+          }
+        },
+        {
+          "id": 108,
+          "type": "stat",
+          "title": "AI calls per API call",
+          "description": "AI calls made for API calls (shared work left out) divided by the API calls that started AI work. A job still working after the chosen time ends makes this read low. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "(sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)) / (sum(label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) > 0)",
+              "legendFormat": "AI calls per API call",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 1,
+              "noValue": "No API calls",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 8
+          }
+        },
+        {
+          "id": 109,
+          "type": "stat",
+          "title": "Tokens sent to the AI",
+          "description": "Tokens in the questions sent (writing calls only: embedding and ranking report none). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"} - tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"} offset $__range) and resets(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[$__range])) and last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[$__range]) unless last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Tokens sent to the AI",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "unit": "locale",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "text"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 8
+          }
+        },
+        {
+          "id": 110,
+          "type": "stat",
+          "title": "Tokens in the AI's answers",
+          "description": "Tokens in the AI's answers (writing calls only). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"} - tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"} offset $__range) and resets(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[$__range])) and last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[$__range]) unless last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "Tokens in the AI's answers",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "unit": "locale",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "text"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 8
+          }
+        },
+        {
+          "id": 111,
+          "type": "row",
+          "title": "AI calls per API call, by part of the work",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 12
+          },
+          "description": "One line per API call: how often it started work and the AI calls its work made in each part."
+        },
+        {
+          "id": 112,
+          "type": "table",
+          "title": "AI calls per API call and part",
+          "description": "One line per API call that starts AI work: how often it started work, then the AI calls its jobs made in each part, in total and failed. Create scenario: Starts a run: finds threats, writes the first set, picks controls. Next set: Writes the next set of scenarios for the run. Regenerate scenarios: Rewrites the chosen scenarios. Create remediation plan: Writes a treatment plan for one scenario. Regenerate plan: Writes a new version of the plan. Map services: Finds upstream and downstream services for a service. Regenerate mapping: Runs the mapping again to add new services. 'No API call' lines: shared work, and jobs started without one. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"threats\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"scenario\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "D",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"controls\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "E",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"remediation\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "F",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"service_mapper\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "G",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", bucket=\"shared\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "H",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "I",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "Value #H",
+                    "desc": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "call": 0,
+                  "Value #A": 1,
+                  "Value #B": 2,
+                  "Value #C": 3,
+                  "Value #D": 4,
+                  "Value #E": 5,
+                  "Value #F": 6,
+                  "Value #G": 7,
+                  "Value #H": 8,
+                  "Value #I": 9
+                },
+                "renameByName": {
+                  "Value #A": "API calls",
+                  "Value #B": "Finding threats",
+                  "Value #C": "Writing scenarios",
+                  "Value #D": "Picking controls",
+                  "Value #E": "Writing the plan",
+                  "Value #F": "Mapping services",
+                  "Value #G": "Shared work",
+                  "Value #H": "Total AI calls",
+                  "Value #I": "Failed"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "unit": "locale",
+              "noValue": "No API calls or AI calls in this time",
+              "custom": {
+                "footer": {
+                  "reducers": [
+                    "sum"
+                  ]
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "call"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "API call"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "threat_scenarios/create_scenario": {
+                            "text": "Create scenario",
+                            "index": 0
+                          },
+                          "threat_scenarios/next_set": {
+                            "text": "Next set",
+                            "index": 1
+                          },
+                          "threat_scenarios/regenerate": {
+                            "text": "Regenerate scenarios",
+                            "index": 2
+                          },
+                          "remediation/create_plan": {
+                            "text": "Create remediation plan",
+                            "index": 3
+                          },
+                          "remediation/regenerate": {
+                            "text": "Regenerate plan",
+                            "index": 4
+                          },
+                          "service_mapper/create_mapping": {
+                            "text": "Map services",
+                            "index": 5
+                          },
+                          "service_mapper/regenerate": {
+                            "text": "Regenerate mapping",
+                            "index": 6
+                          },
+                          "none/none": {
+                            "text": "Shared work (no API call)",
+                            "index": 7
+                          },
+                          "threat_scenarios/none": {
+                            "text": "Threat scenarios: no API call recorded",
+                            "index": 8
+                          },
+                          "remediation/none": {
+                            "text": "Remediation: no API call recorded",
+                            "index": 9
+                          },
+                          "service_mapper/none": {
+                            "text": "Service mapper: no API call recorded",
+                            "index": 10
+                          },
+                          "external_intelligence/none": {
+                            "text": "External intelligence import (no API call)",
+                            "index": 11
+                          },
+                          "library_embeddings/none": {
+                            "text": "Library indexing job (no API call)",
+                            "index": 12
+                          },
+                          "maintenance/none": {
+                            "text": "Maintenance job (no API call)",
+                            "index": 13
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byType",
+                  "options": "number"
+                },
+                "properties": [
+                  {
+                    "id": "noValue",
+                    "value": "0"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 13
+          }
+        },
+        {
+          "id": 113,
+          "type": "row",
+          "title": "Why AI calls failed",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 23
+          },
+          "description": "Failed AI calls by API call, what happened and why."
+        },
+        {
+          "id": 114,
+          "type": "table",
+          "title": "Failed AI calls by API call, what happened and why",
+          "description": "What happened to each failed call and, when the AI did not answer, why. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call, outcome, reason) (label_join((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "Value",
+                    "desc": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "call": 0,
+                  "outcome": 1,
+                  "reason": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "Value": "Failed AI calls"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "unit": "locale",
+              "noValue": "No failed AI calls in this time",
+              "custom": {
+                "footer": {
+                  "reducers": [
+                    "sum"
+                  ]
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "call"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "API call"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "threat_scenarios/create_scenario": {
+                            "text": "Create scenario",
+                            "index": 0
+                          },
+                          "threat_scenarios/next_set": {
+                            "text": "Next set",
+                            "index": 1
+                          },
+                          "threat_scenarios/regenerate": {
+                            "text": "Regenerate scenarios",
+                            "index": 2
+                          },
+                          "remediation/create_plan": {
+                            "text": "Create remediation plan",
+                            "index": 3
+                          },
+                          "remediation/regenerate": {
+                            "text": "Regenerate plan",
+                            "index": 4
+                          },
+                          "service_mapper/create_mapping": {
+                            "text": "Map services",
+                            "index": 5
+                          },
+                          "service_mapper/regenerate": {
+                            "text": "Regenerate mapping",
+                            "index": 6
+                          },
+                          "none/none": {
+                            "text": "Shared work (no API call)",
+                            "index": 7
+                          },
+                          "threat_scenarios/none": {
+                            "text": "Threat scenarios: no API call recorded",
+                            "index": 8
+                          },
+                          "remediation/none": {
+                            "text": "Remediation: no API call recorded",
+                            "index": 9
+                          },
+                          "service_mapper/none": {
+                            "text": "Service mapper: no API call recorded",
+                            "index": 10
+                          },
+                          "external_intelligence/none": {
+                            "text": "External intelligence import (no API call)",
+                            "index": 11
+                          },
+                          "library_embeddings/none": {
+                            "text": "Library indexing job (no API call)",
+                            "index": 12
+                          },
+                          "maintenance/none": {
+                            "text": "Maintenance job (no API call)",
+                            "index": 13
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "outcome"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "What happened"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "ok": {
+                            "text": "Answered",
+                            "index": 0
+                          },
+                          "unavailable": {
+                            "text": "No answer",
+                            "index": 1
+                          },
+                          "unreadable": {
+                            "text": "Answer could not be used",
+                            "index": 2
+                          },
+                          "truncated": {
+                            "text": "Answer cut off at its length limit",
+                            "index": 3
+                          },
+                          "error": {
+                            "text": "Refused or failed",
+                            "index": 4
+                          },
+                          "reused": {
+                            "text": "Earlier answer reused",
+                            "index": 5
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "reason"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Why"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "ai_busy": {
+                            "text": "AI busy (too many requests)",
+                            "index": 0
+                          },
+                          "ai_down": {
+                            "text": "AI service error",
+                            "index": 1
+                          },
+                          "ai_unreachable": {
+                            "text": "Could not connect to the AI",
+                            "index": 2
+                          },
+                          "ai_timed_out": {
+                            "text": "No answer in time",
+                            "index": 3
+                          },
+                          "no_choices": {
+                            "text": "Answer with nothing in it",
+                            "index": 4
+                          },
+                          "none": {
+                            "text": "Not an outage",
+                            "index": 5
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byType",
+                  "options": "number"
+                },
+                "properties": [
+                  {
+                    "id": "noValue",
+                    "value": "0"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          }
+        },
+        {
+          "id": 115,
+          "type": "row",
+          "title": "What the AI was asked to do",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 32
+          },
+          "description": "Each activity: its part, name, what it does, its model."
+        },
+        {
+          "id": 116,
+          "type": "table",
+          "title": "AI calls by activity and model",
+          "description": "One line per activity and model: one kind of AI task in one part of the work, what it does, its AI calls, successful and failed. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "label_join(label_join(sum by (bucket, task, model) ((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!=\"reused\"}[1h] offset $__range)))), \"activity\", \"/\", \"bucket\", \"task\"), \"about\", \"/\", \"bucket\", \"task\") > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "label_join(label_join(sum by (bucket, task, model) ((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome=\"ok\"}[1h] offset $__range)))), \"activity\", \"/\", \"bucket\", \"task\"), \"about\", \"/\", \"bucket\", \"task\") > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "label_join(label_join(sum by (bucket, task, model) ((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", outcome!~\"ok|reused\"}[1h] offset $__range)))), \"activity\", \"/\", \"bucket\", \"task\"), \"about\", \"/\", \"bucket\", \"task\") > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "Value #A",
+                    "desc": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "task": true
+                },
+                "indexByName": {
+                  "bucket": 0,
+                  "activity": 1,
+                  "about": 2,
+                  "model": 3,
+                  "Value #A": 4,
+                  "Value #B": 5,
+                  "Value #C": 6
+                },
+                "renameByName": {
+                  "Value #A": "AI calls",
+                  "Value #B": "Successful",
+                  "Value #C": "Failed"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "unit": "locale",
+              "noValue": "No AI calls in this time",
+              "custom": {
+                "footer": {
+                  "reducers": [
+                    "sum"
+                  ]
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "bucket"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Part"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "threats": {
+                            "text": "Finding threats",
+                            "index": 0
+                          },
+                          "scenario": {
+                            "text": "Writing scenarios",
+                            "index": 1
+                          },
+                          "controls": {
+                            "text": "Picking controls",
+                            "index": 2
+                          },
+                          "remediation": {
+                            "text": "Writing the plan",
+                            "index": 3
+                          },
+                          "service_mapper": {
+                            "text": "Mapping services",
+                            "index": 4
+                          },
+                          "shared": {
+                            "text": "Shared work",
+                            "index": 5
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "activity"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Activity"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "threats/relevance_gate": {
+                            "text": "Relevance check",
+                            "index": 0
+                          },
+                          "threats/gap_fill": {
+                            "text": "New threat suggestion",
+                            "index": 1
+                          },
+                          "threats/embed": {
+                            "text": "Threat search",
+                            "index": 2
+                          },
+                          "threats/rerank": {
+                            "text": "Threat match ranking",
+                            "index": 3
+                          },
+                          "scenario/threat_actions": {
+                            "text": "Threat action split",
+                            "index": 4
+                          },
+                          "scenario/write_scenario": {
+                            "text": "Write scenarios",
+                            "index": 5
+                          },
+                          "scenario/repair_scenario": {
+                            "text": "Rewrite scenarios",
+                            "index": 6
+                          },
+                          "scenario/plan_check": {
+                            "text": "Plan check",
+                            "index": 7
+                          },
+                          "scenario/embed": {
+                            "text": "Evidence search",
+                            "index": 8
+                          },
+                          "scenario/rerank": {
+                            "text": "Evidence ranking",
+                            "index": 9
+                          },
+                          "controls/embed": {
+                            "text": "Control search",
+                            "index": 10
+                          },
+                          "controls/rerank": {
+                            "text": "Control ranking",
+                            "index": 11
+                          },
+                          "remediation/remediation_plan": {
+                            "text": "Write remediation plan",
+                            "index": 12
+                          },
+                          "service_mapper/service_mapper": {
+                            "text": "Map services",
+                            "index": 13
+                          },
+                          "service_mapper/embed": {
+                            "text": "Service search",
+                            "index": 14
+                          },
+                          "shared/embed": {
+                            "text": "Library indexing",
+                            "index": 15
+                          },
+                          "shared/rerank": {
+                            "text": "Shared ranking",
+                            "index": 16
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "about"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "What it does"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "threats/relevance_gate": {
+                            "text": "AI picks which library threats apply to the asset (one call per batch of up to 10 threats)",
+                            "index": 0
+                          },
+                          "threats/gap_fill": {
+                            "text": "AI suggests a threat for a category where no library threat applies",
+                            "index": 1
+                          },
+                          "threats/embed": {
+                            "text": "Turns the asset text into vectors to search the library",
+                            "index": 2
+                          },
+                          "threats/rerank": {
+                            "text": "Ranks library threats against a suggested one",
+                            "index": 3
+                          },
+                          "scenario/threat_actions": {
+                            "text": "AI listed the attacker actions a threat's name describes (older runs only)",
+                            "index": 4
+                          },
+                          "scenario/write_scenario": {
+                            "text": "AI writes a set of attack scenarios, one per attack path, in one call",
+                            "index": 5
+                          },
+                          "scenario/repair_scenario": {
+                            "text": "AI rewrites, in one call, the scenarios of a set that were unusable or missed planned actions",
+                            "index": 6
+                          },
+                          "scenario/plan_check": {
+                            "text": "AI checks, in one call, that each scenario of a set carries out its plan",
+                            "index": 7
+                          },
+                          "scenario/embed": {
+                            "text": "Searches threat intelligence for a scenario's evidence",
+                            "index": 8
+                          },
+                          "scenario/rerank": {
+                            "text": "Ranks the evidence found for a scenario",
+                            "index": 9
+                          },
+                          "controls/embed": {
+                            "text": "Turns the scenario into a vector to search the controls",
+                            "index": 10
+                          },
+                          "controls/rerank": {
+                            "text": "Ranks candidate controls by how well they fit",
+                            "index": 11
+                          },
+                          "remediation/remediation_plan": {
+                            "text": "AI writes the treatment plan for the scenario's controls",
+                            "index": 12
+                          },
+                          "service_mapper/service_mapper": {
+                            "text": "AI lists upstream and downstream services for a service",
+                            "index": 13
+                          },
+                          "service_mapper/embed": {
+                            "text": "Searches the service catalog for candidates",
+                            "index": 14
+                          },
+                          "shared/embed": {
+                            "text": "Embeds new or changed library and evidence rows",
+                            "index": 15
+                          },
+                          "shared/rerank": {
+                            "text": "A ranking no single request asked for",
+                            "index": 16
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "model"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Model"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "none": {
+                            "text": "Not recorded",
+                            "index": 0
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byType",
+                  "options": "number"
+                },
+                "properties": [
+                  {
+                    "id": "noValue",
+                    "value": "0"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 24,
+            "x": 0,
+            "y": 33
+          }
+        },
+        {
+          "id": 117,
+          "type": "row",
+          "title": "Models and tokens",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 45
+          },
+          "description": "Which models were used, and the tokens in and out."
+        },
+        {
+          "id": 118,
+          "type": "table",
+          "title": "AI calls and tokens by model (every module)",
+          "description": "One line per model: its AI calls, failed, and the tokens sent and answered (writing calls only). The Module and API call choices at the top do not narrow this table: tokens by model carry no module or API call. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model) ((((tsg_ai_tokens_total{direction=\"in\"} - tsg_ai_tokens_total{direction=\"in\"} offset $__range) and resets(tsg_ai_tokens_total{direction=\"in\"}[$__range]) == 0) or (round(increase(tsg_ai_tokens_total{direction=\"in\"}[$__range])) and last_over_time(tsg_ai_tokens_total{direction=\"in\"}[1h] offset $__range)) or (max_over_time(tsg_ai_tokens_total{direction=\"in\"}[$__range]) unless last_over_time(tsg_ai_tokens_total{direction=\"in\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "D",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (model) ((((tsg_ai_tokens_total{direction=\"out\"} - tsg_ai_tokens_total{direction=\"out\"} offset $__range) and resets(tsg_ai_tokens_total{direction=\"out\"}[$__range]) == 0) or (round(increase(tsg_ai_tokens_total{direction=\"out\"}[$__range])) and last_over_time(tsg_ai_tokens_total{direction=\"out\"}[1h] offset $__range)) or (max_over_time(tsg_ai_tokens_total{direction=\"out\"}[$__range]) unless last_over_time(tsg_ai_tokens_total{direction=\"out\"}[1h] offset $__range)))) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "Value #A",
+                    "desc": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "model": 0,
+                  "Value #A": 1,
+                  "Value #B": 2,
+                  "Value #C": 3,
+                  "Value #D": 4
+                },
+                "renameByName": {
+                  "Value #A": "AI calls",
+                  "Value #B": "Failed",
+                  "Value #C": "Tokens sent",
+                  "Value #D": "Tokens answered"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "unit": "locale",
+              "noValue": "No AI calls in this time",
+              "custom": {
+                "footer": {
+                  "reducers": [
+                    "sum"
+                  ]
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "model"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Model"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "none": {
+                            "text": "Not recorded",
+                            "index": 0
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byType",
+                  "options": "number"
+                },
+                "properties": [
+                  {
+                    "id": "noValue",
+                    "value": "0"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 46
+          }
+        },
+        {
+          "id": 119,
+          "type": "table",
+          "title": "Tokens by API call",
+          "description": "Tokens sent and answered for each API call's work (writing calls only). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"} - tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"} offset $__range) and resets(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[$__range])) and last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[$__range]) unless last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"in\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (call) (label_join((((tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"} - tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"} offset $__range) and resets(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[$__range])) and last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[$__range]) unless last_over_time(tsg_ai_usage_tokens_total{module=~\"$module\", api=~\"$api\", direction=\"out\"}[1h] offset $__range))), \"call\", \"/\", \"module\", \"api\")) > 0",
+              "legendFormat": "__auto",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "Value #A",
+                    "desc": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "call": 0,
+                  "Value #A": 1,
+                  "Value #B": 2
+                },
+                "renameByName": {
+                  "Value #A": "Tokens sent",
+                  "Value #B": "Tokens answered"
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "unit": "locale",
+              "noValue": "No tokens in this time",
+              "custom": {
+                "footer": {
+                  "reducers": [
+                    "sum"
+                  ]
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "call"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "API call"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "threat_scenarios/create_scenario": {
+                            "text": "Create scenario",
+                            "index": 0
+                          },
+                          "threat_scenarios/next_set": {
+                            "text": "Next set",
+                            "index": 1
+                          },
+                          "threat_scenarios/regenerate": {
+                            "text": "Regenerate scenarios",
+                            "index": 2
+                          },
+                          "remediation/create_plan": {
+                            "text": "Create remediation plan",
+                            "index": 3
+                          },
+                          "remediation/regenerate": {
+                            "text": "Regenerate plan",
+                            "index": 4
+                          },
+                          "service_mapper/create_mapping": {
+                            "text": "Map services",
+                            "index": 5
+                          },
+                          "service_mapper/regenerate": {
+                            "text": "Regenerate mapping",
+                            "index": 6
+                          },
+                          "none/none": {
+                            "text": "Shared work (no API call)",
+                            "index": 7
+                          },
+                          "threat_scenarios/none": {
+                            "text": "Threat scenarios: no API call recorded",
+                            "index": 8
+                          },
+                          "remediation/none": {
+                            "text": "Remediation: no API call recorded",
+                            "index": 9
+                          },
+                          "service_mapper/none": {
+                            "text": "Service mapper: no API call recorded",
+                            "index": 10
+                          },
+                          "external_intelligence/none": {
+                            "text": "External intelligence import (no API call)",
+                            "index": 11
+                          },
+                          "library_embeddings/none": {
+                            "text": "Library indexing job (no API call)",
+                            "index": 12
+                          },
+                          "maintenance/none": {
+                            "text": "Maintenance job (no API call)",
+                            "index": 13
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byType",
+                  "options": "number"
+                },
+                "properties": [
+                  {
+                    "id": "noValue",
+                    "value": "0"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 46
+          }
+        },
+        {
+          "id": 120,
+          "type": "row",
+          "title": "Is the AI usage tracking working?",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 54
+          },
+          "description": "Whether every AI call is recorded and the hourly totals are up to date."
+        },
+        {
+          "id": 121,
+          "type": "stat",
+          "title": "AI usage rows not stored",
+          "description": "Usage rows MongoDB did not take: each was logged whole (ai.usage_row_spilled) and can be replayed within 7 days (deploy/DEPLOYMENT_GUIDE.md, 'AI usage rows not stored'). AiUsageNotRecorded fires when any is in 15 minutes. The AI calls went on.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum((((tsg_ai_usage_spilled_total - tsg_ai_usage_spilled_total offset $__range) and resets(tsg_ai_usage_spilled_total[$__range]) == 0) or (round(increase(tsg_ai_usage_spilled_total[$__range])) and last_over_time(tsg_ai_usage_spilled_total[1h] offset $__range)) or (max_over_time(tsg_ai_usage_spilled_total[$__range]) unless last_over_time(tsg_ai_usage_spilled_total[1h] offset $__range)))) or vector(0)",
+              "legendFormat": "AI usage rows not stored",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 0,
+            "y": 55
+          }
+        },
+        {
+          "id": 122,
+          "type": "stat",
+          "title": "Since the hourly add-up last finished",
+          "description": "How long since the 5-minute hourly add-up on the maintenance worker last finished: red after 15 minutes (AiUsageRollupBehind fires 5 minutes later). 'Not reported yet': no add-up since that worker started (the alert fires after 25 minutes). Per-request reports never wait for it.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "(time() - max(tsg_ai_usage_rollup_last_success_timestamp_seconds)) or vector(-1)",
+              "legendFormat": "Since the hourly add-up last finished",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 0,
+              "noValue": "0",
+              "unit": "s",
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "-1": {
+                      "text": "Not reported yet",
+                      "index": 0,
+                      "color": "orange"
+                    }
+                  }
+                }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 900
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 8,
+            "y": 55
+          }
+        },
+        {
+          "id": 123,
+          "type": "stat",
+          "title": "Time to store one ask's usage rows (95 in 100 within)",
+          "description": "95 in 100 asks stored their usage rows within this time. Past 5 seconds a write gives up and its rows are logged for replay instead.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(tsg_ai_usage_write_seconds_bucket[$__range])))",
+              "legendFormat": "Time to store one ask's usage rows (95 in 100 within)",
+              "instant": true,
+              "range": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 2,
+              "noValue": "No writes in this time",
+              "unit": "s",
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "No writes in this time",
+                      "index": 0
+                    }
+                  }
+                }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "red",
+                    "value": 5
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value",
+            "justifyMode": "center",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            }
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 16,
+            "y": 55
+          }
+        },
+        {
+          "id": 124,
+          "type": "row",
+          "title": "One session or request",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 59
+          },
+          "description": "The exact AI usage of one session or one request, from the API's reports."
+        },
+        {
+          "id": 125,
+          "type": "text",
+          "title": "Look up one session or request",
+          "description": "Links to the API's AI usage reports (JSON, no key) for the id at the top, and to its log lines.",
+          "options": {
+            "mode": "markdown",
+            "content": "Paste a **session id** (a run's) or a **request id** (from an error message or a log line) in **Session or request id** at the top, then click. Reports open in a new tab: JSON from the TSG API, no key needed, the exact numbers from the stored usage rows.\n\n| You have | Open |\n|---|---|\n| A session id | <a href=\"${reports}/requests?session_id=${session:percentencode}\" target=\"_blank\">Its API calls</a>: each with its AI calls per part and model, and the session's totals |\n| | <a href=\"${reports}/calls?session_id=${session:percentencode}\" target=\"_blank\">Its every AI call</a>: when, activity, model, outcome, tokens, seconds |\n| A request id | <a href=\"${reports}/requests/${session:percentencode}\" target=\"_blank\">Its AI calls by activity</a>: name, one-line description, model |\n| | <a href=\"${reports}/calls?request_id=${session:percentencode}\" target=\"_blank\">Its every AI call</a> |\n| Either | [Its log lines on the home page](/grafana/d/tsg/tsg?var-id=${session:percentencode}&${__url_time_range}&viewPanel=panel-60) |\n\nNo id: <a href=\"${reports}?since=${__from:date:iso}&until=${__to:date:iso}\" target=\"_blank\">AI calls by module and API call</a> in the chosen time, from the hourly totals (up to 5 minutes behind)."
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 60
+          }
         }
       ]
     }

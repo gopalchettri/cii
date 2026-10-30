@@ -230,7 +230,7 @@ def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_onc
             "tsg_remediations",
             lambda record: RemediationStatus.from_record(record, True).progress.retrying,
         ),
-        (TaskName.MAP_SERVICES, "tsg_service_mappings", lambda record: mapping_status(record).retrying),
+        (TaskName.MAP_SERVICES, "tsg_service_mappings", lambda record: mapping_status(record, 5).retrying),
     ],
 )
 def test_a_refused_send_shows_on_the_jobs_own_status(

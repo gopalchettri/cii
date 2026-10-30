@@ -752,21 +752,21 @@ def test_the_snapshot_keys_and_what_the_ai_never_sees() -> None:
 def test_the_prompt_is_the_approved_text() -> None:
     system, _ = plan_prompt(_snapshot())
     assert hashlib.sha256(system.encode("utf-8")).hexdigest() == _APPROVED_SYSTEM_PROMPT_SHA256
-    assert PromptVersion.REMEDIATION == "remediation-1"
+    assert PromptVersion.REMEDIATION == "remediation-2"
     assert CHAT_TEMPERATURES[AiTask.REMEDIATION_PLAN] == 0.0
 
 
 def test_one_number_versions_every_prompt() -> None:
     """Owner 2026-10-27: raising PromptVersion.NUMBER changes every stored label at once."""
     labels = [value for name, value in vars(PromptVersion).items() if name.isupper() and name != "NUMBER"]
-    assert PromptVersion.NUMBER == 1 and len(labels) == 4
+    assert PromptVersion.NUMBER == 2 and len(labels) == 4
     assert all(label.endswith(f"-{PromptVersion.NUMBER}") for label in labels)
 
 
 def test_every_prompt_has_text_and_the_file_carries_the_version() -> None:
     """app/prompts.toml: every section has a non-empty text, and its version is PromptVersion.NUMBER."""
     sections = [prompt for group in PROMPTS.values() if isinstance(group, dict) for prompt in group.values()]
-    assert len(sections) == 7 and all(section["text"].strip() for section in sections)
+    assert len(sections) == 6 and all(section["text"].strip() for section in sections)
     assert PROMPTS["version"] == PromptVersion.NUMBER
 
 
@@ -1066,6 +1066,19 @@ def test_an_answer_without_its_summary_is_re_asked_then_fails() -> None:
     with pytest.raises(JobFailed) as failed:
         _written(left_out, left_out)
     assert failed.value.code == ErrorCode.GENERATION_FAILED
+
+
+def test_an_answer_without_its_title_is_kept_and_named_by_code() -> None:
+    """Code names the plan from its controls' domains, else the scenario's title: no re-ask for a title."""
+    untitled = {key: value for key, value in _answer("CII-CID-5", "CII-CID-6").items() if key != "title"}
+    plan, _, chat = _written(untitled)
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 1
+    assert plan["title"] == "Access and Monitoring Remediation"
+    snapshot = _snapshot()
+    for row in snapshot["existing_controls"]["library_mapped"]:
+        row["domain"] = None
+    plan, _, _ = _written(untitled, snapshot=snapshot)
+    assert plan["title"] == SCENARIO["content"]["title"]
 
 
 @pytest.mark.parametrize(

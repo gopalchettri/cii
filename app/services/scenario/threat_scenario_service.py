@@ -15,6 +15,7 @@ from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
     ActionStatus,
+    AiApi,
     AuditAction,
     AuditTarget,
     ConflictReason,
@@ -81,7 +82,7 @@ from app.domain.scenario.review import (
     split_accept_all,
     versions_to_replace,
 )
-from app.domain.shared.audit import audit_target, caller_actor
+from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
 from app.domain.shared.idempotency import duplicate_request
 from app.models.admin.api_clients import Principal
 from app.models.library.library import ThreatLibrary, ThreatProposal
@@ -149,6 +150,7 @@ class ThreatScenarioService:
 
     # Starting a run.
 
+    @origin_of_its_jobs(AiApi.CREATE_SCENARIO)
     def create_threat_scenario_session(
         self, principal: Principal, request: StartRunRequest, idempotency_key: str, *, derived: bool = False
     ) -> tuple[RunBoard, bool]:
@@ -459,6 +461,7 @@ class ThreatScenarioService:
 
     # More work for a finished run.
 
+    @origin_of_its_jobs(AiApi.NEXT_SET)
     def write_next_threat_scenario_set(self, principal: Principal, run: SessionStatus) -> RunActionStarted:
         """Queues the next NEXT_SET_SIZE open paths, best rank first; none left, resumes the controls a cancel
         stopped, else 409 naming why."""
@@ -471,7 +474,7 @@ class ThreatScenarioService:
         if asked:
             epoch = self._queue_write_job(principal, run, RunActionKind.NEXT_SET, batch, asked)
             return _started(run, ActionStatus.GENERATING, epoch)
-        resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run))
+        resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run), restart_times=True)
         if resumed is None:
             raise run_being_deleted(run.session_id)
         if not resumed:
@@ -484,6 +487,7 @@ class ThreatScenarioService:
         )
         return _started(run, ActionStatus.MAPPING_CONTROLS, run.epoch)
 
+    @origin_of_its_jobs(AiApi.REGENERATE)
     def regenerate_threat_scenarios(
         self, principal: Principal, run: SessionStatus, request: ScenarioIdsRequest
     ) -> RunActionStarted:
@@ -524,10 +528,12 @@ class ThreatScenarioService:
         self._audit.create_audit_record(action, caller_actor(principal), target, after=after)
         return epoch
 
-    def _resume_controls(self, session_id: str, cancelled_at: datetime | None) -> int | None:
+    def _resume_controls(
+        self, session_id: str, cancelled_at: datetime | None, restart_times: bool = False
+    ) -> int | None:
         """Queues again and sends the controls a cancel stopped, unless a cancel other than the one stamped
         `cancelled_at` (the one the caller saw) landed since; None when the run is being deleted."""
-        resumed = self._work_control.resume_scenario_controls(session_id, cancelled_at)
+        resumed = self._work_control.resume_scenario_controls(session_id, cancelled_at, restart_times)
         if resumed:
             self._send_job(TaskName.MAP_CONTROLS, session_id, 0)  # the epoch is never checked for controls
         return resumed

@@ -40,6 +40,7 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _write_batch,
     chat,
     sent,
+    unreadable_then,
 )
 
 
@@ -48,7 +49,7 @@ def test_a_reranker_wait_that_ran_out_holds_the_path_back_in_its_own_words() -> 
     index = build_index(build_corpus([technique_doc("T1")]), TextEmbeddings(), ScoredBy(), "rr-model")
     finder = EvidenceFinder(lambda: index, 1.0, gate=gate, candidates=6, kept_per_threat=3)
     with gate.hold_place():  # its one place taken: the search's rerank waits out the gate's limit
-        (result,), _ = finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)
+        (result,), _ = finder.find_evidence([request_of()], approved=ALL_SOURCES)
     problem = evidence_problem({"intel_search": result.search.as_doc()})
     words = ErrorMessage.RERANK_BUSY.format(seconds=0)
     assert problem is not None and (problem.reason, problem.detail) == (AiOutage.BUSY, words)
@@ -68,7 +69,7 @@ def test_a_first_build_whose_ai_slot_wait_ran_out_holds_writes_back_in_that_wait
     with pytest.raises(Unavailable):
         keeper.rebuild_index().result(10)
     finder = EvidenceFinder(keeper.peek_index, 1.0, gate=RerankGate(1), candidates=6, kept_per_threat=3)
-    (result,), _ = finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)  # the placeholder
+    (result,), _ = finder.find_evidence([request_of()], approved=ALL_SOURCES)  # the placeholder
     problem = evidence_problem({"intel_search": result.search.as_doc()})
     assert problem is not None and (problem.reason, problem.detail) == (AiOutage.BUSY, slots_full)
 
@@ -80,7 +81,7 @@ def test_a_search_stopped_by_a_fault_not_the_ai_s_keeps_no_driver_text() -> None
 
     index = build_index(build_corpus([technique_doc("T1")]), StoreDown(), ScoredBy(), "rr-model")
     finder = EvidenceFinder(lambda: index, 1.0, gate=RerankGate(1), candidates=6, kept_per_threat=3)
-    (result,), _ = finder.find_evidence([request_of()], stale=False, approved=ALL_SOURCES)
+    (result,), _ = finder.find_evidence([request_of()], approved=ALL_SOURCES)
     assert (result.search.outage, result.search.outage_message) == (None, "")
 
 
@@ -89,13 +90,8 @@ def test_a_path_whose_ai_slot_wait_ran_out_on_the_last_try_gets_a_card_in_that_w
     chat: FakeChatModel,  # noqa: F811
 ) -> None:
     slots_full = ErrorMessage.AI_BUSY.format(seconds=300)
-
-    def threat_two_waits_out(user_prompt: str) -> dict[str, Any]:
-        if '"Threat 2"' in user_prompt:
-            raise Unavailable(slots_full, reason=AiOutage.BUSY)  # TSG's own slots stayed full: no gateway 429
-        return _answer_for(user_prompt)
-
-    chat.responders[AiTask.WRITE_SCENARIO] = threat_two_waits_out
+    waits_out = Unavailable(slots_full, reason=AiOutage.BUSY)  # TSG's own slots stayed full: no gateway 429
+    chat.responders[AiTask.WRITE_SCENARIO] = unreadable_then("Threat 2", waits_out)
     record_id = _queued_run(["Threat 1", "Threat 2"])
     _write_batch(_on_last_try(record_id))
     assert _scenarios_of(record_id)[1]["failure"] == {
