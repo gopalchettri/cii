@@ -67,6 +67,15 @@ def _reask_build_correction_message(problems: list[str]) -> str:
     return AiLimits.REASK_MESSAGE.format(problems="\n".join(lines))
 
 
+def _earlier_answer(
+    chat: "ChatModel", task: AiTask, messages: list[dict[str, str]], check: AnswerChecker
+) -> tuple[dict[str, Any], str] | None:
+    """The job's own earlier answer to these messages, else for threat finding any recent run's answered by
+    one of the chat's own models (find_earlier_answer): no AI call."""
+    models = [model for model, _ in chat._models]
+    return find_earlier_answer(chat._call_records, task, messages, check, models)
+
+
 class ChatModel:
     """JSON answers from the configured model; the fallback model answers only when the first is busy/down
     (or cooling down). Each model is called with ITS OWN profile (litellm's built-in fallbacks would reuse the
@@ -112,9 +121,7 @@ class ChatModel:
         answer `first_answer_check` faults is asked again too, and kept when the re-ask is unusable or finds
         the AI unavailable.
         `reuse_earlier_answer`: an ask this job already got an answer to that `check_answer` accepts (any
-        delivery of this record, epoch and stage) takes that answer from tsg_ai_call_texts: no AI call; a
-        threat-finding ask also takes any run's recent answer to the very same conversation
-        (find_earlier_answer)."""
+        delivery of this record, epoch and stage) takes that answer from tsg_ai_call_texts: no AI call."""
         messages = build_conversation(system_prompt, user_prompt)
         reuse_check = check_answer if reuse_earlier_answer else None
         answer, reply, capped = self._ask_and_read_answer(task, messages, reuse_check, capped=True)
@@ -155,13 +162,7 @@ class ChatModel:
         if prompt_chars > limit:
             too_long = ErrorMessage.AI_PROMPT_TOO_LONG.format(task=task, chars=prompt_chars, limit=limit)
             raise TruncatedAiAnswer(too_long)
-        models = [model for model, _ in self._models]
-        earlier = (
-            find_earlier_answer(self._call_records, task, messages, reuse_check, models)
-            if reuse_check
-            else None
-        )
-        if earlier:
+        if reuse_check and (earlier := _earlier_answer(self, task, messages, reuse_check)):
             return *earlier, capped
         model, response, seconds, capped = self._ask_for_whole_answer(task, messages, capped)
         reply = response.choices[0].message.content or ""
