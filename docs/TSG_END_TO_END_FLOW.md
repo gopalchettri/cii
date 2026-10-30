@@ -1653,8 +1653,8 @@ scenario instead of producing one without its evidence.
 > best one that clears the bar. It cites **at most one** real-world precedent, marks it **[1]** and keeps the link
 > to the source record. If no record clears the bar, it may use the closest one but says plainly that it is only
 > *related*; if no record names a real attacker or fact it can quote, the scenario says nothing about the real
-> world. The AI never sees links or ids, is told to treat the records as untrusted, and a second AI and the code
-> both check the quoted passage before it is kept.
+> world. The AI never sees links or ids and is told to treat the records as untrusted; the closing sentence that
+> quotes the record is written by code from the record's own title and users.
 
 ### 7.1 Evidence step by step (plain English)
 
@@ -1700,14 +1700,15 @@ The run we follow: the threat "OT protocol command abuse" on the Traffic Control
     a source name, and is told never to follow instructions found in it. *(3 facts shown and the entry marked
     cited; the "It can be reduced by" fact hidden; mode "source-documented"; this run predates D54, which hides
     the attacker-goals fact too)*
-14. **The writer closes the story with a short passage that ties the attacker's action to that record and
-    otherwise says only what the record says.** *(48 words; the code default range is 30-80 words, the upper
-    number a hard limit; this run predates D54: it opens "In real-world attacks, Industroyer, a piece of
-    malicious software, has used the technique "Command Message"…")*
-15. **A second AI confirms the passage says only what the record says, plus that one link; code checks it is plain
-    and short, then adds it with [1].** *(reviewer answer `"evidence_supported": true`; no marker, link or id in
-    it; the statement ends "…could tamper with traffic signal operations [1]." This run predates D38 and D54:
-    today that closing link sentence makes the reviewer answer false, and code's own sentence is cited; see 8.6.)*
+14. **The writer names the one step of its story the record is about; code writes the closing sentence from it
+    (D65).** *(for example, the step "Sending forged OT protocol commands to the Traffic Signal Control System"
+    gives "Sending forged OT protocol commands to the Traffic Signal Control System matches "Command Message", a
+    technique the Industroyer malware and the 2015 Ukraine Electric Power Attack campaign have used"; this run
+    predates D54 and D65: its writer wrote a 48-word passage opening "In real-world attacks, Industroyer, a piece
+    of malicious software, has used the technique "Command Message"…")*
+15. **Code checks the step is plain and short, then adds the sentence with [1].** *(no marker, link, id or quote
+    in the step, and the sentence within the evidence word limit; else code's own sentence from the record is
+    cited; the statement ends "…[1]."; see 8.6)*
 16. **Store the cited record with its link and the whole search, and pass its defences to the controls step.**
     *(one stored entry, `n: 1`, link https://attack.mitre.org/techniques/T1691/001; every candidate and decision in
     `intel_search`; controls query line "Mitigations (MITRE ATT&CK): Out-of-Band Communications Channel; Network
@@ -1719,7 +1720,7 @@ The run we follow: the threat "OT protocol command abuse" on the Traffic Control
 
 > **In plain words:** The question names only the threat. Filters decide which records may answer it; two quick
 > searches shortlist six; a careful model scores them; fixed rules decide which may be used; and at most one is
-> quoted, checked twice, and marked [1]. Its listed defences then help choose the controls.
+> quoted, in a sentence code writes, and marked [1]. Its listed defences then help choose the controls.
 
 ```mermaid
 flowchart TB
@@ -1736,9 +1737,8 @@ flowchart TB
     L --> P{"A citable entry?"}
     P -- "no" --> O["Original style<br/>evidence_mode inferred"]
     P -- "yes" --> B["Evidence block<br/>untrusted, plain facts"]
-    B --> W["Writer passage<br/>from the cited entry"]
-    W --> V["Reviewer<br/>evidence_supported"]
-    V --> X["Code cites [1]<br/>the passage, or its own sentence"]
+    B --> W["Writer step<br/>the story's step the entry is about"]
+    W --> X["Code cites [1]<br/>its sentence from the step, or its own"]
     X --> M["Mitigations into<br/>the controls query"]
 ```
 
@@ -2016,16 +2016,17 @@ Every kept entry is nearest, so the mode is `nearest` and the block told the wri
   {"technique": "Cloud API", "facts": ["Storm-0501, a threat group, has used this technique.", "The AI-Assisted Breach of Mexico's Government Infrastructure campaign used this technique."]}]}
 ```
 
-The writer prompt asks for "the related technique" in nearest mode, but this passage said *"…has used the
-technique "Exploitation for Credential Access"…"*. Code does not check that word, and the reviewer answered
-`evidence_supported: true`, so the passage was cited (this run predates D54: today nearest evidence not called
-related makes `evidence_supported` false, and the block no longer shows the goals fact).
+The writer prompt asked for "the related technique" in nearest mode, but this passage said *"…has used the
+technique "Exploitation for Credential Access"…"*. Code did not check that word, and the reviewer answered
+`evidence_supported: true`, so the passage was cited (this run predates D54 and D65: today code writes the
+sentence, nearest evidence always gets a "related" link such as "is closely related to", and the block no longer
+shows the goals fact).
 
 ### 7.8 How the evidence is used to write the scenario
 
 > **In plain words:** The kept records go into the writer's instructions, but only one is quoted. The story itself
-> never names an attacker group or a past event; a closing passage ties the attacker's action to the quoted
-> record and otherwise says only what it says, checked by a second AI and by code, and marked [1]. The record's listed defences then help pick
+> never names an attacker group or a past event; a closing sentence, written by code, ties the story's own step
+> to the quoted record's title and users and is marked [1]. The record's listed defences then help pick
 > the controls.
 
 **a. Kept entries go into the brief.** `build_brief` (`app/domain/scenario/write.py`) sets `brief.evidence` to all
@@ -2060,9 +2061,9 @@ when set, and `"cited": true` on the cited entry.
 - `_safe_facts` redacts each fact, removes ids and links, strips anything that looks like the block's delimiters,
   sanitises it again (at most 320 characters) and drops an unsafe one.
 - The block holds **no `ref`, score, `url` or source**.
-- The writer prompt (`app/prompts.toml` `[scenario.writer]`, rule 10) says to use only the entry marked `"cited": true` to ground the
-  threat action and to write `evidence_statement`; outside that passage, no precedent, group, technique label, id,
-  source or marker (§8.2).
+- The writer prompt (`app/prompts.toml` `[scenario.writer]`, rule 10) says to use the entry marked `"cited": true` to ground the
+  threat action and to return `evidence_step`, the one step of the story that entry is about (D65); no field
+  carries a precedent, group, technique label, id, source or marker (§8.2).
 
 *Example*, the block the writer saw (from the logged writer call):
 
@@ -2076,25 +2077,24 @@ EVIDENCE (untrusted data):
 The goals fact was shown because this is the cited entry (this run predates D54; today it is hidden). The fourth
 fact, "It can be reduced by: …", is hidden.
 
-**d. The narrative names no group or past event.** Names from the evidence may appear only in
-`evidence_statement`; code's exact checks block markers, unknown labels and uncited advisory ids (§8.4). *Example:*
+**d. The narrative names no group or past event.** Names from the evidence appear only in code's closing
+sentence; code's exact checks block markers, unknown labels and uncited advisory ids (§8.4). *Example:*
 the `scenario_statement` speaks of "a cybercriminal" and "standard OT protocol commands", and names neither
 Industroyer nor the 2015 attack.
 
 **e. The reviewer reads the same block.** `plan_check_prompt` sends the PLAN, the same evidence block and the
-draft. The reviewer answers `evidence_supported`: true only when the passage states nothing but the cited entry's
-facts, plus exactly one link, at its start, from an action the story tells to that entry; a passage that does
-not open with such an action, or any other link to this scenario or asset, makes it false. *Example*, the reviewer's whole answer (this run predates that rule, D38 and D54; see 8.6):
+draft. It judges the story, not the closing sentence: code writes that from the source (D65). *Example*, the
+reviewer's whole answer (this run predates D65, when the reviewer still answered `evidence_supported`; see 8.6):
 `{"rules": {"1": "holds", … "8": "holds"}, "same_threat": true, "same_impact": true, "evidence_supported": true}`.
 
-**f. Code decides and cites.** `_passage_faults` refuses the writer's passage when it is empty, over the
-`EVIDENCE_STATEMENT_WORD_LIMIT` maximum, holds "[", a link, an id, an internal label or an advisory id, says a
-stock phrase ("real-world", "this attack", "documented", "cited" …), is more than one sentence, or (a technique)
-lacks the quoted title or opens with the technique or its users. It runs first as the writer's first-answer
-check, so a faulty passage is asked again once with why (D54); `_passage_problem` then runs it again with the
-reviewer's verdict. A refused passage is dropped with a `citation_removed` warning (never a blocker), and
-code's claim from step b is used instead. `_cited` builds **statement = narrative + " " + passage (its final "."
-removed) + " [1]."**. *Example*, the end of the stored statement (the passage has 48 words):
+**f. Code writes and cites.** `evidence_sentence` ties the writer's `evidence_step` to the cited entry: the step,
+a link, the title in quotes and who used it (a technique) or its first fact (another kind), the link and users
+form picked by the set's epoch and the slot's place (§8.6). A step that is empty, holds a marker, redaction,
+link, code, label or quote, is two sentences, opens on the title or a user, or would take the sentence over the
+`EVIDENCE_STATEMENT_WORD_LIMIT` maximum is not used: code's claim from step b is cited instead, with a
+`citation_removed` warning (never a blocker, never a rewrite). `_cited` builds **statement = narrative + " " +
+sentence (its final "." removed) + " [1]."**. *Example*, the end of the stored statement (this run predates D65:
+its writer wrote a 48-word passage):
 
 > …degrading the critical Traffic Management & Control service. In real-world attacks, Industroyer, a piece of
 > malicious software, has used the technique "Command Message" to inhibit response function during the 2015
@@ -2102,7 +2102,7 @@ removed) + " [1]."**. *Example*, the end of the stored statement (the passage ha
 > systems. Similar protocol command abuse could tamper with traffic signal operations [1].
 
 **g. What is stored.** `_evidence_content`: `content.evidence` holds the one cited entry with `n: 1` and
-`supports` (the cited passage); `content.intel_search` holds the whole search; `content.applicability` counts the
+`supports` (the cited sentence); `content.intel_search` holds the whole search; `content.applicability` counts the
 cited entry's applicability; `content.evidence_mode` is set by `brief_evidence_mode`:
 
 | `evidence_mode` | When | In this run |
@@ -2151,8 +2151,8 @@ Asset: Traffic Control Platform (IT)
 Mitigations (MITRE ATT&CK): Out-of-Band Communications Channel; Network Allowlists; Static Network Configuration
 ```
 
-From here, §8 explains the writer prompt and every check in full. In short: the writer writes the passage, and
-code decides whether to cite it (`_passage_problem`, `_cited`).
+From here, §8 explains the writer prompt and every check in full. In short: the writer names its step, and code
+writes and cites the sentence (`evidence_sentence`, `_cited`).
 
 **Why this matters:** every real-world claim in a scenario can be traced to one public record, with its score and
 the reasons the other candidates were not used. When the evidence is weak, the scenario says so ("related") or
@@ -2165,9 +2165,8 @@ says nothing, rather than invent a precedent.
 > **In plain words:** An AI writer drafts each scenario from a fixed fact sheet that code prepares, so it can
 > only use facts the platform holds. Plain code checks then look for made-up labels, invented advisory numbers,
 > citation marks and copied instructions. A second AI can act as an editor and check the draft against the plan;
-> it is switched off by default (D64). A real-world sentence is cited only when code's checks pass and, while
-> the editor is on, it confirms the sentence matches its public source; otherwise code writes its own sentence
-> from that same source.
+> it is switched off by default (D64). The real-world sentence is written by code from the public source's own
+> title and users, opening on the step the writer names (D65).
 
 Since 31-Oct-2026 a batch of paths is written as one set (§8.0): one write call and one review call for all of
 its slots, and one more round at most. Each slot is still built, read and checked as one path is below
@@ -2185,9 +2184,9 @@ flowchart TB
     R -- yes --> X{"Code blocker?<br/>check_exact_rules"}
     X -- yes --> S["Saved blocked<br/>reviewer skipped"]
     X -- no --> V["Reviewer (AI), if on<br/>one call for the set"]
-    V --> P{"Passage usable?<br/>_passage_problem"}
-    P -- yes --> C1["Cite the writer's passage [1]"]
-    P -- no --> C2["Cite code's own sentence [1]<br/>warning citation_removed"]
+    V --> P{"Step usable?<br/>evidence_sentence"}
+    P -- yes --> C1["Cite code's sentence<br/>from the writer's step [1]"]
+    P -- no --> C2["Cite code's own precedent [1]<br/>warning citation_removed"]
 ```
 
 The path we follow is `e6e2f9ec043f7c21` of session `13bd93f254ce4d2788f18c56f1c011ab`: threat `lib:281`
@@ -2208,26 +2207,23 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    (§8.1, with the threat's actions from the plan) and its own evidence block, or the no-evidence line (§8.2).
    The answer is `{"scenarios": [...]}`, one item per slot with the eight fields of §8.2, each copying back its
    threat's name.
-2. **Each slot is checked with today's code:** `_read_draft` (§8.3), the action-sentence and passage checks,
-   then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2. `SC` is
+2. **Each slot is checked with today's code:** `_read_draft` (§8.3) with code's evidence sentence (§8.6), the
+   action-sentence check, then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2. `SC` is
    one of the internal labels (`_INTERNAL_LABEL`), so a slot label in a draft is an `unknown_id` blocker.
 3. **One review call** (reviewer on only, D64) covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
    (§8.5), read slot by slot with today's reviewer readers. **A slot that is final is saved at once.**
 4. **Round 2, only when needed:** one rewrite call (task `repair_scenario`) for the slots that were unreadable,
    had a fault worth asking again, or need a repair (a listed act not carried out, or a `scenario_mismatch`
-   told the reviewer's quoted words, D62), each with its own problems, or whose closing sentence links
-   to its title in the same words as an earlier clean slot's (`_flag_repeated_links`, D60: told the links taken);
-   then one review call for those slots and the slots whose first review is asked again. A mismatch repair is
-   kept when it was reviewed and nothing blocks it; a repair or relink only if it fixed the first draft
-   (`_fixes`, §8.5 step 8); either only when its review is not asked again, and a relink
-   with no act or mismatch to repair only if its sentence can still be cited; else the reviewed first draft
-   stays (a mismatched one is saved blocked and a reserve path follows). A relink whose first review is asked
-   again has no reviewed draft to fall back on, so it is not rewritten: its clean draft is reviewed again and
-   its repeated link cited (D60). With the reviewer off a repeated link is only logged (`writer.links_repeated`),
-   never rewritten, and round 2 makes no review call. A slot still unusable, or whose rewrite an exact rule blocks, keeps
-   its usable first draft, or gets a failure card (`generation_failed`). There is no third round. An outage in
-   round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's or relink's first draft; any other draft checked,
-   with `plan_check_not_made` naming the outage when it has no review, while the reviewer is on); only a slot with no usable draft keeps
+   told the reviewer's quoted words, D62), each with its own problems; then one review call for those slots
+   and the slots whose first review is asked again (reviewed again, never rewritten). A mismatch repair is
+   kept when it was reviewed and nothing blocks it; a repair only if it fixed the first draft (`_fixes`, §8.5
+   step 8); either only when its review is not asked again; else the reviewed first draft stays (a mismatched
+   one is saved blocked and a reserve path follows). No slot is written again for its evidence sentence: code
+   writes it (D65). With the reviewer off round 2 makes no review call. A slot still unusable, or whose rewrite
+   an exact rule blocks, keeps its usable first draft, or gets a failure card (`generation_failed`). There is no
+   third round. An outage in round 2 (`_firsts_kept`) keeps every slot's usable draft (a repair's first draft;
+   any other draft checked, with `plan_check_not_made` naming the outage when it has no review, while the
+   reviewer is on); only a slot with no usable draft keeps
    the outage, so its path alone is retried, written afresh in a smaller set.
 5. **A whole answer unreadable twice** (no `scenarios` list): `Unavailable`, so the job is retried, with no card
    and no path given up; on the last attempt (`Lease.MAX_ATTEMPTS`) the paths get failure cards. A write answer
@@ -2387,7 +2383,7 @@ Where each key came from:
 
 > **In plain words:** The AI writer gets two things: a fixed set of writing rules, and the brief with any
 > real-world evidence. It must answer in a fixed form with eight fields: a title, the scenario, the risk,
-> assumptions, the way in, one reason per system, the story sentence of each act, and the real-world passage. Word limits are set by the
+> assumptions, the way in, one reason per system, the story sentence of each act, and the step its evidence is about. Word limits are set by the
 > platform's settings, and the upper limit is strict.
 
 **How**
@@ -2396,17 +2392,19 @@ Where each key came from:
    set, and per slot its `SC` label, BRIEF and evidence block (step 3). Each slot's item is read by
    `_read_draft` with that slot's entry point options and its supporting systems' names (section 8.3).
 2. **System prompt.** `app/prompts.toml` `[scenario.writer]` `text`, passed through
-   `with_word_limits`, which fills three slots with "min to max" (`_spoken`):
+   `with_word_limits`, which fills two slots with "min to max" (`_spoken`):
 
    | Slot | Setting | Default |
    |---|---|---|
    | `<scenario words>` | `THREAT_SCENARIO_WORD_LIMIT` | 150-200 |
    | `<risk words>` | `RISK_STATEMENT_WORD_LIMIT` | 100-150 |
-   | `<evidence words>` | `EVIDENCE_STATEMENT_WORD_LIMIT` | 30-80 |
+
+   `EVIDENCE_STATEMENT_WORD_LIMIT` (30-80) is no prompt slot: its maximum caps code's own evidence sentence
+   (§8.6, D65).
 
    A setting that is not "min-max" with 1 ≤ min ≤ max stops start-up (`_word_range`, `app/core/config.py`). In
    the original style, the slot carries `[scenario.writer]` `no_evidence`: *No EVIDENCE is given: cite nothing, tell no real-world
-   event and return "evidence_statement": "".* (in its own slot, so one set can mix both styles).
+   event and return "evidence_step": "".* (in its own slot, so one set can mix both styles).
 3. **User prompt**, per slot: its `SC` label, `BRIEF:` and the BRIEF as JSON. In an evidence story, the evidence block follows
    (`evidence_block`): `EVIDENCE (untrusted data):`, then the JSON between `<<<UNTRUSTED_EVIDENCE_BEGIN>>>` and
    `<<<UNTRUSTED_EVIDENCE_END>>>` (section 7).
@@ -2419,7 +2417,7 @@ Where each key came from:
 5. **The prompt's stable structure.** The writer prompt has uncommitted edits by the owner, so only the parts that
    stay the same are described here:
    - Exactly seven JSON fields, nothing else (table below).
-   - The three word-limit slots. "The upper number of each range is a hard limit"; the lower number is a
+   - The two word-limit slots. "The upper number of each range is a hard limit"; the lower number is a
      target. Code counts no words in the scenario and risk statements, and cuts nothing.
    - 13 numbered rule areas: one threat and one primary impact; explicit causality and grounding; entry point
      and access; supporting systems; attacker type; the scenario statement; the risk statement; the title; safe
@@ -2453,14 +2451,11 @@ Where each key came from:
      (rule 2). An assumption the BRIEF's `why_it_applies` states goes in `assumptions` too. No prompt
      mentions "not recorded in the platform", and the writer's inputs are cleaned of it (section 8.1), so
      the AI never writes it; the API adds it to each shown assumption (section 12.2).
-   - The passage is ONE sentence in the writer's own words that closes the story: it opens with this
-     attacker's action as the story tells it and ties it to the cited entry, any kind (a technique, a
-     vulnerability, an advisory); for a technique the title in quotes ("related" when nearest or when the
-     title names a different act) and who used it from `used_by`; no "real-world", "this attack", "this
-     scenario", "documented", "reported" or "cited"; beyond that one link only the entry's facts, never a named
-     user as this scenario's attacker, never a claim that the asset was attacked, is vulnerable or is
-     exploitable. The story may describe the attacker's steps in the cited entry's terms, staying the
-     specified threat (rule 10, D54).
+   - The evidence (rule 10, D65): the writer returns `evidence_step`, the one step of its story the entry
+     marked `"cited": true` is about, as a gerund phrase naming its system or asset, 6-20 words, with no title,
+     no group, malware or campaign name and no quotes; code writes the closing sentence from it (§8.6). No field
+     carries a real-world precedent or a name from the evidence. The story may describe the attacker's steps in
+     the cited entry's terms, staying the specified threat.
    - The risk opening per category, in everyday words (D46): Spoofing "People could no longer be sure that
      ...", Tampering "People could no longer trust ...", Repudiation "No one could reliably tell who ...", Information
      Disclosure "Sensitive information in ... could be exposed to ...", Denial of Service "<the asset or its
@@ -2478,7 +2473,7 @@ Where each key came from:
    | `entry_point` | marks `entry_point: true` on one of `content.systems` |
    | `system_reasons` | the `reason` of each `content.system_applicability` entry |
    | `action_sentences` | not stored: per listed act, the sentence of `scenario_statement` in which the attacker does it. A first answer that gives none for an act, or quotes words not in its own statement, is asked again once; a second answer is kept, for the review and the rewrite (D47) |
-   | `evidence_statement` | the cited passage at the end of the statement, and the entry's `supports` (section 8.6) |
+   | `evidence_step` | the start of code's evidence sentence: cited at the end of the statement, and the entry's `supports` (section 8.6) |
 
 7. **Prompt version.** Stored as `content.prompt_version`: "scenario writer-evidence-1"
    (`PromptVersion.SCENARIO_WRITER_EVIDENCE`) for an evidence story, "scenario writer-1"
@@ -2521,8 +2516,8 @@ asked for, left out):
 - Model `openai/Kimi-K2.6`: 3,274 tokens in, 536 tokens out, 6.0 seconds, logged at 08:18:34.166 UTC.
 - The risk opens with "Loss of trust in", the Tampering opening of that run; today's is "People could no longer
   trust ..." (D46).
-- The block shows the goals fact and the passage opens "In real-world attacks,": this run predates D54 (section
-  8.6).
+- The block shows the goals fact and the answer carries a whole passage, opening "In real-world attacks,": this
+  run predates D54 and D65 (section 8.6).
 - The scenario statement is 145 words and the risk statement 75 words. Both are under the default lower
   targets (150 and 100 words). That is allowed: the lower number is only a target, and code counts neither.
 - The run has 6 `write_scenario` calls for its 6 scenarios, so no answer needed a re-ask.
@@ -2553,10 +2548,10 @@ asked for, left out):
    - `entry_point` is not one of the offered options, in any form of its name (`is_same_name`;
      `AnswerProblem.ENTRY_POINT_NOT_OFFERED`);
    - a supporting system has no reason in `system_reasons` (`AnswerProblem.SYSTEM_REASONS_MISSING`).
-3. **Never asked again:** a missing or null `evidence_statement` (it defaults to ""), word counts, and
+3. **Never asked again:** a missing or null `evidence_step` (it defaults to ""), word counts, and
    anything the code checks or the reviewer judge later.
-4. A good answer becomes a `ScenarioDraft`: title, statement and risk trimmed; `evidence_statement` with its
-   spaces collapsed; system reasons in the brief's order.
+4. A good answer becomes a `ScenarioDraft`: title, statement and risk trimmed; `evidence_step` kept and, in a
+   story, code's sentence from it in `evidence_statement` (§8.6); system reasons in the brief's order.
 5. Still wrong after the re-ask: `UnreadableAiAnswer`. `PathWriter.write` turns it into a failure with code
    `generation_failed` (section 9).
 6. **The `ChatModel` wrapper**, briefly:
@@ -2605,8 +2600,8 @@ reason.
 > scenario. These are exact rules, so no AI judgement is involved.
 
 **How**
-1. `_reviewed(chat, brief, draft)` runs after the answer is read. In the original style it first blanks
-   `evidence_statement`, so a passage is never checked, reviewed or kept.
+1. `_reviewed(chat, brief, draft)` runs after the answer is read. In the original style no evidence sentence is
+   built, so a step is never checked, reviewed or cited.
 2. `check_exact_rules(draft, brief)` scans the title, statement, risk, assumptions and every system reason:
 
    | Code | Finds | Severity |
@@ -2614,7 +2609,7 @@ reason.
    | `unknown_id` | an internal label (`SYS1`, `THR2` ...) that the BRIEF text does not contain | blocker |
    | `uncited_advisory_id` | a CVE, ICSA or ICSMA, GHSA, MSnn-nnn or VU# number. In a story it is allowed only when the BRIEF text contains it; in the original style any one blocks. The evidence block never carries such numbers (`_without_ids` strips them) | blocker |
    | `unknown_marker` | any `[n]` marker: only code cites | blocker |
-   | `injection_echo` | text that reads as an instruction to an AI, in these fields and in `evidence_statement` too (`echo_findings`) | blocker |
+   | `injection_echo` | text that reads as an instruction to an AI, in these fields and in code's evidence sentence too, the writer's step included (`echo_findings`) | blocker |
 
    The severities are in `FINDING_SEVERITIES` (`app/core/constants/scenario.py`) and `STORY_FINDING_SEVERITIES`
    (`app/core/constants/evidence.py`).
@@ -2643,8 +2638,7 @@ is `unchecked` with no warning, and none of this section's verdicts, notes or re
    once, plus `[scenario.reviewer]`'s short note for a set, and per slot the user prompt of step 3; each slot's
    review is read on its own. `CHAT_TEMPERATURES` sends temperature 0.0.
 2. **System prompt:** `app/prompts.toml` `[scenario.reviewer]` `text`. In the original
-   style code appends `[scenario.reviewer]` `no_evidence`: any `[n]` marker or real-world event breaks rule 8, and
-   `evidence_supported` is false.
+   style code appends `[scenario.reviewer]` `no_evidence`: any `[n]` marker or real-world event breaks rule 8.
 3. **User prompt**, in this order:
    - `PLAN:` and the BRIEF record plus `critical_service` (`_critical_service`, from the asset context); so
      PLAN carries `threat.threat_actions` whenever the writer's BRIEF did;
@@ -2676,17 +2670,16 @@ is `unchecked` with no warning, and none of this section's verdicts, notes or re
    action missing or only named breaks rule 1 (a note, not a blocker: a blocked draft whose one repair fails
    is dropped). The per-action field exists because an omission has no words to
    quote: in the experiments the reviewer caught 0 of 3 incomplete drafts with rule 1's quoted verdict alone,
-   and 3 of 3 with `threat_actions` (D40). Only `evidence_supported` judges the passage: true only if it states nothing but the cited entry's facts, plus
-   exactly one link, at its start, from an action the story tells to that entry; no such opening, any other link, an equated different act,
-   nearest not called related, an unstated consequence or a named user as the attacker makes it false.
+   and 3 of 3 with `threat_actions` (D40). Nothing judges the evidence sentence: code writes it from the source
+   (D65), and the reviewer is no longer asked `evidence_supported`.
 5. **The answer contract** (`PlanCheckAnswer`):
    ```text
    {"rules": {"1": "holds" | "broken: \"<exact words>\" - <reason>", ... "8": ...},
     "threat_actions": {"<each listed action>": "carried out" | "only named" | "missing"},
-    "same_threat": true|false, "same_impact": true|false, "evidence_supported": true|false}
+    "same_threat": true|false, "same_impact": true|false}
    ```
    Every verdict must be "holds" or start with "broken". `same_threat` and `same_impact` are required, so an answer without them
-   is asked again. `threat_actions` defaults to `{}`. `evidence_supported` is optional, and only `true` counts.
+   is asked again. `threat_actions` defaults to `{}`. An answer still carrying `evidence_supported` is read; it is ignored.
 6. **How the results are used:**
    - Each broken rule becomes a `plan_check` **note**, "Rule n: <its words>", at most 300 characters, at most
      10 (`_broken_rules`). Each `threat_actions` verdict other than "carried out" becomes one rule 1 note too,
@@ -2699,8 +2692,7 @@ is `unchecked` with no warning, and none of this section's verdicts, notes or re
    - A reviewer outage (`Unavailable`) is raised. The path waits as an outage and is written again on the next
      try; the writer's answer is not kept.
 7. **What is stored** (`plan_check_record`): `{status, problems, unsupported: [], same_threat, same_impact}`.
-   The verdicts are `null` when the check was not made. `evidence_supported` decides the passage (section 8.6)
-   but is **not stored**.
+   The verdicts are `null` when the check was not made.
 8. **One rewrite for a missing act** (D42; since 31-Oct-2026 part of round 2, one `repair_scenario` call for
    every slot that needs it, §8.0). When the review is `inconsistent` and an act
    the PLAN lists in `threat_actions` is not judged carried out (`actions_not_carried_out`: the PLAN's own
@@ -2728,73 +2720,85 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 - Model `openai/Kimi-K2.6`: 2,434 tokens in, 62 tokens out, 1.1 seconds, logged at 08:18:35.326 UTC.
 - The answer has no `threat_actions`: the run predates D40, and its PLAN had no list.
 - All 8 rules hold, so there is no note and the status is `consistent`. `same_threat` and `same_impact` are
-  true, so there is no blocker. `evidence_supported` is true, so the writer's passage may be cited.
+  true, so there is no blocker. `evidence_supported` is true, which then let the writer's passage be cited (today
+  no code reads it, D65).
 - Stored: `"plan_check": {"status": "consistent", "problems": [], "unsupported": [], "same_threat": true,
   "same_impact": true}`.
 
-### 8.6 The evidence passage (`_passage_problem`, `_cited`)
+### 8.6 The evidence sentence (`evidence_sentence`, `_cited`)
 
-> **In plain words:** The writer's closing evidence passage is added to the scenario only if it is present, short
-> enough, plain (no links, codes or marks) and, while the editor AI is on, confirmed by it. If any of that fails, code writes its
-> own short sentence from the same public source instead, and shows a warning. Either way the scenario ends with
-> one citation, [1], that points to the public source.
+> **In plain words:** The writer names the one step of its story the public source is about. Code then writes the
+> closing sentence itself: that step, a linking phrase, the source's title in quotes and who used it, all taken
+> from the source. If the step is missing or not plain, code uses its own short sentence from the same source
+> instead and shows a warning; no scenario is written again for it. Either way the scenario ends with one
+> citation, [1], that points to the public source.
 
-**How**
-1. In an evidence story only, `_reviewed` asks `_passage_problem(draft, check, cited)`, which runs
-   `_passage_faults` (also the writer's first-answer check, so a faulty passage was already asked again once with
-   why, D54) and then the reviewer's verdict. The checks run in this order; the first that fails gives the reason
-   (`Precedent`, `app/core/constants/evidence.py`):
-   1. the passage is empty: "none was written";
-   2. it has more words than the maximum of `EVIDENCE_STATEMENT_WORD_LIMIT` (default 80): "over its 80-word
-      limit";
-   3. it holds a "[" (a marker or a redaction), a link, a public id (CVE, ICSA, GHSA, MS, CAPEC, an ATT&CK
-      code, VU#), an internal label or an advisory id: "it holds a marker, a redaction, a link, a code or an
-      internal label";
-   4. it says a stock phrase ("real-world", "this attack", "this scenario", "documented", "reportedly",
-      "cited"; quoted titles aside): 'it says "{words}"';
-   5. it is more than one sentence: "it is more than one sentence";
-   6. for a technique only: the title is not in double quotes (straight or curly), or the passage opens with the
-      title, a user, "the technique(s)", "threat groups" or malware an explicit introducer names as evidence
-      ("Malware, such as …", "A malware family called …", "Techniques like …"; an ambiguous "Malware used by …"
-      or "associated with …" is left to the reviewer's `evidence_supported`, D62): 'it does not give the
-      title …' / "it opens with the evidence, not with this attacker's action";
-   7. the reviewer's `evidence_supported` is not true (also when the reviewer was skipped or failed): "the
-      reviewer did not confirm it against its source". Only while the reviewer is on (D64): off, checks 1-6
-      alone decide.
-2. A problem blanks the passage and adds a `citation_removed` **warning**, never a blocker: "The writer's
-   evidence passage was not cited ({reason}): the platform cites its own precedent sentence from the same source
-   instead."
-3. When the card is built (`written_record`, section 9), `_cited(brief, draft)` finds the cited entry again
+**How** (D65)
+1. When a slot's answer is read (`_read_slot_draft`), an evidence story's `evidence_step` goes to
+   `evidence_sentence(step, cited, place)` (`app/domain/scenario/write.py`). `cited` is the entry `_precedent`
+   picks (step 5); `place` is the set's job epoch plus the slot's place in the set (`write_set(chat, briefs,
+   epoch)`, the epoch passed from `write_job` through `PathWriter.write_set`).
+2. **The step is checked** (`_step_fault`); the first that fails gives the reason (`Precedent`,
+   `app/core/constants/evidence.py`):
+   1. it is empty: "none was written";
+   2. it holds a "[" (a marker or a redaction), a double quote (straight or curly), a link, a public id (CVE,
+      ICSA, GHSA, MS, CAPEC, an ATT&CK code, VU#), an internal label or an advisory id: "it holds a marker, a
+      redaction, a link, a code, an internal label or a quote";
+   3. it is more than one sentence: "it is more than one sentence";
+   4. it opens (a leading "the" aside) on the cited title or on a user: "it opens with the evidence, not with
+      this attacker's action";
+   5. the sentence it makes has more words than the maximum of `EVIDENCE_STATEMENT_WORD_LIMIT` (default 80): "its
+      sentence would run over the 80-word limit".
+3. **The sentence** (`_tied`): the step with its first letter capitalised and its final "." removed, a link, the
+   title in double quotes, then:
+   - a technique: ", " and a users form naming who used it, at most 2, as the evidence block names them ("the
+     APT41 group", "the NKAbuse malware", "the Triton campaign"), joined by "and", with "has" for one;
+   - a vulnerability or an advisory: ": " and its first stated fact.
+
+   The pools are in `Precedent`: `LINKS` for source-documented evidence (matches, mirrors, resembles, echoes, is
+   an example of, is a form of, corresponds to, reflects), `RELATED_LINKS` for nearest evidence (is related to,
+   is closely related to, relates to, is broadly related to, is loosely related to, is in the same family as)
+   and `USERS` ("a technique {names} {verb} used", "which {names} {verb} used", "used by {names}"). `place`
+   picks one of each, modulo its size: the 6 slots of a set never share a link, no two neighbouring slots
+   share a users form, and the next set (its epoch one on) starts one further on.
+4. A failed step leaves no sentence; `_checked` adds a `citation_removed` **warning**, never a blocker and never
+   a rewrite: "The writer's evidence step was not used ({reason}): the platform cites its own precedent sentence
+   from the same source instead." With nothing cited, or a cited entry whose title is cleaned away or holds a
+   "[" or an inner sentence end (it would break "… [1]."), there is no sentence and no warning: code's claim
+   stands.
+5. When the card is built (`written_record`, section 9), `_cited(brief, draft)` finds the cited entry again
    with `_precedent(brief.evidence)`: the first entry whose claim (`_claim`) is one plain sentence. The claim is
    code's own sentence: `Precedent.USED_BY` *This attack could use the "{technique}" technique, which {names}
    {verb} used*, `USED_RELATED` (*This attack is related to the "{technique}" technique, ...*) for a nearest
-   entry, or `RELATED_RECORD`
-   (*A related record: {fact}*) for a record that is not a technique.
-4. `supports` is the writer's passage with its final "." removed, else the claim. The statement becomes
+   entry, or `RELATED_RECORD` (*A related record: {fact}*) for a record that is not a technique.
+6. `supports` is code's sentence from the step, else the claim, its final "." removed. The statement becomes
    **narrative + " " + supports + " [1]."**
-5. `content.evidence` stores that one entry with `n: 1` and `supports`, beside `content.evidence_mode`,
-   `content.applicability` (how many cited entries are confirmed or unknown) and `content.intel_search`.
-6. A story that cites nothing is saved `blocked`. This cannot happen after `path_style`, which writes a threat
+7. `content.evidence` stores that one entry with `n: 1` and `supports`, beside `content.evidence_mode`,
+   `content.applicability` (how many cited entries are confirmed or unknown) and `content.intel_search`. Its keys
+   are unchanged: only the text of `supports` and of the statement's end is code's.
+8. A story that cites nothing is saved `blocked`. This cannot happen after `path_style`, which writes a threat
    with nothing citable in the original style.
+9. The reviewer sees the sentence in SCENARIO but judges none of it: no `evidence_supported` is asked or read.
+
+*Example*, one set at epoch 0 (the step is the writer's, the rest code's):
+
+| Slot | Step (writer) | Code adds |
+|---|---|---|
+| SC1 | Flooding the Enterprise Command & Control Centre Platform's network links | **matches** "Network Denial of Service", a technique the APT28 group and the NKAbuse malware have used |
+| SC2 | Seizing a privileged account on the Enterprise Command & Control Centre Platform | **mirrors** "Valid Accounts", which the APT41 group and the FIN8 group have used |
+| SC3 (nearest) | Gaining entry to the Intelligent Traffic Systems Platform through remote access | **relates to** "Exploitation of Remote Services", used by the Bad Rabbit malware and the NotPetya malware |
 
 **In the example**
 
-The writer's passage was cited:
-1. It was present.
-2. It is 48 words (counted with Python), under the 80-word default maximum. (The run's own setting is not stored
-   on the record; the passage passed whatever maximum the run used.)
-3. It has no "[", link, code, label or advisory id.
-4. The reviewer answered `evidence_supported: true`.
-
-So there was no `citation_removed` warning. Had the passage failed, code's own sentence for this entry would have
-been *This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric
-Power Attack campaign have used*. (We computed this by running `_claim` on the stored entry; the run did not use
-it.)
-
-This run predates D38 (2026-10-27) and D54 (2026-10-28). Its passage opens "In real-world attacks," and its last
-sentence, "Similar protocol command abuse could tamper with traffic signal operations", links the evidence to this
-asset. Today the writer starts from the attacker's action and makes its one link to the entry, and a reviewer that
-finds any other link answers `evidence_supported: false`, so code's own sentence above would be cited.
+The run predates D38 (2026-10-27), D54 (2026-10-28) and D65 (2026-10-30). Its writer wrote its own 48-word
+passage, opening "In real-world attacks,", and the reviewer answered `evidence_supported: true`, so it was cited
+with no `citation_removed` warning. Today the writer would give a step such as "Sending forged OT protocol
+commands to the Traffic Signal Control System", and the first slot of a set at epoch 0 would cite *Sending forged
+OT protocol commands to the Traffic Signal Control System matches "Command Message", a technique the Industroyer
+malware and the 2015 Ukraine Electric Power Attack campaign have used*. Had the step failed, code's own sentence
+would be *This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric
+Power Attack campaign have used* (we computed this by running `_claim` on the stored entry; the run did not use
+it).
 
 The saved statement ends:
 
@@ -2832,8 +2836,8 @@ by" fact (mitigations) is never shown to an AI, and the attacker goals were show
 ```
 
 **Why this matters:** each scenario goes through two independent safety nets: exact code rules that cannot be
-argued with, and an AI editor for meaning. Only a real-world claim that matches its public source reaches a
-reader, and it always comes with a link to that source.
+argued with, and an AI editor for meaning. The real-world claim is written by code from its public source, so it
+cannot misquote it, and it always comes with a link to that source.
 
 ---
 
@@ -4298,7 +4302,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `EVIDENCE_SIMILARITY_THRESHOLD` | 1.0, dev only (`.env.example`: 30, bge calibrated 2026-10-19) | evidence kept at or above this reranker score; outside dev with intelligence on it must be set, or start-up stops |
 | `THREAT_SCENARIO_WORD_LIMIT` | 150-200 | scenario statement words (max is hard) |
 | `RISK_STATEMENT_WORD_LIMIT` | 100-150 | risk statement words (max is hard) |
-| `EVIDENCE_STATEMENT_WORD_LIMIT` | 30-80 | evidence passage words (max is hard) |
+| `EVIDENCE_STATEMENT_WORD_LIMIT` | 30-80 | words of code's evidence sentence (over the max: code's own precedent is cited) |
 | `INITIAL_SET_SIZE`, `NEXT_SET_SIZE` | 6, 6 | paths written per set |
 | `TOTAL_SCENARIO_COUNT` | 0 (no cap) | paths selected per session |
 | `THREAT_SIMILARITY_THRESHOLD` | 75 | an AI threat that is a library threat, or takes a library type |
@@ -4350,7 +4354,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | Nearest evidence | When no record clears the bar, the closest records are used only as related context and labelled as such. |
 | Evidence mode | How a scenario's evidence was found: source-documented (cleared the bar), nearest (related only), or inferred (none found; written without). |
 | Brief | The fixed package of facts the writer AI receives: asset, threat, attacker, systems, and evidence. |
-| Writer | The AI that drafts the scenario statement, risk statement and evidence passage. |
+| Writer | The AI that drafts the scenario statement, risk statement and the step its evidence sentence opens on. |
 | Reviewer (plan check) | A second AI that checks the draft against the plan: same threat, same impact, evidence quoted faithfully. |
 | Blocker / warning / note | Blocker: the draft is not used. Warning: it is used, with a flag. Note: a remark for the person reviewing. |
 | Near-duplicate | A draft that repeats a scenario already held (same threat and kind, or the same words). It is never saved. |

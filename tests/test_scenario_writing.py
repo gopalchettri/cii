@@ -45,8 +45,6 @@ from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRe
 from app.domain.scenario.plan import gap_fill_prompt, planned_threat_record, relevance_gate_prompt
 from app.domain.scenario.results import build_scenario_view
 from app.domain.scenario.write import (
-    _PASSAGE,
-    _PASSAGE_ABOUT,
     PLAN_CHECK_SET_PROMPT,
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
@@ -357,30 +355,20 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert [n for n in named for prompt in prompts if n in prompt.casefold()] == []
     assert "Using access the threat only obtains (a stolen credential, secret or session)" in reviewer
     assert "including using access the threat only obtains" in reviewer
-    # Owner 2026-10-28: the evidence passage closes the story with one link to its action, no stock opener.
-    assert "In real-world attacks" not in writer and 'Never write "real-world"' in writer
-    assert "End with at" not in writer and "ONE complete sentence" in writer
-    # D60: it opens on the story's own step, on its named system, linked in words chosen for this sentence
-    opening = "Open the sentence by referring back to the one step of this story that the cited entry is"
-    assert opening in writer and "the system or asset where it happens, by name" in writer
-    assert "Then link that step to the cited entry in linking words chosen for this sentence." in writer
-    assert 'and say it is related when evidence_mode is "nearest"' in writer
-    assert 'called "the related technique"' not in writer and "where it reads best in the sentence" in writer
+    # D65: the writer gives only the step its evidence entry is about; code writes the sentence from it
+    assert "In real-world attacks" not in writer and "No field includes a real-world precedent" in writer
+    step = 'evidence_step: the one step of this story that the entry marked "cited": true is about'
+    assert step in writer and "as a gerund phrase naming the system or asset where it happens" in writer
+    assert "6 to 20 words, with no title, no group, malware or campaign name and no quotes" in writer
+    assert "the application writes the closing evidence sentence from evidence_step" in writer
+    assert '"evidence_statement"' not in writer and "words no other slot uses" not in writer
+    assert "evidence_supported" not in reviewer  # no code reads it: code's sentence states only its source
+    assert "except `evidence_statement`, which the platform writes from EVIDENCE" in reviewer
     assert "Never name it in scenario_statement: explain its exclusion only in system_reasons" in writer
     assert "End scenario_statement on this consequence." in writer
     assert 'No "no" system named in scenario_statement' in writer
-    assert "links that step to the entry in words no other slot uses" in writer
-    # review, 30 Oct: "with the system ..." inside "true ONLY if" read as a requirement, so a step on the
-    # asset or a system named a little differently would lose its sentence; the system may be named
-    assert "(it may name the system or asset it acts on, as the story names them)" in reviewer
-    assert 'never with "The attacker" or "This"' in writer  # owner 2026-10-28: 11 of 26 opened alike
     assert "The story may describe the attacker's steps in the cited entry's terms" in writer
     assert "Do not reshape the specified threat" not in writer  # owner 2026-10-28: it may fit the evidence
-    assert (
-        "plus exactly one link, at the passage's start, from an action `scenario_statement` tells" in reviewer
-    )
-    assert "false for a passage that does not open with such an action" in reviewer
-    assert "a named user presented as this scenario's attacker" in reviewer
     assert 'List an essential missing detail in assumptions as: "assumes <specific condition>".' in writer
     assert "the primary impact comes from an added step that is not part of the threat" in reviewer
     assert "every action its name states is its own" in gate
@@ -389,25 +377,23 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
 
 
 def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None:
-    """The customer's 25,000 tokens a minute: D60's wording grew each system prompt by under 1% (writer
-    21,434 and reviewer 8,675 characters before it). Each story slot's evidence line is sent once per slot in
-    every write and rewrite, so it is bounded too (review, 30 Oct: it had grown from 194 to 310). The set
-    note's word-range sentence added 160 (owner, 30 Oct: longer is fine without a material token cost)."""
-    assert len(writer_system_prompt()) <= 21_850 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 8_760
-    assert len(_PASSAGE) <= 275 and len(_PASSAGE_ABOUT) <= 205
+    """The customer's 25,000 tokens a minute: D65 (code writes the evidence sentence) cut the writer from
+    21,844 characters to 19,836 and the reviewer from 8,745 to 7,691 (the test settings' word ranges), and a
+    story slot no longer carries its own evidence line; each cap is the new size plus about 110 characters."""
+    assert len(writer_system_prompt()) <= 19_950 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 7_800
 
 
 def test_the_set_note_gives_every_slot_the_configured_word_ranges() -> None:
     """Risk statements ran short in sets (11 of 13 under 80 words, 30 Oct): the set note, the prompt's last
-    words, repeats each statement's range from the settings."""
+    words, repeats each statement's range from the settings (the evidence sentence is code's: none asked)."""
     note = writer_system_prompt().rpartition("SET OF SCENARIOS")[2]
     settings = get_settings()
     for field, (least, most) in (
         ("scenario_statement", settings.scenario_words),
         ("risk_statement", settings.risk_words),
-        ("evidence_statement", settings.evidence_words),
     ):
         assert f"{field} {least} to {most}" in note
+    assert "evidence_statement" not in note and "evidence_step" not in note
 
 
 def test_the_asset_and_its_affected_systems_form_one_whole() -> None:

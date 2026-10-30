@@ -209,31 +209,33 @@ class EvidenceMode(StrEnum):
 
 
 class Precedent:
-    """The sentence code cites in an evidence story when the writer's own passage cannot be: from the cited
-    entry's own facts; and why the passage was not cited."""
+    """The sentence code cites in an evidence story: the writer's step tied to the cited entry by a link and
+    a users form picked by the set's epoch and the slot's place (no two slots of a set share one), else code's
+    own sentence from the entry's facts; and why a step was not used."""
 
+    # a technique: the writer's step, a link, its title and who used it
+    SENTENCE: Final = '{step} {link} "{title}", {users}'
+    # a vulnerability or an advisory: its first fact in place of who used it
+    ABOUT_SENTENCE: Final = '{step} {link} "{title}": {fact}'
+    LINKS: Final = (
+        "matches", "mirrors", "resembles", "echoes", "is an example of", "is a form of", "corresponds to",
+        "reflects",
+    )  # fmt: skip
+    # nearest evidence: only related, and said so
+    RELATED_LINKS: Final = (
+        "is related to", "is closely related to", "relates to", "is broadly related to",
+        "is loosely related to", "is in the same family as",
+    )  # fmt: skip
+    USERS: Final = ("a technique {names} {verb} used", "which {names} {verb} used", "used by {names}")
     USED_BY: Final = 'This attack could use the "{technique}" technique, which {names} {verb} used'
     # nearest evidence: only related, and said so
     USED_RELATED: Final = 'This attack is related to the "{technique}" technique, which {names} {verb} used'
     RELATED_RECORD: Final = "A related record: {fact}"
     NOT_WRITTEN: Final = "none was written"
-    TOO_LONG: Final = "over its {most}-word limit"
-    NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code or an internal label"
-    NOT_CONFIRMED: Final = "the reviewer did not confirm it against its source"
-    STOCK_WORDS: Final = 'it says "{words}"'
+    TOO_LONG: Final = "its sentence would run over the {most}-word limit"
+    NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code, an internal label or a quote"
     MANY_SENTENCES: Final = "it is more than one sentence"
-    NO_TITLE: Final = 'it does not give the title "{title}" in double quotes'
     OPENS_ON_EVIDENCE: Final = "it opens with the evidence, not with this attacker's action"
-    # the re-ask problem quoted to the writer, within a re-ask problem's 200 characters (the slot's own
-    # evidence line holds the whole rule)
-    REASK: Final = (
-        "evidence_statement cannot be cited: {reason}. Write it again as this slot's evidence line says"
-    )
-    # a story linking its step to its title like an earlier slot of the set (never names a slot label)
-    REPEATED_LINK: Final = (
-        'evidence_statement links its step to its title with "{words}" like another slot: link them in '
-        "words no slot uses (taken: {used})"
-    )
 
 
 class EvidenceBlock:

@@ -69,7 +69,8 @@ class ScenarioDraft:
     assumptions: tuple[str, ...]
     entry_point: str  # one of the brief's entry_point_options; "" = the asset itself
     system_reasons: tuple[tuple[str, str], ...] = ()  # (system name, its one-sentence reason), brief order
-    evidence_statement: str = ""  # a story's closing passage tied to its cited entry ("" when none)
+    evidence_statement: str = ""  # a story's closing sentence code built from its step ("" when none)
+    evidence_step: str = ""  # the writer's step of its story that the cited entry is about
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,6 @@ class PlanCheck:
     # The reviewer's verdicts on meaning; True when the check could not be made (stored as None then).
     same_threat: bool = True  # the statement, and the cause its risk gives, carry the plan's threat
     same_impact: bool = True  # the risk is the consequence of that same scenario's impact
-    evidence_supported: bool = False  # the passage states only its cited entry's facts
     actions_not_carried_out: tuple[str, ...] = ()  # the brief's listed actions not judged "carried out"
 
 
@@ -121,7 +121,7 @@ class ScenarioAnswer(BaseModel):
     entry_point: str
     system_reasons: dict[str, str] = {}  # one sentence per supporting system, by name
     action_sentences: dict[str, str] = {}  # per listed action, the statement's sentence that carries it out
-    evidence_statement: str | None = ""  # none given is never a re-ask: code cites its own sentence
+    evidence_step: str | None = ""  # none given is never a re-ask: code cites its own sentence
 
     @field_validator("scenario_title", "scenario_statement", "risk_statement")
     @classmethod
@@ -139,7 +139,6 @@ class PlanCheckAnswer(BaseModel):
     threat_actions: dict[str, str] = {}  # per listed action: "carried out", "only named" or "missing"
     same_threat: bool  # required, so a reviewer that leaves them out is re-asked, never assumed
     same_impact: bool
-    evidence_supported: bool | None = None  # only True counts: none given keeps code's own sentence
 
     @model_validator(mode="after")
     def check_every_rule_has_a_verdict(self) -> "PlanCheckAnswer":

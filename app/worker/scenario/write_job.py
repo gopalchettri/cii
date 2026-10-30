@@ -149,7 +149,9 @@ class BatchWriter:
         paths, started, numbered = self._progress.paths, utc_now(), enumerate(self._batch, start=1)
         slots = [(slot_label(place), paths[key]) for place, key in numbered if key in to_write]
         outages: dict[str, BaseException] = {}
-        for path_id, outcome in self._paths.write_set(slots, self._lease.attempts >= Lease.MAX_ATTEMPTS):
+        for path_id, outcome in self._paths.write_set(
+            slots, self._lease.attempts >= Lease.MAX_ATTEMPTS, self._lease.epoch
+        ):
             if isinstance(outcome, Exception):
                 outages[path_id] = outcome
             else:

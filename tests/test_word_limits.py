@@ -1,5 +1,5 @@
-"""The writer's prompt asks for THREAT_SCENARIO_WORD_LIMIT, RISK_STATEMENT_WORD_LIMIT and
-EVIDENCE_STATEMENT_WORD_LIMIT in its slots, the upper number as a hard limit."""
+"""The writer's prompt asks for THREAT_SCENARIO_WORD_LIMIT and RISK_STATEMENT_WORD_LIMIT in its slots, the
+upper number as a hard limit; EVIDENCE_STATEMENT_WORD_LIMIT caps code's own evidence sentence."""
 
 import pytest
 
@@ -18,11 +18,11 @@ def test_the_writer_asks_for_the_configured_lengths(monkeypatch: pytest.MonkeyPa
         EVIDENCE_STATEMENT_WORD_LIMIT="30-80",
     )
     monkeypatch.setattr(write, "get_settings", lambda: settings)
-    slots = (Writing.SCENARIO_WORDS_SLOT, Writing.RISK_WORDS_SLOT, Writing.EVIDENCE_WORDS_SLOT)
+    slots = (Writing.SCENARIO_WORDS_SLOT, Writing.RISK_WORDS_SLOT)
     assert all(slot in WRITER_SYSTEM_PROMPT for slot in slots)
     filled = with_word_limits(WRITER_SYSTEM_PROMPT)
     assert "150 to 200 WORDS, NEVER MORE" in filled and "100 to 150 WORDS, NEVER MORE" in filled
-    assert "evidence_statement: 30 to 80 words." in filled
+    assert "30 to 80" not in filled  # D65: the evidence sentence is code's, its limit checked by code
     assert "The upper number of each range is a hard limit." in filled
     assert not any(slot in filled for slot in slots)
 

@@ -165,7 +165,7 @@ def plan_check_record(check: PlanCheck) -> dict[str, Any]:
         "same_threat": check.same_threat if made else None,
         "same_impact": check.same_impact if made else None,
     }
-    # stored field: a passage the reviewer did not confirm is never cited, so none is unsupported
+    # stored field: code builds the cited sentence from its source's own facts, so none is unsupported
     return {"status": check.status, "problems": list(check.problems), "unsupported": [], **verdicts}
 
 
@@ -200,8 +200,6 @@ PLAN_CHECK_SYSTEM_PROMPT: str = PROMPTS["scenario"]["reviewer"]["text"]
 PLAN_CHECK_SET_PROMPT: str = PLAN_CHECK_SYSTEM_PROMPT + PROMPTS["scenario"]["reviewer"]["set"]
 #: A slot's line with intelligence off, or nothing citable found: no evidence is fabricated or implied.
 NO_EVIDENCE: str = _WRITER["no_evidence"].strip()
-_PASSAGE: str = _WRITER["passage"].strip()  # a story slot's evidence sentence, its cited title filled in
-_PASSAGE_ABOUT: str = _WRITER["passage_about"].strip()  # the same for a vulnerability or an advisory
 _REPAIR: str = _WRITER["repair"]  # a slot's listed actions its review found not carried out
 _REWRITE: str = _WRITER["rewrite"]  # a slot's problems in its earlier answer
 _NO_EVIDENCE_REVIEW: str = PROMPTS["scenario"]["reviewer"]["no_evidence"].strip()
@@ -228,20 +226,8 @@ def writer_system_prompt() -> str:
 def writer_slot(label: str, brief: WriterBrief, note: str = "") -> str:
     """One slot of the writer's user prompt: its BRIEF, its evidence or the line saying none is given, and
     any `note` (a rewrite's problems or a repair's actions)."""
-    evidence = f"{evidence_block(brief)}{_passage_line(brief)}" if _is_story(brief) else NO_EVIDENCE
+    evidence = evidence_block(brief) if _is_story(brief) else NO_EVIDENCE
     return f"SLOT {label}\nBRIEF:\n{_brief_text(brief)}\n{evidence}{note}"
-
-
-def _passage_line(brief: WriterBrief) -> str:
-    """Under a story slot's evidence: what its evidence sentence must do, with the cited title it must quote
-    (in a set the writer drops the rule otherwise: 13 of 13 first drafts, 29 Oct)."""
-    cited = _cited_entry(brief)
-    if cited is None:
-        return ""
-    if cited.get("kind") != IntelKind.TECHNIQUE:
-        return f"\n{_PASSAGE_ABOUT}"
-    title = (_safe_facts([str(cited.get("title") or "")]) or [""])[0]
-    return f"\n{_PASSAGE.format(title=title)}" if title else ""
 
 
 def plan_check_slot(label: str, brief: WriterBrief, draft: ScenarioDraft) -> str:
@@ -279,12 +265,11 @@ def _brief_text(brief: WriterBrief) -> str:
 
 
 def with_word_limits(template: str) -> str:
-    """`template` with the scenario, risk and evidence word limits in their slots: "150 to 200"."""
+    """`template` with the scenario and risk word limits in their slots: "150 to 200"."""
     settings = get_settings()
     slots = (
         (Writing.SCENARIO_WORDS_SLOT, settings.scenario_words),
         (Writing.RISK_WORDS_SLOT, settings.risk_words),
-        (Writing.EVIDENCE_WORDS_SLOT, settings.evidence_words),
     )
     for slot, limits in slots:
         template = template.replace(slot, _spoken(limits))
@@ -308,15 +293,21 @@ def evidence_block(brief: WriterBrief) -> str:
 
 
 def _users_and_facts(facts: list[str]) -> dict[str, list[str]]:
-    """Who used the technique as a reader names them ("the APT41 group"), apart from its other facts: the
-    writer never sees, so never copies, the stored "X, a threat group, has used this technique." wording."""
-    used_by = []
+    """Who used the technique as a reader names them, apart from its other facts: the writer never sees the
+    stored "X, a threat group, has used this technique." wording."""
+    used_by = _reader_names(facts)
+    rest = [fact for fact in facts if not fact.endswith(_USER_FACT_END)]  # an id-only campaign's too
+    return ({"used_by": used_by} if used_by else {}) | {"facts": rest}
+
+
+def _reader_names(facts: list[str]) -> list[str]:
+    """Who used the technique, from its user facts, as a reader names them ("the APT41 group")."""
+    names = []
     for match in filter(None, map(_USER.fullmatch, facts)):
         kind = _USER_KINDS.get(match["what"] or "")
         named = f"the {match['name']} {kind}" if kind else match["name"]
-        used_by.append(f"the {match['campaign']}" if match["campaign"] else named)
-    rest = [fact for fact in facts if not fact.endswith(_USER_FACT_END)]  # an id-only campaign's too
-    return ({"used_by": used_by} if used_by else {}) | {"facts": rest}
+        names.append(f"the {match['campaign']}" if match["campaign"] else named)
+    return names
 
 
 def _stated_facts(entry: dict[str, Any]) -> list[str]:
@@ -662,21 +653,7 @@ def _named_facts(name: str, facts: dict[str, Any]) -> dict[str, Any]:
 #: The planner's aliases and slots (SYS1, THR7) and a set's slots (SC2): never in a brief, so one in a
 #: scenario was made up or leaked from another slot.
 _INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR|SC)\d+\b")
-#: Phrases a story's closing sentence never uses: stock openers and talk about sources (owner 2026-10-28).
-_STOCK_WORDS = re.compile(
-    r"\b(?:real[- ]world|this attack|this scenario|documented|reportedly|cited)\b", re.IGNORECASE
-)
-#: A closing sentence that opens with the evidence itself instead of this attacker's action: the technique(s),
-#: threat groups, or malware an explicit introducer names as evidence ("Malware, such as ..."). An ambiguous
-#: opening ("Malware used by ...") is left to the reviewer's evidence_supported rule.
-_EVIDENCE_OPENER = re.compile(
-    r"(?:the |a |an )?(?:related )?(?:techniques?|threat (?:groups?|actors?))\b"
-    r"|(?:the |a |an )?(?:malicious software|malware)(?:\s+(?:famil(?:y|ies)|tools?|strains?))?,?\s+"
-    r"(?:such as|called|named|known as|like|including)\b",
-    re.IGNORECASE,
-)
-_QUOTED = re.compile(r'"[^"]*"')
-_LEADING_ARTICLE = re.compile(r'^(?:the\s+)?"?', re.IGNORECASE)
+_LEADING_ARTICLE = re.compile(r"^the\s+", re.IGNORECASE)
 #: A public advisory number: CVE, CISA ICS advisory (ICSA, ICSMA), GitHub (GHSA), Microsoft bulletin, CERT/CC.
 _ADVISORY_ID = re.compile(
     r"\b(?:CVE-\d{4}-\d{4,}|ICSM?A-\d{2}-\d{3}-\d{2}[A-Z]?|GHSA(?:-[0-9a-z]{4}){3}|MS\d{2}-\d{3})\b|\bVU#\d+",
@@ -688,7 +665,7 @@ _ECHO_SANITISER = UntrustedTextSanitiser(ECHO_PATTERNS, (), ())
 def check_exact_rules(draft: ScenarioDraft, brief: WriterBrief) -> tuple[Finding, ...]:
     """Every exact finding in the texts the card serves: made-up labels, advisory ids the brief did not give
     (any while intelligence is off), any marker the writer wrote and instructions echoed from untrusted
-    evidence, in the evidence passage too (its other faults only keep it from being cited)."""
+    evidence, in the evidence sentence too (its step's other faults only keep it from being cited)."""
     reasons = tuple(reason for _, reason in draft.system_reasons)
     texts = (draft.title, draft.statement, draft.risk, *draft.assumptions, *reasons)
     text = "\n".join(texts)
@@ -742,34 +719,34 @@ class _Slot:
 
     label: str
     brief: WriterBrief
+    place: int  # the set's epoch plus its place in the set: picks its evidence sentence's link and users form
     draft: ScenarioDraft | None = None  # its usable draft; a repair's while it is written
     problems: tuple[str, ...] = ()  # why the second round writes it again
-    relink: str = ""  # a clean draft's link repeated from another slot: rewritten once reviewed, draft kept
     review: PlanCheckAnswer | None = None  # its usable review
     review_problems: tuple[str, ...] = ()  # why its review is asked again (unusable, or no action judged)
-    first: WrittenScenario | None = None  # its reviewed first draft while its repair or relink is written
+    first: WrittenScenario | None = None  # its reviewed first draft while its repair is written
 
 
 def write_set(
-    chat: ChatModel, briefs: Sequence[tuple[str, WriterBrief]]
+    chat: ChatModel, briefs: Sequence[tuple[str, WriterBrief]], epoch: int = 0
 ) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """Each slot's scenario (or failure card) as soon as it is final, in at most 4 AI calls: one write and one
     review, then one rewrite for the slots that need it (unreadable, a re-ask fault, or listed actions or a
-    reviewer's mismatch to repair or a repeated link, each with its reviewed draft kept) and one review for
-    those and the slots whose review is asked again (a relink among them is not rewritten: a clean draft is
-    never risked for variety); there is no third round. With the reviewer off (D64) there is no review call,
-    so at most 2. A whole write answer still unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an
-    outage raises Unavailable."""
-    slots = [_Slot(label, brief) for label, brief in briefs]
+    reviewer's mismatch to repair, each with its reviewed draft kept) and one review for those and the slots
+    whose review is asked again; there is no third round. With the reviewer off (D64) there is no review
+    call, so at most 2. `epoch` (the set's job epoch) rotates the evidence sentences' links from set to set.
+    A whole write answer still unusable raises UnreadableAiAnswer or TruncatedAiAnswer; an outage raises
+    Unavailable."""
+    # ponytail: the place within this call; a later batch or retry of the same set may repeat a link
+    slots = [_Slot(label, brief, epoch + place) for place, (label, brief) in enumerate(briefs)]
     if not slots:
         return
     blocks = [(slot.label, writer_slot(slot.label, slot.brief)) for slot in slots]
     answers = _ask_set(chat, AiTask.WRITE_SCENARIO, writer_system_prompt(), blocks, "scenarios")
     for slot in slots:
         item = answers.get(slot.label)
-        slot.draft, problems = _read_slot_draft(slot.brief, item)
+        slot.draft, problems = _read_slot_draft(slot, item)
         slot.problems = tuple(problems if slot.draft is None else _first_answer_faults(slot.brief, item))
-    _flag_repeated_links(slots)
     _review(chat, [slot for slot in slots if not slot.problems and _reviewable(slot)])
     second = []
     for slot in slots:
@@ -782,10 +759,8 @@ def write_set(
 
 def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, WrittenScenario | PathFailure]]:
     """One rewrite call for the slots to write again (each told its problems or its repair), then one review
-    call for every slot with a draft to judge. A relink whose first review is asked again has no reviewed
-    draft to fall back on, so it is never rewritten: its clean draft is reviewed again and its repeated link
-    cited (a repeat never blocks). On an outage each slot keeps its usable draft (_firsts_kept); one with
-    none raises."""
+    call for every slot with a draft to judge (one whose review is asked again is reviewed again, never
+    rewritten). On an outage each slot keeps its usable draft (_firsts_kept); one with none raises."""
     rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
     try:
         blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
@@ -846,28 +821,27 @@ def _with_ampersands(value: Any) -> Any:
     return value
 
 
-def _read_slot_draft(
-    brief: WriterBrief, item: dict[str, Any] | None
-) -> tuple[ScenarioDraft | None, list[str]]:
+def _read_slot_draft(slot: _Slot, item: dict[str, Any] | None) -> tuple[ScenarioDraft | None, list[str]]:
     """A slot's draft from its item, or its problems: no item, another threat copied back, or a hard fault
-    (_read_draft); with no evidence given, a passage is never kept."""
+    (_read_draft); a story's closing sentence is code's, from its step (none with no evidence given)."""
+    brief = slot.brief
     if item is None:
         return None, [_SLOT_MISSING]
     if name_match_key(str(item.get("threat") or "")) != name_match_key(brief.threat):
         return None, [_THREAT_NOT_COPIED]  # another slot's answer, or none: written again
     systems = tuple(system.name for system in brief.supporting_systems)
     draft, problems = _read_draft(item, brief_entry_point_options(brief), systems)
-    if draft is not None and not _is_story(brief):
-        draft = dataclasses.replace(draft, evidence_statement="")
+    if draft is not None:
+        cited = _cited_entry(brief) if _is_story(brief) else None
+        sentence = evidence_sentence(draft.evidence_step, cited, slot.place)[0]
+        draft = dataclasses.replace(draft, evidence_statement=sentence)
     return draft, problems
 
 
 def _first_answer_faults(brief: WriterBrief, item: dict[str, Any] | None) -> list[str]:
     """A first answer's faults that have it written again (its draft is kept should that fail): a listed
-    action shown in no sentence of its own story, or a story's closing sentence that cannot be cited."""
-    answer = item or {}
-    faults = _acts_without_a_sentence(answer, brief.threat_actions) if brief.threat_actions else []
-    return faults + (_passage_answer_faults(answer, _cited_entry(brief)) if _is_story(brief) else [])
+    action shown in no sentence of its own story."""
+    return _acts_without_a_sentence(item or {}, brief.threat_actions) if brief.threat_actions else []
 
 
 def _reviewable(slot: _Slot) -> bool:
@@ -929,11 +903,11 @@ def _draft_of(slot: _Slot) -> ScenarioDraft:
 
 def _first_round_end(slot: _Slot) -> WrittenScenario | None:
     """The slot's scenario when the first round settles it; None while the second round must write or
-    review it again (the reviewed first draft of an act or mismatch repair, or of a relink, is kept on it)."""
+    review it again (the reviewed first draft of an act or mismatch repair is kept on it)."""
     if slot.draft is None or slot.problems or slot.review_problems:
         return None
     written = _checked(slot)
-    if slot.relink or _listed_actions(written.plan_check) or _mismatched(written):
+    if _listed_actions(written.plan_check) or _mismatched(written):
         slot.first = written
         return None
     return written
@@ -960,15 +934,14 @@ def _mismatch_problems(written: WrittenScenario) -> tuple[str, ...]:
 
 
 def _note(slot: _Slot) -> str:
-    """What a slot's rewrite is told: the listed actions to repair, then a mismatch's review, its earlier
-    answer's problems and its repeated link."""
+    """What a slot's rewrite is told: the listed actions to repair, then a mismatch's review and its earlier
+    answer's problems."""
     actions = _listed_actions(slot.first.plan_check) if slot.first else ()
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in actions)
     # a mismatch's review is its rewrite's whole instruction: it keeps a stored problem's size
     reviewed = _mismatch_problems(slot.first) if slot.first else ()
     mismatch = [_within_reask(problem, Writing.PROBLEM_MAX_CHARS) for problem in reviewed]
-    others = [_within_reask(p) for p in (*slot.problems, *((slot.relink,) if slot.relink else ()))]
-    problems = (*mismatch, *others)
+    problems = (*mismatch, *(_within_reask(problem) for problem in slot.problems))
     shown = problems[: AiLimits.REASK_MAX_PROBLEMS]
     repair = _REPAIR.replace("{actions}", listed) if actions else ""
     return repair + (_REWRITE.replace("{problems}", "; ".join(shown)) if problems else "")
@@ -995,7 +968,7 @@ def _take_rewrite(slot: _Slot, item: dict[str, Any] | None) -> None:
     """The slot's rewrite in place of its draft when it reads; else a repair is dropped (its first draft
     stays) and a slot keeps its usable first draft, if it had one, also over a rewrite an exact rule blocks
     when that draft is not blocked (it is reviewed in round 2 instead)."""
-    draft, problems = _read_slot_draft(slot.brief, item)
+    draft, problems = _read_slot_draft(slot, item)
     old = slot.draft if slot.first is None else None
     if draft and old and _exactly_blocked(draft, slot.brief) and not _exactly_blocked(old, slot.brief):
         draft = None
@@ -1015,17 +988,14 @@ def _second_round_end(slot: _Slot) -> WrittenScenario | PathFailure:
 
 
 def _repair_or_first(slot: _Slot, first: WrittenScenario) -> WrittenScenario:
-    """The repair, marked rewritten, when it fixes the first draft (_fixes) with a review not asked again and,
-    when only its link was asked again, keeps the closing sentence the first draft had cited; else the first
-    draft."""
+    """The repair, marked rewritten, when it fixes the first draft (_fixes) with a review not asked again;
+    else the first draft."""
     if slot.draft is None:
         log.warning(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="kept_first", message="; ".join(slot.problems))
         return first
     repair = _checked(slot)
-    link_only = not (_listed_actions(first.plan_check) or _mismatched(first))
-    lost = link_only and bool(first.draft.evidence_statement) and not repair.draft.evidence_statement
     # a blocked first draft costs its path: any reviewed repair no rule blocks is better
-    better = _reviewed_unblocked(repair) if _mismatched(first) else _fixes(repair, first) and not lost
+    better = _reviewed_unblocked(repair) if _mismatched(first) else _fixes(repair, first)
     fixed = better and not slot.review_problems
     log.info(LogEvent.WRITER_SCENARIO_REPAIRED, outcome="fixed" if fixed else "kept_first")
     return dataclasses.replace(repair, rewritten=True) if fixed else first
@@ -1054,8 +1024,8 @@ def _firsts_kept(slots: list[_Slot], outage: Unavailable) -> Iterator[tuple[str,
 
 def _checked(slot: _Slot, outage: Unavailable | None = None) -> WrittenScenario:
     """The slot's draft with its exact findings and, unless one blocks it or the reviewer is off (unchecked,
-    no warning), its review's verdict (`outage`: why it has none); a story's passage that cannot be cited is
-    dropped with a warning (code cites its own sentence), never a blocker."""
+    no warning), its review's verdict (`outage`: why it has none); a story whose step cannot open code's
+    sentence gets a warning (code cites its own precedent), never a blocker."""
     draft, brief = _draft_of(slot), slot.brief
     findings = check_exact_rules(draft, brief)
     check: PlanCheck
@@ -1066,8 +1036,8 @@ def _checked(slot: _Slot, outage: Unavailable | None = None) -> WrittenScenario:
     else:
         not_made = str(outage) if outage else _rejected(AiTask.PLAN_CHECK, slot.review_problems)
         check, notes = _plan_check_of(brief, slot.review, not_made)
-    if _is_story(brief) and (problem := _passage_problem(draft, check, _cited_entry(brief))):
-        draft = dataclasses.replace(draft, evidence_statement="")
+    cited = _cited_entry(brief) if _is_story(brief) else None
+    if problem := evidence_sentence(draft.evidence_step, cited, slot.place)[1]:
         message = FindingMessage.CITATION_REMOVED.format(reason=problem)
         notes = (*notes, Finding(FindingCode.CITATION_REMOVED, message))
     return WrittenScenario(draft, (*findings, *notes), check, Route.STANDALONE, brief.threat)
@@ -1099,7 +1069,6 @@ def _plan_check_of(
         broken,
         same_threat=answer.same_threat,
         same_impact=answer.same_impact,
-        evidence_supported=answer.evidence_supported is True,
         actions_not_carried_out=_not_carried_out(brief.threat_actions, answer),
     )
     notes = tuple(Finding(FindingCode.PLAN_CHECK, problem) for problem in broken)
@@ -1203,70 +1172,6 @@ def _quote_in_story(quote: str, statement: str) -> bool:
     return bool(quote) and (quote in statement or (long_tail and tail in statement))
 
 
-def _passage_answer_faults(answer: dict[str, Any], cited: dict[str, Any] | None) -> list[str]:
-    """The problem when `answer`'s closing sentence cannot be cited as written (_passage_faults)."""
-    reason = _passage_faults(" ".join(str(answer.get("evidence_statement") or "").split()), cited)
-    return [Precedent.REASK.format(reason=reason)] if reason else []
-
-
-#: Words that never tell two links apart; "related" is one (nearest evidence must say it).
-_LINK_FILLERS = frozenset({"the", "a", "an", "technique", "related"})
-#: A link ending in one of these is told by its last two words ("form of", "corresponds to").
-_LINK_JOINERS = frozenset({"of", "to", "with", "as", "by", "in", "on", "for", "from", "like", "under"})
-
-
-def passage_link(passage: str) -> str:
-    """The words a closing sentence links its step to its quoted title with ('' with no quoted title)."""
-    return _link_words(passage)[0]
-
-
-def _link_words(passage: str) -> tuple[str, str]:
-    """(passage_link's key, the writer's own words from its first word to the title); ('', '') with no
-    quoted title."""
-    # ponytail: heuristic, the last word before the title (two after a joiner); widen if repeats slip past
-    head, quote, _ = passage.replace("\u201c", '"').partition('"')
-    words = re.findall(r"[\w'-]+", head)
-    kept = [place for place, word in enumerate(words) if word.casefold() not in _LINK_FILLERS]
-    if not (quote and kept):
-        return "", ""
-    span = kept[-2:] if words[kept[-1]].casefold() in _LINK_JOINERS else kept[-1:]
-    return " ".join(words[place].casefold() for place in span), " ".join(words[span[0] :])
-
-
-def _flag_repeated_links(slots: Sequence[_Slot]) -> None:
-    """A clean story slot linking like an earlier clean one is written again, told the links taken; it is
-    reviewed first, so its draft stays should the rewrite do worse (_repair_or_first, _firsts_kept). With the
-    reviewer off a rewrite could not be judged better, so a repeat is only logged."""
-    # never a citation fault (_passage_faults): a repeat that survives its rewrite is still cited
-    links = {
-        slot.label: _link_words(_draft_of(slot).evidence_statement)
-        for slot in slots
-        if not slot.problems and _is_story(slot.brief) and _reviewable(slot)
-    }
-    taken: dict[str, str] = {}  # each link's first slot: it keeps its words
-    for label, (link, _) in links.items():
-        if link:
-            taken.setdefault(link, label)
-    used = [links[label][1] for label in taken.values()]
-    repeats = {label: words for label, (link, words) in links.items() if link and taken[link] != label}
-    review_on = _review_on()
-    for slot in slots:
-        if review_on and slot.label in repeats:
-            slot.relink = _repeated_link(repeats[slot.label], used)
-    # the prompt's variety rule is not holding (D60): fix the prompt, not the guard
-    if len(repeats) > 1 or (repeats and not review_on):
-        log.warning(LogEvent.WRITER_LINKS_REPEATED, slots=len(repeats))
-
-
-def _repeated_link(words: str, used: Sequence[str]) -> str:
-    """A repeated link's problem, listing the taken links that fit a re-ask problem's size, each whole."""
-    room = AiLimits.REASK_PROBLEM_CHARS - len(Precedent.REPEATED_LINK.format(words=words, used=""))
-    listed = ", ".join(f'"{link}"' for link in used)
-    while listed and len(listed) > room:
-        listed = listed.rpartition(", ")[0]
-    return Precedent.REPEATED_LINK.format(words=words, used=listed)
-
-
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
     """True when `repair` was reviewed, is not blocked (another threat or impact blocks), has no listed action
     to repair (_listed_actions) and breaks no rule `first` held (each problem starts "Rule n:")."""
@@ -1279,43 +1184,56 @@ def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
     return repair_rules <= first_rules
 
 
-def _passage_problem(draft: ScenarioDraft, check: PlanCheck, cited: dict[str, Any] | None) -> str:
-    """Why the writer's evidence passage cannot be cited ('' when it can): code's own checks, then the
-    reviewer's confirmation while it is on (the re-ask's answer is not checked again before this)."""
-    fault = _passage_faults(draft.evidence_statement, cited)
-    return fault or ("" if check.evidence_supported or not _review_on() else Precedent.NOT_CONFIRMED)
+# --- the evidence sentence: built by code from the writer's step and the cited entry
 
 
-def _passage_faults(passage: str, cited: dict[str, Any] | None) -> str:
-    """Why a story's closing sentence cannot be cited as written ('' when it can): none, too long, a marker
-    or code, a stock phrase, more than one sentence; for a technique, no quoted title, or an opening on the
-    evidence (the technique, who used it) instead of this attacker's action."""
-    most = get_settings().evidence_words[1]
-    if not passage:
-        return Precedent.NOT_WRITTEN
-    if len(passage.split()) > most:
-        return Precedent.TOO_LONG.format(most=most)
-    # a "[" is a marker or a redaction, as code's own precedent refuses it
-    if "[" in passage or any(
-        pattern.search(passage) for pattern in (_URL, ID_IN_TEXT, _INTERNAL_LABEL, _ADVISORY_ID)
-    ):
-        return Precedent.NOT_PLAIN
-    plain = passage.replace("\u201c", '"').replace("\u201d", '"')
-    unquoted = _QUOTED.sub('""', plain)  # a title's own words never count
-    if stock := _STOCK_WORDS.search(unquoted):
-        return Precedent.STOCK_WORDS.format(words=stock.group())
-    if _SENTENCE_END.search(unquoted.strip()):
-        return Precedent.MANY_SENTENCES
-    if cited is None or cited.get("kind") != IntelKind.TECHNIQUE:
-        return ""  # a vulnerability or advisory is told by its facts: no title, no users
-    title = (_safe_facts([str(cited.get("title") or "")]) or [""])[0]
-    if title and not re.search(f'(?i)"{re.escape(title)}[.,]?"', plain):
-        return Precedent.NO_TITLE.format(title=title)
+def evidence_sentence(step: str, cited: dict[str, Any] | None, place: int) -> tuple[str, str]:
+    """(the closing sentence: the writer's `step`, a link, the cited entry's title and who used it, or its
+    first fact; why the step cannot open it, '' when it can). The sentence is '' when the step fails or
+    nothing is tied: code's precedent (_claim) is cited then."""
+    title = (_safe_facts([str((cited or {}).get("title") or "")]) or [""])[0]
+    # nothing to tie a step to, or a title that would break the marker: code's precedent stands alone
+    if cited is None or not title or "[" in title or _SENTENCE_END.search(title):
+        return "", ""
+    step = " ".join(step.split()).rstrip(" .,;:")
     facts = _safe_facts(_stated_facts(cited))
+    if fault := _step_fault(step, title, facts):
+        return "", fault
+    sentence = _tied(step[:1].upper() + step[1:], cited, title, facts, place)
+    most = get_settings().evidence_words[1]
+    if len(sentence.split()) > most:
+        return "", Precedent.TOO_LONG.format(most=most)
+    return sentence, ""
+
+
+def _tied(step: str, cited: dict[str, Any], title: str, facts: list[str], place: int) -> str:
+    """`step` tied to the cited entry by a link (a related one for nearest evidence) and, for a technique, a
+    users form: `place` picks both, so the 6 slots of a set never share a link and use each form twice."""
+    links = Precedent.RELATED_LINKS if cited.get("nearest") else Precedent.LINKS
+    link = links[place % len(links)]
+    if cited.get("kind") != IntelKind.TECHNIQUE:
+        fact = facts[0].removesuffix(".")
+        return Precedent.ABOUT_SENTENCE.format(step=step, link=link, title=title, fact=fact)
+    names = _reader_names(facts)[: EvidenceLimits.REAL_WORLD_USERS]
+    form = Precedent.USERS[place % len(Precedent.USERS)]
+    users = form.format(names=" and ".join(names), verb="has" if len(names) == 1 else "have")
+    return Precedent.SENTENCE.format(step=step, link=link, title=title, users=users)
+
+
+def _step_fault(step: str, title: str, facts: list[str]) -> str:
+    """Why the writer's step cannot open code's sentence ('' when it can): none, a marker, redaction, link,
+    code, label or quote, more than one sentence, or an opening on the cited title or on who used it."""
+    if not step:
+        return Precedent.NOT_WRITTEN
+    marked = any(mark in step for mark in '["“”')  # "[": a marker or a redaction
+    if marked or any(pattern.search(step) for pattern in (_URL, ID_IN_TEXT, _INTERNAL_LABEL, _ADVISORY_ID)):
+        return Precedent.NOT_PLAIN
+    if _SENTENCE_END.search(step):
+        return Precedent.MANY_SENTENCES
     users = [match["name"] or match["campaign"] for match in filter(None, map(_USER.fullmatch, facts))]
-    opening = _LEADING_ARTICLE.sub("", plain).casefold()
-    on_evidence = any(opening.startswith(name.casefold()) for name in (title, *users) if name)
-    return Precedent.OPENS_ON_EVIDENCE if on_evidence or _EVIDENCE_OPENER.match(unquoted) else ""
+    opening = _LEADING_ARTICLE.sub("", step).casefold()
+    on_evidence = any(opening.startswith(name.casefold()) for name in (title, *users))
+    return Precedent.OPENS_ON_EVIDENCE if on_evidence else ""
 
 
 def _cited_entry(brief: WriterBrief) -> dict[str, Any] | None:
@@ -1347,7 +1265,7 @@ def _read_draft(
         assumptions=tuple(assumption.strip() for assumption in reply.assumptions),
         entry_point=entry_point,
         system_reasons=reasons,
-        evidence_statement=" ".join((reply.evidence_statement or "").split()),
+        evidence_step=reply.evidence_step or "",
     )
     return draft, []
 
@@ -1442,8 +1360,8 @@ def _prompt_version_of(style: WriterStyle) -> str:
 
 
 def _cited(brief: WriterBrief, draft: ScenarioDraft) -> tuple[str, list[dict[str, Any]]]:
-    """An evidence story's statement ending in its passage (the writer's, else code's precedent), citing [1],
-    and the one entry it cites."""
+    """An evidence story's statement ending in its closing sentence (code's, from the writer's step, else
+    code's precedent), citing [1], and the one entry it cites."""
     found = _precedent(brief.evidence) if _is_story(brief) else None
     if found is None:
         return draft.statement, []

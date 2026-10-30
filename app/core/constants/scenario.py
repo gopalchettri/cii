@@ -14,7 +14,6 @@ class Writing:
     PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
-    EVIDENCE_WORDS_SLOT: Final = "<evidence words>"  # the prompts' slot for EVIDENCE_STATEMENT_WORD_LIMIT
 
 
 class ScenarioStatus(StrEnum):
@@ -48,7 +47,7 @@ class FindingCode(StrEnum):
     PLAN_CHECK = "plan_check"  # a rule the reviewer says is broken: a note for review
     PLAN_CHECK_NOT_MADE = "plan_check_not_made"
     SCENARIO_MISMATCH = "scenario_mismatch"  # the statement carries out another threat, or the risk another
-    CITATION_REMOVED = "citation_removed"  # the writer's passage not cited: code's own sentence instead
+    CITATION_REMOVED = "citation_removed"  # the writer's step not used: code's own sentence instead
     NO_EVIDENCE_CITED = "no_evidence_cited"  # stored on older scenarios: a story citing none of its sources
     NEAR_DUPLICATE = "near_duplicate"  # the same path, or the very same words, as a scenario already held
 
@@ -60,7 +59,7 @@ class FindingMessage(StrEnum):
     UNCITED_ADVISORY_ID = "Cites {ids}, which no threat intelligence supplied. Remove the advisory numbers."
     PLAN_CHECK_NOT_MADE = "The plan check could not be made: {reason}"
     CITATION_REMOVED = (
-        "The writer's evidence passage was not cited ({reason}): the platform cites its own precedent "
+        "The writer's evidence step was not used ({reason}): the platform cites its own precedent "
         "sentence from the same source instead."
     )
     SCENARIO_MISMATCH = (

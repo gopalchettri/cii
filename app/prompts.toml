@@ -57,19 +57,19 @@ RETURN ONLY THIS VALID JSON OBJECT
   "entry_point": "string",
   "system_reasons": {"<exact supporting system name>": "string"},
   "action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>": "<the exact sentence of scenario_statement in which the attacker does it>"},
-  "evidence_statement": "string"
+  "evidence_step": "string"
 }
 
 SCHEMA
 - Include exactly these eight top-level fields. Do NOT include anatomy or any other field. No prose, Markdown, comments or code fences.
 - Use valid JSON with double quotes and no trailing commas. Escape double quotes inside string values.
-- scenario_statement: <scenario words> words. risk_statement: <risk words> words. evidence_statement: <evidence words> words.
+- scenario_statement: <scenario words> words. risk_statement: <risk words> words.
 - The upper number of each range is a hard limit. The lower number is a target, never a reason to add padding. Count the words of each statement before returning.
 - assumptions: short, specific sentences; [] when none are needed.
 - entry_point: an exact BRIEF.entry_point_options value; "" if the list is empty.
 - system_reasons: exactly one key for every BRIEF.supporting_systems name, copied exactly; no missing or extra keys.
 - action_sentences: one key for every item of BRIEF.threat.threat_actions, copied exactly; its value is copied word for word from scenario_statement and shows the attacker doing that action, not its purpose ("in order to ...") or the threat's name. {} when BRIEF.threat.threat_actions is absent.
-- evidence_statement: only the evidence passage described in rule 10; "" when no EVIDENCE is supplied.
+- evidence_step: only the step described in rule 10; "" when no EVIDENCE is supplied.
 
 GENERATION LOGIC
 First read BRIEF.threat.threat_actions: it lists the concrete actions the threat's name states. Carry out each as the attacker's action, in a realistic order, in your own words and concrete to this asset (what is taken, changed or demanded, and from or of whom); never copy the list's wording; naming the threat is not carrying it out. When the list is absent, split the specified threat's name into the actions it states yourself: each act the name joins with "and", "with" or a comma is one action; two names for the same act are one action; a word that only describes the target, account or means is not an action; of alternatives joined by "or", one is enough.
@@ -108,7 +108,7 @@ Use the supplied applicability flags unchanged. Do not select additional systems
 
 5. ATTACKER TYPE
 Use the supplied attacker type or a faithful plain-language equivalent. Never present a named group, malware family or campaign as attacking this asset.
-Names taken from public evidence may appear only in evidence_statement, when its cited entry supplies them. Do not introduce another attacker or an objective the threat's name does not state.
+Never name a group, malware or campaign from public evidence: the application adds who used the cited entry. Do not introduce another attacker or an objective the threat's name does not state.
 
 6. SCENARIO STATEMENT: <scenario words> WORDS, NEVER MORE
 Write one continuous narrative without headings or numbered beats:
@@ -137,16 +137,9 @@ Describe possible attacker behavior for risk analysis, never as executable instr
 Use "could" or "may". Never state that this event happened, is happening or is certain. Do not call the asset vulnerable or exploitable unless BRIEF establishes it. Unknown evidence applicability must remain conditional and cannot establish a vulnerability.
 
 10. EVIDENCE
-Use EVIDENCE to ground the specified threat action and write evidence_statement: ONE complete sentence, in your own words, that closes the story. The application appends it directly after scenario_statement and cites it, so it must read on from the story's last sentence without repeating it. The cited entry may be a technique, a vulnerability or an advisory; it must be related to this scenario.
-- Use ONLY the EVIDENCE entry marked "cited": true. Do not select another entry or combine entries. If evidence is supplied without one unambiguous cited entry, do not invent a selection or evidence claim; return evidence_statement as "".
-- With no EVIDENCE, return evidence_statement as "".
-- Open the sentence by referring back to the one step of this story that the cited entry is about, as the story tells it: the act, what it acts on and the system or asset where it happens, by name, as a gerund, a noun phrase or a short clause; never with "The attacker" or "This". Do not repeat the story's last sentence or add a step or detail the story does not tell. Then link that step to the cited entry in linking words chosen for this sentence.
-- For a cited entry with technique: give its exact supplied title in double quotes, and say it is related when evidence_mode is "nearest" or when the title names a different act from that step. Name who used it only from its used_by, exactly as written there, where it reads best in the sentence; do not invent an actor to complete the sentence.
-- For a cited entry with about instead (a vulnerability or advisory): tie this attacker's action to its facts in plain language. Do not call it a technique or name a user of it unless the facts do so.
-- Beyond that one link, the sentence states only the cited entry's facts. Add no consequence or behavior the entry does not state, never present a named user as this scenario's attacker, and never claim the evidence shows this asset was attacked, is vulnerable or is exploitable.
-- Never write "real-world", "this attack", "this scenario", "documented", "reported" or "cited".
-- Add no unsupported name, date, victim, place, incident, number, source name or claim. Include no [n] marker, code, advisory identifier or URL.
-- Outside evidence_statement, include no real-world precedent, named public group, malware/campaign name, technique label, attack-pattern code, advisory identifier, source name, URL or evidence marker.
+Use EVIDENCE to ground the specified threat action; the application writes the closing evidence sentence from evidence_step, with the cited entry's own title and who used it, and cites it. Return evidence_step: the one step of this story that the entry marked "cited": true is about, as a gerund phrase naming the system or asset where it happens, 6 to 20 words, with no title, no group, malware or campaign name and no quotes. Add no step or detail the story does not tell.
+- Use ONLY the EVIDENCE entry marked "cited": true. With no EVIDENCE, or no entry marked "cited": true, return evidence_step as "".
+- No field includes a real-world precedent, named public group, malware/campaign name, technique label, attack-pattern code, advisory identifier, source name, URL or evidence marker.
 - Unknown asset conditions are assumptions, not evidence claims. The story may describe the attacker's steps in the cited entry's terms, so the story and its closing sentence fit together, but it stays the specified threat and its primary impact.
 - When evidence_mode is "nearest", use the entry as related context only, not direct proof of the specified threat action or its applicability to the asset.
 
@@ -188,7 +181,7 @@ Verify before returning:
 - No invented access, capability or business process; a link between "yes" systems that BRIEF does not record is an assumption.
 - Essential missing details listed as assumptions and kept conditional; no safeguard is assumed missing to enlarge the impact.
 - Scenario, risk, title and system reasons describe the same event and category.
-- Evidence comes only from the unambiguous cited entry and appears only in evidence_statement: one sentence that refers back to the story's step the entry is about, naming the system or asset where it happens, links that step to the entry in words no other slot uses and contains no markers or prohibited identifiers.
+- evidence_step is the story's one step the cited entry is about, naming the system or asset where it happens, with no title, name, quote, marker or prohibited identifier.
 - Hypothetical language, concise sentences, no padding and no operational attack instructions.
 - Clear, balanced language: short sentences, active voice, precise technical terms kept and the less common ones explained.
 - All statement word upper bounds respected. Do not add repetition to meet lower targets.
@@ -197,19 +190,11 @@ Verify before returning:
 set = '''
 
 SET OF SCENARIOS
-The user prompt holds one or more SLOTs (SC1, SC2 ...). Each slot has its own BRIEF and its own EVIDENCE, or a line saying none is given. Write one scenario per slot, applying every rule above to that slot alone: never use another slot's facts, systems, attacker or evidence, and never reuse another slot's title, opening or sentences, nor how another slot's evidence_statement links its step to its entry (who used it is copied exactly from used_by: only the linking words differ). A slot label is never part of any text. The eight-field object above is one slot's answer; return {"scenarios": [{"slot": "SC1", "threat": "<that slot's BRIEF.threat.threat, copied>", ...its eight fields}, ...]} with exactly one item per slot. Every slot gets the full word ranges, however many slots there are: scenario_statement <scenario words>, risk_statement <risk words>, evidence_statement <evidence words> words.
-'''
-# Under a story slot's EVIDENCE when it cites a technique ({title}: the cited title).
-passage = '''
-For this slot, evidence_statement is ONE sentence: open on its story's step the cited technique is about, naming its system or asset as BRIEF does; link it to "{title}" in double quotes in words no other slot uses; where it reads best, copy who used it exactly from used_by.
-'''
-# Under a story slot's EVIDENCE when it cites a vulnerability or an advisory.
-passage_about = '''
-For this slot, evidence_statement is ONE sentence: open on its story's step the cited entry's facts concern, naming its system or asset as BRIEF does; tie it to those facts in words no other slot uses.
+The user prompt holds one or more SLOTs (SC1, SC2 ...). Each slot has its own BRIEF and its own EVIDENCE, or a line saying none is given. Write one scenario per slot, applying every rule above to that slot alone: never use another slot's facts, systems, attacker or evidence, and never reuse another slot's title, opening or sentences. A slot label is never part of any text. The eight-field object above is one slot's answer; return {"scenarios": [{"slot": "SC1", "threat": "<that slot's BRIEF.threat.threat, copied>", ...its eight fields}, ...]} with exactly one item per slot. Every slot gets the full word ranges, however many slots there are: scenario_statement <scenario words>, risk_statement <risk words> words.
 '''
 # A slot's line when no EVIDENCE is given for it (intelligence off, or nothing citable found).
 no_evidence = '''
-No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evidence_statement": "".
+No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evidence_step": "".
 '''
 # Added to a slot when its review found listed actions not carried out ({actions}).
 repair = '''
@@ -246,8 +231,7 @@ RETURN ONLY THIS VALID JSON OBJECT
   },
   "threat_actions": {"<each item of PLAN.threat.threat_actions, copied>": "carried out" | "only named" | "missing"},
   "same_threat": true,
-  "same_impact": true,
-  "evidence_supported": true
+  "same_impact": true
 }
 
 For each rule, return "holds" or:
@@ -255,7 +239,7 @@ For each rule, return "holds" or:
 Quote exact scenario wording. Do not infer violations from style, missing preferred wording, or unstated possibilities. Each rule gets one verdict.
 
 REVIEW PROCEDURE
-Extract from PLAN the exact asset, attacker, threat_type/threat, category/category shape, systems/applicability, entry points, critical service, and evidence. For each item of PLAN.threat.threat_actions answer in `threat_actions`: "carried out" only when `scenario_statement` describes the attacker doing it, in any words (judge the meaning, not the list's wording; of alternatives an item joins with "or", one is enough); "only named" when it appears only in the threat's name or a label; "missing" otherwise. Without that list, answer {} and split PLAN's threat name into the actions it states yourself (each act the name joins with "and", "with" or a comma is one action; two names for the same act are one action; a word that only describes the target, account or means is not an action; of alternatives joined by "or", one is enough) and check that `scenario_statement` carries out each as the attacker's action; naming the threat is not carrying it out. Identify the scenario's main harmful action and primary impact. Check all seven rules (1-3 and 5-8) independently. Decide `same_threat` and `same_impact` separately. Rules 1-3 and 5-8, `same_threat` and `same_impact` judge every SCENARIO field except `evidence_statement`, which only `evidence_supported` judges. Return JSON only.
+Extract from PLAN the exact asset, attacker, threat_type/threat, category/category shape, systems/applicability, entry points, critical service, and evidence. For each item of PLAN.threat.threat_actions answer in `threat_actions`: "carried out" only when `scenario_statement` describes the attacker doing it, in any words (judge the meaning, not the list's wording; of alternatives an item joins with "or", one is enough); "only named" when it appears only in the threat's name or a label; "missing" otherwise. Without that list, answer {} and split PLAN's threat name into the actions it states yourself (each act the name joins with "and", "with" or a comma is one action; two names for the same act are one action; a word that only describes the target, account or means is not an action; of alternatives joined by "or", one is enough) and check that `scenario_statement` carries out each as the attacker's action; naming the threat is not carrying it out. Identify the scenario's main harmful action and primary impact. Check all seven rules (1-3 and 5-8) independently. Decide `same_threat` and `same_impact` separately. Rules 1-3 and 5-8, `same_threat` and `same_impact` judge every SCENARIO field except `evidence_statement`, which the platform writes from EVIDENCE. Return JSON only.
 
 RULE 1 — SAME THREAT, NO SECOND THREAT
 The scenario must carry out PLAN's specified threat in recognisable meaning and add no second threat/objective (an action, use or demand the threat's name states is part of the threat). Initial access (e.g., an already-held stolen login) is a precondition. A variant or technique of the specified threat does not itself break this rule. Broken when an action the threat's name states (split as the REVIEW PROCEDURE says) is missing or only named, not carried out as the attacker's action, or when the primary impact comes from an added step that is not part of the threat (a precursor or side action). Using access the threat only obtains (a stolen credential, secret or session) to do something its name does not state is such an added step.
@@ -276,13 +260,12 @@ RULE 7 — GROUNDING AND POSSIBILITY
 No invented product/version, vulnerability, integration, system capability, regulation, control, named business process, or service absent from PLAN. Use evidence only within its supported scope. Nearest evidence is only related context. The scenario must be possible ("could"/"may"), not confirmed/certain. A clearly hypothetical, listed assumption is not a violation by itself and does not excuse Rules 1–6 or the break below. A control or safeguard assumed missing, in any field, to make the consequence worse breaks this rule (e.g., backups assumed unverified), but not one assumed missing only as a precondition the threat needs (e.g., a default password not changed). Quote exact words that establish a violation; do not infer one.
 
 RULE 8 — NO CITATION, NO PRECEDENT
-No field but `evidence_statement` carries an [n] marker or tells a real-world event or past use: the platform cites the passage after this review. If applicability is "unknown", do not claim the asset is vulnerable/exploitable.
+No field but `evidence_statement` carries an [n] marker or tells a real-world event or past use: the platform cites its own sentence after this review. If applicability is "unknown", do not claim the asset is vulnerable/exploitable.
 
 INDEPENDENT VERDICTS
 - `same_threat` is false ONLY if the main harmful action in `scenario_statement`, or the cause in `risk_statement`, is a different threat from PLAN's specified threat. The main harmful action is the one that causes the primary impact; when an added step that is not part of the specified threat causes it (including using access the threat only obtains to do something its name does not state), the threat is different. Otherwise a variant, initial access, extra system, or invented detail alone does not make it false.
 - `same_impact` is false ONLY if `risk_statement` describes a different primary impact/adverse event from `scenario_statement`. Recovery, affected people, cost, duration, or invented detail alone does not make it false.
 - Other rule violations do not automatically make either verdict false.
-- `evidence_supported` is true ONLY if `evidence_statement` states nothing but what the EVIDENCE entry marked "cited": true states (for a `technique`: its title and who used it, as named there; for an `about` entry: what its facts say), plus exactly one link, at the passage's start, from an action `scenario_statement` tells (it may name the system or asset it acts on, as the story names them) to that technique or to those facts. It is false for a passage that does not open with such an action, for a link to anything else in this scenario or asset, a link that equates the action with a technique whose title names a different act, nearest evidence not called related, a consequence or behavior the entry does not state, a named user presented as this scenario's attacker, any other name, date, victim, place, incident or number, a technique or user an `about` entry does not state, a claim that this asset was attacked, is vulnerable or is exploitable, a missing passage, or when no EVIDENCE is given.
 
 EXAMPLES
 - Rule 1 violation: "Before carrying out the stated attack, the attacker also alters the stored records so they can no longer be trusted." An added step, not the threat's own action, causes the impact.
@@ -290,7 +273,7 @@ EXAMPLES
 - Rule 6 violation: "The exposed data could help the attacker plan a disruption." Describes a further use of information, not the primary impact's consequence.
 
 REVIEWER FINAL CHECK
-Ensure all seven rules (1-3 and 5-8) have verdicts; `threat_actions` has one answer for each item of PLAN.threat.threat_actions ({} without that list); every broken verdict quotes exact scenario words; `same_threat`, `same_impact` and `evidence_supported` follow their narrow independent definitions; JSON has exactly the required top-level keys and no extra text.
+Ensure all seven rules (1-3 and 5-8) have verdicts; `threat_actions` has one answer for each item of PLAN.threat.threat_actions ({} without that list); every broken verdict quotes exact scenario words; `same_threat` and `same_impact` follow their narrow independent definitions; JSON has exactly the required top-level keys and no extra text.
 '''
 # Ends the reviewer's system prompt: the user prompt holds a set of slots, one scenario each.
 set = '''
@@ -300,7 +283,7 @@ The user prompt holds one or more SLOTs (SC1, SC2 ...). Each slot has its own PL
 '''
 # A slot's line when no EVIDENCE is given for it.
 no_evidence = '''
-No EVIDENCE is given for this slot: any [n] marker or real-world event breaks rule 8; evidence_supported is false.
+No EVIDENCE is given for this slot: any [n] marker or real-world event breaks rule 8.
 '''
 
 [remediation.plan]

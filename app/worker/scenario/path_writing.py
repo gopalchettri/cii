@@ -69,13 +69,13 @@ class PathWriter:
         self.threats = {threat["key"]: threat for threat in run["plan"]["threats"]}
 
     def write_set(
-        self, slots: Sequence[tuple[str, dict[str, Any]]], last_try: bool
+        self, slots: Sequence[tuple[str, dict[str, Any]]], last_try: bool, epoch: int = 0
     ) -> Iterator[tuple[str, PathOutcome | Exception]]:
         """Each path's outcome by its id as soon as it is final, the set ((slot label, path)) written in one
-        set of AI calls (write_set). The paths left when the AI cannot go on get the outage to retry; a whole
-        answer unusable twice is one too, but on the job's `last_try` each of them gets a failure card. One
-        cut off at the model's full room (or too long to send) gets them at once: a retry would be cut off
-        again."""
+        set of AI calls (write_set; `epoch`, the set's job epoch, rotates its evidence links). The paths left
+        when the AI cannot go on get the outage to retry; a whole answer unusable twice is one too, but on the
+        job's `last_try` each of them gets a failure card. One cut off at the model's full room (or too long
+        to send) gets them at once: a retry would be cut off again."""
         briefs: dict[str, WriterBrief] = {}
         path_ids = {label: path["path_id"] for label, path in slots}
         for label, path in slots:
@@ -86,7 +86,7 @@ class PathWriter:
                 briefs[label] = brief
         left = dict(briefs)
         try:
-            for label, written in write_set(self._chat, list(briefs.items())):
+            for label, written in write_set(self._chat, list(briefs.items()), epoch):
                 brief = left.pop(label)
                 yield path_ids[label], written if isinstance(written, PathFailure) else (brief, written)
         except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
