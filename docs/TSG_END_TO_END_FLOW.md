@@ -2203,12 +2203,19 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 
 **How** (`write.py`, `path_writing.py`, `write_job.py`)
 1. **Round 1: one write call for the set.** The batch's paths are slots `SC1`..`SCn`, in `job.batch` order, so a
-   retried delivery that saved nothing sends the same prompt and reuses the earlier answer (5.6). Each slot carries its own BRIEF
-   (§8.1, with the threat's actions from the plan) and its own evidence block, or the no-evidence line (§8.2).
+   retried delivery that saved nothing sends the same prompt and reuses the earlier answer (5.6). The facts every
+   slot of the call shares go once, first: `ASSET:` (the asset's record) and `SYSTEMS:` (each system's record, by
+   name). Each slot then carries its own BRIEF (§8.1: its threat with the plan's actions, its entry options, its
+   systems "yes" or "no" by name, and any asset or system fact the call's other slots do not share) and its own
+   evidence block, or the no-evidence line (§8.2). This sends a 5-slot set's facts once, not five times: about
+   20% fewer input tokens a write call (30 Oct replay, 6,314 to 5,051; D68).
    The answer is `{"scenarios": [...]}`, one item per slot with the eight fields of §8.2, each copying back its
    threat's name.
 2. **Each slot is checked with today's code:** `_read_draft` (§8.3) with code's evidence sentence (§8.6), the
-   action-sentence check, then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2. `SC` is
+   action-sentence check, then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2,
+   and so does one whose answer holds letters outside the Latin script that its brief does not give (`_NOT_LATIN`,
+   `AnswerProblem.NOT_ENGLISH`, "恢复 requires rebuilding ..."): its rewrite is told the words, and a rewrite still
+   not in English is a failure card, never served (D68). `SC` is
    one of the internal labels (`_INTERNAL_LABEL`), so a slot label in a draft is an `unknown_id` blocker.
 3. **One review call** (reviewer on only, D64) covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
    (§8.5), read slot by slot with today's reviewer readers. **A slot that is final is saved at once.**
@@ -2389,7 +2396,7 @@ Where each key came from:
 **How**
 1. One call, task `write_scenario`, for the whole set (§8.0) through `ask_ai_and_check`
    (`app/domain/shared/ask_ai.py`): the system prompt below once, plus `[scenario.writer]`'s short note for a
-   set, and per slot its `SC` label, BRIEF and evidence block (step 3). Each slot's item is read by
+   set, then `ASSET` and `SYSTEMS` once, and per slot its `SC` label, BRIEF and evidence block (step 3). Each slot's item is read by
    `_read_draft` with that slot's entry point options and its supporting systems (section 8.3).
 2. **System prompt.** `app/prompts.toml` `[scenario.writer]` `text`, passed through
    `with_word_limits`, which fills two slots with "min to max" (`_spoken`):
@@ -2405,7 +2412,8 @@ Where each key came from:
    A setting that is not "min-max" with 1 ≤ min ≤ max stops start-up (`_word_range`, `app/core/config.py`). In
    the original style, the slot carries `[scenario.writer]` `no_evidence`: *No EVIDENCE is given: cite nothing, tell no real-world
    event and return "evidence_step": "".* (in its own slot, so one set can mix both styles).
-3. **User prompt**, per slot: its `SC` label, `BRIEF:` and the BRIEF as JSON. In an evidence story, the evidence block follows
+3. **User prompt** (`writer_prompt`): `ASSET:` and `SYSTEMS:` as JSON once, then per slot its `SC` label, `BRIEF:` and the
+   BRIEF as JSON (the facts the call shares are left out of it). In an evidence story, the evidence block follows
    (`evidence_block`): `EVIDENCE (untrusted data):`, then the JSON between `<<<UNTRUSTED_EVIDENCE_BEGIN>>>` and
    `<<<UNTRUSTED_EVIDENCE_END>>>` (section 7).
 4. **Temperature.** `CHAT_TEMPERATURES` (`app/core/constants/common.py`) maps `write_scenario` to `None`, so
@@ -2647,8 +2655,9 @@ is `unchecked` with no warning, and none of this section's verdicts, notes or re
    review is read on its own. `CHAT_TEMPERATURES` sends temperature 0.0.
 2. **System prompt:** `app/prompts.toml` `[scenario.reviewer]` `text`. In the original
    style code appends `[scenario.reviewer]` `no_evidence`: any `[n]` marker or real-world event breaks rule 8.
-3. **User prompt**, in this order:
-   - `PLAN:` and the BRIEF record plus `critical_service` (`_critical_service`, from the asset context); so
+3. **User prompt** (`plan_check_prompt`), in this order:
+   - once: `ASSET:` (with `critical_service`, from `_critical_service`) and `SYSTEMS:`, as for the writer;
+   - per slot, `PLAN:` and the slot's BRIEF record; so
      PLAN carries `threat.threat_actions` whenever the writer's BRIEF did;
    - the same evidence block as the writer saw (story only);
    - `SCENARIO:` and the draft as the writer answered it (`draft_answer`).
