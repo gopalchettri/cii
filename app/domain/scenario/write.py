@@ -407,9 +407,12 @@ _ACTION_TIE = re.compile(
     re.IGNORECASE,
 )
 _THE_BEFORE = re.compile(r"\bthe\s+$", re.IGNORECASE)
+#: What joins the names of a list (", ", " and ", ", or the ", "/").
+_NAME_LIST_GAP = re.compile(r"\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+|/\s*)(?:the\s+)?", re.IGNORECASE)
 #: A system's name describing the word after it ("<system> data", "<system>'s staff"), not tied by one.
 _NAME_DESCRIBES = re.compile(
-    r"(?:['’]s)?\s+(?!(?:and|or|to|from|on|in|into|via|with|for|at|by|across|between|then)\b)[a-z]",
+    r"(?:['’]s)?\s+(?!(?:and|or|to|from|on|in|into|via|with|without|for|at|by|across|between|then"
+    r"|through|over|under|using|as)\b)[a-z]",
     re.IGNORECASE,
 )
 #: A threat name's "or", and the joiners that make it name several acts ("Command and Control", "with").
@@ -550,17 +553,17 @@ def _brief_actions(threat: dict[str, Any], context: FrozenContext) -> tuple[str,
 def _without_system_names(action: str, names: list[str]) -> str:
     """`action` without any system's name, keeping its meaning: "steal secrets from X" is "steal secrets",
     "extort with X data" is "extort with data", "encrypt X" is "encrypt the system"."""
-    spans = _merged_spans(sorted(span for name in names for span in find_name_mentions(name, action)))
+    spans = _merged_spans(sorted(span for name in names for span in find_name_mentions(name, action)), action)
     for start, end in reversed(spans):  # from the end, so earlier spans keep their place
         action = _without_name_at(action, start, end)
     return " ".join(action.split())
 
 
-def _merged_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Sorted spans with overlapping ones joined ("Plant Historian" holding "Historian" is one span)."""
+def _merged_spans(spans: list[tuple[int, int]], action: str) -> list[tuple[int, int]]:
+    """Sorted spans with overlapping ones, and a list of names ("A, B and C"), joined into one span."""
     merged: list[tuple[int, int]] = []
     for start, end in spans:
-        if merged and start < merged[-1][1]:
+        if merged and (start < merged[-1][1] or _NAME_LIST_GAP.fullmatch(action[merged[-1][1] : start])):
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
@@ -1180,6 +1183,8 @@ _QUOTE_SENTENCES = re.compile(r"(?<=[.!?])\s+|\s*(?:\.\.\.|…)\s*")
 def _quoted_in_story(quote: str, statement: str) -> bool:
     """Whether every sentence of `quote` is in `statement` (a name_match_key form), each whole or from its
     first "could" on: a merged action's quote may join the sentences of its alternatives."""
+    if _quote_in_story(name_match_key(quote), statement):
+        return True
     parts = [key for part in _QUOTE_SENTENCES.split(quote) if (key := name_match_key(part))]
     return bool(parts) and all(_quote_in_story(part, statement) for part in parts)
 

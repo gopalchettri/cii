@@ -540,6 +540,14 @@ def test_the_threat_checks_actions_reach_the_brief_and_the_review_with_no_split_
         ("Log wiping", ["SCADA server", "wipe the logs on the Historian"], ["wipe the logs"]),  # nothing left
         ("Log wiping", ["wipe logs on SCADA server", "wipe logs in Historian", "Wipe  logs"], ["wipe logs"]),
         ("Data encryption", ["encrypt SCADA server"], ["encrypt the system"]),  # the act's object
+        (
+            "API abuse",
+            ["access API of SCADA server without authorization"],
+            ["access API without authorization"],
+        ),
+        ("Data theft", ["steal data from SCADA server and Historian"], ["steal data"]),  # a list of names
+        ("Data theft", ["steal data from SCADA server, the Historian"], ["steal data"]),
+        ("Data theft", ["steal SCADA server and Historian data"], ["steal data"]),
         ("Code injection", ["inject into the Historian"], ["inject into the system"]),  # a bare verb left
         (
             "Impersonation",
@@ -585,6 +593,15 @@ def test_a_merged_actions_quote_may_join_the_sentences_of_its_alternatives() -> 
         assert _acts_without_a_sentence(answer, (action,)) == []
     elsewhere = {"scenario_statement": story, "action_sentences": {action: f"{first} They sold them."}}
     assert _acts_without_a_sentence(elsewhere, (action,)) != []
+
+
+def test_a_quote_found_whole_from_its_first_could_is_found_though_its_first_sentence_is_short() -> None:
+    """Review, 30 Oct: looking up each sentence alone refused a quote whose short first sentence had a
+    reworded opening, which the whole quote's check had found."""
+    story = "A nation-state actor could then disrupt signals. Next it could flood the link with packets."
+    quote = "The attacker could disrupt signals. Next it could flood the link with packets."
+    answer = {"scenario_statement": story, "action_sentences": {"flood the link": quote}}
+    assert _acts_without_a_sentence(answer, ("flood the link",)) == []
 
 
 def test_an_old_plan_sends_no_actions_and_makes_no_split_call() -> None:
