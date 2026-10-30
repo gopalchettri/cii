@@ -401,6 +401,14 @@ def _is_story(brief: WriterBrief) -> bool:
 _LIST_BEFORE = re.compile(r"(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)$", re.IGNORECASE)
 _LIST_AFTER = re.compile(r",\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+#: The words tying a system's name to an action ("steal secrets from", "deploy wiper to the"), at text's end.
+_ACTION_NAME_LEAD = re.compile(
+    r"(?:\b(?:on|from|to|in|into|against|of|across|for|at|via|between|and|targeting|with)\s+)?(?:the\s+)?$",
+    re.IGNORECASE,
+)
+#: A threat name's "or", and the joiners that make it name several acts ("Command and Control", "with").
+_OR_JOINER = re.compile(r"\bor\b", re.IGNORECASE)
+_AND_JOINER = re.compile(r"\b(?:and|with)\b|&", re.IGNORECASE)
 #: The asset facts under the names the brief shows; every other fact keeps its own name.
 _ASSET_FACT_NAMES = {
     "cii_asset_description": "description",
@@ -439,7 +447,7 @@ def build_brief(
         other_systems=tuple(
             redact(system["name"]) for system in context.systems if system["id"] not in path["systems"]
         ),
-        threat_actions=tuple(redact(action) for action in threat.get("actions") or ()),  # the gate's
+        threat_actions=tuple(redact(action) for action in _brief_actions(threat, context)),
         style=style,
         supporting_systems=tuple(
             BriefSystem(system["id"], redact(system["name"]), system["id"] in path["systems"])
@@ -516,6 +524,33 @@ def _reason_on_path(reason: str, path: dict[str, Any], context: FrozenContext) -
             reason, edge = _without_name(reason, start, end, names), start
     repeated = rf"{Writing.OTHER_SYSTEM}(?:,? (?:and |or )?{Writing.OTHER_SYSTEM})+"
     return re.sub(repeated, Writing.OTHER_SYSTEMS, reason)
+
+
+def _brief_actions(threat: dict[str, Any], context: FrozenContext) -> tuple[str, ...]:
+    """The threat's listed actions as the writer reads them: no system named, repeats dropped, and the
+    alternatives of a name joined only by "or" one item ("steal secrets or steal API keys")."""
+    names = [system["name"] for system in context.systems]
+    actions: dict[str, str] = {}
+    for action in threat.get("actions") or ():
+        bare = _without_system_names(str(action), names)
+        if key := name_match_key(bare):
+            actions.setdefault(key, bare)
+    name = threat_name_without_code(threat["name"])
+    if len(actions) > 1 and _OR_JOINER.search(name) and not _AND_JOINER.search(name):
+        return (" or ".join(actions.values()),)
+    return tuple(actions.values())
+
+
+def _without_system_names(action: str, names: list[str]) -> str:
+    """`action` without any system's name and the words tying it to the action ("from", "on the")."""
+    spans = sorted(span for name in names for span in find_name_mentions(name, action))
+    edge = len(action) + 1
+    for start, end in reversed(spans):  # from the end, so earlier spans keep their place; overlaps skipped
+        if end <= edge:
+            lead = _ACTION_NAME_LEAD.search(action[:start])
+            start = lead.start() if lead else start
+            action, edge = action[:start] + action[end:], start
+    return " ".join(action.split())
 
 
 def _without_name(reason: str, start: int, end: int, names: list[str]) -> str:

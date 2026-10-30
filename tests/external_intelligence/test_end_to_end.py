@@ -216,7 +216,7 @@ def test_a_click_plans_and_writes_its_first_set_of_six_in_three_ai_calls(
     """Lean design, plan test 1: a click (the plan and its first set of 6) with good answers makes exactly 3
     AI model calls: one threat check for every threat, one write and one review for the set. Two unreadable
     first drafts add one rewrite and one review holding only those two: 4 writing calls. The threat check's
-    actions reach every brief and review, systems by name."""
+    actions are stored with systems by name and reach every brief and review without them."""
     monkeypatch.setattr(get_settings(), "initial_set_size", 6)
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     chat.responders[AiTask.RELEVANCE_GATE] = _gate_giving_actions
@@ -235,9 +235,11 @@ def test_a_click_plans_and_writes_its_first_set_of_six_in_three_ai_calls(
     rewrites = chat.asked(AiTask.REPAIR_SCENARIO)
     assert [len(slot_blocks(prompt)) for prompt in rewrites] == ([2] if unreadable else [])
     sys1 = next(system["name"] for system in run["context"]["systems"] if system["alias"] == "SYS1")
-    named = _ACTION.replace("SYS1", sys1)
+    assert [threat["actions"] for threat in run["plan"]["threats"]] == [[_ACTION.replace("SYS1", sys1)]] * 6
     briefs = [
         brief_of(block) for prompt in chat.asked(AiTask.WRITE_SCENARIO) for _, block in slot_blocks(prompt)
     ]
-    assert [brief["threat"]["threat_actions"] for brief in briefs] == [[named]] * 6
-    assert all(f'"threat_actions": ["{named}"]' in prompt for prompt in chat.asked(AiTask.PLAN_CHECK))
+    assert [brief["threat"]["threat_actions"] for brief in briefs] == [["altering setpoints"]] * 6
+    assert all(
+        '"threat_actions": ["altering setpoints"]' in prompt for prompt in chat.asked(AiTask.PLAN_CHECK)
+    )

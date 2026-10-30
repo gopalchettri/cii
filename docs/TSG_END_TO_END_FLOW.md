@@ -1156,7 +1156,7 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    - `systems`: every system the threat involves, judged with the asset and all its systems together; [] means the asset itself. `entry_points`: the systems among them an attacker could really get in through. Both, and `confidence` (0-100), are the threat's, shared by its kinds.
    - `needs`: any component the threat requires that no recorded fact mentions.
    - `attacker` and `attacker_reason`: one name from that slot's own `attackers` list, or null with a reason.
-   - `actions`: the concrete acts the threat's name states, each a short phrase naming systems by name. They are stored on the plan threat as `actions` (an alias left in is replaced by the system's name, in the kinds' reasons too) and given to the writer and the reviewer (8.1), so no `threat_actions` call is made.
+   - `actions`: the concrete acts the threat's name states, each a short phrase naming systems by name. They are stored on the plan threat as `actions` (an alias left in is replaced by the system's name, in the kinds' reasons too) and given to the writer and the reviewer without the names (8.1, D63), so no `threat_actions` call is made.
 
 **In the example** (the older gate). With this release the same 75 candidates would be 2 calls of 38 and 37, and lib:281 one slot, answered once with its kinds. There were 36 gate calls (5, 7, 6, 7, 5 and 6 batches per kind, in STRIDE order). All answered first time, with no re-ask. Their answers were logged from 08:15:01 to 08:16:19. lib:281 was slot R45 in the 5th Tampering batch. These are a few lines of that real user prompt (`planner-4`, whose return line had no `entry_points` yet):
 ```text
@@ -2305,8 +2305,13 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    A regenerate's brief is built the same way: it holds no text of the path's earlier versions (12.5, D40).
 10. **The threat's actions** (since 31-Oct-2026). The gate names them with its verdict (5.5): the plan
     threat's `actions`, with system names, never aliases. They go into the BRIEF as `threat.threat_actions`
-    with no AI call. A plan made before this release has no `actions`: the BRIEF then has no `threat_actions`,
-    and the writer and the reviewer split the name themselves (D39's rule), again with no call.
+    with no AI call, written for the writer (`_brief_actions`, D63): every system's name is taken out with the
+    word tying it on ("steal secrets from Traffic Signal Control System" becomes "steal secrets"), an action
+    left empty or repeated is dropped, and when the threat's name joins its alternatives only with "or" (no
+    "and", "with" or "&") the rest are one item joined by " or " ("steal secrets or steal API keys or steal
+    service credentials"). The stored plan keeps its actions as they are. A plan made before this release has
+    no `actions`: the BRIEF then has no `threat_actions`, and the writer and the reviewer split the name
+    themselves (D39's rule), again with no call.
     `AiTask.THREAT_ACTIONS` stays only for the API's task list and older usage rows. Before this release one
     small AI call split the name (`app/prompts.toml` `[scenario.threat_actions]`, D40), once per threat per
     writing job. It split the threat's name into the concrete acts the attacker carries out, each a short verb

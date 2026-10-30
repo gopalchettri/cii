@@ -498,10 +498,11 @@ def _path(threat: dict[str, Any], path_id: str = "p1") -> dict[str, Any]:
 
 
 def test_the_threat_checks_actions_reach_the_brief_and_the_review_with_no_split_call() -> None:
-    """The plan's threat actions (the threat check's, systems by name) are the listed actions of every BRIEF
-    and PLAN of that threat; the set makes one write and one review, and no threat_actions call."""
-    listed = ["altering the SCADA server's setpoints", "hiding the change"]
-    threat = _plan_threat(actions=listed)
+    """The plan's threat actions (the threat check's, systems by name) are the listed actions, without the
+    names, of every BRIEF and PLAN of that threat; the set makes one write and one review, and no
+    threat_actions call."""
+    threat = _plan_threat(actions=["altering the SCADA server's setpoints", "hiding the change"])
+    listed = ["altering setpoints", "hiding the change"]
     chat = FakeChatModel()
     done = {"threat_actions": dict.fromkeys(listed, "carried out")}
     chat.responders |= {
@@ -516,6 +517,40 @@ def test_the_threat_checks_actions_reach_the_brief_and_the_review_with_no_split_
     assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
     sent = _sent_threats(chat)
     assert len(sent) == 4 and all(threat["threat_actions"] == listed for threat in sent)
+
+
+@pytest.mark.parametrize(
+    ("name", "actions", "briefed"),
+    [
+        (  # the Historian is not on the path: no system named, the or-only name's alternatives one item
+            "Secrets, API key or service credential theft",
+            [
+                "steal secrets from SCADA server",
+                "steal API keys from the Historian",
+                "steal service credentials",
+            ],
+            ["steal secrets or steal API keys or steal service credentials"],
+        ),
+        (  # "and" names several acts: each its own item
+            "Credential phishing and MFA session theft",
+            ["phish credentials from SCADA server", "steal MFA session from Historian"],
+            ["phish credentials", "steal MFA session"],
+        ),
+        ("Log wiping", ["SCADA server", "wipe the logs on the Historian"], ["wipe the logs"]),  # nothing left
+        ("Log wiping", ["wipe logs on SCADA server", "wipe logs in Historian", "Wipe  logs"], ["wipe logs"]),
+        (  # an "and" inside a part of the name: left split, so every act is still carried out
+            "Command and Control channel or beacon abuse",
+            ["open a command channel to SCADA server", "beacon from Historian"],
+            ["open a command channel", "beacon"],
+        ),
+    ],
+)
+def test_the_briefs_actions_name_no_system_and_an_or_only_names_alternatives_are_one_item(
+    name: str, actions: list[str], briefed: list[str]
+) -> None:
+    """The writer carries out every listed action and names no system the path is not on, and the reviewer
+    reads an or-only name as one of its alternatives: the brief's actions agree with both."""
+    assert list(_brief_of(_plan_threat(name=name, actions=actions)).threat_actions) == briefed
 
 
 def test_an_old_plan_sends_no_actions_and_makes_no_split_call() -> None:
