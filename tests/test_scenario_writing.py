@@ -51,6 +51,7 @@ from app.domain.scenario.write import (
     PLAN_CHECK_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
     _acts_without_a_sentence,
+    _without_system_names,
     brief_entry_point_options,
     build_brief,
     check_exact_rules,
@@ -538,10 +539,22 @@ def test_the_threat_checks_actions_reach_the_brief_and_the_review_with_no_split_
         ),
         ("Log wiping", ["SCADA server", "wipe the logs on the Historian"], ["wipe the logs"]),  # nothing left
         ("Log wiping", ["wipe logs on SCADA server", "wipe logs in Historian", "Wipe  logs"], ["wipe logs"]),
+        ("Data encryption", ["encrypt SCADA server"], ["encrypt the system"]),  # the act's object
+        ("Code injection", ["inject into the Historian"], ["inject into the system"]),  # a bare verb left
+        (
+            "Impersonation",
+            ["impersonate executive to SCADA server staff"],
+            ["impersonate executive to staff"],
+        ),
+        (
+            "Extortion",
+            ["extort with Historian data", "extort via the Historian's data"],
+            ["extort with data", "extort via data"],
+        ),
         (  # an "and" inside a part of the name: left split, so every act is still carried out
             "Command and Control channel or beacon abuse",
             ["open a command channel to SCADA server", "beacon from Historian"],
-            ["open a command channel", "beacon"],
+            ["open a command channel", "beacon from the system"],
         ),
     ],
 )
@@ -551,6 +564,27 @@ def test_the_briefs_actions_name_no_system_and_an_or_only_names_alternatives_are
     """The writer carries out every listed action and names no system the path is not on, and the reviewer
     reads an or-only name as one of its alternatives: the brief's actions agree with both."""
     assert list(_brief_of(_plan_threat(name=name, actions=actions)).threat_actions) == briefed
+
+
+def test_a_system_name_inside_another_is_taken_out_with_it() -> None:
+    """Review, 30 Oct: "Historian" inside "Plant Historian" was cut first, leaving "wipe logs on Plant"."""
+    assert (
+        _without_system_names("wipe logs on Plant Historian", ["Historian", "Plant Historian"]) == "wipe logs"
+    )
+
+
+def test_a_merged_actions_quote_may_join_the_sentences_of_its_alternatives() -> None:
+    """Live replay, 30 Oct: a merged "steal secrets or steal API keys" item was quoted with both of its
+    sentences, which no single sentence of the story matches, and sent 4 slots to a rewrite."""
+    first = "The attacker could steal secrets from the platform's vault."
+    second = "The attacker could then steal API keys from its integration scripts."
+    story = f"An insider could log in. {first} Alarms could stay quiet. {second} Operators could lose trust."
+    action = "steal secrets or steal API keys"
+    for quote in (f"{first} {second}", f"{first} ... {second}", f"{first}… {second}"):
+        answer = {"scenario_statement": story, "action_sentences": {action: quote}}
+        assert _acts_without_a_sentence(answer, (action,)) == []
+    elsewhere = {"scenario_statement": story, "action_sentences": {action: f"{first} They sold them."}}
+    assert _acts_without_a_sentence(elsewhere, (action,)) != []
 
 
 def test_an_old_plan_sends_no_actions_and_makes_no_split_call() -> None:

@@ -402,8 +402,14 @@ _LIST_BEFORE = re.compile(r"(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)$", re.IGN
 _LIST_AFTER = re.compile(r",\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 #: The words tying a system's name to an action ("steal secrets from", "deploy wiper to the"), at text's end.
-_ACTION_NAME_LEAD = re.compile(
-    r"(?:\b(?:on|from|to|in|into|against|of|across|for|at|via|between|and|targeting|with)\s+)?(?:the\s+)?$",
+_ACTION_TIE = re.compile(
+    r"\b(?:on|from|to|in|into|against|of|across|for|at|via|between|and|targeting|with)\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_THE_BEFORE = re.compile(r"\bthe\s+$", re.IGNORECASE)
+#: A system's name describing the word after it ("<system> data", "<system>'s staff"), not tied by one.
+_NAME_DESCRIBES = re.compile(
+    r"(?:['’]s)?\s+(?!(?:and|or|to|from|on|in|into|via|with|for|at|by|across|between|then)\b)[a-z]",
     re.IGNORECASE,
 )
 #: A threat name's "or", and the joiners that make it name several acts ("Command and Control", "with").
@@ -542,15 +548,37 @@ def _brief_actions(threat: dict[str, Any], context: FrozenContext) -> tuple[str,
 
 
 def _without_system_names(action: str, names: list[str]) -> str:
-    """`action` without any system's name and the words tying it to the action ("from", "on the")."""
-    spans = sorted(span for name in names for span in find_name_mentions(name, action))
-    edge = len(action) + 1
-    for start, end in reversed(spans):  # from the end, so earlier spans keep their place; overlaps skipped
-        if end <= edge:
-            lead = _ACTION_NAME_LEAD.search(action[:start])
-            start = lead.start() if lead else start
-            action, edge = action[:start] + action[end:], start
+    """`action` without any system's name, keeping its meaning: "steal secrets from X" is "steal secrets",
+    "extort with X data" is "extort with data", "encrypt X" is "encrypt the system"."""
+    spans = _merged_spans(sorted(span for name in names for span in find_name_mentions(name, action)))
+    for start, end in reversed(spans):  # from the end, so earlier spans keep their place
+        action = _without_name_at(action, start, end)
     return " ".join(action.split())
+
+
+def _merged_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sorted spans with overlapping ones joined ("Plant Historian" holding "Historian" is one span)."""
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _without_name_at(action: str, start: int, end: int) -> str:
+    """`action` without the system name at [start, end): a name describing the next word goes alone, one
+    tied to the act goes with its tying word, and one the act is done to becomes "the system"."""
+    head, tail = action[:start], action[end:]
+    the = _THE_BEFORE.search(head)
+    bare_head = head[: the.start()] if the else head
+    if described := _NAME_DESCRIBES.match(tail):
+        return f"{bare_head} {tail[described.end() - 1 :]}"
+    tie = _ACTION_TIE.search(head)
+    if tie and len(head[: tie.start()].split()) > 1:  # more than a bare verb is left
+        return head[: tie.start()] + tail
+    return f"{bare_head}{Writing.ACTION_SYSTEM}{tail}" if bare_head.strip() else tail
 
 
 def _without_name(reason: str, start: int, end: int, names: list[str]) -> str:
@@ -1128,11 +1156,11 @@ def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -
     statement = name_match_key(str(answer.get("scenario_statement") or ""))
     given = answer.get("action_sentences")
     quoted = (
-        {name_match_key(str(act)): name_match_key(str(text)) for act, text in given.items()}
+        {name_match_key(str(act)): str(text) for act, text in given.items()}
         if isinstance(given, dict)
         else {}
     )
-    missing = [act for act in actions if not _quote_in_story(quoted.get(name_match_key(act), ""), statement)]
+    missing = [act for act in actions if not _quoted_in_story(quoted.get(name_match_key(act), ""), statement)]
     if not missing:
         return []
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in missing)
@@ -1143,6 +1171,17 @@ def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -
 _QUOTE_OPENING = re.compile(r"^.*?\bcould (?:(?:then|also|next|finally|later) )?")
 #: The fewest words a quote must keep after its opening to be found by them alone.
 _QUOTE_TAIL_MIN_WORDS = 5
+
+
+#: Where a quote joining several of the story's sentences splits ("... signals. Then ...", "…").
+_QUOTE_SENTENCES = re.compile(r"(?<=[.!?])\s+|\s*(?:\.\.\.|…)\s*")
+
+
+def _quoted_in_story(quote: str, statement: str) -> bool:
+    """Whether every sentence of `quote` is in `statement` (a name_match_key form), each whole or from its
+    first "could" on: a merged action's quote may join the sentences of its alternatives."""
+    parts = [key for part in _QUOTE_SENTENCES.split(quote) if (key := name_match_key(part))]
+    return bool(parts) and all(_quote_in_story(part, statement) for part in parts)
 
 
 def _quote_in_story(quote: str, statement: str) -> bool:
