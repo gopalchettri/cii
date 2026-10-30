@@ -574,29 +574,6 @@ def test_a_system_name_inside_another_is_taken_out_with_it() -> None:
     )
 
 
-def test_a_merged_actions_quote_may_join_the_sentences_of_its_alternatives() -> None:
-    """Live replay, 30 Oct: a merged "steal secrets or steal API keys" item was quoted with both of its
-    sentences, which no single sentence of the story matches, and sent 4 slots to a rewrite."""
-    first = "The attacker could steal secrets from the platform's vault."
-    second = "The attacker could then steal API keys from its integration scripts."
-    story = f"An insider could log in. {first} Alarms could stay quiet. {second} Operators could lose trust."
-    action = "steal secrets or steal API keys"
-    for quote in (f"{first} {second}", f"{first} ... {second}", f"{first}… {second}"):
-        answer = {"scenario_statement": story, "action_sentences": {action: quote}}
-        assert _acts_without_a_sentence(answer, (action,)) == []
-    elsewhere = {"scenario_statement": story, "action_sentences": {action: f"{first} They sold them."}}
-    assert _acts_without_a_sentence(elsewhere, (action,)) != []
-
-
-def test_a_quote_found_whole_from_its_first_could_is_found_though_its_first_sentence_is_short() -> None:
-    """Review, 30 Oct: looking up each sentence alone refused a quote whose short first sentence had a
-    reworded opening, which the whole quote's check had found."""
-    story = "A nation-state actor could then disrupt signals. Next it could flood the link with packets."
-    quote = "The attacker could disrupt signals. Next it could flood the link with packets."
-    answer = {"scenario_statement": story, "action_sentences": {"flood the link": quote}}
-    assert _acts_without_a_sentence(answer, ("flood the link",)) == []
-
-
 def test_an_old_plan_sends_no_actions_and_makes_no_split_call() -> None:
     """D3: a plan made before the threat check gave actions sends none: the writer and the reviewer split the
     name themselves (their prompts say how), with no AI call of their own, and the scenario is written."""
@@ -882,34 +859,63 @@ def test_a_repair_whose_consistent_review_leaves_a_listed_action_unjudged_is_kep
     assert [log["outcome"] for log in logs if log["event"] == LogEvent.WRITER_SCENARIO_REPAIRED] == ["fixed"]
 
 
-_PUSH = _CLEAN.statement  # the sentence in which the attacker pushes the firmware
-_HIDE = "They could then hide the change."
+_PUSH = _CLEAN.statement  # sentence 1: the attacker pushes the firmware
+_HIDE = "They could then hide the change."  # sentence 2
 _COMPLETE = draft_answer(_CLEAN) | {
     "scenario_statement": f"{_PUSH} {_HIDE}",
-    "action_sentences": {"pushing firmware": _PUSH, "Hiding the  CHANGE": _HIDE},  # case and spacing forgiven
+    "action_sentences": {"pushing firmware": 1, "Hiding the  CHANGE": 2},  # case and spacing forgiven
 }
+_HIDE_MISSING = AnswerProblem.ACTION_SENTENCES_MISSING.format(actions='"hiding the change"')
+
+
+@pytest.mark.parametrize(
+    "numbers",
+    [
+        {"pushing firmware": 1, "hiding the change": 2},
+        {"Pushing  Firmware": "1", "hiding the change": " 2 "},  # a numeric string
+        {"pushing firmware": 2, "hiding the change": 2},  # one sentence may carry both
+    ],
+)
+def test_a_sentence_number_within_the_story_passes(numbers: dict[str, Any]) -> None:
+    """D67: each listed act points at a sentence of its own scenario_statement by number."""
+    answer = {"scenario_statement": f"{_PUSH} {_HIDE}", "action_sentences": numbers}
+    assert _acts_without_a_sentence(answer, _ACTIONS) == []
+
+
+@pytest.mark.parametrize("number", [None, 0, 3, -1, "3", "", "the second", 1.5, True])
+def test_a_missing_or_out_of_range_sentence_number_is_the_fault(number: Any) -> None:
+    """D67: a missing key, or a number that is no sentence of the story (counted from 1), names the act."""
+    numbers = {"pushing firmware": 1} | ({} if number is None else {"hiding the change": number})
+    answer = {"scenario_statement": f"{_PUSH} {_HIDE}", "action_sentences": numbers}
+    assert _acts_without_a_sentence(answer, _ACTIONS) == [_HIDE_MISSING]
 
 
 @pytest.mark.parametrize(
     "sentences",
     [
-        {"pushing firmware": _PUSH},  # no sentence for one action
-        {
-            "pushing firmware": _PUSH,
-            "hiding the change": "They hide the change in the risk.",
-        },  # not in the story
-        {"pushing firmware": _PUSH, "hiding the change": ""},
-        "every action is in the story",  # not a sentence per action
+        {"pushing firmware": 1},  # no number for one action
+        {"pushing firmware": 1, "hiding the change": 2},  # past the end of a one-sentence story
+        {"pushing firmware": 1, "hiding the change": 0},
+        "every action is in the story",  # not a number per action
     ],
 )
 def test_a_draft_that_shows_no_story_sentence_for_a_listed_action_is_asked_again(sentences: Any) -> None:
     """Root cause of an act left only named: the writer must point at the story sentence where the attacker
-    does each listed act, and code checks the sentence is really in scenario_statement."""
+    does each listed act, and code checks the number is a sentence of scenario_statement."""
     first = draft_answer(_CLEAN) | {"action_sentences": sentences}
     chat = _chat_answering([first, _COMPLETE], [_ALL_DONE])
     written = write_scenario(chat, _listed_brief())
     assert _calls(chat) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
     assert written.draft.statement == _COMPLETE["scenario_statement"] and written.findings == ()
+
+
+def test_the_rewrite_is_told_the_action_with_no_sentence_number() -> None:
+    """D67: the round-2 note names the listed act whose number is past the story's end."""
+    first = draft_answer(_CLEAN) | {"action_sentences": {"pushing firmware": 1, "hiding the change": 2}}
+    chat = _chat_answering([first, _COMPLETE], [_ALL_DONE])
+    write_scenario(chat, _listed_brief())
+    (rewrite,) = chat.asked(AiTask.REPAIR_SCENARIO)
+    assert _HIDE_MISSING in rewrite.split("REJECTED:")[1]
 
 
 def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> None:
@@ -919,7 +925,7 @@ def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> 
     no_list = _chat_answering([draft_answer(_CLEAN) | {"action_sentences": {}}], [_CONSISTENT])
     write_scenario(no_list, _brief_of(_plan_threat()))
     assert _calls(chat) == _calls(no_list) == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
-    still = draft_answer(_CLEAN) | {"action_sentences": {"pushing firmware": _PUSH}}
+    still = draft_answer(_CLEAN) | {"action_sentences": {"pushing firmware": 1}}
     twice = _chat_answering([still, still], [_ALL_DONE])
     assert write_scenario(twice, _listed_brief()).draft.statement == _CLEAN.statement
     assert _calls(twice) == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK]
@@ -927,84 +933,15 @@ def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> 
     assert write_scenario(rewrite_failed, _listed_brief()).draft.statement == _CLEAN.statement
 
 
-_ECCC = "Enterprise Command & Control Centre Platform"
-#: A real set (30 Oct, epoch 3): a listed action, its story's sentence, and the writer's quote of that
-#: sentence with its opening reworded; each slot was written again for it alone.
-_REWORDED_OPENINGS = [
-    (
-        f"tamper authoritative data on {_ECCC}",
-        f"A nation-state actor could enter through the {_ECCC} and, assuming privileged access, tamper "
-        f"authoritative data on the {_ECCC} to alter historical incident logs and current congestion "
-        "indices.",
-        f"The attacker could then tamper authoritative data on the {_ECCC} to alter historical incident logs "
-        "and current congestion indices.",
-    ),
-    (
-        f"evade monitoring on {_ECCC}",
-        "A nation-state actor could enter through the Intelligent Traffic Systems Platform and, assuming "
-        f"elevated OT access, evade monitoring on the {_ECCC} by disabling or filtering agent telemetry "
-        "before it reaches the central dashboard.",
-        f"The attacker could then evade monitoring on the {_ECCC} by disabling or filtering agent telemetry "
-        "before it reaches the central dashboard.",
-    ),
-    (
-        f"compromise backup on {_ECCC}",
-        "A nation-state actor could enter through the Traffic Signal Control System and, assuming "
-        f"administrative access to backup infrastructure, compromise backup on the {_ECCC} by deleting or "
-        "encrypting database and configuration backups.",
-        f"The attacker could then compromise backup on the {_ECCC} by deleting or encrypting database and "
-        "configuration backups.",
-    ),
-    (
-        f"install infostealer on {_ECCC}",
-        "A cybercriminal could enter through the Incident Detection & Response Platform and, assuming an "
-        f"initial foothold such as a malicious attachment, install infostealer on the {_ECCC} to harvest "
-        "browser-saved passwords, tokens and traffic system configuration files.",
-        f"The attacker could then install infostealer on the {_ECCC} to harvest browser-saved passwords, "
-        "tokens and traffic system configuration files.",
-    ),
-]
-_TAMPER, _, _BACKUP, _ = _REWORDED_OPENINGS
-
-
-@pytest.mark.parametrize(("action", "story", "quote"), _REWORDED_OPENINGS)
-def test_a_quote_with_its_opening_reworded_is_found_in_its_story(action: str, story: str, quote: str) -> None:
-    """Root cause of a rewrite for an act the story has: the quote is found from its first "could" on."""
-    answer = {"scenario_statement": story, "action_sentences": {action: quote}}
-    assert _acts_without_a_sentence(answer, (action,)) == []
-
-
-@pytest.mark.parametrize(
-    ("action", "story", "sentences"),
-    [
-        (
-            _BACKUP[0],
-            f"The attacker could also compromise recovery on the {_ECCC} by corrupting failover "
-            "orchestration scripts.",
-            {_BACKUP[0]: _BACKUP[2]},
-        ),  # another act on the same system
-        (_TAMPER[0], _TAMPER[1], {_TAMPER[0]: f"The attacker could then wipe every backup of the {_ECCC}."}),
-        (_TAMPER[0], _TAMPER[1], {"another action": _TAMPER[2]}),  # no quote for the listed action
-        (_TAMPER[0], _TAMPER[1], {_TAMPER[0]: "They could then act."}),  # "act" is in "actor": too short
-    ],
-)
-def test_a_quote_of_an_act_the_story_does_not_have_is_refused(
-    action: str, story: str, sentences: dict[str, str]
-) -> None:
-    """A reworded opening is forgiven, never another act, a missing quote, or a tail too short to tell."""
-    answer = {"scenario_statement": story, "action_sentences": sentences}
-    assert _acts_without_a_sentence(answer, (action,)) == [
-        AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=json.dumps(action, ensure_ascii=False))
-    ]
-
-
-def test_the_writer_names_each_action_s_story_sentence() -> None:
-    """The writer's eighth field and its final check."""
+def test_the_writer_gives_each_action_s_story_sentence_number() -> None:
+    """The writer's eighth field and its final check: a sentence number, never a copied quote."""
     writer = WRITER_SYSTEM_PROMPT
-    assert '"action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>"' in writer
+    assert '{"<each item of BRIEF.threat.threat_actions, copied>": <sentence number>}' in writer
     assert "Include exactly these eight top-level fields" in writer and "Exactly the eight required" in writer
-    assert "its value is copied word for word from scenario_statement and shows the attacker doing" in writer
+    assert "its value is the number (the first is 1) of the sentence of scenario_statement" in writer
+    assert "gives, for each listed action, the number of its own sentence of scenario_statement" in writer
     assert "still gets its own sentence in scenario_statement, never only in risk_statement" in writer
+    assert "word for word" not in writer
 
 
 def test_a_rule_4_verdict_is_never_a_note_and_no_extra_call_is_made() -> None:

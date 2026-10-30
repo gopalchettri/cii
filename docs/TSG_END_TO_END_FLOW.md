@@ -2383,7 +2383,7 @@ Where each key came from:
 
 > **In plain words:** The AI writer gets two things: a fixed set of writing rules, and the brief with any
 > real-world evidence. It must answer in a fixed form with eight fields: a title, the scenario, the risk,
-> assumptions, the way in, one reason per "yes" system, the story sentence of each act, and the step its evidence is about. Word limits are set by the
+> assumptions, the way in, one reason per "yes" system, the number of each act's story sentence, and the step its evidence is about. Word limits are set by the
 > platform's settings, and the upper limit is strict.
 
 **How**
@@ -2472,7 +2472,7 @@ Where each key came from:
    | `assumptions` | `content.assumptions` as written; shown with "- not recorded in the platform" added |
    | `entry_point` | marks `entry_point: true` on one of `content.systems`; one not offered is ignored and code assigns the way in (section 8.3) |
    | `system_reasons` | the `reason` of each "yes" system's `content.system_applicability` entry; a "no" system's, and a missing one's, are code's (section 8.3, D66) |
-   | `action_sentences` | not stored: per listed act, the sentence of `scenario_statement` in which the attacker does it. A first answer that gives none for an act, or quotes words not in its own statement, is asked again once; a second answer is kept, for the review and the rewrite (D47) |
+   | `action_sentences` | not stored: per listed act, the number of the sentence of `scenario_statement` in which the attacker does it, the first being 1 (the statement is split after `.`, `!` or `?` and a space, `_SENTENCE_END`; a numeric string counts too). A first answer that leaves an act out, or gives a number that is no sentence of its own statement, is asked again once, naming the acts; a second answer is kept, for the review and the rewrite (D47, D67) |
    | `evidence_step` | the start of code's evidence sentence: cited at the end of the statement, and the entry's `supports` (section 8.6) |
 
 7. **Prompt version.** Stored as `content.prompt_version`: "scenario writer-evidence-1"

@@ -1129,46 +1129,32 @@ def _unjudged_actions(answer: dict[str, Any]) -> list[str]:
 
 
 def _acts_without_a_sentence(answer: dict[str, Any], actions: tuple[str, ...]) -> list[str]:
-    """The problem when `answer`'s action_sentences copies no sentence of its own scenario_statement for one
-    of the brief's listed `actions`: each action must happen in the story, not only in the risk."""
-    statement = name_match_key(str(answer.get("scenario_statement") or ""))
+    """The problem when `answer`'s action_sentences gives no sentence number of its own scenario_statement
+    for one of the brief's listed `actions`: each action must happen in the story, not only in the risk."""
+    count = len(_story_sentences(str(answer.get("scenario_statement") or "")))
     given = answer.get("action_sentences")
-    quoted = (
-        {name_match_key(str(act)): str(text) for act, text in given.items()}
+    numbers = (
+        {name_match_key(str(act)): _sentence_number(number) for act, number in given.items()}
         if isinstance(given, dict)
         else {}
     )
-    missing = [act for act in actions if not _quoted_in_story(quoted.get(name_match_key(act), ""), statement)]
+    missing = [act for act in actions if not 1 <= numbers.get(name_match_key(act), 0) <= count]
     if not missing:
         return []
     listed = ", ".join(json.dumps(act, ensure_ascii=False) for act in missing)
     return [AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=listed)]
 
 
-#: A quote's opening up to its first "could" and one joining word after it, which the writer may reword.
-_QUOTE_OPENING = re.compile(r"^.*?\bcould (?:(?:then|also|next|finally|later) )?")
-#: The fewest words a quote must keep after its opening to be found by them alone.
-_QUOTE_TAIL_MIN_WORDS = 5
+def _story_sentences(statement: str) -> list[str]:
+    """`statement`'s sentences in order, the first numbered 1."""
+    return [sentence for sentence in _SENTENCE_END.split(statement.strip()) if sentence]
 
 
-#: Where a quote joining several of the story's sentences splits ("... signals. Then ...", "…").
-_QUOTE_SENTENCES = re.compile(r"(?<=[.!?])\s+|\s*(?:\.\.\.|…)\s*")
-
-
-def _quoted_in_story(quote: str, statement: str) -> bool:
-    """Whether every sentence of `quote` is in `statement` (a name_match_key form), each whole or from its
-    first "could" on: a merged action's quote may join the sentences of its alternatives."""
-    if _quote_in_story(name_match_key(quote), statement):
-        return True
-    parts = [key for part in _QUOTE_SENTENCES.split(quote) if (key := name_match_key(part))]
-    return bool(parts) and all(_quote_in_story(part, statement) for part in parts)
-
-
-def _quote_in_story(quote: str, statement: str) -> bool:
-    """Whether `quote` is in `statement` (both name_match_key forms), whole or from its first "could" on."""
-    tail = _QUOTE_OPENING.sub("", quote, count=1)
-    long_tail = len(tail.split()) >= _QUOTE_TAIL_MIN_WORDS
-    return bool(quote) and (quote in statement or (long_tail and tail in statement))
+def _sentence_number(value: Any) -> int:
+    """`value` as a sentence number (an integer or a numeric string); 0, never a sentence, otherwise."""
+    if isinstance(value, str) and value.strip().isdecimal():
+        return int(value)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:

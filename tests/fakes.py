@@ -138,7 +138,7 @@ class FakeChatModel:
 
     def _with_writer_defaults(self, task: AiTask, answer: dict[str, Any], user_prompt: str) -> dict[str, Any]:
         """A writer answer that gives no system_reasons gets one per supporting system of the brief it
-        answers (G216), and one that gives no action_sentences gets its whole statement for each listed
+        answers (G216), and one that gives no action_sentences gets its first sentence (1) for each listed
         action, so a test about something else need not write them; a test of them gives its own (empty
         included)."""
         if task not in (AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO) or not isinstance(answer, dict):
@@ -149,7 +149,7 @@ class FakeChatModel:
             defaults["system_reasons"] = {name: f"It could affect {name}." for name in names}
         acts = (brief_of(user_prompt).get("threat") or {}).get("threat_actions") or []
         if "action_sentences" not in answer and isinstance(answer.get("scenario_statement"), str):
-            defaults["action_sentences"] = {act: answer["scenario_statement"] for act in acts}
+            defaults["action_sentences"] = dict.fromkeys(acts, 1)
         return defaults | answer
 
     def asked(self, task: AiTask) -> list[str]:

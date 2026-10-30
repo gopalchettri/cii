@@ -56,7 +56,7 @@ RETURN ONLY THIS VALID JSON OBJECT
   "assumptions": ["string"],
   "entry_point": "string",
   "system_reasons": {"<exact name of each 'yes' supporting system>": "string"},
-  "action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>": "<the exact sentence of scenario_statement in which the attacker does it>"},
+  "action_sentences": {"<each item of BRIEF.threat.threat_actions, copied>": <sentence number>},
   "evidence_step": "string"
 }
 
@@ -68,7 +68,7 @@ SCHEMA
 - assumptions: short, specific sentences; [] when none are needed.
 - entry_point: an exact BRIEF.entry_point_options value; "" if the list is empty.
 - system_reasons: one key for every BRIEF.supporting_systems name marked "yes", copied exactly; no key for a "no" system.
-- action_sentences: one key for every item of BRIEF.threat.threat_actions, copied exactly; its value is copied word for word from scenario_statement and shows the attacker doing that action, not its purpose ("in order to ...") or the threat's name. {} when BRIEF.threat.threat_actions is absent.
+- action_sentences: one key for every item of BRIEF.threat.threat_actions, copied exactly; its value is the number (the first is 1) of the sentence of scenario_statement that shows the attacker doing that action, not its purpose ("in order to ...") or the threat's name. {} when BRIEF.threat.threat_actions is absent.
 - evidence_step: only the step described in rule 10; "" when no EVIDENCE is supplied.
 
 GENERATION LOGIC
@@ -172,7 +172,7 @@ Verify before returning:
 - Exactly the eight required fields, valid JSON and no anatomy/additional prose.
 - One specified threat, one coherent asset-level event and one primary consequence.
 - Every action the threat's name states is carried out, not only named (one of any "or" alternatives), and the primary impact comes from one of them with no added step.
-- action_sentences gives, for each listed action, its own sentence of scenario_statement in which the attacker does it; an action that only touches the asset as a whole (a demand, a message, a public claim) still gets its own sentence in scenario_statement, never only in risk_statement.
+- action_sentences gives, for each listed action, the number of its own sentence of scenario_statement in which the attacker does it; an action that only touches the asset as a whole (a demand, a message, a public claim) still gets its own sentence in scenario_statement, never only in risk_statement.
 - Every "yes" system has a concise contribution; the common asset consequence is explained once.
 - No "no" system named in scenario_statement and no activity on unknown-applicability systems; supplied applicability unchanged; a system_reasons key for each "yes" system only and an allowed entry point.
 - No invented access, capability or business process; a link between "yes" systems that BRIEF does not record is an assumption.

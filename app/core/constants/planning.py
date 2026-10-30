@@ -227,7 +227,9 @@ class AnswerProblem(StrEnum):
     )
     THREAT_ACTIONS_REQUIRED = 'the reply must be {"actions": [...]}: a non-empty list of short verb phrases'
     THREAT_ACTION_VERDICTS_REQUIRED = "threat_actions must judge every item of PLAN.threat.threat_actions"
-    ACTION_SENTENCES_MISSING = "action_sentences must quote the statement's sentence for each of: {actions}"
+    ACTION_SENTENCES_MISSING = (
+        "action_sentences must give the number of the statement's sentence for each of: {actions}"
+    )
 
 
 class Controls:

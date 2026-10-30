@@ -104,7 +104,7 @@
   "NO_CHOICES": "no_choices"
  },
  "AnswerProblem": {
-  "ACTION_SENTENCES_MISSING": "action_sentences must quote the statement's sentence for each of: {actions}",
+  "ACTION_SENTENCES_MISSING": "action_sentences must give the number of the statement's sentence for each of: {actions}",
   "GAP_FILL_INCOMPLETE": "AI fallback applies=true requires threat_type, threat and attacker",
   "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
   "TEXT_REQUIRED": "must not be empty",
