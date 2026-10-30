@@ -399,9 +399,19 @@ def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None
     """The customer's 25,000 tokens a minute: D65 (code writes the evidence sentence) cut the writer from
     21,844 characters to 19,836 and the reviewer from 8,745 to 7,691 (the test settings' word ranges), and a
     story slot no longer carries its own evidence line. 30 Oct: dropping what code does or checks itself
-    and every rule said twice (the final-check list among them) cut the writer from 19,948 to 15,465. Each
-    cap is the new size plus about 110 characters."""
-    assert len(writer_system_prompt()) <= 15_575 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 7_800
+    and every rule said twice (the final-check list among them) cut the writer from 19,948 to 15,465; English
+    only and the could/may reminder in rules 6 and 13 (replay: stories in the present tense, as certain,
+    went from 3 of 75 to 52 of 75 without them) bring it to 15,578. Each cap is the new size plus about
+    110 characters."""
+    assert len(writer_system_prompt()) <= 15_690 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 7_800
+
+
+def test_the_story_and_the_active_voice_example_keep_could_or_may() -> None:
+    """Replay, 30 Oct: with the slimmed prompt's only active-voice example in the present tense ("the attacker
+    copies the records") and rule 6's could/may clause cut, 52 of 75 stories were told as certain (old 3)."""
+    writer = writer_system_prompt()
+    assert '(rule 13) with hypothetical language such as "could" or "may".' in writer
+    assert '("the attacker could copy the records")' in writer and "attacker copies the records" not in writer
 
 
 def test_the_set_note_gives_every_slot_the_configured_word_ranges() -> None:

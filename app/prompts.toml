@@ -104,7 +104,7 @@ Write one continuous narrative without headings or numbered beats:
 4) State an uncertainty or observation only when supported; do not invent monitoring, alarms, logs, alerts or detection capabilities.
 5) Explain the single primary consequence for the exact asset, its recorded role and its critical service when supplied; mention criticality only when recorded. End scenario_statement on this consequence.
 For OT, focus on the physical process, safety, integrity or availability as relevant to the category. For IT, focus on confidentiality, identity, information integrity or service availability as relevant to the category.
-Write in clear, balanced language (rule 13). Do not pad, repeat descriptions or copy library labels as a substitute for explaining an action.
+Write in clear, balanced language (rule 13) with hypothetical language such as "could" or "may". Do not pad, repeat descriptions or copy library labels as a substitute for explaining an action.
 
 7. RISK STATEMENT: <risk words> WORDS, NEVER MORE
 Write ONE asset-level risk statement, in this order, each part its own short sentence (the first sentence is only the category's opening and the adverse event; the cause comes in the next sentence):
@@ -144,7 +144,7 @@ One short sentence for every "yes" system, under its exact name: the same access
 Write the title, scenario_statement, risk_statement and system_reasons for both readers (ROLE). Mix plain sentences with the correct technical terms; do not make the text so simple that the precise meaning is lost:
 - English only, every word of every field.
 - Short sentences, about 20 words at most, one idea each.
-- Active voice: say who does what ("the attacker copies the records"), not "records could be subjected to exfiltration".
+- Active voice: say who does what ("the attacker could copy the records"), not "records could be subjected to exfiltration".
 - Keep the precise security or technical term where it names the act, attack, component or data exactly (e.g., malware, credentials, firmware, exfiltration). Add a few plain words the first time a less common term appears, e.g., "exfiltrate (copy out) the records". Spell out an acronym the first time.
 - Use everyday words where no precise term is needed ("use", not "leverage"); avoid vague jargon that names no concrete act, such as "malicious activity" or "compromise" with no object.
 - For example, write "The attacker could change the controller's setpoints so the tank overflows", not "Unauthorised modification of process configuration could result in overflow conditions", and not "Someone could make the tank too full".
