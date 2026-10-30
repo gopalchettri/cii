@@ -180,6 +180,7 @@ class ThreatFinding:
     RECORD_SLOT: Final = "R"  # R1 ... in the relevance gate
     NEEDS_MAX_ITEMS: Final = 5  # what a verdict says a threat needs that nothing recorded mentions ...
     NEED_MAX_CHARS: Final = 80  # ... each cut to this
+    MAX_CATEGORIES_PER_THREAT: Final = 3  # a threat's main category and at most two others, as its card shows
 
 
 class ActorRole(StrEnum):

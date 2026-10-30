@@ -1247,6 +1247,7 @@ class ThreatFinder:
         threats = [_main_category_first(threat, main_first.get(threat.key, ())) for threat in threats]
         threats = merge_reworded_threats(threats, self._embeddings, context.asset["name"], folded)
         threats, drops = _keep_on_matching_systems(threats, snapshot.library.threat_library.threats, context)
+        threats = [_main_and_two_others(threat, main_first.get(threat.key, ())) for threat in threats]
         for key, kept in folded.items():
             drops.append(plan_drop(key, names[key], None, PlanStage.MERGE, PlanLoss.MERGED, f"into {kept}"))
         threats = assign_attackers(snapshot, threats, land.sector)
@@ -1306,6 +1307,19 @@ def _main_category_first(threat: PlannedThreat, gate_order: Sequence[StrideCateg
         categories=(lead, *(kind for kind in threat.categories if kind != lead)),
         reason=threat_reason_for(threat, lead),
     )
+
+
+def _main_and_two_others(threat: PlannedThreat, gate_order: Sequence[StrideCategory]) -> PlannedThreat:
+    """The threat with its main category and at most two others, those the gate named earliest (a kind it did
+    not order last), kept in their own order: a card's "also" list stays short when the AI names every
+    kind."""
+    main, *others = threat.categories
+    if len(others) < ThreatFinding.MAX_CATEGORIES_PER_THREAT:
+        return threat
+    rank = {kind: n for n, kind in enumerate(gate_order)}
+    room = ThreatFinding.MAX_CATEGORIES_PER_THREAT - 1
+    chosen = sorted(others, key=lambda kind: rank.get(kind, len(rank)))[:room]
+    return dataclasses.replace(threat, categories=(main, *(kind for kind in others if kind in chosen)))
 
 
 def _named_threat(threat: PlannedThreat, landscape: Landscape) -> PlannedThreat:

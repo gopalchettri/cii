@@ -34,6 +34,7 @@ from tests.planner_samples import (
     gap_fill,
     gap_filled,
     judged,
+    planned,
     planner_chat,
 )
 
@@ -253,6 +254,37 @@ def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the
     (card,) = plan["paths"]  # one card per threat
     assert (card["category"], card["categories"]) == (S.DENIAL_OF_SERVICE, [S.DENIAL_OF_SERVICE, S.TAMPERING])
     assert plan["threats"][0]["category"] == S.DENIAL_OF_SERVICE == card["category"]
+
+
+def test_a_threat_keeps_its_main_category_and_the_two_the_gate_named_next() -> None:
+    """Ransomware filed under five categories, the gate naming all five (D, T, I, R, E): the threat keeps
+    Denial of Service and the two others the gate named next, Tampering and Information Disclosure, in their
+    own order, and its card's path holds those three; phishing, with one, is left as it is."""
+    d, t, i = S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE
+    r, e = S.REPUDIATION, S.ELEVATION_OF_PRIVILEGE
+    five, named = (t, r, i, d, e), (d, t, i, r, e)  # the library's (STRIDE) order; the gate's
+    kinds = [{"name": kind, "impact": "HIGH", "reason": f"It hits SYS1 as {kind}."} for kind in named]
+    chat = planner_chat({})
+    relevant = {RANSOMWARE.name: ["SYS1"], PHISHING.name: ["SYS1"]}
+    chat.responders[AiTask.RELEVANCE_GATE] = _answering({RANSOMWARE.name: {"categories": kinds}}, relevant)
+    library = (dataclasses.replace(RANSOMWARE, categories=five), PHISHING)
+    findings = finder(chat, threats=library).find_threats(CONTEXT)
+    by_key = {threat.key: threat for threat in findings.threats}
+    ransomware, phishing = by_key["lib:1"], by_key["lib:2"]
+    assert ransomware.categories == (S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE)
+    assert ransomware.reason == "It hits SCADA server as Denial of Service."  # the main category's, as before
+    assert phishing.categories == (S.SPOOFING,)
+    plan = build_plan(dataclasses.replace(findings, threats=[ransomware]), 0)
+    (card,) = plan["paths"]
+    assert card["category"] == S.DENIAL_OF_SERVICE
+    assert card["categories"] == [S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE]
+
+
+def test_a_threat_with_three_categories_or_fewer_is_left_as_it_is() -> None:
+    """The gate's order changes nothing when nothing is cut: the others keep their own order."""
+    three = planned("lib:1", "Ransomware", categories=(S.TAMPERING, S.SPOOFING, S.REPUDIATION))
+    gate_order = (S.TAMPERING, S.REPUDIATION, S.SPOOFING)
+    assert plan_module._main_and_two_others(three, gate_order) is three
 
 
 def test_the_gates_actions_reach_the_plan_by_system_name_with_no_split_call() -> None:
