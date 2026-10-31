@@ -54,6 +54,7 @@ from app.core.constants import (
     StoryFindingMessage,
     StrideCategory,
     TextSafety,
+    ThreatFinding,
     WriterStyle,
     Writing,
 )
@@ -302,11 +303,13 @@ def _slot_record(brief: WriterBrief, asset: dict[str, Any], shared: _SharedFacts
 
 
 def _path_record(brief: WriterBrief) -> dict[str, Any]:
-    """A brief's own fields: its category, attacker and threat, its entry point options and every supporting
-    system by name, "yes" when the path goes through it."""
+    """A brief's own fields: its category, attacker (and why), likelihood and threat, its entry point options
+    and every supporting system by name, "yes" when the path goes through it."""
     return {
         "category": brief.category,
         "attacker": brief.attacker,
+        **({"why_this_attacker": brief.why_this_attacker} if brief.why_this_attacker else {}),
+        "likelihood": brief.likelihood,
         "threat": {
             "threat_type": brief.threat_type,
             "threat": brief.threat,
@@ -452,6 +455,8 @@ _NAME_DESCRIBES = re.compile(
 #: A threat name's "or", and the joiners that make it name several acts ("Command and Control", "with").
 _OR_JOINER = re.compile(r"\bor\b", re.IGNORECASE)
 _AND_JOINER = re.compile(r"\b(?:and|with)\b|&", re.IGNORECASE)
+#: The gate's likelihood as the brief says it.
+_LIKELIHOOD_WORDS = {rank: word for word, rank in ThreatFinding.LIKELIHOOD_RANK.items()}
 #: The asset facts under the names the brief shows; every other fact keeps its own name.
 _ASSET_FACT_NAMES = {
     "cii_asset_description": "description",
@@ -468,9 +473,8 @@ def build_brief(
     live: LiveLibrary,
     style: WriterStyle = WriterStyle.ORIGINAL,
 ) -> WriterBrief:
-    """The brief for `path`: its asset's and systems' facts within `budget` characters together, the acting
-    attacker and why the threat applies. Raises PathNotWritable for a path missing a fact or whose threat or
-    attacker was retired."""
+    """The brief for `path`: its asset's and systems' facts within `budget` characters, the acting attacker
+    and why, the likelihood and why the threat applies. PathNotWritable: a missing fact or retired threat."""
     threat = _path_threat(threats, path)
     _check_still_live(threat, path["path_id"], live)
     facts = [_named_facts(context.asset["name"], _asset_facts(context, style))] + [
@@ -483,6 +487,8 @@ def build_brief(
         critical_service=_critical_service(context),
         category=StrideCategory(path["category"]),
         attacker=threat["actors"][0]["name"],
+        why_this_attacker=redact(_reason_on_path(threat["attacker_check_reason"] or "", path, context)),
+        likelihood=_LIKELIHOOD_WORDS[threat["likelihood"]],
         threat_type=threat_name_without_code(threat["type"]["name"]),
         threat=threat_name_without_code(threat["name"]),
         why_it_applies=redact(_reason_on_path(_kind_reason(threat, path), path, context)),

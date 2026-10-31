@@ -397,15 +397,40 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
 
 
+def test_the_brief_gives_the_chosen_attackers_reason_on_this_path_only_and_the_likelihood_word() -> None:
+    """Owner, 31 Oct: the writer fits the story to why its attacker was chosen, never naming a system off the
+    path or personal data; no reason, no key; the likelihood as a word."""
+    reason = "Holds the SCADA server and Historian admin logins; mail ops@grid.example."
+    brief = _brief_of(_plan_threat(attacker_check_reason=reason, likelihood=3))
+    assert brief.likelihood == "HIGH" and "SCADA server" in brief.why_this_attacker
+    assert "Historian" not in brief.why_this_attacker and "ops@grid.example" not in brief.why_this_attacker
+    asked = writer_prompt([("SC1", brief, "")])
+    assert brief.why_this_attacker in asked and '"likelihood": "HIGH"' in asked
+    unexplained = _brief_of(_plan_threat(attacker_check_reason=None, likelihood=1))
+    assert (unexplained.why_this_attacker, unexplained.likelihood) == ("", "LOW")
+    assert "why_this_attacker" not in writer_prompt([("SC1", unexplained, "")]).split("BRIEF:", 1)[1]
+
+
+def test_the_writer_fits_the_attacker_to_its_reason_and_says_the_likelihood_in_the_cause() -> None:
+    writer, reviewer = writer_system_prompt(), PLAN_CHECK_SYSTEM_PROMPT
+    assert "When BRIEF gives why_this_attacker, the access, skill and motive the story gives" in writer
+    assert "access it names that BRIEF does not record is an assumption (rule 2)" in writer
+    assert 'HIGH "is likely", MEDIUM "is possible", LOW "is unlikely but possible"' in writer
+    assert "Never write the level, a score or a reason for it." in writer
+    assert "contradicts PLAN.why_this_attacker" in reviewer
+    assert "ending with PLAN.likelihood in plain words" in reviewer
+
+
 def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None:
     """The customer's 25,000 tokens a minute: D65 (code writes the evidence sentence) cut the writer from
     21,844 characters to 19,836 and the reviewer from 8,745 to 7,691 (the test settings' word ranges), and a
     story slot no longer carries its own evidence line. 30 Oct: dropping what code does or checks itself
     and every rule said twice (the final-check list among them) cut the writer from 19,948 to 15,465; English
     only and the could/may reminder in rules 6 and 13 (replay: stories in the present tense, as certain,
-    went from 3 of 75 to 52 of 75 without them) bring it to 15,578. Each cap is the new size plus about
-    110 characters."""
-    assert len(writer_system_prompt()) <= 15_690 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 7_800
+    went from 3 of 75 to 52 of 75 without them) bring it to 15,578. 31 Oct: the attacker's reason and the
+    likelihood clause bring the writer to 16,112 and the reviewer to 7,915. Each cap is the new size plus
+    about 110 characters."""
+    assert len(writer_system_prompt()) <= 16_220 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 8_030
 
 
 def test_the_story_and_the_active_voice_example_keep_could_or_may() -> None:

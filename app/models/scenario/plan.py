@@ -36,6 +36,7 @@ class Verdict:
     entry_points: tuple[int, ...] = ()  # the systems among `systems` an attacker could get in through
     kinds: tuple[StrideCategory, ...] = ()  # its own categories the gate found it applies as, the main first
     actions: tuple[str, ...] = ()  # the acts its name states, as the gate split them
+    likelihood: int = 0  # ThreatFinding.LIKELIHOOD_RANK; 0 when not relevant
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class PlannedThreat:
     attacker_check_reason: str = ""
     actor_pick: ActorPick | None = None  # the gate's pick, until code decides
     actions: tuple[str, ...] = ()  # the acts its name states, systems by name: the plan's threats[].actions
+    likelihood: int = 0  # how likely a listed attacker would attempt it; the higher on a merge
 
 
 @dataclass
@@ -146,6 +148,7 @@ class RelevanceVerdict(BaseModel):
     entry_points: list[str] = Field(default_factory=list)  # among `systems`: where an attacker could get in
     reason: str = ""  # a rejection's; an applying threat's reasons are its categories'
     confidence: int | None = Field(default=None, ge=0, le=100)
+    likelihood: Any = None  # HIGH, MEDIUM or LOW when relevant; read strictly in code
     needs: list[str] = Field(default_factory=list)  # what the threat needs that nothing recorded mentions
     # The attacker pick and the actions, read leniently in code: a bad one never costs a re-ask (an unlisted
     # attacker is none fits).

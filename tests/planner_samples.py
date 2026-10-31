@@ -98,7 +98,7 @@ def verdict_for(candidate: dict[str, Any], systems: list[str] | None, **fields: 
     ]
     applies = {"relevant": True, "categories": kinds, "systems": systems, "entry_points": systems}
     pick = {"attacker": candidate["attackers"][0], "attacker_reason": "It could reach SYS1."}
-    return threat | applies | {"confidence": 80, "needs": []} | pick | fields
+    return threat | applies | {"confidence": 80, "likelihood": "MEDIUM", "needs": []} | pick | fields
 
 
 def judged(
@@ -187,6 +187,7 @@ def planned(key: str, name: str, systems: tuple[int, ...] = (321,), **fields: An
         "categories": (S.TAMPERING,),
         "impact": 2,
         "confidence": 70.0,
+        "likelihood": 2,
         "reason": "It applies.",
     }
     return PlannedThreat(key, catalogue_id, name=name, systems=systems, **(defaults | fields))

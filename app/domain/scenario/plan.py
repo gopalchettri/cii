@@ -189,6 +189,7 @@ def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
         "reasons": threat_reasons_by_kind(threat),
         "impact": threat.impact,
         "confidence": threat.confidence,
+        "likelihood": threat.likelihood,
         "actors": [
             {"id": actor.actor_id, "name": actor.name, "role": actor.role, "closest": False}
             for actor in threat.actors
@@ -226,6 +227,11 @@ def attack_path_from_library(path: AttackPath) -> bool:
 def attack_path_impact(path: AttackPath) -> int:
     """The highest impact of the path's steps."""
     return max(step.impact for step in path.steps)
+
+
+def attack_path_risk(path: AttackPath) -> int:
+    """The highest impact x likelihood of the path's steps: 1 to 9."""
+    return max(step.impact * step.likelihood for step in path.steps)
 
 
 def attack_path_confidence(path: AttackPath) -> float:
@@ -392,7 +398,8 @@ def parse_verdict(
 ) -> tuple[dict[StrideCategory, Verdict] | None, list[str]]:
     """One threat's verdict checked against its `candidate`, as its verdict under each category it named and
     under each of its own (one it lists but did not name does not apply); a named category it does not list
-    is kept for code to drop. Systems, ways in, confidence, needs, attacker and actions are the threat's."""
+    is kept for code to drop. Systems, ways in, confidence, likelihood, needs, attacker and actions are the
+    threat's."""
     named, problems = _verdict_problems(item, candidate, aliases)
     if problems:
         return None, problems
@@ -408,6 +415,7 @@ def parse_verdict(
         else reason[: ThreatFinding.REASON_MAX_CHARS],
         impact=0,
         confidence=float(item.get("confidence") or 0) if relevant else 0.0,
+        likelihood=ThreatFinding.LIKELIHOOD_RANK[str(item["likelihood"]).upper()] if relevant else 0,
         needs=_needs(item.get("needs") or []),
         actor_pick=actor_pick(item, candidate["attackers"]) if relevant else None,
         kinds=tuple(own),
@@ -423,7 +431,8 @@ def _verdict_problems(
     item: dict[str, Any], candidate: dict[str, Any], aliases: dict[str, int]
 ) -> tuple[dict[StrideCategory, tuple[int, str]], list[str]]:
     """What is wrong with a verdict: its threat copied back, known aliases, a way in among them, its own
-    categories and a 0-100 confidence when relevant, a reason when rejected. Its named categories too."""
+    categories, a 0-100 confidence and a likelihood when relevant, a reason when rejected. Its named
+    categories too."""
     slot, relevant, systems = item["slot"], item.get("relevant"), item.get("systems") or []
     entry_points = (item.get("entry_points") or []) if relevant is True else None
     confidence, needs = item.get("confidence"), item.get("needs") or []
@@ -441,6 +450,8 @@ def _verdict_problems(
             or not 0 <= confidence <= 100
         ):
             problems.append(f"{slot}: confidence must be a number from 0 to 100")
+        if str(item.get("likelihood") or "").upper() not in ThreatFinding.LIKELIHOOD_RANK:
+            problems.append(f"{slot}: likelihood must be HIGH, MEDIUM or LOW")
     elif not str(item.get("reason") or "").strip():
         problems.append(f"{slot}: a threat that does not apply needs its reason")
     if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
@@ -865,6 +876,7 @@ def _ai_threat(
         kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
         actions=verdict.actions,
+        likelihood=verdict.likelihood,
     )
 
 
@@ -884,6 +896,7 @@ def _library_threat(category: StrideCategory, threat: LibraryThreat, verdict: Ve
         kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
         actions=verdict.actions,
+        likelihood=verdict.likelihood,
     )
 
 
@@ -1033,9 +1046,9 @@ def _placed(
 
 
 def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThreat:
-    """One threat for both: every category and system, the higher impact and confidence, the kept one's
-    reason, each category's own reason and place, and an attacker pick that names one over one that names
-    none. Another threat folded in never moves the kept one's first category."""
+    """One threat for both: every category and system, the higher impact, likelihood and confidence, the
+    kept one's reason, each category's own reason and place, and an attacker pick that names one over one that
+    names none. Another threat folded in never moves the kept one's first category."""
     union = set(kept.categories) | set(other.categories)
     lead = (kept.categories[0],) if kept.key != other.key else ()
     return dataclasses.replace(
@@ -1044,6 +1057,7 @@ def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThrea
         systems=tuple(sorted(set(kept.systems) | set(other.systems))),
         impact=max(kept.impact, other.impact),
         confidence=max(kept.confidence, other.confidence),
+        likelihood=max(kept.likelihood, other.likelihood),
         actor_pick=_named_pick_first(kept.actor_pick, other.actor_pick),
         actions=kept.actions or other.actions,
         kind_reasons=tuple((threat_reasons_by_kind(other) | threat_reasons_by_kind(kept)).items()),
@@ -1343,9 +1357,10 @@ def path_on(
 
 
 def _path_strength(path: AttackPath) -> tuple[Any, ...]:
-    """Impact, confidence, the STRIDE order of the kind, then the tie-break: library before AI, the lowest
-    library id, the path id."""
+    """Risk (impact x likelihood), impact, confidence, the STRIDE order of the kind, then the tie-break:
+    library before AI, the lowest library id, the path id."""
     return (
+        -attack_path_risk(path),
         -attack_path_impact(path),
         -attack_path_confidence(path),
         _STRIDE_ORDER.index(attack_path_categories(path)[0]),
@@ -1354,7 +1369,7 @@ def _path_strength(path: AttackPath) -> tuple[Any, ...]:
 
 
 def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
-    """The most relevant path first, the same order on every run."""
+    """The highest risk first, the same order on every run."""
     return sorted(paths, key=_path_strength)
 
 

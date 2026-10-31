@@ -21,7 +21,9 @@ from app.domain.scenario.plan import (
     describe_asset_for_ai,
     merge_reworded_threats,
     merge_same_threats,
+    merge_two_threats,
     parse_verdict,
+    planned_threat_record,
     relevance_gate_prompt,
     threat_from_library,
 )
@@ -114,15 +116,25 @@ def _applies(**fields: Any) -> dict[str, Any]:
     """The sample candidate's verdict: relevant as Tampering, HIGH, on SYS1."""
     kind = {"name": "Tampering", "impact": "HIGH", "reason": "It encrypts SYS1."}
     verdict = {"slot": "R1", "threat": RANSOMWARE.name, "relevant": True, "categories": [kind]}
-    return verdict | {"systems": ["SYS1"], "entry_points": ["SYS1"], "confidence": 80} | fields
+    return (
+        verdict
+        | {"systems": ["SYS1"], "entry_points": ["SYS1"], "confidence": 80, "likelihood": "high"}
+        | fields
+    )
 
 
 def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
-    bad = _applies(systems=["SYS9"], confidence=101, categories=[{"name": "Tampering", "impact": "BIG"}])
+    bad = _applies(
+        systems=["SYS9"],
+        confidence=101,
+        categories=[{"name": "Tampering", "impact": "BIG"}],
+        likelihood="SOMETIMES",
+    )
     assert parse_verdict(bad, _CANDIDATE, {"SYS1": 321})[1] == [
         "R1: systems must be listed aliases only (SYS1, SYS2 ...)",
         "R1: Tampering needs its impact (HIGH, MEDIUM or LOW) and its reason",
         "R1: confidence must be a number from 0 to 100",
+        "R1: likelihood must be HIGH, MEDIUM or LOW",
     ]
     verdicts, problems = parse_verdict(_applies(systems=[["SYS1"]]), _CANDIDATE, {"SYS1": 321})
     assert verdicts is None and problems == ["R1: systems must be listed aliases only (SYS1, SYS2 ...)"]
@@ -133,7 +145,8 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
         "systems": [],
         "reason": "No mail.",
     }
-    verdicts, problems = parse_verdict(rejection | {"impact": "N/A", "confidence": 5}, _CANDIDATE, {})
+    ignored = {"impact": "N/A", "confidence": 5, "likelihood": "HIGH"}  # a rejection has none of them
+    verdicts, problems = parse_verdict(rejection | ignored, _CANDIDATE, {})
     no_mail = Verdict(False, (), "No mail.", 0, 0.0)
     assert problems == [] and verdicts == {S.TAMPERING: no_mail, S.DENIAL_OF_SERVICE: no_mail}
     short = rejection | {"needs": ["mail"]}  # the form asked for
@@ -142,6 +155,23 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
     assert parse_verdict(rejection | {"reason": ""}, _CANDIDATE, {})[1] == [
         "R1: a threat that does not apply needs its reason"
     ]
+
+
+def test_the_gates_likelihood_is_read_like_impact_kept_as_the_higher_on_a_merge_and_stored() -> None:
+    """Owner, 31 Oct: one likelihood per threat, HIGH, MEDIUM or LOW in any case; a relevant verdict without
+    one is a problem; a merge keeps the higher; the plan stores it."""
+    verdicts, problems = parse_verdict(_applies(likelihood="medium"), _CANDIDATE, {"SYS1": 321})
+    assert problems == [] and verdicts is not None and verdicts[S.TAMPERING].likelihood == 2
+    missing = {key: value for key, value in _applies().items() if key != "likelihood"}
+    assert parse_verdict(missing, _CANDIDATE, {"SYS1": 321})[1] == [
+        "R1: likelihood must be HIGH, MEDIUM or LOW"
+    ]
+    low = planned("lib:1", "Ransomware", likelihood=1)
+    high = planned("lib:1", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), likelihood=3)
+    assert merge_two_threats(low, high).likelihood == merge_two_threats(high, low).likelihood == 3
+    assert planned_threat_record(high)["likelihood"] == 3
+    (ransomware,) = finder(planner_chat({RANSOMWARE.name: ["SYS1"]})).find_threats(CONTEXT).threats
+    assert ransomware.likelihood == 2  # the sample gate says MEDIUM
 
 
 def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
@@ -164,7 +194,14 @@ def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
     asset = parse_verdict(relevant | {"systems": [], "entry_points": []}, _CANDIDATE, aliases)[0]
     assert asset is not None
     assert asset[S.TAMPERING] == Verdict(
-        True, (), "It encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, ""), kinds=(S.TAMPERING,)
+        True,
+        (),
+        "It encrypts SYS1.",
+        3,
+        80.0,
+        actor_pick=ActorPick(None, ""),
+        kinds=(S.TAMPERING,),
+        likelihood=3,
     )
     prompt = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
     assert '"entry_points": ["SYS1"]' in prompt and "one, several or all of them" in prompt
@@ -260,6 +297,7 @@ def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_ga
     assert ai_threat.actors == (PlannedActor(INSIDER.actor_id, INSIDER.name, ActorRole.ACTING),)
     assert ai_threat.attacker_check == AttackerCheck.CHOSEN
     assert ai_threat.attacker_check_reason == "Holds the engineering login."
+    assert ai_threat.likelihood == 2  # from the gate's check of the proposal
     (asked,) = chat.asked(AiTask.GAP_FILL)  # one ask for every empty category
     assert '"attacker":' not in asked
     listed = {item["category"]: item for item in items_in(asked, "EMPTY CATEGORIES")}

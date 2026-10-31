@@ -176,6 +176,7 @@ class ThreatFinding:
     THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats, each whole
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
+    LIKELIHOOD_RANK: Final[dict[str, int]] = IMPACT_RANK  # the gate's likelihood: the same three levels
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id
     RECORD_SLOT: Final = "R"  # R1 ... in the relevance gate
     NEEDS_MAX_ITEMS: Final = 5  # what a verdict says a threat needs that nothing recorded mentions ...

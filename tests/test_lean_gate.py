@@ -18,7 +18,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import Unavailable
 from app.domain.scenario import plan as plan_module
-from app.domain.scenario.plan import build_plan
+from app.domain.scenario.plan import build_plan, relevance_gate_prompt
 from app.models.library.library import LibraryActor, LibraryThreat
 from tests.fakes import FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
@@ -125,6 +125,37 @@ def test_a_slot_missing_from_the_answer_is_asked_once_more_alone_and_the_others_
         ("R3", LOG_WIPE.name)
     ]
     assert sorted(threat.name for threat in findings.threats) == sorted([LOG_WIPE.name, FLOOD.name])
+
+
+def test_a_slot_without_a_likelihood_is_asked_once_more_alone_and_the_others_are_kept() -> None:
+    gate = judged({LOG_WIPE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
+
+    def no_likelihood_for_the_log_wipe_at_first(user_prompt: str) -> dict[str, Any]:
+        verdicts = gate(user_prompt)["verdicts"]
+        whole = len(verdicts) > 1
+        for verdict in verdicts:
+            if whole and verdict["threat"] == LOG_WIPE.name:
+                del verdict["likelihood"]
+        return {"verdicts": verdicts}
+
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = no_likelihood_for_the_log_wipe_at_first
+    findings = finder(chat).find_threats(CONTEXT)
+    whole, again = chat.asked(AiTask.RELEVANCE_GATE)
+    assert len(items_in(whole, "CANDIDATES")) == 6
+    assert [item["threat"] for item in items_in(again, "CANDIDATES")] == [LOG_WIPE.name]
+    assert sorted(threat.name for threat in findings.threats) == sorted([LOG_WIPE.name, FLOOD.name])
+
+
+def test_the_gate_asks_one_likelihood_after_the_attacker_and_never_lets_it_decide_relevance() -> None:
+    """Owner, 31 Oct: likelihood counts every listed attacker who could, never decides relevance, and is
+    asked after the attacker so the pick is made first."""
+    _, prompt = relevance_gate_prompt("LANDSCAPE", [])
+    assert "a high impact, likelihood or confidence never makes a threat that fails them relevant" in prompt
+    assert "a LOW likelihood never makes a threat that meets them not relevant" in prompt
+    assert "the more listed attackers who plausibly could, the higher. Give no reason for it." in prompt
+    order = [prompt.index(key) for key in ('"attacker_reason"', '"likelihood": "MEDIUM"', '"actions"')]
+    assert order == sorted(order)
 
 
 def test_a_cut_off_batch_is_asked_again_as_two_halves_both_judged() -> None:
