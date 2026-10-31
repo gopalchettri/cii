@@ -94,7 +94,7 @@ Use the supplied applicability flags unchanged.
 - Name only supplied systems, exactly as given. Describe people by recorded or generic role rather than inventing another system.
 
 5. ATTACKER TYPE
-Use the supplied attacker type or a faithful plain-language equivalent. Never name a group, malware family or campaign, or present one as attacking this asset: the application adds who used the cited entry. Do not introduce another attacker or an objective the threat's name does not state.
+Use the supplied attacker type or a faithful plain-language equivalent. Never name a group, malware family or campaign, or present one as attacking this asset. Do not introduce another attacker or an objective the threat's name does not state.
 
 6. SCENARIO STATEMENT: <scenario words> WORDS, NEVER MORE
 Write one continuous narrative without headings or numbered beats:

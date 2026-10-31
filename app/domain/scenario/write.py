@@ -18,7 +18,6 @@ from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
-    ACTOR_KIND_WORDS,
     AI_OUTAGE_MESSAGES,
     FINAL_FINDINGS,
     FINDING_SEVERITIES,
@@ -35,7 +34,6 @@ from app.core.constants import (
     ErrorMessage,
     EvidenceBlock,
     EvidenceFact,
-    EvidenceLimits,
     EvidenceMode,
     EvidenceSearchFailure,
     FindingCode,
@@ -345,7 +343,7 @@ def evidence_block(brief: WriterBrief) -> str:
     applicability, the entry to cite marked; never a number, ref, link or source."""
     cited = (_precedent(brief.evidence) or (None, ""))[0]
     entries = [
-        {**_subject(item), **_users_and_facts(_safe_facts(_stated_facts(item)))}
+        {**_subject(item), "facts": _shown_facts(item)}
         | ({"applicability": str(item["applicability"])} if item.get("applicability") else {})
         | ({"cited": True} if item is cited else {})
         for item in brief.evidence
@@ -356,24 +354,9 @@ def evidence_block(brief: WriterBrief) -> str:
     return f"EVIDENCE (untrusted data):\n{EvidenceBlock.BEGIN}\n{body}\n{EvidenceBlock.END}"
 
 
-def _users_and_facts(facts: list[str]) -> dict[str, list[str]]:
-    """Who used the technique as a reader names them, apart from its other facts: the writer never sees the
-    stored "X, a threat group, has used this technique." wording."""
-    used_by = _reader_names(facts)
-    rest = [fact for fact in facts if not fact.endswith(_USER_FACT_END)]  # an id-only campaign's too
-    return ({"used_by": used_by} if used_by else {}) | {"facts": rest}
-
-
-def _reader_names(facts: list[str]) -> list[str]:
-    """Who used the technique, from its user facts, as a reader names them ("the APT41 group")."""
-    names = []
-    for match in filter(None, map(_USER.fullmatch, facts)):
-        kind = _USER_KINDS.get(match["what"] or "")
-        name = match["name"] or ""  # none for a campaign, named below
-        self_named = name.casefold().split()[-1:] in ([kind], *_NAMED_KINDS)  # "the Lazarus Group"
-        named = match["name"] if not kind else f"the {name}" if self_named else f"the {name} {kind}"
-        names.append(f"the {match['campaign']}" if match["campaign"] else named)
-    return names
+def _shown_facts(entry: dict[str, Any]) -> list[str]:
+    """What an AI is shown of an entry's facts: never who used it (the card's evidence keeps those)."""
+    return [fact for fact in _safe_facts(_stated_facts(entry)) if not fact.endswith(_USER_FACT_END)]
 
 
 def _stated_facts(entry: dict[str, Any]) -> list[str]:
@@ -408,10 +391,6 @@ def _without_ids(text: str) -> str:
 _USER = re.compile(REAL_WORLD_USER)
 #: How every user fact ends (EvidenceFact.USED_BY and CAMPAIGN_USED), a named one or not.
 _USER_FACT_END = "used this technique."
-#: A user's kind as the writer names it, from the stored kind words ("a threat group": "the X group").
-_USER_KINDS = {ACTOR_KIND_WORDS["group"]: "group", ACTOR_KIND_WORDS["software"]: "malware"}
-#: Last words of a name that already say what it is ("Sandworm Team"): no kind word is added after them.
-_NAMED_KINDS = (["group"], ["team"], ["gang"], ["crew"], ["malware"], ["campaign"])
 
 
 def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str] | None:
@@ -425,8 +404,8 @@ def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str]
 
 
 def _claim(entry: dict[str, Any]) -> str | None:
-    """The entry's claim from its cleaned facts: who used a technique, else its first fact; a nearest entry's
-    says it is only related. None when none."""
+    """The entry's claim from its cleaned facts: a technique the attack could use (only one whose facts name
+    who used it), else its first fact; a nearest entry's says it is only related. None when none."""
     facts = _safe_facts(_stated_facts(entry))
     related = bool(entry.get("nearest"))
     if entry.get("kind") != IntelKind.TECHNIQUE:
@@ -434,14 +413,10 @@ def _claim(entry: dict[str, Any]) -> str | None:
             return None
         fact = facts[0].removesuffix(".")
         return Precedent.RELATED_RECORD.format(fact=fact) if related else fact
-    users = (match for match in map(_USER.fullmatch, facts) if match)
-    names = [m["name"] or f"the {m['campaign']}" for m in users][: EvidenceLimits.REAL_WORLD_USERS]
     title = _safe_facts([str(entry.get("title") or "")])
-    if not (names and title):
+    if not (title and any(map(_USER.fullmatch, facts))):
         return None
-    verb = "has" if len(names) == 1 else "have"
-    template = Precedent.USED_RELATED if related else Precedent.USED_BY
-    return template.format(names=" and ".join(names), verb=verb, technique=title[0])
+    return (Precedent.RELATED_TO if related else Precedent.COULD_USE).format(technique=title[0])
 
 
 def _spoken(limits: tuple[int, int]) -> str:
@@ -789,7 +764,7 @@ class _Slot:
 
     label: str
     brief: WriterBrief
-    place: int  # the set's epoch plus its place in the set: picks its evidence sentence's link and users form
+    place: int  # the set's epoch plus its place in the set: picks its evidence sentence's link
     draft: ScenarioDraft | None = None  # its usable draft; a repair's while it is written
     problems: tuple[str, ...] = ()  # why the second round writes it again
     review: PlanCheckAnswer | None = None  # its usable review
@@ -1264,9 +1239,9 @@ def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
 
 
 def evidence_sentence(step: str, cited: dict[str, Any] | None, place: int) -> tuple[str, str]:
-    """(the closing sentence: the writer's `step`, a link, the cited entry's title and who used it, or its
-    first fact; why the step cannot open it, '' when it can). The sentence is '' when the step fails or
-    nothing is tied: code's precedent (_claim) is cited then."""
+    """(the closing sentence: the writer's `step`, a link and the cited entry's title, with a vulnerability's
+    or advisory's first fact; why the step cannot open it, '' when it can). The sentence is '' when the step
+    fails or nothing is tied: code's precedent (_claim) is cited then."""
     title = (_safe_facts([str((cited or {}).get("title") or "")]) or [""])[0]
     # nothing to tie a step to, or a title that would break the marker: code's precedent stands alone
     if cited is None or not title or "[" in title or _SENTENCE_END.search(title):
@@ -1283,22 +1258,19 @@ def evidence_sentence(step: str, cited: dict[str, Any] | None, place: int) -> tu
 
 
 def _tied(step: str, cited: dict[str, Any], title: str, facts: list[str], place: int) -> str:
-    """`step` tied to the cited entry by a link (a related one for nearest evidence) and, for a technique, a
-    users form: `place` picks both, so the 6 slots of a set never share a link and use each form twice."""
+    """`step` tied to the cited entry by a link (a related one for nearest evidence): `place` picks it, so the
+    6 slots of a set never share a link."""
     links = Precedent.RELATED_LINKS if cited.get("nearest") else Precedent.LINKS
     link = links[place % len(links)]
     if cited.get("kind") != IntelKind.TECHNIQUE:
         fact = facts[0].removesuffix(".")
         return Precedent.ABOUT_SENTENCE.format(step=step, link=link, title=title, fact=fact)
-    names = _reader_names(facts)[: EvidenceLimits.REAL_WORLD_USERS]
-    form = Precedent.USERS[place % len(Precedent.USERS)]
-    users = form.format(names=" and ".join(names), verb="has" if len(names) == 1 else "have")
-    return Precedent.SENTENCE.format(step=step, link=link, title=title, users=users)
+    return Precedent.SENTENCE.format(step=step, link=link, title=title)
 
 
 def _step_fault(step: str, title: str, facts: list[str]) -> str:
     """Why the writer's step cannot open code's sentence ('' when it can): none, a marker, redaction, link,
-    code, label or quote, more than one sentence, or an opening on the cited title or on who used it."""
+    code, label or quote, more than one sentence, a name of who used it, or an opening on the cited title."""
     if not step:
         return Precedent.NOT_WRITTEN
     marked = any(mark in step for mark in '["“”')  # "[": a marker or a redaction
@@ -1307,11 +1279,12 @@ def _step_fault(step: str, title: str, facts: list[str]) -> str:
     if _SENTENCE_END.search(step):
         return Precedent.MANY_SENTENCES
     users = [match["name"] or match["campaign"] for match in filter(None, map(_USER.fullmatch, facts))]
+    if any(find_name_mentions(user, step) for user in users if user):
+        return Precedent.NAMES_A_USER
     opening = _LEADING_ARTICLE.sub("", step).casefold()
     # a gerund title ("Phishing") names the act itself: the story's step may open with it
-    names = (*users, *([] if title.split()[:1] and title.split()[0].casefold().endswith("ing") else [title]))
-    on_evidence = any(opening.startswith(name.casefold()) for name in names if name)
-    return Precedent.OPENS_ON_EVIDENCE if on_evidence else ""
+    gerund = bool(title.split()[:1]) and title.split()[0].casefold().endswith("ing")
+    return Precedent.OPENS_ON_EVIDENCE if not gerund and opening.startswith(title.casefold()) else ""
 
 
 def _cited_entry(brief: WriterBrief) -> dict[str, Any] | None:

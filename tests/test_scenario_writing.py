@@ -374,6 +374,7 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "in this story's own words rather than the cited title's" in writer
     assert "6 to 20 words, with no title, no group, malware or campaign name and no quotes" in writer
     assert "the application writes the closing evidence sentence from evidence_step" in writer
+    assert "the application adds who used" not in writer  # 31 Oct: no closing sentence names who used it
     assert '"evidence_statement"' not in writer and "words no other slot uses" not in writer
     assert "evidence_supported" not in reviewer  # no code reads it: code's sentence states only its source
     assert "except `evidence_statement`, which the platform writes from EVIDENCE" in reviewer
