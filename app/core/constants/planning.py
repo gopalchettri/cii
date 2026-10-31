@@ -220,7 +220,6 @@ class PlanMessage(StrEnum):
 class AnswerProblem(StrEnum):
     """Why an AI answer item breaks its contract: quoted to the AI in the re-ask."""
 
-    GAP_FILL_INCOMPLETE = "AI fallback applies=true requires threat_type, threat and attacker"
     TEXT_REQUIRED = "must not be empty"
     RULE_VERDICTS_REQUIRED = (
         'every numbered rule needs a verdict: "holds", or broken: "<the exact words of the scenario>" '

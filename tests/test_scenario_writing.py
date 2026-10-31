@@ -331,6 +331,7 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
         assert "anything later done with it is an added step" in prompt
         assert '"theft" and "phishing" are not use' in prompt
     assert "LIBRARY-GAP BOUNDARY" not in gap and "TSG_SCENARIO_TARGET" not in gap
+    assert '"attacker":' not in gap  # the gate picks the attacker from the matched type's list
     writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
     assert "never add a step that is not part of the threat" in writer
     assert "its primary impact is what the acquisition itself causes" in writer

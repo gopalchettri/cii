@@ -4,11 +4,10 @@ Frozen, so the parallel gate batches share them safely."""
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.constants import (
     ActorRole,
-    AnswerProblem,
     AttackerCheck,
     StrideCategory,
 )
@@ -163,14 +162,4 @@ class GapFillResponse(BaseModel):
     reason: str
     threat_type: str | None = None
     threat: str | None = None
-    attacker: str | None = None
     systems: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def check_a_proposal_is_whole(self) -> "GapFillResponse":
-        """A proposal names its type, threat and attacker."""
-        if self.applies and not all(
-            value and value.strip() for value in (self.threat_type, self.threat, self.attacker)
-        ):
-            raise ValueError(AnswerProblem.GAP_FILL_INCOMPLETE)
-        return self

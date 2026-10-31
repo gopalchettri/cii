@@ -557,7 +557,7 @@ def _read_proposals(
 def _read_proposal(
     answer: dict[str, Any], aliases: dict[str, int]
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """The gap-fill answer as {applies, threat_type, threat, attacker, reason, systems}, or its problems."""
+    """The gap-fill answer as {applies, threat_type, threat, reason, systems}, or its problems."""
     if not isinstance(answer.get("applies"), bool):
         return None, ['the reply must be {"applies": true|false, ...}']
     checked = answer if answer["applies"] else {"reason": "", **answer}  # "none applies" needs no reason
@@ -565,9 +565,7 @@ def _read_proposal(
         return None, problems
     if not answer["applies"]:
         return {"applies": False}, []
-    fields = {
-        name: str(answer.get(name) or "").strip() for name in ("threat_type", "threat", "attacker", "reason")
-    }
+    fields = {name: str(answer.get(name) or "").strip() for name in ("threat_type", "threat", "reason")}
     problems = [f"{name} is required" for name, value in fields.items() if not value]
     if len(fields["threat_type"]) + len(fields["threat"]) > ThreatFinding.GAP_FILL_MAX_CHARS:
         problems.append("the proposal is too long")

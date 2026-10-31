@@ -61,7 +61,6 @@ _PROPOSAL = {
     "applies": True,
     "threat_type": "Privilege misuse",
     "threat": "Engineering workstation takeover",
-    "attacker": "Nation-state group",
     "systems": ["SYS1"],
     "reason": "SYS1 runs engineering tools.",
 }
@@ -238,7 +237,7 @@ def test_an_asset_no_library_threat_fits_asks_no_gate_and_plans_nothing() -> Non
 
 
 def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_gates_attacker() -> None:
-    """The AI's attacker text is never used: the gate picks among the matched type's linked actors."""
+    """The gap fill asks no attacker: the gate picks among the matched type's linked actors."""
     chat = planner_chat({_PROPOSAL["threat"]: ["SYS1"], LOG_WIPE.name: ["SYS1"]})
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL)
     answer, listed = chat.responders[AiTask.RELEVANCE_GATE], {}
@@ -261,9 +260,8 @@ def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_ga
     assert ai_threat.actors == (PlannedActor(INSIDER.actor_id, INSIDER.name, ActorRole.ACTING),)
     assert ai_threat.attacker_check == AttackerCheck.CHOSEN
     assert ai_threat.attacker_check_reason == "Holds the engineering login."
-    assert "Nation-state group" not in str(chat.asked(AiTask.RELEVANCE_GATE))
-    assert all(query != "Nation-state group" for query, _ in rerank.calls)
     (asked,) = chat.asked(AiTask.GAP_FILL)  # one ask for every empty category
+    assert '"attacker":' not in asked
     listed = {item["category"]: item for item in items_in(asked, "EMPTY CATEGORIES")}
     assert listed[S.ELEVATION_OF_PRIVILEGE]["rejected"] == [ADMIN_ABUSE.name]  # judged: never proposed
     assert S.REPUDIATION not in listed  # one applied
