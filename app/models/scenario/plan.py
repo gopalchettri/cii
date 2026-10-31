@@ -19,7 +19,7 @@ from app.models.library.library import LibraryThreat
 class ActorPick:
     """The gate's pick for one threat: the most plausible listed attacker, and why."""
 
-    name: str | None  # as the library spells it; None: no listed attacker plausibly could
+    name: str | None  # as the library spells it; None: no listed attacker plausibly could, or none named
     reason: str  # one sentence: the access, skill and motive the threat needs
 
 
@@ -148,7 +148,8 @@ class RelevanceVerdict(BaseModel):
     reason: str = ""  # a rejection's; an applying threat's reasons are its categories'
     confidence: int | None = Field(default=None, ge=0, le=100)
     needs: list[str] = Field(default_factory=list)  # what the threat needs that nothing recorded mentions
-    # The attacker pick and the actions, read leniently in code: a bad one never costs a re-ask.
+    # The attacker pick and the actions, read leniently in code: a bad one never costs a re-ask (an unlisted
+    # attacker is none fits).
     attacker: Any = None
     attacker_reason: Any = None
     actions: Any = None

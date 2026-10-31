@@ -193,7 +193,7 @@ class AttackerCheck(StrEnum):
     CHOSEN = "chosen"  # the gate's pick, from the threat's own list, with its reason
     BALANCED = "balanced"  # older plans only: rated as suitable as the pick, acting for fewer threats
     NONE_FITS = "none_fits"  # the gate found no listed attacker plausible: the threat is not planned
-    NOT_CHECKED = "not_checked"  # the gate gave no usable pick: the top-ranked linked actor acts
+    NOT_CHECKED = "not_checked"  # older plans only: no usable pick, the top-ranked linked actor acted
     RANKED = "ranked"  # older plans only: never judged by the gate, the ranking decided
 
 

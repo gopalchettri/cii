@@ -164,7 +164,9 @@ def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
     assert parse_verdict(rejected, _CANDIDATE, aliases)[1] == []
     asset = parse_verdict(relevant | {"systems": [], "entry_points": []}, _CANDIDATE, aliases)[0]
     assert asset is not None
-    assert asset[S.TAMPERING] == Verdict(True, (), "It encrypts SYS1.", 3, 80.0, kinds=(S.TAMPERING,))
+    assert asset[S.TAMPERING] == Verdict(
+        True, (), "It encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, ""), kinds=(S.TAMPERING,)
+    )
     prompt = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
     assert '"entry_points": ["SYS1"]' in prompt and "one, several or all of them" in prompt
 
@@ -356,9 +358,9 @@ def test_an_ai_rewording_of_the_same_type_is_folded_by_meaning() -> None:
 def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch: pytest.MonkeyPatch) -> None:
     assigned: list[list[str]] = []
 
-    def recording(snapshot: Any, threats: list[PlannedThreat], sector: str) -> Any:
+    def recording(snapshot: Any, threats: list[PlannedThreat]) -> Any:
         assigned.append([threat.key for threat in threats])
-        return assign_attackers(snapshot, threats, sector)
+        return assign_attackers(snapshot, threats)
 
     monkeypatch.setattr(plan_module, "assign_attackers", recording)
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
@@ -371,45 +373,36 @@ def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch
     assert assigned == [[threat.key for threat in findings.threats]] == [["lib:1"]]
 
 
-def test_a_linked_type_ranks_its_own_actors_and_an_unlinked_one_gets_no_attacker() -> None:
+def test_a_linked_type_takes_the_gates_pick_and_an_unlinked_one_gets_no_attacker() -> None:
     unlinked = dataclasses.replace(PHISHING, linked_actors=())
     search, _ = library_search(threats=(RANSOMWARE, unlinked))
-    verdict = Verdict(True, (321,), "It encrypts the backup.", 3, 80.0)
+    pick = ActorPick(GANG.name, "Reaches the backup from the internet.")
+    verdict = Verdict(True, (321,), "It encrypts the backup.", 3, 80.0, actor_pick=pick)
     ransomware, phishing = assign_attackers(
         search.snapshot(),
         [_library_threat(S.TAMPERING, RANSOMWARE, verdict), _library_threat(S.SPOOFING, unlinked, verdict)],
-        "Energy",
     )
     assert ransomware.actors[0].actor_id == GANG.actor_id
     assert phishing.actors == ()
 
 
-def test_the_gates_pick_acts_none_fits_names_no_one_and_no_pick_takes_the_top_linked_actor() -> None:
+def test_the_gates_pick_acts_and_none_fits_or_no_pick_names_no_one_without_any_search() -> None:
     search, embeddings = library_search()
     snapshot = search.snapshot()
+    embeddings.queries_down = True  # attackers are never ranked by a search: no embedding call
 
     def chosen(verdict: Verdict) -> PlannedThreat:
-        (decided,) = assign_attackers(snapshot, [_library_threat(S.TAMPERING, RANSOMWARE, verdict)], "Energy")
+        (decided,) = assign_attackers(snapshot, [_library_threat(S.TAMPERING, RANSOMWARE, verdict)])
         return decided
 
-    unchecked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
-    assert (
-        unchecked.attacker_check == AttackerCheck.NOT_CHECKED
-        and unchecked.actors[0].actor_id == GANG.actor_id
-    )
     pick = ActorPick(INSIDER.name, "Holds the backup admin account.")
-    verdicts = [Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=p) for p in (pick, None)]
-    picked_then_open = [_library_threat(S.TAMPERING, RANSOMWARE, verdict) for verdict in verdicts]
-    mixed = assign_attackers(snapshot, picked_then_open, "Energy")
-    assert [t.actors[0].actor_id for t in mixed] == [INSIDER.actor_id, GANG.actor_id]  # the open one ranked
-    embeddings.queries_down = True  # a pick that decides is never ranked: no embedding call
     picked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=pick))
     assert picked.actors[0].actor_id == INSIDER.actor_id and picked.attacker_check == AttackerCheck.CHOSEN
     assert picked.attacker_check_reason == "Holds the backup admin account."
     nobody = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None.")))
     assert nobody.attacker_check == AttackerCheck.NONE_FITS and nobody.actors == ()
-    with pytest.raises(Unavailable):  # no vectors, no ranking: the job retries
-        chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
+    unpicked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
+    assert unpicked.attacker_check == AttackerCheck.NONE_FITS and unpicked.actors == ()
 
 
 def test_one_run_reads_one_library_version_even_when_the_library_changes_meanwhile() -> None:

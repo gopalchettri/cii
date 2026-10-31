@@ -1,6 +1,6 @@
-"""Who acts for a threat: the relevance gate's pick from its type's linked actors, with its reason, else the
-top-ranked linked actor; none when the gate finds none plausible; an unlisted pick is no pick. A hand-written
-scenario takes its threat's linked actors, else its type's, else the whole library's. No attacker AI call."""
+"""Who acts for a threat: the relevance gate's pick from its type's linked actors, with its reason; none when
+the gate finds none plausible or names no listed one. A hand-written scenario takes its threat's linked
+actors, else its type's, else the whole library's. No attacker AI call."""
 
 import dataclasses
 from typing import Any
@@ -47,16 +47,19 @@ def test_threats_of_one_type_with_different_facts_get_different_actors() -> None
     assert insider.attacker_check_reason == "Holds the admin login." and len(insider.actors) == 1
 
 
-def test_no_usable_pick_takes_the_top_linked_actor_and_none_fits_names_no_one() -> None:
-    """An unlisted name, or no reason, is no pick; no re-ask. None plausible: no attacker, so not planned."""
+def test_an_unlisted_or_missing_pick_is_none_fits_and_a_listed_name_without_a_reason_acts() -> None:
+    """Only a listed name acts, never a guess; no re-ask. None plausible or none named: not planned."""
     listed = [GANG.name, INSIDER.name]
-    assert actor_pick({"attacker": "APT99", "attacker_reason": "Famous."}, listed) is None
-    assert actor_pick({"attacker": GANG.name, "attacker_reason": ""}, listed) is None
+    unlisted = actor_pick({"attacker": "APT99", "attacker_reason": "Famous."}, listed)
+    assert unlisted == ActorPick(None, "Famous.")
+    assert actor_pick({"attacker": GANG.name, "attacker_reason": ""}, listed) == ActorPick(GANG.name, "")
+    assert actor_pick({"attacker": None}, listed) == ActorPick(None, "")
+    assert actor_pick({"attacker_reason": "Reaches it."}, listed) == ActorPick(None, "Reaches it.")
     assert actor_pick({"attacker": "ransomware GANG", "attacker_reason": "Reaches it."}, listed) == ActorPick(
         GANG.name, "Reaches it."
     )
     unpicked = choose_actor(_threat("lib:1", None), LINKED)
-    assert unpicked.attacker_check == AttackerCheck.NOT_CHECKED and unpicked.actors[0].name == GANG.name
+    assert unpicked.actors == () and unpicked.attacker_check == AttackerCheck.NONE_FITS
     none_fits = choose_actor(_threat("lib:1", ActorPick(None, "No listed attacker reaches it.")), LINKED)
     assert none_fits.actors == () and none_fits.attacker_check == AttackerCheck.NONE_FITS
 
@@ -83,8 +86,8 @@ def test_the_gate_lists_each_threats_linked_attackers_and_never_judges_one_whose
 
 def test_planning_uses_the_gates_picks_and_makes_no_attacker_call() -> None:
     """Each acting attacker is the gate's pick with its reason (systems by name, never alias); a threat the
-    gate finds no attacker for is not planned."""
-    chat = planner_chat({RANSOMWARE.name: ["SYS1"], PHISHING.name: ["SYS1"]})
+    gate finds no attacker for, or names an unlisted one for, is not planned and is traced as none fits."""
+    chat = planner_chat({RANSOMWARE.name: ["SYS1"], PHISHING.name: ["SYS1"], LOG_WIPE.name: ["SYS1"]})
     answer = chat.responders[AiTask.RELEVANCE_GATE]
 
     def picking(user_prompt: str) -> dict[str, Any]:
@@ -94,6 +97,8 @@ def test_planning_uses_the_gates_picks_and_makes_no_attacker_call() -> None:
                 verdict |= {"attacker": INSIDER.name, "attacker_reason": "Holds SYS1's admin login."}
             elif item["threat"] == PHISHING.name:
                 verdict |= {"attacker": None, "attacker_reason": "No listed attacker reaches SYS1."}
+            elif item["threat"] == LOG_WIPE.name:
+                verdict |= {"attacker": "APT99", "attacker_reason": "A famous group."}
         return {"verdicts": verdicts}
 
     chat.responders[AiTask.RELEVANCE_GATE] = picking
@@ -101,6 +106,8 @@ def test_planning_uses_the_gates_picks_and_makes_no_attacker_call() -> None:
     (ransomware,) = findings.threats
     assert ransomware.actors[0].name == INSIDER.name and ransomware.attacker_check == AttackerCheck.CHOSEN
     assert ransomware.attacker_check_reason == "Holds SCADA server's admin login."
+    traced = {(drop["threat_name"], drop["stage"], drop["reason"]) for drop in findings.drops}
+    assert {(PHISHING.name, "attacker", "none_fits"), (LOG_WIPE.name, "attacker", "none_fits")} <= traced
     assert {task for task, _ in chat.calls} <= {AiTask.RELEVANCE_GATE, AiTask.GAP_FILL}
 
 
