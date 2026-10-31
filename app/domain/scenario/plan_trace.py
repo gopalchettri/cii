@@ -20,7 +20,6 @@ from app.models.scenario.views import GivenUpPath, PlanTraceView, WriteOutcomes
 #: The drops listed first: those that could have been a scenario, then the AI's verdicts, then the filter.
 _TELLING_ORDER = (
     (PlanStage.ATTACKER, AttackerCheck.NONE_FITS),
-    (PlanStage.ATTACKER, PlanLoss.NO_LINKED_ACTOR),
     (PlanStage.MERGE, CandidateRejection.ASSET_TYPE_MISMATCH),
     (PlanStage.MERGE, PlanLoss.MERGED),
     (PlanStage.CHECKS, CandidateRejection.ASSET_TYPE_MISMATCH),
@@ -116,8 +115,7 @@ def _counts(findings: ThreatFindings, plan: dict[str, Any], by: Counter[tuple[st
         "gap_fill_lost": sum(count for (stage, _), count in by.items() if stage == PlanStage.GAP_FILL),
         "merged": by[(PlanStage.MERGE, PlanLoss.MERGED)],
         "unfit_after_merge": by[(PlanStage.MERGE, CandidateRejection.ASSET_TYPE_MISMATCH)],
-        "no_attacker": by[(PlanStage.ATTACKER, AttackerCheck.NONE_FITS)]
-        + by[(PlanStage.ATTACKER, PlanLoss.NO_LINKED_ACTOR)],
+        "no_attacker": by[(PlanStage.ATTACKER, AttackerCheck.NONE_FITS)],
         "threats": len(plan["threats"]),
         "not_selected": len(plan["paths"]) - selected,
         "selected": selected,

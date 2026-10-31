@@ -248,7 +248,7 @@ class LogEvent(StrEnum):
     PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
     PLANNER_CATEGORY_DROPPED = "planner.category_dropped"  # the gate named a category the threat lacks
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
-    PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # no linked attacker, or none plausible
+    PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # a threat or a gap-fill type links no attacker
     WRITER_PLAN_CHECK_NOT_MADE = "writer.plan_check_not_made"
     WRITER_SCENARIO_REPAIRED = "writer.scenario_repaired"  # "fixed", or "kept_first" with any error
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"

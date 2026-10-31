@@ -40,8 +40,16 @@ def _brief(number: int) -> WriterBrief:
     """Slot `number`'s brief: its own threat ("Threat n") on its turn's systems."""
     systems = _PATH_SYSTEMS[(number - 1) % len(_PATH_SYSTEMS)]
     actors = (PlannedActor(7, "Cybercriminal", ActorRole.ACTING),)
+    reason = "Holds the SCADA server login." if number % 2 else ""  # the gate's reason, on odd slots only
     threat = planned_threat_record(
-        planned(f"lib:{number}", f"Threat {number}", systems=systems, actors=actors)
+        planned(
+            f"lib:{number}",
+            f"Threat {number}",
+            systems=systems,
+            actors=actors,
+            attacker_check_reason=reason,
+            likelihood=number % 3 + 1,
+        )
     )
     path = {"path_id": f"p{number}", "steps": [threat["key"]], "category": "Tampering", "systems": [*systems]}
     return build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
@@ -85,6 +93,9 @@ def test_a_set_of_six_sends_the_asset_and_each_system_once_and_each_slot_only_it
             yes = [system["name"] for system in own["supporting_systems"] if system["applicable"] == "yes"]
             assert yes == [system["name"] for system in brief.systems] and set(yes) <= set(names)
             assert set(own["entry_point_options"]) <= set(names)
+            mine = (own["likelihood"], own.get("why_this_attacker", ""))
+            assert mine == (brief.likelihood, brief.why_this_attacker)  # each slot's own, never shared
+        assert "likelihood" not in asset and all("likelihood" not in system for system in systems)
     assert write.count(_ONCE[1]) == review.count(_ONCE[1]) == 1
     assert shared_facts(review)[0]["critical_service"] == _ONCE[1]
 
