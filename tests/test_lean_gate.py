@@ -149,10 +149,11 @@ def test_a_slot_without_a_likelihood_is_asked_once_more_alone_and_the_others_are
 
 def test_the_gate_asks_one_likelihood_after_the_attacker_and_never_lets_it_decide_relevance() -> None:
     """Owner, 31 Oct: likelihood counts every listed attacker who could, never decides relevance, and is
-    asked after the attacker so the pick is made first."""
+    asked after the attacker so the pick is made first. A/B, 31 Oct: adding "a LOW likelihood never makes a
+    threat that meets them not relevant" made the gate accept about 10% more threats and pick another attacker
+    for 29% of them (old against old: 14%); without it both stayed within the old prompt's own noise."""
     _, prompt = relevance_gate_prompt("LANDSCAPE", [])
-    assert "a high impact, likelihood or confidence never makes a threat that fails them relevant" in prompt
-    assert "a LOW likelihood never makes a threat that meets them not relevant" in prompt
+    assert "a high impact, likelihood or confidence never makes a threat that fails them relevant." in prompt
     assert "the more listed attackers who plausibly could, the higher. Give no reason for it." in prompt
     order = [prompt.index(key) for key in ('"attacker_reason"', '"likelihood": "MEDIUM"', '"actions"')]
     assert order == sorted(order)
