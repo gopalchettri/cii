@@ -1019,7 +1019,7 @@ flowchart TB
     I --> J
     J --> K["Choose each threat's attacker"]
     K --> L["One path per threat<br/>its main kind, the others also"]
-    L --> N["Rank: impact, then confidence"]
+    L --> N["Rank: risk (impact x likelihood), impact, then confidence"]
     N --> O["Deal the ranked paths in turns<br/>over the systems: entry_system"]
     O --> P["Select up to TOTAL_SCENARIO_COUNT"]
     P --> Q["Freeze the plan and its trace"]
@@ -1151,11 +1151,12 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    - JSON mode;
    - `max_tokens` the gate's answer room, `CII_ANSWER_TOKENS_RELEVANCE_GATE` (`CHAT_MAX_OUTPUT_TOKENS`; UAT 10,240, a whole batch's answer; the model's 12,288 while its thinking is on);
    - `reasoning_effort` "none" for `openai/Kimi-K2.6`.
-6. **Reply contract** (`[scenario.gate]`, `RelevanceVerdict`): `{"verdicts": [...]}`, exactly one per slot, each copying back its `threat`. A relevant threat answers `{"slot", "threat", "relevant": true, "categories": [{"name", "impact", "reason"}, …], "systems", "entry_points", "confidence", "needs", "attacker", "attacker_reason", "actions"}`; a rejected one only `{"slot", "threat", "relevant": false, "reason", "needs"}`, so most of a batch's answer is short. Each reason is at most 25 words. The fields mean:
+6. **Reply contract** (`[scenario.gate]`, `RelevanceVerdict`): `{"verdicts": [...]}`, exactly one per slot, each copying back its `threat`. A relevant threat answers `{"slot", "threat", "relevant": true, "categories": [{"name", "impact", "reason"}, …], "systems", "entry_points", "confidence", "needs", "attacker", "attacker_reason", "likelihood", "actions"}`; a rejected one only `{"slot", "threat", "relevant": false, "reason", "needs"}`, so most of a batch's answer is short. Each reason is at most 25 words. The fields mean:
    - `categories`: the kinds, among the threat's own, that one of its own actions directly causes the loss of (that kind's STRIDE line), the kind it most directly causes first. That first kind is the threat's main kind and its card's category (5.13); the others are shown as "also", at most two (5.10, D69). Each has its own `impact` (HIGH, MEDIUM or LOW) and `reason`: naming systems by name, with any assumption written as "assumes …", it says why the threat fits the asset (its recorded role, technology, interfaces or data, or the sector's attacker motive) and how its own action causes that kind's loss, never the attack steps. A kind's reason becomes the writer's `why_it_applies` (section 8.1). A rejected threat's `reason` says why not.
    - `systems`: every system the threat involves, judged with the asset and all its systems together; [] means the asset itself. `entry_points`: the systems among them an attacker could really get in through. Both, and `confidence` (0-100), are the threat's, shared by its kinds.
    - `needs`: any component the threat requires that no recorded fact mentions.
-   - `attacker` and `attacker_reason`: one name from that slot's own `attackers` list, or null with a reason.
+   - `attacker` and `attacker_reason`: one name from that slot's own `attackers` list, or null with a reason. A name not on the list, or none, is none fits (5.11, D71).
+   - `likelihood` (D73): HIGH, MEDIUM or LOW, how likely at least one of the slot's listed attackers would attempt the threat against this asset (what it needs, the motive the sector attracts, the exposure recorded; the more listed attackers who plausibly could, the higher). One per threat, never a reason, never deciding relevance; a relevant verdict without one is a slot problem, asked again like a bad impact. A merge keeps the higher; the plan threat stores it as 1-3.
    - `actions`: the concrete acts the threat's name states, each a short phrase naming systems by name. They are stored on the plan threat as `actions` (an alias left in is replaced by the system's name, in the kinds' reasons too) and given to the writer and the reviewer without the names (8.1, D63), so no `threat_actions` call is made.
 
 **In the example** (the older gate). With this release the same 75 candidates would be 2 calls of 38 and 37, and lib:281 one slot, answered once with its kinds. There were 36 gate calls (5, 7, 6, 7, 5 and 6 batches per kind, in STRIDE order). All answered first time, with no re-ask. Their answers were logged from 08:15:01 to 08:16:19. lib:281 was slot R45 in the 5th Tampering batch. These are a few lines of that real user prompt (`planner-4`, whose return line had no `entry_points` yet):
@@ -1254,7 +1255,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 > **In plain words:** If one kind of attack ends up with no accepted library threat at all, the AI may propose one new threat for it. The proposal is kept only if it is truly new (not a rewording of a library threat), if it matches a known threat type that names attackers, and if the same review panel then accepts it. Such a threat is marked as AI-written, and a curator can later add it to the library. In this run no kind was empty, so nothing was proposed.
 
 **How**
-1. **When it runs** (`_CategoryJudge.fill_gap`): only when the kind has nothing accepted *after* the code check, *and* every threat of its bucket was judged. A kind with an empty bucket counts as fully judged, with `checked` = 0. Since 31-Oct-2026 every empty kind is asked in one gap-fill call, and the proposals are checked in one gate call (step 5): at most 2 calls a plan, usually 0.
+1. **When it runs** (`_ThreatJudge.fill_gaps`): only when the kind has nothing accepted *after* the code check, *and* every threat of its bucket was judged. A kind with an empty bucket counts as fully judged, with `checked` = 0. Since 31-Oct-2026 every empty kind is asked in one gap-fill call, and the proposals are checked in one gate call (step 5): at most 2 calls a plan, usually 0.
 2. **Prompt.** `gap_fill_prompt` sends the system message from 5.5 and `LANDSCAPE:…`, `STRIDE category: …` and `app/prompts.toml` `[scenario.gap_fill]`. The prompt includes:
    - how many library threats were judged (`{checked}`);
    - the names of the kind's library threats that were not kept, which must never be proposed again;
@@ -1265,7 +1266,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 
    The prompt speaks only to the AI: when gap fill may run is decided by code (step 1), not by the prompt.
 
-   It is task `gap_fill`, temperature 0.0. Reply: `{"applies": true, "threat_type", "threat", "attacker", "systems", "reason"}` or `{"applies": false, "reason"}` (`GapFillResponse`, checked by `_read_proposal`; type + threat at most 3,500 characters).
+   It is task `gap_fill`, temperature 0.0. Reply: `{"applies": true, "threat_type", "threat", "systems", "reason"}` (no attacker since D71: the gate picks one from the matched type's list) or `{"applies": false, "reason"}` (`GapFillResponse`, checked by `_read_proposal`; type + threat at most 3,500 characters).
 3. **Library repeat** (`_is_library_threat`): `snapshot.find_threats([(threat, kind)], top_k=10, allowed_types=…)` searches the kind's threats that fit the run's asset types (hybrid search, 5.9). `_best_match` then reranks the hits' names against the proposal. A best score ≥ `THREAT_SIMILARITY_THRESHOLD` (default 75) loses the proposal as `library_repeat`.
 4. **Type match:**
    - `snapshot.find_threat_types([threat_type], top_k=10, category=kind)` searches; `_best_match` must score ≥ 75. Otherwise the proposal is lost as `type_unmatched`.
@@ -1352,13 +1353,11 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 > **In plain words:** Each threat in the plan gets exactly one attacker, chosen only from the attackers the library links to that threat's type. The review panel's own pick, with its reason, is used when it gave one: one pick per threat. (In older plans, when several kinds of attack named different attackers, the pick from the first kind in the standard order won.) A "nobody fits" under one kind never cancels an attacker another kind named. A threat for which no listed attacker is plausible is not planned.
 
 **How**
-1. `assign_attackers(snapshot, threats, landscape.sector)` gathers each threat's linked actors: its library record's, or for an AI threat, its matched type's (`linked_actors_by_type`).
-2. For every threat the gate's pick leaves open it builds the query `"{type name}: {threat name}. {reason} {sector}"` and runs one `snapshot.find_actors(queries, top_k=all actors, allowed_ids=linked)`. That is a hybrid search (5.9) over the linked actors only, with one embedding call for all those threats. A pick that decides whatever the ranking ("none fits", or exactly one linked actor of that name) is not ranked (`_pick_decides`); with none left open, no call is made.
-3. `choose_actor(threat, order)` takes the order of ranked linked actors, then any linked actor not ranked:
-   - The pick names no one ("none fits") → no attacker, `attacker_check: none_fits`.
-   - The pick names a linked actor → that actor, `attacker_check: chosen`, with the gate's `attacker_reason`.
-   - No usable pick → the top of the order, `attacker_check: not_checked`.
-   - A threat left with no attacker is dropped (stage `attacker`, `none_fits` or `no_linked_actor`; counted as `no_attacker`).
+1. `assign_attackers(snapshot, threats)` gathers each threat's linked actors: its library record's, or for an AI threat, its matched type's (`linked_actors_by_type`). No search and no embedding call (D71).
+2. `choose_actor(threat, linked)`:
+   - The pick names a linked actor → that actor, `attacker_check: chosen`, with the gate's `attacker_reason` (possibly empty).
+   - Anything else (null, a name not on the list, none given) → no attacker, `attacker_check: none_fits`. Before D71 an unusable pick took the linked actor whose bare name best matched the threat's words (`not_checked`, older plans only).
+   - A threat left with no attacker is dropped (stage `attacker`, `none_fits`; counted as `no_attacker`).
 4. **When kinds disagree** (before 31-Oct-2026; since then the gate names one attacker per threat, shared by its kinds, so they never disagree). The threat's pick comes out of the merge (5.10). `merge_two_threats` keeps `_named_pick_first(kept, other)`, which works like this:
    - a pick that names an attacker beats a "none fits" pick, which beats no pick;
    - **on a tie the kept (earlier) one wins**.
@@ -1405,6 +1404,7 @@ None of lib:281's four paths was held.
 2. **Scope:** `"{kind}@asset"` when there are no systems, `"{kind}@system:<id>"` for one, and `"{kind}@systems:<id>,<id>"` for several, sorted.
 3. **`path_id`** (`attack_path_id`) is `sha256("|".join(step keys) + "@" + scope)`, first 16 hex characters. The same input always gives the same id.
 4. **Rank key** (`_path_strength`), in this order:
+   - −risk: impact x likelihood, 1-9 (D73; HIGH 3, MEDIUM 2, LOW 1), so HIGH x MEDIUM (6) and MEDIUM x HIGH (6) come before HIGH x LOW (3);
    - −impact;
    - −confidence;
    - the kind's STRIDE position;
@@ -2040,25 +2040,24 @@ T1691.001.
 first kept entry whose claim exists, holds no "[" and is one sentence.
 - A **technique** needs facts naming who used it (`_USER`): `"X, <what>, has used this technique."` or
   `"The Y used this technique."`, where a campaign known only by an id ("C0027 …") does not count. At most 2
-  names, and the title must survive `_safe_facts`. Claim (`Precedent.USED_BY`):
-  `This attack could use the "{title}" technique, which {names} {verb} used` (verb "has" for one name, "have" for
-  two), or `This attack is related to the "{title}" technique, …` when nearest (`USED_RELATED`).
+  names, and the title must survive `_safe_facts`. Claim (`Precedent.COULD_USE`, D72, naming no one):
+  `This attack could use the "{title}" technique`, or `This attack is related to the "{title}" technique` when
+  nearest (`RELATED_TO`).
 - **Other kinds** (KEV vulnerability, advisory): the first stated fact (goals and "reduced by" facts skipped), its
   "." removed; "A related record: {fact}" when nearest (`RELATED_RECORD`).
 - **Nothing citable**: `WriterStyle.ORIGINAL`, no evidence in the brief, `evidence_mode` `inferred`, the search
   still stored.
 
 *Example:* T1691.001 is citable because its facts name a user (Industroyer). Code's own claim for it reads:
-*This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric Power
-Attack campaign have used*. (The campaign-id rule in the same run: rank 4's facts include "The C0027 campaign used this
-technique.", so code's claim for rank 4 names only "the Anthropic AI-orchestrated Campaign".)
+*This attack could use the "Command Message" technique* (before D72 it went on "which Industroyer and the 2015
+Ukraine Electric Power Attack campaign have used"). (The campaign-id rule in the same run: rank 4's facts include
+"The C0027 campaign used this technique.", which alone would not make it citable.)
 
 **c. The untrusted evidence block.** `writer_prompt` → `evidence_block` adds, after the BRIEF:
 `EVIDENCE (untrusted data):`, then `<<<UNTRUSTED_EVIDENCE_BEGIN>>>`, a JSON body, then
 `<<<UNTRUSTED_EVIDENCE_END>>>`. The body holds `evidence_mode` and one item per kept entry: `technique` (or `about`
-for another kind) with its title, `used_by` (who used a technique as a reader names them: "the APT41 group", "the
-NKAbuse malware", "the Triton campaign"; D54), `facts` (never a "… used this technique." fact), `applicability`
-when set, and `"cited": true` on the cited entry.
+for another kind) with its title, `facts` (never a "… used this technique." fact: since D72 no AI is shown who
+used a technique), `applicability` when set, and `"cited": true` on the cited entry.
 - `_stated_facts` hides "It can be reduced by: …" and "It is used for these attacker goals: …" on every entry
   (both stay stored on the card).
 - `_safe_facts` redacts each fact, removes ids and links, strips anything that looks like the block's delimiters,
@@ -2302,6 +2301,8 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    | `asset` | step 4: name first, then the asset's facts, cut to fit |
    | `category` | the path's kind of attack (`path.category`) |
    | `attacker` | the threat's acting attacker, `threat.actors[0].name` |
+   | `why_this_attacker` | the gate's `attacker_check_reason`, cut to the path's systems and redacted like `why_it_applies`; only when there is one (D73) |
+   | `likelihood` | the threat's likelihood as HIGH, MEDIUM or LOW (D73); the risk statement's cause ends with it in plain words |
    | `threat.threat_type` | the threat type's name, without a library code (`threat_name_without_code`) |
    | `threat.threat` | the threat's name, without a library code |
    | `threat.why_it_applies` | step 7 |
@@ -2769,18 +2770,16 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
       this attacker's action";
    5. the sentence it makes has more words than the maximum of `EVIDENCE_STATEMENT_WORD_LIMIT` (default 80): "its
       sentence would run over the 80-word limit".
-3. **The sentence** (`_tied`): the step with its first letter capitalised and its final "." removed, a link, the
-   title in double quotes, then:
-   - a technique: ", " and a users form naming who used it, at most 2, as the evidence block names them ("the
-     APT41 group", "the NKAbuse malware", "the Triton campaign"), joined by "and", with "has" for one;
-   - a vulnerability or an advisory: ": " and its first stated fact.
+3. **The sentence** (`_tied`): the step with its first letter capitalised and its final "." removed, a link, then:
+   - a technique: `the "{title}" technique`, naming no one who used it (D72);
+   - a vulnerability or an advisory: the title in double quotes, ": " and its first stated fact.
 
    The pools are in `Precedent`: `LINKS` for source-documented evidence (matches, mirrors, resembles, echoes, is
    an example of, is a form of, corresponds to, reflects), `RELATED_LINKS` for nearest evidence (is related to,
    is closely related to, relates to, is broadly related to, is loosely related to, is in the same family as)
-   and `USERS` ("a technique {names} {verb} used", "which {names} {verb} used", "used by {names}"). `place`
-   picks one of each, modulo its size: the 6 slots of a set never share a link, no two neighbouring slots
-   share a users form, and the next set (its epoch one on) starts one further on.
+   `place` picks one, modulo its size: the 6 slots of a set never share a link, and the next set (its epoch one
+   on) starts one further on. Since D72 no form names who used the technique, and a step that names one
+   anywhere is refused (`NAMES_A_USER`).
 4. A failed step leaves no sentence; `_checked` adds a `citation_removed` **warning**, never a blocker and never
    a rewrite: "The writer's evidence step was not used ({reason}): the platform cites its own precedent sentence
    from the same source instead." With nothing cited, or a cited entry whose title is cleaned away or holds a
@@ -2788,9 +2787,8 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
    stands.
 5. When the card is built (`written_record`, section 9), `_cited(brief, draft)` finds the cited entry again
    with `_precedent(brief.evidence)`: the first entry whose claim (`_claim`) is one plain sentence. The claim is
-   code's own sentence: `Precedent.USED_BY` *This attack could use the "{technique}" technique, which {names}
-   {verb} used*, `USED_RELATED` (*This attack is related to the "{technique}" technique, ...*) for a nearest
-   entry, or `RELATED_RECORD` (*A related record: {fact}*) for a record that is not a technique.
+   code's own sentence: `Precedent.COULD_USE` *This attack could use the "{technique}" technique*, `RELATED_TO`
+   (*This attack is related to the "{technique}" technique*) for a nearest entry, or `RELATED_RECORD` (*A related record: {fact}*) for a record that is not a technique.
 6. `supports` is code's sentence from the step, else the claim, its final "." removed. The statement becomes
    **narrative + " " + supports + " [1]."**
 7. `content.evidence` stores that one entry with `n: 1` and `supports`, beside `content.evidence_mode`,
@@ -2804,9 +2802,9 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 
 | Slot | Step (writer) | Code adds |
 |---|---|---|
-| SC1 | Flooding the Enterprise Command & Control Centre Platform's network links | **matches** "Network Denial of Service", a technique the APT28 group and the NKAbuse malware have used |
-| SC2 | Seizing a privileged account on the Enterprise Command & Control Centre Platform | **mirrors** "Valid Accounts", which the APT41 group and the FIN8 group have used |
-| SC3 (nearest) | Gaining entry to the Intelligent Traffic Systems Platform through remote access | **relates to** "Exploitation of Remote Services", used by the Bad Rabbit malware and the NotPetya malware |
+| SC1 | Flooding the Enterprise Command & Control Centre Platform's network links | **matches** the "Network Denial of Service" technique |
+| SC2 | Seizing a privileged account on the Enterprise Command & Control Centre Platform | **mirrors** the "Valid Accounts" technique |
+| SC3 (nearest) | Gaining entry to the Intelligent Traffic Systems Platform through remote access | **relates to** the "Exploitation of Remote Services" technique |
 
 **In the example**
 
@@ -2814,11 +2812,9 @@ The run predates D38 (2026-10-27), D54 (2026-10-28) and D65 (2026-10-30). Its wr
 passage, opening "In real-world attacks,", and the reviewer answered `evidence_supported: true`, so it was cited
 with no `citation_removed` warning. Today the writer would give a step such as "Sending forged OT protocol
 commands to the Traffic Signal Control System", and the first slot of a set at epoch 0 would cite *Sending forged
-OT protocol commands to the Traffic Signal Control System matches "Command Message", a technique the Industroyer
-malware and the 2015 Ukraine Electric Power Attack campaign have used*. Had the step failed, code's own sentence
-would be *This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric
-Power Attack campaign have used* (we computed this by running `_claim` on the stored entry; the run did not use
-it).
+OT protocol commands to the Traffic Signal Control System matches the "Command Message" technique*. Had the step
+failed, code's own sentence would be *This attack could use the "Command Message" technique* (computed by
+running `_claim` on the stored entry; the run did not use it).
 
 The saved statement ends:
 
