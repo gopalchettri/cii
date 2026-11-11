@@ -6,12 +6,17 @@ from typing import Any
 from app.core.constants import PlanText, PlanWarning, Remediation
 
 
+def action_name_or_position(action: dict[str, Any], position: int) -> str:
+    """The action's id, or its place in the plan when it has none: "A1", "remediation_action_plan[2]"."""
+    return str(action.get("action_id") or "").strip() or f"remediation_action_plan[{position}]"
+
+
 def schedule_plan(plan: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
     """Writes dates, timelines and the critical path onto the plan and its actions; returns warnings."""
     window = (snapshot.get("risk_assessment") or {}).get("assessment_window")
     actions = plan["remediation_action_plan"]
     action_ids = [str(action.get("action_id") or "").strip() for action in actions]
-    names = [action_id or f"remediation_action_plan[{i}]" for i, action_id in enumerate(action_ids)]
+    names = [action_name_or_position(action, position) for position, action in enumerate(actions)]
     anchor = date.fromisoformat(window["timeline_start_date"]) if window else None
     limit = Remediation.MAX_ACTION_DAYS
     warnings: list[str] = []
@@ -75,7 +80,10 @@ def _date_actions(
             action["start_date"] = action["end_date"] = None
             action["timeline"] = PlanText.UNDATED.format(span=span, after=after)
             continue
-        first, last = _shift(anchor, start).isoformat(), _shift(anchor, start + days - 1).isoformat()
+        first, last = (
+            _add_days_within_calendar(anchor, start).isoformat(),
+            _add_days_within_calendar(anchor, start + days - 1).isoformat(),
+        )
         action["start_date"], action["end_date"] = first, last
         action["timeline"] = PlanText.DATED.format(start=first, end=last, span=span, after=after)
     path: list[int] = []
@@ -102,7 +110,7 @@ def _date_plan(
         plan["mitigation_end_date_planned"] = None
         plan["mitigation_timeline"] = PlanText.PLAN_UNDATED.format(total=_spell_days(total), chain=chain)
         return [PlanWarning.NO_WINDOW.format(total=total)]
-    planned_end = _shift(anchor, total - 1)
+    planned_end = _add_days_within_calendar(anchor, total - 1)
     end = planned_end.isoformat()
     plan["mitigation_end_date_planned"] = end
     plan["mitigation_timeline"] = PlanText.PLAN_DATED.format(
@@ -129,7 +137,7 @@ def _spell_days(days: int) -> str:
     return PlanText.DAYS.format(days=days) + ("s" if days != 1 else "")
 
 
-def _shift(anchor: date, offset: int) -> date:
+def _add_days_within_calendar(anchor: date, offset: int) -> date:
     """The anchor plus offset days, clamped to the calendar's last day."""
     try:
         return anchor + timedelta(days=offset)

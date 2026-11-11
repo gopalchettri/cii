@@ -27,7 +27,7 @@ from app.core.constants import (
 from app.core.exceptions import JobFailed
 from app.core.prompts import PROMPTS
 from app.core.redaction import redact
-from app.domain.remediation.schedule import schedule_plan
+from app.domain.remediation.schedule import action_name_or_position, schedule_plan
 from app.domain.scenario.library_rules import compatible_asset_types
 from app.domain.scenario.plan import raw_system_facts
 from app.domain.shared.ask_ai import ChatPrompt, answer_item_problems, ask_ai_and_check
@@ -47,12 +47,6 @@ _CONTEXT_PREFIX: str = PROMPTS["remediation"]["plan"]["context_prefix"]
 _NOT_SHOWN = ("register", "warnings")
 _RATINGS = ("likelihood_rating", "impact_rating", "final_risk_rating")
 _SYSTEM_LISTS = ("protected_systems", "required_systems")
-#: (the request's list of systems, the flag a register stored before that list holds instead).
-_RISK_SYSTEMS = ("supporting_systems_applicable_to_risk", "all_supporting_systems_applicable")
-_EXISTING_SYSTEMS = (
-    "supporting_systems_applicable_to_existing_controls",
-    "existing_controls_all_supporting_system_applicable",
-)
 _STAMPED = (
     "control_id",
     "control_code",
@@ -81,24 +75,12 @@ _EXTENDS = re.compile(Remediation.EXTENDS_PATTERN, re.IGNORECASE)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
-def clip(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | None:
+def redact_and_shorten_text(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | None:
     """Free text as a snapshot holds it: redacted, then cut at `limit` with a mark."""
     if text is None:
         return None
     cleaned = redact(text)
     return cleaned if len(cleaned) <= limit else cleaned[:limit] + Remediation.TRUNCATED_MARK
-
-
-def _by_name(controls: Sequence[LibraryControl]) -> dict[str, LibraryControl | None]:
-    """Each control by its name: IT/OT twins (same name and description) by the lowest id; a name two
-    different controls share by None, so only a code or id says which."""
-    by_name: dict[str, LibraryControl | None] = {}
-    for control in sorted(controls, key=lambda control: control.control_id):
-        key, text = name_match_key(control.name), name_match_key(describe_control(control))
-        first = by_name.setdefault(key, control)
-        if first is not None and name_match_key(describe_control(first)) != text:
-            by_name[key] = None
-    return by_name
 
 
 def resolve_control_refs(
@@ -107,7 +89,14 @@ def resolve_control_refs(
     """The library rows `refs` name, once each in first-named order; the refs naming none, with positions."""
     by_id = {row.control_id: row for row in controls}
     by_code = {row.code.casefold(): row for row in controls}
-    by_name = _by_name(controls)
+    # IT/OT twins (same name and description) go to the lowest id; a name two different controls share
+    # names neither, so only a code or id says which.
+    by_name: dict[str, LibraryControl | None] = {}
+    for control in sorted(controls, key=lambda control: control.control_id):
+        key, text = name_match_key(control.name), name_match_key(describe_control(control))
+        first = by_name.setdefault(key, control)
+        if first is not None and name_match_key(describe_control(first)) != text:
+            by_name[key] = None
     found: dict[int, LibraryControl] = {}
     unresolved: list[tuple[int, ControlRef]] = []
     for position, ref in enumerate(refs):
@@ -148,65 +137,35 @@ def active_mapped_controls(
     return [item for item in controls.get("items") or [] if item["control_id"] in controls_by_id]
 
 
-def risk_scope(
-    scenario: dict[str, Any], context: FrozenContext, register: dict[str, Any]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(the asset's supporting systems, the ones the risk affects) as {supporting_system_id, name}: those the
-    request lists; a register stored before that list: every one when all_supporting_systems_applicable is 1,
-    else the scenario's own (the run's if it names none)."""
-    systems = [{"supporting_system_id": s["id"], "name": s["name"]} for s in context.linked_systems()]
-    listed = register.get("supporting_systems_applicable_to_risk")
-    if listed is not None:
-        return systems, [system for system in systems if system["supporting_system_id"] in listed]
-    if register.get("all_supporting_systems_applicable") == 1:
-        return systems, systems
-    run = {system["id"] for system in context.systems}
-    own = {system["id"] for system in (scenario.get("content") or {}).get("systems") or []} & run or run
-    return systems, [system for system in systems if system["supporting_system_id"] in own]
-
-
-def _protected_systems(
-    register: dict[str, Any], controls: Sequence[LibraryControl], system_ids: Sequence[int]
-) -> tuple[dict[str, set[int]], list[str]]:
-    """Each register control's twin key with the systems it is on: those the request lists for the existing
-    controls (none when it lists none); a register stored before the lists: all of them when the existing
-    flag is 1, else the control's own supporting_system_ids. The warnings for entries naming no library
-    control."""
-    shared: Sequence[int] | None = register.get("supporting_systems_applicable_to_existing_controls") or []
-    if register.get("supporting_systems_applicable_to_risk") is None:  # stored before the lists
-        everywhere = register.get("existing_controls_all_supporting_system_applicable")
-        if everywhere is None:  # a register stored before the flag: its Yes/No said the same
-            everywhere = int(register.get("existing_controls_all_subsystems") == YesNo.YES)
-        shared = system_ids if everywhere == 1 else None
-    protected: dict[str, set[int]] = {}
-    warnings: list[str] = []
-    for entry in register.get("existing_controls") or []:
-        own: list[int] = []
-        if isinstance(entry, dict):  # stored before the lists, an entry named the systems it was on
-            entry = dict(entry)
-            own = entry.pop("supporting_system_ids", None) or []
-        ref = ControlRef.model_validate(entry)
-        named, unresolved = resolve_control_refs([ref], controls)
-        if unresolved:
-            warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=describe_ref(ref)))
-            continue
-        on = own if shared is None else shared
-        protected.setdefault(name_match_key(describe_control(named[0])), set()).update(on)  # IT/OT twins: one
-    return protected, warnings
+def list_affected_systems(context: FrozenContext, register: dict[str, Any]) -> list[dict[str, Any]]:
+    """The asset's supporting systems the register's risk list names, in the asset's order."""
+    listed = set(register["supporting_systems_applicable_to_risk"])
+    return [
+        {"supporting_system_id": system["id"], "name": system["name"]}
+        for system in context.linked_systems()
+        if system["id"] in listed
+    ]
 
 
 def assess_controls(
     items: list[dict[str, Any]],
     register: dict[str, Any],
     controls: Sequence[LibraryControl],
-    systems: list[dict[str, Any]],
     affected: list[dict[str, Any]],
     categories: Mapping[int, str | None],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Each mapped control with its library details, the affected systems of its asset type (`categories`:
-    each system's) an existing control is already on and those it is still needed on, and its status from
-    them; the unmatched warnings."""
-    protected, warnings = _protected_systems(register, controls, [s["supporting_system_id"] for s in systems])
+    """Each mapped control with its library details and its status on the affected systems (`categories`:
+    each system's IT/OT); a warning for each register or mapped control the library does not have."""
+    covered_systems = set(register["supporting_systems_applicable_to_existing_controls"])
+    existing: set[str] = set()  # by name and description, so IT/OT twins are one
+    warnings: list[str] = []
+    for entry in register.get("existing_controls") or []:
+        ref = ControlRef.model_validate(entry)
+        named, unresolved = resolve_control_refs([ref], controls)
+        if unresolved:
+            warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=describe_ref(ref)))
+        else:
+            existing.add(name_match_key(describe_control(named[0])))
     by_id = {row.control_id: row for row in controls}
     library_mapped = []
     for item in items:
@@ -214,8 +173,8 @@ def assess_controls(
         if row is None:
             warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=item.get("code")))
             continue
-        on = protected.get(name_match_key(describe_control(row)))
-        library_mapped.append(_assessed_row(row, item, _of_its_type(row, affected, categories), on))
+        on = covered_systems if name_match_key(describe_control(row)) in existing else None
+        library_mapped.append(_assessed_row(row, item, affected, categories, on))
     return library_mapped, warnings
 
 
@@ -223,7 +182,6 @@ def assess_alternatives(
     found: Sequence[tuple[LibraryControl, float]],
     register: dict[str, Any],
     controls: Sequence[LibraryControl],
-    systems: list[dict[str, Any]],
     affected: list[dict[str, Any]],
     categories: Mapping[int, str | None],
 ) -> list[dict[str, Any]]:
@@ -238,30 +196,27 @@ def assess_alternatives(
         }
         for control, score in found
     ]
-    return assess_controls(offered, register, controls, systems, affected, categories)[0]
-
-
-def _of_its_type(
-    row: LibraryControl, affected: list[dict[str, Any]], categories: Mapping[int, str | None]
-) -> list[dict[str, Any]]:
-    r"""The affected systems a control applies to: an IT control the IT systems, an OT one the OT systems,
-    an IT\OT or untyped one all. None fits (a control named by hand): every affected system."""
-    fitting = [s for s in affected if _applies(row.asset_type, categories.get(s["supporting_system_id"]))]
-    return fitting or affected
-
-
-def _applies(asset_type: str | None, category: str | None) -> bool:
-    """Whether a control of `asset_type` applies to a system of `category`: any, when none is recorded."""
-    allowed = compatible_asset_types(None, [category])
-    return not allowed or asset_type_fits(asset_type, allowed)
+    return assess_controls(offered, register, controls, affected, categories)[0]
 
 
 def _assessed_row(
-    row: LibraryControl, item: dict[str, Any], affected: list[dict[str, Any]], on: set[int] | None
+    row: LibraryControl,
+    item: dict[str, Any],
+    affected: list[dict[str, Any]],
+    categories: Mapping[int, str | None],
+    on: set[int] | None,
 ) -> dict[str, Any]:
-    """One mapped control: its library details, the affected systems an existing control is `on` (None: not
-    an existing control) and those it is still needed on, and its status from them (on every one, on some, on
-    none). No affected system: the risk is on the asset itself, and an existing control is implemented."""
+    """One mapped control: its library details, the affected systems of its type an existing control is `on`
+    (None: not an existing control) and those it is still needed on, and its status from them. No affected
+    system: the risk is on the asset itself, and an existing control is implemented."""
+    # An IT control counts on the IT systems, an OT one on the OT systems, an IT\OT or untyped one on all; a
+    # system of no recorded category takes any. None fits (a control named by hand): every affected system.
+    fitting = []
+    for system in affected:
+        allowed = compatible_asset_types(None, [categories.get(system["supporting_system_id"])])
+        if not allowed or asset_type_fits(row.asset_type, allowed):
+            fitting.append(system)
+    affected = fitting or affected
     covered = [system for system in affected if system["supporting_system_id"] in (on or ())]
     needed = [system for system in affected if system["supporting_system_id"] not in (on or ())]
     status = ImplementationStatus.NOT_IMPLEMENTED
@@ -273,7 +228,7 @@ def _assessed_row(
         "asset_type": row.asset_type,
         "domain": row.domain,
         "control_name": row.name,
-        "control_description": clip(row.description),
+        "control_description": redact_and_shorten_text(row.description),
         "mapping_relevance": None if item.get("score") is None else round(item["score"]),
         "match": item.get("match"),
         "implementation_status": status,
@@ -296,15 +251,17 @@ def build_snapshot(
     identified = register.get("risk_identification_date")
     identified_at = datetime.fromisoformat(identified).isoformat() if identified else None
     return {
-        "asset": clip(context.asset["name"]),
-        "asset_context": _capped(facts_safe_for_prompt(context.asset_context)),
+        "asset": redact_and_shorten_text(context.asset["name"]),
+        "asset_context": _shorten_all_texts(facts_safe_for_prompt(context.asset_context)),
         "supporting_systems": [
-            _capped(facts_safe_for_prompt(raw_system_facts(system))) for system in context.systems
+            _shorten_all_texts(facts_safe_for_prompt(raw_system_facts(system))) for system in context.systems
         ],
         "threat": _threat(content),
         "scenario": _scenario(content),
         "risk_scope": {
-            "all_supporting_systems_applicable": _on_every_system(register, context, *_RISK_SYSTEMS),
+            "all_supporting_systems_applicable": _on_every_system(
+                context, register["supporting_systems_applicable_to_risk"]
+            ),
             "affected_systems": affected,
         },
         "existing_controls": _existing(register, context, library_mapped, alternatives),
@@ -313,8 +270,8 @@ def build_snapshot(
         # The facts code copies into the plan and the AI never sees (the risk owner is a person).
         "register": {
             "risk_identification_date": identified_at,
-            "risk_owner": clip(register.get("risk_owner")),
-            "impacted_business_division": clip(register.get("impacted_business_division")),
+            "risk_owner": redact_and_shorten_text(register.get("risk_owner")),
+            "impacted_business_division": redact_and_shorten_text(register.get("impacted_business_division")),
         },
         "warnings": list(warnings),
     }
@@ -331,17 +288,18 @@ def _existing(
     return {
         "library_mapped": library_mapped,
         "library_alternatives": alternatives,
-        "all_supporting_systems_applicable": _on_every_system(register, context, *_EXISTING_SYSTEMS),
-        "justification": clip(register.get("existing_controls_all_subsystems_justification")),
+        "all_supporting_systems_applicable": _on_every_system(
+            context, register["supporting_systems_applicable_to_existing_controls"]
+        ),
+        "justification": redact_and_shorten_text(
+            register.get("existing_controls_all_subsystems_justification")
+        ),
     }
 
 
-def _on_every_system(register: dict[str, Any], context: FrozenContext, listed: str, flag: str) -> int | None:
-    """1 when the request's list `listed` names a system and every supporting system of the asset, else 0; a
-    register stored before the lists: its own `flag`."""
-    if register.get("supporting_systems_applicable_to_risk") is None:
-        return register.get(flag)
-    every, named = {system["id"] for system in context.linked_systems()}, set(register.get(listed) or [])
+def _on_every_system(context: FrozenContext, listed: Sequence[int]) -> int:
+    """1 when `listed` names at least one system and every supporting system of the asset, else 0."""
+    every, named = {system["id"] for system in context.linked_systems()}, set(listed)
     return int(bool(named) and every <= named)
 
 
@@ -349,11 +307,11 @@ def _threat(content: dict[str, Any]) -> dict[str, Any]:
     """The scenario's threat, its type, category and attackers."""
     threat = content.get("threat") or {}
     return {
-        "category": clip(content.get("category")),
-        "type": clip(threat.get("type")),
-        "name": clip(threat.get("name")),
+        "category": redact_and_shorten_text(content.get("category")),
+        "type": redact_and_shorten_text(threat.get("type")),
+        "name": redact_and_shorten_text(threat.get("name")),
         "actors": [
-            {"name": clip(actor.get("name")), "role": actor.get("role")}
+            {"name": redact_and_shorten_text(actor.get("name")), "role": actor.get("role")}
             for actor in content.get("actors") or []
         ],
     }
@@ -364,11 +322,18 @@ def _scenario(content: dict[str, Any]) -> dict[str, Any]:
     `applicable_to_all_subsystems` judges)."""
     statement, risk = content.get("statement"), content.get("risk_statement")
     return {
-        "title": clip(content.get("title")),
-        "statement": clip(statement and without_platform_note(statement), Remediation.STATEMENT_MAX_CHARS),
-        "risk_statement": clip(risk and without_platform_note(risk), Remediation.STATEMENT_MAX_CHARS),
+        "title": redact_and_shorten_text(content.get("title")),
+        "statement": redact_and_shorten_text(
+            statement and without_platform_note(statement), Remediation.STATEMENT_MAX_CHARS
+        ),
+        "risk_statement": redact_and_shorten_text(
+            risk and without_platform_note(risk), Remediation.STATEMENT_MAX_CHARS
+        ),
         "supporting_systems_involved": [
-            {"supporting_system": clip(system.get("name")), "is_entry_point": bool(system.get("entry_point"))}
+            {
+                "supporting_system": redact_and_shorten_text(system.get("name")),
+                "is_entry_point": bool(system.get("entry_point")),
+            }
             for system in content.get("systems") or []
         ],
         "route_status": (content.get("route") or {}).get("status"),
@@ -384,14 +349,14 @@ def _assessment(register: dict[str, Any]) -> dict[str, Any]:
         days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1 if end else None  # inclusive
         window = {"timeline_start_date": start, "timeline_end_date": end, "total_days": days}
     return {
-        **{rating: _number(register.get(rating)) for rating in _RATINGS},
-        "risk_level": clip(register.get("risk_level")),
-        "impacted_business_division": clip(register.get("impacted_business_division")),
+        **{rating: _rating_text_to_number(register.get(rating)) for rating in _RATINGS},
+        "risk_level": redact_and_shorten_text(register.get("risk_level")),
+        "impacted_business_division": redact_and_shorten_text(register.get("impacted_business_division")),
         "assessment_window": window,
     }
 
 
-def _number(text: str | None) -> int | float | None:
+def _rating_text_to_number(text: str | None) -> int | float | None:
     """A stored rating as a JSON number, an int when whole (the prompt cites it verbatim: 20, never 20.0)."""
     if text is None:
         return None
@@ -399,23 +364,22 @@ def _number(text: str | None) -> int | float | None:
     return int(value) if value == value.to_integral_value() else float(value)
 
 
-def _capped(value: Any) -> Any:
-    """Every text inside a facts block cut by `clip` (facts_safe_for_prompt already redacted it)."""
+def _shorten_all_texts(value: Any) -> Any:
+    """Every text inside a facts block cut by `redact_and_shorten_text`."""
     if isinstance(value, str):
-        return clip(value)
+        return redact_and_shorten_text(value)
     if isinstance(value, dict):
-        return {key: _capped(inner) for key, inner in value.items()}
+        return {key: _shorten_all_texts(inner) for key, inner in value.items()}
     if isinstance(value, list):
-        return [_capped(inner) for inner in value]
+        return [_shorten_all_texts(inner) for inner in value]
     return value
 
 
 def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
     """(system, user): the approved rules, and the snapshot as data without the echo, warnings or ids."""
     shown = {key: value for key, value in snapshot.items() if key not in _NOT_SHOWN}
-    # The register's window, when it gave one, as the days the AI plans to fit (owner, 2026-10-21); its dates
-    # stay code's, which schedules them and warns past the window. No window, or a start alone: the AI
-    # estimates freely.
+    # The register's window, when it gave one, as the days the AI plans to fit; its dates stay code's, which
+    # schedules them and warns past the window. No window, or a start alone: the AI estimates freely.
     risk = {key: value for key, value in shown["risk_assessment"].items() if key != "assessment_window"}
     window = shown["risk_assessment"].get("assessment_window") or {}
     if window.get("total_days"):
@@ -428,19 +392,15 @@ def plan_prompt(snapshot: dict[str, Any]) -> ChatPrompt:
         part: [
             row
             | {"match": ControlMatch.EXACT if row["match"] == ControlMatch.GIVEN else row["match"]}
-            | {key: _names(row[key]) for key in _SYSTEM_LISTS}
+            | {key: [system["name"] for system in row[key]] for key in _SYSTEM_LISTS}
             for row in existing[part]
         ]
         for part in ("library_mapped", "library_alternatives")
     }
-    scope = shown["risk_scope"]
-    shown["risk_scope"] = scope | {"affected_systems": _names(scope["affected_systems"])}
+    affected_names = [system["name"] for system in shown["risk_scope"]["affected_systems"]]
+    shown["risk_scope"] = shown["risk_scope"] | {"affected_systems": affected_names}
     context = json.dumps(drop_database_ids(shown), ensure_ascii=False, separators=(",", ":"))
     return PLAN_SYSTEM_PROMPT, _CONTEXT_PREFIX + context
-
-
-def _names(systems: list[dict[str, Any]]) -> list[str]:
-    return [system["name"] for system in systems]
 
 
 def write_plan(chat: ChatModel, snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -449,7 +409,9 @@ def write_plan(chat: ChatModel, snapshot: dict[str, Any]) -> tuple[dict[str, Any
 
     def check_first_answer(answer: dict[str, Any]) -> list[str]:
         first.append(answer)
-        return _gap_problems(snapshot, answer) + _prose_problems(snapshot, answer)
+        draft = PlanDraft.model_validate(answer)
+        rows, _ = _apply_ai_verdicts(snapshot, draft)
+        return _gap_problems(snapshot, draft, rows) + _prose_problems(draft, rows)
 
     try:
         draft: PlanDraft = ask_ai_and_check(
@@ -466,7 +428,7 @@ def write_plan(chat: ChatModel, snapshot: dict[str, Any]) -> tuple[dict[str, Any
         raise JobFailed(ErrorCode.GENERATION_FAILED, message) from exc
     if first and not draft.remediation_action_plan:
         draft = PlanDraft.model_validate(first[0])
-    plan, warnings = _finish(draft, snapshot)
+    plan, warnings = _build_final_plan(draft, snapshot)
     return plan, [*snapshot["warnings"], *warnings, *schedule_plan(plan, snapshot)]
 
 
@@ -476,40 +438,44 @@ def _read_answer(answer: dict[str, Any]) -> tuple[PlanDraft | None, list[str]]:
     return (None, problems) if problems else (PlanDraft.model_validate(answer), [])
 
 
-def _key(code: str) -> str:
+def _normalise_code(code: str) -> str:
     return code.strip().casefold()
 
 
-def _checks(snapshot: dict[str, Any], draft: PlanDraft) -> dict[str, DraftValidation]:
+def _ai_verdict_for_each_control(snapshot: dict[str, Any], draft: PlanDraft) -> dict[str, DraftValidation]:
     """The AI's check of each identified control by its code: the first one given for a code."""
-    identified = {_key(row["control_code"]) for row in snapshot["existing_controls"]["library_mapped"]}
+    identified = {
+        _normalise_code(row["control_code"]) for row in snapshot["existing_controls"]["library_mapped"]
+    }
     checks: dict[str, DraftValidation] = {}
     for check in draft.control_validation:
-        if _key(check.control_code) in identified:
-            checks.setdefault(_key(check.control_code), check)
+        if _normalise_code(check.control_code) in identified:
+            checks.setdefault(_normalise_code(check.control_code), check)
     return checks
 
 
-def _weighed(snapshot: dict[str, Any], draft: PlanDraft) -> tuple[list[dict[str, Any]], list[str]]:
+def _apply_ai_verdicts(snapshot: dict[str, Any], draft: PlanDraft) -> tuple[list[dict[str, Any]], list[str]]:
     """Every control the plan weighs, as its assessment row: each identified control with its check (a flagged
     one unverified), then each library alternative chosen to replace one; the warnings for a check not given
     or naming no alternative, whose control is flagged for review."""
     existing = snapshot["existing_controls"]
-    offered = {_key(row["control_code"]): row for row in existing.get("library_alternatives") or []}
-    checks = _checks(snapshot, draft)
+    offered = {
+        _normalise_code(row["control_code"]): row for row in existing.get("library_alternatives") or []
+    }
+    checks = _ai_verdict_for_each_control(snapshot, draft)
     rows: list[dict[str, Any]] = []
     chosen: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
     for row in existing["library_mapped"]:
-        check = checks.get(_key(row["control_code"]))
-        reason = clip(check.reason) if check else None
+        check = checks.get(_normalise_code(row["control_code"]))
+        reason = redact_and_shorten_text(check.reason) if check else None
         weighed = row | {"validation": ControlValidation.FLAGGED_FOR_REVIEW, "validation_reason": reason}
         weighed |= {"replaced_by": None, "replaces": []}
         if check is None:
             warnings.append(PlanWarning.VALIDATION_NOT_GIVEN.format(code=row["control_code"]))
         elif check.validation != ControlValidation.REPLACED:
             weighed["validation"] = check.validation
-        elif (alternative := offered.get(_key(check.replacement_code or ""))) is None:
+        elif (alternative := offered.get(_normalise_code(check.replacement_code or ""))) is None:
             replacement = check.replacement_code
             warnings.append(
                 PlanWarning.REPLACEMENT_REFUSED.format(code=row["control_code"], replacement=replacement)
@@ -536,68 +502,70 @@ def _all_implemented(validated: list[dict[str, Any]]) -> bool:
     )
 
 
-def _validated(row: dict[str, Any]) -> bool:
+def _is_kept_after_ai_check(row: dict[str, Any]) -> bool:
     """A control the check kept: an identified one retained, or an alternative chosen to replace one."""
     return row["validation"] == ControlValidation.RETAINED or bool(row["replaces"])
 
 
-def _gap_problems(snapshot: dict[str, Any], answer: dict[str, Any]) -> list[str]:
-    """A shape-valid first answer's faults: an identified control left unchecked, or replaced by a code
-    outside the alternatives; a kept gap left out; an implemented, replaced or flagged control named."""
-    draft = PlanDraft.model_validate(answer)
-    checks = _checks(snapshot, draft)
+def _gap_problems(snapshot: dict[str, Any], draft: PlanDraft, rows: list[dict[str, Any]]) -> list[str]:
+    """A first answer's faults: an identified control left unchecked, or replaced by a code outside the
+    alternatives; a kept gap left out; an implemented, replaced or flagged control named."""
+    checks = _ai_verdict_for_each_control(snapshot, draft)
     offered = {
-        _key(row["control_code"]) for row in snapshot["existing_controls"].get("library_alternatives") or []
+        _normalise_code(row["control_code"])
+        for row in snapshot["existing_controls"].get("library_alternatives") or []
     }
     problems = []
     for row in snapshot["existing_controls"]["library_mapped"]:
-        code, check = row["control_code"], checks.get(_key(row["control_code"]))
+        code, check = row["control_code"], checks.get(_normalise_code(row["control_code"]))
         if check is None:
             problems.append(RemediationMessage.VALIDATION_MISSING.format(code=code))
         elif check.validation == ControlValidation.REPLACED and not check.replacement_code:
             problems.append(RemediationMessage.REPLACEMENT_REQUIRED.format(code=code))
         elif (
             check.validation == ControlValidation.REPLACED
-            and _key(check.replacement_code or "") not in offered
+            and _normalise_code(check.replacement_code or "") not in offered
         ):
             problems.append(
                 RemediationMessage.REPLACEMENT_UNKNOWN.format(code=code, replacement=check.replacement_code)
             )
-    listed = {_key(control.control_code) for control in draft.controls_to_be_implemented}
+    listed = {_normalise_code(control.control_code) for control in draft.controls_to_be_implemented}
     named = listed | {
-        _key(code) for action in draft.remediation_action_plan for code in action.implements_controls
+        _normalise_code(code)
+        for action in draft.remediation_action_plan
+        for code in action.implements_controls
     }
-    for row in _weighed(snapshot, draft)[0]:
-        code, status, key = row["control_code"], row["implementation_status"], _key(row["control_code"])
-        if _validated(row) and status in _GAPS and key not in listed:
+    for row in rows:
+        code, status = row["control_code"], row["implementation_status"]
+        key = _normalise_code(code)
+        if _is_kept_after_ai_check(row) and status in _GAPS and key not in listed:
             problems.append(RemediationMessage.GAP_REQUIRED.format(code=code, status=status))
         elif status == ImplementationStatus.IMPLEMENTED and key in named:
             problems.append(RemediationMessage.IMPLEMENTED_LISTED.format(code=code))
-        elif not _validated(row) and key in named:
+        elif not _is_kept_after_ai_check(row) and key in named:
             problems.append(
                 RemediationMessage.NOT_VALIDATED_LISTED.format(code=code, validation=row["validation"])
             )
     return problems
 
 
-def _prose_problems(snapshot: dict[str, Any], answer: dict[str, Any]) -> list[str]:
-    """A shape-valid first answer's prose faults: a partial control described as new or a not implemented one
-    as extended, an interim action when covered, an action_plan of nothing but code's facts (`_finish` removes
-    those sentences itself, so only an action_plan they would empty is asked again)."""
-    draft = PlanDraft.model_validate(answer)
+def _prose_problems(draft: PlanDraft, rows: list[dict[str, Any]]) -> list[str]:
+    """A first answer's prose faults: a partial control described as new or a not implemented one as
+    extended, an interim action when covered, an action_plan of nothing but code's facts (`_build_final_plan`
+    removes those sentences itself, so only an action_plan they would empty is asked again)."""
     claims = dict.fromkeys(match.group(0) for match in _CODE_FACT.finditer(draft.action_plan))
     if _without_code_facts(draft.action_plan):  # something is left once code's sentences go: no re-ask
         claims = {}
     problems = [RemediationMessage.CODE_FACT_IN_ACTION_PLAN.format(claim=claim) for claim in claims]
-    rows, _ = _weighed(snapshot, draft)
-    status_of = {_key(row["control_code"]): row["implementation_status"] for row in rows}
+    status_of = {_normalise_code(row["control_code"]): row["implementation_status"] for row in rows}
     for control in draft.controls_to_be_implemented:
-        status, extends = status_of.get(_key(control.control_code)), _EXTENDS.search(control.description)
+        status = status_of.get(_normalise_code(control.control_code))
+        extends = _EXTENDS.search(control.description)
         if status == ImplementationStatus.PARTIALLY_IMPLEMENTED and not extends:
             problems.append(RemediationMessage.PARTIAL_NOT_EXTENDED.format(code=control.control_code))
         elif status == ImplementationStatus.NOT_IMPLEMENTED and extends:
             problems.append(RemediationMessage.MISSING_EXTENDED.format(code=control.control_code))
-    if _all_implemented([row for row in rows if _validated(row)]):
+    if _all_implemented([row for row in rows if _is_kept_after_ai_check(row)]):
         problems += [
             RemediationMessage.INTERIM_WHEN_COVERED.format(action=action.action_id)
             for action in draft.remediation_action_plan
@@ -613,18 +581,17 @@ def _without_code_facts(text: str) -> str:
     return " ".join(sentence for sentence in sentences if not _CODE_FACT.search(sentence))
 
 
-def _finish(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """The plan as stored, before its schedule: the checked gaps kept and stamped; coverage, title,
-    assessment, each action's systems and the unresolved gaps code's."""
+def _build_final_plan(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The plan as stored, before its schedule; coverage, title, assessment and action systems are code's."""
     plan = draft.model_dump(mode="json", exclude={"control_validation", "uncovered_risks"})
     if not plan["remediation_action_plan"]:
         raise JobFailed(ErrorCode.INVALID_PLAN, RemediationMessage.PLAN_WITHOUT_ACTION)
     plan["action_plan"] = _without_code_facts(plan["action_plan"])  # the schedule and the library are code's
-    rows, warnings = _weighed(snapshot, draft)
-    gaps = {_key(r["control_code"]): r for r in rows if _validated(r) and r["implementation_status"] in _GAPS}
+    rows, warnings = _apply_ai_verdicts(snapshot, draft)
+    validated = [row for row in rows if _is_kept_after_ai_check(row)]
+    gaps = {_normalise_code(r["control_code"]): r for r in validated if r["implementation_status"] in _GAPS}
     controls, kept_warnings = _kept_controls(plan["controls_to_be_implemented"], rows, gaps)
     recommended = [control["control_code"] for control in controls]
-    validated = [row for row in rows if _validated(row)]
     covered = _all_implemented(validated)
     named = validated if covered else [row for row in rows if row["control_code"] in recommended]
     every_system = snapshot["risk_scope"]["all_supporting_systems_applicable"] == 1
@@ -649,18 +616,11 @@ def _finish(draft: PlanDraft, snapshot: dict[str, Any]) -> tuple[dict[str, Any],
         for row in gaps.values()
         if row["control_code"] not in recommended
     ]
-    return plan, warnings + _finish_actions(
-        plan, snapshot, [row for row in rows if row["control_code"] in recommended]
-    )
-
-
-def _finish_actions(
-    plan: dict[str, Any], snapshot: dict[str, Any], recommended: list[dict[str, Any]]
-) -> list[str]:
-    """Each action's implements_controls cut to the recommended codes and its systems set; the warnings."""
-    actions = plan["remediation_action_plan"]
-    warnings = _delivery_warnings(actions, [row["control_code"] for row in recommended])
-    return warnings + _action_systems(actions, snapshot["risk_scope"]["affected_systems"], recommended)
+    actions, affected = plan["remediation_action_plan"], snapshot["risk_scope"]["affected_systems"]
+    recommended_rows = [row for row in rows if row["control_code"] in recommended]
+    warnings += _delivery_warnings(actions, recommended)  # first: it cuts the codes _action_systems reads
+    warnings += _action_systems(actions, affected, recommended_rows)
+    return plan, warnings
 
 
 def _unresolved_gaps(
@@ -685,24 +645,18 @@ def _unresolved_gaps(
                 "detail": PlanText.GAP_NONE_VALIDATED,
             }
         )
-    texts = dict.fromkeys(clip(_without_code_facts(text)) or "" for text in uncovered)
+    texts = dict.fromkeys(redact_and_shorten_text(_without_code_facts(text)) or "" for text in uncovered)
     return gaps + [
         {"kind": GapKind.UNCOVERED_RISK, "control_code": None, "detail": text} for text in texts if text
     ]
 
 
 def _plan_title(named: list[dict[str, Any]], covered: bool, drafted: str, snapshot: dict[str, Any]) -> str:
-    """The controls' domains, else the AI's title, else the scenario's, else its threat's name."""
-    scenario, threat = snapshot["scenario"]["title"], snapshot["threat"]["name"]
-    return _title(named, covered) or drafted or scenario or threat or ""
-
-
-def _title(controls: list[dict[str, Any]], covered: bool) -> str | None:
-    """The plan's name from the library domains of the controls it recommends (verifies, when covered), in
-    mapping order; None when none has a domain, and the AI's name stays."""
-    domains = list(dict.fromkeys(row["domain"] for row in controls if row.get("domain")))
+    """The library domains of the controls the plan recommends (verifies, when covered), in mapping order;
+    none has a domain: the AI's title, else the scenario's, else its threat's name."""
+    domains = list(dict.fromkeys(row["domain"] for row in named if row.get("domain")))
     if not domains:
-        return None
+        return drafted or snapshot["scenario"]["title"] or snapshot["threat"]["name"] or ""
     joined = domains[0] if len(domains) == 1 else ", ".join(domains[:-1]) + " and " + domains[-1]
     return (PlanText.VERIFICATION_TITLE if covered else PlanText.REMEDIATION_TITLE).format(domains=joined)
 
@@ -711,12 +665,12 @@ def _kept_controls(
     drafted: list[dict[str, Any]], rows: list[dict[str, Any]], gaps: dict[str, dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The recommended controls that are checked gaps of this scenario, once each, stamped from their row."""
-    by_code = {_key(row["control_code"]): row for row in rows}
+    by_code = {_normalise_code(row["control_code"]): row for row in rows}
     kept: list[dict[str, Any]] = []
     seen: set[int] = set()
     warnings: list[str] = []
     for control in drafted:
-        key = _key(control["control_code"])
+        key = _normalise_code(control["control_code"])
         row = by_code.get(key)
         if row is None:
             warnings.append(PlanWarning.CONTROL_NOT_IN_LIBRARY.format(code=control["control_code"]))
@@ -745,11 +699,11 @@ def _action_systems(
     needed = {row["control_code"]: row["required_systems"] for row in recommended}
     warnings: list[str] = []
     for position, action in enumerate(actions):
-        label = str(action.get("action_id") or "").strip() or f"remediation_action_plan[{position}]"
         named: set[int] = set()
         for given in action.get("supporting_systems") or []:
             system = by_name.get(name_match_key(str(given)))
             if system is None:
+                label = action_name_or_position(action, position)
                 warnings.append(PlanWarning.ACTION_SYSTEM_UNKNOWN.format(action=label, system=given))
             else:
                 named.add(system["supporting_system_id"])
@@ -767,15 +721,15 @@ def _action_systems(
 
 def _delivery_warnings(actions: list[dict[str, Any]], recommended: list[str]) -> list[str]:
     """Each action's implements_controls cut to recommended codes, spelt as the library does; the warnings."""
-    known = {code.strip().casefold(): code for code in recommended}
+    known = {_normalise_code(code): code for code in recommended}
     warnings: list[str] = []
     delivered: set[str] = set()
     for position, action in enumerate(actions):
-        name = str(action.get("action_id") or "").strip() or f"remediation_action_plan[{position}]"
         codes = []
         for echoed in (str(code).strip() for code in action["implements_controls"]):
-            canonical = known.get(echoed.casefold())
+            canonical = known.get(_normalise_code(echoed))
             if canonical is None:
+                name = action_name_or_position(action, position)
                 warnings.append(PlanWarning.IMPLEMENTS_UNKNOWN.format(action=name, code=echoed))
             else:
                 codes.append(canonical)

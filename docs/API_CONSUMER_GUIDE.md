@@ -353,8 +353,8 @@ Headers: identity headers.
 | `threat.is_threat_type_ai_generated` | bool | |
 | `threat.is_threat_ai_generated` | bool or null | |
 | `threat.grounding_score` / `.score` | number or null | 0-100 |
-| `threat.scope_rank` | int or null | 1 = most relevant |
-| `actors[]` | object[] | `actor_id`, `actor_name`, `role`, `closest_match`, `selection`, `selection_reason` |
+| `threat.scope_rank` | int or null | 1 = most relevant: the highest risk (impact x likelihood), then impact and confidence |
+| `actors[]` | object[] | `actor_id`, `actor_name`, `role`, `closest_match`, `selection`, `selection_reason` (`selection` is `chosen` on new runs: only an attacker from the threat's own list acts) |
 | `controls[]` | object[] | `control_id`, `control_code`, `itot`, `domain`, `control_name`, `control_description`, `map_rank`, `score`, `mapping_relevance`, `match_type` (`EXACT`/`NEAREST`/`GIVEN`), `match_reason`, `tier` |
 | `accepted` | bool | |
 | `replaces_accepted_version` | string or null | another accepted version of this path; accepting this one needs `replace_accepted` |
@@ -419,7 +419,7 @@ reviewer notes.
         "also_applies": []
       },
       "threat": { "threat_id": "lib:812", "threat_type": "Malware/Ransomware", "grounding_status": "verified", "...": "..." },
-      "actors": [ { "actor_id": 31, "actor_name": "Ransomware affiliate", "role": "acting", "closest_match": false } ],
+      "actors": [ { "actor_id": 31, "actor_name": "Ransomware affiliate", "role": "acting", "closest_match": false, "selection": "chosen", "selection_reason": "A ransomware affiliate has the tools and a profit motive to reach the platform over the network." } ],
       "controls": [
         { "control_id": 446, "control_code": "CID-0446", "itot": "IT\\OT", "domain": "Backup",
           "control_name": "Offline backups", "control_description": "...", "map_rank": 1,
@@ -1529,7 +1529,7 @@ Header `X-Admin-Key`. Every job of every kind active in the last `hours`, newest
 
 No key. Counts only (never a prompt or an answer), each with its model, activity and a one-line description. Source of truth: `app/api/routers/ai_usage.py`, `app/models/ai_usage/usage_report.py`, `app/core/constants/ai_activities.py`.
 
-**Counts in every report.** `total_ai_calls`: attempts sent to an AI model (chat, embedding, rerank), retries included; `successful_calls`: those that ended ok; `failed_calls`: the rest; `asks`: questions put to the AI; `extra_attempts`: attempts beyond one per ask (retries, a fallback model, re-asks); `reused_answers`: earlier answers a job's retry read back (no AI call); `outcomes`: per outcome (`ok`, `unavailable`, `unreadable`, `truncated`, `error`, `reused`); `tokens_in`, `tokens_out`, `seconds`. `buckets` splits them by part of the work: `threats` (finding threats), `scenario` (writing scenarios), `controls` (picking controls), `remediation` (writing the plan), `service_mapper` (mapping services), each with `label`, `description` and `by_task`.
+**Counts in every report.** `total_ai_calls`: attempts sent to an AI model (chat, embedding, rerank), retries included; `successful_calls`: those that ended ok; `failed_calls`: the rest; `asks`: questions put to the AI; `extra_attempts`: attempts beyond one per ask (retries, a fallback model, re-asks); `reused_answers`: earlier answers a job's retry read back (no AI call); `outcomes`: per outcome (`ok`, `unavailable`, `unreadable`, `truncated`, `error`, `reused`); `tokens_in`, `tokens_out` (chat prompts and answers, and, from 2026-10-30, embedding and rerank inputs as the gateway counts them; a local reranker records none), `seconds`. `buckets` splits them by part of the work: `threats` (finding threats), `scenario` (writing scenarios), `controls` (picking controls), `remediation` (writing the plan), `service_mapper` (mapping services), each with `label`, `description` and `by_task`.
 
 | Route | Query | Answer |
 | --- | --- | --- |

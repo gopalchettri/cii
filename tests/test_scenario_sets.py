@@ -560,8 +560,8 @@ def test_with_the_reviewer_off_a_clean_set_costs_one_call_and_an_exact_blocker_s
     closings = [o.draft.evidence_statement for o in outcomes.values() if isinstance(o, WrittenScenario)]
     first, second, original = closings
     step = _STEP[:1].upper() + _STEP[1:]
-    assert first.startswith(f'{step} matches "Module Firmware"') and original == ""
-    assert second.startswith(f'{step} mirrors "Valid Accounts"')
+    assert first == f'{step} matches the "Module Firmware" technique' and original == ""
+    assert second == f'{step} mirrors the "Valid Accounts" technique'
 
 
 @pytest.mark.usefixtures("reviewer_off")

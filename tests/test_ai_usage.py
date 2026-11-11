@@ -287,6 +287,39 @@ def test_search_calls_are_counted_in_the_part_their_job_stage_serves(monkeypatch
     assert found == [("embed", "controls", "ok"), ("rerank", "controls", "ok"), ("rerank", "controls", "ok")]
 
 
+def test_search_calls_record_the_tokens_their_gateway_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-30: embedding and rerank calls count against the gateway's tokens a minute, so their rows
+    carry the tokens it names: an embedding's usage, a rerank's meta tokens, else its billed total; none when
+    the answer names none. Mutation: drop search_tokens from either call, or skip a meta field."""
+    usage = SimpleNamespace(prompt_tokens=12)
+    monkeypatch.setattr(
+        litellm,
+        "embedding",
+        lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage),
+    )
+    scores = [{"index": 0, "relevance_score": 0.5}]
+    reranks = iter(
+        [
+            SimpleNamespace(results=scores, meta={"tokens": {"input_tokens": 40, "output_tokens": 3}}),
+            SimpleNamespace(results=scores, meta={"billed_units": {"total_tokens": 55}}),
+            SimpleNamespace(results=scores),
+        ]
+    )
+    monkeypatch.setattr(litellm, "rerank", lambda **_: next(reranks))
+    profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
+    embed = _EmbeddingProvider(
+        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
+    )
+    rerank = ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key")
+    job = _job(TaskName.MAP_CONTROLS)
+    with structlog.contextvars.bound_contextvars(**job):
+        embed.embed_batch(["scenario text"])
+        for _ in range(3):
+            rerank.score_relevance("scenario", ["control"])
+    found = [(row["task"], row.get("tokens_in"), row.get("tokens_out")) for row in _rows(job["request_id"])]
+    assert found == [("embed", 12, None), ("rerank", 40, 3), ("rerank", 55, None), ("rerank", None, None)]
+
+
 def test_a_shared_threads_calls_are_no_requests_own(monkeypatch: pytest.MonkeyPatch) -> None:
     """A library or evidence index build runs on a thread started from whichever job needed it first: its
     calls are counted as shared, never charged to that job's request. Mutation: drop the shared_work check."""

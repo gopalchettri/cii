@@ -189,6 +189,7 @@ def planned_threat_record(threat: PlannedThreat) -> dict[str, Any]:
         "reasons": threat_reasons_by_kind(threat),
         "impact": threat.impact,
         "confidence": threat.confidence,
+        "likelihood": threat.likelihood,
         "actors": [
             {"id": actor.actor_id, "name": actor.name, "role": actor.role, "closest": False}
             for actor in threat.actors
@@ -226,6 +227,11 @@ def attack_path_from_library(path: AttackPath) -> bool:
 def attack_path_impact(path: AttackPath) -> int:
     """The highest impact of the path's steps."""
     return max(step.impact for step in path.steps)
+
+
+def attack_path_risk(path: AttackPath) -> int:
+    """The highest impact x likelihood of the path's steps: 1 to 9."""
+    return max(step.impact * step.likelihood for step in path.steps)
 
 
 def attack_path_confidence(path: AttackPath) -> float:
@@ -392,7 +398,8 @@ def parse_verdict(
 ) -> tuple[dict[StrideCategory, Verdict] | None, list[str]]:
     """One threat's verdict checked against its `candidate`, as its verdict under each category it named and
     under each of its own (one it lists but did not name does not apply); a named category it does not list
-    is kept for code to drop. Systems, ways in, confidence, needs, attacker and actions are the threat's."""
+    is kept for code to drop. Systems, ways in, confidence, likelihood, needs, attacker and actions are the
+    threat's."""
     named, problems = _verdict_problems(item, candidate, aliases)
     if problems:
         return None, problems
@@ -408,6 +415,7 @@ def parse_verdict(
         else reason[: ThreatFinding.REASON_MAX_CHARS],
         impact=0,
         confidence=float(item.get("confidence") or 0) if relevant else 0.0,
+        likelihood=ThreatFinding.LIKELIHOOD_RANK[str(item["likelihood"]).upper()] if relevant else 0,
         needs=_needs(item.get("needs") or []),
         actor_pick=actor_pick(item, candidate["attackers"]) if relevant else None,
         kinds=tuple(own),
@@ -423,7 +431,8 @@ def _verdict_problems(
     item: dict[str, Any], candidate: dict[str, Any], aliases: dict[str, int]
 ) -> tuple[dict[StrideCategory, tuple[int, str]], list[str]]:
     """What is wrong with a verdict: its threat copied back, known aliases, a way in among them, its own
-    categories and a 0-100 confidence when relevant, a reason when rejected. Its named categories too."""
+    categories, a 0-100 confidence and a likelihood when relevant, a reason when rejected. Its named
+    categories too."""
     slot, relevant, systems = item["slot"], item.get("relevant"), item.get("systems") or []
     entry_points = (item.get("entry_points") or []) if relevant is True else None
     confidence, needs = item.get("confidence"), item.get("needs") or []
@@ -441,6 +450,8 @@ def _verdict_problems(
             or not 0 <= confidence <= 100
         ):
             problems.append(f"{slot}: confidence must be a number from 0 to 100")
+        if str(item.get("likelihood") or "").upper() not in ThreatFinding.LIKELIHOOD_RANK:
+            problems.append(f"{slot}: likelihood must be HIGH, MEDIUM or LOW")
     elif not str(item.get("reason") or "").strip():
         problems.append(f"{slot}: a threat that does not apply needs its reason")
     if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
@@ -500,16 +511,11 @@ def _place_problems(slot: str, systems: Any, entry_points: Any, aliases: dict[st
     return []
 
 
-def actor_pick(item: dict[str, Any], listed: Sequence[str]) -> ActorPick | None:
-    """The gate's attacker pick, or None (the search ranking decides) when it named no listed attacker or gave
-    no reason."""
+def actor_pick(item: dict[str, Any], listed: Sequence[str]) -> ActorPick:
+    """The gate's pick: a listed name with its reason (if any), else none fits; never an unchecked one."""
     by_key = {name_match_key(name): name for name in listed}
     reason = str(item.get("attacker_reason") or "").strip()[: ThreatFinding.REASON_MAX_CHARS]
-    named = item.get("attacker")
-    name = None if named is None else by_key.get(name_match_key(str(named)))
-    if not by_key or not reason or (named is not None and name is None):
-        return None
-    return ActorPick(name, reason)
+    return ActorPick(by_key.get(name_match_key(str(item.get("attacker") or ""))), reason)
 
 
 def _needs(names: list[str]) -> tuple[str, ...]:
@@ -562,7 +568,7 @@ def _read_proposals(
 def _read_proposal(
     answer: dict[str, Any], aliases: dict[str, int]
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """The gap-fill answer as {applies, threat_type, threat, attacker, reason, systems}, or its problems."""
+    """The gap-fill answer as {applies, threat_type, threat, reason, systems}, or its problems."""
     if not isinstance(answer.get("applies"), bool):
         return None, ['the reply must be {"applies": true|false, ...}']
     checked = answer if answer["applies"] else {"reason": "", **answer}  # "none applies" needs no reason
@@ -570,9 +576,7 @@ def _read_proposal(
         return None, problems
     if not answer["applies"]:
         return {"applies": False}, []
-    fields = {
-        name: str(answer.get(name) or "").strip() for name in ("threat_type", "threat", "attacker", "reason")
-    }
+    fields = {name: str(answer.get(name) or "").strip() for name in ("threat_type", "threat", "reason")}
     problems = [f"{name} is required" for name, value in fields.items() if not value]
     if len(fields["threat_type"]) + len(fields["threat"]) > ThreatFinding.GAP_FILL_MAX_CHARS:
         problems.append("the proposal is too long")
@@ -872,6 +876,7 @@ def _ai_threat(
         kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
         actions=verdict.actions,
+        likelihood=verdict.likelihood,
     )
 
 
@@ -891,6 +896,7 @@ def _library_threat(category: StrideCategory, threat: LibraryThreat, verdict: Ve
         kind_places=((category, _place_of(verdict)),),
         actor_pick=verdict.actor_pick,
         actions=verdict.actions,
+        likelihood=verdict.likelihood,
     )
 
 
@@ -1040,9 +1046,9 @@ def _placed(
 
 
 def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThreat:
-    """One threat for both: every category and system, the higher impact and confidence, the kept one's
-    reason, each category's own reason and place, and an attacker pick that names one over one that names
-    none. Another threat folded in never moves the kept one's first category."""
+    """One threat for both: every category and system, the higher impact, likelihood and confidence, the
+    kept one's reason, each category's own reason and place, and an attacker pick that names one over one that
+    names none. Another threat folded in never moves the kept one's first category."""
     union = set(kept.categories) | set(other.categories)
     lead = (kept.categories[0],) if kept.key != other.key else ()
     return dataclasses.replace(
@@ -1051,6 +1057,7 @@ def merge_two_threats(kept: PlannedThreat, other: PlannedThreat) -> PlannedThrea
         systems=tuple(sorted(set(kept.systems) | set(other.systems))),
         impact=max(kept.impact, other.impact),
         confidence=max(kept.confidence, other.confidence),
+        likelihood=max(kept.likelihood, other.likelihood),
         actor_pick=_named_pick_first(kept.actor_pick, other.actor_pick),
         actions=kept.actions or other.actions,
         kind_reasons=tuple((threat_reasons_by_kind(other) | threat_reasons_by_kind(kept)).items()),
@@ -1134,11 +1141,8 @@ def merge_reworded_threats(
 # --- who carries out each threat
 
 
-def assign_attackers(
-    snapshot: LibrarySnapshot, threats: list[PlannedThreat], sector: str
-) -> list[PlannedThreat]:
-    """Every threat with its acting attacker among its type's linked actors, those the gate's pick leaves open
-    ranked with one embedding call; none when its type links none or the gate found none plausible."""
+def assign_attackers(snapshot: LibrarySnapshot, threats: list[PlannedThreat]) -> list[PlannedThreat]:
+    """Every threat with its acting attacker: the gate's pick among its linked actors, else none."""
     library = snapshot.library.threat_library
     by_threat = {threat.catalogue_id: threat.linked_actors for threat in library.threats}
     by_type = linked_actors_by_type(library)
@@ -1146,41 +1150,18 @@ def assign_attackers(
         by_threat.get(t.catalogue_id, ()) if t.catalogue_id is not None else by_type.get(t.type_id, ())
         for t in threats
     ]
-    to_rank = [n for n, threat in enumerate(threats) if not _pick_decides(threat, linked[n])]
-    queries = [f"{t.type_name}: {t.name}. {t.reason} {sector}".strip() for t in (threats[n] for n in to_rank)]
-    allowed = [{actor.actor_id for actor in linked[n]} for n in to_rank]
-    hits = snapshot.find_actors(queries, top_k=len(library.actors), allowed_ids=allowed) if to_rank else []
-    ranked_by_threat = dict(zip(to_rank, hits, strict=True))
-    decided = []
-    for n, (threat, actors) in enumerate(zip(threats, linked, strict=True)):
-        ranked = [actor for actor, _ in ranked_by_threat.get(n, [])]
-        decided.append(choose_actor(threat, (*ranked, *[actor for actor in actors if actor not in ranked])))
-    return decided
+    return [choose_actor(threat, actors) for threat, actors in zip(threats, linked, strict=True)]
 
 
-def _pick_decides(threat: PlannedThreat, linked: Sequence[LibraryActor]) -> bool:
-    """Whether the gate's pick decides the attacker whatever the ranking: none fits, or it names exactly one
-    linked actor."""
-    pick = threat.actor_pick
-    return pick is not None and (pick.name is None or len({a for a in linked if a.name == pick.name}) == 1)
-
-
-def choose_actor(threat: PlannedThreat, order: tuple[LibraryActor, ...]) -> PlannedThreat:
-    """The threat with its acting attacker from `order` (its linked actors, best search rank first): the
-    gate's pick, else the first; none when the gate found none plausible or nothing is linked."""
-    pick, by_name = threat.actor_pick, {actor.name: actor for actor in order}
-    acting: LibraryActor | None
-    if pick is not None and pick.name is None:
-        acting, check, reason = None, AttackerCheck.NONE_FITS, pick.reason
-    elif pick is not None and pick.name in by_name:
-        acting, check, reason = by_name[pick.name], AttackerCheck.CHOSEN, pick.reason
-    else:
-        acting, check, reason = (order[0] if order else None), AttackerCheck.NOT_CHECKED, ""
+def choose_actor(threat: PlannedThreat, linked: Sequence[LibraryActor]) -> PlannedThreat:
+    """The threat with the linked actor the gate picked acting (chosen), else none (none fits)."""
+    pick = threat.actor_pick or ActorPick(None, "")
+    acting = next((actor for actor in linked if actor.name == pick.name), None)
     return dataclasses.replace(
         threat,
         actors=() if acting is None else (PlannedActor(acting.actor_id, acting.name, ActorRole.ACTING),),
-        attacker_check=check,
-        attacker_check_reason=reason,
+        attacker_check=AttackerCheck.NONE_FITS if acting is None else AttackerCheck.CHOSEN,
+        attacker_check_reason=pick.reason,
         actor_pick=None,
     )
 
@@ -1250,12 +1231,11 @@ class ThreatFinder:
         threats = [_main_and_two_others(threat, main_first.get(threat.key, ())) for threat in threats]
         for key, kept in folded.items():
             drops.append(plan_drop(key, names[key], None, PlanStage.MERGE, PlanLoss.MERGED, f"into {kept}"))
-        threats = assign_attackers(snapshot, threats, land.sector)
-        for threat in (threat for threat in threats if not threat.actors):  # none linked, or none plausible
-            none_fits = threat.attacker_check == AttackerCheck.NONE_FITS
-            reason = AttackerCheck.NONE_FITS if none_fits else PlanLoss.NO_LINKED_ACTOR
+        threats = assign_attackers(snapshot, threats)
+        for threat in (threat for threat in threats if not threat.actors):  # no listed attacker fits
             detail = replace_codes_with_names(threat.attacker_check_reason, land.system_names)
-            drops.append(plan_drop(threat.key, threat.name, None, PlanStage.ATTACKER, reason, detail))
+            stage, reason = PlanStage.ATTACKER, AttackerCheck.NONE_FITS
+            drops.append(plan_drop(threat.key, threat.name, None, stage, reason, detail))
         return [threat for threat in threats if threat.actors], drops
 
     def _judge_categories(
@@ -1377,9 +1357,10 @@ def path_on(
 
 
 def _path_strength(path: AttackPath) -> tuple[Any, ...]:
-    """Impact, confidence, the STRIDE order of the kind, then the tie-break: library before AI, the lowest
-    library id, the path id."""
+    """Risk (impact x likelihood), impact, confidence, the STRIDE order of the kind, then the tie-break:
+    library before AI, the lowest library id, the path id."""
     return (
+        -attack_path_risk(path),
         -attack_path_impact(path),
         -attack_path_confidence(path),
         _STRIDE_ORDER.index(attack_path_categories(path)[0]),
@@ -1388,7 +1369,7 @@ def _path_strength(path: AttackPath) -> tuple[Any, ...]:
 
 
 def rank_paths(paths: Iterable[AttackPath]) -> list[AttackPath]:
-    """The most relevant path first, the same order on every run."""
+    """The highest risk first, the same order on every run."""
     return sorted(paths, key=_path_strength)
 
 

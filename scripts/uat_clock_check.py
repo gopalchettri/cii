@@ -1,29 +1,38 @@
-"""UAT clock check: how far MongoDB's, Redis' and every pod's clock (in every project your login sees) is
-from this computer's, in plain words, and what to fix (docs/UAT_CLOCK_SKEW_RUNBOOK.md). Read-only.
+"""UAT clock check, UTC as the standard: a plain log for the support team of the time MongoDB, Redis and every
+pod (in every project of ours your login sees) show, each one's gap from UTC, and who fixes each gap
+(docs/UAT_CLOCK_SKEW_RUNBOOK.md). Read-only. UTC is this computer's clock, so keep it synced.
 
-After oc login, from the project folder: python scripts/uat_clock_check.py [--max-skew 2]"""
+After oc login: python uat_clock_check.py [--max-skew 2]. Stdlib only, Python 3.8+. The log is printed and
+saved as clock_check_<UTC time>.log in the current folder.
+Exit code: 0 no gap, 1 a gap, 2 MongoDB, Redis or every pod could not be read."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import socket
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 
 STORES = {"mongo": "MongoDB", "redis": "Redis"}
 OC_TIMEOUT_SECONDS = 60
 PARALLEL_PODS = 8  # each measurement brackets its own oc call, so running them side by side stays correct
 CLOCK_SKEW_ALERT_SECONDS = 5  # the ClockSkew alert in observability/prometheus/rules.yml
+APP_IMAGE = "tsg-api"  # every TSG app pod's image (deploy/deploy_threatgen.yaml); only it reads MongoDB/Redis
+PLATFORM_PROJECT_PREFIXES = ("openshift", "kube-")  # OpenShift's own projects: none of our pods run there
 #: oc's error text -> what it means, for pods whose clock could not be read.
 PLAIN_REASONS = {
     "container not found": "its container is not running",
     "forbidden": "your login may not run commands in it",
     "executable file not found": "it has no date command",
 }
-#: Runs inside an app pod with the app's own clients and settings; prints only offsets, never a password.
+#: Runs inside a TSG pod with the app's own clients and settings; prints offsets and server addresses, never a
+#: password.
 STORE_SNIPPET = """
 import json, time
 from datetime import UTC
@@ -31,11 +40,17 @@ from app.core.database import get_mongodb, get_redis_client
 def mongo_epoch():  # localTime comes back naive UTC, as app/core/clock.py reads it
     server = get_mongodb().command("hello")["localTime"]
     return server.replace(tzinfo=server.tzinfo or UTC).timestamp()
+def mongo_address():
+    host, port = get_mongodb().client.address
+    return f"{host}:{port}"
 def redis_epoch():
     seconds, micros = get_redis_client().time()
     return seconds + micros / 1e6
+def redis_address():
+    settings = get_redis_client().connection_pool.connection_kwargs
+    return f"{settings['host']}:{settings['port']}"
 result = {}
-for name, read in (("mongo", mongo_epoch), ("redis", redis_epoch)):
+for name, read, address in (("mongo", mongo_epoch, mongo_address), ("redis", redis_epoch, redis_address)):
     try:
         read()  # the first call connects; the second measures one round trip
         sent = time.time()
@@ -44,6 +59,11 @@ for name, read in (("mongo", mongo_epoch), ("redis", redis_epoch)):
         result[name] = [server - (sent + received) / 2, (received - sent) / 2]
     except Exception as exc:
         result[name] = repr(exc)[:200]
+        continue
+    try:
+        result[name].append(address())
+    except Exception:
+        pass  # the address only names the server; the time is what counts
 print(json.dumps(result))
 """
 
@@ -65,8 +85,10 @@ class Pod:
     namespace: str
     node: str
     container: str
+    runs_app: bool = False  # runs the TSG image, so it can read MongoDB and Redis
     pod_minus_here: Offset | None = None
     store_minus_pod: dict[str, Offset] = field(default_factory=dict)
+    store_address: dict[str, str] = field(default_factory=dict)  # host:port of the server that answered
     unread: str = ""  # why its clock could not be read
     notes: list[str] = field(default_factory=list)
 
@@ -121,14 +143,40 @@ def how_far(seconds: float) -> str:
     return f"{amount} {'ahead' if seconds > 0 else 'behind'}"
 
 
+def from_utc(seconds: float) -> str:
+    """'11 s ahead of UTC', '0.3 s behind UTC', or 'in step with UTC'."""
+    words = how_far(seconds)
+    if words == "in step":
+        return "in step with UTC"
+    return f"{words} of UTC" if words.endswith("ahead") else f"{words} UTC"
+
+
+def utc_text(epoch: float) -> str:
+    """A moment in UTC to the second: '2026-10-30 09:15:13 UTC'."""
+    moment = datetime.fromtimestamp(round(epoch), timezone.utc)  # noqa: UP017 — datetime.UTC needs 3.11
+    return moment.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def clock_time(epoch: float, standard: float) -> str:
+    """'09:15:13 UTC', with the date in front when it is not the standard's date."""
+    shown = utc_text(epoch)
+    return shown[11:] if shown[:10] == utc_text(standard)[:10] else shown
+
+
 def offset_from_timing(remote_epoch: float, sent: float, received: float) -> Offset:
     """Remote clock minus ours: the remote read its clock somewhere between `sent` and `received`."""
     return Offset(remote_epoch - (sent + received) / 2, (received - sent) / 2)
 
 
-def project_names(listing: str) -> list[str]:
-    """The names in `oc get projects -o name` (project.project.openshift.io/<name> lines)."""
-    return [line.rsplit("/", 1)[-1] for line in listing.split()]
+def our_projects(listing: str) -> list[str]:
+    """The project names in `oc get projects -o name`, without OpenShift's own (openshift*, kube-*)."""
+    names = [line.rsplit("/", 1)[-1] for line in listing.split()]
+    return [name for name in names if not name.startswith(PLATFORM_PROJECT_PREFIXES)]
+
+
+def is_app_image(image: str) -> bool:
+    """True for the TSG image, whatever its registry or tag: <registry>/<group>/tsg-api:<tag> or @sha256."""
+    return image.rsplit("/", 1)[-1].split("@")[0].split(":")[0] == APP_IMAGE
 
 
 def pods_from_listing(listing: dict, namespace: str) -> list[Pod]:
@@ -136,18 +184,20 @@ def pods_from_listing(listing: dict, namespace: str) -> list[Pod]:
     pods = []
     for item in listing["items"]:
         spec, name = item["spec"], item["metadata"]["name"]
+        container = spec["containers"][0]
         if item.get("status", {}).get("phase") == "Running":
-            pods.append(Pod(name, namespace, spec["nodeName"], spec["containers"][0]["name"]))
+            runs_app = is_app_image(container.get("image", ""))
+            pods.append(Pod(name, namespace, spec["nodeName"], container["name"], runs_app))
     return pods
 
 
 def running_pods() -> list[Pod]:
-    """Every Running pod of every project this login sees; a project it may not list is named on stderr."""
+    """Every Running pod in our projects this login sees; a project it may not list is named on stderr."""
     projects = oc(["get", "projects", "-o", "name"])
     if projects.returncode:
         raise SystemExit(f"oc get projects: {last_line(projects.stderr)}. Run oc login first.")
     pods = []
-    for namespace in project_names(projects.stdout):
+    for namespace in our_projects(projects.stdout):
         answer = oc(["get", "pods", "-n", namespace, "-o", "json"])
         if answer.returncode:
             print(f"Skipped project {namespace}: {last_line(answer.stderr)}", file=sys.stderr)
@@ -157,31 +207,39 @@ def running_pods() -> list[Pod]:
 
 
 def measure(pod: Pod) -> None:
-    """The pod's clock minus this computer's (`date` in the pod), then MongoDB's and Redis' from inside it."""
+    """The pod's clock minus this computer's (`date` in the pod), then, in a TSG pod, MongoDB's and Redis'."""
     sent = time.time()
     answer = oc(["exec", "-n", pod.namespace, pod.name, "-c", pod.container, "--", "date", "+%s.%N"])
     received = time.time()
     try:
         pod.pod_minus_here = offset_from_timing(float(answer.stdout), sent, received)
     except ValueError:
-        pod.unread = plain_reason(last_line(answer.stderr))
+        printed = last_line(answer.stdout)
+        said = f"date printed {printed!r}" if printed else "no answer from date"
+        pod.unread = plain_reason(last_line(answer.stderr) or said)
         return
-    measure_stores(pod)
+    if pod.runs_app:
+        measure_stores(pod)
 
 
 def measure_stores(pod: Pod) -> None:
-    """MongoDB's and Redis' clocks minus the pod's, measured inside the pod (app image only)."""
+    """MongoDB's and Redis' clocks minus the pod's, measured inside a TSG pod with the app's own clients."""
     command = ["exec", "-i", "-n", pod.namespace, pod.name, "-c", pod.container, "--", "python", "-"]
     answer = oc(command, STORE_SNIPPET)
     try:
         measured = json.loads(last_line(answer.stdout))
     except ValueError:
-        return  # no Python or no app in this image: not a TSG app pod
+        why = last_line(answer.stderr) or "no answer"
+        pod.notes.append(f"MongoDB and Redis not read from this pod: {why}")
+        return
     for store, value in measured.items():
-        if isinstance(value, list):
-            pod.store_minus_pod[store] = Offset(*value)
-        else:
+        if not isinstance(value, list):
             pod.notes.append(f"{STORES[store]} not read from this pod: {value}")
+            continue
+        seconds, error, *address = value
+        pod.store_minus_pod[store] = Offset(seconds, error)
+        if address:
+            pod.store_address[store] = address[0]
 
 
 def store_minus_here(pods: list[Pod], store: str) -> Offset | None:
@@ -195,86 +253,148 @@ def store_minus_here(pods: list[Pod], store: str) -> Offset | None:
     return Offset(store_clock.seconds + pod_clock.seconds, store_clock.error + pod_clock.error)
 
 
+def store_label(pods: list[Pod], store: str) -> str:
+    """'MongoDB server 10.228.146.3:27018', or without the address when no pod named it."""
+    address = next((pod.store_address[store] for pod in pods if store in pod.store_address), "")
+    return f"{STORES[store]} server {address}".strip()
+
+
+def node_clocks(pods: list[Pod]) -> dict[str, tuple[Offset, list[Pod]]]:
+    """Each node's gap from UTC (its pod with the shortest oc round trip) and its pods that were read."""
+    nodes: dict[str, tuple[Offset, list[Pod]]] = {}
+    for pod in sorted(pods, key=lambda pod: (pod.namespace, pod.name)):
+        if pod.pod_minus_here is None:
+            continue
+        best, on_node = nodes.get(pod.node, (pod.pod_minus_here, []))
+        nearest = pod.pod_minus_here if pod.pod_minus_here.error < best.error else best
+        nodes[pod.node] = (nearest, [*on_node, pod])
+    return dict(sorted(nodes.items()))
+
+
 def pod_is_off(pod: Pod, max_skew: float) -> bool:
     return pod.pod_minus_here is not None and pod.pod_minus_here.is_off(max_skew)
 
 
-def judged(offset: Offset, max_skew: float) -> str:
-    """'1 min 18 s ahead   WRONG'."""
-    return f"{how_far(offset.seconds):18} {'WRONG' if offset.is_off(max_skew) else 'RIGHT'}"
+def reading(label: str, offset: Offset, standard: float, max_skew: float) -> str:
+    """'[GAP] MongoDB server 10.228.146.3:27018 shows 09:15:13 UTC: 11 s ahead of UTC'."""
+    tag = "[GAP]" if offset.is_off(max_skew) else "[OK] "
+    return (
+        f"{tag} {label} shows {clock_time(standard + offset.seconds, standard)}: {from_utc(offset.seconds)}"
+    )
 
 
-def store_lines(pods: list[Pod], max_skew: float) -> list[str]:
-    lines = []
-    for store, name in STORES.items():
-        offset = store_minus_here(pods, store)
-        lines.append(f"{name + ' server':16} {judged(offset, max_skew) if offset else 'not read'}")
-    return [*lines, ""]
-
-
-def namespace_lines(pods: list[Pod], max_skew: float) -> list[str]:
-    """One project: its counts, then one row per pod, the wrong ones first."""
-    wrong = sum(pod_is_off(pod, max_skew) for pod in pods)
-    unread = sum(pod.pod_minus_here is None for pod in pods)
-    counts = f"pods: {len(pods)}, WRONG: {wrong}" + (f", not read: {unread}" if unread else "")
-    lines = [f"{pods[0].namespace}: {counts}"]
-    width = max(len(pod.name) for pod in pods)
-    for pod in sorted(pods, key=lambda pod: (not pod_is_off(pod, max_skew), pod.name)):
-        if pod.pod_minus_here is None:
-            lines.append(f"  {pod.name:{width}}   not read: {pod.unread}")
+def reading_lines(pods: list[Pod], standard: float, max_skew: float) -> list[str]:
+    """One line per clock: MongoDB, Redis, then every pod by namespace, with its node."""
+    lines = ["READINGS"]
+    for store in STORES:
+        offset, label = store_minus_here(pods, store), store_label(pods, store)
+        if offset is None:
+            lines.append(f"[N/A] {label}: not read (no TSG pod could reach it; see the notes below)")
         else:
-            row = judged(pod.pod_minus_here, max_skew)
-            lines.append(f"  {pod.name:{width}}   {row}  node {short_name(pod.node)}")
-        lines += [f"  {'':{width}}   {note}" for note in pod.notes]
+            lines.append(reading(label, offset, standard, max_skew))
+    for pod in sorted(pods, key=lambda pod: (pod.namespace, pod.name)):
+        label = f"Pod {pod.namespace}/{pod.name} on node {short_name(pod.node)}"
+        if pod.pod_minus_here is None:
+            lines.append(f"[N/A] {label}: not read ({pod.unread})")
+        else:
+            lines.append(reading(label, pod.pod_minus_here, standard, max_skew))
+        lines += [f"      note: {note}" for note in pod.notes]
     return [*lines, ""]
 
 
-def fix_lines(pods: list[Pod], max_skew: float) -> list[str]:
-    """What to fix: a wrong MongoDB or Redis server, and each node running a wrong pod."""
-    lines = []
+def gaps_and_fine(pods: list[Pod], max_skew: float) -> tuple[list[list[str]], list[str]]:
+    """Each gap as its lines (what, then who fixes it), and the clocks without a gap."""
+    gaps, fine = [], []
     for store, name in STORES.items():
-        offset = store_minus_here(pods, store)
+        offset, label = store_minus_here(pods, store), store_label(pods, store)
         if offset and offset.is_off(max_skew):
-            lines.append(f"  {name} server is {how_far(offset.seconds)}. Its admins turn on time sync (NTP).")
-    wrong_by_node: dict[str, list[Offset]] = {}
-    for pod in pods:
-        if pod.pod_minus_here and pod.pod_minus_here.is_off(max_skew):
-            wrong_by_node.setdefault(pod.node, []).append(pod.pod_minus_here)
-    for node, offsets in wrong_by_node.items():
-        seconds = min(offsets, key=lambda offset: offset.error).seconds
-        lines.append(
-            f"  Node {short_name(node)} is {how_far(seconds)} (our pods on it: {len(offsets)}). Admin check:"
+            fix = f"Fix: the {name} server's admins turn on time sync (chrony or NTP) on that server."
+            gaps.append([f"{label} is {from_utc(offset.seconds)}.", fix])
+        elif offset:
+            fine.append(label)
+    for node, (offset, node_pods) in node_clocks(pods).items():
+        label = f"OpenShift node {short_name(node)}"
+        if not offset.is_off(max_skew):
+            fine.append(label)
+            continue
+        names = ", ".join(f"{pod.namespace}/{pod.name}" for pod in node_pods)
+        gaps.append(
+            [
+                f"{label} is {from_utc(offset.seconds)}.",
+                f"Our pods on it show the same gap: {names}",
+                "Fix: the OpenShift cluster admin checks the node's time sync:",
+                f"oc debug node/{node} -- chroot /host chronyc tracking",
+            ]
         )
-        lines.append(f"    oc debug node/{node} -- chroot /host chronyc tracking")
-    measured = [pod for pod in pods if pod.pod_minus_here]
-    if measured and all(pod_is_off(pod, max_skew) for pod in measured):
-        lines.append("  Every pod disagrees with this computer: check this computer's clock first.")
-    return ["To fix:", *lines, ""] if lines else ["Nothing to fix: every clock read is right.", ""]
+    return gaps, fine
 
 
-def meaning_lines(pods: list[Pod], max_skew: float) -> list[str]:
-    """What the clocks mean for TSG, which takes MongoDB's time for every job."""
-    app_pods = [pod for pod in pods if "mongo" in pod.store_minus_pod]
-    if not app_pods:
-        return []
-    alerting = sum(abs(pod.store_minus_pod["mongo"].seconds) > CLOCK_SKEW_ALERT_SECONDS for pod in app_pods)
+def summary_lines(pods: list[Pod], max_skew: float) -> list[str]:
+    """The gaps, numbered, with who fixes each; the clocks without a gap; and what could not be read."""
+    gaps, fine = gaps_and_fine(pods, max_skew)
+    missing, unread = not_checked(pods), sum(pod.pod_minus_here is None for pod in pods)
+    lines = [
+        f"SUMMARY: {len(gaps)} gap{'' if len(gaps) == 1 else 's'} found (more than {max_skew:g} s from UTC)"
+    ]
+    for number, (what, *how) in enumerate(gaps, 1):
+        lines += [f"{number}. {what}", *(f"   {line}" for line in how)]
+    if fine:
+        lines.append(f"No gap: {', '.join(fine)}.")
+    if missing:
+        lines.append(f"Not checked: {', '.join(missing)}. The [N/A] lines above say why.")
+    if unread:
+        lines.append(f"Pods not read: {unread} (marked [N/A] above).")
+    if len(gaps) > 1 and not fine:
+        lines.append("Every clock read has a gap: this computer's clock is probably wrong. Check it first.")
+    return [*lines, ""]
+
+
+def tsg_lines(pods: list[Pod], max_skew: float) -> list[str]:
+    """Why pods share their node's gap, and what the gaps mean for TSG, which takes MongoDB's time."""
+    lines = [
+        "Why a pod shows its node's gap: a pod has no clock of its own; it uses its OpenShift node's clock."
+    ]
     mongo = store_minus_here(pods, "mongo")
-    lines = ["What it means for TSG:", "  Every TSG pod takes MongoDB's time, so jobs still run."]
     if mongo and mongo.is_off(max_skew):
-        lines.append(f"  Saved times are {how_far(mongo.seconds)} of real time.")
-    alert = f"a pod more than {CLOCK_SKEW_ALERT_SECONDS} s from MongoDB"
-    return [*lines, f"  The ClockSkew alert ({alert}) fires for {alerting} of {len(app_pods)} app pods."]
+        saved = from_utc(mongo.seconds)
+        lines.append(
+            f"Impact on TSG: TSG takes MongoDB's time for its jobs, so every time it saves is {saved}."
+        )
+    tsg = [pod for pod in pods if "mongo" in pod.store_minus_pod]
+    if tsg:
+        alerting = sum(abs(pod.store_minus_pod["mongo"].seconds) > CLOCK_SKEW_ALERT_SECONDS for pod in tsg)
+        alert = f"The ClockSkew alert (a TSG pod more than {CLOCK_SKEW_ALERT_SECONDS} s from MongoDB)"
+        lines.append(f"{alert} fires for {alerting} of {len(tsg)} TSG pods.")
+    return lines
 
 
-def report(pods: list[Pod], max_skew: float) -> list[str]:
-    """The whole report: MongoDB and Redis, each project's pods, what to fix, what it means for TSG."""
+def not_checked(pods: list[Pod]) -> list[str]:
+    """What this run could not read: MongoDB, Redis, or every pod. Any of them leaves the check unfinished."""
+    missing = [store_label(pods, store) for store in STORES if store_minus_here(pods, store) is None]
+    return missing if any(pod.pod_minus_here for pod in pods) else [*missing, "every pod"]
+
+
+def report(pods: list[Pod], max_skew: float, standard: float) -> list[str]:
+    """The log at one moment (`standard`, UTC by this computer): header, a line per clock, summary, impact."""
     errors = [pod.pod_minus_here.error for pod in pods if pod.pod_minus_here]
-    within = f"each figure ±{max(errors):.1f} s" if errors else "nothing read"
-    header = f"Clock check against this computer's clock ({within}). WRONG = more than {max_skew:g} s off."
-    lines = [header, "", *store_lines(pods, max_skew)]
-    for namespace in sorted({pod.namespace for pod in pods}):
-        lines += namespace_lines([pod for pod in pods if pod.namespace == namespace], max_skew)
-    return lines + fix_lines(pods, max_skew) + meaning_lines(pods, max_skew)
+    accuracy = (
+        f"Each reading is accurate to within {max(errors):.1f} s." if errors else "Nothing could be read."
+    )
+    namespaces = ", ".join(sorted({pod.namespace for pod in pods})) or "none"
+    computer = socket.gethostname()
+    header = [
+        f"UAT CLOCK CHECK at {utc_text(standard)}",
+        f"Standard time: UTC, from this computer ({computer}). Check its sync: w32tm /query /status",
+        f"Allowed gap: {max_skew:g} s. {accuracy}",
+        f"Checked: MongoDB, Redis, and {len(pods)} pods in namespaces {namespaces}.",
+        "",
+    ]
+    return (
+        header
+        + reading_lines(pods, standard, max_skew)
+        + summary_lines(pods, max_skew)
+        + tsg_lines(pods, max_skew)
+    )
 
 
 def anything_off(pods: list[Pod], max_skew: float) -> bool:
@@ -284,15 +404,22 @@ def anything_off(pods: list[Pod], max_skew: float) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="UAT clock check: MongoDB, Redis and every pod.")
+    parser = argparse.ArgumentParser(description="UAT clock check: MongoDB, Redis and every pod against UTC.")
     parser.add_argument("--max-skew", type=float, default=2.0, help="seconds a clock may be off (default 2)")
     max_skew = parser.parse_args(argv).max_skew
     pods = running_pods()
     print(f"Measuring {len(pods)} pod(s) ...", file=sys.stderr)
     with ThreadPoolExecutor(PARALLEL_PODS) as pool:
         list(pool.map(measure, pods))
-    print("\n".join(report(pods, max_skew)))
-    return 1 if anything_off(pods, max_skew) else 0
+    standard = time.time()
+    log = "\n".join(report(pods, max_skew, standard)) + "\n"
+    print(log)
+    saved = Path(f"clock_check_{utc_text(standard)[:19].replace(' ', '_').replace(':', '')}_UTC.log")
+    saved.write_text(log, encoding="utf-8")
+    print(f"Saved to {saved.resolve()}: share this file with the support team.", file=sys.stderr)
+    if anything_off(pods, max_skew):
+        return 1
+    return 2 if not_checked(pods) else 0
 
 
 if __name__ == "__main__":

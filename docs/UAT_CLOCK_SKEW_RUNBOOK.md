@@ -47,17 +47,25 @@ alert says when one is not.
 
 ## Checking every pod's clock by hand (optional)
 
-From the project folder, logged in with `oc` (reads only):
+From any Windows or Linux machine with Python 3.8+, logged in with `oc` (reads only; the script is one file and
+needs nothing else):
 
 ```
 python scripts/uat_clock_check.py
 ```
 
-It checks every pod in every project your login sees, plus MongoDB and Redis (read from inside the app pods with
-the app's own connections). Each difference is said in words ("1 min 18 s ahead") and marked RIGHT or WRONG
-(more than 2 s; `--max-skew` changes it): MongoDB and Redis first, then each project's pods with their node. Under
-"To fix" it names each wrong node with its `chronyc` command, and a wrong MongoDB or Redis server: those run
-outside the cluster, so their own admins turn on time sync. Exit code 1 means something is wrong.
+UTC is the standard: the clock of the machine running it, so keep that machine synced (`w32tm /query /status`).
+It reads MongoDB, Redis (from inside the `tsg-api` pods, with the app's own connections) and every pod in every
+project your login sees, except OpenShift's own (`openshift*`, `kube-*`). It prints a plain log for the support
+team and saves it as `clock_check_<UTC time>.log` in the current folder:
+
+- **READINGS**: one line per clock, the time it shows and its gap from UTC, marked `[GAP]` (more than 2 s;
+  `--max-skew` changes it), `[OK]` or `[N/A]` (not read, with why). Each pod line names its node.
+- **SUMMARY**: each gap, numbered, with who fixes it. A pod has no clock of its own: it uses its node's, so a
+  node's gap shows on every pod on it and the node is what gets fixed (the cluster admin, with the `chronyc`
+  command given). MongoDB and Redis run outside the cluster: their own admins turn on time sync.
+
+Exit code 0 means no gap, 1 a gap, 2 that MongoDB, Redis or every pod could not be read.
 
 Without Python, from a Linux shell or the OpenShift web terminal, logged in with `oc`. It prints each pod's node
 and how far its clock is from the shell's; within about ±2 s is fine.

@@ -99,8 +99,9 @@ _KEV = Evidence(
     Applicability.UNKNOWN,
 )
 # Owner 2026-10-28: code's own sentence reads on from the story, never "In real-world attacks, ...".
-_GROUPS_CLAIM = 'This attack could use the "Valid Accounts" technique, which APT41 and FIN8 have used'
-_CAMPAIGN_CLAIM = 'This attack could use the "Module Firmware" technique, which the Triton campaign has used'
+# Owner 2026-10-31: no closing sentence names who used the technique; the evidence entry keeps them.
+_GROUPS_CLAIM = 'This attack could use the "Valid Accounts" technique'
+_CAMPAIGN_CLAIM = 'This attack could use the "Module Firmware" technique'
 _DRAFT = ScenarioDraft(
     "Loss of control integrity",
     STORY_PLAIN,
@@ -325,7 +326,7 @@ def test_no_citable_source_is_written_without_evidence_never_failed(evidence: li
 @pytest.mark.parametrize(
     ("item", "claim"),
     [
-        (_GROUPS, 'This attack is related to the "Valid Accounts" technique, which APT41 and FIN8 have used'),
+        (_GROUPS, 'This attack is related to the "Valid Accounts" technique'),
         (
             _KEV,
             "A related record: CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks "
@@ -359,11 +360,7 @@ def test_one_citable_source_lets_the_story_be_written() -> None:
 # D65: the writer gives the one step of its story the cited entry is about; code writes the sentence.
 _STEP = "signing in to the SCADA server with the maintenance login"
 #: Code's sentence for _STEP citing _GROUPS from a set's first slot (epoch 0).
-_SENTENCE = (
-    'Signing in to the SCADA server with the maintenance login matches "Valid Accounts", a technique the '
-    "APT41 group and the FIN8 group have used"
-)
-_USERS = "the APT41 group and the FIN8 group"
+_SENTENCE = 'Signing in to the SCADA server with the maintenance login matches the "Valid Accounts" technique'
 
 
 def _story_record(
@@ -381,7 +378,7 @@ def _story_record(
 
 
 def test_codes_sentence_from_the_writers_step_ends_the_story_cited_with_no_reviewer_confirmation() -> None:
-    """Owner, 30 Oct (D65): code ties the writer's step to the cited entry's own title and users, so the
+    """Owner, 30 Oct (D65): code ties the writer's step to the cited entry's own title, so the
     story ends "<sentence> [1]." with no reviewer confirmation asked, the served view lists the cited item
     under its same keys, and no rewrite is made."""
     written, record, chat = _story_record(_STEP, [_CONSISTENT])
@@ -398,7 +395,7 @@ def test_codes_sentence_from_the_writers_step_ends_the_story_cited_with_no_revie
     ("step", "reason"),
     [
         ("", "none was written"),
-        (" ".join(["word"] * 70), "over the 80-word limit"),
+        (" ".join(["word"] * 76), "over the 80-word limit"),
         (f"{_STEP} [2]", "a marker, a redaction"),
         (f"{_STEP} for [REDACTED]", "a marker, a redaction"),
         (f"{_STEP} from https://example.test/a", "a marker, a redaction"),
@@ -408,8 +405,9 @@ def test_codes_sentence_from_the_writers_step_ends_the_story_cited_with_no_revie
         (f"{_STEP} as “Valid Accounts” says", "or a quote"),
         (f"{_STEP}. It is common", "more than one sentence"),
         ("Valid Accounts used on the SCADA server", "opens with the evidence"),
-        ("APT41 signing in to the SCADA server", "opens with the evidence"),
-        ("the FIN8 group signing in to the SCADA server", "opens with the evidence"),
+        ("APT41 signing in to the SCADA server", "names who used"),
+        ("the FIN8 group signing in to the SCADA server", "names who used"),
+        (f"{_STEP} the way APT41 did", "names who used"),
     ],
     ids=[
         "none",
@@ -425,6 +423,7 @@ def test_codes_sentence_from_the_writers_step_ends_the_story_cited_with_no_revie
         "opens_on_title",
         "opens_on_user",
         "opens_on_the_user",
+        "names_a_user_inside",
     ],
 )
 def test_a_step_that_cannot_open_codes_sentence_gives_way_to_codes_precedent_with_no_rewrite(
@@ -457,9 +456,10 @@ def test_a_step_that_cannot_open_codes_sentence_gives_way_to_codes_precedent_wit
     ids=["noun_phrase", "malware_used_by_the_attacker", "story_words", "title_word_inside", "name_like"],
 )
 def test_a_step_in_the_storys_own_words_opens_codes_sentence(step: str) -> None:
-    """Only an opening on the cited title or on who used it is refused: any step of the story may open."""
+    """Only an opening on the cited title or a name of who used it is refused: any step of the story may
+    open."""
     sentence, fault = evidence_sentence(step, _GROUPS.as_doc(), 0)
-    assert fault == "" and sentence.startswith(step[:1].upper() + step[1:] + ' matches "Valid Accounts"')
+    assert (fault, sentence) == ("", step[:1].upper() + step[1:] + ' matches the "Valid Accounts" technique')
 
 
 def _sentences(briefs: list[tuple[str, Any]], epoch: int = 0) -> tuple[list[str], Any]:
@@ -479,19 +479,16 @@ def _sentences(briefs: list[tuple[str, Any]], epoch: int = 0) -> tuple[list[str]
 
 def _link_of(sentence: str) -> str:
     """The words a sentence ties its step to its quoted title with."""
-    return sentence.removeprefix(_STEP[:1].upper() + _STEP[1:] + " ").partition(' "')[0]
+    return sentence.removeprefix(_STEP[:1].upper() + _STEP[1:] + " ").partition(' the "')[0]
 
 
-def test_six_slots_of_a_set_get_six_links_and_take_the_users_forms_in_turn() -> None:
+def test_six_slots_of_a_set_get_six_links() -> None:
     """Laptop e2e, 30 Oct: the writer linked every slot of a set alike, so 13 slots were written again. Code
-    now picks each slot's link and users form by its place: 6 links in a set of 6, no form twice in a row,
-    and no slot written again for variety."""
+    now picks each slot's link by its place: 6 links in a set of 6, and no slot written again for variety."""
     sentences, fake = _sentences([(f"SC{place}", _story_brief(_GROUPS)) for place in range(1, 7)])
     assert [task for task, _ in fake.calls] == [AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
     assert [_link_of(sentence) for sentence in sentences] == list(Precedent.LINKS[:6])
-    endings = {form.format(names=_USERS, verb="have"): form for form in Precedent.USERS}
-    forms = [next(form for end, form in endings.items() if sentence.endswith(end)) for sentence in sentences]
-    assert forms == [Precedent.USERS[place % 3] for place in range(6)] and len(set(sentences)) == 6
+    assert all(s.endswith('the "Valid Accounts" technique') for s in sentences) and len(set(sentences)) == 6
 
 
 def test_nearest_evidence_always_gets_a_related_link() -> None:
@@ -503,48 +500,39 @@ def test_nearest_evidence_always_gets_a_related_link() -> None:
 
 
 def test_a_sets_links_rotate_with_its_epoch() -> None:
-    """The next set (its job's epoch one on) starts one link and one users form further on."""
+    """The next set (its job's epoch one on) starts one link further on."""
     briefs = [(f"SC{place}", _story_brief(_GROUPS)) for place in (1, 2)]
     (first, second), _ = _sentences(briefs, epoch=0)
     (rotated, _second), _ = _sentences(briefs, epoch=1)
     assert rotated == second and _link_of(rotated) == Precedent.LINKS[1] != _link_of(first)
 
 
-def test_the_title_and_users_come_only_from_the_cited_entry() -> None:
-    """Any title or name the writer gives is never cited: the sentence takes them from the entry, its verb
-    agreeing with one user."""
+def test_the_title_comes_only_from_the_cited_entry() -> None:
+    """Any title or name the writer gives is never cited: the sentence takes the title from the entry."""
     stale = 'Signing in matches "Exploit Public-Facing Application", which Sandworm used.'
     _, record, _ = _story_record(_STEP, [_CONSISTENT], evidence_statement=stale)
     supports = record["content"]["evidence"][0]["supports"]
     assert supports == _SENTENCE and "Sandworm" not in supports and "Public-Facing" not in supports
-    campaign = _CAMPAIGN.as_doc()
-    assert [evidence_sentence(_STEP, campaign, place)[0].partition('", ')[2] for place in range(3)] == [
-        "a technique the Triton campaign has used",
-        "which the Triton campaign has used",
-        "used by the Triton campaign",
-    ]
 
 
-@pytest.mark.parametrize(
-    ("name", "named"),
-    [("Lazarus Group", "the Lazarus Group has used"), ("Sandworm Team", "the Sandworm Team has used"),
-     ("APT41", "the APT41 group has used")],
-)  # fmt: skip
-def test_a_group_whose_name_says_group_is_not_named_twice(name: str, named: str) -> None:
-    """Review, 30 Oct: "Lazarus Group, a threat group" read "the Lazarus Group group has used"."""
-    group = dataclasses.replace(
-        TECHNIQUE, facts=(EvidenceFact.USED_BY.format(name=name, what="a threat group"),)
-    )
-    sentence, fault = evidence_sentence(_STEP, group.as_doc(), 0)
-    assert fault == "" and sentence.endswith(f"a technique {named}")
+@pytest.mark.parametrize("item", [_GROUPS, _CAMPAIGN, dataclasses.replace(_GROUPS, nearest=True)])
+def test_codes_sentence_never_names_who_used_the_technique(item: Evidence) -> None:
+    """Owner 2026-10-31: the groups named were picked without regard to the card's attacker, so the closing
+    sentence names only the technique, in every place; the evidence entry still lists who used it."""
+    links = Precedent.RELATED_LINKS if item.nearest else Precedent.LINKS
+    step = _STEP[:1].upper() + _STEP[1:]
+    for place in range(12):
+        sentence = evidence_sentence(_STEP, item.as_doc(), place)[0]
+        assert sentence == f'{step} {links[place % len(links)]} the "{item.title}" technique'
 
 
 def test_a_gerund_titles_own_act_may_open_the_step() -> None:
     """Review, 30 Oct: "Phishing the operators ..." was refused for opening on the title "Phishing"."""
     phishing = dataclasses.replace(_GROUPS, title="Phishing")
     sentence, fault = evidence_sentence("phishing the operators of the SCADA server", phishing.as_doc(), 0)
-    assert fault == "" and sentence.startswith(
-        'Phishing the operators of the SCADA server matches "Phishing"'
+    assert (fault, sentence) == (
+        "",
+        'Phishing the operators of the SCADA server matches the "Phishing" technique',
     )
 
 
@@ -552,9 +540,10 @@ def test_codes_sentence_fits_the_evidence_word_limit(monkeypatch: pytest.MonkeyP
     """EVIDENCE_STATEMENT_WORD_LIMIT caps code's sentence: a step that would take it over is not used."""
     settings = Settings(EVIDENCE_STATEMENT_WORD_LIMIT="10-20")  # type: ignore[call-arg]
     monkeypatch.setattr(write, "get_settings", lambda: settings)
-    fits, _ = evidence_sentence("signing in to the SCADA server", _GROUPS.as_doc(), 0)
+    step = "signing in to the SCADA server with the shared maintenance login from the vendor laptop"
+    fits, _ = evidence_sentence(step, _GROUPS.as_doc(), 0)
     assert len(fits.split()) == 20
-    over = evidence_sentence("signing in to the busy SCADA server", _GROUPS.as_doc(), 0)
+    over = evidence_sentence(step.replace("vendor", "remote vendor"), _GROUPS.as_doc(), 0)
     assert over == ("", Precedent.TOO_LONG.format(most=20))
 
 
@@ -580,15 +569,17 @@ def test_a_title_that_would_break_the_marker_leaves_codes_precedent(title: str) 
     assert evidence_sentence(step, dataclasses.replace(_KEV, title=title).as_doc(), 0) == ("", "")
 
 
-def test_the_writer_sees_who_used_a_technique_as_plain_names_never_the_stored_wording() -> None:
-    """Owner 2026-10-28: the writer copied "APT41, a threat group, has used this technique"; it now reads
-    who used it as a reader names them, and no user fact (an id-only campaign's included)."""
+def test_the_writer_and_reviewer_never_see_who_used_a_technique() -> None:
+    """Owner 2026-10-31: no AI is shown who used a technique (an id-only campaign's included), so none can
+    name them; the card's evidence entry keeps them."""
     groups = dataclasses.replace(
         _GROUPS, facts=(*_GROUPS.facts, *_ID_ONLY_CAMPAIGN.facts, "It is used widely.")
     )
-    (entry,) = _block_of(writer_prompt([("SC1", _story_brief(groups), "")]))["evidence"]
-    assert entry["used_by"] == ["the APT41 group", "the FIN8 group"]
-    assert entry["facts"] == ["It is used widely."]
+    brief = _story_brief(groups)
+    writer = writer_prompt([("SC1", brief, "")])
+    (entry,) = _block_of(writer)["evidence"]
+    assert "used_by" not in entry and entry["facts"] == ["It is used widely."]
+    assert not {"APT41", "FIN8"} & set(evidence_block(brief).replace('"', " ").split())
 
 
 def test_an_instruction_echoed_in_the_step_blocks() -> None:

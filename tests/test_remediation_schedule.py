@@ -107,6 +107,14 @@ def test_durations_and_dependencies_are_repaired_with_one_warning_each() -> None
     assert (plan["mitigation_timeline_days"], actions[3]["timeline"]) == (limit, "2 days, after A1 completes")
 
 
+def test_an_action_without_an_id_is_named_by_its_place_in_the_plan() -> None:
+    """A blank id: warnings and the critical path name the action "remediation_action_plan[N]"."""
+    plan = _plan(_act("A1", 2), _act("  ", 0, ("A1",)))
+    warnings = schedule_plan(plan, _snapshot())
+    assert warnings == [PlanWarning.DURATION_REPAIRED.format(action="remediation_action_plan[1]", value=0)]
+    assert plan["critical_path"] == ["A1", "remediation_action_plan[1]"]
+
+
 def test_a_repeated_action_id_belongs_to_its_first_holder() -> None:
     plan = _plan(_act("A1", 2), _act("A1", 3), _act("A3", 4, ("A1",)))
     warnings = schedule_plan(plan, _snapshot())

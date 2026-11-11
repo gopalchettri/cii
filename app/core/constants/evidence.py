@@ -209,13 +209,13 @@ class EvidenceMode(StrEnum):
 
 
 class Precedent:
-    """The sentence code cites in an evidence story: the writer's step tied to the cited entry by a link and
-    a users form picked by the set's epoch and the slot's place (no two slots of a set share one), else code's
-    own sentence from the entry's facts; and why a step was not used."""
+    """The sentence code cites in an evidence story: the writer's step tied to the cited entry by a link
+    picked by the set's epoch and the slot's place (no two slots of a set share one), else code's own sentence
+    from the entry's facts; never who used a technique; and why a step was not used."""
 
-    # a technique: the writer's step, a link, its title and who used it
-    SENTENCE: Final = '{step} {link} "{title}", {users}'
-    # a vulnerability or an advisory: its first fact in place of who used it
+    # a technique: the writer's step, a link and its title
+    SENTENCE: Final = '{step} {link} the "{title}" technique'
+    # a vulnerability or an advisory: its first fact after its title
     ABOUT_SENTENCE: Final = '{step} {link} "{title}": {fact}'
     LINKS: Final = (
         "matches", "mirrors", "resembles", "echoes", "is an example of", "is a form of", "corresponds to",
@@ -226,16 +226,16 @@ class Precedent:
         "is related to", "is closely related to", "relates to", "is broadly related to",
         "is loosely related to", "is in the same family as",
     )  # fmt: skip
-    USERS: Final = ("a technique {names} {verb} used", "which {names} {verb} used", "used by {names}")
-    USED_BY: Final = 'This attack could use the "{technique}" technique, which {names} {verb} used'
+    COULD_USE: Final = 'This attack could use the "{technique}" technique'
     # nearest evidence: only related, and said so
-    USED_RELATED: Final = 'This attack is related to the "{technique}" technique, which {names} {verb} used'
+    RELATED_TO: Final = 'This attack is related to the "{technique}" technique'
     RELATED_RECORD: Final = "A related record: {fact}"
     NOT_WRITTEN: Final = "none was written"
     TOO_LONG: Final = "its sentence would run over the {most}-word limit"
     NOT_PLAIN: Final = "it holds a marker, a redaction, a link, a code, an internal label or a quote"
     MANY_SENTENCES: Final = "it is more than one sentence"
     OPENS_ON_EVIDENCE: Final = "it opens with the evidence, not with this attacker's action"
+    NAMES_A_USER: Final = "it names who used the cited technique"
 
 
 class EvidenceBlock:

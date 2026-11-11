@@ -56,9 +56,9 @@ from app.domain.remediation.rules import (
     new_plan_record,
     new_version,
     outage_failed,
-    plan_exists,
+    plan_already_exists_error,
     still_accepted,
-    version_in_progress,
+    version_still_generating_error,
 )
 from app.domain.scenario.plan import freeze_context
 from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
@@ -127,7 +127,7 @@ class RemediationPlanService:
         max_versions = get_settings().regenerations_max_version_count
         version = latest if in_place else check_regenerable(read, remediation_id, max_versions)
         if (requested := self._start_version(principal, read, version, in_place)) is None:
-            raise version_in_progress(remediation_id, latest)  # another regenerate made it first
+            raise version_still_generating_error(remediation_id, latest)  # another regenerate made it first
         return requested
 
     def review_remediation_plan(
@@ -257,7 +257,9 @@ class RemediationPlanService:
             self._remediations.create(record)
         except DuplicateRecord:  # a plan exists, or a request made at the same moment won
             winner = self._status(scenario_id=scenario["_id"])
-            raise plan_exists(scenario["_id"], winner.remediation_id if winner else None) from None
+            raise plan_already_exists_error(
+                scenario["_id"], winner.remediation_id if winner else None
+            ) from None
         # Its run was deleted meanwhile: no plan outlives it.
         if not self._scenarios.count(_id=scenario["_id"]):
             self._remediations.delete(_id=record["_id"])

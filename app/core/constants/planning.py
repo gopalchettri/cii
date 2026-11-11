@@ -176,6 +176,7 @@ class ThreatFinding:
     THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats, each whole
     REASON_MAX_CHARS: Final = 500
     IMPACT_RANK: Final[dict[str, int]] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}  # the gate's impact, higher first
+    LIKELIHOOD_RANK: Final[dict[str, int]] = IMPACT_RANK  # the gate's likelihood: the same three levels
     SYSTEM_ALIAS: Final = "SYS"  # SYS1, SYS2 ... in prompts; never a database id
     RECORD_SLOT: Final = "R"  # R1 ... in the relevance gate
     NEEDS_MAX_ITEMS: Final = 5  # what a verdict says a threat needs that nothing recorded mentions ...
@@ -193,7 +194,7 @@ class AttackerCheck(StrEnum):
     CHOSEN = "chosen"  # the gate's pick, from the threat's own list, with its reason
     BALANCED = "balanced"  # older plans only: rated as suitable as the pick, acting for fewer threats
     NONE_FITS = "none_fits"  # the gate found no listed attacker plausible: the threat is not planned
-    NOT_CHECKED = "not_checked"  # the gate gave no usable pick: the top-ranked linked actor acts
+    NOT_CHECKED = "not_checked"  # older plans only: no usable pick, the top-ranked linked actor acted
     RANKED = "ranked"  # older plans only: never judged by the gate, the ranking decided
 
 
@@ -220,7 +221,6 @@ class PlanMessage(StrEnum):
 class AnswerProblem(StrEnum):
     """Why an AI answer item breaks its contract: quoted to the AI in the re-ask."""
 
-    GAP_FILL_INCOMPLETE = "AI fallback applies=true requires threat_type, threat and attacker"
     TEXT_REQUIRED = "must not be empty"
     RULE_VERDICTS_REQUIRED = (
         'every numbered rule needs a verdict: "holds", or broken: "<the exact words of the scenario>" '

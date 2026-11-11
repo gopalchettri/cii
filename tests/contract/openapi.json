@@ -4773,13 +4773,13 @@
      },
      "tokens_in": {
       "default": 0,
-      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Input tokens: chat prompts, and embedding and rerank inputs as the gateway counts them (recorded from 2026-10-30; a local reranker records none).",
       "title": "Tokens In",
       "type": "integer"
      },
      "tokens_out": {
       "default": 0,
-      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Answer tokens of chat calls; a rerank's output tokens when its gateway names any.",
       "title": "Tokens Out",
       "type": "integer"
      },
@@ -4959,13 +4959,13 @@
      },
      "tokens_in": {
       "default": 0,
-      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Input tokens: chat prompts, and embedding and rerank inputs as the gateway counts them (recorded from 2026-10-30; a local reranker records none).",
       "title": "Tokens In",
       "type": "integer"
      },
      "tokens_out": {
       "default": 0,
-      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Answer tokens of chat calls; a rerank's output tokens when its gateway names any.",
       "title": "Tokens Out",
       "type": "integer"
      },
@@ -6369,13 +6369,13 @@
      },
      "tokens_in": {
       "default": 0,
-      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Input tokens: chat prompts, and embedding and rerank inputs as the gateway counts them (recorded from 2026-10-30; a local reranker records none).",
       "title": "Tokens In",
       "type": "integer"
      },
      "tokens_out": {
       "default": 0,
-      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Answer tokens of chat calls; a rerank's output tokens when its gateway names any.",
       "title": "Tokens Out",
       "type": "integer"
      },
@@ -6922,13 +6922,13 @@
      },
      "tokens_in": {
       "default": 0,
-      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Input tokens: chat prompts, and embedding and rerank inputs as the gateway counts them (recorded from 2026-10-30; a local reranker records none).",
       "title": "Tokens In",
       "type": "integer"
      },
      "tokens_out": {
       "default": 0,
-      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Answer tokens of chat calls; a rerank's output tokens when its gateway names any.",
       "title": "Tokens Out",
       "type": "integer"
      },
@@ -7265,13 +7265,13 @@
      },
      "tokens_in": {
       "default": 0,
-      "description": "Prompt tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Input tokens: chat prompts, and embedding and rerank inputs as the gateway counts them (recorded from 2026-10-30; a local reranker records none).",
       "title": "Tokens In",
       "type": "integer"
      },
      "tokens_out": {
       "default": 0,
-      "description": "Answer tokens of chat calls; embedding and rerank calls record none.",
+      "description": "Answer tokens of chat calls; a rerank's output tokens when its gateway names any.",
       "title": "Tokens Out",
       "type": "integer"
      },
