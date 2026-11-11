@@ -1,0 +1,13 @@
+{
+ "no_actor": {
+  "asks": 0,
+  "code": "actor_library_empty",
+  "message": "No threat type in the library links an active threat actor, so no scenario can name its attacker. Link at least one active threat actor to a threat type and start the run again."
+ },
+ "unreadable": {
+  "asks": [
+   "relevance_gate"
+  ],
+  "message": "not json"
+ }
+}

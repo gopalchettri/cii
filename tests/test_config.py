@@ -139,8 +139,8 @@ def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(
     assert all(int(value) != defaults[key] for key, value in changed.items())
     probe = (
         "import json; from app.core.constants import AiLimits as L, AiTask, CHAT_MAX_OUTPUT_TOKENS as C, "
-        "Generation as G, RerankGateLimits as R, ThreatFinding as T; from app.domain.scenario import plan; "
-        "print(json.dumps([T.AI_BATCHES_AT_ONCE, plan.GATE_BATCH_SIZE, G.WRITER_BATCH, R.RERANKS_AT_ONCE, "
+        "Generation as G, RerankGateLimits as R, ThreatFinding as T; "
+        "print(json.dumps([T.AI_BATCHES_AT_ONCE, T.THREATS_PER_QUESTION, G.WRITER_BATCH, R.RERANKS_AT_ONCE, "
         "C[AiTask.RELEVANCE_GATE], L.RATE_LIMITED_MAX_WAIT_SECONDS, L.RATE_LIMITED_TOTAL_WAIT_SECONDS, "
         "L.MODEL_COOL_DOWN_SECONDS, L.ADAPTIVE_LIMIT_FLOOR, L.ADAPTIVE_LIMIT_TTL_SECONDS, "
         "L.CALL_TOKENS_LIMIT]))"

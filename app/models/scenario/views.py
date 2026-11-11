@@ -1,6 +1,8 @@
 """What the API takes and shows for a run: its requests, status board, scenarios in TSG v1's results format
-and review bodies (data shapes only; domain/scenario/results.py builds them)."""
+and review bodies (data shapes only; domain/scenario/session.py builds them)."""
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -83,6 +85,14 @@ class StartRunRequest(BaseModel):
         if limit and len(system_ids) > limit:
             raise ValueError(SessionMessage.TOO_MANY_SYSTEMS.format(limit=limit))
         return system_ids
+
+    def fingerprint(self) -> str:
+        """Returns the SHA-256 of the request's canonical JSON (systems as a set): what a replayed key must
+        match."""
+        canonical = self.model_dump(mode="json") | {
+            "supporting_system_ids": sorted(self.supporting_system_ids)
+        }
+        return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
 
 class SessionStatus(BaseModel):

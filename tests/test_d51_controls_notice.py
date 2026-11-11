@@ -13,16 +13,14 @@ from app.core.constants import (
     AiOutage,
     Controls,
     Lease,
-    PlanCheckStatus,
-    Route,
     Status,
 )
 from app.core.exceptions import Unavailable
 from app.core.logging import current_request_id
-from app.domain.scenario.results import build_board
-from app.domain.scenario.write import written_record
+from app.domain.scenario.session import build_status_board
+from app.domain.scenario.write import build_scenario_card
 from app.models.scenario.views import session_status_from_record
-from app.models.scenario.write import PlanCheck, WrittenScenario
+from app.models.scenario.write import WrittenScenario
 from app.services.jobs.job_service import _run_job
 from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
@@ -38,11 +36,11 @@ from tests.test_scenario_writing import _READ, _brief_of, _plan_threat
 
 def test_a_written_cards_controls_keep_the_request_that_wrote_it() -> None:
     """The writer's request id is stored on the card's queued controls."""
-    written = WrittenScenario(_READ, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE, "T")
+    written = WrittenScenario(_READ, ())
     run_record = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
     path = {"path_id": "p1", "category": "Tampering", "categories": ["Tampering"], "systems": [321]}
     with bound_contextvars(request_id="req-w"):
-        record = written_record(run_record, path, _plan_threat(), _brief_of(_plan_threat()), written)
+        record = build_scenario_card(run_record, path, _plan_threat(), _brief_of(_plan_threat()), written)
     assert record["controls"]["request_id"] == "req-w"
 
 
@@ -64,7 +62,7 @@ def _shown_retrying(record_id: str) -> tuple[Any, Any]:
     listed, _ = container.get_work_control_repository().list_working_scenario_sessions(86)
     in_list = next((record for record in listed if record["_id"] == record_id), None)
     shown_in_list = _run_job(in_list).retrying if in_list else None  # listed while controls wait
-    return build_board(session_status_from_record(stored)).progress.retrying, shown_in_list
+    return build_status_board(session_status_from_record(stored)).progress.retrying, shown_in_list
 
 
 @pytest.mark.parametrize("retries", [0, Controls.MAX_MESSAGE_RETRIES])

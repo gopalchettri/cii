@@ -19,11 +19,11 @@ from app.core.exceptions import Unavailable
 from app.data_access.admin.ai_call_repository import AiCallRepository
 from app.data_access.jobs.job_repository import JobRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.write import slot_label, write_set
+from app.domain.scenario.write import write_scenario_set
 from app.models.ai.profiles import ChatModelProfile
 from tests.fakes import FakeChatModel
 from tests.test_run_actions import _deliver, _regenerate, api_key, queued  # noqa: F401 - fixtures by name
-from tests.test_scenario_writing import _CONSISTENT, _brief_of, _plan_threat
+from tests.test_scenario_writing import _brief_of, _plan_threat
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
     _answer_for,
     _deliver_until_done,
@@ -55,12 +55,10 @@ def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(
     answers = FakeChatModel()  # works each answer out from its prompt
     answers.queue(AiTask.WRITE_SCENARIO, {"scenario_title": "x"})  # SC1 unreadable: the second round runs
     answers.responders[AiTask.WRITE_SCENARIO] = _answer_for
-    answers.responders[AiTask.PLAN_CHECK] = lambda _: _CONSISTENT
 
     def complete(**request: Any) -> SimpleNamespace:
         user = request["messages"][1]["content"]
-        task = AiTask.PLAN_CHECK if "\nPLAN:\n" in user else AiTask.WRITE_SCENARIO
-        task = AiTask.REPAIR_SCENARIO if "REJECTED:" in user else task
+        task = AiTask.REPAIR_SCENARIO if "REJECTED:" in user else AiTask.WRITE_SCENARIO
         reply = SimpleNamespace(message=SimpleNamespace(content=json.dumps(answers._answer(task, user))))
         return SimpleNamespace(choices=[reply], usage=None)
 
@@ -68,19 +66,14 @@ def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(
     calls = AiCallRepository(get_mongodb()["test_ai_calls"])
     model = ai.ChatModel([("test-chat", _ROOMY_CHAT)], "http://ai.invalid", "key", calls)
     threats = [_plan_threat(), _plan_threat(key="lib:298", name="Historian wipe")]
-    briefs = [(slot_label(place), _brief_of(threat)) for place, threat in enumerate(threats, start=1)]
+    briefs = [(f"SC{place}", _brief_of(threat)) for place, threat in enumerate(threats, start=1)]
     job = {"record_id": uuid.uuid4().hex, "epoch": 1, "task": TaskName.WRITE_SCENARIOS}
     with structlog.contextvars.bound_contextvars(**job, task_id="first"):
-        first = list(write_set(model, briefs))
+        first = list(write_scenario_set(model, briefs))
     asked = len(answers.calls)
     with structlog.contextvars.bound_contextvars(**job, task_id="resent"):
-        again = list(write_set(model, briefs))
-    assert [task for task, _ in answers.calls] == [
-        AiTask.WRITE_SCENARIO,
-        AiTask.PLAN_CHECK,
-        AiTask.REPAIR_SCENARIO,
-        AiTask.PLAN_CHECK,
-    ]
+        again = list(write_scenario_set(model, briefs))
+    assert [task for task, _ in answers.calls] == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO]
     assert len(answers.calls) == asked and again == first and len(first) == 2
 
 

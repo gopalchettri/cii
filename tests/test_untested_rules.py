@@ -1,5 +1,5 @@
-"""Rules no other test held: the reviewer's impact mismatch, made-up labels and advisory ids in every served
-text, the evidence threshold's edge, what another run's register offers the duplicate check, hand-written
+"""Rules no other test held: made-up labels and advisory ids in every served text, the evidence threshold's
+edge, what another run's register offers the duplicate check, hand-written
 targets, asked-slot answers, a scenario read through another run, a regenerate's outage on its last try."""
 
 # ruff: noqa: F811 — the fixtures imported by name are the test parameters of the same name
@@ -26,7 +26,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import Unavailable
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import check_exact_rules, scenario_id
+from app.domain.scenario.write import _apply_safety_checks, build_scenario_id
 from app.domain.shared.ask_ai import answers_for_asked_slots
 from tests.external_intelligence.evidence.test_evidence_finder import finder_of, one, refs
 from tests.external_intelligence.evidence_fakes import ScoredBy, request_of, technique_doc
@@ -39,18 +39,11 @@ from tests.test_run_actions import (  # noqa: F401 — api_key and queued are fi
     api_key,
     queued,
 )
-from tests.test_scenario_writing import _CLEAN, _brief_of, _plan_checked, _plan_threat, _stored
+from tests.test_scenario_writing import _CLEAN, _brief_of, _plan_threat, _stored
 from tests.test_writing_job import _write_batch, chat, sent  # noqa: F401 — fixtures by name
 
 _MADE_UP = "THR7 GHSA-4f8r-qwrm-9x2c MS17-010 VU#123456 ICSMA-23-334-01"
 _ADVISORIES = ("GHSA-4f8r-qwrm-9x2c", "MS17-010", "VU#123456", "ICSMA-23-334-01")
-
-
-def test_a_risk_of_another_impact_is_a_mismatch_that_names_the_impact() -> None:
-    """same_impact false alone is the reviewer's blocker, and its message says the impact changed."""
-    check, notes = _plan_checked({"rules": {"1": "holds"}, "same_threat": True, "same_impact": False})
-    assert [note.code for note in notes] == [FindingCode.SCENARIO_MISMATCH] and not check.same_impact
-    assert "the plan's impact:" in notes[0].message
 
 
 @pytest.mark.parametrize(
@@ -64,7 +57,7 @@ def test_a_risk_of_another_impact_is_a_mismatch_that_names_the_impact() -> None:
 )
 def test_a_made_up_label_or_advisory_id_is_caught_in_every_served_text(where: dict[str, Any]) -> None:
     """THR<n> and GHSA, MS bulletin, CERT/CC VU# and ICS medical advisory ids the brief never gave."""
-    findings = check_exact_rules(dataclasses.replace(_CLEAN, **where), _brief_of(_plan_threat()))
+    findings = _apply_safety_checks(_brief_of(_plan_threat()), dataclasses.replace(_CLEAN, **where)).findings
     assert [finding.code for finding in findings] == [FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID]
     assert "THR7" in findings[0].message
     assert all(advisory in findings[1].message for advisory in _ADVISORIES)
@@ -107,7 +100,7 @@ def test_regenerate_refuses_a_hand_written_scenario(
 ) -> None:
     """A person wrote it: there is no plan path to write it again, so nothing is queued."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     _scenarios().update_one({"_id": first}, {"$set": {"source": RunKind.MANUAL}})
     answer = _regenerate(client, api_key, record_id, [first])
     assert (answer.status_code, answer.json()["reason"]) == (409, ConflictReason.SCENARIOS_NOT_REGENERABLE)
@@ -120,9 +113,9 @@ def test_a_scenario_of_another_run_of_the_same_entity_is_not_found_through_this_
     client: TestClient, api_key: str
 ) -> None:
     mine, theirs = _written_run(["Threat 1"]), _written_run(["Threat 1"])
-    url = f"/v1/sessions/{mine}/scenarios/{scenario_id(theirs, 'p1', 1)}"
+    url = f"/v1/sessions/{mine}/scenarios/{build_scenario_id(theirs, 'p1', 1)}"
     assert client.get(url, headers=_identity(api_key)).status_code == 404
-    own = f"/v1/sessions/{mine}/scenarios/{scenario_id(mine, 'p1', 1)}"
+    own = f"/v1/sessions/{mine}/scenarios/{build_scenario_id(mine, 'p1', 1)}"
     assert client.get(own, headers=_identity(api_key)).status_code == 200
 
 
@@ -132,7 +125,7 @@ def test_a_regenerate_the_ai_is_down_for_on_its_last_try_keeps_the_old_version_a
 ) -> None:
     """The outage is that path's own: the old version stays current with the reason, nothing is raised."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
 
     def down(_: str) -> dict[str, Any]:
         raise Unavailable("down")

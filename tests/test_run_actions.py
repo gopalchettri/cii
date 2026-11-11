@@ -40,13 +40,13 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import LeaseLost, NotFound, Unavailable
+from app.core.exceptions import Conflict, LeaseLost, NotFound, Unavailable
 from app.data_access.jobs.job_repository import (
     JobRepository,
     failed_job_fields,
 )
-from app.domain.scenario.review import regenerate_batch, why_ids_cannot_be_regenerated
-from app.domain.scenario.write import scenario_id
+from app.domain.scenario.session import build_regenerate_batch
+from app.domain.scenario.write import build_scenario_id
 from app.models.admin.api_clients import Principal
 from app.models.scenario.views import ScenarioIdsRequest, SessionStatus, session_status_from_record
 from app.worker.scenario import path_writing
@@ -306,7 +306,7 @@ def test_a_regenerate_runs_while_another_run_of_the_asset_generates(
     other_run = {"_id": uuid.uuid4().hex, "entity_id": 86, "asset_id": asset_id, "status": Status.RUNNING}
     other_run["active"] = True  # still flagged active, as runs saved before this change are
     _sessions().insert_one(other_run)
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     other_entity = _identity(api_key, 87)
     url = f"/v1/sessions/{record_id}/regenerate/scenarios"
     assert client.post(url, json={"scenario_ids": [first]}, headers=other_entity).status_code == 403
@@ -340,7 +340,7 @@ def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
     """T-SCN-24: 202 {epoch 2}; the job writes version 2 (pending, `replaces` v1, never shown v1's text),
     then supersedes v1, which stays accepted; the path is served by v2; the run ends complete."""
     record_id = _written_run(["Threat 1", "Threat 2"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     _scenarios().update_one({"_id": first}, {"$set": {"decision": Decision.ACCEPTED}})
     answer = _regenerate(client, api_key, record_id, [first])
     started = {"session_id": record_id, "user_id": None, "status": ActionStatus.REGENERATING, "epoch": 2}
@@ -348,7 +348,7 @@ def test_regenerate_writes_the_next_version_and_an_accepted_one_stays_accepted(
     assert _sessions().find_one({"_id": record_id})["job"]["batch"] == [{"path_id": "p1", "replaces": first}]
     calls_before = len(fake_chat.calls)
     assert _deliver(record_id, 2) == 1
-    second = _scenarios().find_one({"_id": scenario_id(record_id, "p1", 2)})
+    second = _scenarios().find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert (second["version"], second["replaces"], second["decision"]) == (2, first, Decision.PENDING)
     old = _scenarios().find_one({"_id": first})
     assert (old["superseded_by"], old["decision"]) == (second["_id"], Decision.ACCEPTED)
@@ -381,7 +381,7 @@ def test_a_failed_regenerate_keeps_the_version_current_with_its_reason(
     """T-SCN-25 (R-8): unreadable twice → no new version; v1 stays current with regenerate_error; the path's
     attempts do not change; the run ends partial. A later successful regenerate clears the reason."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     writes = fake_chat.responders[AiTask.WRITE_SCENARIO]
     fake_chat.responders[AiTask.WRITE_SCENARIO] = lambda prompt: {"scenario_title": "x"}
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
@@ -410,7 +410,7 @@ def test_a_regenerate_the_ai_timed_out_on_keeps_the_version_and_names_the_outage
 ) -> None:
     """Owner 2026-10-20: the kept version's regenerate_error says which AI outage it was, with its reason."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
 
     def timed_out(_prompt: str) -> dict[str, Any]:
         raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT], reason=AiOutage.TIMED_OUT)
@@ -434,13 +434,13 @@ def test_a_regenerated_copy_of_another_path_is_kept_hidden_and_the_old_version_s
     kept hidden, naming it, and the version it would replace stays current with why. Before, it was served.
     G268: the log line names the blockers too, the one trace left once a later regenerate succeeds."""
     record_id = _written_run(["Threat 1", "Threat 2"])
-    first, other = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
+    first, other = build_scenario_id(record_id, "p1", 1), build_scenario_id(record_id, "p2", 1)
     copied = {"scenario_statement": _scenarios().find_one({"_id": other})["content"]["statement"]}
     fake_chat.responders[AiTask.WRITE_SCENARIO] = lambda prompt: _answer_for(prompt) | copied
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
     with capture_logs() as logs:
         _deliver(record_id, 2)
-    new = _scenarios().find_one({"_id": scenario_id(record_id, "p1", 2)})
+    new = _scenarios().find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert new["status"] == ScenarioStatus.BLOCKED
     assert (
         new["findings"][-1]["code"] == FindingCode.NEAR_DUPLICATE and other in new["findings"][-1]["message"]
@@ -462,9 +462,9 @@ def test_ten_generations_keep_one_current_version_and_every_older_one_in_its_his
     change nothing, and the next try goes on from the current version."""
     record_id = _written_run(["Threat 1", "Threat 2"])
     writes = fake_chat.responders[AiTask.WRITE_SCENARIO]
-    other = _scenarios().find_one({"_id": scenario_id(record_id, "p2", 1)})
+    other = _scenarios().find_one({"_id": build_scenario_id(record_id, "p2", 1)})
     copied = {"scenario_statement": other["content"]["statement"]}
-    current, epoch = scenario_id(record_id, "p1", 1), 1
+    current, epoch = build_scenario_id(record_id, "p1", 1), 1
 
     def versions() -> list[dict[str, Any]]:
         return list(_scenarios().find({"session_id": record_id, "path_id": "p1"}).sort("version", 1))
@@ -495,10 +495,10 @@ def test_ten_generations_keep_one_current_version_and_every_older_one_in_its_his
             )
             assert kept() == before
             assert _scenarios().find_one({"_id": current})["regenerate_error"] is not None
-            refused = _scenarios().find_one({"_id": scenario_id(record_id, "p1", version)})
+            refused = _scenarios().find_one({"_id": build_scenario_id(record_id, "p1", version)})
             assert (refused or {}).get("status") == (ScenarioStatus.BLOCKED if version == 4 else None)
         regenerate(writes)
-        new = _scenarios().find_one({"_id": scenario_id(record_id, "p1", version)})
+        new = _scenarios().find_one({"_id": build_scenario_id(record_id, "p1", version)})
         assert (new["status"], new["replaces"], new["superseded_by"]) == (ScenarioStatus.DONE, current, None)
         assert _scenarios().find_one({"_id": current})["superseded_by"] == new["_id"]
         assert [doc for doc, after in kept() if after is None] == [new["_id"]]  # one current version
@@ -529,19 +529,19 @@ def test_a_copy_of_another_paths_accepted_older_version_is_kept_hidden(
     library or database"): an accepted version stays in the register once its path is regenerated, so another
     path's new version may not copy it. Before, the run's own list held each path's newest version only."""
     record_id = _written_run(["Threat 1", "Threat 2"])
-    first, other = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
+    first, other = build_scenario_id(record_id, "p1", 1), build_scenario_id(record_id, "p2", 1)
     accepted = _scenarios().find_one({"_id": first})["content"]["statement"]
     _scenarios().update_one({"_id": first}, {"$set": {"decision": Decision.ACCEPTED}})
     reworded = {"scenario_statement": accepted.replace("tamper with", "disrupt")}
     fake_chat.responders[AiTask.WRITE_SCENARIO] = lambda prompt: _answer_for(prompt) | reworded
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
     _deliver(record_id, 2)  # p1's version 2, in other words; version 1 stays accepted
-    assert _scenarios().find_one({"_id": first})["superseded_by"] == scenario_id(record_id, "p1", 2)
+    assert _scenarios().find_one({"_id": first})["superseded_by"] == build_scenario_id(record_id, "p1", 2)
     copied = {"scenario_statement": accepted}
     fake_chat.responders[AiTask.WRITE_SCENARIO] = lambda prompt: _answer_for(prompt) | copied
     assert _regenerate(client, api_key, record_id, [other]).status_code == 202
     _deliver(record_id, 3)
-    new = _scenarios().find_one({"_id": scenario_id(record_id, "p2", 2)})
+    new = _scenarios().find_one({"_id": build_scenario_id(record_id, "p2", 2)})
     assert new["status"] == ScenarioStatus.BLOCKED and first in new["findings"][-1]["message"]
 
 
@@ -557,7 +557,7 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
     no copy for taking its words. Before, the delivery's list kept it, and that target was blocked. The set
     saves in slot order, so p2 is checked once p1's version 1 is replaced."""
     record_id = _written_run(["Threat 1", "Threat 2"])
-    first, other = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
+    first, other = build_scenario_id(record_id, "p1", 1), build_scenario_id(record_id, "p2", 1)
     replaced = _scenarios().find_one({"_id": first})["content"]["statement"]
     superseded: list[str] = []
     supersede = path_writing.supersede_scenario_version
@@ -575,7 +575,9 @@ def test_a_target_may_take_the_words_of_a_pending_version_the_delivery_just_repl
     fake_chat.responders[AiTask.WRITE_SCENARIO] = answer
     assert _regenerate(client, api_key, record_id, [first, other]).status_code == 202
     _deliver(record_id, 2)
-    assert _scenarios().find_one({"_id": scenario_id(record_id, "p2", 2)})["status"] == ScenarioStatus.DONE
+    assert (
+        _scenarios().find_one({"_id": build_scenario_id(record_id, "p2", 2)})["status"] == ScenarioStatus.DONE
+    )
     assert superseded == [first, other]
 
 
@@ -586,9 +588,12 @@ def test_a_crash_between_the_two_writes_is_healed_without_an_ai_call(
     """T-SCN-26 (R-8): version 2 saved, version 1 not yet superseded when the worker died: the retry only
     supersedes v1 and serves v2."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
-    saved = _scenarios().find_one({"_id": first}) | {"_id": scenario_id(record_id, "p1", 2), "version": 2}
+    saved = _scenarios().find_one({"_id": first}) | {
+        "_id": build_scenario_id(record_id, "p1", 2),
+        "version": 2,
+    }
     _scenarios().insert_one(saved | {"replaces": first, "title_key": "another title"})
     calls_before = len(fake_chat.calls)
     _deliver(record_id, 2)
@@ -606,7 +611,7 @@ def test_regenerate_names_every_id_it_cannot_take(
     """T-SCN-27: unknown, a failure card naming no AI outage, an older version → one 409 with every id;
     nothing queued; while a job runs → 409 generation_in_progress."""
     record_id = _written_run(["Threat 1", "Threat 2"])
-    first, second = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p2", 1)
+    first, second = build_scenario_id(record_id, "p1", 1), build_scenario_id(record_id, "p2", 1)
     newer = _scenarios().find_one({"_id": second}) | {"_id": "newer", "version": 2, "title_key": "newer"}
     _scenarios().update_one({"_id": second}, {"$set": {"superseded_by": "newer"}})
     _scenarios().insert_one(newer)
@@ -631,8 +636,9 @@ def test_regenerate_refuses_two_versions_of_one_path() -> None:
         "v1": {"path_id": "p1", "status": ScenarioStatus.DONE, "superseded_by": None},
         "v2": {"path_id": "p1", "status": ScenarioStatus.DONE, "superseded_by": None},
     }
-    errors = why_ids_cannot_be_regenerated(["v1", "v2"], targets)
-    assert [error["reason"] for error in errors] == [TargetProblem.DUPLICATE_VERSION] * 2
+    with pytest.raises(Conflict) as refused:
+        build_regenerate_batch(["v1", "v2"], targets)
+    assert [error["reason"] for error in refused.value.errors or []] == [TargetProblem.DUPLICATE_VERSION] * 2
 
 
 def test_regenerate_takes_an_ai_outage_card_and_writes_it_in_place() -> None:
@@ -644,12 +650,13 @@ def test_regenerate_takes_an_ai_outage_card_and_writes_it_in_place() -> None:
         "no_reason": card | {"path_id": "p2", "failure": {"code": ErrorCode.UNAVAILABLE}},
         "unreadable": card | {"path_id": "p3", "failure": {"code": ErrorCode.GENERATION_FAILED}},
     }
-    errors = why_ids_cannot_be_regenerated(list(targets), targets)
-    assert {error["scenario_id"]: error["reason"] for error in errors} == {
+    with pytest.raises(Conflict) as refused:
+        build_regenerate_batch(list(targets), targets)
+    assert {error["scenario_id"]: error["reason"] for error in refused.value.errors or []} == {
         "no_reason": TargetProblem.FAILURE_SCENARIO,
         "unreadable": TargetProblem.FAILURE_SCENARIO,
     }
-    assert regenerate_batch(["busy"], targets) == [{"path_id": "p1", "replaces": None}]
+    assert build_regenerate_batch(["busy"], targets) == [{"path_id": "p1", "replaces": None}]
 
 
 def test_a_failed_job_never_leaves_the_run_reading_running() -> None:
@@ -704,9 +711,9 @@ def test_a_crash_after_superseding_is_healed_whole(
     """G147: version 2 saved and version 1 superseded, then the worker died before the path's fenced write:
     the retry serves the path by v2, refreshes the counts and sends the controls message, with no AI call."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
-    second = scenario_id(record_id, "p1", 2)
+    second = build_scenario_id(record_id, "p1", 2)
     saved = _scenarios().find_one({"_id": first}) | {"_id": second, "version": 2, "title_key": "v2"}
     _scenarios().insert_one(saved | {"replaces": first, "controls": {"status": Status.QUEUED}})
     _scenarios().update_one({"_id": first}, {"$set": {"superseded_by": second}})
@@ -724,7 +731,7 @@ def test_a_new_version_that_comes_back_after_its_run_was_cancelled_is_never_save
 ) -> None:
     """G214 review: as for the first writing, a regenerate checks it still owns the run before it saves."""
     record_id = _written_run(["Threat 1"])
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     assert _regenerate(client, api_key, record_id, [first]).status_code == 202
 
     def cancelled_meanwhile(user_prompt: str) -> dict[str, Any]:
@@ -734,7 +741,7 @@ def test_a_new_version_that_comes_back_after_its_run_was_cancelled_is_never_save
     fake_chat.responders[AiTask.WRITE_SCENARIO] = cancelled_meanwhile
     with pytest.raises(LeaseLost):
         _deliver(record_id, 2)
-    assert _scenarios().find_one({"_id": scenario_id(record_id, "p1", 2)}) is None
+    assert _scenarios().find_one({"_id": build_scenario_id(record_id, "p1", 2)}) is None
     assert _scenarios().find_one({"_id": first})["superseded_by"] is None
 
 

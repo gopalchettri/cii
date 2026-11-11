@@ -3,12 +3,11 @@ technology nobody recorded is not relevant; and a scenario is written on its own
 
 import dataclasses
 
-from app.core.constants import ContextProperties, PlanCheckStatus, Route, StrideCategory, ThreatFinding
-from app.domain.scenario.controls import control_query
-from app.domain.scenario.plan import describe_asset_for_ai, gap_fill_prompt, relevance_gate_prompt
-from app.domain.scenario.write import brief_entry_point_options, build_brief, written_record
-from app.models.scenario.write import PlanCheck, WrittenScenario
-from tests.planner_samples import CONTEXT
+from app.core.constants import ContextProperties, StrideCategory, ThreatFinding
+from app.domain.scenario.plan import describe_asset_for_ai
+from app.domain.scenario.write import build_control_query, build_scenario_card, build_writer_input
+from app.models.scenario.write import WrittenScenario
+from tests.planner_samples import CONTEXT, gap_fill_prompt, gate_prompt
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
 
 _ORGANISATION_TEXT = "DEWA runs AI-driven customer service, ERP and billing platforms"
@@ -21,11 +20,11 @@ def test_no_other_step_reads_the_organisations_facts_as_the_assets() -> None:
     """Neither the writer's brief nor the control search takes them as the asset's."""
     threat = _plan_threat()
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321]}
-    brief = build_brief({threat["key"]: threat}, path, _WITH_ORGANISATION, 30_000, _LIVE)
+    brief = build_writer_input({threat["key"]: threat}, path, _WITH_ORGANISATION, 30_000, _LIVE)
     assert brief.asset[ContextProperties.ORGANISATION_BRIEF_KEY] == _ORGANISATION_TEXT
     assert "entity_technology_context" not in brief.asset  # never an asset fact
     content = {"statement": "s", "risk_statement": "r", "systems": [{"id": 321}]}
-    assert "billing" not in control_query(content, _WITH_ORGANISATION, [_WITH_ORGANISATION.systems[0]]).text
+    assert "billing" not in build_control_query(content, _WITH_ORGANISATION).text
 
 
 def test_why_it_applies_never_names_a_system_this_scenario_is_not_on() -> None:
@@ -34,9 +33,13 @@ def test_why_it_applies_never_names_a_system_this_scenario_is_not_on() -> None:
     threat = _plan_threat(systems=(321, 322), reason="It reaches the SCADA server and the Historian.")
     on_scada = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321]}
     on_asset = on_scada | {"path_id": "p2", "systems": []}
-    reason = build_brief({threat["key"]: threat}, on_scada, CONTEXT, 30_000, _LIVE).why_it_applies
+    reason = build_writer_input({threat["key"]: threat}, on_scada, CONTEXT, 30_000, _LIVE).facts["threat"][
+        "why_it_applies"
+    ]
     assert reason == "It reaches the SCADA server."
-    reason = build_brief({threat["key"]: threat}, on_asset, CONTEXT, 30_000, _LIVE).why_it_applies
+    reason = build_writer_input({threat["key"]: threat}, on_asset, CONTEXT, 30_000, _LIVE).facts["threat"][
+        "why_it_applies"
+    ]
     assert reason == "It reaches another supporting system."
 
 
@@ -58,8 +61,8 @@ def test_the_organisations_facts_are_a_background_line_never_the_assets() -> Non
 def test_the_relevance_and_gap_fill_rules_never_assume_a_technology_or_borrow_the_organisations() -> None:
     """Both prompts that decide what applies say a technology nobody recorded is never assumed and the
     organisation's facts are background; an unknown fact may only be a missing detail."""
-    gate = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
-    gap = gap_fill_prompt("LANDSCAPE", [(StrideCategory.TAMPERING, 3, ())])[1]
+    gate = gate_prompt([{"slot": "R1"}])
+    gap = gap_fill_prompt([StrideCategory.TAMPERING])
     for prompt in (gate, gap):
         assert "it may never assume that a technology, component or device exists" in prompt
         assert "an engineering workstation, a jump server, a wireless or radio link" in prompt
@@ -74,13 +77,13 @@ def test_a_scenario_is_written_on_its_paths_system_only() -> None:
     lists the other as never part of this scenario."""
     threat = _plan_threat(systems=(321, 322))
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321]}
-    brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
+    brief = build_writer_input({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
     assert [system["name"] for system in brief.systems] == ["SCADA server"]
-    assert brief.other_systems == ("Historian",)
-    draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
-    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE)
+    assert [system.name for system in brief.supporting_systems if not system.applicable] == ["Historian"]
+    draft = dataclasses.replace(_CLEAN, entry_point=brief.entry_options[0])
+    written = WrittenScenario(draft, ())
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
-    card = written_record(run, path, threat, brief, written)["content"]["systems"]
+    card = build_scenario_card(run, path, threat, brief, written)["content"]["systems"]
     assert card == [{"id": 321, "name": "SCADA server", "entry_point": True}]  # never the Historian
 
 
@@ -88,7 +91,7 @@ def test_a_system_listed_beside_others_leaves_with_its_joiner() -> None:
     """No placeholder in a list; one standing alone keeps it."""
     from types import SimpleNamespace
 
-    from app.domain.scenario.write import _reason_on_path
+    from app.domain.scenario.write import _remove_other_system_names_from_reason
 
     systems = [
         {"id": n, "name": name} for n, name in ((1, "Alpha Platform"), (2, "Beta System"), (3, "Gamma Hub"))
@@ -109,4 +112,4 @@ def test_a_system_listed_beside_others_leaves_with_its_joiner() -> None:
         ),
     }
     for reason, (expected, route) in cases.items():
-        assert _reason_on_path(reason, {"systems": route}, context) == expected  # type: ignore[arg-type]
+        assert _remove_other_system_names_from_reason(reason, {"systems": route}, context) == expected  # type: ignore[arg-type]

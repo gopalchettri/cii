@@ -17,9 +17,9 @@ from app.core.constants import (
 from app.core.exceptions import Unavailable
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import RerankGate
-from app.domain.scenario.write import evidence_problem
 from app.search.external_intelligence.corpus_builder import build_corpus
 from app.search.external_intelligence.evidence_index import EMPTY_SNAPSHOT_ID, build_index, empty_index
+from app.worker.scenario.write_job import find_evidence_outage
 from tests.external_intelligence.evidence_fakes import (
     ALL_SOURCES,
     ScoredBy,
@@ -189,7 +189,7 @@ def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:
     result, summary = one(finder, request_of())
     assert result.evidence == () and result.search.snapshot_id is None and result.search.considered == ()
     assert (summary.snapshot_id, summary.threats_searched, summary.source_versions) == (None, 0, {})
-    assert isinstance(evidence_problem({"intel_search": result.search.as_doc()}), Unavailable)  # it waits
+    assert isinstance(find_evidence_outage({"intel_search": result.search.as_doc()}), Unavailable)  # it waits
     full, embeddings = finder_of([technique_doc("T1")])
     results, summary = full.find_evidence([], approved=ALL_SOURCES)
     assert results == [] and summary.snapshot_id is None and "query" not in embeddings.calls
@@ -202,7 +202,7 @@ def test_a_first_index_build_the_ai_stopped_holds_the_paths_back_as_that_outage(
     finder = EvidenceFinder(lambda: waiting, 1.0, gate=RerankGate(1), candidates=6, kept_per_threat=3)
     result, _ = one(finder, request_of())
     assert result.search.snapshot_id is None and result.search.outage == AiOutage.DOWN
-    problem = evidence_problem({"intel_search": result.search.as_doc()})
+    problem = find_evidence_outage({"intel_search": result.search.as_doc()})
     assert problem is not None and (problem.reason, problem.detail) == (
         AiOutage.DOWN,
         AI_OUTAGE_MESSAGES[AiOutage.DOWN],
@@ -217,7 +217,7 @@ def test_a_settled_empty_index_finds_no_evidence_and_is_no_outage() -> None:
     )
     search = result.search
     assert (result.evidence, search.snapshot_id, search.failure) == ((), EMPTY_SNAPSHOT_ID, None)
-    assert evidence_problem({"intel_search": search.as_doc(), "evidence": []}) is None
+    assert find_evidence_outage({"intel_search": search.as_doc(), "evidence": []}) is None
 
 
 def test_an_embedding_outage_leaves_every_request_without_evidence_and_says_why() -> None:
@@ -259,7 +259,7 @@ def test_an_ai_outage_in_the_search_tells_which_and_the_held_path_says_so() -> N
         [request_of(), request_of("Threat: phishing ransomware")], approved=ALL_SOURCES
     )[0]
     assert lost.search.outage == AiOutage.TIMED_OUT and "outage" not in found.search.as_doc()
-    problem = evidence_problem({"intel_search": lost.search.as_doc()})
+    problem = find_evidence_outage({"intel_search": lost.search.as_doc()})
     assert problem is not None
     assert (problem.reason, problem.detail) == (AiOutage.TIMED_OUT, AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT])
 

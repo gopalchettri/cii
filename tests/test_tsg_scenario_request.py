@@ -16,7 +16,7 @@ from app.ai.chat_messages import build_conversation, prompt_hash
 from app.core.config import get_settings
 from app.core.constants import CHAT_MAX_OUTPUT_TOKENS, THINKING_OFF_TEMPLATE_KWARGS, AiTask
 from app.domain.scenario.plan import _PLANNER_SYSTEM
-from app.domain.scenario.write import writer_system_prompt
+from app.domain.scenario.write import build_writer_system_prompt
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
@@ -97,7 +97,7 @@ def test_the_biggest_first_ask_is_rebuilt_as_tsg_sent_it(monkeypatch, tmp_path, 
     body, asked = _run(
         monkeypatch,
         tmp_path,
-        _call(AiTask.WRITE_SCENARIO, 9_000, writer_system_prompt()),
+        _call(AiTask.WRITE_SCENARIO, 9_000, build_writer_system_prompt()),
         _call(AiTask.RELEVANCE_GATE, 5_000, _PLANNER_SYSTEM),
         _call(AiTask.RELEVANCE_GATE, 20_000, _PLANNER_SYSTEM, reask=True),
         _call(AiTask.RELEVANCE_GATE, 30_000, _PLANNER_SYSTEM, model="litellm_proxy/glm-5.3"),

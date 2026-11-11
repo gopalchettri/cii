@@ -25,12 +25,11 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict
-from app.domain.scenario.plan import why_no_path_left
-from app.domain.scenario.review import decided_stamp
+from app.domain.scenario.session import find_why_no_path_left
 from app.models.admin.api_clients import Principal
 from app.models.library.library import LibraryThreat, ThreatLibrary
 from app.models.scenario.views import AcceptRequest, ScenarioIdsRequest, session_status_from_record
-from app.services.scenario.threat_scenario_service import ThreatScenarioService
+from app.services.scenario.threat_scenario_service import ThreatScenarioService, _new_decided_stamp
 from tests.service_builders import threat_scenario_service
 
 #: Library threat 1 is live; 99 was retired after its scenario was written.
@@ -355,16 +354,16 @@ def test_why_no_path_is_left_to_write() -> None:
     written = {"selected": True, "served": "s", "abandoned": False}
     left_out = {"selected": False, "served": None, "abandoned": False}
     abandoned = {"selected": True, "served": None, "abandoned": True}
-    assert why_no_path_left([written]) == ConflictReason.NOTHING_LEFT
-    assert why_no_path_left([written, left_out]) == ConflictReason.TARGET_REACHED
-    assert why_no_path_left([written, left_out, abandoned]) == ConflictReason.SCENARIOS_ABANDONED
+    assert find_why_no_path_left([written]) == ConflictReason.NOTHING_LEFT
+    assert find_why_no_path_left([written, left_out]) == ConflictReason.TARGET_REACHED
+    assert find_why_no_path_left([written, left_out, abandoned]) == ConflictReason.SCENARIOS_ABANDONED
     replaced = {
         "selected": False,
         "served": None,
         "abandoned": True,
         "unselected_reason": "replaced_after_failure",
     }
-    assert why_no_path_left([written, replaced]) == ConflictReason.NOTHING_LEFT  # a spare, not the count
+    assert find_why_no_path_left([written, replaced]) == ConflictReason.NOTHING_LEFT  # a spare, not the count
 
 
 def test_a_store_failure_after_the_decision_never_loses_its_audit_and_a_repeat_heals_the_counts(
@@ -404,7 +403,7 @@ def test_one_refused_id_never_leaves_the_others_untried() -> None:
     refused = _scenario(record_id, "p1")
     _scenario(record_id, "p1", decision=Decision.ACCEPTED, version=2)
     others = [_scenario(record_id, f"p{number}") for number in range(2, 6)]
-    stamp = decided_stamp(Principal("client", "u1", 86, "DESC"), datetime.now(UTC), uuid.uuid4().hex)
+    stamp = _new_decided_stamp(Principal("client", "u1", 86, "DESC"))
     ids = [refused, *others]
     scenarios = container.get_threat_scenario_repository()
     changed = scenarios.update_scenario_decisions(ids, Decision.PENDING, Decision.ACCEPTED, stamp)

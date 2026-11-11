@@ -29,7 +29,7 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import LeaseLost, Unavailable
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import scenario_id
+from app.domain.scenario.write import build_scenario_id
 from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import SNAPSHOT, TECHNIQUE, FakeFinder
@@ -206,18 +206,18 @@ def _start_regenerate(record_id: str, first: str) -> None:
 def test_a_regenerate_searches_again(intel: Intel) -> None:
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1 and len(intel.finder.calls) == 1
-    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
+    _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
     assert len(intel.finder.calls) == 2
-    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
+    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert new["content"]["evidence"] != [] and new["content"]["intel_search"]["query"]
     assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
 
 
 def _written_without_evidence(record_id: str) -> dict[str, Any]:
     """The regenerate's new version, checked to be written without evidence, its old one superseded."""
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     scenarios = get_mongodb()[Collection.SCENARIOS]
-    new = scenarios.find_one({"_id": scenario_id(record_id, "p1", 2)})
+    new = scenarios.find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert scenarios.find_one({"_id": first})["superseded_by"] == new["_id"]
     assert new["status"] == ScenarioStatus.DONE
     assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER
@@ -234,7 +234,7 @@ def test_a_regenerate_of_a_story_whose_threat_has_no_evidence_is_written_without
     assert _deliver_until_done(record_id) == 1
     intel.finder.evidence = ()
     writes = len(story_chat.asked(AiTask.WRITE_SCENARIO))
-    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
+    _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
     _written_without_evidence(record_id)
     assert len(story_chat.asked(AiTask.WRITE_SCENARIO)) == writes + 1
 
@@ -245,11 +245,11 @@ def test_a_regenerate_is_written_in_the_style_of_its_own_delivery(intel: Intel) 
     intel.switch.enabled = False  # the first version: the original writer
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
-    first = scenario_id(record_id, "p1", 1)
+    first = build_scenario_id(record_id, "p1", 1)
     assert "evidence_mode" not in get_mongodb()[Collection.SCENARIOS].find_one({"_id": first})["content"]
     intel.switch.enabled = True
     _start_regenerate(record_id, first)
-    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
+    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
     assert new["content"]["evidence_mode"] == EvidenceMode.SOURCE_DOCUMENTED and len(intel.finder.calls) == 1
 
@@ -260,8 +260,8 @@ def test_a_regenerate_while_off_writes_a_story_again_as_the_original_writer(inte
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1  # a story: written while on
     intel.switch.enabled = False
-    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
-    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
+    _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
+    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert new["content"]["prompt_version"] == PromptVersion.SCENARIO_WRITER
     assert "evidence_mode" not in new["content"]
 
@@ -280,9 +280,9 @@ def test_the_evidence_an_older_plan_kept_is_never_cited_again(
     _sessions().update_one({"_id": record_id}, {"$set": kept})
     monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
     intel.finder.evidence = (replace(TECHNIQUE, source=IntelSource.ATTACK_ENTERPRISE),)
-    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
+    _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
     assert len(intel.finder.calls) == 2  # searched again, on the index rebuilt without it
-    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
+    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert {e["source"] for e in new["content"]["evidence"]} == {IntelSource.ATTACK_ENTERPRISE}
     assert new["content"]["intel_search"]["snapshot_id"] == SNAPSHOT
 
@@ -298,8 +298,8 @@ def test_a_search_on_an_index_not_yet_rebuilt_never_cites_the_revoked_source(
     monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
     enterprise = replace(TECHNIQUE, ref="T1195", source=IntelSource.ATTACK_ENTERPRISE)
     intel.finder.evidence = (TECHNIQUE, enterprise)
-    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
-    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id(record_id, "p1", 2)})
+    _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
+    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert {e["source"] for e in new["content"]["evidence"]} == {IntelSource.ATTACK_ENTERPRISE}
 
 
@@ -311,10 +311,10 @@ def test_a_regenerate_of_a_story_while_the_switch_cannot_be_read_waits_for_it(in
     assert _deliver_until_done(record_id) == 1  # a story: written while on
     intel.switch.known = False
     with pytest.raises(Unavailable):
-        _start_regenerate(record_id, scenario_id(record_id, "p1", 1))
+        _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
     scenarios = get_mongodb()[Collection.SCENARIOS]
-    assert scenarios.find_one({"_id": scenario_id(record_id, "p1", 1)})["superseded_by"] is None
-    assert scenarios.find_one({"_id": scenario_id(record_id, "p1", 2)}) is None
+    assert scenarios.find_one({"_id": build_scenario_id(record_id, "p1", 1)})["superseded_by"] is None
+    assert scenarios.find_one({"_id": build_scenario_id(record_id, "p1", 2)}) is None
 
 
 def test_a_search_whose_only_records_were_revoked_finds_no_evidence_and_is_no_outage(
@@ -325,7 +325,9 @@ def test_a_search_whose_only_records_were_revoked_finds_no_evidence_and_is_no_ou
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
-    _start_regenerate(record_id, scenario_id(record_id, "p1", 1))  # the fake holds mitre_attack_ics only
+    _start_regenerate(
+        record_id, build_scenario_id(record_id, "p1", 1)
+    )  # the fake holds mitre_attack_ics only
     _written_without_evidence(record_id)
 
 

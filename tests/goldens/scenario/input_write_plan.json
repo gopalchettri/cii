@@ -1,0 +1,389 @@
+{
+ "note": "Fixed input for the writing goldens (from plan_turns, with actions, an or-only name and other-system reasons); never rewritten.",
+ "paths": [
+  {
+   "abandoned": false,
+   "also_applies": [],
+   "attempts": 0,
+   "categories": [
+    "Tampering",
+    "Denial of Service"
+   ],
+   "category": "Tampering",
+   "category_id": 12,
+   "confidence": 80.0,
+   "entry_points": [
+    321,
+    322
+   ],
+   "entry_system": 321,
+   "impact": 3,
+   "path_id": "3612e77514e7fb83",
+   "rank": 1,
+   "selected": true,
+   "served": null,
+   "steps": [
+    "lib:1"
+   ],
+   "systems": [
+    321,
+    322
+   ]
+  },
+  {
+   "abandoned": false,
+   "also_applies": [],
+   "attempts": 0,
+   "categories": [
+    "Denial of Service"
+   ],
+   "category": "Denial of Service",
+   "category_id": 15,
+   "confidence": 95.0,
+   "entry_points": [
+    322
+   ],
+   "entry_system": 322,
+   "impact": 3,
+   "path_id": "4a2ec48560942e06",
+   "rank": 2,
+   "selected": true,
+   "served": null,
+   "steps": [
+    "lib:5"
+   ],
+   "systems": [
+    322
+   ]
+  },
+  {
+   "abandoned": false,
+   "also_applies": [],
+   "attempts": 0,
+   "categories": [
+    "Spoofing"
+   ],
+   "category": "Spoofing",
+   "category_id": 11,
+   "confidence": 80.0,
+   "entry_points": [
+    323
+   ],
+   "entry_system": 323,
+   "impact": 3,
+   "path_id": "cfcc04d78faed9c8",
+   "rank": 3,
+   "selected": true,
+   "served": null,
+   "steps": [
+    "lib:2"
+   ],
+   "systems": [
+    323
+   ]
+  },
+  {
+   "abandoned": false,
+   "also_applies": [],
+   "attempts": 0,
+   "categories": [
+    "Repudiation"
+   ],
+   "category": "Repudiation",
+   "category_id": 13,
+   "confidence": 80.0,
+   "entry_points": [],
+   "entry_system": null,
+   "impact": 3,
+   "path_id": "2e90b23a30d2b689",
+   "rank": 4,
+   "selected": true,
+   "served": null,
+   "steps": [
+    "lib:3"
+   ],
+   "systems": []
+  },
+  {
+   "abandoned": false,
+   "also_applies": [],
+   "attempts": 0,
+   "categories": [
+    "Information Disclosure"
+   ],
+   "category": "Information Disclosure",
+   "category_id": 14,
+   "confidence": 80.0,
+   "entry_points": [
+    322
+   ],
+   "entry_system": 322,
+   "impact": 1,
+   "path_id": "2ad43445c638a737",
+   "rank": 5,
+   "selected": false,
+   "served": null,
+   "steps": [
+    "lib:4"
+   ],
+   "systems": [
+    322
+   ],
+   "unselected_reason": "target_reached"
+  },
+  {
+   "abandoned": false,
+   "also_applies": [],
+   "attempts": 0,
+   "categories": [
+    "Elevation of Privilege"
+   ],
+   "category": "Elevation of Privilege",
+   "category_id": 16,
+   "confidence": 80.0,
+   "entry_points": [
+    323
+   ],
+   "entry_system": 323,
+   "impact": 3,
+   "path_id": "84c07ebadbc26e6d",
+   "rank": 6,
+   "selected": false,
+   "served": null,
+   "steps": [
+    "lib:6"
+   ],
+   "systems": [
+    321,
+    323
+   ],
+   "unselected_reason": "target_reached"
+  }
+ ],
+ "threats": [
+  {
+   "actions": [
+    "encrypt the backups on SCADA server",
+    "demand a ransom"
+   ],
+   "actors": [
+    {
+     "closest": false,
+     "id": 3,
+     "name": "Malicious insider",
+     "role": "acting"
+    }
+   ],
+   "ai_generated": false,
+   "attacker_check": "chosen",
+   "attacker_check_reason": "It could reach SCADA server from the office network.",
+   "categories": [
+    "Tampering",
+    "Denial of Service"
+   ],
+   "category": "Tampering",
+   "category_id": 12,
+   "confidence": 80.0,
+   "impact": 3,
+   "key": "lib:1",
+   "library_id": 1,
+   "likelihood": 2,
+   "name": "Ransomware encrypts backup servers",
+   "reason": "Ransomware encrypts backup servers could hit SCADA server as Tampering.",
+   "reasons": {
+    "Denial of Service": "Ransomware encrypts backup servers could hit SCADA server as Denial of Service.",
+    "Tampering": "Ransomware could move from the Historian to the SCADA server and encrypt its backups."
+   },
+   "systems": [
+    321,
+    322
+   ],
+   "type": {
+    "id": 1,
+    "name": "Malware"
+   }
+  },
+  {
+   "actions": [
+    "send phishing emails to Operator HMI users",
+    "make vishing calls"
+   ],
+   "actors": [
+    {
+     "closest": false,
+     "id": 4,
+     "name": "Phishing crew",
+     "role": "acting"
+    }
+   ],
+   "ai_generated": false,
+   "attacker_check": "chosen",
+   "attacker_check_reason": "It could reach SCADA server from the office network.",
+   "categories": [
+    "Spoofing"
+   ],
+   "category": "Spoofing",
+   "category_id": 11,
+   "confidence": 80.0,
+   "impact": 3,
+   "key": "lib:2",
+   "library_id": 2,
+   "likelihood": 3,
+   "name": "Phishing or vishing steals operator credentials",
+   "reason": "Phishing steals operator credentials could hit SCADA server as Spoofing.",
+   "reasons": {
+    "Spoofing": "Phishing steals operator credentials could hit SCADA server as Spoofing."
+   },
+   "systems": [
+    323
+   ],
+   "type": {
+    "id": 2,
+    "name": "Social engineering"
+   }
+  },
+  {
+   "actions": [],
+   "actors": [
+    {
+     "closest": false,
+     "id": 3,
+     "name": "Malicious insider",
+     "role": "acting"
+    }
+   ],
+   "ai_generated": false,
+   "attacker_check": "chosen",
+   "attacker_check_reason": "It could reach SCADA server from the office network.",
+   "categories": [
+    "Repudiation"
+   ],
+   "category": "Repudiation",
+   "category_id": 13,
+   "confidence": 80.0,
+   "impact": 3,
+   "key": "lib:3",
+   "library_id": 3,
+   "likelihood": 1,
+   "name": "Insider deletes audit logs",
+   "reason": "Insider deletes audit logs could hit SCADA server as Repudiation.",
+   "reasons": {
+    "Repudiation": "Insider deletes audit logs could hit SCADA server as Repudiation."
+   },
+   "systems": [],
+   "type": {
+    "id": 3,
+    "name": "Insider misuse"
+   }
+  },
+  {
+   "actions": [],
+   "actors": [
+    {
+     "closest": false,
+     "id": 1,
+     "name": "Ransomware gang",
+     "role": "acting"
+    }
+   ],
+   "ai_generated": false,
+   "attacker_check": "chosen",
+   "attacker_check_reason": "It could reach SCADA server from the office network.",
+   "categories": [
+    "Information Disclosure"
+   ],
+   "category": "Information Disclosure",
+   "category_id": 14,
+   "confidence": 80.0,
+   "impact": 1,
+   "key": "lib:4",
+   "library_id": 4,
+   "likelihood": 2,
+   "name": "Ransomware exfiltrates data",
+   "reason": "Ransomware exfiltrates data could hit SCADA server as Information Disclosure.",
+   "reasons": {
+    "Information Disclosure": "Ransomware exfiltrates data could hit SCADA server as Information Disclosure."
+   },
+   "systems": [
+    322
+   ],
+   "type": {
+    "id": 1,
+    "name": "Malware"
+   }
+  },
+  {
+   "actions": [],
+   "actors": [
+    {
+     "closest": false,
+     "id": 1,
+     "name": "Ransomware gang",
+     "role": "acting"
+    }
+   ],
+   "ai_generated": false,
+   "attacker_check": "chosen",
+   "attacker_check_reason": "It could reach SCADA server from the office network.",
+   "categories": [
+    "Denial of Service"
+   ],
+   "category": "Denial of Service",
+   "category_id": 15,
+   "confidence": 95.0,
+   "impact": 3,
+   "key": "lib:5",
+   "library_id": 5,
+   "likelihood": 2,
+   "name": "Flood of requests overwhelms the historian",
+   "reason": "Flood of requests overwhelms the historian could hit SCADA server as Denial of Service.",
+   "reasons": {
+    "Denial of Service": "A flood through the SCADA server, Historian and Operator HMI could stop the Historian."
+   },
+   "systems": [
+    322
+   ],
+   "type": {
+    "id": 4,
+    "name": "Overload"
+   }
+  },
+  {
+   "actions": [],
+   "actors": [
+    {
+     "closest": false,
+     "id": 3,
+     "name": "Malicious insider",
+     "role": "acting"
+    }
+   ],
+   "ai_generated": false,
+   "attacker_check": "chosen",
+   "attacker_check_reason": "Has admin rights on SCADA server and Historian.",
+   "categories": [
+    "Elevation of Privilege"
+   ],
+   "category": "Elevation of Privilege",
+   "category_id": 16,
+   "confidence": 80.0,
+   "impact": 3,
+   "key": "lib:6",
+   "library_id": 6,
+   "likelihood": 2,
+   "name": "Insider abuses admin rights",
+   "reason": "Insider abuses admin rights could hit SCADA server as Elevation of Privilege.",
+   "reasons": {
+    "Elevation of Privilege": "An insider on the Historian or the SCADA server could abuse admin rights on the Operator HMI."
+   },
+   "systems": [
+    321,
+    323
+   ],
+   "type": {
+    "id": 5,
+    "name": "Privilege misuse"
+   }
+  }
+ ]
+}

@@ -3,13 +3,29 @@ Generation System (PGS)") and on whole words only ("ICS" is never the
 "ics" of "electronics"): the writer reads a system's reason and its entry point by any of their forms."""
 
 from app.core.constants import Writing
-from app.domain.scenario.write import _offered_entry_point, _reasons_by_system
+from app.domain.scenario.write import _pick_reason_for_system, _read_scenario_draft
 from app.domain.shared.names import is_same_name
-from app.models.scenario.write import BriefSystem
+from app.models.scenario.write import BriefSystem, WriterBrief
 
 PGS = "Power Generation System (PGS)"
 DCS = "Distributed Control System (DCS)"
 _YES_DCS, _NO_PGS = BriefSystem(1, DCS, applicable=True), BriefSystem(2, PGS, applicable=False)
+
+
+def _reasons_by_system(
+    written: dict[str, str], systems: tuple[BriefSystem, ...], statement: str
+) -> tuple[tuple[str, str], ...]:
+    """Each system with the reason the card shows for it."""
+    return tuple((system.name, _pick_reason_for_system(system, written, statement)) for system in systems)
+
+
+def _offered_entry_point(written: str, options: tuple[str, ...]) -> str:
+    """The entry point code settles for a slot answering `written`, offered `options`."""
+    brief = WriterBrief({}, (), {}, "Threat", (), (), options)
+    item = {"threat": "Threat", "scenario_title": "T", "scenario_statement": "S.", "risk_statement": "R."}
+    draft, problems = _read_scenario_draft(brief, item | {"assumptions": [], "entry_point": written}, 0)
+    assert draft is not None, problems
+    return draft.entry_point
 
 
 def test_every_form_of_a_name_is_the_same_name_and_nothing_else_is() -> None:

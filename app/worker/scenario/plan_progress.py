@@ -22,12 +22,11 @@ from app.core.exceptions import LeaseLost
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.plan import (
-    best_reserve,
-    budget_left,
-    next_paths_to_write,
-    plan_counts,
-    set_summary,
+from app.domain.scenario.session import (
+    count_plan_paths,
+    pick_next_paths_to_write,
+    pick_replacement_path,
+    summarise_finished_set,
 )
 from app.realtime.publisher import publish_session_status
 from app.worker.jobs import hand_over
@@ -76,8 +75,7 @@ class PlanProgress:
         states = {path_id: state | {"abandoned_reason": reason, "settled_epoch": self._lease.epoch}}
         # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
-        in_set = [path for key, path in self.paths.items() if key in self._set]
-        reserve = best_reserve(self.paths.values(), threats, self._set) if budget_left(in_set) else None
+        reserve = pick_replacement_path(self.paths.values(), threats, self._set)
         if reserve is None:
             self.record(states, counted=counted)
             return None
@@ -91,7 +89,7 @@ class PlanProgress:
     def leave_for_next_set(self, path_id: str, state: dict[str, Any], card: ScenarioOutcome) -> None:
         """Keep a path open but out of the set being written, so only a later set writes it; its `card`
         counted."""
-        # ponytail: best_reserve may still pick it as this set's spare; flag it if spares must be fresh
+        # ponytail: pick_replacement_path may still pick it as this set's spare; flag it if spares must be new
         self._set.discard(path_id)
         settled = state | {"abandoned": False, "settled_epoch": self._lease.epoch}
         self.record({path_id: settled}, {"job.set": sorted(self._set)}, (card,))
@@ -111,7 +109,7 @@ class PlanProgress:
         send a live update. `also`: more fields for the same write."""
         for attack_path_id, state in states.items():
             self.paths[attack_path_id].update(state)
-        figures = plan_counts(self.paths.values())
+        figures = count_plan_paths(self.paths.values())
         self._sessions.update_scenario_session_plan(self._lease, states, figures, also)
         for outcome in counted:
             metrics.SCENARIOS.labels(outcome).inc()
@@ -121,7 +119,7 @@ class PlanProgress:
         """Hand the set's next batch to this same task, or end the set: complete, or partial when a path of
         this set was abandoned."""
         in_set = [path for path_id, path in self.paths.items() if path_id in self._set]
-        batch = next_paths_to_write(in_set)
+        _, batch = pick_next_paths_to_write(in_set)
         if batch:
             hand_over(self._lease, TaskName.WRITE_SCENARIOS, {"job.batch": batch})
             return
@@ -144,13 +142,13 @@ class PlanProgress:
         rescued = {row["path_id"]: row["_id"] for row in written}
         if rescued:
             self.record({path_id: {"served": sid, "abandoned": False} for path_id, sid in rescued.items()})
-        partial = plan_counts(in_set)["abandoned"] > 0
+        partial = count_plan_paths(in_set)["abandoned"] > 0
         # This action's own times: from the plan's freeze, or from a later set's start.
         started = max(self._plan["frozen_at"], self._last_action.get("started_at") or self._plan["frozen_at"])
         outcome = RunActionOutcome.PARTIAL if partial else RunActionOutcome.COMPLETE
         changes: dict[str, Any] = {"last_action.outcome": outcome, **self._action_times(started)}
         if self._last_action.get("kind") == RunActionKind.NEXT_SET:  # requested and epoch stay as queued
-            summary = set_summary(in_set, list(self.paths.values()), outcome)
+            summary = summarise_finished_set(in_set, list(self.paths.values()), outcome)
             changes |= {f"last_next_set.{key}": value for key, value in summary.items()}
         self._lease.update_job(changes | ended_job_fields(Status.DONE))
 

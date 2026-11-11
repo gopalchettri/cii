@@ -27,7 +27,7 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.domain.scenario.write import scenario_id
+from app.domain.scenario.write import build_scenario_id
 from tests.fakes import FakeChatModel
 from tests.test_run_actions import (  # noqa: F401 - fixtures by name
     _deliver,
@@ -220,7 +220,7 @@ def test_one_regenerate_writes_a_new_version_and_a_busy_card_again(
     """A written scenario gets its version 2 and the busy card is written in place, in one job."""
     fake_chat.responders[AiTask.WRITE_SCENARIO] = _busy_for("Threat 2")
     record_id, card = _run_with_a_busy_card(["Threat 1", "Threat 2"])
-    first, second = scenario_id(record_id, "p1", 1), scenario_id(record_id, "p1", 2)
+    first, second = build_scenario_id(record_id, "p1", 1), build_scenario_id(record_id, "p1", 2)
     fake_chat.responders[AiTask.WRITE_SCENARIO] = _answer_for
     assert _regenerate(client, api_key, record_id, [first, card]).status_code == 202
     batch = _sessions().find_one({"_id": record_id})["job"]["batch"]
@@ -246,8 +246,8 @@ def test_a_regenerate_gives_up_a_card_path_that_repeats_a_held_scenario_but_neve
     written, then kept hidden as a near copy."""
     fake_chat.responders[AiTask.WRITE_SCENARIO] = _busy_for("Threat 2")
     record_id, card = _run_with_a_busy_card(["Threat 1", "Threat 2", "Threat 3"])
-    scenarios, first = get_mongodb()[Collection.SCENARIOS], scenario_id(record_id, "p1", 1)
-    third = scenario_id(record_id, "p3", 1)
+    scenarios, first = get_mongodb()[Collection.SCENARIOS], build_scenario_id(record_id, "p1", 1)
+    third = build_scenario_id(record_id, "p3", 1)
     threat = {sid: scenarios.find_one({"_id": sid})["content"]["threat"] for sid in (first, card)}
     scenarios.update_one({"_id": first}, {"$set": {"content.threat": threat[card]}})
     scenarios.update_one({"_id": third}, {"$set": {"content.threat": threat[first]}})

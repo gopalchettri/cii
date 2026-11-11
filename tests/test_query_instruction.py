@@ -12,11 +12,12 @@ import pytest
 
 from app import ai
 from app.ai.profiles import EMBEDDING_MODEL_PROFILES
+from app.core.config import get_settings
 from app.core.constants import QUERY_TASKS, EmbeddingCorpus
 from app.core.database import get_mongodb
 from app.data_access.admin.embedding_repository import EmbeddingRepository
 from app.data_access.base import VectorRepository
-from app.domain.scenario.controls import control_query_instruction
+from app.domain.scenario.write import _read_control_search_settings
 from app.models.ai.profiles import EmbeddingModelProfile
 
 QWEN = "litellm_proxy/qwen3-embedding-8b"
@@ -124,12 +125,15 @@ def test_every_corpus_has_a_task_that_leaves_every_model_room_for_the_query() ->
             assert len(profile.instruction_for(task) or "") < profile.max_text_chars // 10
 
 
-def test_a_stored_control_shortlist_is_keyed_on_the_instruction_the_gateway_sends() -> None:
-    profile = EMBEDDING_MODEL_PROFILES[QWEN]
-    instruction = control_query_instruction(SimpleNamespace(embedding_model=QWEN))  # type: ignore[arg-type]
+def test_a_stored_control_shortlist_is_keyed_on_the_instruction_the_gateway_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile, snapshot = EMBEDDING_MODEL_PROFILES[QWEN], SimpleNamespace(library=SimpleNamespace(stamp=()))
+    monkeypatch.setattr(get_settings(), "embedding_model", QWEN)
+    instruction = _read_control_search_settings(snapshot)["query_instruction"]  # type: ignore[arg-type]
     assert instruction is not None and profile.query_as_sent("q", CONTROL_TASK) == instruction + "q"
-    laptop = SimpleNamespace(embedding_model="openai/text-embedding-3-large")
-    assert control_query_instruction(laptop) is None  # type: ignore[arg-type]
+    monkeypatch.setattr(get_settings(), "embedding_model", "openai/text-embedding-3-large")
+    assert _read_control_search_settings(snapshot)["query_instruction"] is None  # type: ignore[arg-type]
 
 
 # --- the convention: every search embeds its query through the query path
@@ -141,7 +145,7 @@ DOCUMENT_EMBEDDERS = {
     "search/external_intelligence/evidence_index.py:build_index",
 }
 #: The only function that compares texts of one kind with each other (both sides plain).
-TEXT_COMPARERS = {"domain/scenario/plan.py:merge_reworded_threats"}
+TEXT_COMPARERS = {"domain/scenario/plan.py:_merge_reworded_ai_threats"}
 
 
 def _functions() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:

@@ -18,7 +18,6 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
-from app.domain.scenario.plan import planned_threat_record
 from app.worker import lifecycle
 from app.worker.celery_app import celery_app
 from app.worker.external_intelligence.refresh_task import refresh_external_intelligence
@@ -165,5 +164,5 @@ def test_the_worker_warm_up_does_nothing_while_off(monkeypatch: pytest.MonkeyPat
 
 
 def test_a_planned_threat_carries_no_evidence_key_until_it_was_searched() -> None:
-    record = planned_threat_record(planned("lib:1", "Threat 1"))
+    record = planned("lib:1", "Threat 1").to_record({})
     assert "evidence" not in record and "intel_search" not in record

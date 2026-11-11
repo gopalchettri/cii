@@ -15,11 +15,15 @@ from app.core.constants import (
     AiTask,
     CandidateRejection,
     LogEvent,
+    PlanLoss,
+    PlanStage,
+    ThreatFinding,
 )
 from app.core.exceptions import Unavailable
 from app.domain.scenario import plan as plan_module
-from app.domain.scenario.plan import build_plan, relevance_gate_prompt
+from app.domain.scenario.plan import build_plan
 from app.models.library.library import LibraryActor, LibraryThreat
+from app.models.scenario.plan import ActorPick
 from tests.fakes import FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -29,10 +33,11 @@ from tests.planner_samples import (
     PHISHING,
     RANSOMWARE,
     S,
-    audit_of,
+    drops_for,
     finder,
     gap_fill,
     gap_filled,
+    gate_prompt,
     judged,
     planned,
     planner_chat,
@@ -44,7 +49,7 @@ _DEFAULTS = AiTuningSettings.model_fields
 @pytest.fixture(autouse=True)
 def _shipped_gate_sizes(monkeypatch: pytest.MonkeyPatch) -> None:
     """The code's own defaults, whatever the developer's .env says."""
-    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", _DEFAULTS["threats_per_question"].default)
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", _DEFAULTS["threats_per_question"].default)
     monkeypatch.setattr(AiLimits, "CALL_TOKENS_LIMIT", _DEFAULTS["ai_call_tokens_limit"].default)
     gate_room = _DEFAULTS["answer_tokens_relevance_gate"].default
     monkeypatch.setitem(CHAT_MAX_OUTPUT_TOKENS, AiTask.RELEVANCE_GATE, gate_room)
@@ -95,17 +100,16 @@ def test_a_threat_applying_as_one_of_its_categories_is_rejected_under_the_other_
         2,
         80.0,
     )
-    (denial,) = [r for r in audit_of(findings, S.DENIAL_OF_SERVICE).rejected if r["library_id"] == 1]
-    assert (denial["code"], denial["detail"]) == (
-        CandidateRejection.NOT_RELEVANT,
-        "It applies as Tampering only.",
-    )
+    (denial,) = [
+        (d.reason, d.detail) for d in drops_for(findings, S.DENIAL_OF_SERVICE) if d.threat_key == "lib:1"
+    ]
+    assert denial == (CandidateRejection.NOT_RELEVANT, "It applies as Tampering only.")
     chat.responders[AiTask.RELEVANCE_GATE] = _answering({RANSOMWARE.name: as_tampering | {"needs": ["USB"]}})
     findings = finder(chat).find_threats(CONTEXT)
     assert findings.threats == []
     for kind in (S.TAMPERING, S.DENIAL_OF_SERVICE):
-        (refused,) = [r for r in audit_of(findings, kind).rejected if r["library_id"] == 1]
-        assert (refused["code"], refused["detail"]) == (CandidateRejection.NEEDS_UNRECORDED, "USB"), kind
+        (refused,) = [(d.reason, d.detail) for d in drops_for(findings, kind) if d.threat_key == "lib:1"]
+        assert refused == (CandidateRejection.NEEDS_UNRECORDED, "USB"), kind
 
 
 def test_a_slot_missing_from_the_answer_is_asked_once_more_alone_and_the_others_are_kept() -> None:
@@ -152,7 +156,7 @@ def test_the_gate_asks_one_likelihood_after_the_attacker_and_never_lets_it_decid
     asked after the attacker so the pick is made first. A/B, 31 Oct: adding "a LOW likelihood never makes a
     threat that meets them not relevant" made the gate accept about 10% more threats and pick another attacker
     for 29% of them (old against old: 14%); without it both stayed within the old prompt's own noise."""
-    _, prompt = relevance_gate_prompt("LANDSCAPE", [])
+    prompt = gate_prompt([])
     assert "a high impact, likelihood or confidence never makes a threat that fails them relevant." in prompt
     assert "the more listed attackers who plausibly could, the higher. Give no reason for it." in prompt
     order = [prompt.index(key) for key in ('"attacker_reason"', '"likelihood": "MEDIUM"', '"actions"')]
@@ -209,8 +213,11 @@ def test_each_half_of_a_cut_off_batch_is_a_first_ask_with_its_own_follow_up_and_
     chat.responders[AiTask.RELEVANCE_GATE] = halves(unreadable=FLOOD.name)
     with pytest.raises(Unavailable):
         finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT)
-    findings = finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT, last_attempt=True)
-    assert audit_of(findings, S.DENIAL_OF_SERVICE).not_judged == [FLOOD]
+    findings = finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT, is_last_attempt=True)
+    not_judged = [
+        d.threat_key for d in drops_for(findings, S.DENIAL_OF_SERVICE) if d.reason == PlanLoss.NOT_JUDGED
+    ]
+    assert not_judged == [f"lib:{FLOOD.catalogue_id}"]
     assert sorted(threat.name for threat in findings.threats) == sorted(names[:2])
 
 
@@ -274,14 +281,15 @@ def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the
     told = again[0].rsplit("\nCANDIDATES:\n", 1)[0].split("REJECTED:")[1]  # each slot told what it got wrong
     assert "'Spoof' is no STRIDE category" in told and "categories must list" in told
     assert "threat must be this slot's own threat" in told
-    assert audit_of(findings, S.REPUDIATION).not_judged == [LOG_WIPE]  # not judged; the job never retries
+    not_judged = [d.threat_key for d in drops_for(findings, S.REPUDIATION) if d.reason == PlanLoss.NOT_JUDGED]
+    assert not_judged == [f"lib:{LOG_WIPE.catalogue_id}"]  # not judged; the job never retries
     dropped = [e for e in logs if e["event"] == LogEvent.PLANNER_CATEGORY_DROPPED]
     assert [(e["threat_key"], e["categories"]) for e in dropped] == [("lib:1", [S.SPOOFING])]
     skipped = [e["asked"] for e in logs if e["event"] == LogEvent.PLANNER_THREATS_NOT_JUDGED]
     assert skipped == [[PHISHING.name, LOG_WIPE.name, FLOOD.name]]  # the ask again: logged, then not judged
     (ransomware,) = [threat for threat in findings.threats if threat.key == "lib:1"]
     assert ransomware.categories == (S.DENIAL_OF_SERVICE, S.TAMPERING)
-    assert ransomware.reason == "It stops SCADA server."  # its main category's, aliases named
+    assert ransomware.reasons[ransomware.categories[0]] == "It stops SCADA server."  # aliases named
     plan = build_plan(dataclasses.replace(findings, threats=[ransomware]), 0)
     (card,) = plan["paths"]  # one card per threat
     assert (card["category"], card["categories"]) == (S.DENIAL_OF_SERVICE, [S.DENIAL_OF_SERVICE, S.TAMPERING])
@@ -304,7 +312,7 @@ def test_a_threat_keeps_its_main_category_and_the_two_the_gate_named_next() -> N
     by_key = {threat.key: threat for threat in findings.threats}
     ransomware, phishing = by_key["lib:1"], by_key["lib:2"]
     assert ransomware.categories == (S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE)
-    assert ransomware.reason == "It hits SCADA server as Denial of Service."  # the main category's, as before
+    assert ransomware.reasons[S.DENIAL_OF_SERVICE] == "It hits SCADA server as Denial of Service."
     assert phishing.categories == (S.SPOOFING,)
     plan = build_plan(dataclasses.replace(findings, threats=[ransomware]), 0)
     (card,) = plan["paths"]
@@ -314,9 +322,17 @@ def test_a_threat_keeps_its_main_category_and_the_two_the_gate_named_next() -> N
 
 def test_a_threat_with_three_categories_or_fewer_is_left_as_it_is() -> None:
     """The gate's order changes nothing when nothing is cut: the others keep their own order."""
-    three = planned("lib:1", "Ransomware", categories=(S.TAMPERING, S.SPOOFING, S.REPUDIATION))
-    gate_order = (S.TAMPERING, S.REPUDIATION, S.SPOOFING)
-    assert plan_module._main_and_two_others(three, gate_order) is three
+    gang = LibraryActor(1, "Ransomware gang")
+    three = planned(
+        "lib:1",
+        "Ransomware",
+        categories=(S.TAMPERING, S.SPOOFING, S.REPUDIATION),
+        gate_order=(S.TAMPERING, S.REPUDIATION, S.SPOOFING),
+        actor_pick=ActorPick(gang.name, "It can."),
+        linked_actors=(gang,),
+    )
+    (kept,) = plan_module._set_main_category_and_attacker([three], [])
+    assert kept.categories == three.categories
 
 
 def test_the_gates_actions_reach_the_plan_by_system_name_with_no_split_call() -> None:
@@ -373,6 +389,8 @@ def test_two_empty_categories_cost_one_gap_fill_and_one_gate_check() -> None:
         ("Admin grab", [S.ELEVATION_OF_PRIVILEGE]),
     ]
     assert [t.name for t in findings.threats if t.catalogue_id is None] == ["Admin grab"]
-    lost = audit_of(findings, S.INFORMATION_DISCLOSURE).gap_fill_lost
-    assert lost is not None and lost["reason"] == CandidateRejection.NOT_RELEVANT
+    assert [(d.stage, d.reason) for d in drops_for(findings, S.INFORMATION_DISCLOSURE)] == [
+        (PlanStage.GATE, CandidateRejection.NOT_RELEVANT),  # the library's
+        (PlanStage.GAP_FILL, CandidateRejection.NOT_RELEVANT),  # the proposal's, at its gate check
+    ]
     assert len(items_in(whole, "CANDIDATES")) == 6

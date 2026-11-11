@@ -11,9 +11,12 @@ from app.ai import ChatModel
 from app.ai.common import outage_reason
 from app.core.clock import utc_now
 from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
     AI_PATH_OUTAGE_MESSAGE,
+    AiOutage,
     ErrorCode,
     ErrorMessage,
+    EvidenceSearchFailure,
     FindingCode,
     FindingMessage,
     Lease,
@@ -31,7 +34,12 @@ from app.data_access.jobs.job_repository import JobLease
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
-from app.domain.scenario.write import evidence_problem, held_repeat_of, scenario_id, slot_label
+from app.domain.scenario.write import (
+    FIRST_VERSION,
+    build_card_threat_fields,
+    build_scenario_id,
+    find_duplicate_scenario_id,
+)
 from app.domain.shared.parallel import raise_most_retryable
 from app.models.library.library import ThreatLibrary
 from app.models.scenario.write import PathFailure
@@ -44,6 +52,20 @@ log = structlog.get_logger(__name__)
 
 #: Builds one batch's evidence search from its run, its threats and its progress.
 EvidenceSearchBuilder = Callable[[dict[str, Any], dict[str, dict[str, Any]], PlanProgress], EvidenceAtWrite]
+
+
+def find_evidence_outage(threat: dict[str, Any]) -> Unavailable | None:
+    """Returns the outage that holds the threat's story back while its evidence search could not be made."""
+    search = threat.get("intel_search")
+    if search is not None and search.get("failure") is None and search.get("snapshot_id") is not None:
+        return None  # searched, whatever it kept: nothing citable is written without evidence
+    search = search or {}
+    outage = search.get("outage")
+    if outage and outage in AiOutage:  # the AI did not answer the search: told in the refusal's own words
+        message = search.get("outage_message") or AI_OUTAGE_MESSAGES[AiOutage(outage)]
+        return Unavailable(message, reason=outage)
+    failure = search.get("failure") or EvidenceSearchFailure.NO_SNAPSHOT
+    return Unavailable(ErrorMessage.EVIDENCE_SEARCH_UNAVAILABLE.format(reason=failure))
 
 
 class ScenarioWriteJob:
@@ -99,8 +121,7 @@ class BatchWriter:
         scenarios: ThreatScenarioRepository,
         evidence: EvidenceSearchBuilder | None,
     ) -> None:
-        """`evidence`: the batch's evidence search while intelligence is on (evidence stories, a path with
-        nothing citable written without evidence); None writes the original scenarios."""
+        """`evidence`: the batch's evidence search while intelligence is on; None: original scenarios."""
         style = WriterStyle.ORIGINAL if evidence is None else WriterStyle.EVIDENCE_STORY
         self._lease, self._run, self._scenarios = lease, run, scenarios
         self._progress = PlanProgress(lease, run, sessions, scenarios)
@@ -115,14 +136,13 @@ class BatchWriter:
         self._evidence_waits: set[str] = set()  # paths held back by an evidence search outage
 
     def write(self) -> None:
-        """Write the batch's open paths (control mapping queued as each scenario is saved), queue it again for
-        the whole batch, settle any outage, then move the run on."""
+        """Writes the batch's open paths, queues control mapping, settles any outage, moves the run on."""
         to_write = self._saver.to_write(self._batch, self._replaces, self._regenerate)
-        to_write = self._without_repeats(to_write)
+        to_write = self._drop_repeated_paths(to_write)
         outages: dict[str, BaseException] = {}
         if self._evidence is not None:
             self._evidence.attach(to_write)  # one evidence search for the paths about to be written
-            to_write = [key for key in to_write if not self._held_back(key, outages)]
+            to_write = [key for key in to_write if not self._is_held_back(key, outages)]
         self._start_writing()  # the action's threats time (its set picked, its evidence searched) ends here
         outages |= self._write_set(to_write)
         # Sent for every scenario of the batch, whichever delivery saved it, before an outage can raise: a
@@ -144,12 +164,11 @@ class BatchWriter:
         (self._run.get("last_action") or {}).setdefault("writing_started_at", now)  # PlanProgress reads it
 
     def _write_set(self, to_write: list[str]) -> dict[str, BaseException]:
-        """Write the paths as one set, its slots in the batch's order (a retry that saved nothing asks the
-        same), each saved as soon as it is final; the outages of the paths left, by path."""
+        """Writes the paths as one set, saving each as soon as it is final; returns the outages left."""
         paths, started, numbered = self._progress.paths, utc_now(), enumerate(self._batch, start=1)
-        slots = [(slot_label(place), paths[key]) for place, key in numbered if key in to_write]
+        slots = [(f"SC{place}", paths[key]) for place, key in numbered if key in to_write]  # never an id
         outages: dict[str, BaseException] = {}
-        for path_id, outcome in self._paths.write_set(
+        for path_id, outcome in self._paths.write_scenario_set(
             slots, self._lease.attempts >= Lease.MAX_ATTEMPTS, self._lease.epoch
         ):
             if isinstance(outcome, Exception):
@@ -159,32 +178,29 @@ class BatchWriter:
         return outages
 
     def _save(self, path_id: str, outcome: PathOutcome, started_at: datetime) -> None:
-        """Save one path's outcome; a scenario that now serves it has its controls mapped while the batch's
-        other paths are still being written (a message that finds the run being mapped costs one update)."""
+        """Saves one path's outcome and queues control mapping when a scenario now serves it."""
         self._saver.save(path_id, outcome, started_at)
         if path_id in self._served_paths():
             send_job(TaskName.MAP_CONTROLS, self._run["_id"], self._lease.epoch)
 
     def _served_paths(self) -> list[str]:
-        """The batch's paths served by a scenario written for it (a regenerate's: a new version, or an
-        outage card's path written at last)."""
+        """Returns the batch's paths served by a scenario written for it (a regenerate's: a new version)."""
         paths = self._progress.paths
         return [key for key in self._batch if paths[key]["served"] not in (None, self._replaces.get(key))]
 
-    def _without_repeats(self, to_write: list[str]) -> list[str]:
-        """Give up, with no AI call and no new card, each path to write for the first time repeating a
-        scenario the run's other paths hold now (the asset's other sessions never block one: D15); a spare may
-        take its place (never in a regenerate). The paths left to write."""
+    def _drop_repeated_paths(self, to_write: list[str]) -> list[str]:
+        """Gives up, with no AI call and no card, each first write repeating a scenario the run holds now."""
         first_writes = [path_id for path_id in to_write if path_id not in self._replaces]
         if not first_writes:
             return to_write
         threats, repeat = self._paths.threats, FindingCode.NEAR_DUPLICATE
-        own = self._scenarios.list_scenarios_for_duplicate_check(self._run["_id"])
+        own = self._saver.list_held_scenarios()  # the run's own: the asset's other sessions never block one
         left = list(to_write)
-        for path_id in first_writes:
+        for path_id in first_writes:  # a spare may take its place (never in a regenerate)
             path = self._progress.paths[path_id]
             steps = path.get("steps") or []
-            held_id = held_repeat_of(path, threats.get(steps[0], {}) if steps else {}, own)
+            content = build_card_threat_fields(path, threats.get(steps[0], {}) if steps else {})
+            held_id = find_duplicate_scenario_id(content, path_id, own)
             if held_id is not None:  # the plan path keeps which scenario it repeats
                 state = {
                     "attempts": path["attempts"],
@@ -193,30 +209,29 @@ class BatchWriter:
                     "repeats": held_id,
                 }
                 self._progress.abandon(path_id, state, repeat, threats)
-                self._card_says_it_repeats(path_id, held_id)
+                self._mark_card_as_repeat(path_id, held_id)
                 left.remove(path_id)
         return left
 
-    def _card_says_it_repeats(self, path_id: str, held_id: str) -> None:
-        """An outage's failure card on a path given up as a repeat says so instead: it is not regenerated."""
+    def _mark_card_as_repeat(self, path_id: str, held_id: str) -> None:
+        """Rewrites the failure card of a path given up as a repeat to say so."""
         message = FindingMessage.NEAR_DUPLICATE.format(scenario_id=held_id)
         failure = {"code": FindingCode.NEAR_DUPLICATE, "message": message}  # no outage reason any more
-        card_id = scenario_id(self._run["_id"], path_id, 1)
+        card_id = build_scenario_id(self._run["_id"], path_id, FIRST_VERSION)
         changes = {"failure": failure, "updated_at": utc_now()}
         self._scenarios.update(changes, _id=card_id, status=ScenarioStatus.FAILED)
 
-    def _held_back(self, path_id: str, outages: dict[str, BaseException]) -> bool:
-        """Hold a story back while its threat's evidence search could not be made: it waits as an outage."""
+    def _is_held_back(self, path_id: str, outages: dict[str, BaseException]) -> bool:
+        """Records the threat's evidence outage, if any, and returns whether the path waits for it."""
         steps = self._progress.paths[path_id].get("steps") or []
-        problem = evidence_problem(self._paths.threats[steps[0]]) if steps else None
+        problem = find_evidence_outage(self._paths.threats[steps[0]]) if steps else None
         if problem is not None:
             outages[path_id] = problem
             self._evidence_waits.add(path_id)
         return problem is not None
 
     def _settle_outages(self, outages: dict[str, BaseException]) -> None:
-        """Give the job back (raise), unless this is its last try and the provider answered the batch's other
-        paths (or it is a regenerate): then each of these paths gets its failure and the job goes on."""
+        """Gives the job back (raises), unless on its last try the outages become the paths' failure cards."""
         errors = list(outages.values())
         paths_own_outage = (
             self._lease.attempts >= Lease.MAX_ATTEMPTS

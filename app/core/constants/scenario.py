@@ -5,9 +5,7 @@ from typing import Final
 
 
 class Writing:
-    MAX_PLAN_PROBLEMS: Final = 10  # the plan check's problems kept as notes ...
-    PROBLEM_MAX_CHARS: Final = 300  # ... each cut to this
-    RETIRED_RULES: Final = frozenset({"4"})  # reviewer rules no longer asked: never a note (D49)
+    PROBLEM_MAX_CHARS: Final = 300  # why an answer stayed unusable, as a card says it, cut to this
     ACTION_SYSTEM: Final = "the system"  # a system a listed action is done to, its name taken out
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
@@ -64,14 +62,9 @@ class FindingMessage(StrEnum):
 
     UNKNOWN_ID = "Names {labels}: internal labels the platform never gave this scenario. Remove them."
     UNCITED_ADVISORY_ID = "Cites {ids}, which no threat intelligence supplied. Remove the advisory numbers."
-    PLAN_CHECK_NOT_MADE = "The plan check could not be made: {reason}"
     CITATION_REMOVED = (
         "The writer's evidence step was not used ({reason}): the platform cites its own precedent "
         "sentence from the same source instead."
-    )
-    SCENARIO_MISMATCH = (
-        "The reviewer found that the scenario no longer describes the plan's {parts}: the statement and the "
-        "risk must carry out the plan's own threat and its consequence."
     )
     NEAR_DUPLICATE = (
         "Tells the same event as scenario {scenario_id}: the same threat on the same systems and kind, or "

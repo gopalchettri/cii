@@ -6,7 +6,7 @@ import copy
 import pytest
 
 from app.core.constants import Controls
-from app.domain.scenario.controls import ControlMapper, controls_record, is_about_ai
+from app.domain.scenario.write import ControlMapper, build_control_query, build_controls_record
 from app.models.library.library import LibraryControl
 from tests.test_control_mapping import _OT_CONTEXT, _SCENARIO, _ScoresByText, _snapshot
 
@@ -40,7 +40,7 @@ _ACCESS = LibraryControl(
 def test_a_threat_is_about_ai_only_when_its_type_or_name_says_so(
     threat: dict[str, str], about_ai: bool
 ) -> None:
-    assert is_about_ai({"threat": threat}) is about_ai
+    assert build_control_query({"threat": threat}, _OT_CONTEXT).is_about_ai is about_ai
 
 
 _API_THREAT = {"type": "Web/API Exploitation", "name": "Unauthorized API or record access"}
@@ -81,7 +81,7 @@ def test_the_scenario_text_counts_but_a_cited_attackers_name_never(
     """A non-AI threat type whose scenario is about an LLM or AI is about AI; "AI" in the name of a real-world
     campaign the evidence cites is not."""
     content = {"threat": _API_THREAT, "statement": statement, "evidence": evidence}
-    assert is_about_ai(content) is about_ai
+    assert build_control_query(content, _OT_CONTEXT).is_about_ai is about_ai
 
 
 def test_the_search_leaves_out_ai_controls_only_when_asked() -> None:
@@ -98,7 +98,7 @@ def test_a_non_ai_card_never_gets_an_ai_control_even_when_it_scores_best_and_an_
     mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
     assert [item.code for item in mapping.items] == ["C-ACC"]
     assert all("Sensitive OT Data Protection in AI" not in doc for _, docs in rerank.asked for doc in docs)
-    assert controls_record(mapping, snapshot)["made_with"]["ai_controls"] is False
+    assert build_controls_record(mapping, snapshot)["made_with"]["ai_controls"] is False
     ai_card = copy.deepcopy(_SCENARIO)
     ai_card["content"]["threat"] = {
         "type": "AI Abuse",
@@ -106,7 +106,7 @@ def test_a_non_ai_card_never_gets_an_ai_control_even_when_it_scores_best_and_an_
     }
     mapping = ControlMapper(rerank).map_controls(ai_card, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
     assert [item.code for item in mapping.items] == ["C-AI", "C-ACC"]
-    assert controls_record(mapping, snapshot)["made_with"]["ai_controls"] is True
+    assert build_controls_record(mapping, snapshot)["made_with"]["ai_controls"] is True
 
 
 def test_no_control_of_the_cards_type_keeps_another_types_nearest_but_never_an_ai_one() -> None:

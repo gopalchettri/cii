@@ -35,6 +35,11 @@ def threat_name_without_code(name: str) -> str:
     return _LEADING_LIBRARY_CODE.sub("", name, count=1) or name
 
 
+def threat_name_key(name: str) -> str:
+    """A threat name as threat names are matched: its library code left out, normalised."""
+    return name_match_key(threat_name_without_code(name))
+
+
 def as_json(value: Any) -> str:
     """A value as JSON, non-ASCII kept."""
     return json.dumps(value, ensure_ascii=False, default=str)

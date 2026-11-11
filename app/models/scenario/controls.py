@@ -73,6 +73,7 @@ class ControlQuery:
     text: str
     shortened: tuple[str, ...] = ()  # labels such as "scenario", "risk", "system 1450": never their text
     mitigations: tuple[str, ...] = ()  # the cited evidence's mitigations the query carries
+    is_about_ai: bool = False  # the threat is about AI: only then may an AI control be searched
 
 
 class ControlView(BaseModel):

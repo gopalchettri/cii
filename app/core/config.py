@@ -218,8 +218,12 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     # Which asset and supporting-system facts a run requires (a start without one is refused 422;
     # comma-separated column names of dbo.tsg_GetAssetContext; empty = none. Which facts a run
     # USES is the procedure's choice: every column it returns.
-    asset_properties_required: str = Field(default="", validation_alias="ASSET_PROPERTIES_REQUIRED")
-    system_properties_required: str = Field(default="", validation_alias="SYSTEM_PROPERTIES_REQUIRED")
+    asset_properties_required: str = Field(
+        default="", validation_alias=ContextProperties.ASSET_REQUIRED_SETTING
+    )
+    system_properties_required: str = Field(
+        default="", validation_alias=ContextProperties.SYSTEM_REQUIRED_SETTING
+    )
 
     @model_validator(mode="after")
     def refuse_unsafe_settings_outside_dev(self) -> "Settings":
@@ -239,10 +243,10 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     def refuse_always_used_properties(self) -> "Settings":
         """Every environment: id, name, category_code and alias are always used, never a fact a run can lack;
         requiring one stops start-up. A name the procedure does not return is refused at the first run, which
-        is when the procedure is read (app/domain/scenario/plan.py check_required)."""
+        is when the procedure is read (app/domain/scenario/session.py check_required_facts)."""
         for setting, text in (
-            ("ASSET_PROPERTIES_REQUIRED", self.asset_properties_required),
-            ("SYSTEM_PROPERTIES_REQUIRED", self.system_properties_required),
+            (ContextProperties.ASSET_REQUIRED_SETTING, self.asset_properties_required),
+            (ContextProperties.SYSTEM_REQUIRED_SETTING, self.system_properties_required),
         ):
             if always := [name for name in _names(text) if name in ContextProperties.ALWAYS_USED]:
                 raise ValueError(PropertyMessage.ALWAYS_USED.format(setting=setting, names=always))

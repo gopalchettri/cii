@@ -1,0 +1,1436 @@
+{
+ "blocked": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "PENDING",
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "blocked",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 1
+ },
+ "controls_queued": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "PENDING",
+  "controls": [],
+  "controls_error": {
+   "code": "busy"
+  },
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 1
+ },
+ "done_pending": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "PENDING",
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 1
+ },
+ "manual_pending": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": null,
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": {
+   "message": "Proposed to the threat library and awaiting a curator's review. The scenario is saved either way; it becomes verified only if the curator approves.",
+   "threat": {
+    "name": "Ransomware encrypts backup servers",
+    "status": "inserted"
+   },
+   "threat_type": {
+    "name": "Malware",
+    "status": "not_proposed"
+   }
+  },
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "manual",
+  "scope": null,
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "unverified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": null,
+   "library_threat_type": null,
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": null,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": null
+  },
+  "threat_source": null,
+  "threat_type_source": null,
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 1
+ },
+ "manual_rejected": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": null,
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": {
+   "message": "A curator reviewed 'Ransomware encrypts backup servers' and declined it, so this scenario keeps your wording but is not linked to the threat library. Sending it again will not re-propose it: choose a different name if you want a library entry.",
+   "threat": {
+    "name": "Ransomware encrypts backup servers",
+    "status": "rejected_by_curator"
+   },
+   "threat_type": {
+    "name": "Malware",
+    "status": "not_proposed"
+   }
+  },
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "manual",
+  "scope": null,
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "unverified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": null,
+   "library_threat_type": null,
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": null,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": null
+  },
+  "threat_source": null,
+  "threat_type_source": null,
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 1
+ },
+ "outage_card": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": null,
+  "actors": [],
+  "control_match_status": null,
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": null,
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": {
+   "code": "unavailable",
+   "message": "The AI is busy.",
+   "reason": "ai_busy"
+  },
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [
+   "VALIDATION_EXCEPTION"
+  ],
+  "scenario": null,
+  "scenario_id": "f-1",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A",
+   "scope_type": "ASSET",
+   "supporting_system_ids": []
+  },
+  "session_id": "run-golden-1",
+  "status": "failed",
+  "threat": {
+   "grounding_score": null,
+   "grounding_status": null,
+   "is_threat_ai_generated": null,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": null,
+   "library_threat_type": null,
+   "scope_rank": null,
+   "score": null,
+   "threat_catalogue_id": null,
+   "threat_category": "Spoofing",
+   "threat_category_id": null,
+   "threat_id": null,
+   "threat_name": null,
+   "threat_type": null,
+   "threat_type_id": null
+  },
+  "threat_source": null,
+  "threat_type_source": null,
+  "validation_errors": [
+   "The AI is busy."
+  ],
+  "validation_notes": [],
+  "validation_status": "warning",
+  "version": 1
+ },
+ "regenerated": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "PENDING",
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": "2026-11-01T09:30:00Z",
+  "gen_seconds": 0.0,
+  "gen_started_at": "2026-11-01T09:30:00Z",
+  "generation_epoch": 4,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 2,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 2
+ },
+ "rejected_controls_failed": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": null,
+  "controls": [],
+  "controls_error": {
+   "code": "x"
+  },
+  "controls_mapped": false,
+  "controls_mapping_exhausted": true,
+  "controls_mapping_exhaustion_reason": "retry_budget_exhausted",
+  "controls_status": "failed",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": "2026-11-01T09:30:00Z",
+  "rejected_by": "u-3",
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 1
+ },
+ "story_accepted": {
+  "accepted": true,
+  "accepted_at": "2026-11-01T09:30:00Z",
+  "accepted_by": "u-1",
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "NEAREST_ONLY",
+  "controls": [
+   {
+    "control_code": "C-OT",
+    "control_description": "Back up PLC and SCADA logic",
+    "control_id": 2,
+    "control_name": "Backup of controller logic",
+    "domain": "BCDR",
+    "itot": "OT",
+    "map_rank": 1,
+    "mapping_relevance": 57.0,
+    "match_reason": "Score 57 is below the threshold of 60: fallback, one of the 1 nearest kept because no control reached it.",
+    "match_type": "NEAREST",
+    "score": 57.0,
+    "tier": "fallback"
+   }
+  ],
+  "controls_error": null,
+  "controls_mapped": true,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "done",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [
+   {
+    "applicability": null,
+    "facts": [
+     "It is used for these attacker goals: Initial Access, Persistence.",
+     "Sandworm Team, a group, has used this technique.",
+     "It can be reduced by: User Account Management."
+    ],
+    "fetched_at": null,
+    "kind": "technique",
+    "mitigations": [
+     "User Account Management"
+    ],
+    "modified": null,
+    "n": 1,
+    "published": null,
+    "ref": "T0859",
+    "role": "context",
+    "searched_at": "<date>",
+    "source": "mitre_attack_ics",
+    "supports": "This attack could use the \"Valid Accounts\" technique",
+    "title": "Valid Accounts",
+    "url": "https://attack.mitre.org/techniques/T0859/"
+   }
+  ],
+  "evidence_mode": "source-documented",
+  "evidence_search": {
+   "asset_types": [
+    "OT"
+   ],
+   "considered": [],
+   "failure": null,
+   "outage": null,
+   "query": "q",
+   "rerank_model": "fake",
+   "searched_at": "<date>",
+   "snapshot_id": "snap-1",
+   "threshold": 20.0
+  },
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [
+   "VALIDATION_EXCEPTION",
+   "NEAREST_CONTROL"
+  ],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop. This attack could use the \"Valid Accounts\" technique [1].",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [
+   "The writer's evidence step was not used (it holds a marker, a redaction, a link, a code, an internal label or a quote): the platform cites its own precedent sentence from the same source instead."
+  ],
+  "validation_notes": [],
+  "validation_status": "warning",
+  "version": 1
+ },
+ "with_history": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "PENDING",
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": "2026-11-01T09:30:00Z",
+  "gen_seconds": 0.0,
+  "gen_started_at": "2026-11-01T09:30:00Z",
+  "generation_epoch": 4,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [
+   {
+    "accepted": false,
+    "accepted_at": null,
+    "accepted_by": null,
+    "actor": "Malicious insider",
+    "actors": [
+     {
+      "actor_id": 3,
+      "actor_name": "Malicious insider",
+      "closest_match": false,
+      "role": "acting",
+      "selection": "chosen",
+      "selection_reason": "It could reach SCADA server from the office network."
+     }
+    ],
+    "control_match_status": "PENDING",
+    "controls": [],
+    "controls_error": null,
+    "controls_mapped": false,
+    "controls_mapping_exhausted": false,
+    "controls_mapping_exhaustion_reason": null,
+    "controls_status": "queued",
+    "controls_unavailable": false,
+    "created_at": "2026-11-01T09:30:00Z",
+    "evidence": [],
+    "evidence_mode": null,
+    "evidence_search": null,
+    "failure": null,
+    "gen_finished_at": null,
+    "gen_seconds": null,
+    "gen_started_at": null,
+    "generation_epoch": null,
+    "library": null,
+    "regenerate_error": null,
+    "rejected_at": null,
+    "rejected_by": null,
+    "replaced_by": null,
+    "replaced_scenarios": [],
+    "replaces_accepted_version": null,
+    "review_flags": [],
+    "scenario": {
+     "also_applies": [],
+     "assumptions": [
+      "The office network reaches the control network - not recorded in the platform"
+     ],
+     "contributing_categories": [
+      "Denial of Service"
+     ],
+     "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+     "route_status": "STANDALONE",
+     "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+     "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+     "supporting_systems_involved": [
+      {
+       "is_applicable": true,
+       "is_entry_point": true,
+       "justification": "It could affect SCADA server.",
+       "supporting_system": "SCADA server",
+       "supporting_system_id": 321
+      },
+      {
+       "is_applicable": true,
+       "is_entry_point": false,
+       "justification": "It could affect Historian.",
+       "supporting_system": "Historian",
+       "supporting_system_id": 322
+      },
+      {
+       "is_applicable": false,
+       "is_entry_point": false,
+       "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+       "supporting_system": "Operator HMI",
+       "supporting_system_id": 323
+      }
+     ],
+     "threat_category": "Tampering",
+     "threat_name": "Ransomware encrypts backup servers",
+     "threat_type": "Malware"
+    },
+    "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+    "scenario_number": 1,
+    "scenario_source": "generated",
+    "scope": {
+     "evidence": [],
+     "scope_key": "A+321+322",
+     "scope_type": "COMBINATION",
+     "supporting_system_ids": [
+      321,
+      322
+     ]
+    },
+    "session_id": "run-golden-1",
+    "status": "done",
+    "threat": {
+     "grounding_score": 80.0,
+     "grounding_status": "verified",
+     "is_threat_ai_generated": false,
+     "is_threat_type_ai_generated": false,
+     "library_threat_name": "Ransomware encrypts backup servers",
+     "library_threat_type": "Malware",
+     "scope_rank": 1,
+     "score": 80.0,
+     "threat_catalogue_id": 1,
+     "threat_category": "Tampering",
+     "threat_category_id": 12,
+     "threat_id": "lib:1",
+     "threat_name": "Ransomware encrypts backup servers",
+     "threat_type": "Malware",
+     "threat_type_id": 1
+    },
+    "threat_source": "LIBRARY",
+    "threat_type_source": "LIBRARY",
+    "validation_errors": [],
+    "validation_notes": [],
+    "validation_status": "ok",
+    "version": 1
+   }
+  ],
+  "replaces_accepted_version": "other-accepted",
+  "review_flags": [],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 2,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [],
+  "validation_notes": [],
+  "validation_status": "ok",
+  "version": 2
+ },
+ "with_warning_and_note": {
+  "accepted": false,
+  "accepted_at": null,
+  "accepted_by": null,
+  "actor": "Malicious insider",
+  "actors": [
+   {
+    "actor_id": 3,
+    "actor_name": "Malicious insider",
+    "closest_match": false,
+    "role": "acting",
+    "selection": "chosen",
+    "selection_reason": "It could reach SCADA server from the office network."
+   }
+  ],
+  "control_match_status": "PENDING",
+  "controls": [],
+  "controls_error": null,
+  "controls_mapped": false,
+  "controls_mapping_exhausted": false,
+  "controls_mapping_exhaustion_reason": null,
+  "controls_status": "queued",
+  "controls_unavailable": false,
+  "created_at": "2026-11-01T09:30:00Z",
+  "evidence": [],
+  "evidence_mode": null,
+  "evidence_search": null,
+  "failure": null,
+  "gen_finished_at": null,
+  "gen_seconds": null,
+  "gen_started_at": null,
+  "generation_epoch": null,
+  "library": null,
+  "regenerate_error": null,
+  "rejected_at": null,
+  "rejected_by": null,
+  "replaced_by": null,
+  "replaced_scenarios": [],
+  "replaces_accepted_version": null,
+  "review_flags": [
+   "VALIDATION_EXCEPTION",
+   "PLAN_CHECK"
+  ],
+  "scenario": {
+   "also_applies": [],
+   "assumptions": [
+    "The office network reaches the control network - not recorded in the platform"
+   ],
+   "contributing_categories": [
+    "Denial of Service"
+   ],
+   "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "route_status": "STANDALONE",
+   "scenario_statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+   "scenario_title": "Ransomware encrypts backup servers at Grid Control Centre",
+   "supporting_systems_involved": [
+    {
+     "is_applicable": true,
+     "is_entry_point": true,
+     "justification": "It could affect SCADA server.",
+     "supporting_system": "SCADA server",
+     "supporting_system_id": 321
+    },
+    {
+     "is_applicable": true,
+     "is_entry_point": false,
+     "justification": "It could affect Historian.",
+     "supporting_system": "Historian",
+     "supporting_system_id": 322
+    },
+    {
+     "is_applicable": false,
+     "is_entry_point": false,
+     "justification": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats.",
+     "supporting_system": "Operator HMI",
+     "supporting_system_id": 323
+    }
+   ],
+   "threat_category": "Tampering",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware"
+  },
+  "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+  "scenario_number": 1,
+  "scenario_source": "generated",
+  "scope": {
+   "evidence": [],
+   "scope_key": "A+321+322",
+   "scope_type": "COMBINATION",
+   "supporting_system_ids": [
+    321,
+    322
+   ]
+  },
+  "session_id": "run-golden-1",
+  "status": "done",
+  "threat": {
+   "grounding_score": 80.0,
+   "grounding_status": "verified",
+   "is_threat_ai_generated": false,
+   "is_threat_type_ai_generated": false,
+   "library_threat_name": "Ransomware encrypts backup servers",
+   "library_threat_type": "Malware",
+   "scope_rank": 1,
+   "score": 80.0,
+   "threat_catalogue_id": 1,
+   "threat_category": "Tampering",
+   "threat_category_id": 12,
+   "threat_id": "lib:1",
+   "threat_name": "Ransomware encrypts backup servers",
+   "threat_type": "Malware",
+   "threat_type_id": 1
+  },
+  "threat_source": "LIBRARY",
+  "threat_type_source": "LIBRARY",
+  "validation_errors": [
+   "w"
+  ],
+  "validation_notes": [
+   "n"
+  ],
+  "validation_status": "warning",
+  "version": 1
+ }
+}

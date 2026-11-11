@@ -36,7 +36,7 @@ from app.domain.remediation.plan import (
     resolve_control_refs,
     write_plan,
 )
-from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.scenario.write import ControlMapper, build_controls_record
 from app.models.ai.profiles import ChatModelProfile
 from app.models.library.library import LibraryControl
 from app.models.remediation.plan import PlanView
@@ -675,7 +675,7 @@ def test_one_number_versions_every_prompt() -> None:
 def test_every_prompt_has_text_and_the_file_carries_the_version() -> None:
     """app/prompts.toml: every section has a non-empty text, and its version is PromptVersion.NUMBER."""
     sections = [prompt for group in PROMPTS.values() if isinstance(group, dict) for prompt in group.values()]
-    assert len(sections) == 6 and all(section["text"].strip() for section in sections)
+    assert len(sections) == 5 and all(section["text"].strip() for section in sections)
     assert PROMPTS["version"] == PromptVersion.NUMBER
 
 
@@ -1112,10 +1112,23 @@ def test_alternatives_reuse_the_mappings_reranked_shortlist_only_while_it_still_
     since), another rerank model or a record kept without a shortlist is reranked."""
     rerank = _ScoresByText({"Backup of controller logic": 91.0, "Backup policy": 70.0})
     snapshot, mapper = _library_snapshot(*_CONTROLS), ControlMapper(rerank)  # type: ignore[arg-type]
-    record = controls_record(mapper.map_controls(_SCENARIO, _OT_CONTEXT, snapshot), snapshot)
-    reused = mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2, record)
+    record = build_controls_record(mapper.map_controls(_SCENARIO, _OT_CONTEXT, snapshot), snapshot)
+    assert list(record["made_with"]) == [
+        *("rerank_model", "embedding_model", "query_instruction", "library", "threshold", "candidates"),
+        *(
+            "min_controls",
+            "max_controls",
+            "nearest_controls",
+            "query_shortened",
+            "mitigations",
+            "ai_controls",
+        ),
+    ]
+    reused = mapper.find_alternative_controls(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2, record)
     assert len(rerank.asked) == 1 and reused == [(_CONTROLS[2], 70.0)]
-    assert mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2) == reused  # a rerank agrees
+    assert (
+        mapper.find_alternative_controls(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2) == reused
+    )  # a rerank agrees
     insider = [{"name": "Insider", "role": "acting"}]
     picked = {"content": _SCENARIO["content"] | {"actors": insider}}
     other_model = record | {"made_with": record["made_with"] | {"rerank_model": "another-reranker"}}
@@ -1127,10 +1140,12 @@ def test_alternatives_reuse_the_mappings_reranked_shortlist_only_while_it_still_
         (_SCENARIO, without),
         (_SCENARIO, instructed),  # searched with another query instruction: another shortlist
     ):
-        mapper.find_alternatives(scenario, _OT_CONTEXT, snapshot, [2], 2, mapped)
+        mapper.find_alternative_controls(scenario, _OT_CONTEXT, snapshot, [2], 2, mapped)
     assert len(rerank.asked) == 6
     made_before = {key: value for key, value in record["made_with"].items() if key != "query_instruction"}
-    mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, snapshot, [2], 2, record | {"made_with": made_before})
+    mapper.find_alternative_controls(
+        _SCENARIO, _OT_CONTEXT, snapshot, [2], 2, record | {"made_with": made_before}
+    )
     plain = record["made_with"]["query_instruction"] is None  # the laptop's model takes queries plain
     assert len(rerank.asked) == 6 + (not plain)  # kept before the key: reused while the model takes none
 

@@ -67,7 +67,7 @@ def system_prompts() -> list[str]:
         for found in pkgutil.iter_modules(scenario_code.__path__)
     ]
     texts = [value for module in modules for value in vars(module).values() if isinstance(value, str)]
-    return [*texts, importlib.import_module(f"{scenario_code.__name__}.write").writer_system_prompt()]
+    return [*texts, importlib.import_module(f"{scenario_code.__name__}.write").build_writer_system_prompt()]
 
 
 def rebuilt(stored: dict[str, Any], prompts: list[str]) -> list[dict[str, Any]] | None:

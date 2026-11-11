@@ -32,21 +32,14 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PlanRefused, Unavailable
+from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import (
-    attack_path_categories,
-    attack_path_confidence,
-    attack_path_from_library,
-    attack_path_id,
-    attack_path_impact,
-    attack_path_systems,
     build_plan,
+    build_plan_trace,
     describe_asset_for_ai,
-    merge_same_threats,
-    rank_paths,
-    take_turns,
+    spread_paths_across_systems,
 )
-from app.domain.scenario.plan_trace import build_plan_trace
-from app.models.scenario.plan import AttackPath, KindPlace, PlannedThreat, ThreatFindings
+from app.models.scenario.plan import AttackPlace, PlannedThreat, ThreatFindings
 from app.worker import jobs
 from app.worker.scenario.plan_job import PLAN_JOB_FIELDS, PlanJob
 from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
@@ -55,11 +48,19 @@ LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
 
 
 def findings_of(*threats: PlannedThreat) -> ThreatFindings:
-    return ThreatFindings(threats=list(threats), audits=[], landscape=LANDSCAPE)
+    return ThreatFindings(threats=list(threats), landscape=LANDSCAPE)
 
 
-def one_step(key: str, category: S, systems: tuple[int, ...], impact: int) -> AttackPath:
-    return AttackPath((planned(key, key, systems, categories=(category,), impact=impact),))
+def one_step(key: str, category: S, systems: tuple[int, ...], impact: int) -> PlannedThreat:
+    return planned(key, key, systems, categories=(category,), impact=impact)
+
+
+def ranked(*threats: PlannedThreat) -> list[str]:
+    """The threats' keys in their paths' rank order, before the turns."""
+    return [
+        threat.key
+        for threat in sorted(threats, key=lambda threat: plan_module._build_path_record(threat, {})[0])
+    ]
 
 
 def test_every_threat_is_its_own_asset_level_path_none_grouped_under_another() -> None:
@@ -97,21 +98,16 @@ def test_a_threat_is_one_path_told_as_its_main_category_the_others_contributing(
 
 
 def test_the_card_enters_through_its_main_kinds_own_systems_with_its_own_impact_and_confidence() -> None:
-    """A threat accepted as two kinds on different systems keeps each verdict through the merge: its one
-    scenario, told as its main kind, enters only through the systems the gate named for that kind."""
-    tampering = planned(
-        "lib:5", "Logic change", (321,), impact=3, kind_places=((S.TAMPERING, KindPlace((321,), 3, 80.0)),)
-    )
-    denial = planned(
+    """A threat that involves two systems keeps its main kind's place: its one scenario, told as its main
+    kind, enters only through the systems the gate named for it, with that kind's impact."""
+    merged = planned(
         "lib:5",
         "Logic change",
-        (322,),
-        categories=(S.DENIAL_OF_SERVICE,),
-        impact=1,
-        kind_places=((S.DENIAL_OF_SERVICE, KindPlace((322,), 1, 50.0)),),
+        (321, 322),  # the union, for the evidence search
+        categories=(S.TAMPERING, S.DENIAL_OF_SERVICE),
+        impact=3,
+        main_place=AttackPlace((321,), (321,), 3, 80.0),
     )
-    (merged,) = merge_same_threats([tampering, denial])
-    assert merged.systems == (321, 322)  # the union, for the evidence search
     (path,) = build_plan(findings_of(merged), 0)["paths"]
     assert (path["category"], path["systems"], path["impact"], path["confidence"]) == (
         S.TAMPERING,
@@ -123,24 +119,19 @@ def test_the_card_enters_through_its_main_kinds_own_systems_with_its_own_impact_
 
 
 def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_steps() -> None:
-    """The card's category is the last step's; the path's categories start with the first's."""
-    phishing = planned("lib:7", "Phishing", (322,), categories=(S.SPOOFING,), impact=1, confidence=90.0)
+    """The card's id names its threat, its main kind and the systems it is on."""
     wipe = planned(
         "ai:wipe", "Wipe", (321,), categories=(S.TAMPERING, S.REPUDIATION), impact=3, confidence=60.0
     )
-    path = AttackPath((phishing, wipe))  # a chain an owner-approved rule could make (none today)
-    assert attack_path_id(path) == hashlib.sha256(b"lib:7|ai:wipe").hexdigest()[:16]
-    assert attack_path_categories(path) == (S.SPOOFING, S.TAMPERING, S.REPUDIATION)
-    assert (
-        attack_path_systems(path),
-        attack_path_impact(path),
-        attack_path_confidence(path),
-        attack_path_from_library(path),
-    ) == ((321, 322), 3, 60.0, False)
     findings = replace(findings_of(wipe), category_ids={"tampering": 5, "spoofing": 1})
     (record,) = build_plan(findings, 0)["paths"]  # one card, as its main kind
-    on_route = AttackPath((wipe,), scope="Tampering@system:321")  # the kind and the route name the path
-    assert record["path_id"] == attack_path_id(on_route) != attack_path_id(AttackPath((wipe,)))
+    assert record["path_id"] == hashlib.sha256(b"ai:wipe@Tampering@system:321").hexdigest()[:16]
+    on_both = replace(wipe, main_place=AttackPlace((322, 321), (321,), 3, 60.0))
+    (record_on_both,) = build_plan(findings_of(on_both), 0)["paths"]
+    assert record_on_both["path_id"] == hashlib.sha256(b"ai:wipe@Tampering@systems:321,322").hexdigest()[:16]
+    (on_asset,) = build_plan(findings_of(replace(wipe, main_place=AttackPlace())), 0)["paths"]
+    assert on_asset["path_id"] == hashlib.sha256(b"ai:wipe@Tampering@asset").hexdigest()[:16]
+    assert (record["impact"], record["confidence"]) == (3, 60.0)
     assert record["steps"] == ["ai:wipe"] and record["systems"] == [321]
     assert record["category"] == S.TAMPERING and record["categories"] == [S.TAMPERING, S.REPUDIATION]
     assert record["category_id"] == 5  # the library's id, kept for the results
@@ -152,21 +143,21 @@ def test_paths_are_ranked_by_impact_then_confidence_then_stride_order() -> None:
     strong_spoofing = one_step("lib:2", S.SPOOFING, (321,), impact=3)
     strong_tampering = one_step("lib:5", S.TAMPERING, (), impact=3)
     medium = one_step("lib:3", S.TAMPERING, (322,), impact=2)
-    surer = AttackPath((planned("lib:4", "lib:4", (323,), impact=1, confidence=95.0),))
-    ranked = rank_paths([weak_spoofing, surer, strong_tampering, medium, strong_spoofing])
-    assert ranked == [strong_spoofing, strong_tampering, medium, surer, weak_spoofing]
+    surer = planned("lib:4", "lib:4", (323,), impact=1, confidence=95.0)
+    in_order = ranked(weak_spoofing, surer, strong_tampering, medium, strong_spoofing)
+    assert in_order == ["lib:2", "lib:5", "lib:3", "lib:4", "lib:1"]
 
 
 def test_paths_are_ranked_by_risk_then_impact_then_confidence() -> None:
     """Owner, 31 Oct: the attacker shapes risk. Impact 3 x likelihood 2 (6) comes before 2 x 3 (6) on its
     impact, then 2 x 2 (4), then 3 x 1 (3) however sure the gate was of it: the product, never the sum."""
 
-    def path(key: str, impact: int, likelihood: int, confidence: float) -> AttackPath:
-        return AttackPath((planned(key, key, impact=impact, likelihood=likelihood, confidence=confidence),))
+    def path(key: str, impact: int, likelihood: int, confidence: float) -> PlannedThreat:
+        return planned(key, key, impact=impact, likelihood=likelihood, confidence=confidence)
 
     rare, likely, severe = path("lib:1", 3, 1, 90.0), path("lib:2", 2, 3, 50.0), path("lib:3", 3, 2, 40.0)
     even = path("lib:4", 2, 2, 10.0)
-    assert rank_paths([rare, even, likely, severe]) == [severe, likely, even, rare]
+    assert ranked(rare, even, likely, severe) == ["lib:3", "lib:2", "lib:4", "lib:1"]
 
 
 def _turn(path_id: str, systems: list[int], entry_points: list[int]) -> dict[str, Any]:
@@ -187,7 +178,7 @@ def test_paths_take_turns_over_the_systems_each_through_a_way_in_the_gate_named(
         _turn("flood", [2, 3], [2, 3]),
         _turn("asset", [], []),
     ]
-    dealt = take_turns(ranked, [1, 2, 3, 4])
+    dealt = spread_paths_across_systems(ranked, [1, 2, 3, 4])
     assert [(record["path_id"], record["entry_system"]) for record in dealt] == [
         ("ransomware", 1),
         ("timing", 2),
@@ -202,7 +193,9 @@ def test_paths_take_turns_over_the_systems_each_through_a_way_in_the_gate_named(
         or (record["entry_system"] is None and not record["systems"])
         for record in dealt
     )
-    skipped = take_turns([_turn("a", [1, 2], [1]), _turn("b", [1], [1]), _turn("c", [3], [3])], [1, 2, 3])
+    skipped = spread_paths_across_systems(
+        [_turn("a", [1, 2], [1]), _turn("b", [1], [1]), _turn("c", [3], [3])], [1, 2, 3]
+    )
     assert [(record["path_id"], record["entry_system"]) for record in skipped] == [
         ("a", 1),
         ("c", 3),
@@ -210,7 +203,10 @@ def test_paths_take_turns_over_the_systems_each_through_a_way_in_the_gate_named(
     ]
     # SYS1's turn passes over the one path SYS4 could take, while it has another of its own
     shared = [_turn("r1", [1, 4], [1, 4]), _turn("r2", [1], [1]), _turn("r3", [1], [1])]
-    assert [(record["path_id"], record["entry_system"]) for record in take_turns(shared, [1, 2, 3, 4])] == [
+    assert [
+        (record["path_id"], record["entry_system"])
+        for record in spread_paths_across_systems(shared, [1, 2, 3, 4])
+    ] == [
         ("r2", 1),
         ("r1", 4),
         ("r3", 1),
@@ -220,9 +216,8 @@ def test_paths_take_turns_over_the_systems_each_through_a_way_in_the_gate_named(
 def test_the_plan_stores_each_paths_ways_in_and_turn_and_the_trace_counts_them() -> None:
     """The stronger threat gets in through the Historian only, so the SCADA server's first turn goes to the
     weaker one; the ranks follow the turns, and the trace counts each system's turns and each group."""
-    place = KindPlace((321, 322), 3, 70.0, None, (322,))
     via_historian = planned(
-        "lib:1", "Firmware change", (321, 322), impact=3, kind_places=((S.TAMPERING, place),)
+        "lib:1", "Firmware change", (321, 322), impact=3, main_place=AttackPlace((321, 322), (322,), 3, 70.0)
     )
     on_scada = planned("lib:2", "Log wipe", (321,), impact=1)
     findings = findings_of(via_historian, on_scada)
@@ -246,11 +241,11 @@ def test_the_plan_stores_each_paths_ways_in_and_turn_and_the_trace_counts_them()
 def test_equal_paths_rank_library_first_then_by_library_id_whatever_the_input_order() -> None:
     paths = [one_step("ai:z", S.TAMPERING, (321,), 2), one_step("lib:9", S.TAMPERING, (321,), 2)]
     paths.append(one_step("lib:3", S.TAMPERING, (321,), 2))
-    expected = [path.steps[0].key for path in rank_paths(paths)]
+    expected = ranked(*paths)
     assert expected == ["lib:3", "lib:9", "ai:z"]
     for seed in range(5):
         shuffled = random.Random(seed).sample(paths, len(paths))  # noqa: S311 — test data, not security
-        assert [path.steps[0].key for path in rank_paths(shuffled)] == expected
+        assert ranked(*shuffled) == expected
 
 
 def test_the_target_keeps_the_most_relevant_paths_and_never_pads() -> None:

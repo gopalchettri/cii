@@ -146,7 +146,7 @@ _SCENARIO_FIELD_LISTS = {
     "path_id": ("path_id",),
 }
 
-#: What a claim returns: the fields the control query reads (app/domain/scenario/controls.py) and the claim's.
+#: What a claim returns: the fields the control query reads (app/domain/scenario/write.py) and the claim's.
 _CLAIMED_FIELDS = dict.fromkeys(
     (
         "session_id",
@@ -165,7 +165,7 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "content.actors.role",
         "content.systems.id",
         "content.evidence.mitigations",
-        "content.evidence.facts",  # is_about_ai leaves the cited attackers' names out
+        "content.evidence.facts",  # the about-AI check leaves the cited attackers' names out
     ),
     1,
 )
@@ -275,7 +275,7 @@ class ThreatScenarioRepository(MongoRepository):
     def list_scenarios_for_duplicate_check(self, session_id: str) -> list[Record]:
         """The scenario session's finished scenarios (each attack path's newest version and an older accepted
         one): the only ones a new scenario of the session may repeat. The asset's other sessions never block
-        one (owner, 2026-10-20: D15)."""
+        one."""
         own_session: Record = {"session_id": session_id, "status": ScenarioStatus.DONE, **MAPPED_VERSIONS}
         return self.list(fields=_DUPLICATE_CHECK_FIELDS, **own_session)
 

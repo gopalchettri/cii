@@ -42,7 +42,7 @@ from app.core.constants import ControlValidation, GapKind, Remediation, RunKind 
 from app.core.constants.ai_limits import ChatModule  # noqa: E402
 from app.core.exceptions import JobFailed  # noqa: E402
 from app.domain.remediation.plan import assess_alternatives, resolve_control_refs, write_plan  # noqa: E402
-from app.domain.scenario.controls import ControlMapper  # noqa: E402
+from app.domain.scenario.write import ControlMapper  # noqa: E402
 from app.domain.shared.names import name_match_key  # noqa: E402
 from app.models.library.library import LibraryControl  # noqa: E402
 from app.models.remediation.requests import SYSTEM_LISTS, ControlRef  # noqa: E402
@@ -136,7 +136,9 @@ def snapshots(plan: dict[str, Any], mapper: ControlMapper, search: Any, controls
     affected, categories = saved["risk_scope"]["affected_systems"], context.system_categories()
 
     def offering(count: int, with_register: bool) -> dict[str, Any]:
-        found = mapper.find_alternatives(scenario, context, search, identified, count, scenario["controls"])
+        found = mapper.find_alternative_controls(
+            scenario, context, search, identified, count, scenario["controls"]
+        )
         if with_register:
             taken = [*identified, *(control.control_id for control, _ in found)]
             found = [*register_controls_not_found(register, controls, taken), *found]

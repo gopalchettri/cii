@@ -20,13 +20,13 @@ from app.core.constants import (
     Header,
     PlanLoss,
     PlanStage,
+    PlanTraceLimits,
+    ThreatFinding,
     UnselectedReason,
 )
 from app.core.database import get_mongodb
-from app.domain.scenario import plan as plan_module
-from app.domain.scenario import plan_trace
-from app.domain.scenario.plan import build_plan
-from app.domain.scenario.plan_trace import build_plan_trace, plan_trace_view
+from app.domain.scenario.plan import build_plan, build_plan_trace
+from app.domain.scenario.session import build_plan_trace_view
 from app.models.library.library import LibraryThreat
 from app.models.scenario.views import PlanCounts
 from app.worker import jobs
@@ -146,13 +146,13 @@ def test_a_need_is_traced_under_every_kind_it_refuses_the_threat_and_never_elsew
 def test_a_skipped_batch_and_a_threat_no_attacker_fits_are_traced(monkeypatch: pytest.MonkeyPatch) -> None:
     """On the job's last attempt a broken reply for the phishing threat alone is skipped (it is not judged);
     the gate finds no listed attacker plausible for the flood, so it has no scenario."""
-    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 1)
     chat = planner_chat({})
     gate = _gate({FLOOD.name: {"systems": ["SYS1"], "attacker": None, "attacker_reason": "None could."}})
     chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
         {"verdicts": "?"} if PHISHING.name in user else gate(user)
     )
-    trace = _trace(chat, last_attempt=True)
+    trace = _trace(chat, is_last_attempt=True)
     assert (PHISHING.name, S.SPOOFING, PlanLoss.NOT_JUDGED, "") in _drops(trace, PlanStage.GATE)
     assert _drops(trace, PlanStage.ATTACKER) == [(FLOOD.name, None, AttackerCheck.NONE_FITS, "None could.")]
     assert (trace["counts"]["not_judged"], trace["counts"]["no_attacker"], trace["counts"]["threats"]) == (
@@ -164,7 +164,7 @@ def test_a_skipped_batch_and_a_threat_no_attacker_fits_are_traced(monkeypatch: p
 
 def test_the_drops_are_bounded_and_the_most_telling_come_first(monkeypatch: pytest.MonkeyPatch) -> None:
     """A gate verdict before the pre-filter; the counts stay whole, and nothing is ever held (D15)."""
-    monkeypatch.setattr(plan_trace.PlanTraceLimits, "MAX_DROPS", 2)
+    monkeypatch.setattr(PlanTraceLimits, "MAX_DROPS", 2)
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = _gate({FLOOD.name: {"systems": ["SYS1"]}})
     findings = finder(chat, threats=(*THREATS, UNLINKED)).find_threats(CONTEXT)
@@ -197,7 +197,7 @@ def test_the_view_adds_what_became_of_the_planned_paths() -> None:
             "replaced_by": "p2",
         },
     ]
-    view = plan_trace_view("run-1", stored, paths)
+    view = build_plan_trace_view("run-1", stored, paths)
     writing = view.writing
     assert (writing.served, writing.still_to_write, writing.given_up, writing.replaced) == (1, 1, 1, 1)
     (given_up,) = writing.given_up_paths
@@ -269,5 +269,9 @@ def test_a_gap_fill_proposal_not_kept_is_traced_with_its_reason() -> None:
     trace = build_plan_trace(findings, plan, 0)
     assert _drops(trace, PlanStage.GAP_FILL) == [
         ("Insider misuses SCADA server admin rights", S.ELEVATION_OF_PRIVILEGE, PlanLoss.LIBRARY_REPEAT, "")
+    ]
+    # its key keeps the alias the AI wrote, as the proposal's own key does
+    assert [d["threat_key"] for d in trace["drops"] if d["stage"] == PlanStage.GAP_FILL] == [
+        "ai:insider misuses sys 1 admin rights"
     ]
     assert trace["counts"]["gap_fill_lost"] == 1 and trace["counts"]["ai_threats"] == 0

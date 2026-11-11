@@ -51,7 +51,7 @@ from app.data_access.jobs.job_repository import JobLease, JobRepository, ended_j
 from app.data_access.library.sql_operation_repository import SqlOperationRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.results import build_board
+from app.domain.scenario.session import build_status_board
 from app.domain.shared.parallel import raise_most_retryable
 from app.models.scenario.views import session_status_from_record
 from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
@@ -236,7 +236,9 @@ def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(
     }
     # Read as the status endpoint and its live updates read it: through the status fields.
     sessions = ThreatScenarioSessionRepository(scenarios=ThreatScenarioRepository())
-    notice = build_board(session_status_from_record(sessions.get("status", _id=record_id))).progress.retrying
+    notice = build_status_board(
+        session_status_from_record(sessions.get("status", _id=record_id))
+    ).progress.retrying
     assert notice is not None and (notice.reason, notice.attempt) == (AiOutage.BUSY, 1)
     _records().update_one(
         {"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}}
@@ -245,7 +247,7 @@ def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(
 
     def retry_runs(lease: JobLease) -> None:
         status = session_status_from_record(sessions.get("status", _id=record_id))
-        shown_while_retrying.append(build_board(status).progress.retrying)
+        shown_while_retrying.append(build_status_board(status).progress.retrying)
         jobs.hand_over(lease, TaskName.WRITE_SCENARIOS)
 
     jobs.run_leased_job(_task("task-2"), Collection.SESSIONS, record_id, 1, retry_runs)

@@ -11,7 +11,7 @@ from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
 from app.data_access.scenario.threat_scenario_session_repository import SESSION_STATUS_FIELDS
-from app.domain.scenario.results import build_board, build_scenario_view
+from app.domain.scenario.session import build_scenario_view, build_status_board
 from app.models.scenario.views import ScenarioCount, SessionStatus, StageTimings, session_status_from_record
 
 _FAILED = {"error": {"code": "unavailable", "message": "The AI service is down."}, "attempts": 3}
@@ -117,7 +117,7 @@ def _written(status: Status = Status.DONE, /, **counts: int) -> dict[str, Any]:
     ],
 )
 def test_each_stage_and_what_to_do_now(fields: dict[str, Any], expected: tuple[str, ...]) -> None:
-    board = build_board(_run(**fields))
+    board = build_status_board(_run(**fields))
     progress = board.progress
     shown = (progress.threats, progress.scenarios, progress.controls, progress.overall, board.session_status)
     assert shown == expected
@@ -128,7 +128,7 @@ def test_times_reasons_and_numbers_say_what_happened() -> None:
     numbers."""
     last = {"outcome": "partial", "requested": 6, "delivered": 4}
     fields = _written(planned=170, remaining=162, written=6, pending=6, abandoned=2, controls_waiting=1)
-    board = build_board(
+    board = build_status_board(
         _run(
             **fields,
             timings={"threats_s": 126.1, "scenarios_s": 8.4, "controls_s": 1500.3599999999997},
@@ -139,7 +139,7 @@ def test_times_reasons_and_numbers_say_what_happened() -> None:
     progress = board.progress
     assert (board.asset_name, board.user_id, progress.last_next_set) == ("Grid Centre", "u-7", last)
     assert progress.timings == StageTimings(threats=126.1, scenarios=8.4, controls=None)  # controls still run
-    done = build_board(_run(**_written(**_SET), timings={"controls_s": 1500.3599999999997})).progress
+    done = build_status_board(_run(**_written(**_SET), timings={"controls_s": 1500.3599999999997})).progress
     assert done.timings.controls == 1500.4  # live run 2026-10-12: a sum of many parts, shown to 0.1 s
     assert progress.error_message == {"scenarios": "2 attack path(s) could not be written."}
     assert progress.scenario_count == ScenarioCount(
@@ -164,35 +164,35 @@ _RETRY = {
 
 @pytest.mark.parametrize("status", [Status.QUEUED, Status.RUNNING])
 def test_a_stage_waiting_out_an_ai_outage_says_why_which_try_and_when(status: Status) -> None:
-    threats = build_board(_run(status=status, job={"attempts": 2, "retry": _RETRY})).progress.retrying
+    threats = build_status_board(_run(status=status, job={"attempts": 2, "retry": _RETRY})).progress.retrying
     assert threats is not None and threats.model_dump() == {"stage": Step.THREATS, **_RETRY}
-    writing = build_board(_run(**_written(status, **_SET), job={"retry": _RETRY})).progress.retrying
+    writing = build_status_board(_run(**_written(status, **_SET), job={"retry": _RETRY})).progress.retrying
     assert writing is not None and writing.stage == Step.SCENARIOS
 
 
 @pytest.mark.parametrize("status", [Status.DONE, Status.FAILED, Status.CANCELLED])
 def test_a_run_that_ended_never_shows_a_retry_notice(status: Status) -> None:
-    assert build_board(_run(status=status, job={"retry": _RETRY})).progress.retrying is None
+    assert build_status_board(_run(status=status, job={"retry": _RETRY})).progress.retrying is None
 
 
 def test_a_run_the_ai_failed_names_the_outage_any_other_failure_none() -> None:
     timed_out = {"code": "unavailable", "message": _RETRY["message"], "reason": AiOutage.TIMED_OUT}
     assert (
-        build_board(_run(status=Status.FAILED, job={"error": timed_out})).progress.error_reason
+        build_status_board(_run(status=Status.FAILED, job={"error": timed_out})).progress.error_reason
         == "ai_timed_out"
     )
-    assert build_board(_run(status=Status.FAILED, job=_FAILED)).progress.error_reason is None
+    assert build_status_board(_run(status=Status.FAILED, job=_FAILED)).progress.error_reason is None
 
 
 def test_a_failed_run_says_why_and_a_failed_mapping_names_its_count() -> None:
-    failed = build_board(_run(status=Status.FAILED, job=_FAILED)).progress
+    failed = build_status_board(_run(status=Status.FAILED, job=_FAILED)).progress
     assert failed.error_message == {"threats": "The AI service is down."}
     assert failed.scenario_count.total is None and failed.scenario_count.remaining is None
-    unmatched = build_board(_run(**_written(**_SET, controls_failed=2))).progress
+    unmatched = build_status_board(_run(**_written(**_SET, controls_failed=2))).progress
     assert unmatched.error_message == {"controls": BoardMessage.CONTROLS_FAILED.format(failed=2)}
     # Live E2E 2026-10-15: a hand-written run's controls are never tried again in the background (Rule R1T).
     hand_written = _written(written=1, accepted=1, controls_failed=1) | {"kind": RunKind.MANUAL}
-    board = build_board(_run(**hand_written)).progress
+    board = build_status_board(_run(**hand_written)).progress
     assert board.error_message == {"controls": BoardMessage.CONTROLS_FAILED_MANUAL}
     assert "tried again later" not in board.error_message["controls"]
 
@@ -203,14 +203,18 @@ def test_a_summary_shows_its_own_action_running_or_failed_never_the_one_before()
     asked = {"outcome": "running", "requested": 6, "delivered": None}
     for outcome in ("running", "failed"):
         action = {"kind": RunActionKind.NEXT_SET, "outcome": outcome}
-        board = build_board(_run(**_written(**_SET), last_action=action, last_next_set=asked))
+        board = build_status_board(_run(**_written(**_SET), last_action=action, last_next_set=asked))
         assert board.progress.last_next_set == asked | {"outcome": outcome}
     done = {"outcome": "complete", "requested": 6, "delivered": 6}
     regenerating = {"kind": RunActionKind.REGENERATE, "outcome": "running"}
-    later = build_board(_run(**_written(**_SET), last_action=regenerating, last_next_set=done)).progress
+    later = build_status_board(
+        _run(**_written(**_SET), last_action=regenerating, last_next_set=done)
+    ).progress
     assert later.last_next_set == done  # another action runs: the last next set stays as it ended
     # Reviewer 2026-10-12: a next set whose job failed, then a regenerate: it never got its finish write.
-    stale = build_board(_run(**_written(**_SET), last_action=regenerating, last_next_set=asked)).progress
+    stale = build_status_board(
+        _run(**_written(**_SET), last_action=regenerating, last_next_set=asked)
+    ).progress
     assert stale.last_next_set == asked | {"outcome": "failed"}
 
 

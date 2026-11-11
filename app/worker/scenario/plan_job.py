@@ -21,8 +21,8 @@ from app.core.constants import (
 )
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.data_access.jobs.job_repository import JobLease, ended_job_fields
-from app.domain.scenario.plan import ThreatFinder, build_plan, set_and_first_batch
-from app.domain.scenario.plan_trace import build_plan_trace
+from app.domain.scenario.plan import ThreatFinder, build_plan, build_plan_trace
+from app.domain.scenario.session import pick_next_paths_to_write
 from app.models.scenario.asset_context import FrozenContext
 from app.worker.jobs import hand_over
 
@@ -44,12 +44,14 @@ class PlanJob:
         started = time.perf_counter()
         context = FrozenContext.from_record(lease.record["context"])
         country = get_settings().context_country if self._switch.is_on() else ""  # a fact, ranks nothing
-        last_attempt = lease.attempts >= Lease.MAX_ATTEMPTS
-        findings = self._threat_finder.find_threats(context, country, last_attempt=last_attempt)
-        plan = build_plan(findings, get_settings().total_scenario_count)  # other sessions never block (D15)
+        is_last_attempt = lease.attempts >= Lease.MAX_ATTEMPTS
+        findings = self._threat_finder.find_threats(context, country, is_last_attempt=is_last_attempt)
+        plan = build_plan(findings, get_settings().total_scenario_count)  # its other sessions never block
         plan |= {"frozen_at": utc_now(), "made_with": _made_with(findings.library_stamp)}
         selected = [path["path_id"] for path in plan["paths"] if path["selected"]]
-        asked, batch = set_and_first_batch(plan["paths"], get_settings().initial_set_size)  # [] when none
+        asked, batch = pick_next_paths_to_write(
+            plan["paths"], get_settings().initial_set_size
+        )  # [] when none
         trace = build_plan_trace(findings, plan, len(asked))
         changes = _plan_changes(plan, len(selected), time.perf_counter() - started) | {"plan_trace": trace}
         if asked:

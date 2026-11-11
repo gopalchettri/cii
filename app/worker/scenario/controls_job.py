@@ -33,9 +33,10 @@ from app.core.exceptions import (
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.controls import ControlMapper, controls_record, embed_control_queries
+from app.domain.scenario.write import ControlMapper, build_control_query, build_controls_record
 from app.domain.shared.parallel import run_in_parallel
 from app.models.scenario.asset_context import FrozenContext
+from app.models.scenario.controls import ControlQuery
 from app.realtime.publisher import publish_session_status
 from app.search.service import LibrarySearch
 from app.search.snapshot import LibrarySnapshot
@@ -140,6 +141,7 @@ class RunControls:
         self._snapshot, self._mapper = snapshot, mapper
         self._taken_over = False  # another delivery took the run over mid-turn
         self._queries_embedded = _OneEmbedCall(lambda: None)  # the claimed scenarios' control queries
+        self._queries: dict[str, ControlQuery] = {}  # each claimed scenario's control query, by its id
 
     def map_all(self) -> int:
         """Map up to Controls.PER_DELIVERY scenarios, all at once on a remote reranker (the local CPU model
@@ -151,8 +153,7 @@ class RunControls:
         for _ in range(Controls.PER_DELIVERY // at_once):
             # Claimed before any is mapped: a scenario an outage gives back is never claimed again this turn.
             scenarios = self._claim_up_to(at_once)
-            embed = partial(embed_control_queries, scenarios, self._context, self._snapshot)
-            self._queries_embedded = _OneEmbedCall(embed)
+            self._queries_embedded = _OneEmbedCall(partial(self._embed_queries, scenarios))
             mapped += sum(run_in_parallel(self._map_and_count, scenarios, at_once, "controls"))
             if self._taken_over:  # the run's lease ran out mid-turn and another delivery took the run over
                 return mapped
@@ -162,6 +163,15 @@ class RunControls:
         self._sessions.update_controls_delivery(self._record_id, self._task_id, hand_over=True)
         send_job(TaskName.MAP_CONTROLS, self._record_id, 0)  # the epoch is never checked for controls
         return mapped
+
+    def _embed_queries(self, scenarios: list[dict[str, Any]]) -> None:
+        """Build and embed the scenarios' control queries in one call; each mapping reuses its query."""
+        if not self._snapshot.library.control_library:  # nothing to search: each mapping fails with no call
+            return
+        self._queries = {
+            scenario["_id"]: build_control_query(scenario["content"], self._context) for scenario in scenarios
+        }
+        self._snapshot.embed_control_queries([query.text for query in self._queries.values()])
 
     def _claim_up_to(self, count: int) -> list[dict[str, Any]]:
         """Up to `count` of the run's waiting scenarios, oldest first, claimed for this delivery."""
@@ -202,9 +212,7 @@ class RunControls:
             send_job(TaskName.MAP_CONTROLS, self._record_id, 0)
 
     def _map_one(self, scenario: dict[str, Any]) -> int:
-        """Map and save one scenario's controls: 1 when saved. A reason no retry changes fails its controls;
-        an outage gives it back and is raised; a job-wide failure fails it and is raised; a lost lease skips
-        it."""
+        """Maps and saves one scenario's controls (1 when saved); a lasting fault fails them."""
         scenario_id, attempts = scenario["_id"], scenario["controls"]["attempts"]
         try:
             lease = _ScenarioLease(
@@ -213,7 +221,8 @@ class RunControls:
             # Background work: on a local CPU reranker any waiting foreground rerank goes first.
             with keep_lease_alive(lease, lease.give_back), background_reranks():
                 self._queries_embedded.wait()  # under this scenario's lease: the call may be slow
-                mapping = self._mapper.map_controls(scenario, self._context, self._snapshot)
+                query = self._queries.get(scenario_id)
+                mapping = self._mapper.map_controls(scenario, self._context, self._snapshot, query)
         except ControlsNotMapped as exc:
             self._fail(scenario_id, attempts, exc.code, exc.message)
             return 0
@@ -237,7 +246,7 @@ class RunControls:
             self._task_id,
             attempts,
             Status.DONE,
-            mapping=controls_record(mapping, self._snapshot),
+            mapping=build_controls_record(mapping, self._snapshot),
         )
         log.info(LogEvent.CONTROLS_MAPPED, scenario_id=scenario_id, controls=len(mapping.items), saved=saved)
         return int(saved)

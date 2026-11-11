@@ -1,0 +1,1000 @@
+{
+ "cards": [
+  {
+   "_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 3,
+      "name": "Malicious insider",
+      "reason": "It could reach SCADA server from the office network.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Tampering",
+    "category_id": 12,
+    "contributing_categories": [
+     "Denial of Service"
+    ],
+    "prompt_version": "scenario writer-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+    "system_applicability": [
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "It could affect SCADA server."
+     },
+     {
+      "applicable": true,
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian",
+      "reason": "It could affect Historian."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": true,
+      "id": 321,
+      "name": "SCADA server"
+     },
+     {
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Tampering",
+     "category_id": 12,
+     "confidence": 80.0,
+     "key": "lib:1",
+     "library_id": 1,
+     "name": "Ransomware encrypts backup servers",
+     "rank": 1,
+     "type": "Malware",
+     "type_id": 1
+    },
+    "title": "Ransomware encrypts backup servers at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "3612e77514e7fb83",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "ransomware encrypts backup servers at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "848c3791-b62a-5888-a7fe-32fe7c17e225",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 3,
+      "name": "Malicious insider",
+      "reason": "Has admin rights on SCADA server and Historian.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Elevation of Privilege",
+    "category_id": 16,
+    "contributing_categories": [],
+    "prompt_version": "scenario writer-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+    "system_applicability": [
+     {
+      "applicable": true,
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "It could affect SCADA server."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "It could affect Operator HMI."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server"
+     },
+     {
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Elevation of Privilege",
+     "category_id": 16,
+     "confidence": 80.0,
+     "key": "lib:6",
+     "library_id": 6,
+     "name": "Insider abuses admin rights",
+     "rank": 6,
+     "type": "Privilege misuse",
+     "type_id": 5
+    },
+    "title": "Insider abuses admin rights at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "84c07ebadbc26e6d",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "insider abuses admin rights at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "0e1416ae-df62-5f91-85e9-bf1418499133",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 1,
+      "name": "Ransomware gang",
+      "reason": "It could reach SCADA server from the office network.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Denial of Service",
+    "category_id": 15,
+    "contributing_categories": [],
+    "prompt_version": "scenario writer-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A Ransomware gang could act on Historian. It could spread. It could stop transmission at Grid Control Centre.",
+    "system_applicability": [
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 322,
+      "name": "Historian",
+      "reason": "It could affect Historian."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": true,
+      "id": 322,
+      "name": "Historian"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Denial of Service",
+     "category_id": 15,
+     "confidence": 95.0,
+     "key": "lib:5",
+     "library_id": 5,
+     "name": "Flood of requests overwhelms the historian",
+     "rank": 2,
+     "type": "Overload",
+     "type_id": 4
+    },
+    "title": "Flood of requests overwhelms the historian at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "4a2ec48560942e06",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "flood of requests overwhelms the historian at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "35b9a541-541f-5170-81fc-6a9b1da57a23",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 4,
+      "name": "Phishing crew",
+      "reason": "It could reach SCADA server from the office network.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Spoofing",
+    "category_id": 11,
+    "contributing_categories": [],
+    "prompt_version": "scenario writer-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A Phishing crew could act on Operator HMI. It could spread. It could stop transmission at Grid Control Centre.",
+    "system_applicability": [
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "It could affect Operator HMI."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Spoofing",
+     "category_id": 11,
+     "confidence": 80.0,
+     "key": "lib:2",
+     "library_id": 2,
+     "name": "Phishing or vishing steals operator credentials",
+     "rank": 3,
+     "type": "Social engineering",
+     "type_id": 2
+    },
+    "title": "Phishing or vishing steals operator credentials at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "cfcc04d78faed9c8",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "phishing or vishing steals operator credentials at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 3,
+      "name": "Malicious insider",
+      "reason": "It could reach SCADA server from the office network.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "applicability": {},
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Tampering",
+    "category_id": 12,
+    "contributing_categories": [
+     "Denial of Service"
+    ],
+    "evidence": [
+     {
+      "applicability": null,
+      "facts": [
+       "It is used for these attacker goals: Initial Access, Persistence.",
+       "Sandworm Team, a group, has used this technique.",
+       "It can be reduced by: User Account Management."
+      ],
+      "fetched_at": null,
+      "joined": [],
+      "kind": "technique",
+      "mitigations": [
+       "User Account Management"
+      ],
+      "modified": null,
+      "n": 1,
+      "published": null,
+      "ref": "T0859",
+      "role": "context",
+      "score": 41.5,
+      "searched_at": "<date>",
+      "source": "mitre_attack_ics",
+      "supports": "This attack could use the \"Valid Accounts\" technique",
+      "title": "Valid Accounts",
+      "url": "https://attack.mitre.org/techniques/T0859/"
+     }
+    ],
+    "evidence_mode": "source-documented",
+    "intel_search": {
+     "asset_types": [
+      "OT"
+     ],
+     "considered": [],
+     "failure": null,
+     "outage": null,
+     "query": "q",
+     "rerank_model": "fake",
+     "searched_at": "<date>",
+     "snapshot_id": "snap-1",
+     "threshold": 20.0
+    },
+    "prompt_version": "scenario writer-evidence-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop. This attack could use the \"Valid Accounts\" technique [1].",
+    "system_applicability": [
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "It could affect SCADA server."
+     },
+     {
+      "applicable": true,
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian",
+      "reason": "It could affect Historian."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": true,
+      "id": 321,
+      "name": "SCADA server"
+     },
+     {
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Tampering",
+     "category_id": 12,
+     "confidence": 80.0,
+     "key": "lib:1",
+     "library_id": 1,
+     "name": "Ransomware encrypts backup servers",
+     "rank": 1,
+     "type": "Malware",
+     "type_id": 1
+    },
+    "title": "Ransomware encrypts backup servers at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [
+    {
+     "code": "citation_removed",
+     "message": "The writer's evidence step was not used (it holds a marker, a redaction, a link, a code, an internal label or a quote): the platform cites its own precedent sentence from the same source instead.",
+     "severity": "warning"
+    }
+   ],
+   "path_id": "3612e77514e7fb83",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "ransomware encrypts backup servers at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "848c3791-b62a-5888-a7fe-32fe7c17e225",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 3,
+      "name": "Malicious insider",
+      "reason": "Has admin rights on SCADA server and Historian.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "applicability": {},
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Elevation of Privilege",
+    "category_id": 16,
+    "contributing_categories": [],
+    "evidence": [],
+    "evidence_mode": "inferred",
+    "intel_search": {
+     "asset_types": [
+      "OT"
+     ],
+     "considered": [],
+     "failure": null,
+     "outage": null,
+     "query": "q",
+     "rerank_model": "fake",
+     "searched_at": "<date>",
+     "snapshot_id": "snap-1",
+     "threshold": 20.0
+    },
+    "prompt_version": "scenario writer-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.",
+    "system_applicability": [
+     {
+      "applicable": true,
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "It could affect SCADA server."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "It could affect Operator HMI."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server"
+     },
+     {
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Elevation of Privilege",
+     "category_id": 16,
+     "confidence": 80.0,
+     "key": "lib:6",
+     "library_id": 6,
+     "name": "Insider abuses admin rights",
+     "rank": 6,
+     "type": "Privilege misuse",
+     "type_id": 5
+    },
+    "title": "Insider abuses admin rights at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "84c07ebadbc26e6d",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "insider abuses admin rights at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "0e1416ae-df62-5f91-85e9-bf1418499133",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 1,
+      "name": "Ransomware gang",
+      "reason": "It could reach SCADA server from the office network.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "applicability": {
+     "unknown": 1
+    },
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Denial of Service",
+    "category_id": 15,
+    "contributing_categories": [],
+    "evidence": [
+     {
+      "applicability": "unknown",
+      "facts": [
+       "CISA lists weaknesses in Siemens WinCC as exploited in real attacks (added 2025-01-01)."
+      ],
+      "fetched_at": null,
+      "joined": [],
+      "kind": "vulnerability",
+      "mitigations": [],
+      "modified": null,
+      "n": 1,
+      "published": null,
+      "ref": "CVE-2024-0001",
+      "role": "context",
+      "score": 30.0,
+      "searched_at": "<date>",
+      "source": "cisa_kev",
+      "supports": "The attacker logs in with stolen operator credentials is an example of \"Siemens WinCC flaw\": CISA lists weaknesses in Siemens WinCC as exploited in real attacks (added 2025-01-01)",
+      "title": "Siemens WinCC flaw",
+      "url": "https://nvd.nist.gov/vuln/detail/CVE-2024-0001"
+     }
+    ],
+    "evidence_mode": "source-documented",
+    "intel_search": {
+     "asset_types": [
+      "OT"
+     ],
+     "considered": [],
+     "failure": null,
+     "outage": null,
+     "query": "q",
+     "rerank_model": "fake",
+     "searched_at": "<date>",
+     "snapshot_id": "snap-1",
+     "threshold": 20.0
+    },
+    "prompt_version": "scenario writer-evidence-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A Ransomware gang could act on Historian. It could spread. It could stop transmission at Grid Control Centre. The attacker logs in with stolen operator credentials is an example of \"Siemens WinCC flaw\": CISA lists weaknesses in Siemens WinCC as exploited in real attacks (added 2025-01-01) [1].",
+    "system_applicability": [
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 322,
+      "name": "Historian",
+      "reason": "It could affect Historian."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": true,
+      "id": 322,
+      "name": "Historian"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Denial of Service",
+     "category_id": 15,
+     "confidence": 95.0,
+     "key": "lib:5",
+     "library_id": 5,
+     "name": "Flood of requests overwhelms the historian",
+     "rank": 2,
+     "type": "Overload",
+     "type_id": 4
+    },
+    "title": "Flood of requests overwhelms the historian at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "4a2ec48560942e06",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "flood of requests overwhelms the historian at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  },
+  {
+   "_id": "35b9a541-541f-5170-81fc-6a9b1da57a23",
+   "asset_id": 103,
+   "content": {
+    "actors": [
+     {
+      "closest": false,
+      "id": 4,
+      "name": "Phishing crew",
+      "reason": "It could reach SCADA server from the office network.",
+      "role": "acting",
+      "selection": "chosen"
+     }
+    ],
+    "also_applies": [],
+    "applicability": {},
+    "assumptions": [
+     "The office network reaches the control network."
+    ],
+    "category": "Spoofing",
+    "category_id": 11,
+    "contributing_categories": [],
+    "evidence": [
+     {
+      "applicability": null,
+      "facts": [
+       "It is used for these attacker goals: Initial Access, Persistence.",
+       "Sandworm Team, a group, has used this technique.",
+       "It can be reduced by: User Account Management."
+      ],
+      "fetched_at": null,
+      "joined": [],
+      "kind": "technique",
+      "mitigations": [
+       "User Account Management"
+      ],
+      "modified": null,
+      "n": 1,
+      "nearest": true,
+      "published": null,
+      "ref": "T0859",
+      "role": "context",
+      "score": 41.5,
+      "searched_at": "<date>",
+      "source": "mitre_attack_ics",
+      "supports": "The attacker logs in with stolen operator credentials is in the same family as the \"Spearphishing Attachment\" technique",
+      "title": "Spearphishing Attachment",
+      "url": "https://attack.mitre.org/techniques/T0859/"
+     }
+    ],
+    "evidence_mode": "nearest",
+    "intel_search": {
+     "asset_types": [
+      "OT"
+     ],
+     "considered": [],
+     "failure": null,
+     "outage": null,
+     "query": "q",
+     "rerank_model": "fake",
+     "searched_at": "<date>",
+     "snapshot_id": "snap-1",
+     "threshold": 20.0
+    },
+    "prompt_version": "scenario writer-evidence-2",
+    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
+    "route": {
+     "note": null,
+     "status": "standalone"
+    },
+    "statement": "A Phishing crew could act on Operator HMI. It could spread. It could stop transmission at Grid Control Centre. The attacker logs in with stolen operator credentials is in the same family as the \"Spearphishing Attachment\" technique [1].",
+    "system_applicability": [
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 321,
+      "name": "SCADA server",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": false,
+      "entry_point": false,
+      "id": 322,
+      "name": "Historian",
+      "reason": "This threat's actions in this scenario do not reach this system; that does not make it immune to other threats."
+     },
+     {
+      "applicable": true,
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI",
+      "reason": "It could affect Operator HMI."
+     }
+    ],
+    "systems": [
+     {
+      "entry_point": true,
+      "id": 323,
+      "name": "Operator HMI"
+     }
+    ],
+    "threat": {
+     "ai_generated": false,
+     "category": "Spoofing",
+     "category_id": 11,
+     "confidence": 80.0,
+     "key": "lib:2",
+     "library_id": 2,
+     "name": "Phishing or vishing steals operator credentials",
+     "rank": 3,
+     "type": "Social engineering",
+     "type_id": 2
+    },
+    "title": "Phishing or vishing steals operator credentials at Grid Control Centre"
+   },
+   "controls": {
+    "attempts": 0,
+    "origin": {},
+    "queued_at": "<datetime>",
+    "request_id": null,
+    "status": "queued"
+   },
+   "created_at": "<datetime>",
+   "decided_at": null,
+   "decided_by": null,
+   "decision": "pending",
+   "entity_id": 86,
+   "findings": [],
+   "path_id": "cfcc04d78faed9c8",
+   "plan_check": {
+    "problems": [],
+    "same_impact": null,
+    "same_threat": null,
+    "status": "unchecked",
+    "unsupported": []
+   },
+   "replaces": null,
+   "rewritten": false,
+   "session_id": "run-golden-1",
+   "source": "generated",
+   "status": "done",
+   "superseded_by": null,
+   "title_key": "phishing or vishing steals operator credentials at grid control centre",
+   "updated_at": "<datetime>",
+   "version": 1
+  }
+ ],
+ "note": "Fixed input for the control and view goldens: the done cards of the writing goldens; never rewritten."
+}

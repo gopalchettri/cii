@@ -2,6 +2,7 @@
 one threat per threat and who carries out each threat."""
 
 import dataclasses
+import hashlib
 import threading
 import time
 from types import SimpleNamespace
@@ -11,27 +12,24 @@ import pytest
 
 from app.ai import UnreadableAiAnswer
 from app.core.config import get_settings
-from app.core.constants import ActorRole, AiTask, AttackerCheck, CandidateRejection, ErrorCode, ThreatFinding
+from app.core.constants import (
+    ActorRole,
+    AiTask,
+    AttackerCheck,
+    CandidateRejection,
+    ErrorCode,
+    PlanLoss,
+    PlanStage,
+    ThreatFinding,
+)
 from app.core.exceptions import PlanRefused, Unavailable
 from app.domain.scenario import plan as plan_module
-from app.domain.scenario.plan import (
-    ThreatFinder,
-    assign_attackers,
-    build_plan,
-    describe_asset_for_ai,
-    merge_reworded_threats,
-    merge_same_threats,
-    merge_two_threats,
-    parse_verdict,
-    planned_threat_record,
-    relevance_gate_prompt,
-    threat_from_library,
-)
+from app.domain.scenario.plan import ThreatFinder, build_plan, describe_asset_for_ai
 from app.domain.shared.names import replace_codes_with_names
 from app.domain.shared.parallel import run_in_parallel
 from app.models.library.library import LibraryActor, ThreatLibrary
 from app.models.scenario.asset_context import FrozenContext
-from app.models.scenario.plan import ActorPick, PlannedActor, PlannedThreat, Verdict
+from app.models.scenario.plan import ActorPick, Drop, PlannedActor, PlannedThreat, Verdict
 from app.search.service import LibrarySearch
 from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -47,13 +45,13 @@ from tests.planner_samples import (
     THREATS,
     WORDS,
     S,
-    audit_of,
+    drops_for,
     finder,
     gap_fill,
     gap_fill_for_elevation,
     gap_filled,
+    gate_prompt,
     judged,
-    library_search,
     planned,
     planner_chat,
     system_row,
@@ -70,20 +68,13 @@ _PROPOSAL = {
 _TYPE_MATCHES = {("Privilege misuse", "Privilege misuse"): 90.0}
 
 
-def _library_threat(category: S, threat: Any, verdict: Verdict) -> PlannedThreat:
-    return PlannedThreat(
-        key=f"lib:{threat.catalogue_id}",
-        catalogue_id=threat.catalogue_id,
-        type_id=threat.type_id,
-        type_name=threat.type_name,
-        name=threat.name,
-        categories=(category,),
-        systems=verdict.systems,
-        impact=verdict.impact,
-        confidence=verdict.confidence,
-        reason=verdict.reason,
-        actor_pick=verdict.actor_pick,
-    )
+#: The sample landscape: SYS1 is the SCADA server (321), SYS2 the Historian (322).
+_LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
+
+
+def _threat_picking(key: str, pick: ActorPick | None, linked: tuple[LibraryActor, ...]) -> PlannedThreat:
+    """A judged library threat with the gate's pick among its linked actors."""
+    return planned(key, key, actor_pick=pick, linked_actors=linked)
 
 
 def test_the_landscape_names_systems_by_alias_and_keeps_to_its_budget() -> None:
@@ -96,12 +87,12 @@ def test_the_landscape_names_systems_by_alias_and_keeps_to_its_budget() -> None:
     assert "backup_tested" not in landscape.text  # an unrecorded fact is left out, never written as "no"
     assert landscape.system_ids == {"SYS1": 321, "SYS2": 322}
     listed = '"supporting_systems": [{"name": "SCADA server", "asset_type": "OT"}, {"name": "Historian"'
-    assert listed in landscape.text and not landscape.cut  # the asset's systems by name and asset type
+    assert listed in landscape.text and not landscape.is_cut  # the asset's systems by name and asset type
     wordy_scada = system_row(321, "SYS1", "SCADA server", past_incidents="Outage after a patch. " * 30)
     wordy = FrozenContext(**{**CONTEXT.to_record(), "systems": [wordy_scada, CONTEXT.systems[1]]})
     squeezed = describe_asset_for_ai(wordy, budget=1_200)
     # The longest fact is cut, never the last system: every system keeps its line, name and asset type.
-    assert len(squeezed.text) <= 1_200 and squeezed.cut
+    assert len(squeezed.text) <= 1_200 and squeezed.is_cut
     assert '\nSYS2 "Historian": {"name": "Historian"' in squeezed.text
     scada_line = next(line for line in squeezed.text.splitlines() if line.startswith("SYS1 "))
     assert "…" in scada_line and '"asset_type": "OT"' in scada_line
@@ -123,6 +114,14 @@ def _applies(**fields: Any) -> dict[str, Any]:
     )
 
 
+def _read_sample_verdict(item: dict[str, Any]) -> tuple[Verdict | None, list[str]]:
+    """The sample candidate's verdict as code reads it, or its problems."""
+    named, problems = plan_module._find_problems_in_threat_answer(item, _CANDIDATE, _LANDSCAPE.system_ids)
+    return (
+        None if problems else plan_module._read_one_threat_answer(item, _CANDIDATE, named, _LANDSCAPE)
+    ), problems
+
+
 def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
     bad = _applies(
         systems=["SYS9"],
@@ -130,14 +129,14 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
         categories=[{"name": "Tampering", "impact": "BIG"}],
         likelihood="SOMETIMES",
     )
-    assert parse_verdict(bad, _CANDIDATE, {"SYS1": 321})[1] == [
+    assert _read_sample_verdict(bad)[1] == [
         "R1: systems must be listed aliases only (SYS1, SYS2 ...)",
         "R1: Tampering needs its impact (HIGH, MEDIUM or LOW) and its reason",
         "R1: confidence must be a number from 0 to 100",
         "R1: likelihood must be HIGH, MEDIUM or LOW",
     ]
-    verdicts, problems = parse_verdict(_applies(systems=[["SYS1"]]), _CANDIDATE, {"SYS1": 321})
-    assert verdicts is None and problems == ["R1: systems must be listed aliases only (SYS1, SYS2 ...)"]
+    verdict, problems = _read_sample_verdict(_applies(systems=[["SYS1"]]))
+    assert verdict is None and problems == ["R1: systems must be listed aliases only (SYS1, SYS2 ...)"]
     rejection = {
         "slot": "R1",
         "threat": RANSOMWARE.name,
@@ -146,13 +145,15 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
         "reason": "No mail.",
     }
     ignored = {"impact": "N/A", "confidence": 5, "likelihood": "HIGH"}  # a rejection has none of them
-    verdicts, problems = parse_verdict(rejection | ignored, _CANDIDATE, {})
-    no_mail = Verdict(False, (), "No mail.", 0, 0.0)
-    assert problems == [] and verdicts == {S.TAMPERING: no_mail, S.DENIAL_OF_SERVICE: no_mail}
+    no_mail = Verdict({}, (CandidateRejection.NOT_RELEVANT, "No mail."), (), (), 0.0, 0, None, ())
+    assert _read_sample_verdict(rejection | ignored) == (
+        no_mail,
+        [],
+    )  # one verdict for all its own categories
     short = rejection | {"needs": ["mail"]}  # the form asked for
-    needing = Verdict(False, (), "No mail.", 0, 0.0, ("mail",))
-    assert parse_verdict(short, _CANDIDATE, {}) == ({S.TAMPERING: needing, S.DENIAL_OF_SERVICE: needing}, [])
-    assert parse_verdict(rejection | {"reason": ""}, _CANDIDATE, {})[1] == [
+    needing = dataclasses.replace(no_mail, refusal=(CandidateRejection.NEEDS_UNRECORDED, "mail"))
+    assert _read_sample_verdict(short) == (needing, [])
+    assert _read_sample_verdict(rejection | {"reason": ""})[1] == [
         "R1: a threat that does not apply needs its reason"
     ]
 
@@ -160,16 +161,15 @@ def test_a_verdict_is_checked_in_code_and_a_rejection_needs_no_impact() -> None:
 def test_the_gates_likelihood_is_read_like_impact_kept_as_the_higher_on_a_merge_and_stored() -> None:
     """Owner, 31 Oct: one likelihood per threat, HIGH, MEDIUM or LOW in any case; a relevant verdict without
     one is a problem; a merge keeps the higher; the plan stores it."""
-    verdicts, problems = parse_verdict(_applies(likelihood="medium"), _CANDIDATE, {"SYS1": 321})
-    assert problems == [] and verdicts is not None and verdicts[S.TAMPERING].likelihood == 2
+    verdict, problems = _read_sample_verdict(_applies(likelihood="medium"))
+    assert problems == [] and verdict is not None and verdict.likelihood == 2
     missing = {key: value for key, value in _applies().items() if key != "likelihood"}
-    assert parse_verdict(missing, _CANDIDATE, {"SYS1": 321})[1] == [
-        "R1: likelihood must be HIGH, MEDIUM or LOW"
-    ]
+    assert _read_sample_verdict(missing)[1] == ["R1: likelihood must be HIGH, MEDIUM or LOW"]
     low = planned("lib:1", "Ransomware", likelihood=1)
-    high = planned("lib:1", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), likelihood=3)
-    assert merge_two_threats(low, high).likelihood == merge_two_threats(high, low).likelihood == 3
-    assert planned_threat_record(high)["likelihood"] == 3
+    high = planned("ai:x", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), likelihood=3)
+    merge = plan_module._merge_threat_into_another
+    assert merge(low, high, CONTEXT, []).likelihood == merge(high, low, CONTEXT, []).likelihood == 3
+    assert high.to_record({})["likelihood"] == 3
     (ransomware,) = finder(planner_chat({RANSOMWARE.name: ["SYS1"]})).find_threats(CONTEXT).threats
     assert ransomware.likelihood == 2  # the sample gate says MEDIUM
 
@@ -177,33 +177,21 @@ def test_the_gates_likelihood_is_read_like_impact_kept_as_the_higher_on_a_merge_
 def test_a_relevant_verdict_names_its_ways_in_among_its_own_systems() -> None:
     """The gate says through which of a threat's systems an attacker could get in: at least one when it
     names systems, never one it does not name; a rejection needs none, and the asset itself has none."""
-    aliases = {"SYS1": 321, "SYS2": 322}
     relevant = _applies(systems=["SYS1", "SYS2"], entry_points=[])
-    assert parse_verdict(relevant, _CANDIDATE, aliases)[1] == [
+    assert _read_sample_verdict(relevant)[1] == [
         "R1: entry_points must name the systems among its own an attacker could get in through"
     ]
     outside = relevant | {"systems": ["SYS1"], "entry_points": ["SYS2"]}
-    assert parse_verdict(outside, _CANDIDATE, aliases)[1] == [
-        "R1: entry_points must be aliases from its own systems"
-    ]
-    verdicts, problems = parse_verdict(relevant | {"entry_points": ["SYS2"]}, _CANDIDATE, aliases)
-    assert problems == [] and verdicts is not None
-    assert (verdicts[S.TAMPERING].systems, verdicts[S.TAMPERING].entry_points) == ((321, 322), (322,))
+    assert _read_sample_verdict(outside)[1] == ["R1: entry_points must be aliases from its own systems"]
+    verdict, problems = _read_sample_verdict(relevant | {"entry_points": ["SYS2"]})
+    assert problems == [] and verdict is not None
+    assert (verdict.systems, verdict.entry_points) == ((321, 322), (322,))
     rejected = relevant | {"relevant": False, "reason": "No.", "entry_points": ["SYS9"]}
-    assert parse_verdict(rejected, _CANDIDATE, aliases)[1] == []
-    asset = parse_verdict(relevant | {"systems": [], "entry_points": []}, _CANDIDATE, aliases)[0]
-    assert asset is not None
-    assert asset[S.TAMPERING] == Verdict(
-        True,
-        (),
-        "It encrypts SYS1.",
-        3,
-        80.0,
-        actor_pick=ActorPick(None, ""),
-        kinds=(S.TAMPERING,),
-        likelihood=3,
-    )
-    prompt = relevance_gate_prompt("LANDSCAPE", [{"slot": "R1"}])[1]
+    assert _read_sample_verdict(rejected)[1] == []
+    asset, _ = _read_sample_verdict(relevant | {"systems": [], "entry_points": []})
+    named = {S.TAMPERING: (3, "It encrypts SCADA server.")}  # aliases read as system names
+    assert asset == Verdict(named, None, (), (), 80.0, 3, ActorPick(None, ""), ())
+    prompt = gate_prompt([{"slot": "R1"}])
     assert '"entry_points": ["SYS1"]' in prompt and "one, several or all of them" in prompt
 
 
@@ -218,7 +206,7 @@ def test_an_unreadable_gate_reply_retries_the_job_before_any_gap_fill() -> None:
 
 def test_once_a_gate_call_raises_unavailable_no_new_gate_call_starts(monkeypatch: pytest.MonkeyPatch) -> None:
     """The job retries anyway: a call already running finishes, the batches still waiting never start."""
-    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 1)
     monkeypatch.setattr(ThreatFinding, "AI_BATCHES_AT_ONCE", 1)  # one gate call at a time
 
     def down(user_prompt: str) -> dict[str, Any]:
@@ -237,13 +225,13 @@ def test_on_the_last_attempt_a_broken_batch_is_skipped_and_its_categories_get_no
 ) -> None:
     """Two batches of three: the one holding the phishing threat stays unreadable, so its threats are not
     judged under any of their categories, and only the categories all judged get the one gap fill."""
-    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 3)
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 3)
     chat = planner_chat({FLOOD.name: ["SYS1"]})
     gate = chat.responders[AiTask.RELEVANCE_GATE]
     chat.responders[AiTask.RELEVANCE_GATE] = lambda u: {"verdicts": "?"} if PHISHING.name in u else gate(u)
-    findings = finder(chat).find_threats(CONTEXT, last_attempt=True)
-    spoofing = audit_of(findings, S.SPOOFING)
-    assert spoofing.judged_ids == set() and spoofing.rejected == [] and spoofing.not_judged == [PHISHING]
+    findings = finder(chat).find_threats(CONTEXT, is_last_attempt=True)
+    spoofing = [(drop.threat_key, drop.stage, drop.reason) for drop in drops_for(findings, S.SPOOFING)]
+    assert spoofing == [("lib:2", PlanStage.GATE, PlanLoss.NOT_JUDGED)]
     assert len([user for user in chat.asked(AiTask.RELEVANCE_GATE) if PHISHING.name in user]) == 2
     assert gap_filled(chat) == [S.INFORMATION_DISCLOSURE, S.ELEVATION_OF_PRIVILEGE]  # in one ask
     assert [threat.name for threat in findings.threats] == [FLOOD.name]
@@ -252,16 +240,16 @@ def test_on_the_last_attempt_a_broken_batch_is_skipped_and_its_categories_get_no
 def test_an_unusable_batch_on_the_last_attempt_costs_only_its_own_threats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)  # one threat per batch
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 1)  # one threat per batch
     chat = planner_chat({RANSOMWARE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
     gate = chat.responders[AiTask.RELEVANCE_GATE]
     chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
         {"verdicts": "?"} if FLOOD.name in user else gate(user)
     )
-    findings = finder(chat).find_threats(CONTEXT, last_attempt=True)
-    denial = audit_of(findings, S.DENIAL_OF_SERVICE)
+    findings = finder(chat).find_threats(CONTEXT, is_last_attempt=True)
+    denial = [(drop.threat_key, drop.reason) for drop in drops_for(findings, S.DENIAL_OF_SERVICE)]
     assert [threat.name for threat in findings.threats] == [RANSOMWARE.name]  # its good verdict is kept
-    assert denial.judged_ids == {RANSOMWARE.catalogue_id}
+    assert denial == [(f"lib:{FLOOD.catalogue_id}", PlanLoss.NOT_JUDGED)]  # the ransomware was judged
     plan = build_plan(findings, 0)
     assert any(S.DENIAL_OF_SERVICE in path["categories"] for path in plan["paths"])  # it has a scenario
 
@@ -269,7 +257,7 @@ def test_an_unusable_batch_on_the_last_attempt_costs_only_its_own_threats(
 def test_an_asset_no_library_threat_fits_asks_no_gate_and_plans_nothing() -> None:
     chat = planner_chat({})
     it_only = dataclasses.replace(LOG_WIPE, asset_type="IT")  # linked to an actor; the asset is OT
-    findings = finder(chat, threats=(it_only,)).find_threats(CONTEXT, last_attempt=True)
+    findings = finder(chat, threats=(it_only,)).find_threats(CONTEXT, is_last_attempt=True)
     assert findings.threats == [] and chat.asked(AiTask.RELEVANCE_GATE) == []
 
 
@@ -290,7 +278,7 @@ def test_gap_fill_comes_after_the_whole_category_takes_a_library_type_and_the_ga
     chat.responders[AiTask.RELEVANCE_GATE] = picking
     rerank = FakeRerankModel(_TYPE_MATCHES)
     findings = finder(chat, rerank).find_threats(CONTEXT)
-    (ai_threat,) = [threat for threat in findings.threats if not threat_from_library(threat)]
+    (ai_threat,) = [threat for threat in findings.threats if threat.catalogue_id is None]
     assert ai_threat.key == "ai:engineering workstation takeover"
     assert (ai_threat.type_id, ai_threat.type_name) == (5, "Privilege misuse")  # the library type
     assert listed[_PROPOSAL["threat"]] == [INSIDER.name]  # its type's linked actor, never the AI's text
@@ -309,7 +297,7 @@ def test_a_proposal_whose_type_matches_no_library_type_is_never_planned() -> Non
     chat = planner_chat({_PROPOSAL["threat"]: ["SYS1"]})
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL | {"threat_type": "Quantum sabotage"})
     findings = finder(chat, FakeRerankModel()).find_threats(CONTEXT)  # no type scores at the bar
-    assert all(threat_from_library(threat) for threat in findings.threats)
+    assert all(threat.catalogue_id is not None for threat in findings.threats)
     assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
 
 
@@ -320,7 +308,7 @@ def test_a_proposal_whose_type_links_no_attacker_is_never_judged() -> None:
     threats = tuple(unlinked if threat is ADMIN_ABUSE else threat for threat in THREATS)
     findings = finder(chat, FakeRerankModel(_TYPE_MATCHES), threats=threats).find_threats(CONTEXT)
     assert S.ELEVATION_OF_PRIVILEGE in gap_filled(chat)
-    assert all(threat_from_library(threat) for threat in findings.threats)
+    assert all(threat.catalogue_id is not None for threat in findings.threats)
     assert not any(_PROPOSAL["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))
 
 
@@ -333,10 +321,13 @@ def test_a_proposal_the_gate_cannot_judge_retries_the_job_and_on_the_last_attemp
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(_PROPOSAL)
     with pytest.raises(Unavailable):
         finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT)
-    findings = finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT, last_attempt=True)
-    assert all(threat_from_library(threat) for threat in findings.threats)
-    elevation = audit_of(findings, S.ELEVATION_OF_PRIVILEGE)
-    assert [rejected["code"] for rejected in elevation.rejected] == [CandidateRejection.NOT_RELEVANT]
+    findings = finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT, is_last_attempt=True)
+    assert all(threat.catalogue_id is not None for threat in findings.threats)
+    elevation = [(drop.stage, drop.reason) for drop in drops_for(findings, S.ELEVATION_OF_PRIVILEGE)]
+    assert elevation == [
+        (PlanStage.GATE, CandidateRejection.NOT_RELEVANT),  # the library threat
+        (PlanStage.GAP_FILL, PlanLoss.NOT_JUDGED),  # the proposal its gate check could not judge
+    ]
 
 
 def test_a_proposal_repeating_a_library_threat_is_dropped_at_the_threat_threshold(
@@ -351,7 +342,7 @@ def test_a_proposal_repeating_a_library_threat_is_dropped_at_the_threat_threshol
         chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(proposal)
         scores = {(proposal["threat"], ADMIN_ABUSE.name): 80.0} | _TYPE_MATCHES
         found = finder(chat, FakeRerankModel(scores)).find_threats(CONTEXT)
-        return [threat.name for threat in found.threats if not threat_from_library(threat)]
+        return [threat.name for threat in found.threats if threat.catalogue_id is None]
 
     assert ai_threats() == []
     monkeypatch.setattr(get_settings(), "threat_similarity_threshold", 85.0)
@@ -359,22 +350,35 @@ def test_a_proposal_repeating_a_library_threat_is_dropped_at_the_threat_threshol
 
 
 def test_one_library_threat_found_under_two_categories_is_one_threat() -> None:
-    tampering = planned("lib:1", RANSOMWARE.name, (321,), impact=2)
-    denial = planned("lib:1", RANSOMWARE.name, (322,), categories=(S.DENIAL_OF_SERVICE,), impact=3)
-    (merged,) = merge_same_threats([denial, tampering])
-    assert merged.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE) and merged.systems == (321, 322)
-    assert merged.impact == 3
+    """One verdict for all its own categories: one record, its highest impact, its main category's path."""
+    tampering_low = {"name": "Tampering", "impact": "LOW", "reason": "It encrypts SYS1."}
+    denial_high = {"name": "Denial of Service", "impact": "HIGH", "reason": "It stops SYS2."}
+    gate = judged({RANSOMWARE.name: ["SYS1", "SYS2"]})
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: {
+        "verdicts": [
+            verdict | ({"categories": [tampering_low, denial_high]} if verdict["slot"] == "R1" else {})
+            for verdict in gate(user)["verdicts"]
+        ]
+    }
+    (ransomware,) = finder(chat).find_threats(CONTEXT).threats
+    assert ransomware.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE) and ransomware.systems == (321, 322)
+    assert ransomware.impact == 3 and ransomware.main_place.impact == 1  # the path is its main category's
 
 
 def test_an_ai_threat_named_like_a_library_threat_of_its_type_is_that_library_threat() -> None:
     """The library name keeps its code, the AI's has none; of another type, both are kept."""
     library = planned("lib:1", f"T1486 {RANSOMWARE.name}", (321,))
     ai_twin = planned("ai:x", RANSOMWARE.name, (322,), categories=(S.DENIAL_OF_SERVICE,))
-    (kept,) = merge_same_threats([library, ai_twin])
+    drops: list[Drop] = []
+    embeddings = FakeEmbeddings(WORDS)
+    (kept,) = plan_module._merge_duplicate_threats([library, ai_twin], embeddings, CONTEXT, drops)  # type: ignore[arg-type]
     assert kept.key == "lib:1" and kept.systems == (321, 322)
     assert kept.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE)
+    assert drops == [Drop("ai:x", RANSOMWARE.name, None, PlanStage.MERGE, PlanLoss.MERGED, "into lib:1")]
     other_type = planned("ai:x", RANSOMWARE.name, (322,), type_id=5, type_name="Privilege misuse")
-    assert [threat.key for threat in merge_same_threats([library, other_type])] == ["ai:x", "lib:1"]
+    both = plan_module._merge_duplicate_threats([library, other_type], embeddings, CONTEXT, [])  # type: ignore[arg-type]
+    assert [threat.key for threat in both] == ["ai:x", "lib:1"]
 
 
 def test_an_ai_rewording_of_the_same_type_is_folded_by_meaning() -> None:
@@ -384,21 +388,22 @@ def test_an_ai_rewording_of_the_same_type_is_folded_by_meaning() -> None:
     different = planned("ai:b", "Phishing of operators")
     other_type = planned("ai:c", "Ransomware locking the backup", (322,), type_id=5)
     embeddings = FakeEmbeddings(WORDS)
-    kept = merge_reworded_threats(
-        [library, reworded, different, other_type], embeddings, "Grid Control Centre"
-    )  # type: ignore[arg-type]
-    assert [threat.key for threat in kept] == ["lib:1", "ai:b", "ai:c"] and kept[0].systems == (321, 322)
+    threats = [library, reworded, different, other_type]
+    kept = plan_module._merge_duplicate_threats(threats, embeddings, CONTEXT, [])  # type: ignore[arg-type]
+    assert [threat.key for threat in kept] == ["ai:b", "ai:c", "lib:1"] and kept[2].systems == (321, 322)
     assert embeddings.calls == ["compare"]  # both sides alike, never as search queries
 
 
 def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch: pytest.MonkeyPatch) -> None:
     assigned: list[list[str]] = []
 
-    def recording(snapshot: Any, threats: list[PlannedThreat]) -> Any:
-        assigned.append([threat.key for threat in threats])
-        return assign_attackers(snapshot, threats)
+    pick_attackers = plan_module._set_main_category_and_attacker
 
-    monkeypatch.setattr(plan_module, "assign_attackers", recording)
+    def recording(threats: list[PlannedThreat], drops: list[Drop]) -> Any:
+        assigned.append([threat.key for threat in threats])
+        return pick_attackers(threats, drops)
+
+    monkeypatch.setattr(plan_module, "_set_main_category_and_attacker", recording)
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
     twin = _PROPOSAL | {
         "threat_type": "Malware",
@@ -410,35 +415,34 @@ def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch
 
 
 def test_a_linked_type_takes_the_gates_pick_and_an_unlinked_one_gets_no_attacker() -> None:
-    unlinked = dataclasses.replace(PHISHING, linked_actors=())
-    search, _ = library_search(threats=(RANSOMWARE, unlinked))
     pick = ActorPick(GANG.name, "Reaches the backup from the internet.")
-    verdict = Verdict(True, (321,), "It encrypts the backup.", 3, 80.0, actor_pick=pick)
-    ransomware, phishing = assign_attackers(
-        search.snapshot(),
-        [_library_threat(S.TAMPERING, RANSOMWARE, verdict), _library_threat(S.SPOOFING, unlinked, verdict)],
+    drops: list[Drop] = []
+    linked, unlinked = (
+        _threat_picking("lib:1", pick, RANSOMWARE.linked_actors),
+        _threat_picking("lib:2", pick, ()),
     )
+    (ransomware,) = plan_module._set_main_category_and_attacker([linked, unlinked], drops)
     assert ransomware.actors[0].actor_id == GANG.actor_id
-    assert phishing.actors == ()
+    assert [(drop.threat_key, drop.reason) for drop in drops] == [("lib:2", AttackerCheck.NONE_FITS)]
 
 
-def test_the_gates_pick_acts_and_none_fits_or_no_pick_names_no_one_without_any_search() -> None:
-    search, embeddings = library_search()
-    snapshot = search.snapshot()
-    embeddings.queries_down = True  # attackers are never ranked by a search: no embedding call
+def test_the_gates_pick_acts_and_none_fits_or_no_pick_names_no_one() -> None:
+    """Never a search: the pick acts when it names a linked actor; else the threat is dropped as none fits."""
 
-    def chosen(verdict: Verdict) -> PlannedThreat:
-        (decided,) = assign_attackers(snapshot, [_library_threat(S.TAMPERING, RANSOMWARE, verdict)])
-        return decided
+    def chosen(pick: ActorPick | None) -> tuple[list[PlannedThreat], list[Drop]]:
+        drops: list[Drop] = []
+        return plan_module._set_main_category_and_attacker(
+            [_threat_picking("lib:1", pick, RANSOMWARE.linked_actors)], drops
+        ), drops
 
-    pick = ActorPick(INSIDER.name, "Holds the backup admin account.")
-    picked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=pick))
+    (picked,), _ = chosen(ActorPick(INSIDER.name, "Holds the backup admin account."))
     assert picked.actors[0].actor_id == INSIDER.actor_id and picked.attacker_check == AttackerCheck.CHOSEN
-    assert picked.attacker_check_reason == "Holds the backup admin account."
-    nobody = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0, actor_pick=ActorPick(None, "None.")))
-    assert nobody.attacker_check == AttackerCheck.NONE_FITS and nobody.actors == ()
-    unpicked = chosen(Verdict(True, (321,), "Encrypts SYS1.", 3, 80.0))
-    assert unpicked.attacker_check == AttackerCheck.NONE_FITS and unpicked.actors == ()
+    assert picked.attacker_check_reason == "Holds the backup admin account." and picked.actor_pick is None
+    nobody, drops = chosen(ActorPick(None, "None."))
+    none_fits = Drop("lib:1", "lib:1", None, PlanStage.ATTACKER, AttackerCheck.NONE_FITS, "None.")
+    assert nobody == [] and drops == [none_fits]
+    unpicked, drops = chosen(None)
+    assert unpicked == [] and [drop.reason for drop in drops] == [AttackerCheck.NONE_FITS]
 
 
 def test_one_run_reads_one_library_version_even_when_the_library_changes_meanwhile() -> None:
@@ -479,22 +483,22 @@ def test_every_alias_the_ai_wrote_reads_as_the_system_name() -> None:
     )
     assert replace_codes_with_names("STEP7 project on SYS1", names) == "STEP7 project on SCADA system"
     findings = finder(planner_chat({LOG_WIPE.name: ["SYS1"]})).find_threats(CONTEXT)
-    assert findings.threats[0].reason == f"{LOG_WIPE.name} hits SCADA server."
+    (log_wipe,) = findings.threats
+    assert log_wipe.reasons[S.REPUDIATION] == f"{LOG_WIPE.name} hits SCADA server."
 
 
 def test_one_gate_call_judges_every_library_threat_once_for_all_its_categories_in_library_order() -> None:
     chat = planner_chat({RANSOMWARE.name: ["SYS1"]})
     findings = finder(chat).find_threats(CONTEXT)
-    for audit in findings.audits:
-        in_category = {threat.catalogue_id for threat in THREATS if audit.category in threat.categories}
-        assert audit.judged_ids == in_category, audit.category
+    assert findings.gate_asked == sum(len(threat.categories) for threat in THREATS)  # threat x own category
+    assert not [drop for drop in findings.drops if drop.reason == PlanLoss.NOT_JUDGED]  # every one judged
     (asked,) = chat.asked(AiTask.RELEVANCE_GATE)
     shown = [(c["threat"], c["categories"]) for c in items_in(asked, "CANDIDATES")]
     assert shown == [(threat.name, list(threat.categories)) for threat in THREATS]
 
 
 def test_gate_batches_run_at_once_and_every_threat_keeps_its_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(plan_module, "GATE_BATCH_SIZE", 1)
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 1)
     monkeypatch.setattr(ThreatFinding, "AI_BATCHES_AT_ONCE", 4)
     running, peak, lock = [0], [0], threading.Lock()
     gate_answer = judged({RANSOMWARE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
@@ -537,10 +541,23 @@ def test_the_landscape_cut_is_even_and_never_blanks_a_fact() -> None:
     context = FrozenContext(**{**CONTEXT.to_record(), "systems": long_systems})
     squeezed = describe_asset_for_ai(context, budget=1_800)
     lines = [line for line in squeezed.text.splitlines() if line.startswith("SYS")]
-    assert len(lines) == 6 and squeezed.cut and len(squeezed.text) <= 1_800
+    assert len(lines) == 6 and squeezed.is_cut and len(squeezed.text) <= 1_800
     lengths = {len(line) for line in lines}
     assert max(lengths) - min(lengths) <= 2  # one common length, give or take the alias digits
     assert '""' not in squeezed.text
     unrecorded = system_row(330, "SYS1", "Historian", category_name=None)
     listed = describe_asset_for_ai(FrozenContext(**{**CONTEXT.to_record(), "systems": [unrecorded]}), 30_000)
     assert '"supporting_systems": [{"name": "Historian"}]' in listed.text  # no asset type: left out, not null
+
+
+def test_an_ai_threats_key_and_path_come_from_its_raw_name_while_its_name_says_the_system() -> None:
+    """The key keeps the alias the AI wrote, so its path id never depends on what the systems are called."""
+    proposal = _PROPOSAL | {"threat": "SYS1 credential theft"}
+    chat = planner_chat({proposal["threat"]: ["SYS1"]})
+    chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(proposal)
+    findings = finder(chat, FakeRerankModel(_TYPE_MATCHES)).find_threats(CONTEXT)
+    (ai_threat,) = [threat for threat in findings.threats if threat.catalogue_id is None]
+    assert (ai_threat.key, ai_threat.name) == ("ai:sys 1 credential theft", "SCADA server credential theft")
+    (path,) = [path for path in build_plan(findings, 0)["paths"] if path["steps"] == [ai_threat.key]]
+    seed = f"{ai_threat.key}@{S.ELEVATION_OF_PRIVILEGE}@system:321"
+    assert path["path_id"] == hashlib.sha256(seed.encode()).hexdigest()[:16]

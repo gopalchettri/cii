@@ -19,7 +19,7 @@ from app.core.constants.job_modules import module_of
 from app.core.database import get_mongodb
 from app.core.exceptions import WaitingForAnotherJob
 from app.data_access.jobs.job_repository import JobLease, JobRepository, new_job
-from app.domain.scenario.results import build_board
+from app.domain.scenario.session import build_status_board
 from app.domain.service_mapper.views import mapping_status
 from app.models.admin.api_clients import Principal
 from app.models.remediation.plan import RemediationStatus, RemediationSummary, version_status
@@ -223,7 +223,7 @@ def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_onc
         (
             TaskName.FIND_THREATS,
             "tsg_sessions",
-            lambda record: build_board(session_status_from_record(record)).progress.retrying,
+            lambda record: build_status_board(session_status_from_record(record)).progress.retrying,
         ),
         (
             TaskName.WRITE_PLAN,
